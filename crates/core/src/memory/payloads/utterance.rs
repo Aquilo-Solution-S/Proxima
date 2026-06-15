@@ -1,4 +1,4 @@
-use proxima_core::FactPayload;
+use crate::FactPayload;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +27,7 @@ pub struct UtteranceV1 {
 }
 
 impl FactPayload for UtteranceV1 {
-    const SCHEMA_ID: &'static str = "proxima-agent-memory/utterance-v1";
+    const SCHEMA_ID: &'static str = "core/utterance-v1";
     const SCHEMA_VERSION: u32 = 1;
 
     fn render(&self) -> String {
@@ -40,6 +40,6 @@ impl FactPayload for UtteranceV1 {
     }
 
     fn sidecar_table() -> Option<&'static str> {
-        Some("proxima_agent_memory.utterance_v1")
+        Some("proxima_core.utterance_v1")
     }
 }

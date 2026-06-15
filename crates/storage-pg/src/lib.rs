@@ -335,7 +335,7 @@ impl Storage for PgStorage {
             .await
             .map_err(|e| StorageError::Internal(e.to_string()))?;
         let draft = edge_draft_from_spec(edge);
-        verbs::edge_append::append_edge_in_tx(&mut tx, &draft, None).await?;
+        verbs::edge_append::append_edge_in_tx(&mut tx, &draft, edge.edge_payload).await?;
         tx.commit().await.map_err(crate::error::map_err)
     }
 

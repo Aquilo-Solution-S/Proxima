@@ -1,17 +1,19 @@
 use std::sync::Arc;
 use std::{future::Future, pin::Pin};
 
+mod common;
+
 use async_trait::async_trait;
+use common::{drop_db, fresh_pg};
 use proxima_core::engine::Engine;
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
-    AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, EntityKind, FlavorRegistry,
-    FlavorRegistryFrozen, McpToolError, MemoryId, OrgId, Owner, OwnerPrincipalKind,
-    PersonalityInstanceId, Principal, SchemaId, StorageError, UserId,
+    AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FlavorRegistry,
+    FlavorRegistryFrozen, McpToolError, MemoryId, OrgId, Owner, PersonalityInstanceId, Principal,
+    SchemaId, StorageError, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
 use serde_json::json;
 
 #[derive(Debug)]
@@ -124,27 +126,23 @@ impl EmbeddingClient for FixedEmbedding {
 
 #[tokio::test]
 async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(db_name) = create_db().await? else {
+    let Some((pg, db_name)) = fresh_pg().await else {
         return Ok(());
     };
-    let pg = proxima_storage_pg::PgStorage::connect(&db_url(&db_name)).await?;
-    pg.run_migrations().await?;
-    proxima_agent_memory::migrator().run(pg.pool()).await?;
 
-    let mut registry = FlavorRegistry::new();
-    proxima_agent_memory::register(&mut registry);
+    let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze());
     let owner = nil_owner();
     let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
 
     let remembered = call_tool(
-        pg.pool(),
+        &pg,
         &owner,
         &handles,
         &frozen,
         author.clone(),
-        "proxima-agent-memory/proxima_remember",
+        "core/remember",
         json!({
             "title": "Atlas edges",
             "body": "Edges must be loaded from the visible node set.",
@@ -162,12 +160,12 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
     );
 
     let searched = call_tool(
-        pg.pool(),
+        &pg,
         &owner,
         &handles,
         &frozen,
         author,
-        "proxima-agent-memory/proxima_search_graph",
+        "core/search_graph",
         json!({"query": "atlas edges", "limit": 5}),
     )
     .await?;
@@ -188,12 +186,9 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
 )]
 async fn remember_cited_and_uncited_persist_personality_and_citation_rows()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(db_name) = create_db().await? else {
+    let Some((pg, db_name)) = fresh_pg().await else {
         return Ok(());
     };
-    let pg = proxima_storage_pg::PgStorage::connect(&db_url(&db_name)).await?;
-    pg.run_migrations().await?;
-    proxima_agent_memory::migrator().run(pg.pool()).await?;
     create_remember_citation_sidecars(pg.pool()).await?;
 
     let frozen = registry_with_remember_test_citation();
@@ -203,12 +198,12 @@ async fn remember_cited_and_uncited_persist_personality_and_citation_rows()
     let author = author_ctx().with_personality(personality);
 
     let cited = call_tool(
-        pg.pool(),
+        &pg,
         &owner,
         &handles,
         &frozen,
         author.clone(),
-        "proxima-agent-memory/proxima_remember",
+        "core/remember",
         json!({
             "title": "Cited remembered note",
             "body": "This note cites a typed test artifact.",
@@ -233,12 +228,12 @@ async fn remember_cited_and_uncited_persist_personality_and_citation_rows()
     )
     .await?;
     let uncited = call_tool(
-        pg.pool(),
+        &pg,
         &owner,
         &handles,
         &frozen,
         author,
-        "proxima-agent-memory/proxima_remember",
+        "core/remember",
         json!({
             "title": "Uncited remembered note",
             "body": "This note has no citation.",
@@ -283,18 +278,16 @@ async fn remember_cited_and_uncited_persist_personality_and_citation_rows()
     );
     assert_eq!(uncited_row.1, personality.into_inner());
 
-    let cited_sidecar_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM proxima_agent_memory.agent_note_v1 WHERE memory_id = $1",
-    )
-    .bind(cited_memory_id)
-    .fetch_one(pg.pool())
-    .await?;
-    let uncited_sidecar_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM proxima_agent_memory.agent_note_v1 WHERE memory_id = $1",
-    )
-    .bind(uncited_memory_id)
-    .fetch_one(pg.pool())
-    .await?;
+    let cited_sidecar_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM proxima_core.agent_note_v1 WHERE memory_id = $1")
+            .bind(cited_memory_id)
+            .fetch_one(pg.pool())
+            .await?;
+    let uncited_sidecar_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM proxima_core.agent_note_v1 WHERE memory_id = $1")
+            .bind(uncited_memory_id)
+            .fetch_one(pg.pool())
+            .await?;
     assert_eq!(cited_sidecar_count, 1);
     assert_eq!(uncited_sidecar_count, 1);
     assert_eq!(
@@ -322,27 +315,23 @@ async fn remember_cited_and_uncited_persist_personality_and_citation_rows()
 #[tokio::test]
 async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn std::error::Error>>
 {
-    let Some(db_name) = create_db().await? else {
+    let Some((pg, db_name)) = fresh_pg().await else {
         return Ok(());
     };
-    let pg = proxima_storage_pg::PgStorage::connect(&db_url(&db_name)).await?;
-    pg.run_migrations().await?;
-    proxima_agent_memory::migrator().run(pg.pool()).await?;
 
-    let mut registry = FlavorRegistry::new();
-    proxima_agent_memory::register(&mut registry);
+    let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze());
     let owner = nil_owner();
     let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
 
     let first = call_tool(
-        pg.pool(),
+        &pg,
         &owner,
         &handles,
         &frozen,
         author.clone(),
-        "proxima-agent-memory/proxima_remember",
+        "core/remember",
         json!({
             "title": "First fact",
             "body": "A remembered observation.",
@@ -351,12 +340,12 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
     )
     .await?;
     let second = call_tool(
-        pg.pool(),
+        &pg,
         &owner,
         &handles,
         &frozen,
         author.clone(),
-        "proxima-agent-memory/proxima_remember",
+        "core/remember",
         json!({
             "title": "Second fact",
             "body": "Another remembered observation.",
@@ -366,12 +355,12 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
     .await?;
 
     let link = call_tool(
-        pg.pool(),
+        &pg,
         &owner,
         &handles,
         &frozen,
         author,
-        "proxima-agent-memory/proxima_link",
+        "core/link",
         json!({
             "source": first["handle"],
             "target": second["handle"],
@@ -395,15 +384,11 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
 #[tokio::test]
 async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dyn std::error::Error>>
 {
-    let Some(db_name) = create_db().await? else {
+    let Some((pg, db_name)) = fresh_pg().await else {
         return Ok(());
     };
-    let pg = proxima_storage_pg::PgStorage::connect(&db_url(&db_name)).await?;
-    pg.run_migrations().await?;
-    proxima_agent_memory::migrator().run(pg.pool()).await?;
 
-    let mut registry = FlavorRegistry::new();
-    proxima_agent_memory::register(&mut registry);
+    let registry = FlavorRegistry::new();
     let frozen_inner = registry.freeze();
     let frozen = Arc::new(frozen_inner.clone());
     let owner = nil_owner();
@@ -411,12 +396,12 @@ async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dy
     let author = author_ctx();
 
     let remembered = call_tool(
-        pg.pool(),
+        &pg,
         &owner,
         &handles,
         &frozen,
         author.clone(),
-        "proxima-agent-memory/proxima_remember",
+        "core/remember",
         json!({
             "title": "Operational note",
             "body": "This body deliberately omits the query token.",
@@ -425,18 +410,13 @@ async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dy
         }),
     )
     .await?;
-    let memory_id = handles
-        .resolve_memory(remembered["handle"].as_str().expect("handle"))?
-        .into_inner();
-    insert_embedding(pg.pool(), &owner, memory_id).await?;
-
     let lexical = call_tool(
-        pg.pool(),
+        &pg,
         &owner,
         &handles,
         &frozen,
         author.clone(),
-        "proxima-agent-memory/proxima_search_graph",
+        "core/search_graph",
         json!({"query": "galaxy", "limit": 5}),
     )
     .await?;
@@ -448,13 +428,13 @@ async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dy
             .with_embed(Arc::new(FixedEmbedding)),
     );
     let hybrid = call_tool_with_engine(
-        pg.pool(),
+        &pg,
         &owner,
         &handles,
         &frozen,
         author,
         Some(engine),
-        "proxima-agent-memory/proxima_search_graph",
+        "core/search_graph",
         json!({"query": "galaxy", "mode": "hybrid", "limit": 5}),
     )
     .await?;
@@ -468,15 +448,11 @@ async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dy
 #[tokio::test]
 async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(db_name) = create_db().await? else {
+    let Some((pg, db_name)) = fresh_pg().await else {
         return Ok(());
     };
-    let pg = proxima_storage_pg::PgStorage::connect(&db_url(&db_name)).await?;
-    pg.run_migrations().await?;
-    proxima_agent_memory::migrator().run(pg.pool()).await?;
 
-    let mut registry = FlavorRegistry::new();
-    proxima_agent_memory::register(&mut registry);
+    let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze());
     let owner = nil_owner();
     let personality_a = PersonalityInstanceId::new(uuid::Uuid::now_v7());
@@ -484,11 +460,11 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
     // Author a Fact AS personality_a via the real remember path (T3 stamps
     // ctx.author.personality_instance_id into memories.personality_instance_id).
     let authored_handle = call_tool_prefixed(
-        pg.pool(),
+        &pg,
         &owner,
         &frozen,
         author_ctx().with_personality(personality_a),
-        "proxima-agent-memory/proxima_remember",
+        "core/remember",
         json!({
             "title": "Company shared author",
             "body": "Company shared alpha needle.",
@@ -501,11 +477,11 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
         .expect("remember handle")
         .to_string();
     let nil_handle = call_tool_prefixed(
-        pg.pool(),
+        &pg,
         &owner,
         &frozen,
         author_ctx(),
-        "proxima-agent-memory/proxima_remember",
+        "core/remember",
         json!({
             "title": "Nil author",
             "body": "Company shared beta needle.",
@@ -519,11 +495,11 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
         .to_string();
 
     let search = call_tool_prefixed(
-        pg.pool(),
+        &pg,
         &owner,
         &frozen,
         author_ctx().with_self_perspective(personality_b_root),
-        "proxima-agent-memory/proxima_search_graph",
+        "core/search_graph",
         json!({"query": "alpha needle", "limit": 5}),
     )
     .await?;
@@ -534,11 +510,11 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
     );
 
     let opened = call_tool_prefixed(
-        pg.pool(),
+        &pg,
         &owner,
         &frozen,
         author_ctx().with_self_perspective(personality_b_root),
-        "proxima-agent-memory/proxima_open",
+        "core/open",
         json!({"handle": authored_handle.clone()}),
     )
     .await?;
@@ -548,11 +524,11 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
     );
 
     let nil_opened = call_tool_prefixed(
-        pg.pool(),
+        &pg,
         &owner,
         &frozen,
         author_ctx().with_self_perspective(personality_b_root),
-        "proxima-agent-memory/proxima_open",
+        "core/open",
         json!({"handle": nil_handle}),
     )
     .await?;
@@ -573,15 +549,11 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
     reason = "two-axis idempotency fixture: owner and kind dimensions in one linear script"
 )]
 async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(db_name) = create_db().await? else {
+    let Some((pg, db_name)) = fresh_pg().await else {
         return Ok(());
     };
-    let pg = proxima_storage_pg::PgStorage::connect(&db_url(&db_name)).await?;
-    pg.run_migrations().await?;
-    proxima_agent_memory::migrator().run(pg.pool()).await?;
 
-    let mut registry = FlavorRegistry::new();
-    proxima_agent_memory::register(&mut registry);
+    let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze());
     let frozen_b = frozen.clone();
     let owner_a = nil_owner();
@@ -601,28 +573,28 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     };
 
     let a = call_tool(
-        pg.pool(),
+        &pg,
         &owner_a,
         &Arc::new(HandleTable::new()),
         &frozen,
         author_ctx(),
-        "proxima-agent-memory/proxima_derive",
+        "core/derive",
         shared_args(),
     )
     .await?;
     let b = call_tool(
-        pg.pool(),
+        &pg,
         &owner_b,
         &Arc::new(HandleTable::new()),
         &frozen,
         author_ctx(),
-        "proxima-agent-memory/proxima_derive",
+        "core/derive",
         shared_args(),
     )
     .await?;
 
     let distinct_owner_memories: i64 = sqlx::query_scalar(
-        "SELECT count(DISTINCT memory_id) FROM proxima_agent_memory.agent_derivation_v1
+        "SELECT count(DISTINCT memory_id) FROM proxima_core.agent_derivation_v1
          WHERE idempotency_key = 'shared-key-collision'",
     )
     .fetch_one(pg.pool())
@@ -635,12 +607,12 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     assert_eq!(b["idempotent_replay"], json!(false));
 
     let abstraction = call_tool(
-        pg.pool(),
+        &pg,
         &owner_a,
         &Arc::new(HandleTable::new()),
         &frozen,
         author_ctx(),
-        "proxima-agent-memory/proxima_derive",
+        "core/derive",
         json!({
             "kind": "Abstraction",
             "title": "Same key, A vs P",
@@ -651,12 +623,12 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     )
     .await?;
     let perspective = call_tool(
-        pg.pool(),
+        &pg,
         &owner_a,
         &Arc::new(HandleTable::new()),
         &frozen_b,
         author_ctx(),
-        "proxima-agent-memory/proxima_derive",
+        "core/derive",
         json!({
             "kind": "Perspective",
             "title": "Same key, A vs P",
@@ -667,7 +639,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     )
     .await?;
     let distinct_kind_memories: i64 = sqlx::query_scalar(
-        "SELECT count(DISTINCT memory_id) FROM proxima_agent_memory.agent_derivation_v1
+        "SELECT count(DISTINCT memory_id) FROM proxima_core.agent_derivation_v1
          WHERE idempotency_key = 'kind-key-collision'",
     )
     .fetch_one(pg.pool())
@@ -686,27 +658,23 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
 
 #[tokio::test]
 async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(db_name) = create_db().await? else {
+    let Some((pg, db_name)) = fresh_pg().await else {
         return Ok(());
     };
-    let pg = proxima_storage_pg::PgStorage::connect(&db_url(&db_name)).await?;
-    pg.run_migrations().await?;
-    proxima_agent_memory::migrator().run(pg.pool()).await?;
 
-    let mut registry = FlavorRegistry::new();
-    proxima_agent_memory::register(&mut registry);
+    let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze());
     let owner = nil_owner();
     let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
 
     let perspective = call_tool(
-        pg.pool(),
+        &pg,
         &owner,
         &handles,
         &frozen,
         author.clone(),
-        "proxima-agent-memory/proxima_derive",
+        "core/derive",
         json!({
             "kind": "Perspective",
             "title": "Top-layer perspective",
@@ -719,12 +687,12 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
     let perspective_handle = perspective["handle"].as_str().expect("handle").to_string();
 
     let upward = call_tool(
-        pg.pool(),
+        &pg,
         &owner,
         &handles,
         &frozen,
         author,
-        "proxima-agent-memory/proxima_derive",
+        "core/derive",
         json!({
             "kind": "Abstraction",
             "title": "Should fail",
@@ -747,7 +715,7 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
 }
 
 async fn call_tool(
-    pool: &sqlx::PgPool,
+    pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,
     handles: &Arc<HandleTable>,
     registry: &Arc<proxima_core::FlavorRegistryFrozen>,
@@ -756,12 +724,12 @@ async fn call_tool(
     args: serde_json::Value,
 ) -> Result<serde_json::Value, proxima_core::McpToolError> {
     call_tool_with_engine(
-        pool,
+        pg,
         owner,
         handles,
         registry,
         author,
-        Some(engine_for_registry(registry)),
+        Some(engine_for_registry(registry, pg)),
         name,
         args,
     )
@@ -769,7 +737,7 @@ async fn call_tool(
 }
 
 async fn call_tool_prefixed(
-    pool: &sqlx::PgPool,
+    pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,
     registry: &Arc<proxima_core::FlavorRegistryFrozen>,
     author: McpAuthorContext,
@@ -784,7 +752,7 @@ async fn call_tool_prefixed(
     let caller_self_perspective = author.caller_self_perspective;
     (descriptor.call)(
         McpToolCtx {
-            pool: pool.clone(),
+            pool: pg.pool().clone(),
             owner: owner.clone(),
             authz: AuthzContext::single_owner(owner, AuthPath::System),
             handles: None,
@@ -793,7 +761,7 @@ async fn call_tool_prefixed(
             author,
             caller_self_perspective,
             master_token_id: None,
-            engine: Some(engine_for_registry(registry)),
+            engine: Some(engine_for_registry(registry, pg)),
         },
         args,
     )
@@ -802,7 +770,7 @@ async fn call_tool_prefixed(
 
 #[allow(clippy::too_many_arguments)]
 async fn call_tool_with_engine(
-    pool: &sqlx::PgPool,
+    pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,
     handles: &Arc<HandleTable>,
     registry: &Arc<proxima_core::FlavorRegistryFrozen>,
@@ -818,7 +786,7 @@ async fn call_tool_with_engine(
         .expect("registered tool");
     (descriptor.call)(
         McpToolCtx {
-            pool: pool.clone(),
+            pool: pg.pool().clone(),
             owner: owner.clone(),
             authz: AuthzContext::single_owner(owner, AuthPath::System),
             handles: Some(handles.clone()),
@@ -832,33 +800,6 @@ async fn call_tool_with_engine(
         args,
     )
     .await
-}
-
-async fn insert_embedding(
-    pool: &sqlx::PgPool,
-    owner: &Owner,
-    memory_id: uuid::Uuid,
-) -> Result<(), sqlx::Error> {
-    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
-    let owner_principal_id = match &owner.principal {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
-    sqlx::query(
-        "INSERT INTO proxima_core.embeddings
-            (entity_kind, entity_id, embedding_version, model_id, vec, dim,
-             owner_principal_kind, owner_principal_id, owner_org_id)
-         VALUES ($1, $2, 1, 'test-embed', $3, 3, $4, $5, $6)",
-    )
-    .bind(EntityKind::Fact)
-    .bind(memory_id)
-    .bind(vec![1.0f32, 0.0, 0.0])
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner.org_id.into_inner())
-    .execute(pool)
-    .await
-    .map(|_| ())
 }
 
 fn nil_owner() -> Owner {
@@ -894,21 +835,19 @@ impl AuthorCtxExt for McpAuthorContext {
     }
 }
 
-async fn create_db() -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let db_name = unique_db_name("proxima_test");
-    proxima_pg_testkit::create_db(&db_name)
-        .await
-        .expect("PG required for tests but admin connect failed");
-    Ok(Some(db_name))
-}
-
-fn engine_for_registry(registry: &Arc<FlavorRegistryFrozen>) -> Arc<Engine> {
-    Arc::new(Engine::new((**registry).clone(), MemoryStore::new()))
+fn engine_for_registry(
+    registry: &Arc<FlavorRegistryFrozen>,
+    pg: &proxima_storage_pg::PgStorage,
+) -> Arc<Engine> {
+    Arc::new(
+        Engine::new((**registry).clone(), MemoryStore::new())
+            .with_storage(pg.clone().into_handle())
+            .with_embed(Arc::new(FixedEmbedding)),
+    )
 }
 
 fn registry_with_remember_test_citation() -> Arc<FlavorRegistryFrozen> {
     let mut registry = FlavorRegistry::new();
-    proxima_agent_memory::register(&mut registry);
     registry.add_cited_object_schema::<RememberTestCitedObject>();
     registry.add_citation_mapping_schema::<RememberTestCitationMapping>();
     Arc::new(registry.freeze())

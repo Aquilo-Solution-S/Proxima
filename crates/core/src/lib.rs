@@ -12,6 +12,7 @@ pub mod flavor;
 pub mod ids;
 pub mod llm;
 pub mod mcp;
+pub mod memory;
 pub mod models;
 pub mod owner;
 pub mod payload;
@@ -40,6 +41,7 @@ pub use mcp::{
     McpToolError, MemoryHandleClass, OutputMode, PrefixedUuidClass, PrefixedUuidError,
     format_prefixed_uuid, parse_prefixed_uuid,
 };
+pub use memory::*;
 pub use models::*;
 pub use owner::*;
 pub use payload::*;

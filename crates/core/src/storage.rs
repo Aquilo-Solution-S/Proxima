@@ -67,6 +67,7 @@ pub struct DerivedEdgeSpec<'a> {
     pub target_memory_id: MemoryId,
     pub authorship_kind: EdgeAuthorshipKind,
     pub authorship_owner_memory_id: Option<MemoryId>,
+    pub edge_payload: Option<&'a serde_json::Value>,
 }
 
 #[derive(Debug)]

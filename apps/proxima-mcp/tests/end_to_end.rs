@@ -40,10 +40,7 @@ async fn run_with_handle_serves_tools_list() -> Result<(), Box<dyn std::error::E
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert!(
-        names.contains(&"proxima-agent-memory_proxima_remember"),
-        "got {names:?}"
-    );
+    assert!(names.contains(&"core_remember"), "got {names:?}");
     assert!(
         names.contains(&"proxima-goal_goal_propose"),
         "got {names:?}"

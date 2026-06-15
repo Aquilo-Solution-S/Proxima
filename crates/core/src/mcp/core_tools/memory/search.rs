@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
-use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
-use proxima_core::verbs::query::{MemorySearchRequest, MemorySearchResult, SearchMode};
-use proxima_core::{EdgeId, MemoryId, PersonalityInstanceId};
+use crate::mcp::core_tools::get_memory::sidecar_specs;
+use crate::mcp::{McpTool, McpToolCtx, McpToolError};
+use crate::verbs::query::{MemorySearchRequest, MemorySearchResult, SearchMode};
+use crate::{EdgeId, MemoryId, PersonalityInstanceId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -63,7 +64,7 @@ pub struct NeighborEdge {
 pub struct SearchGraphTool;
 
 impl McpTool for SearchGraphTool {
-    const NAME: &'static str = "proxima-agent-memory/proxima_search_graph";
+    const NAME: &'static str = "core/search_graph";
     const DESCRIPTION: &'static str =
         "Search agent-authored notes and derivations. Returns session handles.";
     type Args = SearchGraphArgs;
@@ -338,8 +339,8 @@ async fn load_graph_payloads(
                 COALESCE(n.body, d.body) AS body,
                 COALESCE(n.tags, d.tags) AS tags
          FROM proxima_core.memories m
-         LEFT JOIN proxima_agent_memory.agent_note_v1 n USING (memory_id)
-         LEFT JOIN proxima_agent_memory.agent_derivation_v1 d USING (memory_id)
+         LEFT JOIN proxima_core.agent_note_v1 n USING (memory_id)
+         LEFT JOIN proxima_core.agent_derivation_v1 d USING (memory_id)
          WHERE m.owner_principal_kind = $1
            AND m.owner_principal_id = $2
            AND m.memory_id = ANY($3::uuid[])",
@@ -374,7 +375,7 @@ FROM (
            ts_rank_cd(to_tsvector('simple', a.title || ' ' || a.body), q.tsq) AS score,
            a.tags
     FROM q, proxima_core.memories m
-    JOIN proxima_agent_memory.agent_note_v1 a USING (memory_id)
+    JOIN proxima_core.agent_note_v1 a USING (memory_id)
     WHERE m.owner_principal_kind = $1
       AND m.owner_principal_id = $2
       AND m.kind IS NULL
@@ -389,7 +390,7 @@ FROM (
            ts_rank_cd(to_tsvector('simple', d.title || ' ' || d.body), q.tsq),
            d.tags
     FROM q, proxima_core.memories m
-    JOIN proxima_agent_memory.agent_derivation_v1 d USING (memory_id)
+    JOIN proxima_core.agent_derivation_v1 d USING (memory_id)
     WHERE m.owner_principal_kind = $1
       AND m.owner_principal_id = $2
       AND m.kind IN ('Abstraction', 'Perspective')
@@ -402,7 +403,7 @@ LIMIT $4
 #[derive(Debug, sqlx::FromRow)]
 struct SearchRow {
     memory_id: uuid::Uuid,
-    kind: proxima_core::EntityKind,
+    kind: crate::EntityKind,
     schema_id: String,
     authoring_personality_instance_id: Option<uuid::Uuid>,
     title: String,
@@ -457,9 +458,9 @@ pub async fn neighbor_edges(
 struct EdgeRow {
     edge_id: uuid::Uuid,
     relation: String,
-    source_kind: proxima_core::EntityKind,
+    source_kind: crate::EntityKind,
     source_memory_id: Option<uuid::Uuid>,
-    target_kind: proxima_core::EntityKind,
+    target_kind: crate::EntityKind,
     target_memory_id: Option<uuid::Uuid>,
 }
 
@@ -471,14 +472,10 @@ pub struct OpenArgs {
     pub handle: String,
 }
 
-fn format_memory_by_kind(
-    ctx: &McpToolCtx,
-    memory_id: MemoryId,
-    kind: proxima_core::EntityKind,
-) -> String {
+fn format_memory_by_kind(ctx: &McpToolCtx, memory_id: MemoryId, kind: crate::EntityKind) -> String {
     match kind {
-        proxima_core::EntityKind::Abstraction => ctx.format_abstraction_memory(memory_id),
-        proxima_core::EntityKind::Perspective => ctx.format_perspective_memory(memory_id),
+        crate::EntityKind::Abstraction => ctx.format_abstraction_memory(memory_id),
+        crate::EntityKind::Perspective => ctx.format_perspective_memory(memory_id),
         _ => ctx.format_fact_memory(memory_id),
     }
 }
@@ -521,7 +518,7 @@ pub struct OpenOutput {
 pub struct OpenTool;
 
 impl McpTool for OpenTool {
-    const NAME: &'static str = "proxima-agent-memory/proxima_open";
+    const NAME: &'static str = "core/open";
     const DESCRIPTION: &'static str = "Resolve a memory handle to its payload and neighbor edges.";
     type Args = OpenArgs;
     type Output = OpenOutput;
@@ -532,55 +529,54 @@ impl McpTool for OpenTool {
     ) -> futures::future::BoxFuture<'static, Result<OpenOutput, McpToolError>> {
         Box::pin(async move {
             let memory_id = ctx.resolve_memory(&args.handle)?;
-            let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
             let memory_uuid = memory_id.into_inner();
-            let row = sqlx::query_as::<_, OpenRow>(OPEN_SQL)
-                .bind(memory_uuid)
-                .bind(owner_kind)
-                .bind(owner_principal_id)
-                .fetch_optional(&ctx.pool)
-                .await
-                .map_err(map_storage)?
+            let storage = ctx
+                .storage()
+                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+            let sidecars = sidecar_specs(&ctx);
+            let snapshot = storage
+                .load_memory_by_id(&ctx.owner, memory_id, None, &sidecars)
+                .await?
                 .ok_or_else(|| {
                     McpToolError::InvalidInput(format!("memory {memory_uuid} not found"))
                 })?;
             let neighbor_edges = neighbor_edges(&ctx, &[memory_uuid]).await?;
+            let title = payload_string(&snapshot.payload_json, "title")
+                .or_else(|| payload_string(&snapshot.payload_json, "conversation_id"));
+            let body = payload_string(&snapshot.payload_json, "body")
+                .or_else(|| payload_string(&snapshot.payload_json, "text"))
+                .or_else(|| snapshot.text.clone());
+            let tags = payload_tags(&snapshot.payload_json);
             Ok(OpenOutput {
-                handle: args.handle,
-                kind: memory_kind_for_edge(row.kind).as_str().to_string(),
-                schema_id: row.schema_id,
+                handle: format_memory_by_kind_label(&ctx, snapshot.memory_id, &snapshot.kind),
+                kind: snapshot.kind,
+                schema_id: snapshot.schema_id.as_str().to_string(),
                 authoring_personality_instance_id: format_authoring_personality(
                     &ctx,
-                    decode_personality(row.authoring_personality_instance_id),
+                    snapshot.authoring_personality_instance_id,
                 ),
-                title: row.title,
-                body: row.body,
-                tags: row.tags.unwrap_or_default(),
+                title,
+                body,
+                tags,
                 neighbor_edges,
             })
         })
     }
 }
 
-const OPEN_SQL: &str = r"
-SELECT m.kind, m.schema_id, m.personality_instance_id AS authoring_personality_instance_id,
-       COALESCE(n.title, d.title) AS title,
-       COALESCE(n.body, d.body) AS body,
-       COALESCE(n.tags, d.tags) AS tags
-FROM proxima_core.memories m
-LEFT JOIN proxima_agent_memory.agent_note_v1 n USING (memory_id)
-LEFT JOIN proxima_agent_memory.agent_derivation_v1 d USING (memory_id)
-WHERE m.memory_id = $1
-  AND m.owner_principal_kind = $2
-  AND m.owner_principal_id = $3
-";
+fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+}
 
-#[derive(Debug, sqlx::FromRow)]
-struct OpenRow {
-    kind: Option<proxima_core::EntityKind>,
-    schema_id: String,
-    authoring_personality_instance_id: Option<uuid::Uuid>,
-    title: Option<String>,
-    body: Option<String>,
-    tags: Option<Vec<String>>,
+fn payload_tags(payload: &serde_json::Value) -> Vec<String> {
+    payload
+        .get("tags")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|tag| tag.as_str().map(ToOwned::to_owned))
+        .collect()
 }

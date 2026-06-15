@@ -94,6 +94,7 @@ impl Default for FlavorRegistry {
         registry.add_cited_object_schema::<crate::verbs::persist_mcp_call::McpCallIoV1>();
         registry
             .add_citation_mapping_schema::<crate::verbs::persist_mcp_call::McpCallIoCitationV1>();
+        crate::memory::register_all(&mut registry);
         crate::mcp::core_tools::register_all(&mut registry);
         registry
     }
@@ -142,7 +143,7 @@ impl FlavorRegistry {
                 schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
                 kind: PayloadKind::Fact,
                 filter_keys: vec![],
-                sidecar_table: F::sidecar_table().map(|t| t.to_string()),
+                sidecar_table: F::sidecar_table().map(std::string::ToString::to_string),
                 natural_key_columns: F::natural_key_columns()
                     .iter()
                     .map(|s| (*s).to_string())
@@ -762,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_includes_all_21_substrate_mcp_tools() {
+    fn default_registry_includes_all_31_substrate_mcp_tools() {
         let frozen = FlavorRegistry::new().freeze();
         let names: std::collections::HashSet<_> =
             frozen.list_mcp_tools().iter().map(|d| d.name).collect();
@@ -792,6 +793,12 @@ mod tests {
             "core/facts_citing_object",
             "core/citation_of_fact",
             "core/walk_memory_lineage",
+            "core/search_graph",
+            "core/open",
+            "core/remember",
+            "core/record_utterance",
+            "core/derive",
+            "core/link",
         ];
         for name in expected {
             assert!(names.contains(name), "missing tool {name}");
@@ -800,6 +807,6 @@ mod tests {
             !names.contains("core/emit_budget_decision"),
             "retired tool name must not remain registered"
         );
-        assert_eq!(names.len(), 25, "exactly 25 substrate tools registered");
+        assert_eq!(names.len(), 31, "exactly 31 substrate tools registered");
     }
 }

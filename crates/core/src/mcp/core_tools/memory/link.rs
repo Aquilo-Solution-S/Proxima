@@ -1,16 +1,12 @@
-use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
-use proxima_core::{EdgeAuthorshipKind, EdgeId, MemoryId};
-use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
+use crate::mcp::{McpTool, McpToolCtx, McpToolError};
+use crate::storage::DerivedEdgeSpec;
+use crate::{EdgeAuthorshipKind, EdgeId, MemoryId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{AGENT_LINK_RELATION, AgentLinkV1};
 
 use super::util::{map_storage, memory_kind_for_edge, owner_columns};
-
-const LINK_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
-    0x4d, 0x70, 0x9b, 0xfb, 0x71, 0xc7, 0x4e, 0x37, 0xb2, 0x88, 0x3a, 0x09, 0xe7, 0x05, 0x69, 0xb5,
-]);
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LinkArgs {
@@ -42,7 +38,7 @@ pub struct LinkOutput {
 pub struct LinkTool;
 
 impl McpTool for LinkTool {
-    const NAME: &'static str = "proxima-agent-memory/proxima_link";
+    const NAME: &'static str = "core/link";
     const DESCRIPTION: &'static str =
         "Author a typed agent-link-refers-to edge between two memory handles.";
     type Args = LinkArgs;
@@ -73,7 +69,6 @@ impl McpTool for LinkTool {
             let source_kind = load_kind(&ctx, source_id).await?;
             let target_kind = load_kind(&ctx, target_id).await?;
 
-            let edge_id = link_edge_id(&ctx.owner, source_id, target_id);
             let relation = ctx
                 .registry
                 .resolve_relation(AGENT_LINK_RELATION)
@@ -85,24 +80,22 @@ impl McpTool for LinkTool {
                 confidence: args.confidence,
             })
             .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-            let edge_draft = EdgeDraft {
-                edge_id,
+            let edge = DerivedEdgeSpec {
+                owner: &ctx.owner,
                 relation,
                 source_kind: memory_kind_for_edge(source_kind),
-                source_memory_id: Some(source_id),
-                source_goal_id: None,
+                source_memory_id: MemoryId::new(source_id),
                 target_kind: memory_kind_for_edge(target_kind),
-                target_memory_id: Some(target_id),
-                target_goal_id: None,
+                target_memory_id: MemoryId::new(target_id),
                 authorship_kind: EdgeAuthorshipKind::ExternalAgent,
-                authorship_owner_memory_id: ctx.caller_self_perspective.map(MemoryId::into_inner),
-                owner: &ctx.owner,
+                authorship_owner_memory_id: ctx.caller_self_perspective,
+                edge_payload: Some(&payload),
             };
-            let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
-            append_edge_in_tx(&mut tx, &edge_draft, Some(&payload))
-                .await
-                .map_err(McpToolError::Storage)?;
-            tx.commit().await.map_err(map_storage)?;
+            let engine = ctx
+                .engine()
+                .ok_or_else(|| McpToolError::InvalidInput("engine required".into()))?;
+            engine.storage().append_memory_edge(&edge).await?;
+            let edge_id = load_latest_link_edge_id(&ctx, source_id, target_id).await?;
 
             Ok(LinkOutput {
                 edge_handle: ctx.format_edge(EdgeId::new(edge_id)),
@@ -112,14 +105,13 @@ impl McpTool for LinkTool {
 }
 
 fn resolve_memory(ctx: &McpToolCtx, raw: &str) -> Result<uuid::Uuid, McpToolError> {
-    ctx.resolve_memory(raw)
-        .map(proxima_core::MemoryId::into_inner)
+    ctx.resolve_memory(raw).map(crate::MemoryId::into_inner)
 }
 
 async fn load_kind(
     ctx: &McpToolCtx,
     memory_id: uuid::Uuid,
-) -> Result<Option<proxima_core::EntityKind>, McpToolError> {
+) -> Result<Option<crate::EntityKind>, McpToolError> {
     let (owner_kind, owner_principal_id, _) = owner_columns(&ctx.owner);
     sqlx::query_scalar(
         "SELECT kind
@@ -137,19 +129,29 @@ async fn load_kind(
     .ok_or_else(|| McpToolError::InvalidInput(format!("memory {memory_id} not found for owner")))
 }
 
-fn link_edge_id(owner: &proxima_core::Owner, source: uuid::Uuid, target: uuid::Uuid) -> uuid::Uuid {
-    let (kind, principal_id, org_id) = owner_columns(owner);
-    let mut key = Vec::with_capacity(96);
-    key.extend_from_slice(kind.as_str().as_bytes());
-    key.push(0);
-    key.extend_from_slice(principal_id.as_bytes());
-    key.push(0);
-    key.extend_from_slice(org_id.as_bytes());
-    key.push(0);
-    key.extend_from_slice(AGENT_LINK_RELATION.as_bytes());
-    key.push(0);
-    key.extend_from_slice(source.as_bytes());
-    key.push(0);
-    key.extend_from_slice(target.as_bytes());
-    uuid::Uuid::new_v5(&LINK_NAMESPACE, &key)
+async fn load_latest_link_edge_id(
+    ctx: &McpToolCtx,
+    source_id: uuid::Uuid,
+    target_id: uuid::Uuid,
+) -> Result<uuid::Uuid, McpToolError> {
+    let (owner_kind, owner_principal_id, _) = owner_columns(&ctx.owner);
+    sqlx::query_scalar(
+        "SELECT edge_id
+         FROM proxima_core.edges
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND relation = $3
+           AND source_memory_id = $4
+           AND target_memory_id = $5
+         ORDER BY edge_id DESC
+         LIMIT 1",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(AGENT_LINK_RELATION)
+    .bind(source_id)
+    .bind(target_id)
+    .fetch_one(&ctx.pool)
+    .await
+    .map_err(map_storage)
 }

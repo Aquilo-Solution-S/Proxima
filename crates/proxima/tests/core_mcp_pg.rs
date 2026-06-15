@@ -134,16 +134,12 @@ impl FlavorApp for EmptyApp {
 
 impl FlavorBundle for AgentMemoryApp {
     fn register(registry: &mut FlavorRegistry) {
-        proxima_agent_memory::register(registry);
         registry.add_cited_object_schema::<TestCitedObject>();
         registry.add_citation_mapping_schema::<TestCitationMapping>();
     }
 
     fn migrators() -> Vec<NamedMigrator> {
-        vec![NamedMigrator::new(
-            "proxima-agent-memory",
-            proxima_agent_memory::migrator(),
-        )]
+        Vec::new()
     }
 }
 
@@ -305,7 +301,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
                 authz.clone(),
                 owner.clone(),
                 Some("test-model".to_string()),
-                "proxima-agent-memory/proxima_remember",
+                "core/remember",
                 serde_json::json!({
                     "title": "Retrieval surface",
                     "body": "hybrid substrate keyword needle",
@@ -389,7 +385,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
                 authz.clone(),
                 owner.clone(),
                 Some("test-model".to_string()),
-                "proxima-agent-memory/proxima_remember",
+                "core/remember",
                 serde_json::json!({
                     "title": "Cited retrieval",
                     "body": "Fact cites external object.",

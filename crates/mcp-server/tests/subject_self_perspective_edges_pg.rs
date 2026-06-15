@@ -2,7 +2,9 @@ mod common;
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use common::{create_db, db_url, drop_db};
+use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::mcp::{McpAuthorContext, PrefixedUuidClass, parse_prefixed_uuid};
 use proxima_core::storage::Storage;
 use proxima_core::verbs::query::MemoryStore;
@@ -14,6 +16,24 @@ use proxima_storage_pg::PgStorage;
 use serde_json::json;
 use uuid::Uuid;
 
+#[derive(Debug)]
+struct FixedEmbedding;
+
+#[async_trait]
+impl EmbeddingClient for FixedEmbedding {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+        Ok(vec![1.0, 0.0, 0.0])
+    }
+
+    fn model_id(&self) -> &'static str {
+        "test-embed"
+    }
+
+    fn dim(&self) -> usize {
+        3
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -23,18 +43,18 @@ async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
     let database_url = db_url(&db_name);
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
-    proxima_agent_memory::migrator().run(pg.pool()).await?;
 
     let owner = Owner {
         principal: Principal::User(UserId::new(Uuid::now_v7())),
         org_id: OrgId::new(Uuid::now_v7()),
     };
 
-    let mut registry = FlavorRegistry::new();
-    proxima_agent_memory::register(&mut registry);
+    let registry = FlavorRegistry::new();
     let frozen = registry.freeze();
     let engine = Arc::new(
-        Engine::new(frozen.clone(), MemoryStore::new()).with_storage(pg.clone().into_handle()),
+        Engine::new(frozen.clone(), MemoryStore::new())
+            .with_storage(pg.clone().into_handle())
+            .with_embed(Arc::new(FixedEmbedding)),
     );
     let server = McpToolHost::from_pool(pg.pool().clone(), owner.clone(), Arc::new(frozen))
         .with_engine(engine);
@@ -42,7 +62,7 @@ async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
 
     let remembered = server
         .call_tool(
-            "proxima-agent-memory/proxima_remember",
+            "core/remember",
             json!({
                 "title": "Subject self source",
                 "body": "A source Fact for subject self-perspective attribution.",
@@ -57,7 +77,7 @@ async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
 
     let derived = server
         .call_tool(
-            "proxima-agent-memory/proxima_derive",
+            "core/derive",
             json!({
                 "kind": "Abstraction",
                 "title": "Subject self derivation",
@@ -79,7 +99,7 @@ async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
 
     let linked = server
         .call_tool(
-            "proxima-agent-memory/proxima_link",
+            "core/link",
             json!({
                 "source": derived_handle,
                 "target": source_handle,

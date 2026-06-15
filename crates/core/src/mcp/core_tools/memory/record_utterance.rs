@@ -1,17 +1,14 @@
-use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
-use proxima_core::verbs::event_ingest::EventDraft;
-use proxima_core::{
+use crate::mcp::{McpTool, McpToolCtx, McpToolError};
+use crate::verbs::event_ingest::EventDraft;
+use crate::{
     FactPayload, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId, canonical_json_bytes,
 };
-use proxima_storage_pg::verbs::event_ingest::ingest_event_with_sidecar_in_tx;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{Speaker, UtteranceV1};
 
-use super::util::map_storage;
-
-const SOURCE_ID: &str = "proxima-agent-memory/conversation";
+const SOURCE_ID: &str = "core/conversation";
 const UTTERANCE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x23, 0xa5, 0x64, 0x58, 0x2b, 0x71, 0x49, 0x29, 0x8b, 0x7d, 0xb9, 0x49, 0xd2, 0x52, 0xe2, 0x11,
 ]);
@@ -34,7 +31,7 @@ pub struct RecordUtteranceOutput {
 pub struct RecordUtteranceTool;
 
 impl McpTool for RecordUtteranceTool {
-    const NAME: &'static str = "proxima-agent-memory/proxima_record_utterance";
+    const NAME: &'static str = "core/record_utterance";
     const DESCRIPTION: &'static str =
         "Append one conversation utterance as a personality-authored Fact.";
     type Args = RecordUtteranceArgs;
@@ -63,8 +60,7 @@ impl McpTool for RecordUtteranceTool {
                 conversation_id: conversation_id.to_string(),
                 text: text.to_string(),
             };
-            let sidecar = payload.clone();
-            let payload_value = serde_json::to_value(payload)
+            let payload_value = serde_json::to_value(&payload)
                 .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
             let payload_bytes = canonical_json_bytes(&payload_value);
             let source_instance_id = args
@@ -92,33 +88,19 @@ impl McpTool for RecordUtteranceTool {
             };
 
             let engine = ctx
-                .engine
-                .as_ref()
+                .engine()
                 .ok_or_else(|| McpToolError::InvalidInput("engine required".into()))?;
             let authorized = engine
                 .authorize_event_ingest(&ctx.authz, Role::GraphWrite, draft)
                 .map_err(|err| McpToolError::Other(err.to_string()))?;
-            let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
-            let outcome = ingest_event_with_sidecar_in_tx(&mut tx, &authorized, |tx, outcome| {
-                Box::pin(async move {
-                    sqlx::query(
-                        "INSERT INTO proxima_agent_memory.utterance_v1
-                           (memory_id, speaker, conversation_id, text)
-                         VALUES ($1, $2, $3, $4)",
-                    )
-                    .bind(outcome.memory_id.into_inner())
-                    .bind(sidecar.speaker.as_str())
-                    .bind(&sidecar.conversation_id)
-                    .bind(&sidecar.text)
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(|err| proxima_core::StorageError::Internal(err.to_string()))?;
-                    Ok(())
-                })
-            })
-            .await
-            .map_err(McpToolError::Storage)?;
-            tx.commit().await.map_err(map_storage)?;
+            let outcome = engine
+                .storage()
+                .ingest_event_with_sidecar(
+                    &authorized,
+                    UtteranceV1::sidecar_table().expect("UtteranceV1 has a sidecar table"),
+                    &payload_value,
+                )
+                .await?;
             if let Err(err) = engine
                 .ensure_fact_embedding(&ctx.owner, outcome.memory_id)
                 .await
@@ -126,7 +108,7 @@ impl McpTool for RecordUtteranceTool {
                 tracing::warn!(
                     memory_id = %outcome.memory_id.into_inner(),
                     error = %err,
-                    "best-effort Fact embedding failed after proxima_record_utterance",
+                    "best-effort Fact embedding failed after core/record_utterance",
                 );
             }
 

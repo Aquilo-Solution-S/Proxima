@@ -539,10 +539,7 @@ mod tests {
             provider_safe_tool_name("core/emit_abstraction"),
             "core_emit_abstraction"
         );
-        assert_eq!(
-            provider_safe_tool_name("proxima-agent-memory/proxima_remember"),
-            "proxima-agent-memory_proxima_remember"
-        );
+        assert_eq!(provider_safe_tool_name("core/remember"), "core_remember");
         assert_eq!(provider_safe_tool_name("a..b"), "a._b");
     }
 

@@ -24,10 +24,8 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
         return Ok(());
     };
     let database_url = db_url(&db_name);
-    let mut registry = FlavorRegistry::new();
-    proxima_agent_memory::register(&mut registry);
+    let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
-    proxima_agent_memory::migrator().run(server.pool()).await?;
     let auth_store = Arc::new(McpEdgeAuth::headless());
     let token = uuid::Uuid::new_v4();
     auth_store
@@ -61,10 +59,7 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert!(
-        names.contains(&"proxima-agent-memory_proxima_remember"),
-        "got {names:?}"
-    );
+    assert!(names.contains(&"core_remember"), "got {names:?}");
 
     let remembered = post_rpc(
         &client,
@@ -76,7 +71,7 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
             "id": 3,
             "method": "tools/call",
             "params": {
-                "name": "proxima-agent-memory_proxima_remember",
+                "name": "core_remember",
                 "arguments": {
                     "title": "mcp streamable test",
                     "body": "HTTP transport remembers notes.",
@@ -110,10 +105,8 @@ async fn missing_auth_returns_401() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     let database_url = db_url(&db_name);
-    let mut registry = FlavorRegistry::new();
-    proxima_agent_memory::register(&mut registry);
+    let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
-    proxima_agent_memory::migrator().run(server.pool()).await?;
     let auth_store = Arc::new(McpEdgeAuth::headless());
     let (handle, addr) = serve_streamable_http(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
@@ -145,10 +138,8 @@ async fn disallowed_origin_returns_403_with_valid_token() -> Result<(), Box<dyn 
         return Ok(());
     };
     let database_url = db_url(&db_name);
-    let mut registry = FlavorRegistry::new();
-    proxima_agent_memory::register(&mut registry);
+    let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
-    proxima_agent_memory::migrator().run(server.pool()).await?;
     let auth_store = Arc::new(McpEdgeAuth::headless());
     let token = uuid::Uuid::new_v4();
     auth_store
@@ -186,10 +177,8 @@ async fn local_master_token_lists_all_tools_without_origin()
         return Ok(());
     };
     let database_url = db_url(&db_name);
-    let mut registry = FlavorRegistry::new();
-    proxima_agent_memory::register(&mut registry);
+    let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
-    proxima_agent_memory::migrator().run(server.pool()).await?;
     let auth_store = Arc::new(McpEdgeAuth::headless());
     let token = uuid::Uuid::new_v4();
     auth_store
@@ -222,7 +211,7 @@ async fn local_master_token_lists_all_tools_without_origin()
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert!(names.contains(&"proxima-agent-memory_proxima_remember"));
+    assert!(names.contains(&"core_remember"));
     assert!(names.contains(&"core_get_memory"));
     assert!(names.contains(&"core_walk_memory_lineage"));
     assert!(names.contains(&"core_fetch_memory"));
@@ -242,10 +231,8 @@ async fn non_loopback_bind_refused_immediately() -> Result<(), Box<dyn std::erro
         return Ok(());
     };
     let database_url = db_url(&db_name);
-    let mut registry = FlavorRegistry::new();
-    proxima_agent_memory::register(&mut registry);
+    let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
-    proxima_agent_memory::migrator().run(server.pool()).await?;
     let bind: SocketAddr = "0.0.0.0:0".parse()?;
     let auth_store = Arc::new(McpEdgeAuth::headless());
     let err = serve_streamable_http(bind, server, default_allowlist(), auth_store)
@@ -379,10 +366,8 @@ async fn start_host_auth_server(
         return Ok(None);
     };
     let database_url = db_url(&db_name);
-    let mut registry = FlavorRegistry::new();
-    proxima_agent_memory::register(&mut registry);
+    let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
-    proxima_agent_memory::migrator().run(server.pool()).await?;
     let auth_store = Arc::new(McpEdgeAuth::headless().with_host(authenticator, nil_owner()));
     let (handle, addr) = serve_streamable_http_with_revalidation(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),

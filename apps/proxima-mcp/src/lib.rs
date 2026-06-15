@@ -13,15 +13,14 @@ pub struct ProximaMcpApp;
 
 impl FlavorBundle for ProximaMcpApp {
     fn register(registry: &mut FlavorRegistry) {
-        proxima_agent_memory::register(registry);
         proxima_flavor_goal::register(registry);
     }
 
     fn migrators() -> Vec<NamedMigrator> {
-        vec![
-            NamedMigrator::new("proxima-agent-memory", proxima_agent_memory::migrator()),
-            NamedMigrator::new("proxima-flavor-goal", proxima_flavor_goal::migrator()),
-        ]
+        vec![NamedMigrator::new(
+            "proxima-flavor-goal",
+            proxima_flavor_goal::migrator(),
+        )]
     }
 }
 
