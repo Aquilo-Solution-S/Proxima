@@ -9,6 +9,7 @@ use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::verbs::consolidate::owner_columns;
 use crate::verbs::fact_retention::get_fact_retention_in_tx;
+use crate::verbs::hard_delete::{HardDeleteSet, HardDeleteSidecars, execute_hard_delete};
 
 #[derive(Debug, sqlx::FromRow)]
 struct DueFactRow {
@@ -56,6 +57,7 @@ pub async fn cleanup_due_facts(
     pool: &sqlx::PgPool,
     owner: &Owner,
     fact_sidecar_tables: &[String],
+    edge_sidecar_tables: &[String],
     citation_mapping_sidecar_tables: &[String],
     cited_object_sidecar_tables: &[String],
 ) -> Result<CleanupDueFactsOutcome, StorageError> {
@@ -64,6 +66,7 @@ pub async fn cleanup_due_facts(
         &mut tx,
         owner,
         fact_sidecar_tables,
+        edge_sidecar_tables,
         citation_mapping_sidecar_tables,
         cited_object_sidecar_tables,
     )
@@ -76,6 +79,7 @@ async fn cleanup_due_facts_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     fact_sidecar_tables: &[String],
+    edge_sidecar_tables: &[String],
     citation_mapping_sidecar_tables: &[String],
     cited_object_sidecar_tables: &[String],
 ) -> Result<CleanupDueFactsOutcome, StorageError> {
@@ -151,7 +155,7 @@ async fn cleanup_due_facts_in_tx(
         .await?;
     }
 
-    delete_edges_referencing_facts(
+    let edge_ids = edge_ids_referencing_facts(
         tx,
         owner_kind,
         owner_principal_id,
@@ -159,9 +163,23 @@ async fn cleanup_due_facts_in_tx(
         &due_memory_ids,
     )
     .await?;
-    delete_fact_sidecars(tx, fact_sidecar_tables, &due_memory_ids).await?;
-    delete_citation_mapping_sidecars(tx, citation_mapping_sidecar_tables, &due_memory_ids).await?;
-    delete_fact_core_rows(tx, &due).await?;
+    execute_hard_delete(
+        tx,
+        &HardDeleteSet {
+            memories: due
+                .iter()
+                .map(|row| (EntityKind::Fact, row.memory_id))
+                .collect(),
+            edge_ids,
+            event_ids: due.iter().map(|row| row.event_id.clone()).collect(),
+        },
+        &HardDeleteSidecars {
+            memory_keyed: fact_sidecar_tables,
+            edge_keyed: edge_sidecar_tables,
+            citation_mapping_keyed: citation_mapping_sidecar_tables,
+        },
+    )
+    .await?;
     let (cited_objects_erased, orphaned_s3_blobs) =
         garbage_collect_cited_objects(tx, cited_object_sidecar_tables, &candidate_cited_object_ids)
             .await?;
@@ -256,15 +274,16 @@ async fn insert_entity_delete_event(
     Ok(())
 }
 
-async fn delete_edges_referencing_facts(
+async fn edge_ids_referencing_facts(
     tx: &mut Transaction<'_, Postgres>,
     owner_kind: OwnerPrincipalKind,
     owner_principal_id: Uuid,
     owner_org_id: Uuid,
     due_memory_ids: &[Uuid],
-) -> Result<(), StorageError> {
-    sqlx::query(
-        "DELETE FROM proxima_core.edges
+) -> Result<Vec<Uuid>, StorageError> {
+    sqlx::query_scalar(
+        "SELECT edge_id
+           FROM proxima_core.edges
           WHERE owner_principal_kind = $1
             AND owner_principal_id = $2
             AND owner_org_id = $3
@@ -278,61 +297,9 @@ async fn delete_edges_referencing_facts(
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(due_memory_ids)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    Ok(())
-}
-
-async fn delete_fact_sidecars(
-    tx: &mut Transaction<'_, Postgres>,
-    fact_sidecar_tables: &[String],
-    due_memory_ids: &[Uuid],
-) -> Result<(), StorageError> {
-    for table in fact_sidecar_tables {
-        let table = PgIdent::table(table)?;
-        let sql = format!(
-            "DELETE FROM {table} WHERE memory_id = ANY($1::uuid[])",
-            table = table.as_str(),
-        );
-        sqlx::query(&sql)
-            .bind(due_memory_ids)
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?;
-    }
-    Ok(())
-}
-
-async fn delete_citation_mapping_sidecars(
-    tx: &mut Transaction<'_, Postgres>,
-    citation_mapping_sidecar_tables: &[String],
-    due_memory_ids: &[Uuid],
-) -> Result<(), StorageError> {
-    let citation_mapping_ids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT citation_mapping_id
-           FROM proxima_core.memories
-          WHERE memory_id = ANY($1::uuid[])
-            AND citation_mapping_id IS NOT NULL",
-    )
-    .bind(due_memory_ids)
     .fetch_all(&mut **tx)
     .await
-    .map_err(map_err)?;
-
-    for table in citation_mapping_sidecar_tables {
-        let table = PgIdent::table(table)?;
-        let sql = format!(
-            "DELETE FROM {table} WHERE citation_mapping_id = ANY($1::uuid[])",
-            table = table.as_str(),
-        );
-        sqlx::query(&sql)
-            .bind(&citation_mapping_ids)
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?;
-    }
-    Ok(())
+    .map_err(map_err)
 }
 
 async fn candidate_cited_object_ids(
@@ -452,41 +419,4 @@ async fn delete_orphaned_cited_objects(
     .map_err(map_err)?;
 
     Ok(deleted.rows_affected())
-}
-
-async fn delete_fact_core_rows(
-    tx: &mut Transaction<'_, Postgres>,
-    due: &[DueFactRow],
-) -> Result<(), StorageError> {
-    let due_memory_ids = due.iter().map(|row| row.memory_id).collect::<Vec<_>>();
-    sqlx::query(
-        "DELETE FROM proxima_core.embeddings
-          WHERE entity_kind = 'Fact'
-            AND entity_id = ANY($1::uuid[])",
-    )
-    .bind(&due_memory_ids)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    sqlx::query(
-        "DELETE FROM proxima_core.citation_mappings
-          WHERE memory_id = ANY($1::uuid[])",
-    )
-    .bind(&due_memory_ids)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.memories WHERE memory_id = ANY($1::uuid[])")
-        .bind(&due_memory_ids)
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?;
-    for row in due {
-        sqlx::query("DELETE FROM proxima_core.events WHERE event_id = $1")
-            .bind(&row.event_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?;
-    }
-    Ok(())
 }

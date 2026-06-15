@@ -516,6 +516,7 @@ impl Storage for PgStorage {
         &self,
         owner: &Owner,
         fact_sidecar_tables: &[String],
+        edge_sidecar_tables: &[String],
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
     ) -> Result<CleanupDueFactsOutcome, StorageError> {
@@ -523,6 +524,7 @@ impl Storage for PgStorage {
             &self.pool,
             owner,
             fact_sidecar_tables,
+            edge_sidecar_tables,
             citation_mapping_sidecar_tables,
             cited_object_sidecar_tables,
         )
