@@ -96,6 +96,19 @@ async fn reload_embedding_client_replaces_engine_slot() {
 }
 
 #[tokio::test]
+async fn drain_embedding_jobs_without_client_is_noop() {
+    let (principal, owner) = fresh_owner();
+    let engine = boot_engine(principal, owner);
+
+    let outcome = engine
+        .drain_embedding_jobs(10)
+        .await
+        .expect("missing embedding client is a no-op");
+
+    assert_eq!(outcome, proxima_core::EmbeddingDrainOutcome::default());
+}
+
+#[tokio::test]
 async fn query_verb_returns_empty_for_configured_owner() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner.clone());
