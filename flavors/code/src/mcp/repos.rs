@@ -334,5 +334,6 @@ fn map_repo_registry(error: RepoRegistryError) -> McpToolError {
             format!("ingestion run is already terminal: {run_id} ({status:?})"),
         ),
         RepoRegistryError::Database(error) => map_storage(error),
+        RepoRegistryError::Storage(error) => McpToolError::Other(error.to_string()),
     }
 }

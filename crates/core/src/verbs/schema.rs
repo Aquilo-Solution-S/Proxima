@@ -124,6 +124,18 @@ impl SchemaInfo {
     }
 }
 
+#[must_use]
+pub fn sidecar_tables(schemas: &[SchemaInfo], kind: PayloadKind) -> Vec<String> {
+    let mut tables = schemas
+        .iter()
+        .filter(|schema| schema.kind == kind)
+        .filter_map(|schema| schema.sidecar_table.clone())
+        .collect::<Vec<_>>();
+    tables.sort();
+    tables.dedup();
+    tables
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MemorySearchProjectionField {
     pub column: String,
