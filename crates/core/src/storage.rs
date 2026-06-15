@@ -111,6 +111,7 @@ pub trait Storage: Send + Sync {
     async fn ingest_event_atomic(
         &self,
         draft: &EventDraft,
+        embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError>;
 
     /// Owner-scoped read of stored Fact render text. Returns `None` when
@@ -158,6 +159,7 @@ pub trait Storage: Send + Sync {
         authorized: &AuthorizedEventIngest,
         sidecar_table: &str,
         sidecar_payload: &serde_json::Value,
+        embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError>;
 
     /// Atomic Fact + Citation materialization for an already-authorized
@@ -167,6 +169,7 @@ pub trait Storage: Send + Sync {
         authorized: &AuthorizedFactWithCitation,
         sidecar_table: &str,
         sidecar_payload: &serde_json::Value,
+        embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError>;
 
     /// Atomic derived Memory authoring: Memory row, typed sidecar,
@@ -485,6 +488,7 @@ impl Storage for NoopStorage {
     async fn ingest_event_atomic(
         &self,
         _draft: &EventDraft,
+        _embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
@@ -501,6 +505,7 @@ impl Storage for NoopStorage {
         _authorized: &AuthorizedEventIngest,
         _sidecar_table: &str,
         _sidecar_payload: &serde_json::Value,
+        _embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
@@ -510,6 +515,7 @@ impl Storage for NoopStorage {
         _authorized: &AuthorizedFactWithCitation,
         _sidecar_table: &str,
         _sidecar_payload: &serde_json::Value,
+        _embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }

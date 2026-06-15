@@ -29,19 +29,13 @@ impl Engine {
         draft: EventDraft,
     ) -> Result<EventIngestOutcome, ProtocolError> {
         let authorized = self.authorize_event_ingest(authz, Role::SourceIngest, draft)?;
-        let owner = authorized.draft().owner();
+        let embedding_client = self.embed_client();
+        let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
         let outcome = self
             .storage
-            .ingest_event_atomic(authorized.draft())
+            .ingest_event_atomic(authorized.draft(), embedding_model_id)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))?;
-        if let Err(err) = self.ensure_fact_embedding(&owner, outcome.memory_id).await {
-            tracing::warn!(
-                memory_id = %outcome.memory_id.into_inner(),
-                error = %err,
-                "best-effort Fact embedding failed after event ingest",
-            );
-        }
         Ok(outcome)
     }
 

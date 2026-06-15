@@ -842,7 +842,9 @@ where
         }),
     };
 
-    ingest_event_in_tx(tx, &draft)
+    let embedding_client = ctx.engine().and_then(proxima_core::Engine::embed_client);
+    let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
+    ingest_event_in_tx(tx, &draft, embedding_model_id)
         .await
         .map_err(McpToolError::Storage)
 }

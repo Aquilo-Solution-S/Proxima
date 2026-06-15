@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 mod common;
 
+use async_trait::async_trait;
 use common::{drop_db, fresh_pg};
 use proxima_core::engine::Engine;
+use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
@@ -11,6 +13,24 @@ use proxima_core::{
 };
 use serde_json::json;
 use sqlx::Row;
+
+#[derive(Debug)]
+struct FixedEmbedding;
+
+#[async_trait]
+impl EmbeddingClient for FixedEmbedding {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+        Ok(vec![0.0; EMBEDDING_DIM])
+    }
+
+    fn model_id(&self) -> &'static str {
+        "test-utterance-embed"
+    }
+
+    fn dim(&self) -> usize {
+        EMBEDDING_DIM
+    }
+}
 
 #[tokio::test]
 async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn std::error::Error>>
@@ -28,7 +48,9 @@ async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn
     };
     let personality = PersonalityInstanceId::new(uuid::Uuid::now_v7());
     let engine = Arc::new(
-        Engine::new(frozen_inner, MemoryStore::new()).with_storage(pg.clone().into_handle()),
+        Engine::new(frozen_inner, MemoryStore::new())
+            .with_storage(pg.clone().into_handle())
+            .with_embed(Arc::new(FixedEmbedding)),
     );
 
     let descriptor = frozen
@@ -85,6 +107,23 @@ async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn
         row.get::<String, _>("text"),
         "The citation phase needs utterance Facts."
     );
+    let memory_id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT memory_id FROM proxima_core.memories WHERE schema_id = 'core/utterance-v1'",
+    )
+    .fetch_one(pg.pool())
+    .await?;
+    let jobs: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxima_core.embedding_jobs
+          WHERE entity_kind = 'Fact'
+            AND entity_id = $1
+            AND model_id = 'test-utterance-embed'
+            AND status = 'pending'",
+    )
+    .bind(memory_id)
+    .fetch_one(pg.pool())
+    .await?;
+    assert_eq!(jobs, 1);
 
     drop(pg);
     drop_db(&db_name).await?;

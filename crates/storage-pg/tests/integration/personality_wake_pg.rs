@@ -557,7 +557,9 @@ async fn personality_provenance_edges_use_operator_authorship() {
         let owner = owner_fixture();
         let seed = seed_test_personality(&pg, &owner).await?;
         let root_id = current_root_perspective_memory_id(&pg, seed.instance_id).await?;
-        let fact = pg.ingest_event_atomic(&fact_draft(owner.clone())).await?;
+        let fact = pg
+            .ingest_event_atomic(&fact_draft(owner.clone()), None)
+            .await?;
         let descriptors = core_relation_descriptors();
         let resolve = |id: &str| {
             let descriptor = descriptors
@@ -662,7 +664,9 @@ async fn personality_provenance_skips_perspective_context_targets() {
         let owner = owner_fixture();
         let seed = seed_test_personality(&pg, &owner).await?;
         let root_id = current_root_perspective_memory_id(&pg, seed.instance_id).await?;
-        let fact = pg.ingest_event_atomic(&fact_draft(owner.clone())).await?;
+        let fact = pg
+            .ingest_event_atomic(&fact_draft(owner.clone()), None)
+            .await?;
         let descriptors = core_relation_descriptors();
         let resolve = |id: &str| {
             let descriptor = descriptors
@@ -737,7 +741,9 @@ async fn personality_authored_edge_links_root_to_emitted_memory() {
         let owner = owner_fixture();
         let seed = seed_test_personality(&pg, &owner).await?;
         let root_id = current_root_perspective_memory_id(&pg, seed.instance_id).await?;
-        let fact = pg.ingest_event_atomic(&fact_draft(owner.clone())).await?;
+        let fact = pg
+            .ingest_event_atomic(&fact_draft(owner.clone()), None)
+            .await?;
         let descriptors = core_relation_descriptors();
         let resolve = |id: &str| {
             let descriptor = descriptors

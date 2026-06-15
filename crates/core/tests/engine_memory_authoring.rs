@@ -271,6 +271,7 @@ async fn ingest_event_with_sidecar_writes_fact_and_note_sidecar()
             &authorized,
             AgentNoteV1::sidecar_table().expect("agent note has a sidecar table"),
             &payload,
+            None,
         )
         .await?;
 

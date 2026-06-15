@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 
 use proxima_core::engine::Engine;
+use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
@@ -131,6 +132,8 @@ async fn cleanup_due_facts_erases_fact_and_tombstones_direct_derivative()
     let derivative_id = insert_direct_derivative(&pg, &owner, fact_id).await?;
     let provenance_edge_id = edge_id_between(&pg, derivative_id, fact_id).await?;
     insert_agent_link_sidecar(&pg, provenance_edge_id).await?;
+    insert_embedding_artifacts(&pg, &owner, EntityKind::Fact, fact_id).await?;
+    insert_embedding_artifacts(&pg, &owner, EntityKind::Abstraction, derivative_id).await?;
 
     engine.set_fact_retention(&authz, &owner, 60).await?;
     let cleanup = engine.cleanup_due_facts(&authz, &owner).await?;
@@ -140,6 +143,8 @@ async fn cleanup_due_facts_erases_fact_and_tombstones_direct_derivative()
     assert_fact_erased(&pg, fact_id, &event_id, citation_mapping_id).await?;
     assert_derivative_tombstoned(&pg, derivative_id).await?;
     assert_agent_link_sidecar_erased(&pg, provenance_edge_id).await?;
+    assert_embedding_artifacts_erased(&pg, fact_id).await?;
+    assert_embedding_artifacts_erased(&pg, derivative_id).await?;
     assert_entity_delete_emitted(&pg, fact_id).await?;
     assert_entity_delete_emitted(&pg, derivative_id).await?;
     assert_tombstoned_derivative_filtered(&pg, &engine, &authz, &owner, derivative_id).await?;
@@ -385,6 +390,32 @@ async fn assert_derivative_tombstoned(
     .fetch_one(pg.pool())
     .await?;
     assert!(tombstoned_at.is_some());
+    Ok(())
+}
+
+async fn assert_embedding_artifacts_erased(
+    pg: &proxima_storage_pg::PgStorage,
+    memory_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let embedding_count: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxima_core.embeddings
+          WHERE entity_id = $1",
+    )
+    .bind(memory_id)
+    .fetch_one(pg.pool())
+    .await?;
+    assert_eq!(embedding_count, 0);
+
+    let job_count: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxima_core.embedding_jobs
+          WHERE entity_id = $1",
+    )
+    .bind(memory_id)
+    .fetch_one(pg.pool())
+    .await?;
+    assert_eq!(job_count, 0);
     Ok(())
 }
 
@@ -646,6 +677,61 @@ async fn insert_derivative(
     insert_provenance_edge(pg, owner, derivative_id, origin_id, origin_kind).await?;
 
     Ok(derivative_id)
+}
+
+async fn insert_embedding_artifacts(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    kind: EntityKind,
+    memory_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.embeddings
+            (entity_kind, entity_id, embedding_version, model_id, vec,
+             owner_principal_kind, owner_principal_id, owner_org_id)
+         VALUES ($1, $2, 1, 'cleanup-embed', $3::vector, $4, $5, $6)",
+    )
+    .bind(kind)
+    .bind(memory_id)
+    .bind(zero_vector_literal())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner.org_id.into_inner())
+    .execute(pg.pool())
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO proxima_core.embedding_jobs
+            (owner_principal_kind, owner_principal_id, owner_org_id,
+             entity_kind, entity_id, model_id)
+         VALUES ($1, $2, $3, $4, $5, 'cleanup-embed')",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner.org_id.into_inner())
+    .bind(kind)
+    .bind(memory_id)
+    .execute(pg.pool())
+    .await?;
+    Ok(())
+}
+
+fn zero_vector_literal() -> String {
+    let mut out = String::with_capacity(EMBEDDING_DIM.saturating_mul(2).saturating_add(2));
+    out.push('[');
+    for idx in 0..EMBEDDING_DIM {
+        if idx > 0 {
+            out.push(',');
+        }
+        out.push('0');
+    }
+    out.push(']');
+    out
 }
 
 async fn insert_provenance_edge(

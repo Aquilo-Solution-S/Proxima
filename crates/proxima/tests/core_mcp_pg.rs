@@ -8,7 +8,8 @@ use proxima::{
 };
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::{
-    CitationMappingPayload, CitedObjectPayload, FlavorRegistry, Owner, SchemaId, StorageError,
+    CitationMappingPayload, CitedObjectPayload, FlavorRegistry, MemoryId, Owner, SchemaId,
+    StorageError,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use uuid::Uuid;
@@ -317,6 +318,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
             )
             .await?;
         let memory = remembered["handle"].as_str().expect("remembered handle");
+        ensure_fact_embedding_for_handle(&built.engine, &owner, memory).await?;
 
         let lexical = tools
             .search_memories(
@@ -485,5 +487,20 @@ async fn create_citation_sidecars(pool: &sqlx::PgPool) -> Result<(), sqlx::Error
     )
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+async fn ensure_fact_embedding_for_handle(
+    engine: &proxima_core::Engine,
+    owner: &Owner,
+    handle: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let memory_id = handle
+        .strip_prefix("F:")
+        .expect("prefixed fact id")
+        .parse::<Uuid>()?;
+    engine
+        .ensure_fact_embedding(owner, MemoryId::new(memory_id))
+        .await?;
     Ok(())
 }

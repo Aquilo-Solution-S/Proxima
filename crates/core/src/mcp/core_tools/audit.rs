@@ -126,8 +126,10 @@ async fn write_fact(ctx: &McpToolCtx, payload: &PersonalityConfigChangedV1) -> R
             },
         }),
     };
+    let embedding_client = ctx.engine().and_then(crate::engine::Engine::embed_client);
+    let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
     storage
-        .ingest_event_atomic(&draft)
+        .ingest_event_atomic(&draft, embedding_model_id)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
