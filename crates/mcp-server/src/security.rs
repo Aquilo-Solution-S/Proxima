@@ -116,7 +116,7 @@ pub fn assert_loopback(addr: &SocketAddr) -> Result<(), McpServerError> {
     Ok(())
 }
 
-/// Concrete return type for [`mcp_auth_layer`]. The extractor
+/// Concrete return type for [`mcp_auth_layer_with_config`]. The extractor
 /// tuple `(State, Request)` is locked here so the public signature
 /// stays a single-line `McpAuthLayer` instead of a six-line
 /// `FromFnLayer<...>` (per `clippy::type_complexity`).
@@ -137,21 +137,16 @@ pub struct McpAuthLayerState {
     revalidation: RevalidationConfig,
 }
 
-/// Bearer-token middleware that resolves
-/// `Authorization: Bearer <wire-token>` via MCP edge auth and injects
-/// the resolved context into request extensions. Wire tokens are
-/// `pxw_<uuid>` wake tokens, `pxm_<uuid>` local master tokens, or host
-/// bearer material. Missing or unknown tokens short-circuit with HTTP
-/// 401. A present but disallowed `Origin` short-circuits with 403;
-/// missing `Origin` is allowed after bearer auth for native CLI clients.
+/// Bearer-token middleware that resolves `Authorization: Bearer
+/// <wire-token>` via MCP edge auth and injects the resolved context into
+/// request extensions. Wire tokens are `pxm_<uuid>` local master tokens
+/// or host bearer material; reserved `pxw_` wake tokens fail closed.
+/// Missing or unknown tokens short-circuit with HTTP 401. A present but
+/// disallowed `Origin` short-circuits with 403; missing `Origin` is
+/// allowed after bearer auth for native CLI clients.
 ///
-/// Returns a [`McpAuthLayer`] (alias of [`FromFnLayer`]) so
-/// callers apply it directly with [`axum::Router::layer`].
-pub fn mcp_auth_layer(auth: Arc<McpEdgeAuth>, allowlist: OriginAllowlist) -> McpAuthLayer {
-    mcp_auth_layer_with_config(auth, allowlist, RevalidationConfig::default())
-}
-
-/// Bearer-token middleware with explicit stream revalidation config.
+/// Returns a [`McpAuthLayer`] (alias of [`FromFnLayer`]) so callers
+/// apply it directly with [`axum::Router::layer`].
 pub fn mcp_auth_layer_with_config(
     auth: Arc<McpEdgeAuth>,
     allowlist: OriginAllowlist,

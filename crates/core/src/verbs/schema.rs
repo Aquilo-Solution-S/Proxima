@@ -607,58 +607,6 @@ impl FlavorRegistryFrozen {
         (self.fact_renderers[position].render)(payload_bytes).map(Some)
     }
 
-    /// Render typed Fact payload bytes through the build-time registered
-    /// `FactPayload::render` implementation.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StorageError::Internal` when the schema is unknown, is
-    /// not registered as `PayloadKind::Fact`, has no typed renderer, or
-    /// the payload bytes fail to decode as the registered JSON type.
-    pub fn render_fact_payload(
-        &self,
-        schema_id: &SchemaId,
-        schema_version: SchemaVersion,
-        payload_bytes: &[u8],
-    ) -> Result<String, StorageError> {
-        self.try_render_fact_payload(schema_id, schema_version, payload_bytes)?
-            .ok_or_else(|| {
-                StorageError::Internal(format!(
-                    "Fact schema {} v{} has no typed renderer",
-                    schema_id.as_str(),
-                    schema_version.into_inner(),
-                ))
-            })
-    }
-
-    /// Resolve the head-by-natural-key filter for a stateful Fact
-    /// schema. Returns `None` when the schema is unknown, is not a
-    /// Fact, or has no natural-key columns (stateless Fact). Used by
-    /// the engine to populate `QueryRequest::stateful_heads` for
-    /// heads-only queries (docs/14 §Query, docs/03 §Stateful Fact
-    /// schemas).
-    #[must_use]
-    pub fn stateful_filter_for(
-        &self,
-        schema_id: &SchemaId,
-    ) -> Option<crate::verbs::query::StatefulHeadsFilter> {
-        let info = self
-            .schemas
-            .iter()
-            .find(|s| s.schema_id == *schema_id && s.kind == PayloadKind::Fact)?;
-        if info.natural_key_columns.is_empty() {
-            return None;
-        }
-        let sidecar_table = info.sidecar_table.clone()?;
-        Some(crate::verbs::query::StatefulHeadsFilter {
-            schema_id: info.schema_id.clone(),
-            schema_version: info.schema_version,
-            sidecar_table,
-            natural_key_columns: info.natural_key_columns.clone(),
-            tombstone: info.tombstone.clone(),
-        })
-    }
-
     #[must_use]
     pub fn stateful_filters_for_schema(
         &self,
