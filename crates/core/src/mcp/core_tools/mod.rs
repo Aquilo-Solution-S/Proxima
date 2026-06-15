@@ -25,6 +25,7 @@ pub mod get_personality;
 pub mod goal;
 pub mod instantiate_personality;
 pub mod list_edge_types;
+pub mod list_events;
 pub mod list_personalities;
 pub mod list_read_scope;
 pub mod list_schemas;
@@ -52,6 +53,7 @@ pub use goal::{
 };
 pub use instantiate_personality::InstantiatePersonalityTool;
 pub use list_edge_types::ListEdgeTypesTool;
+pub use list_events::ListEventsTool;
 pub use list_personalities::ListPersonalitiesTool;
 pub use list_read_scope::ListReadScopeTool;
 pub use list_schemas::ListSchemasTool;
@@ -100,6 +102,7 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<ListSubstrateToolsTool>();
     registry.add_substrate_mcp_tool::<ListSchemasTool>();
     registry.add_substrate_mcp_tool::<ListEdgeTypesTool>();
+    registry.add_substrate_mcp_tool::<ListEventsTool>();
     registry.add_substrate_mcp_tool::<OpenTool>();
     registry.add_substrate_mcp_tool::<RememberTool>();
     registry.add_substrate_mcp_tool::<RecordUtteranceTool>();

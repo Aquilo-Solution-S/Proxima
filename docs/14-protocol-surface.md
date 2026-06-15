@@ -24,7 +24,7 @@ No runtime schema/source/tool/flavor registration surface exists.
 
 Agent long-term memory is core substrate. The MCP tools are thin callers
 of Engine verbs; storage stays behind the Engine. The substrate tool
-count is 35 (authoritative live list: `core/list_substrate_tools`).
+count is 36 (authoritative live list: `core/list_substrate_tools`).
 
 Canonical substrate memory tools:
 
@@ -49,12 +49,14 @@ no outbox, `LISTEN`/`NOTIFY`, or server-push transport. `change_event`
 is now a durable, owner-scoped, seq-ordered **pull log** (see
 [§Change Log](#change-log--pull-only)).
 
-> **Pending surface.** The only engine-exposed reader of `change_event`
-> today is `EventHistory` (backward, bounded). The forward seq-cursor
-> poll a harness wake loop needs exists only at the storage layer
-> (`Storage::list_change_events_after`) — not yet wrapped by an engine
-> verb, and **no MCP tool reads events**. A client-facing forward poll
-> (e.g. `core/list_events?since=<seq>`) is the missing piece.
+> **Forward poll.** `change_event` is read in both directions. Backward,
+> bounded reads use the `EventHistory` engine verb. The forward seq-cursor
+> poll a harness wake loop needs ships as the **`core/list_events`** MCP
+> tool — events with `seq > since`, ascending, plus a `next_since` cursor
+> and a `has_more` hint — a thin owner-scoped wrapper over
+> `Storage::list_change_events_after`. There is intentionally no gRPC/engine
+> forward verb: the MCP tool reads storage directly, the same posture as the
+> other read tools (`core/search_memories`, `core/walk_memory_lineage`).
 
 | Verb | Direction | Idempotency | Scope | Current status |
 |---|---|---|---|---|
@@ -118,9 +120,9 @@ Owner-scoped bounded read of `change_event`, newest-first.
 | `seq_high_water` | latest owner event seq at read time |
 
 No `after` cursor — this verb is backward-only. Forward replay (events
-with `seq > cursor`) exists at the storage layer
-(`Storage::list_change_events_after`) but is not yet wrapped by an
-engine verb or exposed over MCP.
+with `seq > cursor`) is served by the `core/list_events` MCP tool over
+`Storage::list_change_events_after`; it is intentionally neither added as
+an `after` cursor here nor wrapped by a gRPC/engine verb.
 
 ### GoalWrite
 
@@ -177,11 +179,11 @@ on wake / reconnect:
     process in order; persist the new high-water seq
 ```
 
-This is the harness wake path. It is exposed today only as the
-`Storage::list_change_events_after` trait method; the forward poll is
-not yet an engine verb or an MCP tool (see the pending-surface note in
-[§The verbs](#the-verbs)). `EventHistory` is the backward-only,
-engine-exposed counterpart.
+This is the harness wake path. It is exposed as the `core/list_events`
+MCP tool — a thin owner-scoped wrapper over the
+`Storage::list_change_events_after` trait method that returns events
+ascending plus a `next_since` cursor and a `has_more` hint.
+`EventHistory` is the backward-only, engine-exposed counterpart.
 
 Cold-start stitching — seed from a snapshot, then poll forward:
 
