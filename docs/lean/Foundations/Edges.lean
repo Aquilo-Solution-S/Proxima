@@ -87,7 +87,7 @@ noncomputable def NodeRef.owner : NodeRef → Owner
 -- ============================================================
 
 /-- Flavor-qualified relation identity (e.g. `core/derived-from`,
-    `proxima-goal/motivated-by`). Namespacing is pinned in
+    `core/motivated-by`). Namespacing is pinned in
     Foundations.Composition. -/
 axiom RelationId : Type
 axiom relation_class : RelationId → RelationClass

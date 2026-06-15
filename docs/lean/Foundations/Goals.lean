@@ -27,36 +27,30 @@ namespace Proxima
 -- ============================================================
 
 inductive GoalState where
-  | Proposed   -- awaiting gate
   | Active     -- live direction
   | Paused     -- suspended direction
   | Achieved   -- positive close (terminal)
   | Abandoned  -- post-active negative close (terminal)
-  | Rejected   -- gate-time decline (terminal)
   deriving DecidableEq, Repr
 
 def GoalState.terminal : GoalState → Bool
-  | .Achieved | .Abandoned | .Rejected => true
+  | .Achieved | .Abandoned => true
   | _ => false
 
 /-- The admitted supersession transitions, transcribed from the
     doc 06 lifecycle diagram:
 
-      (none) -> Proposed -> Active -> Paused -> Active
-                          \-> Rejected
-                          \-> Achieved
-                          \-> Abandoned
       (none) -> Active
       Active -> Active       # modification
+      Active -> Paused
+      Active -> Achieved
+      Active -> Abandoned
+      Paused -> Active
 
-    Reading the diagram literally: Rejected branches off Proposed
-    (gate-time decline — its state-table meaning), Achieved/Abandoned
-    close out Active ("post-active negative close"). Terminal states
-    admit nothing. `(none) -> Proposed | Active` are creations, not
-    transitions, so they don't appear in this relation. -/
+    Achieved/Abandoned close out Active. Terminal states admit nothing.
+    `(none) -> Active` is creation, not a transition, so it does not
+    appear in this relation. -/
 def goalTransitionAdmitted : GoalState → GoalState → Prop
-  | .Proposed, .Active   => True
-  | .Proposed, .Rejected => True
   | .Active,   .Active   => True   -- modification
   | .Active,   .Paused   => True
   | .Active,   .Achieved => True
@@ -69,8 +63,8 @@ def goalTransitionAdmitted : GoalState → GoalState → Prop
 -- ============================================================
 
 inductive GoalAuthorship where
-  | User            -- direct user Goal writes and gates
-  | External        -- outside-agent proposals
+  | User            -- direct user Goal writes
+  | External        -- outside-agent Goal writes
   | SystemTool      -- tool-authored lifecycle close
   | SystemOperator  -- A→Goal operator output
   deriving DecidableEq, Repr

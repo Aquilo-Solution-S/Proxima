@@ -154,12 +154,7 @@ Core relations:
 | `core/supersedes` | `Supersession` | A→A, P→P, Goal→Goal |
 | `core/inspires` | `Causal` | Goal → Root Perspective |
 | `core/authored` | `Causal` | Root Perspective → emitted memory |
-
-Goal flavor relation:
-
-| Relation | Class | Shape |
-|---|---|---|
-| `proxima-goal/motivated-by` | `Structural` | Goal → Fact / Abstraction evidence |
+| `core/motivated-by` | `Structural` | Goal → Fact / Abstraction evidence |
 
 Relation classes are substrate vocabulary. Flavors add relation ids, not new
 classes.
@@ -257,7 +252,7 @@ Dream forms:
 | Reflection | `2^A × Π → P` | Perspective |
 | Cross-domain synthesis | `2^F_cross × Π → A_cross` | Abstraction |
 | Self/Perspective revision | `2^A × P_active × G_active → P_new` | Perspective |
-| Goal reorientation | `P/A evidence → Goal write` | Goal proposal / supersession |
+| Goal reorientation | `P/A evidence → Goal write` | Goal write / supersession |
 
 Dream outputs are ordinary writes. They obey schema registration, relation
 registration, owner scope, layer direction, citation rules, and append-only
