@@ -34,8 +34,10 @@ async fn boots_engine_with_core_goal_tools_on_fresh_db() {
     let db_url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let config =
-            EmbedConfig::from_lookup(|key| (key == "DATABASE_URL").then(|| db_url.clone()))?;
+        let config = EmbedConfig {
+            database_url: db_url,
+            s3: None,
+        };
         let owner = company_owner(Uuid::now_v7());
 
         let booted = ProximaBuilder::new(config, owner).boot().await?;

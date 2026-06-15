@@ -74,42 +74,49 @@ impl RuntimeBuilder {
         }
     }
 
+    /// Set the Postgres connection string. Env equivalent: `DATABASE_URL`.
     #[must_use]
     pub fn database_url(mut self, database_url: impl Into<String>) -> Self {
         self.database_url = Some(database_url.into());
         self
     }
 
+    /// Configure the cited-blob S3 store. Env equivalent: the `PROXIMA_S3_*` block.
     #[must_use]
     pub fn s3(mut self, s3: S3RuntimeConfig) -> Self {
         self.s3 = Some(s3);
         self
     }
 
+    /// Set the engine `Owner` explicitly. Mutually exclusive with [`Self::org_id`].
     #[must_use]
     pub fn owner(mut self, owner: Owner) -> Self {
         self.owner = Some(owner);
         self
     }
 
+    /// Derive the company `Owner` from an org id. Env equivalent: `PROXIMA_ORG_ID`.
     #[must_use]
     pub fn org_id(mut self, org_id: uuid::Uuid) -> Self {
         self.org_id = Some(org_id);
         self
     }
 
+    /// Set the loopback-only MCP master token. Env equivalent: `PROXIMA_MCP_MASTER_TOKEN`.
     #[must_use]
     pub fn master_token(mut self, master_token: impl Into<String>) -> Self {
         self.master_token = Some(master_token.into());
         self
     }
 
+    /// Enable the MCP transport on the default loopback bind.
     #[must_use]
     pub fn with_mcp(mut self) -> Self {
         self.mcp_enabled = true;
         self
     }
 
+    /// Enable MCP and bind it to `bind`. Env equivalent: `PROXIMA_MCP_BIND`.
     #[must_use]
     pub fn mcp_bind(mut self, bind: SocketAddr) -> Self {
         self.mcp_enabled = true;
@@ -117,12 +124,16 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Allow non-loopback MCP exposure (requires an authenticator and
+    /// allowed origins). Env equivalent: `PROXIMA_EXPOSE_NETWORK`.
     #[must_use]
     pub fn expose_network(mut self, expose_network: bool) -> Self {
         self.expose_network = Some(expose_network);
         self
     }
 
+    /// Set the CORS origin allowlist for exposed MCP. Env equivalent
+    /// (comma-separated): `PROXIMA_ALLOWED_ORIGINS`.
     #[must_use]
     pub fn allowed_origins(mut self, allowed_origins: Vec<String>) -> Self {
         self.allowed_origins = Some(allowed_origins);
@@ -149,24 +160,29 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Opt into loopback-only single-owner mode (no authenticator).
+    /// Never combined with network exposure; programmatic only.
     #[must_use]
     pub fn allow_insecure_single_owner(mut self) -> Self {
         self.insecure_single_owner = true;
         self
     }
 
+    /// Install the host authenticator used to resolve MCP credentials.
     #[must_use]
     pub fn authenticator(mut self, authenticator: Arc<dyn Authenticator>) -> Self {
         self.authenticator = Some(authenticator);
         self
     }
 
+    /// Install the embedding client (`Engine::with_embed`).
     #[must_use]
     pub fn embed_client(mut self, client: Arc<dyn EmbeddingClient>) -> Self {
         self.embed_client = Some(client);
         self
     }
 
+    /// Install the Anthropic model client (`Engine::with_anthropic`).
     #[must_use]
     pub fn anthropic(mut self, client: Arc<dyn AnthropicClient>) -> Self {
         self.anthropic = Some(client);
