@@ -41,19 +41,10 @@ impl NamedMigrator {
     }
 }
 
-/// One migration version contributed by one source.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MigrationVersion {
-    pub source: &'static str,
-    pub version: i64,
-    pub description: String,
-}
-
 /// Successful migration run metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationRunReport {
     pub sources: Vec<&'static str>,
-    pub versions: Vec<MigrationVersion>,
 }
 
 /// Errors raised by the framework migration facade.
@@ -117,18 +108,8 @@ pub async fn run_core_and_flavor_migrations(
 
 impl MigrationRunReport {
     fn from_sources(sources: &[NamedMigrator]) -> Self {
-        let versions = sources
-            .iter()
-            .flat_map(|source| {
-                source.migrator.iter().map(|migration| MigrationVersion {
-                    source: source.source,
-                    version: migration.version,
-                    description: migration.description.to_string(),
-                })
-            })
-            .collect();
         let sources = sources.iter().map(|source| source.source).collect();
-        Self { sources, versions }
+        Self { sources }
     }
 }
 

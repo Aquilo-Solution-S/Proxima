@@ -27,11 +27,6 @@ impl Cursor {
     }
 
     #[must_use]
-    pub fn into_bytes(self) -> Vec<u8> {
-        self.0
-    }
-
-    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

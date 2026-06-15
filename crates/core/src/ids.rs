@@ -145,11 +145,6 @@ impl EventId {
     pub const fn into_inner(self) -> [u8; 32] {
         self.0
     }
-
-    #[must_use]
-    pub const fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
 }
 
 /// `UUIDv7`, declared by the source at emit time.
