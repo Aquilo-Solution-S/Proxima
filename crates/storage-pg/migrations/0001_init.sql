@@ -472,8 +472,33 @@ CREATE TABLE proxima_core.change_event (
     edge_target_memory_id uuid,
     edge_target_goal_id uuid,
     entity_personality_instance_id uuid,
-    wake_chain_depth smallint DEFAULT 0 NOT NULL
+    wake_chain_depth smallint DEFAULT 0 NOT NULL,
+    CONSTRAINT change_event_endpoint_chk CHECK (
+        CASE
+            WHEN kind = 'EdgeAppend' THEN
+                entity_kind IS NULL
+                AND entity_memory_id IS NULL AND entity_goal_id IS NULL
+                AND entity_schema_id IS NULL AND entity_schema_version IS NULL
+                AND supersedes_memory_id IS NULL AND supersedes_goal_id IS NULL
+                AND edge_id IS NOT NULL AND edge_relation IS NOT NULL
+                AND ((edge_source_memory_id IS NOT NULL) <> (edge_source_goal_id IS NOT NULL))
+                AND ((edge_target_memory_id IS NOT NULL) <> (edge_target_goal_id IS NOT NULL))
+            ELSE
+                ((entity_memory_id IS NOT NULL) <> (entity_goal_id IS NOT NULL))
+                AND entity_kind IS NOT NULL
+                AND entity_schema_id IS NOT NULL
+                AND entity_schema_version IS NOT NULL
+                AND edge_id IS NULL AND edge_relation IS NULL
+                AND edge_source_memory_id IS NULL AND edge_source_goal_id IS NULL
+                AND edge_target_memory_id IS NULL AND edge_target_goal_id IS NULL
+                AND NOT (supersedes_memory_id IS NOT NULL AND supersedes_goal_id IS NOT NULL)
+        END
+    )
 );
+
+
+COMMENT ON CONSTRAINT change_event_endpoint_chk ON proxima_core.change_event IS
+  'Endpoint XOR + not-null companions guarding the pull-read decode (change_event.rs). EdgeAppend rows carry edge_id/edge_relation and exactly one of *_memory_id/*_goal_id per edge endpoint, with all entity/supersedes columns NULL. EntityAppend/EntityDelete rows carry exactly one of entity_memory_id/entity_goal_id plus entity_kind/schema, at most one supersedes endpoint, and all edge columns NULL. Mirrors edges_source/target_endpoint_chk; keeps a raw INSERT from persisting an undecodable row.';
 
 
 --
