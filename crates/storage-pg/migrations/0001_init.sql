@@ -837,7 +837,6 @@ CREATE TABLE proxima_core.personality_wake_entries (
     enabled boolean DEFAULT true NOT NULL,
     authored_by proxima_core.wake_authored_by DEFAULT 'any'::proxima_core.wake_authored_by NOT NULL,
     probability_promille integer DEFAULT 1000 NOT NULL,
-    disabled_reason text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     tombstoned_at timestamp with time zone,

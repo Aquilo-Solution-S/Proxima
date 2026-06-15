@@ -27,7 +27,6 @@ pub struct WakeEntryRow {
     pub probability_promille: u16,
     pub goal_scope: WakeEntryGoalScope,
     pub instructions: String,
-    pub disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]

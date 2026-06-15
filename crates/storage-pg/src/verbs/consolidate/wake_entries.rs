@@ -254,7 +254,6 @@ async fn upsert_wake_entry(
              probability_promille = EXCLUDED.probability_promille,
              goal_scope = EXCLUDED.goal_scope,
              instructions = EXCLUDED.instructions,
-             disabled_reason = NULL,
              tombstoned_at = NULL,
              updated_at = now()",
     )
