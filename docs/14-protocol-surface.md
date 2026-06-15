@@ -14,7 +14,7 @@ operational RPCs.
 | Surface | Status | Contract |
 |---|---|---|
 | graph verbs | current | cognitive graph reads/writes/events |
-| operational/config RPCs | current | runtime personality and inference config |
+| operational/config RPCs | current | runtime personality config |
 | compliance admin operations | design intent | compliance primitives in [13](13-compliance.md), admin surface deferred |
 | operators / wake / tools / LLM calls | internal | clients observe committed graph effects as `ChangeEvent`s |
 
@@ -24,7 +24,7 @@ No runtime schema/source/tool/flavor registration surface exists.
 
 Agent long-term memory is core substrate. The MCP tools are thin callers
 of Engine verbs; storage stays behind the Engine. The substrate tool
-count is 30.
+count is 35 (authoritative live list: `core/list_substrate_tools`).
 
 Canonical substrate memory tools:
 
@@ -41,20 +41,25 @@ Canonical substrate memory tools:
 Graph search is unified into `core/search_memories`; there is no
 separate graph-search tool.
 
-## The six verbs
+## The verbs
 
-Semantic graph/client contract:
+Semantic graph/client contract. Five current verbs; the live-push
+`Subscribe` stream was **retired** — `change_event` is now a pull-only
+durable log (replay via `EventHistory`; the harness wake path reads
+events after a seq cursor). The `### Subscribe`, `## Cursor & Resume`,
+and `## Cold-Start Stitching` sections below still describe the retired
+push model and are pending a pull-only rewrite.
 
 | Verb | Direction | Idempotency | Scope | Current status |
 |---|---|---|---|---|
 | `Query` | client -> engine, sync | yes | Owner | current |
-| `Subscribe` | engine -> client, stream | n/a | Owner | current |
 | `EventHistory` | client -> engine, sync | yes | Owner | current |
 | `GoalWrite` | client -> engine, sync | `request_id` | Owner | current |
 | `EventIngest` | source -> engine, sync | `event_id` | Owner | current |
 | `Schema` | client -> engine, sync | yes | binary | current |
+| `Subscribe` | engine -> client, stream | n/a | Owner | **retired** (pull-only) |
 
-These six verbs are the cognitive graph surface. Operational/config
+These five current verbs are the cognitive graph surface. Operational/config
 RPCs below are not graph verbs.
 
 ## Owner-scoping — the primary axis
