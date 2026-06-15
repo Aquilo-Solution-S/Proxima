@@ -79,15 +79,14 @@ predicate. Cross-owner edges and cross-owner evidence are rejected.
 
 ## Storage Layout
 
-Core rows and core memory sidecars live in `proxima_core`.
-
-Flavor sidecars live under one Postgres schema per linked flavor:
+Core rows and core sidecars live in `proxima_core`. Flavor sidecars live
+under one Postgres schema per linked flavor:
 
 | Owner | Sidecar namespace |
 |---|---|
 | core memory | `proxima_core.agent_note_v1`, `proxima_core.agent_derivation_v1`, `proxima_core.agent_link_v1`, `proxima_core.utterance_v1` |
+| core goals | `proxima_core.goal_*_v1` |
 | `proxima-code` | `proxima_code.*` |
-| `proxima-goal` | `proxima_goal.*` |
 
 Postgres schemas are catalog namespaces, not payload schemas. The payload
 schema registry is build-time Rust metadata (03 / 08).
