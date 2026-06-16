@@ -13,10 +13,14 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
+use proxima_core::verbs::event_ingest::{
+    AuthorizedCitationAttachment, AuthorizedInlineCitationMapping, AuthorizedInlineCitedObject,
+    EventDraft, EventIngestOutcome,
+};
 use proxima_core::{
     AuthorizedEventIngest, AuthorizedFactWithCitation, AuthzContext, Engine, EntityKind,
-    FactPayload, OwnerPrincipalKind, Role, SchemaVersion, SourceBatchId, SourceId, StorageError,
+    FactPayload, MemoryId, Owner, OwnerPrincipalKind, Role, SchemaVersion, SourceBatchId, SourceId,
+    StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -24,6 +28,14 @@ use crate::error::{internal, map_err};
 
 pub type EventIngestSidecarFuture<'t> =
     Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
+
+#[derive(Debug, Clone)]
+pub struct AttachCitationOutcome {
+    pub memory_id: MemoryId,
+    pub cited_object_id: uuid::Uuid,
+    pub attached: bool,
+    pub idempotent: bool,
+}
 
 /// Pool-scoped `EventIngest`. Opens its own transaction; commits on
 /// success.
@@ -450,7 +462,6 @@ where
         });
     }
 
-    let cited_object_id_new = uuid::Uuid::now_v7();
     let citation_mapping_id = uuid::Uuid::now_v7();
     let memory_id = uuid::Uuid::now_v7();
     let change_seq = uuid::Uuid::now_v7();
@@ -459,27 +470,7 @@ where
         proxima_core::PersonalityInstanceId::into_inner,
     );
 
-    let cited_object_id = sqlx::query_scalar::<_, uuid::Uuid>(
-        r"INSERT INTO proxima_core.cited_objects
-            (cited_object_id, schema_id, owner_principal_kind,
-             owner_principal_id, owner_org_id, content_hash)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (owner_principal_kind, owner_principal_id,
-                      owner_org_id, schema_id, content_hash)
-         DO UPDATE SET schema_id = EXCLUDED.schema_id
-         RETURNING cited_object_id",
-    )
-    .bind(cited_object_id_new)
-    .bind(cited_object.schema_id().as_str())
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(&cited_object.content_hash()[..])
-    .fetch_one(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
-    (cited_object.sidecar_inserter_fn())(tx, cited_object_id, cited_object.payload_bytes()).await?;
+    let cited_object_id = upsert_cited_object_in_tx(tx, &owner, cited_object).await?;
 
     sqlx::query(
         r"INSERT INTO proxima_core.source_batches
@@ -557,6 +548,202 @@ where
     )
     .await?;
 
+    insert_citation_mapping_in_tx(
+        tx,
+        &owner,
+        mapping,
+        citation_mapping_id,
+        memory_id,
+        cited_object_id,
+    )
+    .await?;
+
+    sqlx::query(
+        r"INSERT INTO proxima_core.change_event
+            (seq, owner_principal_kind, owner_principal_id,
+             owner_org_id, kind, entity_kind,
+             entity_memory_id, entity_schema_id, entity_schema_version,
+             entity_personality_instance_id)
+         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Fact', $5, $6, $7, $8)",
+    )
+    .bind(change_seq)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(memory_id)
+    .bind(draft.schema_id.as_str())
+    .bind(draft.schema_version.into_inner().cast_signed())
+    .bind(author_personality_instance_id)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+
+    Ok(outcome)
+}
+
+/// Attach a typed inline citation to an existing uncited Fact inside an
+/// already-open transaction.
+///
+/// # Errors
+///
+/// Returns `NotFound` when the memory is absent for the owner, tombstoned,
+/// already derived, or owner-mismatched. Returns storage errors from
+/// cited-object sidecar insertion, citation-mapping sidecar insertion, or
+/// core row updates. The caller owns transaction rollback/commit.
+pub async fn attach_citation_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    authorized: &AuthorizedCitationAttachment,
+) -> Result<AttachCitationOutcome, StorageError> {
+    let memory_id = authorized.memory_id();
+    let memory_uuid = memory_id.into_inner();
+    let owner = authorized.owner();
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+
+    let existing_mapping_id = sqlx::query_scalar::<_, Option<uuid::Uuid>>(
+        r"SELECT citation_mapping_id
+            FROM proxima_core.memories
+           WHERE memory_id = $1
+             AND owner_principal_kind = $2
+             AND owner_principal_id = $3
+             AND owner_org_id = $4
+             AND kind IS NULL
+             AND tombstoned_at IS NULL",
+    )
+    .bind(memory_uuid)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?
+    .ok_or(StorageError::NotFound)?;
+
+    if let Some(citation_mapping_id) = existing_mapping_id {
+        let cited_object_id =
+            cited_object_id_for_mapping_in_tx(tx, owner, memory_uuid, citation_mapping_id).await?;
+        return Ok(AttachCitationOutcome {
+            memory_id,
+            cited_object_id,
+            attached: false,
+            idempotent: true,
+        });
+    }
+
+    let cited_object_id = upsert_cited_object_in_tx(tx, owner, authorized.cited_object()).await?;
+    let citation_mapping_id = uuid::Uuid::now_v7();
+    insert_citation_mapping_in_tx(
+        tx,
+        owner,
+        authorized.mapping(),
+        citation_mapping_id,
+        memory_uuid,
+        cited_object_id,
+    )
+    .await?;
+
+    let updated = sqlx::query(
+        r"UPDATE proxima_core.memories
+             SET citation_mapping_id = $2
+           WHERE memory_id = $1
+             AND owner_principal_kind = $3
+             AND owner_principal_id = $4
+             AND owner_org_id = $5
+             AND citation_mapping_id IS NULL",
+    )
+    .bind(memory_uuid)
+    .bind(citation_mapping_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+
+    if updated.rows_affected() != 1 {
+        return Err(StorageError::Conflict(
+            "citation was attached concurrently".to_string(),
+        ));
+    }
+
+    Ok(AttachCitationOutcome {
+        memory_id,
+        cited_object_id,
+        attached: true,
+        idempotent: false,
+    })
+}
+
+async fn cited_object_id_for_mapping_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    memory_id: uuid::Uuid,
+    citation_mapping_id: uuid::Uuid,
+) -> Result<uuid::Uuid, StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    sqlx::query_scalar::<_, uuid::Uuid>(
+        r"SELECT cm.cited_object_id
+            FROM proxima_core.citation_mappings cm
+           WHERE cm.citation_mapping_id = $1
+             AND cm.memory_id = $2
+             AND cm.owner_principal_kind = $3
+             AND cm.owner_principal_id = $4
+             AND cm.owner_org_id = $5",
+    )
+    .bind(citation_mapping_id)
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?
+    .ok_or_else(|| {
+        StorageError::Internal(format!(
+            "Fact memory {memory_id} references missing citation mapping {citation_mapping_id}",
+        ))
+    })
+}
+
+async fn upsert_cited_object_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    cited_object: &AuthorizedInlineCitedObject,
+) -> Result<uuid::Uuid, StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let cited_object_id_new = uuid::Uuid::now_v7();
+    let cited_object_id = sqlx::query_scalar::<_, uuid::Uuid>(
+        r"INSERT INTO proxima_core.cited_objects
+            (cited_object_id, schema_id, owner_principal_kind,
+             owner_principal_id, owner_org_id, content_hash)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (owner_principal_kind, owner_principal_id,
+                      owner_org_id, schema_id, content_hash)
+         DO UPDATE SET schema_id = EXCLUDED.schema_id
+         RETURNING cited_object_id",
+    )
+    .bind(cited_object_id_new)
+    .bind(cited_object.schema_id().as_str())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(&cited_object.content_hash()[..])
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+
+    (cited_object.sidecar_inserter_fn())(tx, cited_object_id, cited_object.payload_bytes()).await?;
+    Ok(cited_object_id)
+}
+
+async fn insert_citation_mapping_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    mapping: &AuthorizedInlineCitationMapping,
+    citation_mapping_id: uuid::Uuid,
+    memory_id: uuid::Uuid,
+    cited_object_id: uuid::Uuid,
+) -> Result<(), StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     sqlx::query(
         r"INSERT INTO proxima_core.citation_mappings
             (citation_mapping_id, schema_id, memory_id,
@@ -580,28 +767,7 @@ where
     if let Some(insert_sidecar) = mapping.sidecar_inserter_fn() {
         insert_sidecar(tx, citation_mapping_id, mapping.payload_bytes()).await?;
     }
-
-    sqlx::query(
-        r"INSERT INTO proxima_core.change_event
-            (seq, owner_principal_kind, owner_principal_id,
-             owner_org_id, kind, entity_kind,
-             entity_memory_id, entity_schema_id, entity_schema_version,
-             entity_personality_instance_id)
-         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Fact', $5, $6, $7, $8)",
-    )
-    .bind(change_seq)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(memory_id)
-    .bind(draft.schema_id.as_str())
-    .bind(draft.schema_version.into_inner().cast_signed())
-    .bind(author_personality_instance_id)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
-    Ok(outcome)
+    Ok(())
 }
 
 /// Run gated `EventIngest` plus a typed sidecar insert inside an

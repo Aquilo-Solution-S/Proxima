@@ -27,7 +27,8 @@ pub use proxima_core::error::ProtocolError;
 pub use proxima_core::llm;
 pub use proxima_core::storage::NoopStorage;
 pub use proxima_core::verbs::event_ingest::{
-    EventDraft, EventIngestOutcome, InlineCitationMappingDraft, InlineCitedObjectDraft,
+    AuthorizedCitationAttachment, EventDraft, EventIngestOutcome, InlineCitationMappingDraft,
+    InlineCitedObjectDraft,
 };
 pub use proxima_core::verbs::mcp_call_history::{
     MAX_MCP_CALL_HISTORY_LIMIT, McpCallHistoryRequest, McpCallHistoryResponse, McpCallRecord,
@@ -45,8 +46,8 @@ pub use proxima_mcp_server::McpAuthContext;
 #[cfg(feature = "testkit")]
 pub use proxima_pg_testkit as testkit;
 pub use proxima_storage_pg::verbs::event_ingest::{
-    ingest_fact, ingest_fact_in_tx, ingest_fact_with_citation_atomic,
-    ingest_fact_with_citation_in_tx,
+    AttachCitationOutcome, attach_citation_in_tx, ingest_fact, ingest_fact_in_tx,
+    ingest_fact_with_citation_atomic, ingest_fact_with_citation_in_tx,
 };
 pub use proxima_storage_pg::verbs::fact_embeddings::{
     list_facts_missing_embedding, load_fact_text, load_fact_text_in_tx, upsert_fact_embedding,
