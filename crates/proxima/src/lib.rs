@@ -24,14 +24,22 @@ pub use migrations::{
     MigrationError, MigrationRunReport, NamedMigrator, run_core_and_flavor_migrations,
 };
 pub use proxima_core::error::ProtocolError;
+pub use proxima_core::llm;
+pub use proxima_core::storage::NoopStorage;
+pub use proxima_core::verbs::event_ingest::{
+    EventIngestOutcome, InlineCitationMappingDraft, InlineCitedObjectDraft,
+};
 pub use proxima_core::verbs::schema::PayloadKind;
 pub use proxima_core::{
-    AbstractionPayload, AuthPath, AuthzContext, CapabilitySet, Engine, EngineHandle, FactPayload,
-    FlavorRegistry, GoalPayload, GroupId, Identity, McpCallLogInput, McpCallLogOutcome, OrgId,
-    Owner, PerspectivePayload, Principal, Role, RoleSet, SchemaId, SchemaVersion, SearchProjection,
-    SearchProjectionColumnKind, SearchProjectionField, StorageError, ToolScope, proxima_flavor,
+    AbstractionPayload, AuthPath, AuthzContext, CapabilitySet, CitationMappingPayload,
+    CitedObjectPayload, Engine, EngineHandle, FactPayload, FlavorRegistry, GoalPayload, GroupId,
+    Identity, McpCallLogInput, McpCallLogOutcome, OrgId, Owner, PerspectivePayload, Principal,
+    Role, RoleSet, SchemaId, SchemaVersion, SearchProjection, SearchProjectionColumnKind,
+    SearchProjectionField, StorageError, ToolScope, proxima_flavor,
 };
 pub use proxima_mcp_server::McpAuthContext;
+#[cfg(feature = "testkit")]
+pub use proxima_pg_testkit as testkit;
 pub use proxima_storage_pg::verbs::event_ingest::{
     ingest_fact, ingest_fact_in_tx, ingest_fact_with_citation_atomic,
     ingest_fact_with_citation_in_tx,
