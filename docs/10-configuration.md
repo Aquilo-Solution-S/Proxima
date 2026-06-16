@@ -52,6 +52,9 @@ Proxima::<App>::app().from_env().authenticator(auth).run().await?;
 | `PROXIMA_ALLOWED_ORIGINS` | Comma-separated MCP origin allowlist. |
 | `PROXIMA_STREAM_MAX_LIFETIME` | Max lifetime (seconds) of a subscribe stream. |
 | `PROXIMA_STREAM_EPOCH_INTERVAL` | Stream epoch re-check interval (seconds). |
+| `MISTRAL_API_KEY` | Enables `proxima-mcp` embeddings with Mistral. |
+| `PROXIMA_EMBED_MODEL` | Optional embedding model for `proxima-mcp`; defaults to `mistral-embed`. |
+| `MISTRAL_API_BASE` | Optional Mistral-compatible API base; defaults to `https://api.mistral.ai/v1`. |
 | `PROXIMA_S3_BUCKET` | Enables cited-blob S3 storage. |
 | `PROXIMA_S3_REGION` | S3 region for cited-blob storage. |
 | `PROXIMA_S3_ENDPOINT_URL` | Optional S3-compatible endpoint URL. |
@@ -96,12 +99,25 @@ builder.embed_client(client: Arc<dyn EmbeddingClient>)
 
 Proxima holds no embedding-model registry and no active-model singleton —
 those tables and their config tools were removed. The host wires its own
-provider (e.g. via `crates/llm-openai-compat`, whose Ollama/OpenAI
-clients read their own env) and is responsible for keeping vector
-dimensions consistent: vector rows are shared infrastructure, so a
-binary uses one embedding space and changing it may require re-embedding.
-If no client is injected, semantic search modes are unavailable; lexical
-paths still work.
+provider (e.g. via `crates/llm-openai-compat`) and is responsible for
+keeping vector dimensions consistent: vector rows are shared
+infrastructure, so a binary uses one embedding space and changing it may
+require re-embedding. If no client is injected, semantic search modes are
+unavailable; lexical paths still work.
+
+`apps/proxima-mcp` injects a Mistral client only when `MISTRAL_API_KEY`
+is present:
+
+| Env var | Required | Default | Meaning |
+|---|---:|---|---|
+| `MISTRAL_API_KEY` | yes (enables embeddings) | - | Bearer token for Mistral embeddings. |
+| `PROXIMA_EMBED_MODEL` | no | `mistral-embed` | Model id sent to `/embeddings`. |
+| `MISTRAL_API_BASE` | no | `https://api.mistral.ai/v1` | OpenAI-compatible embeddings API base. |
+
+When `MISTRAL_API_KEY` is absent, `proxima-mcp` starts in degraded mode:
+no embedding client is installed, `core/get_graph.embeddings_available`
+is `false`, semantic/hybrid search reports the missing capability, and
+lexical-only paths remain available.
 
 `EmbedCaps { dim, matryoshka }` and `LlmCaps { tool_use, json_mode,
 long_context, vision }` remain core vocabulary types but are not a

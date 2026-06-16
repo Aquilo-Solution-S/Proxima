@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use proxima_core::llm::{EmbeddingClient, LlmError};
+use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::models::EmbedCaps;
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +10,9 @@ use crate::{build_client, join_endpoint};
 // =====================================================================
 // OpenAI-compatible embedding client — /embeddings
 // =====================================================================
+
+pub const MISTRAL_EMBED_BASE_URL: &str = "https://api.mistral.ai/v1";
+pub const MISTRAL_EMBED_MODEL: &str = "mistral-embed";
 
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatConfig {
@@ -65,6 +68,28 @@ impl OpenAiCompatEmbeddingClient {
             model_id: model_id.into(),
             caps,
         })
+    }
+
+    /// Construct a Mistral `/embeddings` client using the OpenAI-compatible
+    /// request/response shape.
+    ///
+    /// # Errors
+    /// Returns `LlmError::Internal` if the HTTP client cannot be built.
+    pub fn mistral(
+        bearer_token: impl Into<String>,
+        model_id: impl Into<String>,
+        base_url: impl Into<String>,
+    ) -> Result<Self, LlmError> {
+        let dim = u32::try_from(EMBEDDING_DIM)
+            .map_err(|_| LlmError::Internal("EMBEDDING_DIM does not fit u32".into()))?;
+        Self::new(
+            model_id,
+            EmbedCaps {
+                matryoshka: false,
+                dim,
+            },
+            OpenAiCompatConfig::new(base_url, Some(bearer_token.into())),
+        )
     }
 }
 
@@ -149,5 +174,24 @@ mod tests {
     fn openai_compat_timeout_allows_slow_local_models() {
         let cfg = super::OpenAiCompatConfig::new("http://localhost:11434/v1", None);
         assert_eq!(cfg.timeout, std::time::Duration::from_mins(10));
+    }
+
+    #[test]
+    fn mistral_preset_uses_core_embedding_space_without_matryoshka() {
+        let client = super::OpenAiCompatEmbeddingClient::mistral(
+            "secret",
+            super::MISTRAL_EMBED_MODEL,
+            super::MISTRAL_EMBED_BASE_URL,
+        )
+        .expect("client builds");
+
+        assert_eq!(client.model_id, super::MISTRAL_EMBED_MODEL);
+        assert_eq!(client.config.base_url, super::MISTRAL_EMBED_BASE_URL);
+        assert_eq!(client.config.bearer_token.as_deref(), Some("secret"));
+        assert_eq!(
+            client.caps.dim,
+            u32::try_from(proxima_core::llm::EMBEDDING_DIM).expect("EMBEDDING_DIM fits u32")
+        );
+        assert!(!client.caps.matryoshka);
     }
 }
