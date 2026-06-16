@@ -1,16 +1,20 @@
 pub mod args;
 
-pub use args::{ArgsError, DEFAULT_BIND, DEFAULT_DATABASE_URL, McpConfig, USAGE, parse_args};
+pub use args::{
+    ArgsError, DEFAULT_BIND, DEFAULT_DATABASE_URL, McpConfig, RECONCILE_USAGE, ReconcileConfig,
+    ReconcileScope, USAGE, parse_args, parse_reconcile_args,
+};
 
 use std::sync::Arc;
 
 use proxima::{
     AppInfo, FlavorApp, FlavorBundle, Proxima, ProximaError, RunningProxima, RuntimeBuilder,
 };
-use proxima_core::FlavorRegistry;
+use proxima_core::{FlavorRegistry, llm::EmbeddingClient};
 use proxima_llm_openai_compat::{
     MISTRAL_EMBED_BASE_URL, MISTRAL_EMBED_MODEL, OpenAiCompatEmbeddingClient,
 };
+use proxima_storage_pg::{EmbeddingReconcileOptions, EmbeddingReconcileScope, PgStorage};
 
 const MISTRAL_API_KEY: &str = "MISTRAL_API_KEY";
 const PROXIMA_EMBED_MODEL: &str = "PROXIMA_EMBED_MODEL";
@@ -49,7 +53,25 @@ impl FlavorApp for ProximaMcpApp {
 ///
 /// Returns argument, facade boot, or MCP transport failures.
 pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError> {
-    let config = parse_args(args)?;
+    let mut args: Vec<String> = args.into_iter().collect();
+    if args
+        .first()
+        .is_some_and(|arg| arg == "reconcile-embeddings")
+    {
+        args.remove(0);
+        let config = parse_reconcile_args(args).map_err(|err| match err {
+            ArgsError::Help => CliError::Help(RECONCILE_USAGE),
+            other => CliError::Args(other),
+        })?;
+        return run_reconcile(config).await;
+    }
+    if args.first().is_some_and(|arg| arg == "serve") {
+        args.remove(0);
+    }
+    let config = parse_args(args).map_err(|err| match err {
+        ArgsError::Help => CliError::Help(USAGE),
+        other => CliError::Args(other),
+    })?;
     // rmcp 1.6 logs idle-session keep-alive expiry and the resulting
     // session-cleanup race at ERROR; both are clean lifecycle events
     // (`quit_reason=Closed`). Pin those targets to `warn` until rmcp
@@ -77,6 +99,61 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
             .map_err(|err| CliError::Transport(err.to_string()))?;
     }
     Ok(())
+}
+
+async fn run_reconcile(config: ReconcileConfig) -> Result<(), CliError> {
+    let model = config
+        .model
+        .unwrap_or_else(|| active_embedding_model(|key| std::env::var(key).ok()));
+    let storage = PgStorage::connect(&config.database_url)
+        .await
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    storage
+        .run_migrations()
+        .await
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    let outcome = storage
+        .reconcile_embeddings(EmbeddingReconcileOptions {
+            model_id: &model,
+            scope: reconcile_scope(config.scope),
+            limit: config.limit,
+        })
+        .await
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+
+    println!(
+        "scanned={} enqueued={} skipped={}",
+        outcome.scanned, outcome.enqueued, outcome.skipped
+    );
+
+    if config.drain {
+        let client = mistral_embedding_client(|key| std::env::var(key).ok())?.ok_or_else(|| {
+            CliError::Runtime(ProximaError::Config(
+                "reconcile-embeddings --drain requires MISTRAL_API_KEY".into(),
+            ))
+        })?;
+        if client.model_id() != model {
+            return Err(CliError::Runtime(ProximaError::Config(format!(
+                "reconcile-embeddings --drain model mismatch: queued model {model:?}, Mistral client model {:?}",
+                client.model_id()
+            ))));
+        }
+        let limit = config.limit.unwrap_or(i64::MAX);
+        let drain = storage
+            .drain_embedding_jobs_inline(&client, limit)
+            .await
+            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+        println!("embedded={} failed={}", drain.embedded, drain.failed);
+    }
+    Ok(())
+}
+
+fn reconcile_scope(scope: ReconcileScope) -> EmbeddingReconcileScope {
+    match scope {
+        ReconcileScope::MissingOnly => EmbeddingReconcileScope::MissingOnly,
+        ReconcileScope::IncludeStale => EmbeddingReconcileScope::IncludeStale,
+        ReconcileScope::Since(since) => EmbeddingReconcileScope::Since(since),
+    }
 }
 
 /// # Errors
@@ -120,6 +197,11 @@ fn mistral_embedding_client(
         .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))
 }
 
+fn active_embedding_model(lookup: impl Fn(&str) -> Option<String>) -> String {
+    lookup_non_empty(&lookup, PROXIMA_EMBED_MODEL)
+        .unwrap_or_else(|| MISTRAL_EMBED_MODEL.to_string())
+}
+
 fn lookup_non_empty(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Option<String> {
     lookup(key).and_then(|value| {
         let trimmed = value.trim();
@@ -129,6 +211,8 @@ fn lookup_non_empty(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Opti
 
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
+    #[error("help requested")]
+    Help(&'static str),
     #[error(transparent)]
     Args(#[from] ArgsError),
     #[error(transparent)]
@@ -140,7 +224,20 @@ pub enum CliError {
 impl CliError {
     #[must_use]
     pub fn is_help(&self) -> bool {
-        matches!(self, Self::Args(args) if args.is_help())
+        match self {
+            Self::Help(_) => true,
+            Self::Args(args) => args.is_help(),
+            Self::Runtime(_) | Self::Transport(_) => false,
+        }
+    }
+
+    #[must_use]
+    pub fn help_text(&self) -> Option<&'static str> {
+        match self {
+            Self::Help(usage) => Some(usage),
+            Self::Args(args) if args.is_help() => Some(USAGE),
+            Self::Args(_) | Self::Runtime(_) | Self::Transport(_) => None,
+        }
     }
 }
 
@@ -182,5 +279,14 @@ mod tests {
 
         assert_eq!(client.model_id(), "custom-mistral-embed");
         assert_eq!(client.dim(), proxima_core::llm::EMBEDDING_DIM);
+    }
+
+    #[test]
+    fn active_embedding_model_uses_same_env_default_as_mistral_client() {
+        assert_eq!(active_embedding_model(|_| None), MISTRAL_EMBED_MODEL);
+        assert_eq!(
+            active_embedding_model(|key| (key == PROXIMA_EMBED_MODEL).then(|| "custom".into())),
+            "custom"
+        );
     }
 }
