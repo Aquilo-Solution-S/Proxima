@@ -27,7 +27,7 @@ pub use proxima_core::error::ProtocolError;
 pub use proxima_core::llm;
 pub use proxima_core::storage::NoopStorage;
 pub use proxima_core::verbs::event_ingest::{
-    EventIngestOutcome, InlineCitationMappingDraft, InlineCitedObjectDraft,
+    EventDraft, EventIngestOutcome, InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
 pub use proxima_core::verbs::schema::PayloadKind;
 pub use proxima_core::{
@@ -35,7 +35,8 @@ pub use proxima_core::{
     CitedObjectPayload, Engine, EngineHandle, FactPayload, FlavorRegistry, GoalPayload, GroupId,
     Identity, McpCallLogInput, McpCallLogOutcome, OrgId, Owner, PerspectivePayload, Principal,
     Role, RoleSet, SchemaId, SchemaVersion, SearchProjection, SearchProjectionColumnKind,
-    SearchProjectionField, StorageError, ToolScope, proxima_flavor,
+    SearchProjectionField, SourceBatchId, SourceId, StorageError, ToolScope, UserId,
+    canonical_json_bytes, proxima_flavor,
 };
 pub use proxima_mcp_server::McpAuthContext;
 #[cfg(feature = "testkit")]
