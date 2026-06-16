@@ -5,9 +5,9 @@ use crate::error::ProtocolError;
 use crate::storage::StorageError;
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_ingest::{
-    AuthorizedEventIngest, AuthorizedFactWithCitation, AuthorizedInlineCitationMapping,
-    AuthorizedInlineCitedObject, EventDraft, EventIngestOutcome, InlineCitationMappingDraft,
-    InlineCitedObjectDraft,
+    AuthorizedCitationAttachment, AuthorizedEventIngest, AuthorizedFactWithCitation,
+    AuthorizedInlineCitationMapping, AuthorizedInlineCitedObject, EventDraft, EventIngestOutcome,
+    InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::verbs::schema::{PayloadKind, SchemaInfo};
@@ -107,6 +107,50 @@ impl Engine {
         // agent-supplied JSON, so they stay fully validated below.
         self.ensure_fact_schema(&draft.schema_id, draft.schema_version)?;
         draft.rendered_text = self.render_fact_text(&draft);
+        let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
+
+        Ok(AuthorizedFactWithCitation::new(
+            draft,
+            cited_object,
+            mapping,
+        ))
+    }
+
+    /// Authorize + schema-validate + owner-stamp a citation attachment
+    /// for an existing Fact memory. Does NOT write.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context cannot access `principal`,
+    /// lacks `role`, or the citation mapping targets a different cited-object
+    /// schema; `UnknownSchema` when a citation schema is absent for the
+    /// required kind; `InvalidArgument` when JSON payload validation fails; or
+    /// `Internal` when a registered cited-object schema has no sidecar inserter.
+    pub fn authorize_citation_attachment(
+        &self,
+        authz: &AuthzContext,
+        role: Role,
+        principal: Principal,
+        memory_id: MemoryId,
+        cited_object: InlineCitedObjectDraft,
+        mapping: InlineCitationMappingDraft,
+    ) -> Result<AuthorizedCitationAttachment, ProtocolError> {
+        super::authorize(authz, &principal, role)?;
+        let owner = authz.scoped_owner(principal);
+        let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
+        Ok(AuthorizedCitationAttachment::new(
+            memory_id,
+            owner,
+            cited_object,
+            mapping,
+        ))
+    }
+
+    fn authorize_inline_citation(
+        &self,
+        cited_object: InlineCitedObjectDraft,
+        mapping: InlineCitationMappingDraft,
+    ) -> Result<(AuthorizedInlineCitedObject, AuthorizedInlineCitationMapping), ProtocolError> {
         let cited_object_info = self.validate_json_payload(
             &cited_object.schema_id,
             cited_object.schema_version,
@@ -155,8 +199,7 @@ impl Engine {
             )
             .map_err(|e| ProtocolError::internal(e.to_string()))?;
 
-        Ok(AuthorizedFactWithCitation::new(
-            draft,
+        Ok((
             AuthorizedInlineCitedObject::new(
                 cited_object.schema_id,
                 cited_object.schema_version,

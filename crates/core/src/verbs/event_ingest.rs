@@ -181,6 +181,53 @@ impl AuthorizedInlineCitationMapping {
     }
 }
 
+/// Proof that an existing Fact memory and inline citation payloads
+/// passed authorization, kind-specific schema validation, and citation
+/// mapping target validation.
+#[derive(Debug)]
+pub struct AuthorizedCitationAttachment {
+    memory_id: MemoryId,
+    owner: Owner,
+    cited_object: AuthorizedInlineCitedObject,
+    mapping: AuthorizedInlineCitationMapping,
+}
+
+impl AuthorizedCitationAttachment {
+    pub(crate) fn new(
+        memory_id: MemoryId,
+        owner: Owner,
+        cited_object: AuthorizedInlineCitedObject,
+        mapping: AuthorizedInlineCitationMapping,
+    ) -> Self {
+        Self {
+            memory_id,
+            owner,
+            cited_object,
+            mapping,
+        }
+    }
+
+    #[must_use]
+    pub const fn memory_id(&self) -> MemoryId {
+        self.memory_id
+    }
+
+    #[must_use]
+    pub const fn owner(&self) -> &Owner {
+        &self.owner
+    }
+
+    #[must_use]
+    pub const fn cited_object(&self) -> &AuthorizedInlineCitedObject {
+        &self.cited_object
+    }
+
+    #[must_use]
+    pub const fn mapping(&self) -> &AuthorizedInlineCitationMapping {
+        &self.mapping
+    }
+}
+
 /// Proof that a Fact ingest and its inline citation payloads passed
 /// authorization, kind-specific schema validation, and citation
 /// mapping target validation.

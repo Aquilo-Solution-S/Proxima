@@ -6,11 +6,12 @@ use proxima_core::verbs::event_ingest::{
 };
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, Engine, FactPayload,
-    FlavorRegistry, Owner, PersonalityInstanceId, Role, SchemaId, SchemaVersion, SourceBatchId,
-    SourceId, StorageError, canonical_json_bytes,
+    FlavorRegistry, MemoryId, Owner, PersonalityInstanceId, Role, SchemaId, SchemaVersion,
+    SourceBatchId, SourceId, Storage, StorageError, canonical_json_bytes,
 };
 use proxima_storage_pg::verbs::event_ingest::{
-    ingest_fact_with_citation_atomic, ingest_fact_with_citation_in_tx,
+    attach_citation_in_tx, ingest_fact_in_tx, ingest_fact_with_citation_atomic,
+    ingest_fact_with_citation_in_tx,
 };
 use std::future::Future;
 use std::pin::Pin;
@@ -199,6 +200,56 @@ async fn create_sidecar_tables(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+async fn ingest_plain_fact_for_attach(
+    pg: &proxima_storage_pg::PgStorage,
+    engine: &Engine,
+    authz: &AuthzContext,
+) -> Result<proxima_core::EventIngestOutcome, Box<dyn std::error::Error>> {
+    let fact = TestFact {
+        note: "plain fact".to_string(),
+    };
+    let note = fact.note.clone();
+    let mut tx = pg.pool().begin().await?;
+    let fact_outcome = ingest_fact_in_tx(
+        &mut tx,
+        engine,
+        authz,
+        Role::SourceIngest,
+        &fact,
+        move |tx, outcome| {
+            Box::pin(async move {
+                sqlx::query(
+                    "INSERT INTO public.inline_cited_fact_sidecar (memory_id, note)
+                         VALUES ($1, $2)",
+                )
+                .bind(outcome.memory_id.into_inner())
+                .bind(note)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+                Ok(())
+            })
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(fact_outcome)
+}
+
+async fn stored_fact_citation_mapping_id(
+    pool: &sqlx::PgPool,
+    memory_id: MemoryId,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT citation_mapping_id
+         FROM proxima_core.memories
+         WHERE memory_id = $1",
+    )
+    .bind(memory_id.into_inner())
+    .fetch_one(pool)
+    .await
+}
+
 #[tokio::test]
 async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -272,6 +323,101 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
         assert!(!second_outcome.idempotent_replay);
         assert_ne!(first_outcome.memory_id, second_outcome.memory_id);
         assert_written_rows_and_personality(pg.pool(), &second_outcome, personality).await?;
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg().await;
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        pg.run_migrations().await?;
+        create_sidecar_tables(pg.pool()).await?;
+
+        let engine = engine();
+        let owner = owner_fixture();
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+
+        let fact_outcome = ingest_plain_fact_for_attach(&pg, &engine, &authz).await?;
+        assert!(
+            pg.citation_of_fact(&owner, fact_outcome.memory_id)
+                .await?
+                .is_none(),
+            "plain Fact starts uncited"
+        );
+
+        let authorized = engine.authorize_citation_attachment(
+            &authz,
+            Role::SourceIngest,
+            owner.principal.clone(),
+            fact_outcome.memory_id,
+            cited_object(),
+            citation_mapping(1, 5),
+        )?;
+
+        let mut tx = pg.pool().begin().await?;
+        let first_attach = attach_citation_in_tx(&mut tx, &authorized).await?;
+        tx.commit().await?;
+
+        assert!(first_attach.attached);
+        assert!(!first_attach.idempotent);
+        assert_eq!(first_attach.memory_id, fact_outcome.memory_id);
+
+        let readback = pg
+            .citation_of_fact(&owner, fact_outcome.memory_id)
+            .await?
+            .expect("attached citation must be readable");
+        assert_eq!(readback.cited_object_id, first_attach.cited_object_id);
+        assert_eq!(readback.mapping_schema_id, TestCitationMapping::schema_id());
+        assert_eq!(
+            readback.cited_object_schema_id,
+            TestCitedObject::schema_id()
+        );
+
+        let stored_mapping_id =
+            stored_fact_citation_mapping_id(pg.pool(), fact_outcome.memory_id).await?;
+        assert_eq!(stored_mapping_id, Some(readback.citation_mapping_id));
+        assert_eq!(count(pg.pool(), "proxima_core.citation_mappings").await?, 1);
+        assert_eq!(
+            count(pg.pool(), "public.inline_citation_mapping_sidecar").await?,
+            1
+        );
+
+        let mut tx = pg.pool().begin().await?;
+        let second_attach = attach_citation_in_tx(&mut tx, &authorized).await?;
+        tx.commit().await?;
+
+        assert!(!second_attach.attached);
+        assert!(second_attach.idempotent);
+        assert_eq!(second_attach.memory_id, fact_outcome.memory_id);
+        assert_eq!(second_attach.cited_object_id, first_attach.cited_object_id);
+        assert_eq!(count(pg.pool(), "proxima_core.citation_mappings").await?, 1);
+        assert_eq!(
+            count(pg.pool(), "public.inline_citation_mapping_sidecar").await?,
+            1
+        );
+
+        let missing = engine.authorize_citation_attachment(
+            &authz,
+            Role::SourceIngest,
+            owner.principal.clone(),
+            MemoryId::new(Uuid::now_v7()),
+            cited_object(),
+            citation_mapping(1, 5),
+        )?;
+        let mut tx = pg.pool().begin().await?;
+        let err = attach_citation_in_tx(&mut tx, &missing)
+            .await
+            .expect_err("missing target Fact must return NotFound");
+        drop(tx);
+        assert!(matches!(err, StorageError::NotFound));
 
         Ok(())
     }

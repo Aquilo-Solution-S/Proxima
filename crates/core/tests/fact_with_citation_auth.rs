@@ -212,6 +212,55 @@ fn authorize_fact_with_citation_rejects_mapping_target_mismatch() {
 }
 
 #[test]
+fn authorize_citation_attachment_accepts_valid_pair() {
+    let owner = owner();
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let memory_id = proxima_core::MemoryId::new(Uuid::now_v7());
+    let expected = TestCitedObject {
+        body: "object".to_string(),
+    }
+    .idempotency_key();
+
+    let authorized = engine()
+        .authorize_citation_attachment(
+            &authz,
+            Role::SourceIngest,
+            owner.principal.clone(),
+            memory_id,
+            cited_object(),
+            mapping(TestCitationMapping::schema_id()),
+        )
+        .expect("registered citation attachment payloads must authorize");
+
+    assert_eq!(authorized.memory_id(), memory_id);
+    assert_eq!(authorized.owner(), &owner);
+    assert_eq!(authorized.cited_object().content_hash(), &expected);
+    assert_eq!(
+        authorized.mapping().schema_id(),
+        &TestCitationMapping::schema_id()
+    );
+}
+
+#[test]
+fn authorize_citation_attachment_rejects_mapping_target_mismatch() {
+    let owner = owner();
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+
+    let err = engine()
+        .authorize_citation_attachment(
+            &authz,
+            Role::SourceIngest,
+            owner.principal.clone(),
+            proxima_core::MemoryId::new(Uuid::now_v7()),
+            cited_object(),
+            mapping(MismatchedCitationMapping::schema_id()),
+        )
+        .expect_err("mapping target schema must match cited object schema");
+
+    assert_eq!(err.code, ErrorCode::Forbidden);
+}
+
+#[test]
 fn authorize_fact_with_citation_rejects_unknown_schema_ids() {
     let owner = owner();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
