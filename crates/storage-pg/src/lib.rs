@@ -43,6 +43,10 @@ use proxima_core::{
 };
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{PgPool, Postgres, Transaction};
+pub use verbs::fact_embeddings::{
+    EmbeddingInlineDrainOutcome, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
+    EmbeddingReconcileScope,
+};
 
 use crate::error::internal;
 
@@ -121,6 +125,31 @@ impl PgStorage {
     #[must_use]
     pub fn into_handle(self) -> StorageHandle {
         Arc::new(self)
+    }
+
+    /// Global enqueue-only embedding reconciliation.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from the reconciliation query.
+    pub async fn reconcile_embeddings(
+        &self,
+        options: EmbeddingReconcileOptions<'_>,
+    ) -> Result<EmbeddingReconcileOutcome, StorageError> {
+        verbs::fact_embeddings::reconcile_embeddings(&self.pool, options).await
+    }
+
+    /// Inline drain for queued embedding jobs.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from claiming or writing jobs/embeddings.
+    pub async fn drain_embedding_jobs_inline(
+        &self,
+        client: &dyn proxima_core::llm::EmbeddingClient,
+        limit: i64,
+    ) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
+        verbs::fact_embeddings::drain_embedding_jobs_inline(&self.pool, client, limit).await
     }
 
     /// Apply all pending migrations under
@@ -206,6 +235,15 @@ impl Storage for PgStorage {
         verbs::fact_embeddings::load_fact_text(&self.pool, owner, memory_id).await
     }
 
+    async fn load_embedding_text(
+        &self,
+        owner: &Owner,
+        entity_kind: proxima_core::EntityKind,
+        memory_id: MemoryId,
+    ) -> Result<Option<String>, StorageError> {
+        verbs::fact_embeddings::load_embedding_text(&self.pool, owner, entity_kind, memory_id).await
+    }
+
     async fn upsert_fact_embedding(
         &self,
         owner: &Owner,
@@ -219,6 +257,31 @@ impl Storage for PgStorage {
         })?;
         verbs::fact_embeddings::upsert_fact_embedding(
             &mut tx, owner, memory_id, model_id, dim, vec,
+        )
+        .await?;
+        tx.commit().await.map_err(crate::error::map_err)
+    }
+
+    async fn upsert_memory_embedding(
+        &self,
+        owner: &Owner,
+        entity_kind: proxima_core::EntityKind,
+        memory_id: MemoryId,
+        model_id: &str,
+        dim: usize,
+        vec: &[f32],
+    ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(|err| {
+            StorageError::Internal(format!("begin memory embedding upsert tx: {err}"))
+        })?;
+        verbs::fact_embeddings::upsert_memory_embedding(
+            &mut tx,
+            owner,
+            entity_kind,
+            memory_id,
+            model_id,
+            dim,
+            vec,
         )
         .await?;
         tx.commit().await.map_err(crate::error::map_err)

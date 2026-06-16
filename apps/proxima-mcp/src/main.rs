@@ -5,7 +5,7 @@ async fn main() -> ExitCode {
     match proxima_mcp::run(std::env::args().skip(1)).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) if err.is_help() => {
-            println!("{}", proxima_mcp::USAGE);
+            println!("{}", err.help_text().unwrap_or(proxima_mcp::USAGE));
             ExitCode::SUCCESS
         }
         Err(err) => {

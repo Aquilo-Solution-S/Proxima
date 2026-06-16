@@ -47,7 +47,10 @@ impl Engine {
         req: AuthorDerivedRequestInput<'_>,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
         let client = self.embed_client().ok_or_else(|| {
-            StorageError::Internal("embedding client required for derived memory authoring".into())
+            StorageError::Internal(
+                "derived memory authoring unavailable: no embedding client is configured (set MISTRAL_API_KEY)"
+                    .into(),
+            )
         })?;
         let embedding = client
             .embed(&req.text)

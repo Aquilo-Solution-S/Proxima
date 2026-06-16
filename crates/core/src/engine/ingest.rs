@@ -238,16 +238,31 @@ impl Engine {
         owner: &Owner,
         memory_id: MemoryId,
     ) -> Result<(), StorageError> {
-        let Some(text) = self.storage.load_fact_text(owner, memory_id).await? else {
-            return Ok(());
+        self.ensure_memory_embedding(owner, EntityKind::Fact, memory_id)
+            .await?;
+        Ok(())
+    }
+
+    async fn ensure_memory_embedding(
+        &self,
+        owner: &Owner,
+        entity_kind: EntityKind,
+        memory_id: MemoryId,
+    ) -> Result<bool, StorageError> {
+        let Some(text) = self
+            .storage
+            .load_embedding_text(owner, entity_kind, memory_id)
+            .await?
+        else {
+            return Ok(false);
         };
         let Some(client) = self.embed_client() else {
-            return Ok(());
+            return Ok(false);
         };
         let embedding = client
             .embed(&text)
             .await
-            .map_err(|e| StorageError::Internal(format!("embed Fact text: {e}")))?;
+            .map_err(|e| StorageError::Internal(format!("embed memory text: {e}")))?;
         if embedding.len() != client.dim() {
             return Err(StorageError::ConstraintViolation(format!(
                 "embedding dim mismatch: client dim {} but vector len {}",
@@ -256,14 +271,16 @@ impl Engine {
             )));
         }
         self.storage
-            .upsert_fact_embedding(
+            .upsert_memory_embedding(
                 owner,
+                entity_kind,
                 memory_id,
                 client.model_id(),
                 client.dim(),
                 &embedding,
             )
-            .await
+            .await?;
+        Ok(true)
     }
 
     /// Owner-scoped, idempotent backfill enqueue for missing Fact
@@ -290,7 +307,7 @@ impl Engine {
             .map_err(|_| StorageError::Internal("enqueued count does not fit usize".into()))
     }
 
-    /// Host-invoked sweep that drains durable pending Fact embedding jobs
+    /// Host-invoked sweep that drains durable pending memory embedding jobs
     /// for the currently active embedding model. This method does not
     /// spawn a worker, timer, or model decision loop; the caller controls
     /// invocation and `limit`.
@@ -316,18 +333,11 @@ impl Engine {
         let mut outcome = EmbeddingDrainOutcome::default();
         for claim in claims {
             outcome.processed += 1;
-            if claim.entity_kind != EntityKind::Fact {
-                outcome.failed += 1;
-                self.storage
-                    .fail_embedding_job(&claim, "embedding jobs are only valid for Facts")
-                    .await?;
-                continue;
-            }
             match self
-                .ensure_fact_embedding(&claim.owner, claim.entity_id)
+                .ensure_memory_embedding(&claim.owner, claim.entity_kind, claim.entity_id)
                 .await
             {
-                Ok(()) => self.storage.complete_embedding_job(&claim).await?,
+                Ok(_) => self.storage.complete_embedding_job(&claim).await?,
                 Err(err) => {
                     outcome.failed += 1;
                     self.storage
