@@ -29,6 +29,9 @@ pub use proxima_core::storage::NoopStorage;
 pub use proxima_core::verbs::event_ingest::{
     EventDraft, EventIngestOutcome, InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
+pub use proxima_core::verbs::mcp_call_history::{
+    MAX_MCP_CALL_HISTORY_LIMIT, McpCallHistoryRequest, McpCallHistoryResponse, McpCallRecord,
+};
 pub use proxima_core::verbs::schema::PayloadKind;
 pub use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, CapabilitySet, CitationMappingPayload,
@@ -89,6 +92,21 @@ pub async fn log_mcp_call(
     input: McpCallLogInput,
 ) -> Result<McpCallLogOutcome, ProtocolError> {
     engine.persist_mcp_call(authz, input).await
+}
+
+/// Read one Owner's MCP-call activity log through an embedded engine.
+/// Owner-scoped, `GraphRead`-gated; `req.actor_oid = Some` narrows to one actor.
+///
+/// # Errors
+///
+/// Returns `Forbidden` when `authz` cannot access `req.principal` or lacks
+/// graph-read, or `Internal` on storage failure / `limit == 0`.
+pub async fn read_mcp_call_history(
+    engine: &Engine,
+    authz: &AuthzContext,
+    req: &McpCallHistoryRequest,
+) -> Result<McpCallHistoryResponse, ProtocolError> {
+    engine.read_mcp_call_history(authz, req).await
 }
 
 type RegisterFn = Box<dyn FnOnce(&mut FlavorRegistry) + Send>;

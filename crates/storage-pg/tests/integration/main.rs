@@ -23,6 +23,7 @@ mod migrations;
 mod persist_mcp_call;
 mod personality_wake_pg;
 mod query_pg;
+mod read_mcp_call_history_pg;
 mod read_scope_pg;
 mod search_pg;
 mod set_wake_entries_within_pg;

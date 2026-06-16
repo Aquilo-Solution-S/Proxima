@@ -4,6 +4,9 @@ use crate::error::ProtocolError;
 use crate::verbs::event_history::{
     EventHistoryRequest, EventHistoryResponse, MAX_EVENT_HISTORY_LIMIT,
 };
+use crate::verbs::mcp_call_history::{
+    MAX_MCP_CALL_HISTORY_LIMIT, McpCallHistoryRequest, McpCallHistoryResponse,
+};
 use crate::verbs::query::{QueryRequest, QueryResponse};
 use crate::verbs::schema::{SchemaRequest, SchemaResponse};
 
@@ -73,6 +76,36 @@ impl Engine {
         }
         self.storage
             .event_history(&effective)
+            .await
+            .map_err(|e| ProtocolError::internal(e.to_string()))
+    }
+
+    /// docs/14 §protocol surface — Owner-scoped bounded MCP-call
+    /// activity read. Same auth shape as `Query`; server clamps
+    /// `limit` to `MAX_MCP_CALL_HISTORY_LIMIT`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context cannot access `req.principal` or
+    /// lacks the graph-read role, or `Internal` when `req.limit == 0` or
+    /// the storage read fails.
+    pub async fn read_mcp_call_history(
+        &self,
+        authz: &AuthzContext,
+        req: &McpCallHistoryRequest,
+    ) -> Result<McpCallHistoryResponse, ProtocolError> {
+        super::authorize(authz, &req.principal, Role::GraphRead)?;
+        if req.limit == 0 {
+            return Err(ProtocolError::internal(
+                "read_mcp_call_history.limit must be > 0",
+            ));
+        }
+        let mut effective = req.clone();
+        if effective.limit > MAX_MCP_CALL_HISTORY_LIMIT {
+            effective.limit = MAX_MCP_CALL_HISTORY_LIMIT;
+        }
+        self.storage
+            .read_mcp_call_history(&effective)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
