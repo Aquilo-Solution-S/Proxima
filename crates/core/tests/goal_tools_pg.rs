@@ -9,7 +9,7 @@ use proxima_core::engine::Engine;
 use proxima_core::goal::relations::CORE_MOTIVATED_BY_RELATION;
 use proxima_core::mcp::core_tools::goal::{
     ChildGoalInput, GoalDecomposeArgs, GoalMarkAchievedArgs, GoalModifyArgs, GoalPayloadArgs,
-    GoalSetArgs, GoalTransition, GoalTransitionArgs,
+    GoalSetArgs, GoalTransition, GoalTransitionArgs, GoalWriteOutput,
 };
 use proxima_core::mcp::core_tools::{
     GoalDecomposeTool, GoalMarkAchievedTool, GoalModifyTool, GoalSetTool, GoalTransitionTool,
@@ -131,6 +131,111 @@ async fn goal_lifecycle_tool_chain() -> TestResult {
             assert_eq!(
                 count_motivated_by_edge(harness.pg.pool(), achieved_id, evidence.id).await?,
                 1,
+            );
+            Ok(())
+        })
+    })
+    .await
+}
+
+#[tokio::test]
+async fn goal_full_lifecycle_accepts_structured_body_payload() -> TestResult {
+    with_harness(|harness| {
+        Box::pin(async move {
+            let evidence = harness
+                .seed_evidence_memory("structured body lifecycle evidence")
+                .await?;
+            let active = harness
+                .call::<GoalSetTool>(task_goal_set_args(
+                    "Structured lifecycle goal",
+                    "Exercise every goal tool with a structured body object.",
+                    "High",
+                    "structured-lifecycle-set",
+                ))
+                .await?;
+            assert_fresh_goal_write(&active);
+
+            let active_id = harness.goal_id(&active.handle)?;
+            let decomposed = harness
+                .call::<GoalDecomposeTool>(GoalDecomposeArgs {
+                    parent_goal: active.handle.clone(),
+                    children: vec![task_child_goal(
+                        "Structured lifecycle child",
+                        "Child goal with a structured body object.",
+                        "Low",
+                    )],
+                    target_personality: None,
+                    idempotency_key: "structured-lifecycle-decompose".into(),
+                })
+                .await?;
+            assert_eq!(decomposed.parent_goal, active.handle);
+            assert!(!decomposed.idempotent_replay);
+            assert_eq!(decomposed.children.len(), 1);
+            let child = decomposed.children.first().expect("one child output");
+            assert_fresh_goal_write(child);
+            let child_id = harness.goal_id(&child.handle)?;
+            assert_eq!(
+                count_parent_link(harness.pg.pool(), child_id, active_id).await?,
+                1,
+            );
+
+            let paused = harness
+                .call::<GoalTransitionTool>(GoalTransitionArgs {
+                    goal: active.handle.clone(),
+                    transition: GoalTransition::Pause,
+                    idempotency_key: Some("structured-lifecycle-pause".into()),
+                })
+                .await?;
+            assert_fresh_goal_write(&paused);
+
+            let resumed = harness
+                .call::<GoalTransitionTool>(GoalTransitionArgs {
+                    goal: paused.handle.clone(),
+                    transition: GoalTransition::Resume,
+                    idempotency_key: Some("structured-lifecycle-resume".into()),
+                })
+                .await?;
+            assert_fresh_goal_write(&resumed);
+
+            let modified = harness
+                .call::<GoalModifyTool>(GoalModifyArgs {
+                    goal: resumed.handle.clone(),
+                    payload: task_payload(
+                        "Structured lifecycle goal modified",
+                        "Modified structured body object.",
+                        "Medium",
+                    ),
+                    evidence: Some(vec![evidence.handle.clone()]),
+                    idempotency_key: Some("structured-lifecycle-modify".into()),
+                })
+                .await?;
+            assert_fresh_goal_write(&modified);
+
+            let achieved = harness
+                .call::<GoalMarkAchievedTool>(GoalMarkAchievedArgs {
+                    goal: modified.handle.clone(),
+                    evidence: vec![evidence.handle.clone()],
+                    idempotency_key: Some("structured-lifecycle-achieved".into()),
+                })
+                .await?;
+            assert_fresh_goal_write(&achieved);
+
+            let paused_id = harness.goal_id(&paused.handle)?;
+            let resumed_id = harness.goal_id(&resumed.handle)?;
+            let modified_id = harness.goal_id(&modified.handle)?;
+            let achieved_id = harness.goal_id(&achieved.handle)?;
+            assert_structured_lifecycle_chain(
+                harness.pg.pool(),
+                active_id,
+                paused_id,
+                resumed_id,
+                modified_id,
+                achieved_id,
+            )
+            .await?;
+            assert_eq!(
+                task_goal_priority(harness.pg.pool(), achieved_id).await?,
+                Some("Medium".to_string())
             );
             Ok(())
         })
@@ -333,9 +438,30 @@ fn goal_set_args(title: &str, text: &str, idempotency_key: &str) -> GoalSetArgs 
     }
 }
 
+fn task_goal_set_args(
+    title: &str,
+    text: &str,
+    priority: &str,
+    idempotency_key: &str,
+) -> GoalSetArgs {
+    GoalSetArgs {
+        payload: task_payload(title, text, priority),
+        evidence: Vec::new(),
+        target_personality: None,
+        idempotency_key: Some(idempotency_key.into()),
+    }
+}
+
 fn child_goal(title: &str, text: &str) -> ChildGoalInput {
     ChildGoalInput {
         payload: simple_payload(title, text),
+        evidence: Vec::new(),
+    }
+}
+
+fn task_child_goal(title: &str, text: &str, priority: &str) -> ChildGoalInput {
+    ChildGoalInput {
+        payload: task_payload(title, text, priority),
         evidence: Vec::new(),
     }
 }
@@ -347,6 +473,19 @@ fn simple_payload(title: &str, text: &str) -> GoalPayloadArgs {
         title: title.into(),
         text: text.into(),
         body: json!({}),
+    }
+}
+
+fn task_payload(title: &str, text: &str, priority: &str) -> GoalPayloadArgs {
+    GoalPayloadArgs {
+        schema_id: "core/task-v1".into(),
+        schema_version: Some(1),
+        title: title.into(),
+        text: text.into(),
+        body: json!({
+            "due_at": null,
+            "priority": priority,
+        }),
     }
 }
 
@@ -458,6 +597,11 @@ fn assert_goal_write(handle: &str, lifecycle_memory: Option<&str>) {
     );
 }
 
+fn assert_fresh_goal_write(output: &GoalWriteOutput) {
+    assert_goal_write(&output.handle, output.lifecycle_memory.as_deref());
+    assert!(!output.idempotent_replay);
+}
+
 async fn count_goals(pool: &sqlx::PgPool) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.goals")
         .fetch_one(pool)
@@ -474,6 +618,20 @@ async fn count_goal_achieved_for(pool: &sqlx::PgPool, goal_id: GoalId) -> Result
     sqlx::query_scalar(
         "SELECT count(*)::bigint
            FROM proxima_core.goal_achieved_v1
+          WHERE goal_id = $1",
+    )
+    .bind(goal_id.into_inner())
+    .fetch_one(pool)
+    .await
+}
+
+async fn task_goal_priority(
+    pool: &sqlx::PgPool,
+    goal_id: GoalId,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT priority::text
+           FROM proxima_core.task_goal_v1
           WHERE goal_id = $1",
     )
     .bind(goal_id.into_inner())
@@ -598,6 +756,22 @@ async fn assert_goal_state_supersedes(
     .await?;
     assert_eq!(state, expected_state);
     assert_eq!(supersedes, expected_supersedes.map(GoalId::into_inner));
+    Ok(())
+}
+
+async fn assert_structured_lifecycle_chain(
+    pool: &sqlx::PgPool,
+    active_id: GoalId,
+    paused_id: GoalId,
+    resumed_id: GoalId,
+    modified_id: GoalId,
+    achieved_id: GoalId,
+) -> Result<(), sqlx::Error> {
+    assert_goal_state_supersedes(pool, active_id, "Active", None).await?;
+    assert_goal_state_supersedes(pool, paused_id, "Paused", Some(active_id)).await?;
+    assert_goal_state_supersedes(pool, resumed_id, "Active", Some(paused_id)).await?;
+    assert_goal_state_supersedes(pool, modified_id, "Active", Some(resumed_id)).await?;
+    assert_goal_state_supersedes(pool, achieved_id, "Achieved", Some(modified_id)).await?;
     Ok(())
 }
 
