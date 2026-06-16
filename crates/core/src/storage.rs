@@ -25,6 +25,7 @@ use crate::verbs::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
+use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::{
     EdgeAuthorshipKind, EntityKind, MemoryId, MemoryOperatorKind, Owner, Principal,
@@ -270,6 +271,14 @@ pub trait Storage: Send + Sync {
         &self,
         req: &EventHistoryRequest,
     ) -> Result<EventHistoryResponse, StorageError>;
+
+    /// Owner-scoped, optionally actor-filtered MCP-call activity log,
+    /// newest-first. Server clamps `limit` to
+    /// `MAX_MCP_CALL_HISTORY_LIMIT`.
+    async fn read_mcp_call_history(
+        &self,
+        req: &McpCallHistoryRequest,
+    ) -> Result<McpCallHistoryResponse, StorageError>;
 
     /// Owner-scoped snapshot read of memories per docs/14 §"Query".
     /// Returns `MemoryRow` substrate shape with payload bytes projected
@@ -673,6 +682,13 @@ impl Storage for NoopStorage {
             events: Vec::new(),
             seq_high_water: None,
         })
+    }
+
+    async fn read_mcp_call_history(
+        &self,
+        _req: &McpCallHistoryRequest,
+    ) -> Result<McpCallHistoryResponse, StorageError> {
+        Ok(McpCallHistoryResponse { calls: Vec::new() })
     }
 
     async fn query_memories(

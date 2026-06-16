@@ -30,6 +30,7 @@ use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
+use proxima_core::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use proxima_core::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use proxima_core::verbs::query::{
     FactCitationReadback, MemoryLineageRequest, MemoryLineageResponse, MemorySearchRequest,
@@ -405,6 +406,13 @@ impl Storage for PgStorage {
         req: &EventHistoryRequest,
     ) -> Result<EventHistoryResponse, StorageError> {
         verbs::event_history::event_history(&self.pool, req).await
+    }
+
+    async fn read_mcp_call_history(
+        &self,
+        req: &McpCallHistoryRequest,
+    ) -> Result<McpCallHistoryResponse, StorageError> {
+        verbs::mcp_call_history::read_mcp_call_history(&self.pool, req).await
     }
 
     async fn query_memories(

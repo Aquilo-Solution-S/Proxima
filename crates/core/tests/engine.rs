@@ -11,6 +11,7 @@ use proxima_core::ids::{OrgId, SourceBatchId, UserId};
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient};
 use proxima_core::owner::{Owner, Principal};
 use proxima_core::verbs::event_history::EventHistoryRequest;
+use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, SchemaRequest};
 use proxima_core::{AuthPath, AuthzContext, McpCallLogInput, RoleSet};
@@ -288,6 +289,27 @@ async fn persist_mcp_call_authorized_context_clears_the_gate() {
         .await
         .expect_err("NoopStorage rejects writes");
     assert_eq!(err.code, ErrorCode::Internal);
+}
+
+#[tokio::test]
+async fn read_mcp_call_history_rejects_context_without_graph_read_role() {
+    let (principal, owner) = fresh_owner();
+    let engine = boot_engine(principal, owner.clone());
+    let mut authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    authz.capabilities.roles = RoleSet::none();
+
+    let err = engine
+        .read_mcp_call_history(
+            &authz,
+            &McpCallHistoryRequest {
+                principal: owner.principal,
+                actor_oid: None,
+                limit: 1,
+            },
+        )
+        .await
+        .expect_err("missing graph-read role must be rejected");
+    assert_eq!(err.code, ErrorCode::Forbidden);
 }
 
 #[tokio::test]
