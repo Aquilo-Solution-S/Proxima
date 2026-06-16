@@ -138,11 +138,31 @@ pub trait Storage: Send + Sync {
         memory_id: crate::MemoryId,
     ) -> Result<Option<String>, StorageError>;
 
+    /// Owner-scoped read of stored text for any embeddable memory kind.
+    async fn load_embedding_text(
+        &self,
+        owner: &Owner,
+        entity_kind: EntityKind,
+        memory_id: crate::MemoryId,
+    ) -> Result<Option<String>, StorageError>;
+
     /// Owner-scoped idempotent upsert of one Fact embedding row for the
     /// `(Fact, memory_id, 1, model_id)` natural key.
     async fn upsert_fact_embedding(
         &self,
         owner: &Owner,
+        memory_id: crate::MemoryId,
+        model_id: &str,
+        dim: usize,
+        vec: &[f32],
+    ) -> Result<(), StorageError>;
+
+    /// Owner-scoped idempotent upsert of one embedding row for any
+    /// embeddable memory kind.
+    async fn upsert_memory_embedding(
+        &self,
+        owner: &Owner,
+        entity_kind: EntityKind,
         memory_id: crate::MemoryId,
         model_id: &str,
         dim: usize,
@@ -158,7 +178,7 @@ pub trait Storage: Send + Sync {
         limit: usize,
     ) -> Result<Vec<crate::MemoryId>, StorageError>;
 
-    /// Atomically claim up to `limit` pending Fact embedding jobs for
+    /// Atomically claim up to `limit` pending memory embedding jobs for
     /// `model_id`, oldest-first. Implementations must use row locks
     /// with `SKIP LOCKED` so concurrent host drainers do not claim the
     /// same job.
@@ -590,9 +610,30 @@ impl Storage for NoopStorage {
         Ok(None)
     }
 
+    async fn load_embedding_text(
+        &self,
+        _owner: &Owner,
+        _entity_kind: EntityKind,
+        _memory_id: crate::MemoryId,
+    ) -> Result<Option<String>, StorageError> {
+        Ok(None)
+    }
+
     async fn upsert_fact_embedding(
         &self,
         _owner: &Owner,
+        _memory_id: crate::MemoryId,
+        _model_id: &str,
+        _dim: usize,
+        _vec: &[f32],
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn upsert_memory_embedding(
+        &self,
+        _owner: &Owner,
+        _entity_kind: EntityKind,
         _memory_id: crate::MemoryId,
         _model_id: &str,
         _dim: usize,

@@ -119,6 +119,22 @@ no embedding client is installed, `core/get_graph.embeddings_available`
 is `false`, semantic/hybrid search reports the missing capability, and
 lexical-only paths remain available.
 
+Embedding job reconciliation is a global maintenance command, not an
+owner-scoped MCP tool:
+
+```sh
+proxima-mcp reconcile-embeddings
+```
+
+Deploy command form:
+
+```yaml
+command: ["proxima-mcp", "reconcile-embeddings"]
+```
+
+`--drain` processes queued jobs inline with the same Mistral client and
+therefore requires `MISTRAL_API_KEY`.
+
 `EmbedCaps { dim, matryoshka }` and `LlmCaps { tool_use, json_mode,
 long_context, vision }` remain core vocabulary types but are not a
 runtime-config surface here.
