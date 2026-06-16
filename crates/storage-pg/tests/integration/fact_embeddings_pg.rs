@@ -7,8 +7,11 @@ use proxima_core::llm::{EMBEDDING_DIM, EMBEDDING_JOB_MAX_ATTEMPTS, EmbeddingClie
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::{
-    AuthPath, AuthzContext, FactPayload, FlavorRegistry, Owner, SchemaVersion, SourceBatchId,
-    SourceId, Storage,
+    AuthPath, AuthzContext, EntityKind, FactPayload, FlavorRegistry, Owner, SchemaVersion,
+    SourceBatchId, SourceId, Storage,
+};
+use proxima_storage_pg::{
+    EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
 };
 use uuid::Uuid;
 
@@ -101,6 +104,20 @@ async fn count_embedding_jobs(
     .await
 }
 
+async fn count_embedding_jobs_for_model(
+    pool: &sqlx::PgPool,
+    model_id: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxima_core.embedding_jobs
+          WHERE model_id = $1",
+    )
+    .bind(model_id)
+    .fetch_one(pool)
+    .await
+}
+
 async fn load_embedding_job(
     pool: &sqlx::PgPool,
     memory_id: proxima_core::MemoryId,
@@ -125,6 +142,18 @@ async fn load_memory_text(
         .bind(memory_id.into_inner())
         .fetch_one(pool)
         .await
+}
+
+async fn reconcile_stub_fact_embeddings(
+    pg: &proxima_storage_pg::PgStorage,
+    scope: EmbeddingReconcileScope,
+) -> Result<EmbeddingReconcileOutcome, proxima_core::StorageError> {
+    pg.reconcile_embeddings(EmbeddingReconcileOptions {
+        model_id: "stub-fact-embed",
+        scope,
+        limit: None,
+    })
+    .await
 }
 
 #[tokio::test]
@@ -375,6 +404,128 @@ async fn fact_embedding_backfill_heals_no_client_ingest() -> Result<(), Box<dyn 
         );
         assert_eq!(count_embedding_jobs(pg.pool(), first.memory_id).await?, 0);
         assert_eq!(count_embedding_jobs(pg.pool(), second.memory_id).await?, 0);
+        Ok(())
+    }
+    .await;
+    drop(pg);
+    drop_db(&db_name).await?;
+    result
+}
+
+#[tokio::test]
+async fn reconcile_embeddings_enqueues_missing_facts_idempotently()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner_fixture();
+        let engine = engine_for(pg.clone(), None);
+        for label in [
+            "reconcile fact one",
+            "reconcile fact two",
+            "reconcile fact three",
+        ] {
+            engine
+                .event_ingest(
+                    &AuthzContext::single_owner(&owner, AuthPath::System),
+                    fact_draft(&owner, label),
+                )
+                .await?;
+        }
+        let stale = engine
+            .event_ingest(
+                &AuthzContext::single_owner(&owner, AuthPath::System),
+                fact_draft(&owner, "reconcile stale fact"),
+            )
+            .await?;
+        let other_model_embedding = vec![0.125; EMBEDDING_DIM];
+        pg.upsert_memory_embedding(
+            &owner,
+            EntityKind::Fact,
+            stale.memory_id,
+            "other-model",
+            EMBEDDING_DIM,
+            &other_model_embedding,
+        )
+        .await?;
+
+        assert_eq!(
+            count_embedding_jobs_for_model(pg.pool(), "stub-fact-embed").await?,
+            0
+        );
+        let first =
+            reconcile_stub_fact_embeddings(&pg, EmbeddingReconcileScope::MissingOnly).await?;
+        assert_eq!(first.scanned, 4);
+        assert_eq!(first.enqueued, 3);
+        assert_eq!(first.skipped, 1);
+        assert_eq!(
+            count_embedding_jobs_for_model(pg.pool(), "stub-fact-embed").await?,
+            3
+        );
+        assert_eq!(count_embedding_jobs(pg.pool(), stale.memory_id).await?, 0);
+
+        let second =
+            reconcile_stub_fact_embeddings(&pg, EmbeddingReconcileScope::MissingOnly).await?;
+        assert_eq!(second.scanned, 4);
+        assert_eq!(second.enqueued, 0);
+        assert_eq!(second.skipped, 4);
+        assert_eq!(
+            count_embedding_jobs_for_model(pg.pool(), "stub-fact-embed").await?,
+            3
+        );
+        assert_eq!(count_embedding_jobs(pg.pool(), stale.memory_id).await?, 0);
+
+        let include_stale =
+            reconcile_stub_fact_embeddings(&pg, EmbeddingReconcileScope::IncludeStale).await?;
+        assert_eq!(include_stale.scanned, 4);
+        assert_eq!(include_stale.enqueued, 1);
+        assert_eq!(include_stale.skipped, 3);
+        assert_eq!(
+            count_embedding_jobs_for_model(pg.pool(), "stub-fact-embed").await?,
+            4
+        );
+        assert_eq!(count_embedding_jobs(pg.pool(), stale.memory_id).await?, 1);
+
+        let include_stale_again =
+            reconcile_stub_fact_embeddings(&pg, EmbeddingReconcileScope::IncludeStale).await?;
+        assert_eq!(include_stale_again.scanned, 4);
+        assert_eq!(include_stale_again.enqueued, 0);
+        assert_eq!(include_stale_again.skipped, 4);
+        assert_eq!(
+            count_embedding_jobs_for_model(pg.pool(), "stub-fact-embed").await?,
+            4
+        );
+        Ok(())
+    }
+    .await;
+    drop(pg);
+    drop_db(&db_name).await?;
+    result
+}
+
+#[tokio::test]
+async fn reconcile_embedding_drain_writes_fact_embeddings() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner_fixture();
+        let engine = engine_for(pg.clone(), None);
+        let outcome = engine
+            .event_ingest(
+                &AuthzContext::single_owner(&owner, AuthPath::System),
+                fact_draft(&owner, "reconcile drain fact"),
+            )
+            .await?;
+        reconcile_stub_fact_embeddings(&pg, EmbeddingReconcileScope::MissingOnly).await?;
+
+        let client = ConstantEmbedding::prefixed("stub-fact-embed", &[0.25, 0.5, 0.75]);
+        let drain = pg.drain_embedding_jobs_inline(&client, 10).await?;
+        assert_eq!(drain.embedded, 1);
+        assert_eq!(drain.failed, 0);
+        assert_eq!(
+            count_fact_embeddings(pg.pool(), outcome.memory_id).await?,
+            1
+        );
+        assert_eq!(count_embedding_jobs(pg.pool(), outcome.memory_id).await?, 0);
         Ok(())
     }
     .await;

@@ -2301,9 +2301,12 @@ version = "0.1.0"
 dependencies = [
  "proxima",
  "proxima-core",
+ "proxima-llm-openai-compat",
+ "proxima-storage-pg",
  "reqwest",
  "serde_json",
  "thiserror",
+ "time",
  "tokio",
  "tracing",
  "tracing-subscriber",

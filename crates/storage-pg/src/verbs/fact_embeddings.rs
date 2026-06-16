@@ -1,8 +1,9 @@
-use proxima_core::llm::{EMBEDDING_DIM, EMBEDDING_JOB_MAX_ATTEMPTS};
+use proxima_core::llm::{EMBEDDING_DIM, EMBEDDING_JOB_MAX_ATTEMPTS, EmbeddingClient};
 use proxima_core::{
     EmbeddingJobClaim, EntityKind, MemoryId, Owner, OwnerPrincipalKind, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
+use time::OffsetDateTime;
 
 use crate::error::map_err;
 
@@ -48,6 +49,104 @@ fn ensure_nonnegative_limit(limit: i64) -> Result<i64, StorageError> {
     Ok(limit)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingReconcileScope {
+    MissingOnly,
+    IncludeStale,
+    Since(OffsetDateTime),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddingReconcileOptions<'a> {
+    pub model_id: &'a str,
+    pub scope: EmbeddingReconcileScope,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EmbeddingReconcileOutcome {
+    pub scanned: u64,
+    pub enqueued: u64,
+    pub skipped: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EmbeddingInlineDrainOutcome {
+    pub embedded: usize,
+    pub failed: usize,
+}
+
+const RECONCILE_EMBEDDINGS_SQL: &str = "
+WITH scoped AS MATERIALIZED (
+     SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS entity_kind,
+            m.memory_id,
+            m.owner_principal_kind,
+            m.owner_principal_id,
+            m.owner_org_id
+       FROM proxima_core.memories m
+      WHERE m.text IS NOT NULL
+        AND m.tombstoned_at IS NULL
+        AND (
+            (m.event_id IS NOT NULL AND m.kind IS NULL)
+            OR m.kind IN (
+                'Abstraction'::proxima_core.entity_kind,
+                'Perspective'::proxima_core.entity_kind
+            )
+        )
+        AND ($3::text <> 'since' OR m.created_at >= $4)
+      ORDER BY m.created_at ASC, m.memory_id ASC
+      LIMIT $2
+ ),
+ eligible AS MATERIALIZED (
+     SELECT s.*
+       FROM scoped s
+      WHERE (
+            CASE WHEN $3::text = 'missing_only'
+            THEN NOT EXISTS (
+                SELECT 1
+                  FROM proxima_core.embeddings e
+                 WHERE e.entity_kind = s.entity_kind
+                   AND e.entity_id = s.memory_id
+                   AND e.embedding_version = 1
+            )
+            ELSE NOT EXISTS (
+                SELECT 1
+                  FROM proxima_core.embeddings e
+                 WHERE e.entity_kind = s.entity_kind
+                   AND e.entity_id = s.memory_id
+                   AND e.embedding_version = 1
+                   AND e.model_id = $1
+            )
+            END
+        )
+        AND NOT EXISTS (
+            SELECT 1
+              FROM proxima_core.embedding_jobs j
+             WHERE j.owner_principal_kind = s.owner_principal_kind
+               AND j.owner_principal_id = s.owner_principal_id
+               AND j.owner_org_id = s.owner_org_id
+               AND j.entity_kind = s.entity_kind
+               AND j.entity_id = s.memory_id
+               AND j.model_id = $1
+               AND j.embedding_version = 1
+        )
+ ),
+ inserted AS (
+     INSERT INTO proxima_core.embedding_jobs
+         (owner_principal_kind, owner_principal_id, owner_org_id,
+          entity_kind, entity_id, model_id)
+     SELECT owner_principal_kind, owner_principal_id, owner_org_id,
+            entity_kind, memory_id, $1
+       FROM eligible
+     ON CONFLICT (owner_principal_kind, owner_principal_id, owner_org_id,
+                  entity_kind, entity_id, model_id, embedding_version)
+     DO NOTHING
+     RETURNING 1
+ )
+ SELECT
+     (SELECT count(*)::bigint FROM scoped) AS scanned,
+     (SELECT count(*)::bigint FROM inserted) AS enqueued";
+
 /// Owner-scoped read of the rendered text stored on a Fact memory row.
 ///
 /// # Errors
@@ -73,6 +172,47 @@ pub async fn load_fact_text(
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(map_err)
+}
+
+/// Owner-scoped read of stored memory text for an embedding job.
+///
+/// Facts are encoded as `kind IS NULL`; derived memories carry
+/// `Abstraction` / `Perspective` in `kind`.
+///
+/// # Errors
+///
+/// Returns `StorageError::Internal` for SQL failures.
+pub async fn load_embedding_text(
+    pool: &PgPool,
+    owner: &Owner,
+    entity_kind: EntityKind,
+    memory_id: MemoryId,
+) -> Result<Option<String>, StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
+    sqlx::query_scalar(
+        "SELECT text
+           FROM proxima_core.memories
+          WHERE memory_id = $1
+            AND owner_principal_kind = $2
+            AND owner_principal_id = $3
+            AND owner_org_id = $4
+            AND text IS NOT NULL
+            AND tombstoned_at IS NULL
+            AND (
+                ($5 = 'Fact'::proxima_core.entity_kind
+                 AND event_id IS NOT NULL
+                 AND kind IS NULL)
+                OR kind = $5
+            )",
+    )
+    .bind(memory_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(entity_kind)
     .fetch_optional(pool)
     .await
     .map_err(map_err)
@@ -123,6 +263,25 @@ pub async fn upsert_fact_embedding(
     dim: usize,
     vec: &[f32],
 ) -> Result<(), StorageError> {
+    upsert_memory_embedding(tx, owner, EntityKind::Fact, memory_id, model_id, dim, vec).await
+}
+
+/// Idempotently upsert one memory embedding row inside an existing tx.
+///
+/// # Errors
+///
+/// Returns `ConstraintViolation` when `dim` or `vec.len()` do not match
+/// the fixed embedding width, otherwise maps SQL failures through the
+/// shared mapper.
+pub async fn upsert_memory_embedding(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    entity_kind: EntityKind,
+    memory_id: MemoryId,
+    model_id: &str,
+    dim: usize,
+    vec: &[f32],
+) -> Result<(), StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
     if dim != EMBEDDING_DIM || vec.len() != EMBEDDING_DIM {
         return Err(StorageError::ConstraintViolation(
@@ -142,7 +301,7 @@ pub async fn upsert_fact_embedding(
              owner_principal_id = EXCLUDED.owner_principal_id,
              owner_org_id = EXCLUDED.owner_org_id",
     )
-    .bind(EntityKind::Fact)
+    .bind(entity_kind)
     .bind(memory_id.into_inner())
     .bind(model_id)
     .bind(vec_literal)
@@ -393,4 +552,123 @@ pub async fn enqueue_missing_embedding_jobs(
     .await
     .map_err(map_err)?;
     Ok(result.rows_affected())
+}
+
+/// Global enqueue-only reconciliation for embeddable memories.
+///
+/// Scans Facts plus derived memories with stored text, skips rows by
+/// scope-specific embedding coverage and target-model durable jobs,
+/// and enqueues via `proxima_core.embedding_jobs`.
+///
+/// # Errors
+///
+/// Returns `ConstraintViolation` for negative limits, otherwise maps SQL
+/// failures through the shared mapper.
+pub async fn reconcile_embeddings(
+    pool: &PgPool,
+    options: EmbeddingReconcileOptions<'_>,
+) -> Result<EmbeddingReconcileOutcome, StorageError> {
+    let limit = match options.limit {
+        Some(limit) => ensure_nonnegative_limit(limit)?,
+        None => i64::MAX,
+    };
+    if limit == 0 {
+        return Ok(EmbeddingReconcileOutcome::default());
+    }
+
+    let (scope, since) = match options.scope {
+        EmbeddingReconcileScope::MissingOnly => ("missing_only", None),
+        EmbeddingReconcileScope::IncludeStale => ("include_stale", None),
+        EmbeddingReconcileScope::Since(since) => ("since", Some(since)),
+    };
+
+    let row: (i64, i64) = sqlx::query_as(RECONCILE_EMBEDDINGS_SQL)
+        .bind(options.model_id)
+        .bind(limit)
+        .bind(scope)
+        .bind(since)
+        .fetch_one(pool)
+        .await
+        .map_err(map_err)?;
+
+    let scanned = u64::try_from(row.0)
+        .map_err(|_| StorageError::Internal("scanned count is negative".into()))?;
+    let enqueued = u64::try_from(row.1)
+        .map_err(|_| StorageError::Internal("enqueued count is negative".into()))?;
+    Ok(EmbeddingReconcileOutcome {
+        scanned,
+        enqueued,
+        skipped: scanned.saturating_sub(enqueued),
+    })
+}
+
+/// Drain queued embedding jobs inline for one embedding client.
+///
+/// # Errors
+///
+/// Returns storage errors from claiming, embedding row writes, or final
+/// job-state writes. Per-job embedding failures are recorded on job rows
+/// and counted in the returned outcome.
+pub async fn drain_embedding_jobs_inline(
+    pool: &PgPool,
+    client: &dyn EmbeddingClient,
+    limit: i64,
+) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
+    let claims = claim_pending_embedding_jobs(pool, client.model_id(), limit).await?;
+    let mut outcome = EmbeddingInlineDrainOutcome::default();
+    for claim in claims {
+        match embed_claim(pool, client, &claim).await {
+            Ok(true) => {
+                complete_embedding_job(pool, &claim).await?;
+                outcome.embedded += 1;
+            }
+            Ok(false) => {
+                complete_embedding_job(pool, &claim).await?;
+            }
+            Err(err) => {
+                outcome.failed += 1;
+                fail_embedding_job(pool, &claim, &err.to_string()).await?;
+            }
+        }
+    }
+    Ok(outcome)
+}
+
+async fn embed_claim(
+    pool: &PgPool,
+    client: &dyn EmbeddingClient,
+    claim: &EmbeddingJobClaim,
+) -> Result<bool, StorageError> {
+    let Some(text) =
+        load_embedding_text(pool, &claim.owner, claim.entity_kind, claim.entity_id).await?
+    else {
+        return Ok(false);
+    };
+    let embedding = client
+        .embed(&text)
+        .await
+        .map_err(|err| StorageError::Internal(format!("embed memory text: {err}")))?;
+    if embedding.len() != client.dim() {
+        return Err(StorageError::ConstraintViolation(format!(
+            "embedding dim mismatch: client dim {} but vector len {}",
+            client.dim(),
+            embedding.len(),
+        )));
+    }
+
+    let mut tx = pool.begin().await.map_err(|err| {
+        StorageError::Internal(format!("begin memory embedding upsert tx: {err}"))
+    })?;
+    upsert_memory_embedding(
+        &mut tx,
+        &claim.owner,
+        claim.entity_kind,
+        claim.entity_id,
+        client.model_id(),
+        client.dim(),
+        &embedding,
+    )
+    .await?;
+    tx.commit().await.map_err(map_err)?;
+    Ok(true)
 }

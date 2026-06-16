@@ -22,6 +22,7 @@ pub struct GoalPayloadArgs {
     pub title: String,
     pub text: String,
     #[serde(default)]
+    #[schemars(with = "std::collections::BTreeMap<String, serde_json::Value>")]
     pub body: serde_json::Value,
 }
 
@@ -385,6 +386,13 @@ fn encode_goal_payload(
                 schema_version.into_inner(),
             ))
         })?;
+    if !args.body.is_object() {
+        return Err(McpToolError::InvalidInput(format!(
+            "body for GoalPayload schema {} v{} must be a JSON object",
+            schema_id.as_str(),
+            schema_version.into_inner(),
+        )));
+    }
     ctx.registry
         .validate_payload(&schema_id, schema_version, PayloadKind::Goal, &args.body)
         .map_err(McpToolError::InvalidInput)?;
@@ -497,5 +505,24 @@ fn format_goal_write_output(ctx: &McpToolCtx, outcome: GoalWriteOutcome) -> Goal
             .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id)))
             .collect(),
         idempotent_replay: outcome.idempotent_replay,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn goal_payload_args_body_schema_is_object() {
+        let schema =
+            serde_json::to_value(schemars::schema_for!(GoalPayloadArgs)).expect("schema JSON");
+        let body = schema
+            .pointer("/properties/body")
+            .expect("body property schema");
+        assert_eq!(
+            body.get("type").and_then(serde_json::Value::as_str),
+            Some("object"),
+            "body must be advertised as an object schema: {body:#}",
+        );
     }
 }

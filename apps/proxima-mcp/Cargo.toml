@@ -9,9 +9,12 @@ publish = false
 
 [dependencies]
 proxima-core = { path = "../../crates/core" }
+proxima-llm-openai-compat = { path = "../../crates/llm-openai-compat" }
+proxima-storage-pg = { path = "../../crates/storage-pg" }
 proxima = { path = "../../crates/proxima" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid = { workspace = true }
+time = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
