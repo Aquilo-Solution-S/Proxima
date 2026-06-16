@@ -33,6 +33,8 @@ pub struct GetGraphArgs {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct GetGraphOutput {
+    /// Whether the current engine has an embedding client installed.
+    pub embeddings_available: bool,
     /// Every personality the owner owns, fully expanded — same shape as
     /// `core/get_personality` output.
     pub personalities: Vec<GetPersonalityOutput>,
@@ -72,6 +74,10 @@ impl McpTool for GetGraphTool {
             let storage = ctx
                 .storage()
                 .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+            let embeddings_available = ctx
+                .engine()
+                .and_then(crate::engine::Engine::embed_client)
+                .is_some();
 
             let personality_rows = storage
                 .list_personality_instances(&ctx.owner, args.include_tombstoned)
@@ -149,6 +155,7 @@ impl McpTool for GetGraphTool {
                 .collect();
 
             Ok(GetGraphOutput {
+                embeddings_available,
                 personalities,
                 schemas,
                 edge_types,

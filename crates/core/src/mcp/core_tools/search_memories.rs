@@ -182,7 +182,10 @@ impl McpTool for SearchMemoriesTool {
                     McpToolError::Other("engine required for semantic search".into())
                 })?;
                 let embed = engine.embed_client().ok_or_else(|| {
-                    McpToolError::Other("embedding client required for semantic search".into())
+                    McpToolError::Other(
+                        "semantic search unavailable: no embedding client is configured (set MISTRAL_API_KEY)"
+                            .into(),
+                    )
                 })?;
                 req.query_embedding = Some(
                     embed
