@@ -37,9 +37,9 @@ use proxima_core::verbs::query::{
     MemorySearchResult, QueryRequest, QueryResponse,
 };
 use proxima_core::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EmbeddingJobClaim,
-    MasterTokenPersonality, MemoryDependency, MemoryId, Owner, Principal, SourceBatchId, Storage,
-    StorageError, StorageHandle,
+    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EmbeddingJobClaim, FactEntityId,
+    MasterTokenPersonality, MemoryDependency, MemoryId, Owner, Principal, SchemaId, SchemaVersion,
+    SourceBatchId, Storage, StorageError, StorageHandle,
 };
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -492,6 +492,17 @@ impl Storage for PgStorage {
         projections: &[proxima_core::verbs::schema::MemorySearchProjection],
     ) -> Result<Vec<MemorySearchResult>, StorageError> {
         verbs::query::search_memories(&self.pool, req, projections).await
+    }
+
+    async fn fact_entity_id_for(
+        &self,
+        owner: &Owner,
+        schema_id: &SchemaId,
+        schema_version: SchemaVersion,
+        natural_key: &serde_json::Value,
+    ) -> Result<Option<FactEntityId>, StorageError> {
+        verbs::query::fact_entity_id_for(&self.pool, owner, schema_id, schema_version, natural_key)
+            .await
     }
 
     async fn facts_citing_object(

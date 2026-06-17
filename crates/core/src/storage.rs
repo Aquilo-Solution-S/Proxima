@@ -28,7 +28,7 @@ use crate::verbs::goal_write::{
 use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::{
-    EdgeAuthorshipKind, EntityKind, MemoryId, MemoryOperatorKind, Owner, Principal,
+    EdgeAuthorshipKind, EntityKind, FactEntityId, MemoryId, MemoryOperatorKind, Owner, Principal,
     RegisteredRelation, SchemaId, SchemaVersion,
 };
 
@@ -318,6 +318,16 @@ pub trait Storage: Send + Sync {
         projections: &[crate::verbs::schema::MemorySearchProjection],
     ) -> Result<Vec<crate::verbs::query::MemorySearchResult>, StorageError>;
 
+    /// Owner-scoped lookup of the stable aggregate identity for a
+    /// stateful Fact natural key. One unique-index probe; no head read.
+    async fn fact_entity_id_for(
+        &self,
+        owner: &Owner,
+        schema_id: &SchemaId,
+        schema_version: SchemaVersion,
+        natural_key: &serde_json::Value,
+    ) -> Result<Option<FactEntityId>, StorageError>;
+
     /// Owner-scoped read-back of Fact rows whose citation mapping points at
     /// one cited object.
     async fn facts_citing_object(
@@ -589,6 +599,16 @@ impl Storage for NoopStorage {
         _embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn fact_entity_id_for(
+        &self,
+        _owner: &Owner,
+        _schema_id: &SchemaId,
+        _schema_version: SchemaVersion,
+        _natural_key: &serde_json::Value,
+    ) -> Result<Option<FactEntityId>, StorageError> {
+        Ok(None)
     }
 
     async fn author_derived(

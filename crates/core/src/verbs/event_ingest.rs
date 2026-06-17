@@ -71,16 +71,36 @@ pub struct EventDraft {
 #[derive(Debug)]
 pub struct AuthorizedEventIngest {
     draft: EventDraft,
+    fact_sidecar_table: Option<String>,
+    fact_natural_key_columns: Vec<String>,
 }
 
 impl AuthorizedEventIngest {
-    pub(crate) fn new(draft: EventDraft) -> Self {
-        Self { draft }
+    pub(crate) fn new(
+        draft: EventDraft,
+        fact_sidecar_table: Option<String>,
+        fact_natural_key_columns: Vec<String>,
+    ) -> Self {
+        Self {
+            draft,
+            fact_sidecar_table,
+            fact_natural_key_columns,
+        }
     }
 
     #[must_use]
     pub fn draft(&self) -> &EventDraft {
         &self.draft
+    }
+
+    #[must_use]
+    pub fn fact_sidecar_table(&self) -> Option<&str> {
+        self.fact_sidecar_table.as_deref()
+    }
+
+    #[must_use]
+    pub fn fact_natural_key_columns(&self) -> &[String] {
+        &self.fact_natural_key_columns
     }
 }
 
@@ -237,6 +257,8 @@ pub struct AuthorizedFactWithCitation {
     cited_object: AuthorizedInlineCitedObject,
     mapping: AuthorizedInlineCitationMapping,
     author_personality_instance_id: Option<PersonalityInstanceId>,
+    fact_sidecar_table: Option<String>,
+    fact_natural_key_columns: Vec<String>,
 }
 
 impl AuthorizedFactWithCitation {
@@ -244,6 +266,8 @@ impl AuthorizedFactWithCitation {
         draft: EventDraft,
         cited_object: AuthorizedInlineCitedObject,
         mapping: AuthorizedInlineCitationMapping,
+        fact_sidecar_table: Option<String>,
+        fact_natural_key_columns: Vec<String>,
     ) -> Self {
         let author_personality_instance_id = draft.author_personality_instance_id;
         Self {
@@ -251,6 +275,8 @@ impl AuthorizedFactWithCitation {
             cited_object,
             mapping,
             author_personality_instance_id,
+            fact_sidecar_table,
+            fact_natural_key_columns,
         }
     }
 
@@ -272,6 +298,16 @@ impl AuthorizedFactWithCitation {
     #[must_use]
     pub const fn author_personality_instance_id(&self) -> Option<PersonalityInstanceId> {
         self.author_personality_instance_id
+    }
+
+    #[must_use]
+    pub fn fact_sidecar_table(&self) -> Option<&str> {
+        self.fact_sidecar_table.as_deref()
+    }
+
+    #[must_use]
+    pub fn fact_natural_key_columns(&self) -> &[String] {
+        &self.fact_natural_key_columns
     }
 }
 
