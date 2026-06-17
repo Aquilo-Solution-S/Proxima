@@ -265,6 +265,47 @@ pub async fn ingest_event_in_tx(
     .await
 }
 
+/// Run raw-draft `EventIngest` plus a typed sidecar insert inside an
+/// already-open transaction, deriving a Fact-entity head from the
+/// sidecar row after the sidecar insert succeeds.
+///
+/// # Errors
+///
+/// Returns storage errors from Fact materialization, sidecar
+/// insertion, Fact-entity derivation, or embedding enqueue. The caller
+/// owns transaction rollback/commit.
+pub async fn ingest_event_with_derived_sidecar_in_tx<F>(
+    tx: &mut Transaction<'_, Postgres>,
+    draft: &EventDraft,
+    embedding_model_id: Option<&str>,
+    sidecar_table: Option<&str>,
+    natural_key_columns: &[&str],
+    sidecar: F,
+) -> Result<EventIngestOutcome, StorageError>
+where
+    F: for<'t> FnOnce(
+        &'t mut Transaction<'_, Postgres>,
+        &'t EventIngestOutcome,
+    ) -> EventIngestSidecarFuture<'t>,
+{
+    let natural_key_columns = natural_key_columns
+        .iter()
+        .copied()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let derive_inputs = FactEntityDeriveInputs {
+        sidecar_table,
+        natural_key_columns: &natural_key_columns,
+    };
+    let options = IngestCoreOptions {
+        embedding_model_id,
+        derive_inputs: Some(derive_inputs),
+        citation_plan: CitationPlan::DraftHint,
+        change_event_author_personality_instance_id: None,
+    };
+    ingest_core(tx, draft, options, sidecar).await
+}
+
 /// Run gated Fact ingest plus typed inline citation sidecars inside an
 /// already-open transaction.
 ///
