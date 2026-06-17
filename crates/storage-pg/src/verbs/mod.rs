@@ -19,5 +19,5 @@ pub mod hard_delete;
 pub mod master_token_personality;
 pub(crate) mod mcp_call_history;
 pub mod persist_mcp_call;
-pub(crate) mod query;
+pub mod query;
 pub mod subject_personality;

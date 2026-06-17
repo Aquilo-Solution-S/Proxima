@@ -80,8 +80,16 @@ pub(super) fn goal_row_from_db(r: GoalRowDb) -> Result<GoalRow, StorageError> {
 }
 
 pub(super) fn edge_row_from_db(r: EdgeRowDb) -> Result<EdgeRow, StorageError> {
-    let source = entity_ref_from_endpoint(r.source_memory_id, r.source_goal_id)?;
-    let target = entity_ref_from_endpoint(r.target_memory_id, r.target_goal_id)?;
+    let source = entity_ref_from_endpoint(
+        r.source_memory_id,
+        r.source_goal_id,
+        r.source_fact_entity_id,
+    )?;
+    let target = entity_ref_from_endpoint(
+        r.target_memory_id,
+        r.target_goal_id,
+        r.target_fact_entity_id,
+    )?;
     Ok(EdgeRow {
         id: r.edge_id,
         relation: r.relation,
@@ -96,10 +104,11 @@ pub(super) fn edge_row_from_db(r: EdgeRowDb) -> Result<EdgeRow, StorageError> {
 fn entity_ref_from_endpoint(
     memory_id: Option<uuid::Uuid>,
     goal_id: Option<uuid::Uuid>,
+    fact_entity_id: Option<uuid::Uuid>,
 ) -> Result<EntityRef, StorageError> {
-    match (memory_id, goal_id) {
-        (Some(m), None) => Ok(EntityRef::Memory(MemoryId::new(m))),
-        (None, Some(g)) => Ok(EntityRef::Goal(GoalId::new(g))),
+    match (memory_id, goal_id, fact_entity_id) {
+        (Some(m), None, None | Some(_)) => Ok(EntityRef::Memory(MemoryId::new(m))),
+        (None, Some(g), None) => Ok(EntityRef::Goal(GoalId::new(g))),
         _ => Err(StorageError::Internal(
             "edge endpoint columns violate CHECK constraint".into(),
         )),
@@ -137,8 +146,10 @@ pub(super) struct EdgeRowDb {
     pub(super) relation_class: RelationClass,
     pub(super) source_memory_id: Option<uuid::Uuid>,
     pub(super) source_goal_id: Option<uuid::Uuid>,
+    pub(super) source_fact_entity_id: Option<uuid::Uuid>,
     pub(super) target_memory_id: Option<uuid::Uuid>,
     pub(super) target_goal_id: Option<uuid::Uuid>,
+    pub(super) target_fact_entity_id: Option<uuid::Uuid>,
     pub(super) owner_principal_kind: OwnerPrincipalKind,
     pub(super) owner_principal_id: uuid::Uuid,
     pub(super) owner_org_id: uuid::Uuid,

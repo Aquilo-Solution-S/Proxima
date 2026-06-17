@@ -293,6 +293,25 @@ impl SchemaRef {
     }
 }
 
+/// Durable endpoint binding for a relation side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum EndpointBinding {
+    /// Resolve the side through a `fact_entity_id` head pointer.
+    FollowHead,
+    /// Pin the side to the exact memory or goal row written on the edge.
+    Pin,
+}
+
+impl EndpointBinding {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FollowHead => "FollowHead",
+            Self::Pin => "Pin",
+        }
+    }
+}
+
 /// Build-time descriptor for a registered relation. Authored by the
 /// flavor that owns the relation; consumed by:
 ///
@@ -313,6 +332,10 @@ pub struct RelationDescriptor {
     pub source_kind_mask: EntityKindMask,
     /// Entity kinds permitted as edge target endpoints.
     pub target_kind_mask: EntityKindMask,
+    /// Durable endpoint binding required for the source side.
+    pub source_binding: EndpointBinding,
+    /// Durable endpoint binding required for the target side.
+    pub target_binding: EndpointBinding,
     /// Edge authorship kinds permitted for this relation.
     pub authorship_mask: AuthorshipKindMask,
     /// Some(SchemaRef) iff edges of this relation carry a typed
@@ -328,6 +351,8 @@ impl RelationDescriptor {
     pub fn substrate(
         relation: impl Into<String>,
         class: RelationClass,
+        source_binding: EndpointBinding,
+        target_binding: EndpointBinding,
         source_kind_mask: EntityKindMask,
         target_kind_mask: EntityKindMask,
         authorship_mask: AuthorshipKindMask,
@@ -337,6 +362,8 @@ impl RelationDescriptor {
             class,
             source_kind_mask,
             target_kind_mask,
+            source_binding,
+            target_binding,
             authorship_mask,
             payload_schema: None,
         }
@@ -344,11 +371,14 @@ impl RelationDescriptor {
 
     /// Typed relation — edges of this relation carry an
     /// `EdgePayload` sidecar keyed on `edge_id`.
+    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn typed(
         relation: impl Into<String>,
         class: RelationClass,
         payload_schema: SchemaRef,
+        source_binding: EndpointBinding,
+        target_binding: EndpointBinding,
         source_kind_mask: EntityKindMask,
         target_kind_mask: EntityKindMask,
         authorship_mask: AuthorshipKindMask,
@@ -358,6 +388,8 @@ impl RelationDescriptor {
             class,
             source_kind_mask,
             target_kind_mask,
+            source_binding,
+            target_binding,
             authorship_mask,
             payload_schema: Some(payload_schema),
         }
@@ -374,10 +406,24 @@ impl RelationDescriptor {
     pub fn validate_edge_shape(
         &self,
         source_kind: &str,
+        source_endpoint: EndpointBinding,
         target_kind: &str,
+        target_endpoint: EndpointBinding,
         authorship_kind: &str,
     ) -> Result<(), String> {
         self.validate_descriptor()?;
+        self.validate_endpoint_binding(
+            "source",
+            self.source_binding,
+            source_endpoint,
+            source_kind,
+        )?;
+        self.validate_endpoint_binding(
+            "target",
+            self.target_binding,
+            target_endpoint,
+            target_kind,
+        )?;
         if !self.source_kind_mask.contains_str(source_kind) {
             return Err(format!(
                 "relation {} rejects source kind {}",
@@ -420,6 +466,31 @@ impl RelationDescriptor {
         Ok(())
     }
 
+    fn validate_endpoint_binding(
+        &self,
+        side: &str,
+        declared: EndpointBinding,
+        actual: EndpointBinding,
+        kind: &str,
+    ) -> Result<(), String> {
+        if declared != actual {
+            return Err(format!(
+                "relation {} expects {} endpoint {}, got {}",
+                self.relation,
+                side,
+                declared.as_str(),
+                actual.as_str(),
+            ));
+        }
+        if actual == EndpointBinding::FollowHead && kind != "Fact" {
+            return Err(format!(
+                "relation {} requires {} FollowHead endpoint to be Fact, got {}",
+                self.relation, side, kind,
+            ));
+        }
+        Ok(())
+    }
+
     /// Validate mask shape independent of a concrete edge.
     ///
     /// # Errors
@@ -441,6 +512,22 @@ impl RelationDescriptor {
         if self.authorship_mask.is_empty() {
             return Err(format!(
                 "relation {} has empty authorship mask",
+                self.relation
+            ));
+        }
+        if self.source_binding == EndpointBinding::FollowHead
+            && !self.source_kind_mask.contains_fact()
+        {
+            return Err(format!(
+                "relation {} has source FollowHead binding without Fact source mask",
+                self.relation
+            ));
+        }
+        if self.target_binding == EndpointBinding::FollowHead
+            && !self.target_kind_mask.contains_fact()
+        {
+            return Err(format!(
+                "relation {} has target FollowHead binding without Fact target mask",
                 self.relation
             ));
         }
@@ -466,6 +553,8 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
         RelationDescriptor::substrate(
             CORE_DERIVED_FROM_RELATION,
             RelationClass::Provenance,
+            EndpointBinding::Pin,
+            EndpointBinding::Pin,
             EntityKindMask::all(),
             EntityKindMask::fact_abstraction_goal(),
             AuthorshipKindMask::event_source()
@@ -476,6 +565,8 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
         RelationDescriptor::substrate(
             CORE_SUPERSEDES_RELATION,
             RelationClass::Supersession,
+            EndpointBinding::Pin,
+            EndpointBinding::Pin,
             EntityKindMask::abstraction_perspective_goal(),
             EntityKindMask::abstraction_perspective_goal(),
             AuthorshipKindMask::core(),
@@ -483,6 +574,8 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
         RelationDescriptor::substrate(
             CORE_INSPIRES_RELATION,
             RelationClass::Causal,
+            EndpointBinding::Pin,
+            EndpointBinding::Pin,
             EntityKindMask::goal(),
             EntityKindMask::perspective(),
             AuthorshipKindMask::user().union(AuthorshipKindMask::external_agent()),
@@ -490,6 +583,8 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
         RelationDescriptor::substrate(
             CORE_AUTHORED_RELATION,
             RelationClass::Causal,
+            EndpointBinding::Pin,
+            EndpointBinding::Pin,
             EntityKindMask::perspective(),
             EntityKindMask::memory(),
             AuthorshipKindMask::engine().union(AuthorshipKindMask::external_agent()),
@@ -497,6 +592,8 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
         RelationDescriptor::substrate(
             CORE_DEPENDS_ON_RELATION,
             RelationClass::Structural,
+            EndpointBinding::Pin,
+            EndpointBinding::Pin,
             EntityKindMask::memory(),
             EntityKindMask::memory(),
             AuthorshipKindMask::engine().union(AuthorshipKindMask::external_agent()),
@@ -517,7 +614,8 @@ pub struct RegisteredRelation<'a> {
 mod tests {
     use super::{
         CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, CORE_INSPIRES_RELATION,
-        CORE_SUPERSEDES_RELATION, EntityKindMask, RelationClass, core_relation_descriptors,
+        CORE_SUPERSEDES_RELATION, EndpointBinding, EntityKindMask, RelationClass, SchemaId,
+        SchemaRef, SchemaVersion, core_relation_descriptors,
     };
 
     fn descriptor_for(relation: &str) -> Option<RelationClass> {
@@ -558,6 +656,8 @@ mod tests {
         let descriptor = super::RelationDescriptor::substrate(
             "test/bad",
             RelationClass::Causal,
+            EndpointBinding::Pin,
+            EndpointBinding::Pin,
             EntityKindMask::fact(),
             EntityKindMask::fact(),
             super::AuthorshipKindMask::perspective_link(),
@@ -572,7 +672,62 @@ mod tests {
             .find(|d| d.relation == CORE_AUTHORED_RELATION)
             .expect("core/authored descriptor");
         descriptor
-            .validate_edge_shape("Perspective", "Abstraction", "Engine")
+            .validate_edge_shape(
+                "Perspective",
+                EndpointBinding::Pin,
+                "Abstraction",
+                EndpointBinding::Pin,
+                "Engine",
+            )
             .expect("Perspective can frame an Abstraction");
+    }
+
+    #[test]
+    fn pin_descriptors_reject_follow_head_endpoint_shape() {
+        let substrate = super::RelationDescriptor::substrate(
+            "test/pin-substrate",
+            RelationClass::Structural,
+            EndpointBinding::Pin,
+            EndpointBinding::Pin,
+            EntityKindMask::fact(),
+            EntityKindMask::fact(),
+            super::AuthorshipKindMask::event_source(),
+        );
+        assert!(
+            substrate
+                .validate_edge_shape(
+                    "Fact",
+                    EndpointBinding::FollowHead,
+                    "Fact",
+                    EndpointBinding::Pin,
+                    "EventSource",
+                )
+                .is_err()
+        );
+
+        let typed = super::RelationDescriptor::typed(
+            "test/pin-typed",
+            RelationClass::Structural,
+            SchemaRef::new(
+                SchemaId::new("test/pin-edge-v1".into()),
+                SchemaVersion::new(1),
+            ),
+            EndpointBinding::Pin,
+            EndpointBinding::Pin,
+            EntityKindMask::fact(),
+            EntityKindMask::fact(),
+            super::AuthorshipKindMask::event_source(),
+        );
+        assert!(
+            typed
+                .validate_edge_shape(
+                    "Fact",
+                    EndpointBinding::Pin,
+                    "Fact",
+                    EndpointBinding::FollowHead,
+                    "EventSource",
+                )
+                .is_err()
+        );
     }
 }

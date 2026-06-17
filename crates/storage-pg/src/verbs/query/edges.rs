@@ -6,6 +6,7 @@ use sqlx::PgPool;
 use crate::error::internal;
 
 use super::memories::visible_ids_for;
+use super::resolve_head;
 use super::rows::{EdgeRowDb, edge_row_from_db};
 
 /// Hard upper bound on edges returned by snapshot-edge mode.
@@ -62,9 +63,11 @@ async fn query_edges_by_id(
     owner_principal_id: uuid::Uuid,
     schemas: &[SchemaInfo],
 ) -> Result<Vec<EdgeRow>, StorageError> {
-    let rows = sqlx::query_as::<_, EdgeRowDb>(
-        "SELECT edge_id, relation, relation_class, source_memory_id, source_goal_id, \
-                target_memory_id, target_goal_id, owner_principal_kind, \
+    let mut rows = sqlx::query_as::<_, EdgeRowDb>(
+        "SELECT edge_id, relation, relation_class, \
+                source_memory_id, source_goal_id, source_fact_entity_id, \
+                target_memory_id, target_goal_id, target_fact_entity_id, \
+                owner_principal_kind, \
                 owner_principal_id, owner_org_id \
          FROM proxima_core.edges \
          WHERE owner_principal_kind = $1 \
@@ -80,6 +83,7 @@ async fn query_edges_by_id(
     .fetch_all(pool)
     .await
     .map_err(internal)?;
+    hydrate_fact_entity_heads(pool, &mut rows).await?;
     let endpoint_memory_ids = rows
         .iter()
         .flat_map(|row| [row.source_memory_id, row.target_memory_id])
@@ -139,18 +143,36 @@ async fn query_edges_between_visible_nodes(
     visible_goal_ids: &[uuid::Uuid],
 ) -> Result<Vec<EdgeRow>, StorageError> {
     let rows = sqlx::query_as::<_, EdgeRowDb>(
-        "SELECT edge_id, relation, relation_class, source_memory_id, source_goal_id, \
-                target_memory_id, target_goal_id, owner_principal_kind, \
-                owner_principal_id, owner_org_id \
-         FROM proxima_core.edges \
-         WHERE owner_principal_kind = $1 \
-           AND owner_principal_id = $2 \
+        "SELECT e.edge_id, e.relation, e.relation_class, \
+                COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id, \
+                e.source_goal_id, e.source_fact_entity_id, \
+                COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id, \
+                e.target_goal_id, e.target_fact_entity_id, \
+                e.owner_principal_kind, \
+                e.owner_principal_id, e.owner_org_id \
+         FROM proxima_core.edges e \
+         LEFT JOIN proxima_core.fact_entities sfe \
+           ON sfe.fact_entity_id = e.source_fact_entity_id \
+          AND sfe.owner_principal_kind = e.owner_principal_kind \
+          AND sfe.owner_principal_id = e.owner_principal_id \
+          AND sfe.owner_org_id = e.owner_org_id \
+         LEFT JOIN proxima_core.fact_entities tfe \
+           ON tfe.fact_entity_id = e.target_fact_entity_id \
+          AND tfe.owner_principal_kind = e.owner_principal_kind \
+          AND tfe.owner_principal_id = e.owner_principal_id \
+          AND tfe.owner_org_id = e.owner_org_id \
+         WHERE e.owner_principal_kind = $1 \
+           AND e.owner_principal_id = $2 \
            AND ( \
-             (source_memory_id = ANY($3::uuid[]) OR source_goal_id = ANY($4::uuid[])) \
+             (e.source_memory_id = ANY($3::uuid[]) \
+              OR e.source_goal_id = ANY($4::uuid[]) \
+              OR sfe.current_memory_id = ANY($3::uuid[])) \
              AND \
-             (target_memory_id = ANY($3::uuid[]) OR target_goal_id = ANY($4::uuid[])) \
+             (e.target_memory_id = ANY($3::uuid[]) \
+              OR e.target_goal_id = ANY($4::uuid[]) \
+              OR tfe.current_memory_id = ANY($3::uuid[])) \
            ) \
-         ORDER BY created_at DESC \
+         ORDER BY e.created_at DESC \
          LIMIT $5",
     )
     .bind(owner_kind)
@@ -162,4 +184,54 @@ async fn query_edges_between_visible_nodes(
     .await
     .map_err(internal)?;
     rows.into_iter().map(edge_row_from_db).collect()
+}
+
+async fn hydrate_fact_entity_heads(
+    pool: &PgPool,
+    rows: &mut [EdgeRowDb],
+) -> Result<(), StorageError> {
+    let mut groups = std::collections::HashMap::<
+        (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid),
+        Vec<uuid::Uuid>,
+    >::new();
+    for row in rows.iter() {
+        let key = (
+            row.owner_principal_kind,
+            row.owner_principal_id,
+            row.owner_org_id,
+        );
+        if let Some(id) = row.source_fact_entity_id {
+            groups.entry(key).or_default().push(id);
+        }
+        if let Some(id) = row.target_fact_entity_id {
+            groups.entry(key).or_default().push(id);
+        }
+    }
+    if groups.is_empty() {
+        return Ok(());
+    }
+
+    let mut resolved = std::collections::HashMap::new();
+    for ((owner_kind, owner_principal_id, owner_org_id), mut ids) in groups {
+        ids.sort_unstable();
+        ids.dedup();
+        resolved
+            .extend(resolve_head(pool, owner_kind, owner_principal_id, owner_org_id, &ids).await?);
+    }
+
+    for row in rows {
+        if let Some(id) = row.source_fact_entity_id {
+            let head = resolved.get(&id).copied().ok_or_else(|| {
+                StorageError::Internal(format!("fact entity {id} has no owner-scoped head"))
+            })?;
+            row.source_memory_id = Some(head);
+        }
+        if let Some(id) = row.target_fact_entity_id {
+            let head = resolved.get(&id).copied().ok_or_else(|| {
+                StorageError::Internal(format!("fact entity {id} has no owner-scoped head"))
+            })?;
+            row.target_memory_id = Some(head);
+        }
+    }
+    Ok(())
 }

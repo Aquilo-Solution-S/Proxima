@@ -30,8 +30,8 @@ pub use payloads::{
 };
 
 use proxima_core::{
-    AuthorshipKindMask, EntityKindMask, RelationClass, RelationDescriptor, SchemaId, SchemaRef,
-    SchemaVersion,
+    AuthorshipKindMask, EndpointBinding, EntityKindMask, RelationClass, RelationDescriptor,
+    SchemaId, SchemaRef, SchemaVersion,
 };
 pub use repos::{
     RepoEraseReceipt, RepoIngestionRun, RepoRecord, RepoRegistryError, RunStage, RunStatus,
@@ -70,6 +70,8 @@ proxima_core::proxima_flavor! {
                 SchemaId::new("proxima-code/calls".into()),
                 SchemaVersion::new(1),
             ),
+            EndpointBinding::Pin,
+            EndpointBinding::Pin,
             EntityKindMask::fact(),
             EntityKindMask::fact(),
             AuthorshipKindMask::event_source(),
@@ -77,6 +79,8 @@ proxima_core::proxima_flavor! {
         RelationDescriptor::substrate(
             mcp::CODE_TARGETS_EXECUTION_REQUEST_RELATION,
             RelationClass::Causal,
+            EndpointBinding::Pin,
+            EndpointBinding::Pin,
             EntityKindMask::perspective(),
             EntityKindMask::fact(),
             AuthorshipKindMask::external_agent(),
@@ -84,6 +88,8 @@ proxima_core::proxima_flavor! {
         RelationDescriptor::substrate(
             mcp::CODE_HAS_ACCEPTANCE_CRITERIA_RELATION,
             RelationClass::Provenance,
+            EndpointBinding::Pin,
+            EndpointBinding::Pin,
             EntityKindMask::fact(),
             EntityKindMask::fact(),
             AuthorshipKindMask::external_agent(),

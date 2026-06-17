@@ -351,9 +351,9 @@ BEGIN
                source_owner_kind,
                source_owner_id,
                source_owner_org_id
-          FROM proxima_core.memories
+         FROM proxima_core.memories
          WHERE memory_id = NEW.source_memory_id;
-    ELSE
+    ELSIF NEW.source_goal_id IS NOT NULL THEN
         SELECT 'Goal'::proxima_core.entity_kind,
                owner_principal_kind,
                owner_principal_id,
@@ -364,6 +364,17 @@ BEGIN
                source_owner_org_id
           FROM proxima_core.goals
          WHERE goal_id = NEW.source_goal_id;
+    ELSE
+        SELECT 'Fact'::proxima_core.entity_kind,
+               owner_principal_kind,
+               owner_principal_id,
+               owner_org_id
+          INTO source_actual_kind,
+               source_owner_kind,
+               source_owner_id,
+               source_owner_org_id
+          FROM proxima_core.fact_entities
+         WHERE fact_entity_id = NEW.source_fact_entity_id;
     END IF;
 
     IF NEW.target_memory_id IS NOT NULL THEN
@@ -375,9 +386,9 @@ BEGIN
                target_owner_kind,
                target_owner_id,
                target_owner_org_id
-          FROM proxima_core.memories
+         FROM proxima_core.memories
          WHERE memory_id = NEW.target_memory_id;
-    ELSE
+    ELSIF NEW.target_goal_id IS NOT NULL THEN
         SELECT 'Goal'::proxima_core.entity_kind,
                owner_principal_kind,
                owner_principal_id,
@@ -388,6 +399,17 @@ BEGIN
                target_owner_org_id
           FROM proxima_core.goals
          WHERE goal_id = NEW.target_goal_id;
+    ELSE
+        SELECT 'Fact'::proxima_core.entity_kind,
+               owner_principal_kind,
+               owner_principal_id,
+               owner_org_id
+          INTO target_actual_kind,
+               target_owner_kind,
+               target_owner_id,
+               target_owner_org_id
+          FROM proxima_core.fact_entities
+         WHERE fact_entity_id = NEW.target_fact_entity_id;
     END IF;
 
     IF source_actual_kind IS NULL THEN
@@ -470,8 +492,10 @@ CREATE TABLE proxima_core.change_event (
     edge_relation text,
     edge_source_memory_id uuid,
     edge_source_goal_id uuid,
+    edge_source_fact_entity_id uuid,
     edge_target_memory_id uuid,
     edge_target_goal_id uuid,
+    edge_target_fact_entity_id uuid,
     entity_personality_instance_id uuid,
     wake_chain_depth smallint DEFAULT 0 NOT NULL,
     CONSTRAINT change_event_endpoint_chk CHECK (
@@ -482,16 +506,16 @@ CREATE TABLE proxima_core.change_event (
                 AND entity_schema_id IS NULL AND entity_schema_version IS NULL
                 AND supersedes_memory_id IS NULL AND supersedes_goal_id IS NULL
                 AND edge_id IS NOT NULL AND edge_relation IS NOT NULL
-                AND ((edge_source_memory_id IS NOT NULL) <> (edge_source_goal_id IS NOT NULL))
-                AND ((edge_target_memory_id IS NOT NULL) <> (edge_target_goal_id IS NOT NULL))
+                AND num_nonnulls(edge_source_memory_id, edge_source_goal_id, edge_source_fact_entity_id) = 1
+                AND num_nonnulls(edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id) = 1
             ELSE
-                ((entity_memory_id IS NOT NULL) <> (entity_goal_id IS NOT NULL))
+                num_nonnulls(entity_memory_id, entity_goal_id) = 1
                 AND entity_kind IS NOT NULL
                 AND entity_schema_id IS NOT NULL
                 AND entity_schema_version IS NOT NULL
                 AND edge_id IS NULL AND edge_relation IS NULL
-                AND edge_source_memory_id IS NULL AND edge_source_goal_id IS NULL
-                AND edge_target_memory_id IS NULL AND edge_target_goal_id IS NULL
+                AND edge_source_memory_id IS NULL AND edge_source_goal_id IS NULL AND edge_source_fact_entity_id IS NULL
+                AND edge_target_memory_id IS NULL AND edge_target_goal_id IS NULL AND edge_target_fact_entity_id IS NULL
                 AND NOT (supersedes_memory_id IS NOT NULL AND supersedes_goal_id IS NOT NULL)
         END
     )
@@ -499,7 +523,7 @@ CREATE TABLE proxima_core.change_event (
 
 
 COMMENT ON CONSTRAINT change_event_endpoint_chk ON proxima_core.change_event IS
-  'Endpoint XOR + not-null companions guarding the pull-read decode (change_event.rs). EdgeAppend rows carry edge_id/edge_relation and exactly one of *_memory_id/*_goal_id per edge endpoint, with all entity/supersedes columns NULL. EntityAppend/EntityDelete rows carry exactly one of entity_memory_id/entity_goal_id plus entity_kind/schema, at most one supersedes endpoint, and all edge columns NULL. Mirrors edges_source/target_endpoint_chk; keeps a raw INSERT from persisting an undecodable row.';
+  'Endpoint XOR + not-null companions guarding the pull-read decode (change_event.rs). EdgeAppend rows carry edge_id/edge_relation and exactly one of *_memory_id/*_goal_id/*_fact_entity_id per edge endpoint, with all entity/supersedes columns NULL. EntityAppend/EntityDelete rows carry exactly one of entity_memory_id/entity_goal_id plus entity_kind/schema, at most one supersedes endpoint, and all edge columns NULL. Mirrors edges_source/target_endpoint_chk; keeps a raw INSERT from persisting an undecodable row.';
 
 
 --
@@ -610,22 +634,24 @@ CREATE TABLE proxima_core.edges (
     source_kind proxima_core.entity_kind NOT NULL,
     source_memory_id uuid,
     source_goal_id uuid,
+    source_fact_entity_id uuid,
     target_kind proxima_core.entity_kind NOT NULL,
     target_memory_id uuid,
     target_goal_id uuid,
+    target_fact_entity_id uuid,
     authorship_kind proxima_core.edge_authorship_kind NOT NULL,
     authorship_owner_memory_id uuid,
     owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
     owner_principal_id uuid NOT NULL,
     owner_org_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT edges_source_endpoint_chk CHECK (((source_memory_id IS NOT NULL) <> (source_goal_id IS NOT NULL))),
-    CONSTRAINT edges_target_endpoint_chk CHECK (((target_memory_id IS NOT NULL) <> (target_goal_id IS NOT NULL)))
+    CONSTRAINT edges_source_endpoint_chk CHECK ((num_nonnulls(source_memory_id, source_goal_id, source_fact_entity_id) = 1 AND (source_fact_entity_id IS NULL OR source_kind = 'Fact'::proxima_core.entity_kind))),
+    CONSTRAINT edges_target_endpoint_chk CHECK ((num_nonnulls(target_memory_id, target_goal_id, target_fact_entity_id) = 1 AND (target_fact_entity_id IS NULL OR target_kind = 'Fact'::proxima_core.entity_kind)))
 );
 
 
 COMMENT ON TABLE proxima_core.edges IS
-  'Typed directed relations between any two nodes (memory or goal endpoints; exactly one of source_memory_id/source_goal_id per side, likewise on target). relation_class groups them: Provenance, Structural, Causal, Interpretive, Supersession. See docs/02-memory.md.';
+  'Typed directed relations between any two nodes (memory, goal, or fact-entity endpoints; exactly one endpoint column per side, likewise on target). relation_class groups them: Provenance, Structural, Causal, Interpretive, Supersession. See docs/02-memory.md.';
 
 
 --
@@ -680,6 +706,25 @@ CREATE TABLE proxima_core.events (
     schema_version integer NOT NULL,
     observed_at timestamp with time zone NOT NULL,
     occurred_at timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: fact_entities; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.fact_entities (
+    fact_entity_id uuid NOT NULL,
+    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
+    owner_principal_id uuid NOT NULL,
+    owner_org_id uuid NOT NULL,
+    schema_id text NOT NULL,
+    schema_version integer NOT NULL,
+    natural_key jsonb NOT NULL,
+    current_memory_id uuid NOT NULL,
+    current_created_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT fact_entities_schema_version_positive_chk CHECK ((schema_version > 0))
 );
 
 
@@ -855,6 +900,7 @@ CREATE TABLE proxima_core.mcp_call_logged_v1 (
 
 CREATE TABLE proxima_core.memories (
     memory_id uuid NOT NULL,
+    fact_entity_id uuid,
     owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
     owner_principal_id uuid NOT NULL,
     owner_org_id uuid NOT NULL,
@@ -872,6 +918,7 @@ CREATE TABLE proxima_core.memories (
     personality_instance_id uuid NOT NULL,
     wake_chain_depth smallint DEFAULT 0 NOT NULL,
     tombstoned_at timestamp with time zone,
+    CONSTRAINT memories_fact_entity_chk CHECK ((fact_entity_id IS NULL OR (event_id IS NOT NULL AND kind IS NULL))),
     CONSTRAINT memories_kind_values_chk CHECK (((kind IS NULL) OR (kind = ANY (ARRAY['Abstraction'::proxima_core.entity_kind, 'Perspective'::proxima_core.entity_kind])))),
     CONSTRAINT memories_schema_version_positive_chk CHECK ((schema_version > 0)),
     CONSTRAINT memories_variant_chk CHECK ((((event_id IS NOT NULL) AND (kind IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (supersedes IS NULL)) OR ((kind IS NOT NULL) AND (text IS NOT NULL) AND (operator_kind IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (event_id IS NULL) AND (citation_mapping_id IS NULL)))),
@@ -1098,6 +1145,22 @@ ALTER TABLE ONLY proxima_core.embedding_jobs
 
 ALTER TABLE ONLY proxima_core.events
     ADD CONSTRAINT events_pkey PRIMARY KEY (event_id);
+
+
+--
+-- Name: fact_entities fact_entities_identity_uq; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.fact_entities
+    ADD CONSTRAINT fact_entities_identity_uq UNIQUE (owner_principal_kind, owner_principal_id, owner_org_id, schema_id, schema_version, natural_key);
+
+
+--
+-- Name: fact_entities fact_entities_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.fact_entities
+    ADD CONSTRAINT fact_entities_pkey PRIMARY KEY (fact_entity_id);
 
 
 --
@@ -1345,6 +1408,13 @@ CREATE INDEX idx_edges_source_goal ON proxima_core.edges USING btree (source_goa
 
 
 --
+-- Name: idx_edges_source_fact_entity; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_edges_source_fact_entity ON proxima_core.edges USING btree (source_fact_entity_id) WHERE (source_fact_entity_id IS NOT NULL);
+
+
+--
 -- Name: idx_edges_target_memory; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
@@ -1356,6 +1426,13 @@ CREATE INDEX idx_edges_target_memory ON proxima_core.edges USING btree (target_m
 --
 
 CREATE INDEX idx_edges_target_goal ON proxima_core.edges USING btree (target_goal_id) WHERE (target_goal_id IS NOT NULL);
+
+
+--
+-- Name: idx_edges_target_fact_entity; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_edges_target_fact_entity ON proxima_core.edges USING btree (target_fact_entity_id) WHERE (target_fact_entity_id IS NOT NULL);
 
 
 --
@@ -1454,6 +1531,13 @@ CREATE UNIQUE INDEX idx_master_token_personality_instance ON proxima_core.master
 --
 
 CREATE INDEX idx_memories_owner_kind ON proxima_core.memories USING btree (owner_principal_kind, owner_principal_id, owner_org_id, kind);
+
+
+--
+-- Name: idx_memories_fact_entity; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_memories_fact_entity ON proxima_core.memories USING btree (fact_entity_id) WHERE (fact_entity_id IS NOT NULL);
 
 
 --
@@ -1591,6 +1675,14 @@ ALTER TABLE ONLY proxima_core.edges
 
 
 --
+-- Name: edges edges_source_fact_entity_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.edges
+    ADD CONSTRAINT edges_source_fact_entity_id_fkey FOREIGN KEY (source_fact_entity_id) REFERENCES proxima_core.fact_entities(fact_entity_id) ON DELETE RESTRICT;
+
+
+--
 -- Name: edges edges_source_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
@@ -1607,6 +1699,14 @@ ALTER TABLE ONLY proxima_core.edges
 
 
 --
+-- Name: edges edges_target_fact_entity_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.edges
+    ADD CONSTRAINT edges_target_fact_entity_id_fkey FOREIGN KEY (target_fact_entity_id) REFERENCES proxima_core.fact_entities(fact_entity_id) ON DELETE RESTRICT;
+
+
+--
 -- Name: edges edges_target_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
@@ -1620,6 +1720,14 @@ ALTER TABLE ONLY proxima_core.edges
 
 ALTER TABLE ONLY proxima_core.events
     ADD CONSTRAINT events_source_batch_id_fkey FOREIGN KEY (source_batch_id) REFERENCES proxima_core.source_batches(id);
+
+
+--
+-- Name: fact_entities fact_entities_current_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.fact_entities
+    ADD CONSTRAINT fact_entities_current_memory_id_fkey FOREIGN KEY (current_memory_id) REFERENCES proxima_core.memories(memory_id) ON DELETE RESTRICT;
 
 
 --
@@ -1748,6 +1856,14 @@ ALTER TABLE ONLY proxima_core.memories
 
 ALTER TABLE ONLY proxima_core.memories
     ADD CONSTRAINT memories_event_id_fkey FOREIGN KEY (event_id) REFERENCES proxima_core.events(event_id);
+
+
+--
+-- Name: memories memories_fact_entity_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.memories
+    ADD CONSTRAINT memories_fact_entity_id_fkey FOREIGN KEY (fact_entity_id) REFERENCES proxima_core.fact_entities(fact_entity_id) ON DELETE SET NULL;
 
 
 --

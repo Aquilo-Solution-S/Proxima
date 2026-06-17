@@ -436,6 +436,7 @@ pub async fn erase_repo(
     let set = HardDeleteSet {
         memories,
         edge_ids,
+        fact_entity_ids: Vec::new(),
         event_ids,
     };
 
