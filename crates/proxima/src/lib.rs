@@ -38,10 +38,9 @@ pub use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, CapabilitySet, CitationMappingPayload,
     CitedObjectPayload, Engine, EngineHandle, FactPayload, FlavorRegistry, GoalPayload, GroupId,
     Identity, McpCallLogInput, McpCallLogOutcome, MemoryId, OrgId, Owner, PerspectivePayload,
-    Principal,
-    Role, RoleSet, SchemaId, SchemaVersion, SearchProjection, SearchProjectionColumnKind,
-    SearchProjectionField, SourceBatchId, SourceId, StorageError, ToolScope, UserId,
-    canonical_json_bytes, proxima_flavor,
+    Principal, Role, RoleSet, SchemaId, SchemaVersion, SearchProjection,
+    SearchProjectionColumnKind, SearchProjectionField, SourceBatchId, SourceId, StorageError,
+    ToolScope, UserId, canonical_json_bytes, proxima_flavor,
 };
 pub use proxima_mcp_server::McpAuthContext;
 #[cfg(feature = "testkit")]
