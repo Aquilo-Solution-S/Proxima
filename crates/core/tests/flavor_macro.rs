@@ -168,13 +168,16 @@ fn flavor_macro_accepts_empty_goal_schemas() {
 // covers the surviving runtime branch.
 mod nested {
     use proxima_core::{
-        AuthorshipKindMask, EntityKindMask, RelationClass, RelationDescriptor, proxima_flavor,
+        AuthorshipKindMask, EndpointBinding, EntityKindMask, RelationClass, RelationDescriptor,
+        proxima_flavor,
     };
     proxima_flavor! {
         name = "proxima-core",
         relations = [ RelationDescriptor::substrate(
             "wrong-crate/bad",
             RelationClass::Provenance,
+            EndpointBinding::Pin,
+            EndpointBinding::Pin,
             EntityKindMask::all(),
             EntityKindMask::all(),
             AuthorshipKindMask::core(),

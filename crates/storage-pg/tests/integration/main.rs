@@ -12,6 +12,7 @@ mod event_ingest_with_sidecar_pg;
 mod external_agent_constraint_pg;
 mod fact_cleanup_pg;
 mod fact_embeddings_pg;
+mod fact_entity_schema_pg;
 mod fact_with_citation_pg;
 mod goal_external_authorship_pg;
 mod goal_state_transitions_pg;

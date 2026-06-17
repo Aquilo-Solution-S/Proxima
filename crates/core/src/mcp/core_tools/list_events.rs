@@ -226,6 +226,7 @@ struct EdgeKindRow {
 fn format_ref(ctx: &McpToolCtx, r: &EntityRef, kind: EntityKind) -> String {
     match r {
         EntityRef::Goal(g) => ctx.format_goal(*g),
+        EntityRef::FactEntity(fe) => format!("fact_entity:{}", fe.into_inner()),
         EntityRef::Memory(m) => match kind {
             EntityKind::Abstraction => ctx.format_abstraction_memory(*m),
             EntityKind::Perspective => ctx.format_perspective_memory(*m),
