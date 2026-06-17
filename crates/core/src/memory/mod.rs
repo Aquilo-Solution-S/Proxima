@@ -5,8 +5,8 @@ pub mod payloads;
 pub use payloads::{AgentDerivationV1, AgentLinkV1, AgentNoteV1, Speaker, UtteranceV1};
 
 use crate::{
-    AuthorshipKindMask, EntityKindMask, FlavorRegistry, RelationClass, RelationDescriptor,
-    SchemaId, SchemaRef, SchemaVersion,
+    AuthorshipKindMask, EndpointBinding, EntityKindMask, FlavorRegistry, RelationClass,
+    RelationDescriptor, SchemaId, SchemaRef, SchemaVersion,
 };
 
 pub const AGENT_LINK_RELATION: &str = "core/agent-link-refers-to";
@@ -24,6 +24,8 @@ pub(crate) fn register_all(registry: &mut FlavorRegistry) {
             SchemaId::new("core/agent-link-v1".into()),
             SchemaVersion::new(1),
         ),
+        EndpointBinding::Pin,
+        EndpointBinding::Pin,
         EntityKindMask::abstraction_perspective(),
         EntityKindMask::memory(),
         AuthorshipKindMask::external_agent(),

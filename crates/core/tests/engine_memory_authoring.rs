@@ -88,6 +88,8 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
     registry.add_relation(RelationDescriptor::substrate(
         "test/derived-from-abstraction",
         RelationClass::Provenance,
+        proxima_core::EndpointBinding::Pin,
+        proxima_core::EndpointBinding::Pin,
         EntityKindMask::abstraction(),
         EntityKindMask::abstraction(),
         AuthorshipKindMask::external_agent(),

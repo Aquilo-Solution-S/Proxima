@@ -7,7 +7,9 @@
 //!
 //! Used by M5.5 typed F-layer edges (e.g. `proxima-code/calls`).
 
-use proxima_core::{EdgeAuthorshipKind, EntityKind, Owner, RegisteredRelation, StorageError};
+use proxima_core::{
+    EdgeAuthorshipKind, EndpointBinding, EntityKind, Owner, RegisteredRelation, StorageError,
+};
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
@@ -61,7 +63,9 @@ pub async fn append_edge_in_tx(
     descriptor
         .validate_edge_shape(
             draft.source_kind.as_str(),
+            EndpointBinding::Pin,
             draft.target_kind.as_str(),
+            EndpointBinding::Pin,
             draft.authorship_kind.as_str(),
         )
         .map_err(StorageError::ConstraintViolation)?;

@@ -1,7 +1,8 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::{
     AbstractionPayload, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
-    CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EdgeId, MemoryId, SchemaId, SchemaVersion,
+    CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EdgeId, EndpointBinding, MemoryId, SchemaId,
+    SchemaVersion,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -133,7 +134,9 @@ impl McpTool for DeriveTool {
                         .descriptor
                         .validate_edge_shape(
                             args.kind.to_entity_kind().as_str(),
+                            EndpointBinding::Pin,
                             memory_kind_for_edge(*source_kind).as_str(),
+                            EndpointBinding::Pin,
                             EdgeAuthorshipKind::ExternalAgent.as_str(),
                         )
                         .map_err(McpToolError::LayeringViolation)?;

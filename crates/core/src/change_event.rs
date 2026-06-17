@@ -6,7 +6,7 @@
 
 use uuid::Uuid;
 
-use crate::{GoalId, MemoryId, Owner, SchemaId, SchemaVersion};
+use crate::{FactEntityId, GoalId, MemoryId, Owner, SchemaId, SchemaVersion};
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, sqlx::Type,
@@ -60,11 +60,12 @@ pub enum ChangeEventKindTag {
 }
 
 /// Endpoint of an Edge or supersedes target. Sum type matching
-/// `change_event` columns: a memory or a goal.
+/// `change_event` columns: a memory, goal, or log-only Fact entity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum EntityRef {
     Memory(MemoryId),
     Goal(GoalId),
+    FactEntity(FactEntityId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
