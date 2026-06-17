@@ -37,9 +37,9 @@ use proxima_core::verbs::query::{
     MemorySearchResult, QueryRequest, QueryResponse,
 };
 use proxima_core::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EmbeddingJobClaim,
-    MasterTokenPersonality, MemoryDependency, MemoryId, Owner, Principal, SourceBatchId, Storage,
-    StorageError, StorageHandle,
+    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EmbeddingJobClaim, FactEntityId,
+    MasterTokenPersonality, MemoryDependency, MemoryId, Owner, Principal, SchemaId, SchemaVersion,
+    SourceBatchId, Storage, StorageError, StorageHandle,
 };
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -56,7 +56,7 @@ mod error;
 mod pg_ident;
 mod pgvector;
 pub mod query {
-    pub use crate::verbs::query::MAX_SNAPSHOT_EDGES;
+    pub use crate::verbs::query::{MAX_SNAPSHOT_EDGES, fact_entity_id_for};
 }
 #[cfg(feature = "test-fixtures")]
 pub mod test_fixtures;
@@ -208,9 +208,11 @@ fn edge_draft_from_spec<'a>(edge: &'a DerivedEdgeSpec<'a>) -> verbs::edge_append
         source_kind: edge.source_kind,
         source_memory_id: Some(edge.source_memory_id.into_inner()),
         source_goal_id: None,
+        source_fact_entity_id: None,
         target_kind: edge.target_kind,
         target_memory_id: Some(edge.target_memory_id.into_inner()),
         target_goal_id: None,
+        target_fact_entity_id: None,
         authorship_kind: edge.authorship_kind,
         authorship_owner_memory_id: edge.authorship_owner_memory_id.map(MemoryId::into_inner),
         owner: edge.owner,
@@ -494,6 +496,23 @@ impl Storage for PgStorage {
         verbs::query::search_memories(&self.pool, req, projections).await
     }
 
+    async fn fact_entity_id_for(
+        &self,
+        owner: &Owner,
+        schema_id: &SchemaId,
+        schema_version: SchemaVersion,
+        natural_key: &serde_json::Value,
+    ) -> Result<Option<FactEntityId>, StorageError> {
+        verbs::query::fact_entity_id_for_pool(
+            &self.pool,
+            owner,
+            schema_id,
+            schema_version,
+            natural_key,
+        )
+        .await
+    }
+
     async fn facts_citing_object(
         &self,
         owner: &Owner,
@@ -509,6 +528,14 @@ impl Storage for PgStorage {
         fact_memory_id: MemoryId,
     ) -> Result<Option<FactCitationReadback>, StorageError> {
         verbs::query::citation_of_fact(&self.pool, owner, fact_memory_id).await
+    }
+
+    async fn citation_of_entity_head(
+        &self,
+        owner: &Owner,
+        fact_entity_id: FactEntityId,
+    ) -> Result<Option<FactCitationReadback>, StorageError> {
+        verbs::query::citation_of_entity_head(&self.pool, owner, fact_entity_id).await
     }
 
     async fn walk_memory_lineage(

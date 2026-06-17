@@ -39,7 +39,7 @@ pub mod walk_memory_lineage;
 
 pub use add_wake_entry::AddWakeEntryTool;
 pub use audit::{AuditEmit, emit_personality_config_changed};
-pub use citation_of_fact::CitationOfFactTool;
+pub use citation_of_fact::{CitationOfEntityHeadTool, CitationOfFactTool};
 pub use cleanup_facts::CleanupFactsTool;
 pub use clear_fact_retention::ClearFactRetentionTool;
 pub use facts_citing_object::FactsCitingObjectTool;
@@ -85,6 +85,7 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<SearchMemoriesTool>();
     registry.add_substrate_mcp_tool::<FactsCitingObjectTool>();
     registry.add_substrate_mcp_tool::<CitationOfFactTool>();
+    registry.add_substrate_mcp_tool::<CitationOfEntityHeadTool>();
     registry.add_substrate_mcp_tool::<WalkMemoryLineageTool>();
     registry.add_substrate_mcp_tool::<InstantiatePersonalityTool>();
     registry.add_substrate_mcp_tool::<TombstonePersonalityTool>();

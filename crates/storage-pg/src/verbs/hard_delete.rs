@@ -16,6 +16,9 @@ pub struct HardDeleteSet {
     pub memories: Vec<(EntityKind, Uuid)>,
     /// Edge rows to delete. Edge-keyed sidecars are deleted first.
     pub edge_ids: Vec<Uuid>,
+    /// Fact-entity rows to delete after follow-head edges are gone and
+    /// before their current head memories are deleted.
+    pub fact_entity_ids: Vec<Uuid>,
     /// Event rows to delete (bytea event ids), deleted after memories.
     pub event_ids: Vec<Vec<u8>>,
 }
@@ -56,6 +59,7 @@ pub async fn execute_hard_delete(
 
     delete_edge_keyed_sidecars(tx, sidecars.edge_keyed, &set.edge_ids).await?;
     counts.edges = delete_edges(tx, &set.edge_ids).await?;
+    delete_fact_entities(tx, &set.fact_entity_ids).await?;
 
     delete_memory_keyed_sidecars(tx, sidecars.memory_keyed, &memory_ids).await?;
     counts.embeddings = delete_embeddings(tx, &set.memories).await?;
@@ -74,6 +78,25 @@ pub async fn execute_hard_delete(
     counts.events = delete_events(tx, &set.event_ids).await?;
 
     Ok(counts)
+}
+
+async fn delete_fact_entities(
+    tx: &mut Transaction<'_, Postgres>,
+    fact_entity_ids: &[Uuid],
+) -> Result<(), StorageError> {
+    if fact_entity_ids.is_empty() {
+        return Ok(());
+    }
+
+    sqlx::query(
+        "DELETE FROM proxima_core.fact_entities
+          WHERE fact_entity_id = ANY($1::uuid[])",
+    )
+    .bind(fact_entity_ids)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    Ok(())
 }
 
 async fn delete_embedding_jobs(

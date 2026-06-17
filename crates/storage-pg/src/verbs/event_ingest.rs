@@ -15,7 +15,7 @@ use std::pin::Pin;
 
 use proxima_core::verbs::event_ingest::{
     AuthorizedCitationAttachment, AuthorizedInlineCitationMapping, AuthorizedInlineCitedObject,
-    EventDraft, EventIngestOutcome,
+    Citation, EventDraft, EventIngestOutcome,
 };
 use proxima_core::{
     AuthorizedEventIngest, AuthorizedFactWithCitation, AuthzContext, Engine, EntityKind,
@@ -25,6 +25,7 @@ use proxima_core::{
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::error::{internal, map_err};
+use crate::pg_ident::PgIdent;
 
 pub type EventIngestSidecarFuture<'t> =
     Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
@@ -35,6 +36,58 @@ pub struct AttachCitationOutcome {
     pub cited_object_id: uuid::Uuid,
     pub attached: bool,
     pub idempotent: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FactEntityDeriveInputs<'a> {
+    sidecar_table: Option<&'a str>,
+    natural_key_columns: &'a [String],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IngestCoreOptions<'a> {
+    embedding_model_id: Option<&'a str>,
+    derive_inputs: Option<FactEntityDeriveInputs<'a>>,
+    citation_plan: CitationPlan<'a>,
+    change_event_author_personality_instance_id: Option<uuid::Uuid>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CitationPlan<'a> {
+    DraftHint,
+    Inline {
+        cited_object: &'a AuthorizedInlineCitedObject,
+        mapping: &'a AuthorizedInlineCitationMapping,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PendingCitation<'a> {
+    DraftHint {
+        citation: &'a Citation,
+        citation_mapping_id: uuid::Uuid,
+        cited_object_id: uuid::Uuid,
+    },
+    Inline {
+        mapping: &'a AuthorizedInlineCitationMapping,
+        citation_mapping_id: uuid::Uuid,
+        cited_object_id: uuid::Uuid,
+    },
+}
+
+impl PendingCitation<'_> {
+    const fn citation_mapping_id(self) -> uuid::Uuid {
+        match self {
+            Self::DraftHint {
+                citation_mapping_id,
+                ..
+            }
+            | Self::Inline {
+                citation_mapping_id,
+                ..
+            } => citation_mapping_id,
+        }
+    }
 }
 
 /// Pool-scoped `EventIngest`. Opens its own transaction; commits on
@@ -195,212 +248,21 @@ where
 ///
 /// Constraint violations map to `ConstraintViolation`; sqlx failures
 /// map to `Internal`.
-#[allow(clippy::too_many_lines)]
 pub async fn ingest_event_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     draft: &EventDraft,
     embedding_model_id: Option<&str>,
 ) -> Result<EventIngestOutcome, StorageError> {
-    let event_id = draft.event_id();
-    let event_id_bytes = event_id.into_inner();
-    let owner = draft.owner();
-
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
-
-    // Replay check.
-    let existing = sqlx::query_scalar::<_, uuid::Uuid>(
-        r"SELECT memory_id FROM proxima_core.memories
-           WHERE event_id = $1
-             AND tombstoned_at IS NULL",
-    )
-    .bind(&event_id_bytes[..])
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_err)?;
-
-    if let Some(memory_id) = existing {
-        let seq = sqlx::query_scalar!(
-            r#"SELECT seq FROM proxima_core.change_event
-                 WHERE entity_memory_id = $1 ORDER BY seq ASC LIMIT 1"#,
-            memory_id,
-        )
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(map_err)?;
-
-        return Ok(EventIngestOutcome {
-            event_id,
-            memory_id: proxima_core::MemoryId::new(memory_id),
-            change_event_seq: seq,
-            idempotent_replay: true,
-        });
-    }
-
-    // Generate ids inside the tx; UUIDv7 carries time so seq
-    // is monotonic-ish even across concurrent writers.
-    let memory_id = uuid::Uuid::now_v7();
-    let change_seq = uuid::Uuid::now_v7();
-
-    // 1. cited_object — optional; idempotent on the UNIQUE when present.
-    let citation_refs = if let Some(citation) = &draft.citation {
-        let citation_mapping_id = uuid::Uuid::now_v7();
-        let cited_object_id_new = uuid::Uuid::now_v7();
-        let cited_id: uuid::Uuid = sqlx::query_scalar!(
-            r#"INSERT INTO proxima_core.cited_objects
-            (cited_object_id, schema_id, owner_principal_kind,
-             owner_principal_id, owner_org_id, content_hash)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (owner_principal_kind, owner_principal_id,
-                      owner_org_id, schema_id, content_hash)
-         DO UPDATE SET schema_id = EXCLUDED.schema_id
-         RETURNING cited_object_id"#,
-            cited_object_id_new,
-            citation.object.schema_id.as_str(),
-            owner_kind as OwnerPrincipalKind,
-            owner_principal_id,
-            owner_org_id,
-            &citation.object.content_hash[..],
-        )
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(map_err)?;
-        Some((citation, citation_mapping_id, cited_id))
-    } else {
-        None
-    };
-    let citation_mapping_id = citation_refs
-        .as_ref()
-        .map(|(_, citation_mapping_id, _)| *citation_mapping_id);
-
-    // 2. source_batch upsert (idempotent on PK). Must come before
-    //    event insert due to FK from events.source_batch_id.
-    sqlx::query!(
-        r#"INSERT INTO proxima_core.source_batches
-            (id, source_id, owner_principal_kind,
-             owner_principal_id, owner_org_id)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (id) DO NOTHING"#,
-        draft.source_batch_id.into_inner(),
-        draft.source_id.as_str(),
-        owner_kind as OwnerPrincipalKind,
-        owner_principal_id,
-        owner_org_id,
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-
-    // 3. event — collision = replay. We already short-circuited
-    //    the replay path above, so a conflict here means a race.
-    //    Treat as Internal (caller can retry).
-    sqlx::query!(
-        r#"INSERT INTO proxima_core.events
-            (event_id, source_id, source_batch_id,
-             owner_principal_kind, owner_principal_id, owner_org_id,
-             schema_id, schema_version, observed_at, occurred_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"#,
-        &event_id_bytes[..],
-        draft.source_id.as_str(),
-        draft.source_batch_id.into_inner(),
-        owner_kind as OwnerPrincipalKind,
-        owner_principal_id,
-        owner_org_id,
-        draft.schema_id.as_str(),
-        draft.schema_version.into_inner().cast_signed(),
-        draft.observed_at,
-        draft.occurred_at,
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-
-    let author_personality_instance_id = draft.author_personality_instance_id.map_or_else(
-        uuid::Uuid::nil,
-        proxima_core::PersonalityInstanceId::into_inner,
-    );
-
-    // 4. memory (Fact) — citation_mapping_id FK is deferred when present.
-    //    Nil marks non-personality authoring.
-    sqlx::query(
-        r"INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             owner_org_id, schema_id, schema_version, event_id, citation_mapping_id,
-             text, personality_instance_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
-                 $9, $10)",
-    )
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(draft.schema_id.as_str())
-    .bind(draft.schema_version.into_inner().cast_signed())
-    .bind(&event_id_bytes[..])
-    .bind(citation_mapping_id)
-    .bind(draft.rendered_text.as_deref())
-    .bind(author_personality_instance_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-
-    enqueue_embedding_job_in_tx(
-        tx,
-        owner_kind,
-        owner_principal_id,
-        owner_org_id,
-        EntityKind::Fact,
-        memory_id,
+    let options = IngestCoreOptions {
         embedding_model_id,
-    )
-    .await?;
-
-    // 5. citation_mapping — optional; memory_id FK is deferred when present.
-    if let Some((citation, citation_mapping_id, cited_id)) = citation_refs {
-        sqlx::query!(
-            r#"INSERT INTO proxima_core.citation_mappings
-            (citation_mapping_id, schema_id, memory_id,
-             cited_object_id, owner_principal_kind,
-             owner_principal_id, owner_org_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
-            citation_mapping_id,
-            citation.mapping.schema_id.as_str(),
-            memory_id,
-            cited_id,
-            owner_kind as OwnerPrincipalKind,
-            owner_principal_id,
-            owner_org_id,
-        )
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?;
-    }
-
-    // 6. change_event (EntityAppend / Fact).
-    sqlx::query!(
-        r#"INSERT INTO proxima_core.change_event
-            (seq, owner_principal_kind, owner_principal_id,
-             owner_org_id, kind, entity_kind,
-             entity_memory_id, entity_schema_id,
-             entity_schema_version)
-         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Fact', $5, $6, $7)"#,
-        change_seq,
-        owner_kind as OwnerPrincipalKind,
-        owner_principal_id,
-        owner_org_id,
-        memory_id,
-        draft.schema_id.as_str(),
-        draft.schema_version.into_inner().cast_signed(),
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-
-    Ok(EventIngestOutcome {
-        event_id,
-        memory_id: proxima_core::MemoryId::new(memory_id),
-        change_event_seq: change_seq,
-        idempotent_replay: false,
+        derive_inputs: None,
+        citation_plan: CitationPlan::DraftHint,
+        change_event_author_personality_instance_id: None,
+    };
+    ingest_core(tx, draft, options, |_tx, _outcome| {
+        Box::pin(async { Ok(()) })
     })
+    .await
 }
 
 /// Run gated Fact ingest plus typed inline citation sidecars inside an
@@ -412,7 +274,6 @@ pub async fn ingest_event_in_tx(
 /// Fact sidecar insertion, cited-object sidecar insertion, or
 /// citation-mapping sidecar insertion. The caller owns transaction
 /// rollback/commit.
-#[allow(clippy::too_many_lines)]
 pub async fn ingest_fact_with_citation_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     authorized: &AuthorizedFactWithCitation,
@@ -426,159 +287,24 @@ where
     ) -> EventIngestSidecarFuture<'t>,
 {
     let draft = authorized.draft();
-    let event_id = draft.event_id();
-    let event_id_bytes = event_id.into_inner();
-    let owner = draft.owner();
-    let cited_object = authorized.cited_object();
-    let mapping = authorized.mapping();
-
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
-
-    let existing = sqlx::query_scalar::<_, uuid::Uuid>(
-        r"SELECT memory_id FROM proxima_core.memories
-           WHERE event_id = $1
-             AND tombstoned_at IS NULL",
-    )
-    .bind(&event_id_bytes[..])
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
-    if let Some(memory_id) = existing {
-        let seq = sqlx::query_scalar::<_, uuid::Uuid>(
-            r"SELECT seq FROM proxima_core.change_event
-                 WHERE entity_memory_id = $1 ORDER BY seq ASC LIMIT 1",
-        )
-        .bind(memory_id)
-        .fetch_one(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-
-        return Ok(EventIngestOutcome {
-            event_id,
-            memory_id: proxima_core::MemoryId::new(memory_id),
-            change_event_seq: seq,
-            idempotent_replay: true,
-        });
-    }
-
-    let citation_mapping_id = uuid::Uuid::now_v7();
-    let memory_id = uuid::Uuid::now_v7();
-    let change_seq = uuid::Uuid::now_v7();
     let author_personality_instance_id = authorized.author_personality_instance_id().map_or_else(
         uuid::Uuid::nil,
         proxima_core::PersonalityInstanceId::into_inner,
     );
-
-    let cited_object_id = upsert_cited_object_in_tx(tx, &owner, cited_object).await?;
-
-    sqlx::query(
-        r"INSERT INTO proxima_core.source_batches
-            (id, source_id, owner_principal_kind,
-             owner_principal_id, owner_org_id)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (id) DO NOTHING",
-    )
-    .bind(draft.source_batch_id.into_inner())
-    .bind(draft.source_id.as_str())
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
-    sqlx::query(
-        r"INSERT INTO proxima_core.events
-            (event_id, source_id, source_batch_id,
-             owner_principal_kind, owner_principal_id, owner_org_id,
-             schema_id, schema_version, observed_at, occurred_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-    )
-    .bind(&event_id_bytes[..])
-    .bind(draft.source_id.as_str())
-    .bind(draft.source_batch_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(draft.schema_id.as_str())
-    .bind(draft.schema_version.into_inner().cast_signed())
-    .bind(draft.observed_at)
-    .bind(draft.occurred_at)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
-    sqlx::query(
-        r"INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             owner_org_id, schema_id, schema_version, event_id, citation_mapping_id,
-             text, personality_instance_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-    )
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(draft.schema_id.as_str())
-    .bind(draft.schema_version.into_inner().cast_signed())
-    .bind(&event_id_bytes[..])
-    .bind(citation_mapping_id)
-    .bind(draft.rendered_text.as_deref())
-    .bind(author_personality_instance_id)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
-    let outcome = EventIngestOutcome {
-        event_id,
-        memory_id: proxima_core::MemoryId::new(memory_id),
-        change_event_seq: change_seq,
-        idempotent_replay: false,
+    let derive_inputs = FactEntityDeriveInputs {
+        sidecar_table: authorized.fact_sidecar_table(),
+        natural_key_columns: authorized.fact_natural_key_columns(),
     };
-    fact_sidecar(tx, &outcome).await?;
-    enqueue_embedding_job_in_tx(
-        tx,
-        owner_kind,
-        owner_principal_id,
-        owner_org_id,
-        EntityKind::Fact,
-        memory_id,
+    let options = IngestCoreOptions {
         embedding_model_id,
-    )
-    .await?;
-
-    insert_citation_mapping_in_tx(
-        tx,
-        &owner,
-        mapping,
-        citation_mapping_id,
-        memory_id,
-        cited_object_id,
-    )
-    .await?;
-
-    sqlx::query(
-        r"INSERT INTO proxima_core.change_event
-            (seq, owner_principal_kind, owner_principal_id,
-             owner_org_id, kind, entity_kind,
-             entity_memory_id, entity_schema_id, entity_schema_version,
-             entity_personality_instance_id)
-         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Fact', $5, $6, $7, $8)",
-    )
-    .bind(change_seq)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(memory_id)
-    .bind(draft.schema_id.as_str())
-    .bind(draft.schema_version.into_inner().cast_signed())
-    .bind(author_personality_instance_id)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
-    Ok(outcome)
+        derive_inputs: Some(derive_inputs),
+        citation_plan: CitationPlan::Inline {
+            cited_object: authorized.cited_object(),
+            mapping: authorized.mapping(),
+        },
+        change_event_author_personality_instance_id: Some(author_personality_instance_id),
+    };
+    ingest_core(tx, draft, options, fact_sidecar).await
 }
 
 /// Attach a typed inline citation to an existing uncited Fact inside an
@@ -791,11 +517,399 @@ where
         &'t EventIngestOutcome,
     ) -> EventIngestSidecarFuture<'t>,
 {
-    let outcome = ingest_event_in_tx(tx, authorized.draft(), embedding_model_id).await?;
-    if !outcome.idempotent_replay {
-        sidecar(tx, &outcome).await?;
+    let draft = authorized.draft();
+    let derive_inputs = FactEntityDeriveInputs {
+        sidecar_table: authorized.fact_sidecar_table(),
+        natural_key_columns: authorized.fact_natural_key_columns(),
+    };
+    let options = IngestCoreOptions {
+        embedding_model_id,
+        derive_inputs: Some(derive_inputs),
+        citation_plan: CitationPlan::DraftHint,
+        change_event_author_personality_instance_id: None,
+    };
+    ingest_core(tx, draft, options, sidecar).await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn ingest_core<F>(
+    tx: &mut Transaction<'_, Postgres>,
+    draft: &EventDraft,
+    options: IngestCoreOptions<'_>,
+    sidecar: F,
+) -> Result<EventIngestOutcome, StorageError>
+where
+    F: for<'t> FnOnce(
+        &'t mut Transaction<'_, Postgres>,
+        &'t EventIngestOutcome,
+    ) -> EventIngestSidecarFuture<'t>,
+{
+    let event_id = draft.event_id();
+    let event_id_bytes = event_id.into_inner();
+    let owner = draft.owner();
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+
+    let existing = sqlx::query_scalar::<_, uuid::Uuid>(
+        r"SELECT memory_id FROM proxima_core.memories
+           WHERE event_id = $1
+             AND tombstoned_at IS NULL",
+    )
+    .bind(&event_id_bytes[..])
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+
+    if let Some(memory_id) = existing {
+        let seq = sqlx::query_scalar::<_, uuid::Uuid>(
+            r"SELECT seq FROM proxima_core.change_event
+                 WHERE entity_memory_id = $1 ORDER BY seq ASC LIMIT 1",
+        )
+        .bind(memory_id)
+        .fetch_one(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+
+        return Ok(EventIngestOutcome {
+            event_id,
+            memory_id: proxima_core::MemoryId::new(memory_id),
+            change_event_seq: seq,
+            idempotent_replay: true,
+        });
     }
+
+    let memory_id = uuid::Uuid::now_v7();
+    let change_seq = uuid::Uuid::now_v7();
+
+    let citation_refs = match options.citation_plan {
+        CitationPlan::DraftHint => {
+            if let Some(citation) = &draft.citation {
+                let citation_mapping_id = uuid::Uuid::now_v7();
+                let cited_object_id_new = uuid::Uuid::now_v7();
+                let cited_object_id = sqlx::query_scalar::<_, uuid::Uuid>(
+                    r"INSERT INTO proxima_core.cited_objects
+                        (cited_object_id, schema_id, owner_principal_kind,
+                         owner_principal_id, owner_org_id, content_hash)
+                     VALUES ($1, $2, $3, $4, $5, $6)
+                     ON CONFLICT (owner_principal_kind, owner_principal_id,
+                                  owner_org_id, schema_id, content_hash)
+                     DO UPDATE SET schema_id = EXCLUDED.schema_id
+                     RETURNING cited_object_id",
+                )
+                .bind(cited_object_id_new)
+                .bind(citation.object.schema_id.as_str())
+                .bind(owner_kind)
+                .bind(owner_principal_id)
+                .bind(owner_org_id)
+                .bind(&citation.object.content_hash[..])
+                .fetch_one(tx.as_mut())
+                .await
+                .map_err(map_err)?;
+                Some(PendingCitation::DraftHint {
+                    citation,
+                    citation_mapping_id,
+                    cited_object_id,
+                })
+            } else {
+                None
+            }
+        }
+        CitationPlan::Inline {
+            cited_object,
+            mapping,
+        } => {
+            let citation_mapping_id = uuid::Uuid::now_v7();
+            let cited_object_id = upsert_cited_object_in_tx(tx, &owner, cited_object).await?;
+            Some(PendingCitation::Inline {
+                mapping,
+                citation_mapping_id,
+                cited_object_id,
+            })
+        }
+    };
+    let citation_mapping_id = citation_refs
+        .as_ref()
+        .map(|pending| (*pending).citation_mapping_id());
+
+    sqlx::query(
+        r"INSERT INTO proxima_core.source_batches
+            (id, source_id, owner_principal_kind,
+             owner_principal_id, owner_org_id)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(draft.source_batch_id.into_inner())
+    .bind(draft.source_id.as_str())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+
+    sqlx::query(
+        r"INSERT INTO proxima_core.events
+            (event_id, source_id, source_batch_id,
+             owner_principal_kind, owner_principal_id, owner_org_id,
+             schema_id, schema_version, observed_at, occurred_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+    )
+    .bind(&event_id_bytes[..])
+    .bind(draft.source_id.as_str())
+    .bind(draft.source_batch_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(draft.schema_id.as_str())
+    .bind(draft.schema_version.into_inner().cast_signed())
+    .bind(draft.observed_at)
+    .bind(draft.occurred_at)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+
+    let author_personality_instance_id = draft.author_personality_instance_id.map_or_else(
+        uuid::Uuid::nil,
+        proxima_core::PersonalityInstanceId::into_inner,
+    );
+
+    sqlx::query(
+        r"INSERT INTO proxima_core.memories
+            (memory_id, owner_principal_kind, owner_principal_id,
+             owner_org_id, schema_id, schema_version, event_id, citation_mapping_id,
+             text, personality_instance_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+                 $9, $10)",
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(draft.schema_id.as_str())
+    .bind(draft.schema_version.into_inner().cast_signed())
+    .bind(&event_id_bytes[..])
+    .bind(citation_mapping_id)
+    .bind(draft.rendered_text.as_deref())
+    .bind(author_personality_instance_id)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+
+    let outcome = EventIngestOutcome {
+        event_id,
+        memory_id: proxima_core::MemoryId::new(memory_id),
+        change_event_seq: change_seq,
+        idempotent_replay: false,
+    };
+
+    sidecar(tx, &outcome).await?;
+    if let Some(inputs) = options.derive_inputs {
+        derive_fact_entity_after_sidecar(
+            tx,
+            &owner,
+            draft,
+            memory_id,
+            inputs.sidecar_table,
+            inputs.natural_key_columns,
+        )
+        .await?;
+    }
+    enqueue_embedding_job_in_tx(
+        tx,
+        owner_kind,
+        owner_principal_id,
+        owner_org_id,
+        EntityKind::Fact,
+        memory_id,
+        options.embedding_model_id,
+    )
+    .await?;
+
+    if let Some(pending) = citation_refs {
+        match pending {
+            PendingCitation::DraftHint {
+                citation,
+                citation_mapping_id,
+                cited_object_id,
+            } => {
+                sqlx::query(
+                    r"INSERT INTO proxima_core.citation_mappings
+                        (citation_mapping_id, schema_id, memory_id,
+                         cited_object_id, owner_principal_kind,
+                         owner_principal_id, owner_org_id)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                )
+                .bind(citation_mapping_id)
+                .bind(citation.mapping.schema_id.as_str())
+                .bind(memory_id)
+                .bind(cited_object_id)
+                .bind(owner_kind)
+                .bind(owner_principal_id)
+                .bind(owner_org_id)
+                .execute(tx.as_mut())
+                .await
+                .map_err(map_err)?;
+            }
+            PendingCitation::Inline {
+                mapping,
+                citation_mapping_id,
+                cited_object_id,
+            } => {
+                insert_citation_mapping_in_tx(
+                    tx,
+                    &owner,
+                    mapping,
+                    citation_mapping_id,
+                    memory_id,
+                    cited_object_id,
+                )
+                .await?;
+            }
+        }
+    }
+
+    sqlx::query(
+        r"INSERT INTO proxima_core.change_event
+            (seq, owner_principal_kind, owner_principal_id,
+             owner_org_id, kind, entity_kind,
+             entity_memory_id, entity_schema_id,
+             entity_schema_version, entity_personality_instance_id)
+         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Fact', $5, $6, $7, $8)",
+    )
+    .bind(change_seq)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(memory_id)
+    .bind(draft.schema_id.as_str())
+    .bind(draft.schema_version.into_inner().cast_signed())
+    .bind(options.change_event_author_personality_instance_id)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+
     Ok(outcome)
+}
+
+async fn derive_fact_entity_after_sidecar(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    draft: &EventDraft,
+    memory_id: uuid::Uuid,
+    sidecar_table: Option<&str>,
+    natural_key_columns: &[String],
+) -> Result<(), StorageError> {
+    if natural_key_columns.is_empty() {
+        return Ok(());
+    }
+
+    let sidecar_table = sidecar_table.ok_or_else(|| {
+        StorageError::Internal(format!(
+            "stateful Fact schema {} v{} has no sidecar table",
+            draft.schema_id.as_str(),
+            draft.schema_version.into_inner(),
+        ))
+    })?;
+    let (natural_key, created_at) =
+        fact_natural_key_after_sidecar(tx, memory_id, sidecar_table, natural_key_columns).await?;
+
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let fact_entity_id = sqlx::query_scalar::<_, uuid::Uuid>(
+        r"INSERT INTO proxima_core.fact_entities
+            (fact_entity_id, owner_principal_kind, owner_principal_id, owner_org_id,
+             schema_id, schema_version, natural_key, current_memory_id, current_created_at)
+         VALUES
+            ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (owner_principal_kind, owner_principal_id, owner_org_id,
+                      schema_id, schema_version, natural_key)
+         DO UPDATE
+             SET current_memory_id = EXCLUDED.current_memory_id,
+                 current_created_at = EXCLUDED.current_created_at
+             WHERE (EXCLUDED.current_created_at, EXCLUDED.current_memory_id)
+                 > (fact_entities.current_created_at, fact_entities.current_memory_id)
+         RETURNING fact_entity_id",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(draft.schema_id.as_str())
+    .bind(draft.schema_version.into_inner().cast_signed())
+    .bind(&natural_key)
+    .bind(memory_id)
+    .bind(created_at)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+
+    let fact_entity_id = if let Some(fact_entity_id) = fact_entity_id {
+        fact_entity_id
+    } else {
+        crate::verbs::query::fact_entity_id_for(
+            tx.as_mut(),
+            owner,
+            &draft.schema_id,
+            draft.schema_version,
+            &natural_key,
+        )
+        .await?
+        .map(proxima_core::FactEntityId::into_inner)
+        .ok_or_else(|| {
+            StorageError::Internal(format!(
+                "fact_entities conflict race left no row for schema {} v{} natural key {natural_key}",
+                draft.schema_id.as_str(),
+                draft.schema_version.into_inner(),
+            ))
+        })?
+    };
+
+    let updated = sqlx::query(
+        "UPDATE proxima_core.memories
+            SET fact_entity_id = $1
+          WHERE memory_id = $2",
+    )
+    .bind(fact_entity_id)
+    .bind(memory_id)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    if updated.rows_affected() != 1 {
+        return Err(StorageError::Internal(format!(
+            "failed to attach fact_entity_id to memory {memory_id}",
+        )));
+    }
+    Ok(())
+}
+
+async fn fact_natural_key_after_sidecar(
+    tx: &mut Transaction<'_, Postgres>,
+    memory_id: uuid::Uuid,
+    sidecar_table: &str,
+    natural_key_columns: &[String],
+) -> Result<(serde_json::Value, time::OffsetDateTime), StorageError> {
+    let sidecar_table = PgIdent::table(sidecar_table)?;
+    let natural_key_exprs = natural_key_columns
+        .iter()
+        .map(|column| PgIdent::column(column).map(|ident| format!("s.{}", ident.as_str())))
+        .collect::<Result<Vec<_>, _>>()?;
+    let natural_key_sql = format!(
+        "SELECT jsonb_build_array({}) AS natural_key, m.created_at
+           FROM {} s
+           JOIN proxima_core.memories m ON m.memory_id = s.memory_id
+          WHERE s.memory_id = $1",
+        natural_key_exprs.join(", "),
+        sidecar_table.as_str(),
+    );
+    sqlx::query_as::<_, (serde_json::Value, time::OffsetDateTime)>(&natural_key_sql)
+        .bind(memory_id)
+        .fetch_optional(tx.as_mut())
+        .await
+        .map_err(map_err)?
+        .ok_or_else(|| {
+            StorageError::Internal(format!(
+                "missing sidecar row in {} for Fact memory {memory_id}",
+                sidecar_table.as_str(),
+            ))
+        })
 }
 
 async fn enqueue_embedding_job_in_tx(

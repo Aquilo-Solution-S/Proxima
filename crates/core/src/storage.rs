@@ -28,7 +28,7 @@ use crate::verbs::goal_write::{
 use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::{
-    EdgeAuthorshipKind, EntityKind, MemoryId, MemoryOperatorKind, Owner, Principal,
+    EdgeAuthorshipKind, EntityKind, FactEntityId, MemoryId, MemoryOperatorKind, Owner, Principal,
     RegisteredRelation, SchemaId, SchemaVersion,
 };
 
@@ -318,6 +318,16 @@ pub trait Storage: Send + Sync {
         projections: &[crate::verbs::schema::MemorySearchProjection],
     ) -> Result<Vec<crate::verbs::query::MemorySearchResult>, StorageError>;
 
+    /// Owner-scoped lookup of the stable aggregate identity for a
+    /// stateful Fact natural key. One unique-index probe; no head read.
+    async fn fact_entity_id_for(
+        &self,
+        owner: &Owner,
+        schema_id: &SchemaId,
+        schema_version: SchemaVersion,
+        natural_key: &serde_json::Value,
+    ) -> Result<Option<FactEntityId>, StorageError>;
+
     /// Owner-scoped read-back of Fact rows whose citation mapping points at
     /// one cited object.
     async fn facts_citing_object(
@@ -333,6 +343,15 @@ pub trait Storage: Send + Sync {
         &self,
         owner: &Owner,
         fact_memory_id: crate::MemoryId,
+    ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError>;
+
+    /// Owner-scoped inverse read-back from a stateful Fact entity's
+    /// current head to that head version's citation mapping and cited
+    /// object, if present.
+    async fn citation_of_entity_head(
+        &self,
+        owner: &Owner,
+        fact_entity_id: FactEntityId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError>;
 
     /// Owner-scoped bounded walk over memory-only Provenance and
@@ -591,6 +610,16 @@ impl Storage for NoopStorage {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
+    async fn fact_entity_id_for(
+        &self,
+        _owner: &Owner,
+        _schema_id: &SchemaId,
+        _schema_version: SchemaVersion,
+        _natural_key: &serde_json::Value,
+    ) -> Result<Option<FactEntityId>, StorageError> {
+        Ok(None)
+    }
+
     async fn author_derived(
         &self,
         _req: &AuthorDerivedRequest<'_>,
@@ -766,6 +795,14 @@ impl Storage for NoopStorage {
         &self,
         _owner: &Owner,
         _fact_memory_id: crate::MemoryId,
+    ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
+        Ok(None)
+    }
+
+    async fn citation_of_entity_head(
+        &self,
+        _owner: &Owner,
+        _fact_entity_id: FactEntityId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
         Ok(None)
     }

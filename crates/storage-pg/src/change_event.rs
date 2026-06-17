@@ -4,8 +4,8 @@
 //! pull-only durable log; consumers read it by `seq` cursor.
 
 use proxima_core::{
-    ChangeEvent, ChangeEventKind, ChangeEventKindTag, EntityKind, EntityRef, GoalId, MemoryId,
-    Owner, OwnerPrincipalKind, SchemaId, SchemaVersion, StorageError,
+    ChangeEvent, ChangeEventKind, ChangeEventKindTag, EntityKind, EntityRef, FactEntityId, GoalId,
+    MemoryId, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion, StorageError,
 };
 use uuid::Uuid;
 
@@ -29,8 +29,10 @@ struct ChangeEventRow {
     edge_relation: Option<String>,
     edge_source_memory_id: Option<Uuid>,
     edge_source_goal_id: Option<Uuid>,
+    edge_source_fact_entity_id: Option<Uuid>,
     edge_target_memory_id: Option<Uuid>,
     edge_target_goal_id: Option<Uuid>,
+    edge_target_fact_entity_id: Option<Uuid>,
     entity_personality_instance_id: Option<Uuid>,
     wake_chain_depth: i16,
     entity_memory_present: bool,
@@ -55,8 +57,8 @@ pub(crate) async fn hydrate_change_event(
                   entity_schema_id, entity_schema_version,
                   supersedes_memory_id, supersedes_goal_id,
                   edge_id, edge_relation,
-                  edge_source_memory_id, edge_source_goal_id,
-                  edge_target_memory_id, edge_target_goal_id,
+                  edge_source_memory_id, edge_source_goal_id, edge_source_fact_entity_id,
+                  edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id,
                   entity_personality_instance_id,
                   wake_chain_depth,
                   (
@@ -97,8 +99,8 @@ pub(crate) async fn hydrate_change_events_batch(
                   entity_schema_id, entity_schema_version,
                   supersedes_memory_id, supersedes_goal_id,
                   edge_id, edge_relation,
-                  edge_source_memory_id, edge_source_goal_id,
-                  edge_target_memory_id, edge_target_goal_id,
+                  edge_source_memory_id, edge_source_goal_id, edge_source_fact_entity_id,
+                  edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id,
                   entity_personality_instance_id,
                   wake_chain_depth,
                   (
@@ -154,8 +156,16 @@ fn decode_edge_append(row: &ChangeEventRow) -> Result<ChangeEventKind, StorageEr
         .edge_relation
         .clone()
         .ok_or_else(|| StorageError::Internal("missing edge_relation".into()))?;
-    let source = decode_entity_ref(row.edge_source_memory_id, row.edge_source_goal_id)?;
-    let target = decode_entity_ref(row.edge_target_memory_id, row.edge_target_goal_id)?;
+    let source = decode_entity_ref(
+        row.edge_source_memory_id,
+        row.edge_source_goal_id,
+        row.edge_source_fact_entity_id,
+    )?;
+    let target = decode_entity_ref(
+        row.edge_target_memory_id,
+        row.edge_target_goal_id,
+        row.edge_target_fact_entity_id,
+    )?;
     Ok(ChangeEventKind::EdgeAppend {
         edge_id,
         relation,
@@ -253,11 +263,13 @@ fn decode_personality(instance_id: Option<Uuid>) -> Option<Uuid> {
 fn decode_entity_ref(
     memory_id: Option<Uuid>,
     goal_id: Option<Uuid>,
+    fact_entity_id: Option<Uuid>,
 ) -> Result<EntityRef, StorageError> {
-    match (memory_id, goal_id) {
-        (Some(m), None) => Ok(EntityRef::Memory(MemoryId::new(m))),
-        (None, Some(g)) => Ok(EntityRef::Goal(GoalId::new(g))),
-        (Some(_), Some(_)) | (None, None) => Err(StorageError::Internal(
+    match (memory_id, goal_id, fact_entity_id) {
+        (Some(m), None, None) => Ok(EntityRef::Memory(MemoryId::new(m))),
+        (None, Some(g), None) => Ok(EntityRef::Goal(GoalId::new(g))),
+        (None, None, Some(fe)) => Ok(EntityRef::FactEntity(FactEntityId::new(fe))),
+        _ => Err(StorageError::Internal(
             "change_event endpoint columns violate CHECK constraint".into(),
         )),
     }

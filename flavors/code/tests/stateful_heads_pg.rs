@@ -401,6 +401,88 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
 }
 
 #[tokio::test]
+async fn heads_only_keeps_same_principal_heads_split_by_owner_org() {
+    let (db_name, pg) = migrated_db().await;
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let user = UserId::new(Uuid::now_v7());
+        let owner_a = Owner {
+            principal: Principal::User(user),
+            org_id: OrgId::new(Uuid::now_v7()),
+        };
+        let owner_b = Owner {
+            principal: Principal::User(user),
+            org_id: OrgId::new(Uuid::now_v7()),
+        };
+        let engine = Engine::new(registry_for_test()).with_storage(storage);
+        let repo_id = Uuid::now_v7();
+
+        let first_org_memory = seed_file_revision_state(
+            pg.pool(),
+            &engine,
+            owner_a.clone(),
+            repo_id,
+            "src/shared.rs",
+            b"org-a",
+            FileState::Present,
+        )
+        .await?;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let second_org_memory = seed_file_revision_state(
+            pg.pool(),
+            &engine,
+            owner_b,
+            repo_id,
+            "src/shared.rs",
+            b"org-b",
+            FileState::Present,
+        )
+        .await?;
+
+        let req = QueryRequest {
+            principal: Principal::User(user),
+            entity_kind: None,
+            schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
+            supersession: SupersessionStatus::HeadsOnly,
+            tombstones: TombstoneFilter::PresentOnly,
+            personality_roots: PersonalityRootFilter::IncludeInactive,
+            limit: 100,
+            include_payloads: true,
+            memory_ids: Vec::new(),
+            goal_ids: Vec::new(),
+            edge_ids: Vec::new(),
+            stateful_heads: Vec::new(),
+        };
+        let resp = engine
+            .query(
+                &proxima_core::AuthzContext::single_owner(&owner_a, proxima_core::AuthPath::System),
+                &req,
+            )
+            .await?;
+        let ids = resp
+            .memories
+            .iter()
+            .map(|m| m.id.into_inner())
+            .collect::<Vec<_>>();
+
+        assert!(
+            ids.contains(&first_org_memory),
+            "same-principal heads must not be suppressed across owner_org_id"
+        );
+        assert!(
+            ids.contains(&second_org_memory),
+            "newer same-principal head remains visible"
+        );
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("heads_only_keeps_same_principal_heads_split_by_owner_org failed");
+}
+
+#[tokio::test]
 async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
     let (db_name, pg) = migrated_db().await;
 
