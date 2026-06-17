@@ -4,11 +4,14 @@ use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::McpTool;
 use crate::mcp::{McpToolCtx, McpToolError};
+use crate::{FactEntityId, McpTool};
 
 #[derive(Debug, Default)]
 pub struct CitationOfFactTool;
+
+#[derive(Debug, Default)]
+pub struct CitationOfEntityHeadTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CitationOfFactArgs {
@@ -16,9 +19,22 @@ pub struct CitationOfFactArgs {
     pub fact: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CitationOfEntityHeadArgs {
+    /// Stable `fact_entity_id` UUID.
+    pub fact_entity_id: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct CitationOfFactOutput {
     pub fact: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub citation: Option<FactCitationOutput>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CitationOfEntityHeadOutput {
+    pub fact_entity_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub citation: Option<FactCitationOutput>,
 }
@@ -58,6 +74,42 @@ impl McpTool for CitationOfFactTool {
                 });
             Ok(CitationOfFactOutput {
                 fact: ctx.format_fact_memory(fact_memory_id),
+                citation,
+            })
+        })
+    }
+}
+
+impl McpTool for CitationOfEntityHeadTool {
+    const NAME: &'static str = "core/citation_of_entity_head";
+    const DESCRIPTION: &'static str = "Return the owner-scoped citation mapping and cited object for a stateful Fact entity's current head, or none.";
+    type Args = CitationOfEntityHeadArgs;
+    type Output = CitationOfEntityHeadOutput;
+
+    fn call(
+        ctx: McpToolCtx,
+        args: CitationOfEntityHeadArgs,
+    ) -> BoxFuture<'static, Result<CitationOfEntityHeadOutput, McpToolError>> {
+        Box::pin(async move {
+            let fact_entity_uuid = args
+                .fact_entity_id
+                .parse::<uuid::Uuid>()
+                .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}")))?;
+            let fact_entity_id = FactEntityId::new(fact_entity_uuid);
+            let storage = ctx
+                .storage()
+                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+            let citation = storage
+                .citation_of_entity_head(&ctx.owner, fact_entity_id)
+                .await?
+                .map(|row| FactCitationOutput {
+                    citation_mapping_id: row.citation_mapping_id.to_string(),
+                    mapping_schema_id: row.mapping_schema_id.as_str().to_string(),
+                    cited_object_id: row.cited_object_id.to_string(),
+                    cited_object_schema_id: row.cited_object_schema_id.as_str().to_string(),
+                });
+            Ok(CitationOfEntityHeadOutput {
+                fact_entity_id: fact_entity_uuid.to_string(),
                 citation,
             })
         })

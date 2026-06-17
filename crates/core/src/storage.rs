@@ -345,6 +345,15 @@ pub trait Storage: Send + Sync {
         fact_memory_id: crate::MemoryId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError>;
 
+    /// Owner-scoped inverse read-back from a stateful Fact entity's
+    /// current head to that head version's citation mapping and cited
+    /// object, if present.
+    async fn citation_of_entity_head(
+        &self,
+        owner: &Owner,
+        fact_entity_id: FactEntityId,
+    ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError>;
+
     /// Owner-scoped bounded walk over memory-only Provenance and
     /// Supersession edges. Does not traverse Goals or write edges.
     async fn walk_memory_lineage(
@@ -786,6 +795,14 @@ impl Storage for NoopStorage {
         &self,
         _owner: &Owner,
         _fact_memory_id: crate::MemoryId,
+    ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
+        Ok(None)
+    }
+
+    async fn citation_of_entity_head(
+        &self,
+        _owner: &Owner,
+        _fact_entity_id: FactEntityId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
         Ok(None)
     }

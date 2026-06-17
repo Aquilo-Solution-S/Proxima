@@ -12,6 +12,8 @@ mod event_ingest_with_sidecar_pg;
 mod external_agent_constraint_pg;
 mod fact_cleanup_pg;
 mod fact_embeddings_pg;
+mod fact_entity_citations_pg;
+mod fact_entity_cleanup_pg;
 mod fact_entity_edges_pg;
 mod fact_entity_ingest_pg;
 mod fact_entity_schema_pg;
