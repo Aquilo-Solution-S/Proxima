@@ -14,7 +14,11 @@
 //! LEFT JOIN the sidecar, project the row into a typed JSON value,
 //! then encode the wire payload as canonical JSON bytes.
 
-use proxima_core::{FactEntityId, Owner, SchemaId, SchemaVersion, StorageError};
+use std::collections::HashMap;
+
+use proxima_core::{
+    FactEntityId, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion, StorageError,
+};
 use sqlx::PgPool;
 
 mod citations;
@@ -59,4 +63,32 @@ pub(crate) async fn fact_entity_id_for(
     .await
     .map_err(crate::error::map_err)?;
     Ok(id.map(FactEntityId::new))
+}
+
+pub(crate) async fn resolve_head(
+    pool: &PgPool,
+    owner_kind: OwnerPrincipalKind,
+    owner_principal_id: uuid::Uuid,
+    owner_org_id: uuid::Uuid,
+    fact_entity_ids: &[uuid::Uuid],
+) -> Result<HashMap<uuid::Uuid, uuid::Uuid>, StorageError> {
+    if fact_entity_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows = sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid)>(
+        "SELECT fact_entity_id, current_memory_id
+           FROM proxima_core.fact_entities
+          WHERE owner_principal_kind = $1
+            AND owner_principal_id = $2
+            AND owner_org_id = $3
+            AND fact_entity_id = ANY($4::uuid[])",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(fact_entity_ids)
+    .fetch_all(pool)
+    .await
+    .map_err(crate::error::map_err)?;
+    Ok(rows.into_iter().collect())
 }
