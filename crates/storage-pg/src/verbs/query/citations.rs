@@ -1,10 +1,11 @@
 use proxima_core::personality::{MemorySnapshot, SidecarSpec};
 use proxima_core::verbs::query::FactCitationReadback;
-use proxima_core::{MemoryId, Owner, SchemaId, StorageError};
+use proxima_core::{FactEntityId, MemoryId, Owner, SchemaId, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
 use crate::verbs::consolidate::load_memory_by_id;
+use crate::verbs::query::resolve_head;
 
 pub(crate) async fn facts_citing_object(
     pool: &PgPool,
@@ -92,4 +93,25 @@ pub(crate) async fn citation_of_fact(
             }
         },
     ))
+}
+
+pub(crate) async fn citation_of_entity_head(
+    pool: &PgPool,
+    owner: &Owner,
+    fact_entity_id: FactEntityId,
+) -> Result<Option<FactCitationReadback>, StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let fact_entity_uuid = fact_entity_id.into_inner();
+    let heads = resolve_head(
+        pool,
+        owner_kind,
+        owner_principal_id,
+        owner_org_id,
+        &[fact_entity_uuid],
+    )
+    .await?;
+    let Some(head) = heads.get(&fact_entity_uuid).copied() else {
+        return Ok(None);
+    };
+    citation_of_fact(pool, owner, MemoryId::new(head)).await
 }

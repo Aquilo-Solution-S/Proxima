@@ -29,7 +29,7 @@ mod memories;
 mod rows;
 mod search;
 
-pub(crate) use citations::{citation_of_fact, facts_citing_object};
+pub(crate) use citations::{citation_of_entity_head, citation_of_fact, facts_citing_object};
 pub use edges::MAX_SNAPSHOT_EDGES;
 pub(crate) use lineage::walk_memory_lineage;
 pub(crate) use memories::query_memories;

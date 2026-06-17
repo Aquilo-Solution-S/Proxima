@@ -524,6 +524,14 @@ impl Storage for PgStorage {
         verbs::query::citation_of_fact(&self.pool, owner, fact_memory_id).await
     }
 
+    async fn citation_of_entity_head(
+        &self,
+        owner: &Owner,
+        fact_entity_id: FactEntityId,
+    ) -> Result<Option<FactCitationReadback>, StorageError> {
+        verbs::query::citation_of_entity_head(&self.pool, owner, fact_entity_id).await
+    }
+
     async fn walk_memory_lineage(
         &self,
         req: &MemoryLineageRequest,

@@ -1,5 +1,7 @@
 //! Owner Fact-retention sweep.
 
+use std::collections::HashSet;
+
 use proxima_core::verbs::fact_cleanup::{CleanupDueFactsOutcome, OrphanedS3Blob};
 use proxima_core::{EntityKind, Owner, OwnerPrincipalKind, StorageError};
 use sqlx::{Postgres, Transaction};
@@ -120,6 +122,22 @@ async fn cleanup_due_facts_in_tx(
     }
 
     let due_memory_ids = due.iter().map(|row| row.memory_id).collect::<Vec<_>>();
+    let fact_entity_ids_to_delete = fact_entity_ids_reaching_zero(
+        tx,
+        owner_kind,
+        owner_principal_id,
+        owner_org_id,
+        &due_memory_ids,
+    )
+    .await?;
+    let follow_head_edge_ids = repoint_or_delete_fact_entities(
+        tx,
+        owner_kind,
+        owner_principal_id,
+        owner_org_id,
+        &due_memory_ids,
+    )
+    .await?;
     let candidate_cited_object_ids = candidate_cited_object_ids(tx, &due_memory_ids).await?;
     let tombstoned = tombstone_transitive_derivatives(
         tx,
@@ -170,6 +188,7 @@ async fn cleanup_due_facts_in_tx(
         &due_memory_ids,
     )
     .await?;
+    let edge_ids = merged_edge_ids(edge_ids, follow_head_edge_ids);
     execute_hard_delete(
         tx,
         &HardDeleteSet {
@@ -178,6 +197,7 @@ async fn cleanup_due_facts_in_tx(
                 .map(|row| (EntityKind::Fact, row.memory_id))
                 .collect(),
             edge_ids,
+            fact_entity_ids: fact_entity_ids_to_delete,
             event_ids: due.iter().map(|row| row.event_id.clone()).collect(),
         },
         &HardDeleteSidecars {
@@ -206,6 +226,179 @@ fn empty_outcome() -> CleanupDueFactsOutcome {
         cited_objects_erased: 0,
         orphaned_s3_blobs: Vec::new(),
     }
+}
+
+fn merged_edge_ids(mut edge_ids: Vec<Uuid>, follow_head_edge_ids: Vec<Uuid>) -> Vec<Uuid> {
+    edge_ids.extend(follow_head_edge_ids);
+    let mut seen = HashSet::with_capacity(edge_ids.len());
+    edge_ids.retain(|edge_id| seen.insert(*edge_id));
+    edge_ids
+}
+
+pub(crate) async fn repoint_or_delete_fact_entities(
+    tx: &mut Transaction<'_, Postgres>,
+    owner_kind: OwnerPrincipalKind,
+    owner_principal_id: Uuid,
+    owner_org_id: Uuid,
+    due_memory_ids: &[Uuid],
+) -> Result<Vec<Uuid>, StorageError> {
+    if due_memory_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    repoint_fact_entity_heads(
+        tx,
+        owner_kind,
+        owner_principal_id,
+        owner_org_id,
+        due_memory_ids,
+    )
+    .await?;
+    let fact_entity_ids = fact_entity_ids_reaching_zero(
+        tx,
+        owner_kind,
+        owner_principal_id,
+        owner_org_id,
+        due_memory_ids,
+    )
+    .await?;
+    follow_head_edge_ids_for_entities(
+        tx,
+        owner_kind,
+        owner_principal_id,
+        owner_org_id,
+        &fact_entity_ids,
+    )
+    .await
+}
+
+async fn repoint_fact_entity_heads(
+    tx: &mut Transaction<'_, Postgres>,
+    owner_kind: OwnerPrincipalKind,
+    owner_principal_id: Uuid,
+    owner_org_id: Uuid,
+    due_memory_ids: &[Uuid],
+) -> Result<(), StorageError> {
+    if due_memory_ids.is_empty() {
+        return Ok(());
+    }
+
+    sqlx::query(
+        "WITH due_entities AS (
+             SELECT DISTINCT m.fact_entity_id
+               FROM proxima_core.memories m
+              WHERE m.owner_principal_kind = $1
+                AND m.owner_principal_id = $2
+                AND m.owner_org_id = $3
+                AND m.memory_id = ANY($4::uuid[])
+                AND m.fact_entity_id IS NOT NULL
+         ),
+         next_versions AS (
+             SELECT DISTINCT ON (m.fact_entity_id)
+                    m.fact_entity_id, m.memory_id, m.created_at
+               FROM proxima_core.memories m
+               JOIN due_entities de
+                 ON de.fact_entity_id = m.fact_entity_id
+              WHERE m.owner_principal_kind = $1
+                AND m.owner_principal_id = $2
+                AND m.owner_org_id = $3
+                AND m.memory_id <> ALL($4::uuid[])
+                AND m.tombstoned_at IS NULL
+              ORDER BY m.fact_entity_id, m.created_at DESC, m.memory_id DESC
+         )
+         UPDATE proxima_core.fact_entities fe
+            SET current_memory_id = nv.memory_id,
+                current_created_at = nv.created_at
+           FROM next_versions nv
+          WHERE fe.fact_entity_id = nv.fact_entity_id
+            AND fe.owner_principal_kind = $1
+            AND fe.owner_principal_id = $2
+            AND fe.owner_org_id = $3
+            AND fe.current_memory_id = ANY($4::uuid[])",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(due_memory_ids)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}
+
+async fn fact_entity_ids_reaching_zero(
+    tx: &mut Transaction<'_, Postgres>,
+    owner_kind: OwnerPrincipalKind,
+    owner_principal_id: Uuid,
+    owner_org_id: Uuid,
+    due_memory_ids: &[Uuid],
+) -> Result<Vec<Uuid>, StorageError> {
+    if due_memory_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    sqlx::query_scalar(
+        "WITH due_entities AS (
+             SELECT DISTINCT m.fact_entity_id
+               FROM proxima_core.memories m
+              WHERE m.owner_principal_kind = $1
+                AND m.owner_principal_id = $2
+                AND m.owner_org_id = $3
+                AND m.memory_id = ANY($4::uuid[])
+                AND m.fact_entity_id IS NOT NULL
+         )
+         SELECT de.fact_entity_id
+           FROM due_entities de
+          WHERE NOT EXISTS (
+                    SELECT 1
+                      FROM proxima_core.memories survivor
+                     WHERE survivor.owner_principal_kind = $1
+                       AND survivor.owner_principal_id = $2
+                       AND survivor.owner_org_id = $3
+                       AND survivor.fact_entity_id = de.fact_entity_id
+                       AND survivor.memory_id <> ALL($4::uuid[])
+                       AND survivor.tombstoned_at IS NULL
+                )
+          ORDER BY de.fact_entity_id",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(due_memory_ids)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)
+}
+
+async fn follow_head_edge_ids_for_entities(
+    tx: &mut Transaction<'_, Postgres>,
+    owner_kind: OwnerPrincipalKind,
+    owner_principal_id: Uuid,
+    owner_org_id: Uuid,
+    fact_entity_ids: &[Uuid],
+) -> Result<Vec<Uuid>, StorageError> {
+    if fact_entity_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    sqlx::query_scalar(
+        "SELECT edge_id
+           FROM proxima_core.edges
+          WHERE owner_principal_kind = $1
+            AND owner_principal_id = $2
+            AND owner_org_id = $3
+            AND (
+                source_fact_entity_id = ANY($4::uuid[])
+                OR target_fact_entity_id = ANY($4::uuid[])
+            )",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(fact_entity_ids)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)
 }
 
 async fn tombstone_transitive_derivatives(
