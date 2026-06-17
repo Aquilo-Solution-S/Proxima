@@ -64,7 +64,9 @@ impl Engine {
         super::authorize(authz, &draft.principal, role)?;
         let owner = authz.scoped_owner(draft.principal.clone());
         draft.stamp_owner(owner);
-        self.ensure_fact_schema(&draft.schema_id, draft.schema_version)?;
+        let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
+        let fact_sidecar_table = fact_info.sidecar_table.clone();
+        let fact_natural_key_columns = fact_info.natural_key_columns.clone();
         draft.rendered_text = self.render_fact_text(&draft);
         if let Some(citation) = &draft.citation {
             self.ensure_event_ingest_schema(
@@ -76,7 +78,11 @@ impl Engine {
                 citation.mapping.schema_version,
             )?;
         }
-        Ok(AuthorizedEventIngest::new(draft))
+        Ok(AuthorizedEventIngest::new(
+            draft,
+            fact_sidecar_table,
+            fact_natural_key_columns,
+        ))
     }
 
     /// Authorize + schema-validate + owner-stamp a Fact with typed
@@ -105,7 +111,9 @@ impl Engine {
         // `authorize_event_ingest`. The Fact payload is built from a
         // trusted typed struct. The untrusted citation payloads are
         // agent-supplied JSON, so they stay fully validated below.
-        self.ensure_fact_schema(&draft.schema_id, draft.schema_version)?;
+        let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
+        let fact_sidecar_table = fact_info.sidecar_table.clone();
+        let fact_natural_key_columns = fact_info.natural_key_columns.clone();
         draft.rendered_text = self.render_fact_text(&draft);
         let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
 
@@ -113,6 +121,8 @@ impl Engine {
             draft,
             cited_object,
             mapping,
+            fact_sidecar_table,
+            fact_natural_key_columns,
         ))
     }
 
@@ -230,22 +240,16 @@ impl Engine {
         Ok(())
     }
 
-    fn ensure_fact_schema(
+    fn fact_schema_info(
         &self,
         schema_id: &crate::SchemaId,
         schema_version: SchemaVersion,
-    ) -> Result<(), ProtocolError> {
-        if self
-            .registry
+    ) -> Result<&SchemaInfo, ProtocolError> {
+        self.registry
             .lookup_payload(schema_id, schema_version, PayloadKind::Fact)
-            .is_none()
-        {
-            return Err(ProtocolError::unknown_schema(
-                schema_id.as_str(),
-                schema_version.into_inner(),
-            ));
-        }
-        Ok(())
+            .ok_or_else(|| {
+                ProtocolError::unknown_schema(schema_id.as_str(), schema_version.into_inner())
+            })
     }
 
     fn render_fact_text(&self, draft: &EventDraft) -> Option<String> {

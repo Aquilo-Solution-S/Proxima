@@ -565,6 +565,7 @@ fn push_stateful_head_branch(
               AND m2.schema_version = m.schema_version \
               AND m2.owner_principal_kind = m.owner_principal_kind \
               AND m2.owner_principal_id = m.owner_principal_id \
+              AND m2.owner_org_id = m.owner_org_id \
               AND m2.tombstoned_at IS NULL \
               AND {nk_pairs} \
               AND m2.created_at > m.created_at \
