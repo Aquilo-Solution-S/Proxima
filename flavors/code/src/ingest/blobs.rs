@@ -1,6 +1,6 @@
 use proxima_core::verbs::event_ingest::EventIngestOutcome;
 use proxima_core::{FactPayload, Owner, SourceBatchId};
-use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
+use proxima_storage_pg::verbs::event_ingest;
 use sqlx::PgPool;
 
 use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1};
@@ -57,7 +57,7 @@ pub async fn ingest_commit(
     )?;
 
     let mut tx = pool.begin().await?;
-    let outcome = ingest_event_in_tx(&mut tx, &draft, None).await?;
+    let outcome = event_ingest::ingest_event_in_tx(&mut tx, &draft, None).await?;
     if !outcome.idempotent_replay {
         sqlx::query(
             "INSERT INTO proxima_code.commit_v1 \
@@ -107,26 +107,45 @@ pub async fn ingest_file_revision(
         observed_at,
     )?;
 
+    let repo_id = payload.repo_id;
+    let file_path = payload.file_path.clone();
+    let language = payload.language.clone();
+    let content_sha256 = payload.content_sha256;
+    let size_bytes = i64::try_from(payload.size_bytes).unwrap_or(i64::MAX);
+    let indexed_commit_sha = payload.indexed_commit_sha.clone();
+    let state = payload.state;
+
     let mut tx = pool.begin().await?;
-    let outcome = ingest_event_in_tx(&mut tx, &draft, None).await?;
-    if !outcome.idempotent_replay {
-        sqlx::query(
-            "INSERT INTO proxima_code.file_revision_v1 \
-                (memory_id, repo_id, file_path, language, content_sha256, \
-                 size_bytes, indexed_commit_sha, state) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-        )
-        .bind(outcome.memory_id.into_inner())
-        .bind(payload.repo_id)
-        .bind(&payload.file_path)
-        .bind(payload.language.as_deref())
-        .bind(&payload.content_sha256[..])
-        .bind(i64::try_from(payload.size_bytes).unwrap_or(i64::MAX))
-        .bind(&payload.indexed_commit_sha)
-        .bind(payload.state)
-        .execute(&mut *tx)
-        .await?;
-    }
+    let outcome = event_ingest::ingest_event_with_derived_sidecar_in_tx(
+        &mut tx,
+        &draft,
+        None,
+        FileRevisionV1::sidecar_table(),
+        FileRevisionV1::natural_key_columns(),
+        move |tx, outcome| {
+            Box::pin(async move {
+                sqlx::query(
+                    "INSERT INTO proxima_code.file_revision_v1 \
+                        (memory_id, repo_id, file_path, language, content_sha256, \
+                         size_bytes, indexed_commit_sha, state) \
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+                )
+                .bind(outcome.memory_id.into_inner())
+                .bind(repo_id)
+                .bind(&file_path)
+                .bind(language.as_deref())
+                .bind(content_sha256.to_vec())
+                .bind(size_bytes)
+                .bind(&indexed_commit_sha)
+                .bind(state)
+                .execute(tx.as_mut())
+                .await
+                .map_err(|err| proxima_core::StorageError::Internal(err.to_string()))?;
+                Ok(())
+            })
+        },
+    )
+    .await?;
     tx.commit().await?;
     Ok(outcome)
 }
@@ -161,31 +180,54 @@ pub async fn ingest_code_chunk(
         observed_at,
     )?;
 
+    let repo_id = payload.repo_id;
+    let file_path = payload.file_path.clone();
+    let chunk_index = i32::try_from(payload.chunk_index).unwrap_or(i32::MAX);
+    let text = payload.text.clone();
+    let language = payload.language.clone();
+    let chunk_type = payload.chunk_type.clone();
+    let byte_range_start = i64::from(payload.byte_range_start);
+    let byte_range_end = i64::from(payload.byte_range_end);
+    let line_range_start = i64::from(payload.line_range_start);
+    let line_range_end = i64::from(payload.line_range_end);
+    let state = payload.state;
+
     let mut tx = pool.begin().await?;
-    let outcome = ingest_event_in_tx(&mut tx, &draft, None).await?;
-    if !outcome.idempotent_replay {
-        sqlx::query(
-            "INSERT INTO proxima_code.code_chunk_v1 \
-                (memory_id, repo_id, file_path, chunk_index, \
-                 text, language, chunk_type, byte_range_start, byte_range_end, \
-                 line_range_start, line_range_end, state) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
-        )
-        .bind(outcome.memory_id.into_inner())
-        .bind(payload.repo_id)
-        .bind(&payload.file_path)
-        .bind(i32::try_from(payload.chunk_index).unwrap_or(i32::MAX))
-        .bind(&payload.text)
-        .bind(payload.language.as_deref())
-        .bind(&payload.chunk_type)
-        .bind(i64::from(payload.byte_range_start))
-        .bind(i64::from(payload.byte_range_end))
-        .bind(i64::from(payload.line_range_start))
-        .bind(i64::from(payload.line_range_end))
-        .bind(payload.state)
-        .execute(&mut *tx)
-        .await?;
-    }
+    let outcome = event_ingest::ingest_event_with_derived_sidecar_in_tx(
+        &mut tx,
+        &draft,
+        None,
+        CodeChunkV1::sidecar_table(),
+        CodeChunkV1::natural_key_columns(),
+        move |tx, outcome| {
+            Box::pin(async move {
+                sqlx::query(
+                    "INSERT INTO proxima_code.code_chunk_v1 \
+                        (memory_id, repo_id, file_path, chunk_index, \
+                         text, language, chunk_type, byte_range_start, byte_range_end, \
+                         line_range_start, line_range_end, state) \
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+                )
+                .bind(outcome.memory_id.into_inner())
+                .bind(repo_id)
+                .bind(&file_path)
+                .bind(chunk_index)
+                .bind(&text)
+                .bind(language.as_deref())
+                .bind(&chunk_type)
+                .bind(byte_range_start)
+                .bind(byte_range_end)
+                .bind(line_range_start)
+                .bind(line_range_end)
+                .bind(state)
+                .execute(tx.as_mut())
+                .await
+                .map_err(|err| proxima_core::StorageError::Internal(err.to_string()))?;
+                Ok(())
+            })
+        },
+    )
+    .await?;
     tx.commit().await?;
     Ok(outcome)
 }
