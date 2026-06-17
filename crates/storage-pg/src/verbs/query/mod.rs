@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use proxima_core::{
     FactEntityId, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion, StorageError,
 };
-use sqlx::PgPool;
+use sqlx::{Executor, PgConnection, PgPool, Postgres};
 
 mod citations;
 mod edges;
@@ -35,13 +35,42 @@ pub(crate) use lineage::walk_memory_lineage;
 pub(crate) use memories::query_memories;
 pub(crate) use search::search_memories;
 
-pub(crate) async fn fact_entity_id_for(
+/// Resolve the aggregate `fact_entity_id` for an owner-scoped Fact
+/// natural key inside an existing transaction.
+///
+/// # Errors
+///
+/// Returns `Internal` on sqlx failures.
+pub async fn fact_entity_id_for(
+    tx: &mut PgConnection,
+    owner: &Owner,
+    schema_id: &SchemaId,
+    schema_version: SchemaVersion,
+    natural_key: &serde_json::Value,
+) -> Result<Option<FactEntityId>, StorageError> {
+    fact_entity_id_for_executor(tx, owner, schema_id, schema_version, natural_key).await
+}
+
+pub(crate) async fn fact_entity_id_for_pool(
     pool: &PgPool,
     owner: &Owner,
     schema_id: &SchemaId,
     schema_version: SchemaVersion,
     natural_key: &serde_json::Value,
 ) -> Result<Option<FactEntityId>, StorageError> {
+    fact_entity_id_for_executor(pool, owner, schema_id, schema_version, natural_key).await
+}
+
+async fn fact_entity_id_for_executor<'e, E>(
+    executor: E,
+    owner: &Owner,
+    schema_id: &SchemaId,
+    schema_version: SchemaVersion,
+    natural_key: &serde_json::Value,
+) -> Result<Option<FactEntityId>, StorageError>
+where
+    E: Executor<'e, Database = Postgres>,
+{
     let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let id = sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT fact_entity_id
@@ -59,7 +88,7 @@ pub(crate) async fn fact_entity_id_for(
     .bind(schema_id.as_str())
     .bind(schema_version.into_inner().cast_signed())
     .bind(natural_key)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .map_err(crate::error::map_err)?;
     Ok(id.map(FactEntityId::new))

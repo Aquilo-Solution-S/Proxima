@@ -56,7 +56,7 @@ mod error;
 mod pg_ident;
 mod pgvector;
 pub mod query {
-    pub use crate::verbs::query::MAX_SNAPSHOT_EDGES;
+    pub use crate::verbs::query::{MAX_SNAPSHOT_EDGES, fact_entity_id_for};
 }
 #[cfg(feature = "test-fixtures")]
 pub mod test_fixtures;
@@ -503,8 +503,14 @@ impl Storage for PgStorage {
         schema_version: SchemaVersion,
         natural_key: &serde_json::Value,
     ) -> Result<Option<FactEntityId>, StorageError> {
-        verbs::query::fact_entity_id_for(&self.pool, owner, schema_id, schema_version, natural_key)
-            .await
+        verbs::query::fact_entity_id_for_pool(
+            &self.pool,
+            owner,
+            schema_id,
+            schema_version,
+            natural_key,
+        )
+        .await
     }
 
     async fn facts_citing_object(
