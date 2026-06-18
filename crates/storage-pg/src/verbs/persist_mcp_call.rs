@@ -204,7 +204,7 @@ pub async fn persist_mcp_call_in_tx(
     .bind(input.actor_upn.as_str())
     .bind(input.ok)
     .bind(input.error.as_deref())
-    .bind(i32::try_from(input.latency_ms).unwrap_or(i32::MAX))
+    .bind(i64::from(input.latency_ms))
     .bind(i64::try_from(input.io_byte_len_original).unwrap_or(i64::MAX))
     .bind(input.io_truncated)
     .bind(&io_content_hash[..])

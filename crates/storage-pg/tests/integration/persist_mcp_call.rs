@@ -28,7 +28,7 @@ async fn persist_writes_fact_inline_io_citation_and_change_event() {
                 .await?;
         assert_eq!(n_facts.0, 1);
 
-        let fact: (String, String, bool, i32) = sqlx::query_as(
+        let fact: (String, String, bool, i64) = sqlx::query_as(
             "SELECT tool_name, actor_upn, ok, latency_ms \
              FROM proxima_core.mcp_call_logged_v1 WHERE memory_id = $1",
         )
