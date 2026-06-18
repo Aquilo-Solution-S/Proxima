@@ -1,13 +1,16 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
+use futures_util::future::try_join_all;
 use proxima_core::personality::ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID;
 use proxima_core::verbs::query::{
     EntityKind, PersonalityRootFilter, QueryRequest, QueryResponse, SupersessionStatus,
     TombstoneFilter,
 };
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
-use proxima_core::{OwnerPrincipalKind, StorageError};
+use proxima_core::{
+    MemoryId, OwnerPrincipalKind, SchemaId, SchemaVersion, SidecarPayload, StorageError,
+};
 use sqlx::PgPool;
 
 use crate::error::internal;
@@ -133,13 +136,14 @@ pub(crate) async fn query_memories(
 
     let rows: Vec<MemoryRowDb> = q.fetch_all(pool).await.map_err(internal)?;
 
+    let mut payloads = if req.include_payloads {
+        load_row_payloads_batch(pool, sidecars, &rows).await?
+    } else {
+        HashMap::new()
+    };
     let mut memories = Vec::with_capacity(rows.len());
     for row in rows {
-        let payload = if req.include_payloads {
-            load_row_payload(pool, sidecars, &row).await?
-        } else {
-            None
-        };
+        let payload = payloads.remove(&MemoryId::new(row.memory_id));
         memories.push(memory_row_from_db(row, payload)?);
     }
 
@@ -178,34 +182,42 @@ pub(crate) async fn query_memories(
     })
 }
 
-async fn load_row_payload(
+async fn load_row_payloads_batch(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
-    row: &MemoryRowDb,
-) -> Result<Option<proxima_core::SidecarPayload>, StorageError> {
-    let schema_version = u32::try_from(row.schema_version).map_err(|_| {
-        StorageError::Internal(format!(
-            "invalid memory schema_version {} for memory {}",
-            row.schema_version, row.memory_id
-        ))
-    })?;
-    let kind = match row.kind.unwrap_or(EntityKind::Fact) {
-        EntityKind::Fact => PayloadKind::Fact,
-        EntityKind::Abstraction => PayloadKind::Abstraction,
-        EntityKind::Perspective => PayloadKind::Perspective,
-        EntityKind::Goal => return Ok(None),
-    };
-    let key = PgSidecarKey::new(
-        kind,
-        proxima_core::SchemaId::new(row.schema_id.clone()),
-        proxima_core::SchemaVersion::new(schema_version),
-    );
-    if !sidecars.contains(&key) {
-        return Ok(None);
+    rows: &[MemoryRowDb],
+) -> Result<HashMap<MemoryId, SidecarPayload>, StorageError> {
+    let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
+    for row in rows {
+        let schema_version = u32::try_from(row.schema_version).map_err(|_| {
+            StorageError::Internal(format!(
+                "invalid memory schema_version {} for memory {}",
+                row.schema_version, row.memory_id
+            ))
+        })?;
+        let kind = match row.kind.unwrap_or(EntityKind::Fact) {
+            EntityKind::Fact => PayloadKind::Fact,
+            EntityKind::Abstraction => PayloadKind::Abstraction,
+            EntityKind::Perspective => PayloadKind::Perspective,
+            EntityKind::Goal => continue,
+        };
+        let key = PgSidecarKey::new(
+            kind,
+            SchemaId::new(row.schema_id.clone()),
+            SchemaVersion::new(schema_version),
+        );
+        if sidecars.contains(&key) {
+            ids_by_key
+                .entry(key)
+                .or_default()
+                .push(MemoryId::new(row.memory_id));
+        }
     }
-    sidecars
-        .load_memory_payload(pool, key, proxima_core::MemoryId::new(row.memory_id))
-        .await
+    let batches = ids_by_key.into_iter().map(|(key, ids)| async move {
+        sidecars.load_memory_payloads_batch(pool, &key, &ids).await
+    });
+    let rows = try_join_all(batches).await?;
+    Ok(rows.into_iter().flatten().collect())
 }
 
 pub(super) async fn visible_ids_for(
