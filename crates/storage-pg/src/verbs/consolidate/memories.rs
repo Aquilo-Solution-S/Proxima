@@ -434,20 +434,13 @@ pub async fn append_personality_memories(
         .await
         .map_err(map_err)?;
 
-        let sidecar_sql = format!(
-            "INSERT INTO {sidecar}
-             SELECT * FROM jsonb_populate_record(
-                 NULL::{sidecar},
-                 ($1::jsonb || jsonb_build_object('memory_id', $2::uuid))
-             )",
-            sidecar = output_sidecar_table.as_str(),
-        );
-        sqlx::query(&sidecar_sql)
-            .bind(&memory.typed_payload)
-            .bind(memory_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_err)?;
+        crate::insert_jsonb_memory_sidecar(
+            &mut tx,
+            MemoryId::new(memory_id),
+            output_sidecar_table.as_str(),
+            &memory.typed_payload,
+        )
+        .await?;
 
         let change_seq = uuid::Uuid::now_v7();
         sqlx::query(
