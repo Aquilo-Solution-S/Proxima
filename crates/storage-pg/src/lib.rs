@@ -138,6 +138,11 @@ impl PgStorage {
         &self.sidecars
     }
 
+    /// Replace the entire sidecar registry.
+    ///
+    /// The caller must include the core sidecars. The boot/facade path
+    /// enforces sidecar coverage with `freeze_against`; tests may pass
+    /// deliberate partial registries.
     #[must_use]
     pub fn with_sidecars(mut self, sidecars: PgSidecarRegistryFrozen) -> Self {
         self.sidecars = sidecars;
@@ -340,8 +345,7 @@ impl Storage for PgStorage {
         embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError> {
         let mut tx = self.pool.begin().await.map_err(internal)?;
-        let sidecars = self.sidecars.clone();
-        let fact_sidecars = sidecars.clone();
+        let fact_sidecars = self.sidecars.clone();
         let payload = sidecar_payload.clone();
         let outcome = verbs::event_ingest::ingest_event_with_sidecar_in_tx(
             &mut tx,
