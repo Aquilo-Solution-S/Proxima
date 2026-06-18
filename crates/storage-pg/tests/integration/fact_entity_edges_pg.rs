@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
 use proxima_core::mcp::core_tools::list_events::{ListEventsArgs, ListEventsTool};
-use proxima_core::mcp::{McpAuthorContext, McpToolCtx, OutputMode};
+use proxima_core::mcp::{McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_history::EventHistoryRequest;
 use proxima_core::verbs::event_ingest::EventDraft;
@@ -15,12 +15,16 @@ use proxima_core::verbs::query::{QueryRequest, TombstoneFilter};
 use proxima_core::{
     AuthPath, AuthorshipKindMask, AuthzContext, ChangeEventKind, EdgeAuthorshipKind,
     EndpointBinding, EntityKind, EntityKindMask, EntityRef, FactPayload, FactTombstone,
-    FlavorRegistry, FlavorRegistryFrozen, McpTool, OrgId, Owner, OwnerPrincipalKind, Principal,
-    RelationClass, RelationDescriptor, Role, SchemaVersion, SourceBatchId, SourceId, StorageError,
-    UserId, canonical_json_bytes,
+    FlavorRegistry, FlavorRegistryFrozen, McpTool, MemoryId, OrgId, Owner, OwnerPrincipalKind,
+    PayloadKeyBuilder, Principal, RelationClass, RelationDescriptor, Role, SchemaVersion,
+    SidecarPayload, SourceBatchId, SourceId, StorageError, UserId, canonical_json_bytes,
 };
-use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemoryPayloadFuture};
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
+use proxima_storage_pg::verbs::event_ingest::{EventIngestSidecarFuture, PgFactSidecar};
+use proxima_storage_pg::{
+    PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -39,6 +43,14 @@ impl FactPayload for StatefulFactV1 {
     const SCHEMA_ID: &'static str = "test/stateful-fact-v1";
     const SCHEMA_VERSION: u32 = 1;
 
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("entity_key", &self.entity_key);
+        key.field_str("body", &self.body);
+        key.field_str("state", &self.state);
+        key.finish()
+    }
+
     fn render(&self) -> String {
         format!("{}: {}", self.entity_key, self.body)
     }
@@ -56,6 +68,42 @@ impl FactPayload for StatefulFactV1 {
             column: "state",
             value: "Deleted",
         })
+    }
+}
+
+impl PgFactSidecar for StatefulFactV1 {
+    fn insert_sidecar<'t>(
+        self,
+        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
+        memory_id: MemoryId,
+    ) -> EventIngestSidecarFuture<'t>
+    where
+        Self: 't,
+    {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO proxima_test.stateful_fact_v1
+                    (memory_id, entity_key, body, state)
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(memory_id.into_inner())
+            .bind(&self.entity_key)
+            .bind(&self.body)
+            .bind(&self.state)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+impl PgMemoryPayload for StatefulFactV1 {
+    fn load_memory_payload(
+        _pool: &sqlx::PgPool,
+        _memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
+        Box::pin(async { Ok(None) })
     }
 }
 
@@ -81,6 +129,21 @@ fn registry_for_test() -> FlavorRegistryFrozen {
         AuthorshipKindMask::event_source().union(AuthorshipKindMask::external_agent()),
     ));
     registry.freeze()
+}
+
+fn pg_sidecars_for_test() -> PgSidecarRegistryFrozen {
+    let registry = registry_for_test();
+    let mut sidecars = PgSidecarRegistry::new();
+    register_core_pg_sidecars(&mut sidecars);
+    sidecars.add_fact::<StatefulFactV1>();
+    sidecars
+        .freeze_against(registry.schemas())
+        .expect("test PG sidecars match test schemas")
+}
+
+async fn fresh_pg_with_sidecars() -> (PgStorage, String) {
+    let (pg, db_name) = fresh_pg().await;
+    (pg.with_sidecars(pg_sidecars_for_test()), db_name)
 }
 
 async fn create_sidecar(pg: &PgStorage) -> Result<(), sqlx::Error> {
@@ -142,13 +205,9 @@ async fn ingest_fact(
     let authorized = engine
         .authorize_event_ingest(&authz, Role::SourceIngest, draft)
         .map_err(|err| StorageError::Internal(err.to_string()))?;
-    pg.ingest_event_with_sidecar(
-        &authorized,
-        StatefulFactV1::sidecar_table().expect("test sidecar"),
-        &payload_value,
-        None,
-    )
-    .await
+    let sidecar_payload = SidecarPayload::fact(payload.clone());
+    pg.ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
+        .await
 }
 
 async fn memory_fact_entity_id(
@@ -195,7 +254,6 @@ async fn append_follow_head_edge(
             authorship_owner_memory_id: None,
             owner,
         },
-        None,
     )
     .await?;
     tx.commit().await?;
@@ -231,7 +289,6 @@ async fn append_pinned_edge(
             authorship_owner_memory_id: None,
             owner,
         },
-        None,
     )
     .await?;
     tx.commit().await?;
@@ -276,7 +333,7 @@ async fn raw_insert_follow_edge(
 #[tokio::test]
 async fn follow_head_edge_writes_log_and_graph_resolves_to_latest_head()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
 
     let result = async {
         pg.run_migrations().await?;
@@ -357,7 +414,7 @@ async fn follow_head_edge_writes_log_and_graph_resolves_to_latest_head()
 #[tokio::test]
 async fn follow_head_tombstoned_head_uses_existing_visibility()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
 
     let result = async {
         pg.run_migrations().await?;
@@ -406,7 +463,7 @@ async fn follow_head_tombstoned_head_uses_existing_visibility()
 #[tokio::test]
 async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
 
     let result = async {
         pg.run_migrations().await?;
@@ -440,7 +497,6 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
                 authorship_owner_memory_id: None,
                 owner: &owner,
             },
-            None,
         )
         .await
         .expect_err("FollowHead relation must reject pinned endpoints");
@@ -466,7 +522,6 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
                 authorship_owner_memory_id: None,
                 owner: &owner,
             },
-            None,
         )
         .await
         .expect_err("Pin relation must reject fact-entity endpoints");
@@ -489,7 +544,6 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
                 authorship_owner_memory_id: None,
                 owner: &owner,
             },
-            None,
         )
         .await
         .expect_err("Rust exactly-one guard rejects three-way endpoint");
@@ -582,7 +636,7 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
 #[tokio::test]
 async fn event_history_and_list_events_preserve_fact_entity_endpoints()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
 
     let result = async {
         pg.run_migrations().await?;
@@ -624,7 +678,6 @@ async fn event_history_and_list_events_preserve_fact_entity_endpoints()
         ));
 
         let ctx = McpToolCtx {
-            pool: pg.pool().clone(),
             owner: owner.clone(),
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: None,
@@ -639,6 +692,7 @@ async fn event_history_and_list_events_preserve_fact_entity_endpoints()
             },
             caller_self_perspective: None,
             master_token_id: None,
+            extensions: McpToolExtensions::with(pg.pool().clone()),
             engine: Some(engine),
         };
         let listed = ListEventsTool::call(
@@ -670,7 +724,7 @@ async fn event_history_and_list_events_preserve_fact_entity_endpoints()
 #[tokio::test]
 async fn pin_relations_still_round_trip_memory_endpoints() -> Result<(), Box<dyn std::error::Error>>
 {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
 
     let result = async {
         pg.run_migrations().await?;

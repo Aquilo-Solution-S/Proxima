@@ -1,14 +1,13 @@
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
-use proxima_core::storage::StorageError;
 use proxima_core::verbs::event_ingest::{
     EventDraft, InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FactPayload,
-    FlavorRegistry, OrgId, Owner, Principal, Role, SchemaId, SchemaVersion, SourceBatchId,
-    SourceId, UserId, canonical_json_bytes,
+    FlavorRegistry, OrgId, Owner, PayloadKeyBuilder, Principal, Role, SchemaId, SchemaVersion,
+    SourceBatchId, SourceId, UserId, canonical_json_bytes,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -21,6 +20,12 @@ struct TestFact {
 impl FactPayload for TestFact {
     const SCHEMA_ID: &'static str = "test/fact";
     const SCHEMA_VERSION: u32 = 1;
+
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("value", &self.value);
+        key.finish()
+    }
 
     fn render(&self) -> String {
         self.value.clone()
@@ -281,17 +286,7 @@ fn authorize_fact_with_citation_rejects_unknown_schema_ids() {
 }
 
 #[test]
-fn default_sidecar_insert_error_is_internal() {
-    let err = <TestCitedObject as CitedObjectPayload>::missing_inline_sidecar_inserter_error();
-
-    assert!(
-        matches!(err, StorageError::Internal(message) if message.contains("test/cited-object")),
-        "default sidecar insert must report the missing inline inserter"
-    );
-}
-
-#[test]
-fn registered_cited_object_schema_exposes_sidecar_inserter() {
+fn registered_cited_object_schema_exposes_sidecar_table() {
     let mut registry = FlavorRegistry::new();
     registry.add_cited_object_schema::<TestCitedObject>();
     let frozen = registry.freeze();
@@ -304,5 +299,5 @@ fn registered_cited_object_schema_exposes_sidecar_inserter() {
         )
         .expect("registered cited-object schema must be present");
 
-    assert!(info.sidecar_inserter.is_some());
+    assert_eq!(info.sidecar_table.as_deref(), Some("test.cited_object_v1"));
 }

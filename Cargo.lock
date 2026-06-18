@@ -2289,6 +2289,7 @@ dependencies = [
  "blake3",
  "futures",
  "hex",
+ "proxima",
  "proxima-core",
  "proxima-mcp-server",
  "proxima-pg-testkit",

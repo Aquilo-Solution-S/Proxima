@@ -8,7 +8,7 @@ use std::sync::Arc;
 use common::{create_db, db_url, drop_db};
 use proxima_core::mcp::core_tools::add_wake_entry::AddWakeEntryTool;
 use proxima_core::mcp::core_tools::wake_entry_input::WakeEntryDraftInput;
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
+use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::storage::Storage;
 use proxima_core::{
     AuthPath, AuthzContext, Engine, FlavorRegistry, InstantiatePersonalityRequest, McpTool, OrgId,
@@ -49,9 +49,7 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
         Arc::new(Engine::new(FlavorRegistry::new().freeze()).with_storage(Arc::new(pg.clone())));
 
     // Construct an McpToolCtx pretending we're a wake invocation on this personality.
-    let pool = pg.pool().clone();
     let ctx = McpToolCtx {
-        pool,
         owner: owner.clone(),
         authz: AuthzContext::single_owner(&owner, AuthPath::System),
         handles: Some(Arc::new(HandleTable::new())),
@@ -66,6 +64,7 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
         },
         caller_self_perspective: Some(root_memory_id),
         master_token_id: None,
+        extensions: McpToolExtensions::with(pg.pool().clone()),
         engine: Some(engine.clone()),
     };
 

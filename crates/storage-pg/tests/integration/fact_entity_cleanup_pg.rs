@@ -12,15 +12,22 @@ use proxima_core::verbs::event_ingest::{
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    AuthPath, AuthorshipKindMask, AuthzContext, EdgeAuthorshipKind, EdgePayload, EndpointBinding,
-    EntityKind, EntityKindMask, FactPayload, FlavorRegistry, FlavorRegistryFrozen, OrgId, Owner,
-    Principal, RelationClass, RelationDescriptor, Role, SchemaId, SchemaRef, SchemaVersion,
-    SourceBatchId, SourceId, StorageError, UserId, canonical_json_bytes,
+    AuthPath, AuthorshipKindMask, AuthzContext, EdgeAuthorshipKind, EdgeId, EdgePayload,
+    EndpointBinding, EntityKind, EntityKindMask, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
+    MemoryId, OrgId, Owner, PayloadKeyBuilder, Principal, RelationClass, RelationDescriptor, Role,
+    SchemaId, SchemaRef, SchemaVersion, SidecarPayload, SourceBatchId, SourceId, StorageError,
+    UserId, canonical_json_bytes,
 };
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
+use proxima_storage_pg::sidecars::{
+    PgEdgeSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgSidecarFuture,
+};
+use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_with_sidecar_in_tx};
+use proxima_storage_pg::verbs::event_ingest::{EventIngestSidecarFuture, PgFactSidecar};
+use proxima_storage_pg::{
+    PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
+};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use uuid::Uuid;
 
 const FOLLOW_RELATION: &str = "test/cleanup-follow-head";
@@ -38,6 +45,14 @@ impl FactPayload for StatefulFactV1 {
     const SCHEMA_ID: &'static str = "test/cleanup-stateful-fact-v1";
     const SCHEMA_VERSION: u32 = 1;
 
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("entity_key", &self.entity_key);
+        key.field_str("body", &self.body);
+        key.field_str("state", &self.state);
+        key.finish()
+    }
+
     fn render(&self) -> String {
         format!("{}: {}", self.entity_key, self.body)
     }
@@ -48,6 +63,42 @@ impl FactPayload for StatefulFactV1 {
 
     fn natural_key_columns() -> &'static [&'static str] {
         &["entity_key"]
+    }
+}
+
+impl PgFactSidecar for StatefulFactV1 {
+    fn insert_sidecar<'t>(
+        self,
+        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
+        memory_id: MemoryId,
+    ) -> EventIngestSidecarFuture<'t>
+    where
+        Self: 't,
+    {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO proxima_test.cleanup_stateful_fact_v1
+                    (memory_id, entity_key, body, state)
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(memory_id.into_inner())
+            .bind(&self.entity_key)
+            .bind(&self.body)
+            .bind(&self.state)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+impl PgMemoryPayload for StatefulFactV1 {
+    fn load_memory_payload(
+        _pool: &sqlx::PgPool,
+        _memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
+        Box::pin(async { Ok(None) })
     }
 }
 
@@ -64,6 +115,29 @@ impl EdgePayload for FollowEdgeV1 {
 
     fn sidecar_table() -> &'static str {
         "proxima_core.agent_link_v1"
+    }
+}
+
+impl PgEdgeSidecar for FollowEdgeV1 {
+    fn insert_edge_sidecar<'t>(
+        &'t self,
+        tx: &'t mut sqlx::PgConnection,
+        edge_id: EdgeId,
+    ) -> PgSidecarFuture<'t> {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO proxima_core.agent_link_v1
+                    (edge_id, reason, confidence)
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(edge_id.into_inner())
+            .bind(&self.reason)
+            .bind(self.confidence)
+            .execute(tx)
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(())
+        })
     }
 }
 
@@ -92,6 +166,22 @@ fn registry_for_test() -> FlavorRegistryFrozen {
         AuthorshipKindMask::external_agent(),
     ));
     registry.freeze()
+}
+
+fn pg_sidecars_for_test() -> PgSidecarRegistryFrozen {
+    let registry = registry_for_test();
+    let mut sidecars = PgSidecarRegistry::new();
+    register_core_pg_sidecars(&mut sidecars);
+    sidecars.add_fact::<StatefulFactV1>();
+    sidecars.add_edge::<FollowEdgeV1>();
+    sidecars
+        .freeze_against(registry.schemas())
+        .expect("test PG sidecars match test schemas")
+}
+
+async fn fresh_pg_with_sidecars() -> (PgStorage, String) {
+    let (pg, db_name) = fresh_pg().await;
+    (pg.with_sidecars(pg_sidecars_for_test()), db_name)
 }
 
 async fn create_sidecar(pg: &PgStorage) -> Result<(), sqlx::Error> {
@@ -175,13 +265,9 @@ async fn ingest_fact(
     let authorized = engine
         .authorize_event_ingest(&authz, Role::SourceIngest, draft)
         .map_err(|err| StorageError::Internal(err.to_string()))?;
-    pg.ingest_event_with_sidecar(
-        &authorized,
-        StatefulFactV1::sidecar_table().expect("test sidecar"),
-        &payload_value,
-        None,
-    )
-    .await
+    let sidecar_payload = SidecarPayload::fact(payload.clone());
+    pg.ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
+        .await
 }
 
 async fn memory_fact_entity_id(pg: &PgStorage, memory_id: Uuid) -> Result<Uuid, sqlx::Error> {
@@ -218,12 +304,12 @@ async fn append_follow_head_edge(
         .resolve_relation(FOLLOW_RELATION)
         .expect("follow-head relation");
     let edge_id = Uuid::now_v7();
-    let payload = json!({
-        "reason": "cleanup sidecar proof",
-        "confidence": 100
-    });
+    let payload = FollowEdgeV1 {
+        reason: "cleanup sidecar proof".to_string(),
+        confidence: 100,
+    };
     let mut tx = pg.pool().begin().await?;
-    append_edge_in_tx(
+    append_edge_with_sidecar_in_tx(
         &mut tx,
         &EdgeDraft {
             edge_id,
@@ -240,7 +326,7 @@ async fn append_follow_head_edge(
             authorship_owner_memory_id: None,
             owner,
         },
-        Some(&payload),
+        move |tx, edge_id| Box::pin(async move { payload.insert_edge_sidecar(tx, edge_id).await }),
     )
     .await?;
     tx.commit().await?;
@@ -359,7 +445,7 @@ async fn memory_exists(pg: &PgStorage, memory_id: Uuid) -> Result<bool, sqlx::Er
 #[tokio::test]
 async fn erasing_non_head_version_keeps_follow_head_edge() -> Result<(), Box<dyn std::error::Error>>
 {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
 
     let result = async {
         pg.run_migrations().await?;
@@ -409,7 +495,7 @@ async fn erasing_non_head_version_keeps_follow_head_edge() -> Result<(), Box<dyn
 #[tokio::test]
 async fn erasing_current_head_repoints_to_prior_live_version()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
 
     let result = async {
         pg.run_migrations().await?;
@@ -458,7 +544,7 @@ async fn erasing_current_head_repoints_to_prior_live_version()
 #[tokio::test]
 async fn erasing_last_version_deletes_entity_follow_head_edges_and_sidecars()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
 
     let result = async {
         pg.run_migrations().await?;
@@ -506,7 +592,7 @@ async fn erasing_last_version_deletes_entity_follow_head_edges_and_sidecars()
 #[tokio::test]
 async fn cleanup_is_owner_scoped_for_identical_natural_keys()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
 
     let result = async {
         pg.run_migrations().await?;
@@ -552,7 +638,7 @@ async fn cleanup_is_owner_scoped_for_identical_natural_keys()
 #[tokio::test]
 async fn provenance_tombstone_walk_stays_memory_id_pinned() -> Result<(), Box<dyn std::error::Error>>
 {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
 
     let result = async {
         pg.run_migrations().await?;

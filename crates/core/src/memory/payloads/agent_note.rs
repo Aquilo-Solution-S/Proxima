@@ -1,4 +1,7 @@
-use crate::{FactPayload, SearchProjection, SearchProjectionColumnKind, SearchProjectionField};
+use crate::{
+    FactPayload, PayloadKeyBuilder, SearchProjection, SearchProjectionColumnKind,
+    SearchProjectionField,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -13,6 +16,12 @@ pub struct AgentNoteV1 {
 impl FactPayload for AgentNoteV1 {
     const SCHEMA_ID: &'static str = "core/agent-note-v1";
     const SCHEMA_VERSION: u32 = 1;
+
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_uuid("note_id", self.note_id);
+        key.finish()
+    }
 
     fn render(&self) -> String {
         format!("{}\n\n{}", self.title, self.body)

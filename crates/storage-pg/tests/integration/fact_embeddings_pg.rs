@@ -7,8 +7,7 @@ use proxima_core::llm::{EMBEDDING_DIM, EMBEDDING_JOB_MAX_ATTEMPTS, EmbeddingClie
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::{
-    AuthPath, AuthzContext, EntityKind, FactPayload, FlavorRegistry, Owner, SchemaVersion,
-    SourceBatchId, SourceId, Storage,
+    AuthPath, AuthzContext, EntityKind, FlavorRegistry, Owner, SourceBatchId, Storage,
 };
 use proxima_storage_pg::{
     EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
@@ -55,21 +54,15 @@ fn fact_draft(owner: &Owner, label: &str) -> EventDraft {
     let payload = TestFactV1 {
         label: label.to_string(),
     };
-    let payload = serde_json::to_value(payload).expect("test payload serializes");
-    EventDraft {
-        source_id: SourceId::new("proxima-test/fact-embedding"),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.principal.clone(),
-        org_id: None,
-        author_personality_instance_id: None,
-        schema_id: TestFactV1::schema_id(),
-        schema_version: SchemaVersion::new(TestFactV1::SCHEMA_VERSION),
-        payload: proxima_core::canonical_json_bytes(&payload),
-        rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
-        citation: None,
-    }
+    let mut draft = EventDraft::from_payload(
+        owner,
+        "proxima-test/fact-embedding",
+        SourceBatchId::new(Uuid::now_v7()),
+        &payload,
+        now,
+    );
+    draft.org_id = None;
+    draft
 }
 
 async fn count_fact_embeddings(

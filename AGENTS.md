@@ -28,6 +28,7 @@ explicit request.
 | `docs/06-goals-and-self.md` | Goal entity (DAG, supersession); Self as pure query |
 | `docs/07-storage.md` | IDs, identity rules, append-only, vector store independence |
 | `docs/08-core-and-flavors.md` | Bare core / flavor layering, no-feature-flags |
+| `docs/09-developing-flavors.md` | Agent implementation checklist for flavor crates: typed keys, sidecars, registration, migrations, tools |
 | `docs/10-configuration.md` | Env config surface (Postgres/MCP/S3), MCP auth modes, host-injected embedding client; no inference targets/tiers |
 | `docs/11-citations.md` | `CitedObject` / `CitationMapping` traits; bibliographic provenance, Fact-only citation rule |
 | `docs/12-tool-manifest.md` | T1 (runtime, schema-consuming) vs T2 (build-time flavors) tool tiers |

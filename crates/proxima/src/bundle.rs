@@ -3,14 +3,24 @@
 //! bundles compose statically — duplicate ids fail at registry freeze.
 
 use proxima_core::FlavorRegistry;
+use proxima_storage_pg::PgSidecarRegistry;
 
 use crate::NamedMigrator;
 
 pub trait FlavorBundle {
     fn register(registry: &mut FlavorRegistry);
+    fn register_pg_sidecars(_registry: &mut PgSidecarRegistry) {}
     /// By-value, order-preserving. The facade force-sets
     /// `ignore_missing(true)` on every returned migrator at boot.
     fn migrators() -> Vec<NamedMigrator>;
+}
+
+impl FlavorBundle for () {
+    fn register(_registry: &mut FlavorRegistry) {}
+
+    fn migrators() -> Vec<NamedMigrator> {
+        Vec::new()
+    }
 }
 
 macro_rules! impl_flavor_bundle_tuple {
@@ -18,6 +28,10 @@ macro_rules! impl_flavor_bundle_tuple {
         impl<$($name: FlavorBundle),+> FlavorBundle for ($($name,)+) {
             fn register(registry: &mut FlavorRegistry) {
                 $($name::register(registry);)+
+            }
+
+            fn register_pg_sidecars(registry: &mut PgSidecarRegistry) {
+                $($name::register_pg_sidecars(registry);)+
             }
 
             fn migrators() -> Vec<NamedMigrator> {
@@ -43,6 +57,7 @@ mod tests {
     use std::borrow::Cow;
 
     use proxima_core::FlavorRegistry;
+    use proxima_storage_pg::PgSidecarRegistry;
     use sqlx::migrate::{Migration, MigrationType, Migrator};
 
     use super::FlavorBundle;
@@ -82,6 +97,8 @@ mod tests {
             alpha::register(registry);
         }
 
+        fn register_pg_sidecars(_registry: &mut PgSidecarRegistry) {}
+
         fn migrators() -> Vec<NamedMigrator> {
             vec![NamedMigrator::new("alpha", migrator(&[1, 2]))]
         }
@@ -91,6 +108,8 @@ mod tests {
         fn register(registry: &mut FlavorRegistry) {
             beta::register(registry);
         }
+
+        fn register_pg_sidecars(_registry: &mut PgSidecarRegistry) {}
 
         fn migrators() -> Vec<NamedMigrator> {
             vec![NamedMigrator::new("beta", migrator(&[3]))]

@@ -3,6 +3,7 @@
 //!
 //! See docs/07-storage.md and AGENTS.md invariants 2, 3, 5.
 
+use std::any::{Any, TypeId};
 use std::sync::Arc;
 
 use crate::SourceBatchId;
@@ -28,8 +29,12 @@ use crate::verbs::goal_write::{
 use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::{
-    EdgeAuthorshipKind, EntityKind, FactEntityId, MemoryId, MemoryOperatorKind, Owner, Principal,
-    RegisteredRelation, SchemaId, SchemaVersion,
+    AbstractionPayload, CitationMappingPayload, CitedObjectPayload, EdgePayload, FactPayload,
+    GoalPayload, PerspectivePayload,
+};
+use crate::{
+    EdgeAuthorshipKind, EdgeId, EntityKind, FactEntityId, MemoryId, MemoryOperatorKind, Owner,
+    Principal, RegisteredRelation, SchemaId, SchemaVersion,
 };
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -62,6 +67,208 @@ pub struct MasterTokenPersonality {
     pub self_perspective_memory_id: crate::MemoryId,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryKindRow {
+    pub memory_id: MemoryId,
+    /// `None` means Fact; Abstraction/Perspective are stored explicitly.
+    pub kind: Option<EntityKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryGraphPayloadRow {
+    pub memory_id: MemoryId,
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NeighborEdgeRow {
+    pub edge_id: EdgeId,
+    pub relation: String,
+    pub source_kind: EntityKind,
+    pub source_memory_id: Option<MemoryId>,
+    pub target_kind: EntityKind,
+    pub target_memory_id: Option<MemoryId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EdgeEndpointKindRow {
+    pub edge_id: EdgeId,
+    pub source_kind: EntityKind,
+    pub target_kind: EntityKind,
+}
+
+#[derive(Clone)]
+pub struct SidecarPayload {
+    pub kind: crate::verbs::schema::PayloadKind,
+    pub schema_id: SchemaId,
+    pub schema_version: SchemaVersion,
+    type_id: TypeId,
+    value: Arc<dyn Any + Send + Sync>,
+    protocol_json: fn(&dyn Any) -> Result<serde_json::Value, String>,
+}
+
+impl PartialEq for SidecarPayload {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.schema_id == other.schema_id
+            && self.schema_version == other.schema_version
+            && self.type_id == other.type_id
+    }
+}
+
+impl Eq for SidecarPayload {}
+
+impl std::fmt::Debug for SidecarPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SidecarPayload")
+            .field("kind", &self.kind)
+            .field("schema_id", &self.schema_id)
+            .field("schema_version", &self.schema_version)
+            .field("type_id", &self.type_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SidecarPayload {
+    fn new<T>(
+        kind: crate::verbs::schema::PayloadKind,
+        schema_id: SchemaId,
+        schema_version: SchemaVersion,
+        value: T,
+    ) -> Self
+    where
+        T: serde::Serialize + Send + Sync + 'static,
+    {
+        Self {
+            kind,
+            schema_id,
+            schema_version,
+            type_id: TypeId::of::<T>(),
+            value: Arc::new(value),
+            protocol_json: encode_protocol_json::<T>,
+        }
+    }
+
+    #[must_use]
+    pub fn fact<T>(value: T) -> Self
+    where
+        T: FactPayload + Send + Sync,
+    {
+        Self::new(
+            crate::verbs::schema::PayloadKind::Fact,
+            T::schema_id(),
+            SchemaVersion::new(T::SCHEMA_VERSION),
+            value,
+        )
+    }
+
+    #[must_use]
+    pub fn abstraction<T>(value: T) -> Self
+    where
+        T: AbstractionPayload + Send + Sync,
+    {
+        Self::new(
+            crate::verbs::schema::PayloadKind::Abstraction,
+            T::schema_id(),
+            SchemaVersion::new(T::SCHEMA_VERSION),
+            value,
+        )
+    }
+
+    #[must_use]
+    pub fn perspective<T>(value: T) -> Self
+    where
+        T: PerspectivePayload + Send + Sync,
+    {
+        Self::new(
+            crate::verbs::schema::PayloadKind::Perspective,
+            T::schema_id(),
+            SchemaVersion::new(T::SCHEMA_VERSION),
+            value,
+        )
+    }
+
+    #[must_use]
+    pub fn goal<T>(value: T) -> Self
+    where
+        T: GoalPayload + Send + Sync,
+    {
+        Self::new(
+            crate::verbs::schema::PayloadKind::Goal,
+            T::schema_id(),
+            SchemaVersion::new(T::SCHEMA_VERSION),
+            value,
+        )
+    }
+
+    #[must_use]
+    pub fn edge<T>(value: T) -> Self
+    where
+        T: EdgePayload + Send + Sync,
+    {
+        Self::new(
+            crate::verbs::schema::PayloadKind::Edge,
+            T::schema_id(),
+            SchemaVersion::new(T::SCHEMA_VERSION),
+            value,
+        )
+    }
+
+    #[must_use]
+    pub fn cited_object<T>(value: T) -> Self
+    where
+        T: CitedObjectPayload,
+    {
+        Self::new(
+            crate::verbs::schema::PayloadKind::CitedObject,
+            T::schema_id(),
+            SchemaVersion::new(T::SCHEMA_VERSION),
+            value,
+        )
+    }
+
+    #[must_use]
+    pub fn citation_mapping<T>(value: T) -> Self
+    where
+        T: CitationMappingPayload,
+    {
+        Self::new(
+            crate::verbs::schema::PayloadKind::CitationMapping,
+            T::schema_id(),
+            SchemaVersion::new(T::SCHEMA_VERSION),
+            value,
+        )
+    }
+
+    #[must_use]
+    pub fn downcast_ref<T>(&self) -> Option<&T>
+    where
+        T: Send + Sync + 'static,
+    {
+        self.value.downcast_ref::<T>()
+    }
+
+    /// Render this typed payload as JSON for protocol output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the erased value does not match its encoder or
+    /// the typed serializer fails.
+    pub fn to_protocol_json(&self) -> Result<serde_json::Value, String> {
+        (self.protocol_json)(self.value.as_ref())
+    }
+}
+
+fn encode_protocol_json<T>(value: &dyn Any) -> Result<serde_json::Value, String>
+where
+    T: serde::Serialize + Send + Sync + 'static,
+{
+    let typed = value
+        .downcast_ref::<T>()
+        .ok_or_else(|| "sidecar payload type mismatch".to_string())?;
+    serde_json::to_value(typed).map_err(|err| err.to_string())
+}
+
 #[derive(Debug, Clone)]
 pub struct DerivedEdgeSpec<'a> {
     pub owner: &'a Owner,
@@ -72,7 +279,7 @@ pub struct DerivedEdgeSpec<'a> {
     pub target_memory_id: MemoryId,
     pub authorship_kind: EdgeAuthorshipKind,
     pub authorship_owner_memory_id: Option<MemoryId>,
-    pub edge_payload: Option<&'a serde_json::Value>,
+    pub sidecar_payload: Option<&'a SidecarPayload>,
 }
 
 #[derive(Debug)]
@@ -87,8 +294,7 @@ pub struct AuthorDerivedRequest<'a> {
     pub model_id: &'a str,
     pub prompt_version: &'a str,
     pub author_personality_instance_id: Option<PersonalityInstanceId>,
-    pub sidecar_table: &'a str,
-    pub sidecar_payload: serde_json::Value,
+    pub sidecar_payload: SidecarPayload,
     /// Prior A/P memory superseded by this derived memory. Storage must
     /// persist this on `memories.supersedes` in the same transaction as
     /// the row, sidecar, and edge writes.
@@ -223,22 +429,21 @@ pub trait Storage: Send + Sync {
     ) -> Result<McpCallLogOutcome, StorageError>;
 
     /// Atomic Fact materialization for already-authorized `EventIngest`
-    /// plus one data-driven typed sidecar row.
-    async fn ingest_event_with_sidecar(
+    /// plus one typed sidecar payload. The storage backend dispatches
+    /// the payload through its build-time sidecar registry.
+    async fn ingest_event_with_typed_sidecar(
         &self,
         authorized: &AuthorizedEventIngest,
-        sidecar_table: &str,
-        sidecar_payload: &serde_json::Value,
+        sidecar_payload: &SidecarPayload,
         embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError>;
 
     /// Atomic Fact + Citation materialization for an already-authorized
-    /// inline-citation write plus one data-driven Fact sidecar row.
-    async fn ingest_fact_with_citation_and_sidecar(
+    /// inline-citation write plus one typed Fact sidecar payload.
+    async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,
-        sidecar_table: &str,
-        sidecar_payload: &serde_json::Value,
+        sidecar_payload: &SidecarPayload,
         embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError>;
 
@@ -255,7 +460,65 @@ pub trait Storage: Send + Sync {
 
     /// Atomic single memory-edge authoring for already-resolved relation
     /// specs.
-    async fn append_memory_edge(&self, edge: &DerivedEdgeSpec<'_>) -> Result<(), StorageError>;
+    async fn append_memory_edge(&self, edge: &DerivedEdgeSpec<'_>) -> Result<EdgeId, StorageError>;
+
+    /// Owner-scoped lookup of memory endpoint kinds. Missing ids are
+    /// omitted; callers that need strict existence must compare ids.
+    async fn load_memory_kinds(
+        &self,
+        _owner: &Owner,
+        _memory_ids: &[MemoryId],
+    ) -> Result<Vec<MemoryKindRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    /// Owner-scoped payload fragments used by graph MCP projections.
+    async fn load_memory_graph_payloads(
+        &self,
+        _owner: &Owner,
+        _memory_ids: &[MemoryId],
+    ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    /// Owner-scoped memory-neighbor edges for graph MCP projections.
+    async fn load_neighbor_memory_edges(
+        &self,
+        _owner: &Owner,
+        _memory_ids: &[MemoryId],
+        _limit: usize,
+    ) -> Result<Vec<NeighborEdgeRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    /// Owner-scoped memory-edge id lookup for one source, relation, and
+    /// target set.
+    async fn load_memory_edge_ids(
+        &self,
+        _owner: &Owner,
+        _relation: &str,
+        _source_memory_id: MemoryId,
+        _target_memory_ids: &[MemoryId],
+    ) -> Result<Vec<EdgeId>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    /// Lookup edge endpoint kinds for display of `change_event` rows.
+    async fn load_edge_endpoint_kinds(
+        &self,
+        _edge_ids: &[EdgeId],
+    ) -> Result<Vec<EdgeEndpointKindRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    /// Owner-scoped lookup of a non-tombstoned personality root.
+    async fn active_personality_root(
+        &self,
+        _owner: &Owner,
+        _instance_id: PersonalityInstanceId,
+    ) -> Result<Option<MemoryId>, StorageError> {
+        Ok(None)
+    }
 
     /// Atomic direct Active Goal create plus goal payload sidecar,
     /// activation Fact, `core/inspires`, and `core/motivated-by`
@@ -309,7 +572,7 @@ pub trait Storage: Send + Sync {
     ) -> Result<McpCallHistoryResponse, StorageError>;
 
     /// Owner-scoped snapshot read of memories per docs/14 §"Query".
-    /// Returns `MemoryRow` substrate shape with payload bytes projected
+    /// Returns `MemoryRow` substrate shape with typed payload projections
     /// from sidecar tables. `schemas` is the list of registered schemas
     /// with sidecar tables for dynamic JOIN construction.
     async fn query_memories(
@@ -333,7 +596,7 @@ pub trait Storage: Send + Sync {
         owner: &Owner,
         schema_id: &SchemaId,
         schema_version: SchemaVersion,
-        natural_key: &serde_json::Value,
+        natural_key: &[String],
     ) -> Result<Option<FactEntityId>, StorageError>;
 
     /// Owner-scoped read-back of Fact rows whose citation mapping points at
@@ -598,21 +861,19 @@ impl Storage for NoopStorage {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
-    async fn ingest_event_with_sidecar(
+    async fn ingest_event_with_typed_sidecar(
         &self,
         _authorized: &AuthorizedEventIngest,
-        _sidecar_table: &str,
-        _sidecar_payload: &serde_json::Value,
+        _sidecar_payload: &SidecarPayload,
         _embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
-    async fn ingest_fact_with_citation_and_sidecar(
+    async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         _authorized: &AuthorizedFactWithCitation,
-        _sidecar_table: &str,
-        _sidecar_payload: &serde_json::Value,
+        _sidecar_payload: &SidecarPayload,
         _embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
@@ -623,7 +884,7 @@ impl Storage for NoopStorage {
         _owner: &Owner,
         _schema_id: &SchemaId,
         _schema_version: SchemaVersion,
-        _natural_key: &serde_json::Value,
+        _natural_key: &[String],
     ) -> Result<Option<FactEntityId>, StorageError> {
         Ok(None)
     }
@@ -635,7 +896,10 @@ impl Storage for NoopStorage {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
-    async fn append_memory_edge(&self, _edge: &DerivedEdgeSpec<'_>) -> Result<(), StorageError> {
+    async fn append_memory_edge(
+        &self,
+        _edge: &DerivedEdgeSpec<'_>,
+    ) -> Result<EdgeId, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 

@@ -2,9 +2,9 @@ use proxima_core::change_event::{EntityKind, EntityRef};
 use proxima_core::relation::RelationClass;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{EdgeRow, GoalRow, MemoryRow, StatefulHeadsFilter};
-use proxima_core::verbs::schema::SchemaInfo;
 use proxima_core::{
-    GoalId, MemoryId, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion, StorageError,
+    GoalId, MemoryId, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion, SidecarPayload,
+    StorageError,
 };
 use sqlx::PgPool;
 
@@ -13,7 +13,7 @@ use crate::pg_ident::PgIdent;
 
 pub(super) fn memory_row_from_db(
     r: MemoryRowDb,
-    schemas: &[SchemaInfo],
+    payload: Option<SidecarPayload>,
 ) -> Result<MemoryRow, StorageError> {
     let schema_version = u32::try_from(r.schema_version).map_err(|_| {
         StorageError::Internal(format!(
@@ -24,10 +24,6 @@ pub(super) fn memory_row_from_db(
 
     let schema_id = SchemaId::new(r.schema_id);
     let schema_version = SchemaVersion::new(schema_version);
-    let json_encoder = schemas
-        .iter()
-        .find(|s| s.schema_id == schema_id && s.schema_version == schema_version)
-        .and_then(|s| s.json_encoder);
 
     Ok(MemoryRow {
         id: MemoryId::new(r.memory_id),
@@ -35,26 +31,8 @@ pub(super) fn memory_row_from_db(
         schema_id,
         schema_version,
         owner: owner_from_parts(r.owner_principal_kind, r.owner_principal_id, r.owner_org_id),
-        payload: r
-            .payload_json
-            .as_deref()
-            .map(|text| json_text_to_payload(text, json_encoder))
-            .transpose()?
-            .unwrap_or_default(),
+        payload,
     })
-}
-
-fn json_text_to_payload(
-    text: &str,
-    encoder: Option<proxima_core::verbs::schema::PayloadJsonEncoder>,
-) -> Result<Vec<u8>, StorageError> {
-    let value: serde_json::Value = serde_json::from_str(text)
-        .map_err(|e| StorageError::Internal(format!("invalid payload JSON projection: {e}")))?;
-    if let Some(encode) = encoder {
-        return encode(&value)
-            .map_err(|e| StorageError::Internal(format!("JSON payload encode failed: {e}")));
-    }
-    Ok(proxima_core::canonical_json_bytes(&value))
 }
 
 pub(super) fn goal_row_from_db(r: GoalRowDb) -> Result<GoalRow, StorageError> {
@@ -157,14 +135,13 @@ pub(super) struct EdgeRowDb {
 
 #[derive(Debug, sqlx::FromRow)]
 pub(super) struct MemoryRowDb {
-    memory_id: uuid::Uuid,
+    pub(super) memory_id: uuid::Uuid,
     owner_principal_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
     owner_org_id: uuid::Uuid,
-    schema_id: String,
-    schema_version: i32,
-    kind: Option<EntityKind>,
-    payload_json: Option<String>,
+    pub(super) schema_id: String,
+    pub(super) schema_version: i32,
+    pub(super) kind: Option<EntityKind>,
 }
 
 pub(super) async fn read_seq_high_water(

@@ -720,7 +720,7 @@ CREATE TABLE proxima_core.fact_entities (
     owner_org_id uuid NOT NULL,
     schema_id text NOT NULL,
     schema_version integer NOT NULL,
-    natural_key jsonb NOT NULL,
+    natural_key text[] NOT NULL,
     current_memory_id uuid NOT NULL,
     current_created_at timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
@@ -779,7 +779,7 @@ COMMENT ON TABLE proxima_core.goals IS
 
 
 COMMENT ON CONSTRAINT goals_payload_nonempty_chk ON proxima_core.goals IS
-  'Defense-in-depth against zero-byte payloads. Every registered Goal schema encodes to a non-empty canonical-JSON object (the smallest, SimpleTextGoalV1, is "{}"). Engine GoalWrite validates the payload against its schema (crates/core/src/engine/goals.rs); this CHECK is the last line of defense if a zero-byte payload reaches storage by another path. Replaces the former DEFAULT ''\x'' which silently admitted empty payloads.';
+  'Defense-in-depth against zero-byte goal-key payloads. Every registered Goal schema produces non-empty schema-owned key material. Engine GoalWrite validates the payload against its registered schema before storage; this CHECK is the last line of defense if a zero-byte key reaches storage by another path. Replaces the former DEFAULT ''\x'' which silently admitted empty payloads.';
 
 COMMENT ON CONSTRAINT goals_request_id_nonempty ON proxima_core.goals IS
   'Goal writes are idempotent per Owner/request_id; empty request ids are never valid.';
@@ -889,6 +889,8 @@ CREATE TABLE proxima_core.mcp_call_logged_v1 (
     latency_ms integer NOT NULL,
     io_byte_len bigint NOT NULL,
     io_truncated boolean NOT NULL,
+    io_content_hash bytea NOT NULL,
+    CONSTRAINT mcp_call_logged_v1_io_content_hash_len_chk CHECK ((octet_length(io_content_hash) = 32)),
     CONSTRAINT mcp_call_logged_v1_io_byte_len_chk CHECK ((io_byte_len >= 0)),
     CONSTRAINT mcp_call_logged_v1_latency_ms_chk CHECK ((latency_ms >= 0))
 );

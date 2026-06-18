@@ -2,7 +2,7 @@ use super::Engine;
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, StorageError};
 use crate::{
     CORE_SUPERSEDES_RELATION, EdgeAuthorshipKind, EntityKind, MemoryId, MemoryOperatorKind, Owner,
-    PersonalityInstanceId, RegisteredRelation, SchemaId, SchemaVersion,
+    PersonalityInstanceId, RegisteredRelation, SchemaId, SchemaVersion, SidecarPayload,
 };
 
 #[derive(Debug, Clone)]
@@ -28,8 +28,7 @@ pub struct AuthorDerivedRequestInput<'a> {
     pub model_id: &'a str,
     pub prompt_version: &'a str,
     pub author_personality_instance_id: Option<PersonalityInstanceId>,
-    pub sidecar_table: &'a str,
-    pub sidecar_payload: serde_json::Value,
+    pub sidecar_payload: SidecarPayload,
     /// Prior A/P memory superseded by this derived memory. The engine
     /// records both `memories.supersedes` and a same-transaction
     /// `core/supersedes` edge.
@@ -95,7 +94,7 @@ impl Engine {
                 target_memory_id: edge.target_memory_id,
                 authorship_kind: edge.authorship_kind,
                 authorship_owner_memory_id: edge.authorship_owner_memory_id,
-                edge_payload: None,
+                sidecar_payload: None,
             })
             .collect();
         if let (Some(prior), Some(relation)) = (req.supersedes, supersedes_relation) {
@@ -108,7 +107,7 @@ impl Engine {
                 target_memory_id: prior,
                 authorship_kind: EdgeAuthorshipKind::Engine,
                 authorship_owner_memory_id: None,
-                edge_payload: None,
+                sidecar_payload: None,
             });
         }
         let storage_req = AuthorDerivedRequest {
@@ -122,7 +121,6 @@ impl Engine {
             model_id: req.model_id,
             prompt_version: req.prompt_version,
             author_personality_instance_id: req.author_personality_instance_id,
-            sidecar_table: req.sidecar_table,
             sidecar_payload: req.sidecar_payload,
             supersedes: req.supersedes,
             embedding: Some(embedding),

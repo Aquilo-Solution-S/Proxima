@@ -36,7 +36,7 @@ pub async fn persist_mcp_call_in_tx(
     input: &McpCallLogInput,
 ) -> Result<McpCallLogOutcome, StorageError> {
     let io_content_hash = input.io_content_hash();
-    let event_id = input.event_id().map_err(internal)?;
+    let event_id = input.event_id();
     let event_id_bytes = event_id.into_inner();
 
     let (owner_kind, owner_principal_id, owner_org_id) = input.owner.columns();
@@ -195,8 +195,8 @@ pub async fn persist_mcp_call_in_tx(
     sqlx::query(
         r"INSERT INTO proxima_core.mcp_call_logged_v1
             (memory_id, tool_name, actor_oid, actor_upn, ok, error,
-             latency_ms, io_byte_len, io_truncated)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+             latency_ms, io_byte_len, io_truncated, io_content_hash)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(memory_id)
     .bind(input.tool_name.as_str())
@@ -207,6 +207,7 @@ pub async fn persist_mcp_call_in_tx(
     .bind(i32::try_from(input.latency_ms).unwrap_or(i32::MAX))
     .bind(i64::try_from(input.io_byte_len_original).unwrap_or(i64::MAX))
     .bind(input.io_truncated)
+    .bind(&io_content_hash[..])
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;

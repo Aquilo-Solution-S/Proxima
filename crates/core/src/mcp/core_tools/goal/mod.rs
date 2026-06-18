@@ -8,7 +8,7 @@ use crate::verbs::goal_write::{
 use crate::verbs::schema::PayloadKind;
 use crate::{
     EdgeId, MemoryId, ModelId, OperatorId, PersonalityInstanceId, PromptVersion, SchemaId,
-    SchemaVersion, ToolId, canonical_json_bytes,
+    SchemaVersion, ToolId,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -76,6 +76,7 @@ impl McpTool for GoalSetTool {
                 title: payload.title.clone(),
                 text: payload.text.clone(),
                 payload: payload.payload.clone(),
+                sidecar_payload: payload.sidecar_payload.clone(),
                 state: GoalState::Active,
                 parent_goal_ids: Vec::new(),
                 supersedes_goal_id: None,
@@ -393,19 +394,28 @@ fn encode_goal_payload(
             schema_version.into_inner(),
         )));
     }
-    ctx.registry
-        .validate_payload(&schema_id, schema_version, PayloadKind::Goal, &args.body)
+    let payload = ctx
+        .registry
+        .ingest_protocol_payload(&schema_id, schema_version, PayloadKind::Goal, &args.body)
         .map_err(McpToolError::InvalidInput)?;
-    let payload = match schema.json_encoder {
-        Some(encode) => encode(&args.body).map_err(McpToolError::InvalidInput)?,
-        None => canonical_json_bytes(&args.body),
-    };
+    let sidecar_payload = schema
+        .sidecar_table
+        .is_some()
+        .then_some(payload.sidecar_payload);
+    let payload = payload.key_bytes.ok_or_else(|| {
+        McpToolError::InvalidInput(format!(
+            "GoalPayload schema {} v{} did not produce key bytes",
+            schema_id.as_str(),
+            schema_version.into_inner(),
+        ))
+    })?;
     Ok(GoalPayloadWrite {
         schema_id,
         schema_version,
         title: title.to_string(),
         text: text.to_string(),
         payload,
+        sidecar_payload,
     })
 }
 
@@ -443,24 +453,12 @@ async fn personality_root(
     ctx: &McpToolCtx,
     instance_id: PersonalityInstanceId,
 ) -> Result<MemoryId, McpToolError> {
-    let (owner_kind, owner_id) = ctx.owner.principal.columns();
-    let row: Option<(uuid::Uuid,)> = sqlx::query_as(
-        "SELECT current_root_perspective_memory_id
-           FROM proxima_core.personality
-          WHERE owner_principal_kind = $1
-            AND owner_principal_id = $2
-            AND owner_org_id = $3
-            AND personality_instance_id = $4
-            AND status <> 'tombstoned'::proxima_core.personality_status",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(ctx.owner.org_id.into_inner())
-    .bind(instance_id.into_inner())
-    .fetch_optional(&ctx.pool)
-    .await
-    .map_err(|err| McpToolError::Other(err.to_string()))?;
-    row.map(|(memory_id,)| MemoryId::new(memory_id))
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    storage
+        .active_personality_root(&ctx.owner, instance_id)
+        .await?
         .ok_or_else(|| McpToolError::InvalidInput("target personality not found".into()))
 }
 

@@ -1,12 +1,12 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::storage::DerivedEdgeSpec;
-use crate::{EdgeAuthorshipKind, EdgeId, MemoryId};
+use crate::{EdgeAuthorshipKind, MemoryId, SidecarPayload};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{AGENT_LINK_RELATION, AgentLinkV1};
 
-use super::util::{map_storage, memory_kind_for_edge};
+use super::util::memory_kind_for_edge;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LinkArgs {
@@ -75,83 +75,54 @@ impl McpTool for LinkTool {
                 .ok_or_else(|| {
                     McpToolError::Other(format!("relation {AGENT_LINK_RELATION} not registered"))
                 })?;
-            let payload = serde_json::to_value(AgentLinkV1 {
+            let payload = SidecarPayload::edge(AgentLinkV1 {
                 reason: reason.to_string(),
                 confidence: args.confidence,
-            })
-            .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+            });
             let edge = DerivedEdgeSpec {
                 owner: &ctx.owner,
                 relation,
                 source_kind: memory_kind_for_edge(source_kind),
-                source_memory_id: MemoryId::new(source_id),
+                source_memory_id: source_id,
                 target_kind: memory_kind_for_edge(target_kind),
-                target_memory_id: MemoryId::new(target_id),
+                target_memory_id: target_id,
                 authorship_kind: EdgeAuthorshipKind::ExternalAgent,
                 authorship_owner_memory_id: ctx.caller_self_perspective,
-                edge_payload: Some(&payload),
+                sidecar_payload: Some(&payload),
             };
             let engine = ctx
                 .engine()
                 .ok_or_else(|| McpToolError::InvalidInput("engine required".into()))?;
-            engine.storage().append_memory_edge(&edge).await?;
-            let edge_id = load_latest_link_edge_id(&ctx, source_id, target_id).await?;
+            let edge_id = engine.storage().append_memory_edge(&edge).await?;
 
             Ok(LinkOutput {
-                edge_handle: ctx.format_edge(EdgeId::new(edge_id)),
+                edge_handle: ctx.format_edge(edge_id),
             })
         })
     }
 }
 
-fn resolve_memory(ctx: &McpToolCtx, raw: &str) -> Result<uuid::Uuid, McpToolError> {
-    ctx.resolve_memory(raw).map(crate::MemoryId::into_inner)
+fn resolve_memory(ctx: &McpToolCtx, raw: &str) -> Result<MemoryId, McpToolError> {
+    ctx.resolve_memory(raw)
 }
 
 async fn load_kind(
     ctx: &McpToolCtx,
-    memory_id: uuid::Uuid,
+    memory_id: MemoryId,
 ) -> Result<Option<crate::EntityKind>, McpToolError> {
-    let (owner_kind, owner_principal_id, _) = ctx.owner.columns();
-    sqlx::query_scalar(
-        "SELECT kind
-         FROM proxima_core.memories
-         WHERE memory_id = $1
-           AND owner_principal_kind = $2
-           AND owner_principal_id = $3",
-    )
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .fetch_optional(&ctx.pool)
-    .await
-    .map_err(map_storage)?
-    .ok_or_else(|| McpToolError::InvalidInput(format!("memory {memory_id} not found for owner")))
-}
-
-async fn load_latest_link_edge_id(
-    ctx: &McpToolCtx,
-    source_id: uuid::Uuid,
-    target_id: uuid::Uuid,
-) -> Result<uuid::Uuid, McpToolError> {
-    let (owner_kind, owner_principal_id, _) = ctx.owner.columns();
-    sqlx::query_scalar(
-        "SELECT edge_id
-         FROM proxima_core.edges
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND relation = $3
-           AND source_memory_id = $4
-           AND target_memory_id = $5
-         ORDER BY edge_id DESC
-         LIMIT 1",
-    )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(AGENT_LINK_RELATION)
-    .bind(source_id)
-    .bind(target_id)
-    .fetch_one(&ctx.pool)
-    .await
-    .map_err(map_storage)
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    storage
+        .load_memory_kinds(&ctx.owner, &[memory_id])
+        .await?
+        .into_iter()
+        .next()
+        .map(|row| row.kind)
+        .ok_or_else(|| {
+            McpToolError::InvalidInput(format!(
+                "memory {} not found for owner",
+                memory_id.into_inner()
+            ))
+        })
 }

@@ -8,12 +8,12 @@
 //! Used by M5.5 typed F-layer edges (e.g. `proxima-code/calls`).
 
 use proxima_core::{
-    EdgeAuthorshipKind, EdgePayload, EndpointBinding, EntityKind, FactEntityId, GoalId, MemoryId,
-    Owner, RegisteredRelation, StorageError,
+    EdgeAuthorshipKind, EdgeId, EdgePayload, EndpointBinding, EntityKind, FactEntityId, GoalId,
+    MemoryId, Owner, RegisteredRelation, StorageError,
 };
 
 use crate::error::map_err;
-use crate::pg_ident::PgIdent;
+use crate::sidecars::{PgEdgeSidecar, PgSidecarFuture};
 
 /// Durable edge endpoint with exactly one backing id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,7 +165,7 @@ pub async fn append_edge(
         authorship_owner_memory_id,
         owner,
     );
-    append_edge_in_tx(tx, &draft, None).await?;
+    append_edge_in_tx(tx, &draft).await?;
     Ok(edge_id)
 }
 
@@ -174,11 +174,10 @@ pub async fn append_edge(
 ///
 /// # Errors
 ///
-/// Returns storage errors from payload serialization, schema mismatch,
-/// edge validation, row insertion, sidecar insertion, or change event
-/// insertion.
+/// Returns storage errors from schema mismatch, edge validation, row
+/// insertion, sidecar insertion, or change event insertion.
 #[allow(clippy::too_many_arguments)]
-pub async fn append_typed_edge<E: EdgePayload>(
+pub async fn append_typed_edge<E: EdgePayload + PgEdgeSidecar + Clone>(
     tx: &mut sqlx::PgConnection,
     edge_id: uuid::Uuid,
     relation: RegisteredRelation<'_>,
@@ -207,7 +206,6 @@ pub async fn append_typed_edge<E: EdgePayload>(
             payload_schema.schema_version.into_inner(),
         )));
     }
-    let payload_json = serde_json::to_value(payload).map_err(crate::error::internal)?;
     let draft = EdgeDraft::new(
         edge_id,
         relation,
@@ -217,12 +215,16 @@ pub async fn append_typed_edge<E: EdgePayload>(
         authorship_owner_memory_id,
         owner,
     );
-    append_edge_in_tx(tx, &draft, Some(&payload_json)).await?;
+    let sidecar_payload = payload.clone();
+    append_edge_with_sidecar_in_tx(tx, &draft, move |tx, edge_id| {
+        Box::pin(async move { sidecar_payload.insert_edge_sidecar(tx, edge_id).await })
+    })
+    .await?;
     Ok(edge_id)
 }
 
-/// Write an edge row + (optional) typed sidecar + the EdgeAppend
-/// change_event in one transaction.
+/// Write a substrate edge row + the EdgeAppend change_event in one
+/// transaction.
 ///
 /// # Errors
 ///
@@ -231,53 +233,50 @@ pub async fn append_typed_edge<E: EdgePayload>(
 pub async fn append_edge_in_tx(
     tx: &mut sqlx::PgConnection,
     draft: &EdgeDraft<'_>,
-    payload: Option<&serde_json::Value>,
 ) -> Result<(), StorageError> {
-    let sidecar_table = draft.relation.payload_sidecar_table;
-    validate_edge_draft(draft, payload)?;
+    validate_edge_draft(draft, false)?;
 
     if !insert_edge_row(tx, draft).await? {
         return Ok(());
     }
 
-    // Sidecar SQL composed from validated identifier; can't be a macro.
-    if let (Some(payload_json), Some(table)) = (payload, sidecar_table) {
-        let table = PgIdent::table(table)?;
-
-        let sidecar_sql = format!(
-            "INSERT INTO {table} \
-             SELECT * FROM jsonb_populate_record( \
-                 NULL::{table}, \
-                 ($1::jsonb || jsonb_build_object('edge_id', $2::uuid)) \
-             )",
-            table = table.as_str(),
-        );
-        sqlx::query(&sidecar_sql)
-            .bind(payload_json)
-            .bind(draft.edge_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_err)?;
-    }
-
     append_edge_change_event(tx, draft).await
 }
 
-fn validate_edge_draft(
+/// Write a typed edge row + sidecar + the EdgeAppend change_event in one
+/// transaction.
+///
+/// # Errors
+///
+/// Returns `ConstraintViolation` on shape failures; `Internal` on sqlx or
+/// concrete sidecar insertion failure.
+pub async fn append_edge_with_sidecar_in_tx(
+    tx: &mut sqlx::PgConnection,
     draft: &EdgeDraft<'_>,
-    payload: Option<&serde_json::Value>,
+    sidecar: impl for<'t> FnOnce(&'t mut sqlx::PgConnection, EdgeId) -> PgSidecarFuture<'t>,
 ) -> Result<(), StorageError> {
+    validate_edge_draft(draft, true)?;
+
+    if !insert_edge_row(tx, draft).await? {
+        return Ok(());
+    }
+
+    sidecar(tx, EdgeId::new(draft.edge_id)).await?;
+    append_edge_change_event(tx, draft).await
+}
+
+fn validate_edge_draft(draft: &EdgeDraft<'_>, payload_present: bool) -> Result<(), StorageError> {
     let descriptor = draft.relation.descriptor;
     let sidecar_table = draft.relation.payload_sidecar_table;
-    match (sidecar_table, payload) {
-        (Some(_), Some(_)) | (None, None) => {}
-        (Some(_), None) => {
+    match (sidecar_table.is_some(), payload_present) {
+        (true, true) | (false, false) => {}
+        (true, false) => {
             return Err(StorageError::ConstraintViolation(format!(
                 "missing EdgePayload for typed relation {}",
                 descriptor.relation
             )));
         }
-        (None, Some(_)) => {
+        (false, true) => {
             return Err(StorageError::ConstraintViolation(format!(
                 "payload supplied for substrate relation {}",
                 descriptor.relation

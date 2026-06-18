@@ -1,4 +1,4 @@
-use proxima_core::{FactPayload, proxima_schema_id};
+use proxima_core::{FactPayload, PayloadKeyBuilder, proxima_schema_id};
 use serde::{Deserialize, Serialize};
 
 use super::AcceptanceCriterionV1;
@@ -16,6 +16,13 @@ pub struct TestRequestedV1 {
 impl FactPayload for TestRequestedV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("test-requested-v1");
     const SCHEMA_VERSION: u32 = 1;
+
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_uuid("repo_id", self.repo_id);
+        key.field_str("test_key", &self.test_key);
+        key.finish()
+    }
 
     fn sidecar_table() -> Option<&'static str> {
         Some("proxima_code.test_requested_v1")
