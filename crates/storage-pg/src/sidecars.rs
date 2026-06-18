@@ -5,6 +5,7 @@
 //! stay out of `proxima-core`.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -22,6 +23,8 @@ use crate::verbs::event_ingest::PgFactSidecar;
 pub type PgSidecarFuture<'t> = Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
 pub type PgMemoryPayloadFuture<'t> =
     Pin<Box<dyn Future<Output = Result<Option<SidecarPayload>, StorageError>> + Send + 't>>;
+pub type PgMemoryPayloadBatchFuture<'t> =
+    Pin<Box<dyn Future<Output = Result<Vec<(MemoryId, SidecarPayload)>, StorageError>> + Send + 't>>;
 
 pub trait PgMemorySidecar: Send + Sync + 'static {
     fn insert_memory_sidecar<'t>(
@@ -32,7 +35,32 @@ pub trait PgMemorySidecar: Send + Sync + 'static {
 }
 
 pub trait PgMemoryPayload: Send + Sync + 'static {
-    fn load_memory_payload(pool: &PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_>;
+    #[must_use]
+    fn load_batch<'t>(
+        pool: &'t PgPool,
+        kind: PayloadKind,
+        memory_ids: &'t [MemoryId],
+    ) -> PgMemoryPayloadBatchFuture<'t> {
+        Box::pin(async move {
+            let _ = kind;
+            let mut payloads = Vec::new();
+            for memory_id in memory_ids {
+                if let Some(payload) = Self::load_memory_payload(pool, *memory_id).await? {
+                    payloads.push((*memory_id, payload));
+                }
+            }
+            Ok(payloads)
+        })
+    }
+
+    #[must_use]
+    fn load_memory_payload(pool: &PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_> {
+        Box::pin(async move {
+            let memory_ids = [memory_id];
+            let mut rows = Self::load_batch(pool, PayloadKind::Fact, &memory_ids).await?;
+            Ok(rows.pop().map(|(_memory_id, payload)| payload))
+        })
+    }
 }
 
 pub trait PgEdgeSidecar: Send + Sync + 'static {
@@ -92,6 +120,11 @@ type PgMemorySidecarInserter = for<'t> fn(
     &'t SidecarPayload,
 ) -> PgSidecarFuture<'t>;
 type PgMemoryPayloadLoader = for<'t> fn(&'t PgPool, MemoryId) -> PgMemoryPayloadFuture<'t>;
+type PgMemoryPayloadBatchLoader = for<'t> fn(
+    &'t PgPool,
+    PayloadKind,
+    &'t [MemoryId],
+) -> PgMemoryPayloadBatchFuture<'t>;
 
 type PgEdgeSidecarInserter =
     for<'t> fn(&'t mut PgConnection, EdgeId, &'t SidecarPayload) -> PgSidecarFuture<'t>;
@@ -131,6 +164,7 @@ pub struct PgSidecarEntry {
     pub sidecar_table: String,
     memory_insert: Option<PgMemorySidecarInserter>,
     memory_load: Option<PgMemoryPayloadLoader>,
+    memory_load_batch: Option<PgMemoryPayloadBatchLoader>,
     edge_insert: Option<PgEdgeSidecarInserter>,
     cited_object_insert: Option<PgCitedObjectSidecarInserter>,
     citation_mapping_insert: Option<PgCitationMappingSidecarInserter>,
@@ -168,6 +202,7 @@ impl PgSidecarRegistry {
                     sidecar_table: table.to_string(),
                     memory_insert: Some(insert_memory_sidecar::<P>),
                     memory_load: Some(load_memory_payload::<P>),
+                    memory_load_batch: Some(load_memory_payload_batch::<P>),
                     edge_insert: None,
                     cited_object_insert: None,
                     citation_mapping_insert: None,
@@ -230,6 +265,7 @@ impl PgSidecarRegistry {
                     sidecar_table: table.to_string(),
                     memory_insert: None,
                     memory_load: None,
+                    memory_load_batch: None,
                     edge_insert: None,
                     cited_object_insert: None,
                     citation_mapping_insert: None,
@@ -263,6 +299,7 @@ impl PgSidecarRegistry {
                 sidecar_table: P::sidecar_table().to_string(),
                 memory_insert: None,
                 memory_load: None,
+                memory_load_batch: None,
                 edge_insert: Some(insert_edge_sidecar::<P>),
                 cited_object_insert: None,
                 citation_mapping_insert: None,
@@ -295,6 +332,7 @@ impl PgSidecarRegistry {
                 sidecar_table: P::sidecar_table().to_string(),
                 memory_insert: None,
                 memory_load: None,
+                memory_load_batch: None,
                 edge_insert: None,
                 cited_object_insert: Some(insert_cited_object_sidecar::<P>),
                 citation_mapping_insert: None,
@@ -331,6 +369,7 @@ impl PgSidecarRegistry {
                     sidecar_table: table.to_string(),
                     memory_insert: None,
                     memory_load: None,
+                    memory_load_batch: None,
                     edge_insert: None,
                     cited_object_insert: None,
                     citation_mapping_insert: Some(insert_citation_mapping_sidecar::<P>),
@@ -363,6 +402,7 @@ impl PgSidecarRegistry {
                 sidecar_table: sidecar_table.into(),
                 memory_insert: Some(insert_memory_sidecar::<P>),
                 memory_load: Some(load_memory_payload::<P>),
+                memory_load_batch: Some(load_memory_payload_batch::<P>),
                 edge_insert: None,
                 cited_object_insert: None,
                 citation_mapping_insert: None,
@@ -425,7 +465,9 @@ impl PgSidecarRegistry {
             }
             let has_inserter = match key.kind {
                 PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective => {
-                    entry.memory_insert.is_some() && entry.memory_load.is_some()
+                    entry.memory_insert.is_some()
+                        && entry.memory_load.is_some()
+                        && entry.memory_load_batch.is_some()
                 }
                 PayloadKind::Edge => entry.edge_insert.is_some(),
                 PayloadKind::CitedObject => entry.cited_object_insert.is_some(),
@@ -557,7 +599,26 @@ impl PgSidecarRegistryFrozen {
         key: PgSidecarKey,
         memory_id: MemoryId,
     ) -> Result<Option<SidecarPayload>, StorageError> {
-        let entry = self.entries.get(&key).ok_or_else(|| {
+        let mut rows = self
+            .load_memory_payloads_batch(pool, &key, &[memory_id])
+            .await?;
+        Ok(rows.pop().map(|(_memory_id, payload)| payload))
+    }
+
+    /// Load typed sidecar payload projections for already-created Memory rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConstraintViolation` when no PG memory sidecar is
+    /// registered for the schema. Returns storage errors from the
+    /// concrete loader.
+    pub async fn load_memory_payloads_batch(
+        &self,
+        pool: &PgPool,
+        key: &PgSidecarKey,
+        memory_ids: &[MemoryId],
+    ) -> Result<Vec<(MemoryId, SidecarPayload)>, StorageError> {
+        let entry = self.entries.get(key).ok_or_else(|| {
             StorageError::ConstraintViolation(format!(
                 "no PG sidecar registered for {} v{} {:?}",
                 key.schema_id.as_str(),
@@ -565,7 +626,7 @@ impl PgSidecarRegistryFrozen {
                 key.kind,
             ))
         })?;
-        let load = entry.memory_load.ok_or_else(|| {
+        let load = entry.memory_load_batch.ok_or_else(|| {
             StorageError::ConstraintViolation(format!(
                 "PG sidecar for {} v{} {:?} is not a memory sidecar",
                 key.schema_id.as_str(),
@@ -573,7 +634,7 @@ impl PgSidecarRegistryFrozen {
                 key.kind,
             ))
         })?;
-        load(pool, memory_id).await
+        load(pool, key.kind, memory_ids).await
     }
 
     /// Insert a typed sidecar row for an already-created Edge row.
@@ -790,6 +851,17 @@ where
     P::load_memory_payload(pool, memory_id)
 }
 
+fn load_memory_payload_batch<'t, P>(
+    pool: &'t PgPool,
+    kind: PayloadKind,
+    memory_ids: &'t [MemoryId],
+) -> PgMemoryPayloadBatchFuture<'t>
+where
+    P: PgMemoryPayload,
+{
+    P::load_batch(pool, kind, memory_ids)
+}
+
 fn bytes32(bytes: &[u8], column: &str) -> Result<[u8; 32], StorageError> {
     <[u8; 32]>::try_from(bytes).map_err(|_| {
         StorageError::Internal(format!(
@@ -797,6 +869,320 @@ fn bytes32(bytes: &[u8], column: &str) -> Result<[u8; 32], StorageError> {
             bytes.len()
         ))
     })
+}
+
+fn memory_insert_sql(
+    table: &str,
+    key_column: &str,
+    columns: &[(&str, Option<&str>)],
+) -> String {
+    let mut sql = String::new();
+    write!(&mut sql, "INSERT INTO {table} ({key_column}")
+        .expect("writing SQL into String cannot fail");
+    for (column, _) in columns {
+        write!(&mut sql, ", {column}").expect("writing SQL into String cannot fail");
+    }
+    sql.push_str(") VALUES ($1");
+    for (index, (_, cast)) in columns.iter().enumerate() {
+        write!(&mut sql, ", ${}", index + 2).expect("writing SQL into String cannot fail");
+        if let Some(pg_type) = cast {
+            write!(&mut sql, "::{pg_type}").expect("writing SQL into String cannot fail");
+        }
+    }
+    sql.push(')');
+    sql
+}
+
+fn memory_select_batch_sql(table: &str, key_column: &str, columns: &[&str]) -> String {
+    let mut sql = String::new();
+    write!(&mut sql, "SELECT {key_column}").expect("writing SQL into String cannot fail");
+    for column in columns {
+        write!(&mut sql, ", {column}").expect("writing SQL into String cannot fail");
+    }
+    write!(&mut sql, " FROM {table} WHERE {key_column} = ANY($1)")
+        .expect("writing SQL into String cannot fail");
+    sql
+}
+
+fn parse_utterance_speaker(value: &str) -> Result<proxima_core::Speaker, StorageError> {
+    match value {
+        "user" => Ok(proxima_core::Speaker::User),
+        "agent" => Ok(proxima_core::Speaker::Agent),
+        other => Err(StorageError::Internal(format!(
+            "invalid utterance speaker {other}"
+        ))),
+    }
+}
+
+macro_rules! pg_sidecar_row_ty {
+    (uuid) => {
+        uuid::Uuid
+    };
+    (uuid_array) => {
+        Vec<uuid::Uuid>
+    };
+    (text) => {
+        String
+    };
+    (opt_text) => {
+        Option<String>
+    };
+    (text_array) => {
+        Vec<String>
+    };
+    (bool) => {
+        bool
+    };
+    (timestamptz) => {
+        time::OffsetDateTime
+    };
+    (bytea32) => {
+        Vec<u8>
+    };
+    (u32_as_i32) => {
+        i32
+    };
+    (u64_as_i64) => {
+        i64
+    };
+    (enum { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }) => {
+        String
+    };
+}
+
+macro_rules! pg_sidecar_cast {
+    (enum { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }) => {
+        Some($pg_type)
+    };
+    ($kind:ident) => {
+        None
+    };
+}
+
+macro_rules! pg_sidecar_bind {
+    ((uuid), $self:ident, $field:ident) => {
+        $self.$field
+    };
+    ((uuid_array), $self:ident, $field:ident) => {
+        &$self.$field
+    };
+    ((text), $self:ident, $field:ident) => {
+        &$self.$field
+    };
+    ((opt_text), $self:ident, $field:ident) => {
+        $self.$field.as_deref()
+    };
+    ((text_array), $self:ident, $field:ident) => {
+        &$self.$field
+    };
+    ((bool), $self:ident, $field:ident) => {
+        $self.$field
+    };
+    ((timestamptz), $self:ident, $field:ident) => {
+        $self.$field
+    };
+    ((bytea32), $self:ident, $field:ident) => {
+        $self.$field.to_vec()
+    };
+    ((u32_as_i32), $self:ident, $field:ident) => {
+        i32::try_from($self.$field).map_err(|err| {
+            StorageError::ConstraintViolation(format!("{} out of range: {err}", stringify!($field)))
+        })?
+    };
+    ((u64_as_i64), $self:ident, $field:ident) => {
+        i64::try_from($self.$field).map_err(|err| {
+            StorageError::ConstraintViolation(format!("{} out of range: {err}", stringify!($field)))
+        })?
+    };
+    (
+        (
+            enum { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }
+        ),
+        $self:ident,
+        $field:ident
+    ) => {
+        $to_str(&$self.$field)
+    };
+}
+
+macro_rules! pg_sidecar_decode {
+    ((uuid), $row:ident, $field:ident) => {
+        $row.$field
+    };
+    ((uuid_array), $row:ident, $field:ident) => {
+        $row.$field
+    };
+    ((text), $row:ident, $field:ident) => {
+        $row.$field
+    };
+    ((opt_text), $row:ident, $field:ident) => {
+        $row.$field
+    };
+    ((text_array), $row:ident, $field:ident) => {
+        $row.$field
+    };
+    ((bool), $row:ident, $field:ident) => {
+        $row.$field
+    };
+    ((timestamptz), $row:ident, $field:ident) => {
+        $row.$field
+    };
+    ((bytea32), $row:ident, $field:ident) => {
+        bytes32(&$row.$field, stringify!($field))?
+    };
+    ((u32_as_i32), $row:ident, $field:ident) => {
+        u32::try_from($row.$field)
+            .map_err(|err| StorageError::Internal(format!("invalid {}: {err}", stringify!($field))))?
+    };
+    ((u64_as_i64), $row:ident, $field:ident) => {
+        u64::try_from($row.$field)
+            .map_err(|err| StorageError::Internal(format!("invalid {}: {err}", stringify!($field))))?
+    };
+    (
+        (
+            enum { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }
+        ),
+        $row:ident,
+        $field:ident
+    ) => {
+        ($from_str)($row.$field.as_str())?
+    };
+}
+
+macro_rules! pg_sidecar_payload {
+    (@wrap Fact, $payload:expr) => {
+        SidecarPayload::fact($payload)
+    };
+    (@wrap Abstraction, $payload:expr) => {
+        SidecarPayload::abstraction($payload)
+    };
+    (@wrap Perspective, $payload:expr) => {
+        SidecarPayload::perspective($payload)
+    };
+    ($payload_ty:path, $kind:expr, $payload:expr, [$($payload_kind:ident),+ $(,)?]) => {{
+        match $kind {
+            $(
+                PayloadKind::$payload_kind => Ok(pg_sidecar_payload!(@wrap $payload_kind, $payload)),
+            )+
+            other => Err(StorageError::ConstraintViolation(format!(
+                "payload kind {other:?} is not valid for {}",
+                std::any::type_name::<$payload_ty>(),
+            ))),
+        }
+    }};
+}
+
+macro_rules! pg_sidecar {
+    (
+        payload: $($payload_ty:ident)::+,
+        row: $row_ty:ident,
+        kinds: [$($payload_kind:ident),+ $(,)?],
+        table: $table:literal,
+        key: $key_column:ident,
+        fields: {
+            $(
+                $field:ident => $column:ident : $column_kind:tt
+            ),+ $(,)?
+        } $(,)?
+    ) => {
+        impl PgMemorySidecar for $($payload_ty)::+ {
+            fn insert_memory_sidecar<'t>(
+                &'t self,
+                tx: &'t mut Transaction<'_, Postgres>,
+                memory_id: MemoryId,
+            ) -> PgSidecarFuture<'t> {
+                Box::pin(async move {
+                    let sql = memory_insert_sql(
+                        $table,
+                        stringify!($key_column),
+                        &[$(
+                            (stringify!($column), pg_sidecar_cast! $column_kind),
+                        )+],
+                    );
+                    sqlx::query(&sql)
+                        .bind(memory_id.into_inner())
+                        $(
+                            .bind(pg_sidecar_bind!($column_kind, self, $field))
+                        )+
+                        .execute(tx.as_mut())
+                        .await
+                        .map_err(|err| StorageError::Internal(err.to_string()))?;
+                    Ok(())
+                })
+            }
+        }
+
+        #[derive(Debug, sqlx::FromRow)]
+        struct $row_ty {
+            $key_column: uuid::Uuid,
+            $(
+                $field: pg_sidecar_row_ty! $column_kind,
+            )+
+        }
+
+        impl PgMemoryPayload for $($payload_ty)::+ {
+            fn load_batch<'t>(
+                pool: &'t PgPool,
+                kind: PayloadKind,
+                memory_ids: &'t [MemoryId],
+            ) -> PgMemoryPayloadBatchFuture<'t> {
+                Box::pin(async move {
+                    if memory_ids.is_empty() {
+                        return Ok(Vec::new());
+                    }
+                    let raw_memory_ids = memory_ids
+                        .iter()
+                        .map(|memory_id| (*memory_id).into_inner())
+                        .collect::<Vec<_>>();
+                    let sql = memory_select_batch_sql(
+                        $table,
+                        stringify!($key_column),
+                        &[$(stringify!($column)),+],
+                    );
+                    let rows = sqlx::query_as::<_, $row_ty>(&sql)
+                        .bind(&raw_memory_ids)
+                        .fetch_all(pool)
+                        .await
+                        .map_err(|err| StorageError::Internal(err.to_string()))?;
+                    rows.into_iter()
+                        .map(|row| {
+                            let memory_id = MemoryId::new(row.$key_column);
+                            let payload = $($payload_ty)::+ {
+                                $(
+                                    $field: pg_sidecar_decode!($column_kind, row, $field),
+                                )+
+                            };
+                            Ok((
+                                memory_id,
+                                pg_sidecar_payload!(
+                                    $($payload_ty)::+,
+                                    kind,
+                                    payload,
+                                    [$($payload_kind),+]
+                                )?,
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, StorageError>>()
+                })
+            }
+        }
+    };
+}
+
+macro_rules! goal_lifecycle_fact {
+    ($($payload_ty:ident)::+, $row_ty:ident, $table:literal) => {
+        pg_sidecar! {
+            payload: $($payload_ty)::+,
+            row: $row_ty,
+            kinds: [Fact],
+            table: $table,
+            key: memory_id,
+            fields: {
+                goal_id => goal_id: (uuid),
+                transitioned_at => transitioned_at: (timestamptz),
+            },
+        }
+    };
 }
 
 fn insert_edge_sidecar<'t, P>(
@@ -896,446 +1282,95 @@ where
     P::copy_goal_sidecar(tx, goal_id, source_goal_id)
 }
 
-impl PgMemorySidecar for proxima_core::AgentNoteV1 {
-    fn insert_memory_sidecar<'t>(
-        &'t self,
-        tx: &'t mut Transaction<'_, Postgres>,
-        memory_id: MemoryId,
-    ) -> PgSidecarFuture<'t> {
-        Box::pin(async move {
-            sqlx::query(
-                "INSERT INTO proxima_core.agent_note_v1
-                    (memory_id, note_id, title, body, tags, idempotency_key)
-                 VALUES ($1, $2, $3, $4, $5, $6)",
-            )
-            .bind(memory_id.into_inner())
-            .bind(self.note_id)
-            .bind(&self.title)
-            .bind(&self.body)
-            .bind(&self.tags)
-            .bind(self.idempotency_key.as_deref())
-            .execute(tx.as_mut())
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
-            Ok(())
-        })
-    }
+pg_sidecar! {
+    payload: proxima_core::AgentNoteV1,
+    row: AgentNotePayloadRow,
+    kinds: [Fact],
+    table: "proxima_core.agent_note_v1",
+    key: memory_id,
+    fields: {
+        note_id => note_id: (uuid),
+        title => title: (text),
+        body => body: (text),
+        tags => tags: (text_array),
+        idempotency_key => idempotency_key: (opt_text),
+    },
 }
 
-#[derive(Debug, sqlx::FromRow)]
-struct AgentNotePayloadRow {
-    note_id: uuid::Uuid,
-    title: String,
-    body: String,
-    tags: Vec<String>,
-    idempotency_key: Option<String>,
+pg_sidecar! {
+    payload: proxima_core::UtteranceV1,
+    row: UtterancePayloadRow,
+    kinds: [Fact],
+    table: "proxima_core.utterance_v1",
+    key: memory_id,
+    fields: {
+        speaker => speaker: (enum {
+            to_str: proxima_core::Speaker::as_str,
+            pg_type: "text",
+            from_str: parse_utterance_speaker
+        }),
+        conversation_id => conversation_id: (text),
+        text => text: (text),
+    },
 }
 
-impl PgMemoryPayload for proxima_core::AgentNoteV1 {
-    fn load_memory_payload(pool: &PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_> {
-        Box::pin(async move {
-            let row: Option<AgentNotePayloadRow> = sqlx::query_as(
-                "SELECT note_id, title, body, tags, idempotency_key
-                   FROM proxima_core.agent_note_v1
-                  WHERE memory_id = $1",
-            )
-            .bind(memory_id.into_inner())
-            .fetch_optional(pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
-            Ok(row.map(|row| {
-                SidecarPayload::fact(proxima_core::AgentNoteV1 {
-                    note_id: row.note_id,
-                    title: row.title,
-                    body: row.body,
-                    tags: row.tags,
-                    idempotency_key: row.idempotency_key,
-                })
-            }))
-        })
-    }
+pg_sidecar! {
+    payload: proxima_core::AgentDerivationV1,
+    row: AgentDerivationPayloadRow,
+    kinds: [Abstraction, Perspective],
+    table: "proxima_core.agent_derivation_v1",
+    key: memory_id,
+    fields: {
+        title => title: (text),
+        body => body: (text),
+        tags => tags: (text_array),
+        idempotency_key => idempotency_key: (opt_text),
+        source_memory_ids => source_memory_ids: (uuid_array),
+        model_id => model_id: (text),
+        client_name => client_name: (text),
+        client_version => client_version: (text),
+    },
 }
 
-impl PgMemorySidecar for proxima_core::UtteranceV1 {
-    fn insert_memory_sidecar<'t>(
-        &'t self,
-        tx: &'t mut Transaction<'_, Postgres>,
-        memory_id: MemoryId,
-    ) -> PgSidecarFuture<'t> {
-        Box::pin(async move {
-            sqlx::query(
-                "INSERT INTO proxima_core.utterance_v1
-                    (memory_id, speaker, conversation_id, text)
-                 VALUES ($1, $2, $3, $4)",
-            )
-            .bind(memory_id.into_inner())
-            .bind(self.speaker.as_str())
-            .bind(&self.conversation_id)
-            .bind(&self.text)
-            .execute(tx.as_mut())
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
-            Ok(())
-        })
-    }
+pg_sidecar! {
+    payload: proxima_core::verbs::persist_mcp_call::McpCallLoggedV1,
+    row: McpCallLoggedPayloadRow,
+    kinds: [Fact],
+    table: "proxima_core.mcp_call_logged_v1",
+    key: memory_id,
+    fields: {
+        tool_name => tool_name: (text),
+        actor_oid => actor_oid: (text),
+        actor_upn => actor_upn: (text),
+        ok => ok: (bool),
+        error => error: (opt_text),
+        latency_ms => latency_ms: (u32_as_i32),
+        io_byte_len => io_byte_len: (u64_as_i64),
+        io_truncated => io_truncated: (bool),
+        io_content_hash => io_content_hash: (bytea32),
+    },
 }
 
-impl PgMemoryPayload for proxima_core::UtteranceV1 {
-    fn load_memory_payload(pool: &PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_> {
-        Box::pin(async move {
-            let row: Option<(String, String, String)> = sqlx::query_as(
-                "SELECT speaker, conversation_id, text
-                   FROM proxima_core.utterance_v1
-                  WHERE memory_id = $1",
-            )
-            .bind(memory_id.into_inner())
-            .fetch_optional(pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
-            row.map(|(speaker, conversation_id, text)| {
-                let speaker = match speaker.as_str() {
-                    "user" => proxima_core::Speaker::User,
-                    "agent" => proxima_core::Speaker::Agent,
-                    other => {
-                        return Err(StorageError::Internal(format!(
-                            "invalid utterance speaker {other}"
-                        )));
-                    }
-                };
-                Ok(SidecarPayload::fact(proxima_core::UtteranceV1 {
-                    speaker,
-                    conversation_id,
-                    text,
-                }))
-            })
-            .transpose()
-        })
-    }
-}
-
-impl PgMemorySidecar for proxima_core::AgentDerivationV1 {
-    fn insert_memory_sidecar<'t>(
-        &'t self,
-        tx: &'t mut Transaction<'_, Postgres>,
-        memory_id: MemoryId,
-    ) -> PgSidecarFuture<'t> {
-        Box::pin(async move {
-            sqlx::query(
-                "INSERT INTO proxima_core.agent_derivation_v1
-                    (memory_id, title, body, tags, idempotency_key,
-                     source_memory_ids, model_id, client_name, client_version)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-            )
-            .bind(memory_id.into_inner())
-            .bind(&self.title)
-            .bind(&self.body)
-            .bind(&self.tags)
-            .bind(self.idempotency_key.as_deref())
-            .bind(&self.source_memory_ids)
-            .bind(&self.model_id)
-            .bind(&self.client_name)
-            .bind(&self.client_version)
-            .execute(tx.as_mut())
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
-            Ok(())
-        })
-    }
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct AgentDerivationPayloadRow {
-    title: String,
-    body: String,
-    tags: Vec<String>,
-    idempotency_key: Option<String>,
-    source_memory_ids: Vec<uuid::Uuid>,
-    model_id: String,
-    client_name: String,
-    client_version: String,
-}
-
-impl PgMemoryPayload for proxima_core::AgentDerivationV1 {
-    fn load_memory_payload(pool: &PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_> {
-        Box::pin(async move {
-            let row: Option<AgentDerivationPayloadRow> = sqlx::query_as(
-                "SELECT title, body, tags, idempotency_key, source_memory_ids,
-                        model_id, client_name, client_version
-                   FROM proxima_core.agent_derivation_v1
-                  WHERE memory_id = $1",
-            )
-            .bind(memory_id.into_inner())
-            .fetch_optional(pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
-            Ok(row.map(|row| {
-                SidecarPayload::abstraction(proxima_core::AgentDerivationV1 {
-                    title: row.title,
-                    body: row.body,
-                    tags: row.tags,
-                    idempotency_key: row.idempotency_key,
-                    source_memory_ids: row.source_memory_ids,
-                    model_id: row.model_id,
-                    client_name: row.client_name,
-                    client_version: row.client_version,
-                })
-            }))
-        })
-    }
-}
-
-impl PgMemorySidecar for proxima_core::verbs::persist_mcp_call::McpCallLoggedV1 {
-    fn insert_memory_sidecar<'t>(
-        &'t self,
-        tx: &'t mut Transaction<'_, Postgres>,
-        memory_id: MemoryId,
-    ) -> PgSidecarFuture<'t> {
-        Box::pin(async move {
-            let latency_ms = i32::try_from(self.latency_ms).map_err(|err| {
-                StorageError::ConstraintViolation(format!("latency_ms out of range: {err}"))
-            })?;
-            let io_byte_len = i64::try_from(self.io_byte_len).map_err(|err| {
-                StorageError::ConstraintViolation(format!("io_byte_len out of range: {err}"))
-            })?;
-            sqlx::query(
-                "INSERT INTO proxima_core.mcp_call_logged_v1
-                    (memory_id, tool_name, actor_oid, actor_upn, ok, error,
-                     latency_ms, io_byte_len, io_truncated, io_content_hash)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-            )
-            .bind(memory_id.into_inner())
-            .bind(&self.tool_name)
-            .bind(&self.actor_oid)
-            .bind(&self.actor_upn)
-            .bind(self.ok)
-            .bind(self.error.as_deref())
-            .bind(latency_ms)
-            .bind(io_byte_len)
-            .bind(self.io_truncated)
-            .bind(self.io_content_hash.to_vec())
-            .execute(tx.as_mut())
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
-            Ok(())
-        })
-    }
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct McpCallLoggedPayloadRow {
-    tool_name: String,
-    actor_oid: String,
-    actor_upn: String,
-    ok: bool,
-    error: Option<String>,
-    latency_ms: i32,
-    io_byte_len: i64,
-    io_truncated: bool,
-    io_content_hash: Vec<u8>,
-}
-
-impl PgMemoryPayload for proxima_core::verbs::persist_mcp_call::McpCallLoggedV1 {
-    fn load_memory_payload(pool: &PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_> {
-        Box::pin(async move {
-            let row: Option<McpCallLoggedPayloadRow> = sqlx::query_as(
-                "SELECT tool_name, actor_oid, actor_upn, ok, error,
-                        latency_ms, io_byte_len, io_truncated, io_content_hash
-                   FROM proxima_core.mcp_call_logged_v1
-                  WHERE memory_id = $1",
-            )
-            .bind(memory_id.into_inner())
-            .fetch_optional(pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
-            row.map(|row| {
-                let latency_ms = u32::try_from(row.latency_ms)
-                    .map_err(|err| StorageError::Internal(format!("invalid latency_ms: {err}")))?;
-                let io_byte_len = u64::try_from(row.io_byte_len)
-                    .map_err(|err| StorageError::Internal(format!("invalid io_byte_len: {err}")))?;
-                let io_content_hash = bytes32(&row.io_content_hash, "io_content_hash")?;
-                Ok(SidecarPayload::fact(
-                    proxima_core::verbs::persist_mcp_call::McpCallLoggedV1 {
-                        tool_name: row.tool_name,
-                        actor_oid: row.actor_oid,
-                        actor_upn: row.actor_upn,
-                        ok: row.ok,
-                        error: row.error,
-                        latency_ms,
-                        io_byte_len,
-                        io_truncated: row.io_truncated,
-                        io_content_hash,
-                    },
-                ))
-            })
-            .transpose()
-        })
-    }
-}
-
-fn insert_goal_lifecycle_sidecar<'t>(
-    tx: &'t mut Transaction<'_, Postgres>,
-    memory_id: MemoryId,
-    goal_id: uuid::Uuid,
-    transitioned_at: time::OffsetDateTime,
-    table: &'static str,
-) -> PgSidecarFuture<'t> {
-    Box::pin(async move {
-        let sql = format!(
-            "INSERT INTO {table} (memory_id, goal_id, transitioned_at)
-             VALUES ($1, $2, $3)"
-        );
-        sqlx::query(&sql)
-            .bind(memory_id.into_inner())
-            .bind(goal_id)
-            .bind(transitioned_at)
-            .execute(tx.as_mut())
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
-        Ok(())
-    })
-}
-
-fn load_goal_lifecycle_payload<'t, P>(
-    pool: &'t PgPool,
-    memory_id: MemoryId,
-    table: &'static str,
-    build: fn(uuid::Uuid, time::OffsetDateTime) -> P,
-) -> PgMemoryPayloadFuture<'t>
-where
-    P: FactPayload + Send + Sync + 'static,
-{
-    Box::pin(async move {
-        let sql = format!("SELECT goal_id, transitioned_at FROM {table} WHERE memory_id = $1");
-        let row: Option<(uuid::Uuid, time::OffsetDateTime)> = sqlx::query_as(&sql)
-            .bind(memory_id.into_inner())
-            .fetch_optional(pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
-        Ok(row.map(|(goal_id, transitioned_at)| {
-            SidecarPayload::fact(build(goal_id, transitioned_at))
-        }))
-    })
-}
-
-impl PgMemorySidecar for proxima_core::GoalActivatedV1 {
-    fn insert_memory_sidecar<'t>(
-        &'t self,
-        tx: &'t mut Transaction<'_, Postgres>,
-        memory_id: MemoryId,
-    ) -> PgSidecarFuture<'t> {
-        insert_goal_lifecycle_sidecar(
-            tx,
-            memory_id,
-            self.goal_id,
-            self.transitioned_at,
-            "proxima_core.goal_activated_v1",
-        )
-    }
-}
-
-impl PgMemoryPayload for proxima_core::GoalActivatedV1 {
-    fn load_memory_payload(pool: &PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_> {
-        load_goal_lifecycle_payload(
-            pool,
-            memory_id,
-            "proxima_core.goal_activated_v1",
-            |goal_id, transitioned_at| proxima_core::GoalActivatedV1 {
-                goal_id,
-                transitioned_at,
-            },
-        )
-    }
-}
-
-impl PgMemorySidecar for proxima_core::GoalPausedV1 {
-    fn insert_memory_sidecar<'t>(
-        &'t self,
-        tx: &'t mut Transaction<'_, Postgres>,
-        memory_id: MemoryId,
-    ) -> PgSidecarFuture<'t> {
-        insert_goal_lifecycle_sidecar(
-            tx,
-            memory_id,
-            self.goal_id,
-            self.transitioned_at,
-            "proxima_core.goal_paused_v1",
-        )
-    }
-}
-
-impl PgMemoryPayload for proxima_core::GoalPausedV1 {
-    fn load_memory_payload(pool: &PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_> {
-        load_goal_lifecycle_payload(
-            pool,
-            memory_id,
-            "proxima_core.goal_paused_v1",
-            |goal_id, transitioned_at| proxima_core::GoalPausedV1 {
-                goal_id,
-                transitioned_at,
-            },
-        )
-    }
-}
-
-impl PgMemorySidecar for proxima_core::GoalAchievedV1 {
-    fn insert_memory_sidecar<'t>(
-        &'t self,
-        tx: &'t mut Transaction<'_, Postgres>,
-        memory_id: MemoryId,
-    ) -> PgSidecarFuture<'t> {
-        insert_goal_lifecycle_sidecar(
-            tx,
-            memory_id,
-            self.goal_id,
-            self.transitioned_at,
-            "proxima_core.goal_achieved_v1",
-        )
-    }
-}
-
-impl PgMemoryPayload for proxima_core::GoalAchievedV1 {
-    fn load_memory_payload(pool: &PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_> {
-        load_goal_lifecycle_payload(
-            pool,
-            memory_id,
-            "proxima_core.goal_achieved_v1",
-            |goal_id, transitioned_at| proxima_core::GoalAchievedV1 {
-                goal_id,
-                transitioned_at,
-            },
-        )
-    }
-}
-
-impl PgMemorySidecar for proxima_core::GoalAbandonedV1 {
-    fn insert_memory_sidecar<'t>(
-        &'t self,
-        tx: &'t mut Transaction<'_, Postgres>,
-        memory_id: MemoryId,
-    ) -> PgSidecarFuture<'t> {
-        insert_goal_lifecycle_sidecar(
-            tx,
-            memory_id,
-            self.goal_id,
-            self.transitioned_at,
-            "proxima_core.goal_abandoned_v1",
-        )
-    }
-}
-
-impl PgMemoryPayload for proxima_core::GoalAbandonedV1 {
-    fn load_memory_payload(pool: &PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_> {
-        load_goal_lifecycle_payload(
-            pool,
-            memory_id,
-            "proxima_core.goal_abandoned_v1",
-            |goal_id, transitioned_at| proxima_core::GoalAbandonedV1 {
-                goal_id,
-                transitioned_at,
-            },
-        )
-    }
-}
+goal_lifecycle_fact!(
+    proxima_core::GoalActivatedV1,
+    GoalActivatedPayloadRow,
+    "proxima_core.goal_activated_v1"
+);
+goal_lifecycle_fact!(
+    proxima_core::GoalPausedV1,
+    GoalPausedPayloadRow,
+    "proxima_core.goal_paused_v1"
+);
+goal_lifecycle_fact!(
+    proxima_core::GoalAchievedV1,
+    GoalAchievedPayloadRow,
+    "proxima_core.goal_achieved_v1"
+);
+goal_lifecycle_fact!(
+    proxima_core::GoalAbandonedV1,
+    GoalAbandonedPayloadRow,
+    "proxima_core.goal_abandoned_v1"
+);
 
 impl PgGoalSidecar for proxima_core::TaskGoalV1 {
     fn insert_goal_sidecar<'t>(
