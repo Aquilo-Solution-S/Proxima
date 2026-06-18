@@ -1,20 +1,21 @@
 use std::sync::Arc;
-use std::{future::Future, pin::Pin};
 
 mod common;
 
 use common::{ConstantEmbedding, drop_db, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
+use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FlavorRegistry,
     FlavorRegistryFrozen, McpToolError, MemoryId, OrgId, Owner, PersonalityInstanceId, Principal,
-    SchemaId, StorageError, UserId,
+    SchemaId, UserId,
 };
+use proxima_storage_pg::sidecars::{
+    PgCitationMappingSidecar, PgCitedObjectSidecar, PgSidecarFuture,
+};
+use proxima_storage_pg::{PgSidecarRegistry, register_core_pg_sidecars};
 use serde_json::json;
 use time::format_description::well_known::Rfc3339;
-
-type SidecarFuture<'t> = Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct RememberTestCitedObject {
@@ -37,12 +38,14 @@ impl CitedObjectPayload for RememberTestCitedObject {
         hasher.update(self.locator.as_bytes());
         *hasher.finalize().as_bytes()
     }
+}
 
-    fn sidecar_insert<'t>(
+impl PgCitedObjectSidecar for RememberTestCitedObject {
+    fn insert_cited_object_sidecar<'t>(
         &'t self,
-        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
-        sidecar_row_id: uuid::Uuid,
-    ) -> SidecarFuture<'t> {
+        tx: &'t mut sqlx::PgConnection,
+        cited_object_id: uuid::Uuid,
+    ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO public.remember_test_cited_object_v1
@@ -50,12 +53,12 @@ impl CitedObjectPayload for RememberTestCitedObject {
                  VALUES ($1, $2, $3)
                  ON CONFLICT (cited_object_id) DO NOTHING",
             )
-            .bind(sidecar_row_id)
+            .bind(cited_object_id)
             .bind(&self.artifact_id)
             .bind(&self.locator)
-            .execute(&mut **tx)
+            .execute(tx)
             .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            .map_err(|err| proxima_core::StorageError::Internal(err.to_string()))?;
             Ok(())
         })
     }
@@ -79,26 +82,27 @@ impl CitationMappingPayload for RememberTestCitationMapping {
     fn cited_object_schema() -> SchemaId {
         RememberTestCitedObject::schema_id()
     }
+}
 
-    fn sidecar_insert<'t>(
+impl PgCitationMappingSidecar for RememberTestCitationMapping {
+    fn insert_citation_mapping_sidecar<'t>(
         &'t self,
-        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
-        sidecar_row_id: uuid::Uuid,
-    ) -> SidecarFuture<'t> {
+        tx: &'t mut sqlx::PgConnection,
+        citation_mapping_id: uuid::Uuid,
+    ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO public.remember_test_citation_mapping_v1
                     (citation_mapping_id, section, byte_start, byte_end)
-                 VALUES ($1, $2, $3, $4)
-                 ON CONFLICT (citation_mapping_id) DO NOTHING",
+                 VALUES ($1, $2, $3, $4)",
             )
-            .bind(sidecar_row_id)
+            .bind(citation_mapping_id)
             .bind(&self.section)
             .bind(self.byte_start)
             .bind(self.byte_end)
-            .execute(&mut **tx)
+            .execute(tx)
             .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            .map_err(|err| proxima_core::StorageError::Internal(err.to_string()))?;
             Ok(())
         })
     }
@@ -256,7 +260,7 @@ async fn remember_enqueues_one_embedding_job_and_replay_does_not_duplicate()
 )]
 async fn remember_cited_and_uncited_persist_personality_and_citation_rows()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_remember_sidecars().await;
     create_remember_citation_sidecars(pg.pool()).await?;
 
     let frozen = registry_with_remember_test_citation();
@@ -841,7 +845,6 @@ async fn call_tool_prefixed(
     let caller_self_perspective = author.caller_self_perspective;
     (descriptor.call)(
         McpToolCtx {
-            pool: pg.pool().clone(),
             owner: owner.clone(),
             authz: AuthzContext::single_owner(owner, AuthPath::System),
             handles: None,
@@ -850,6 +853,7 @@ async fn call_tool_prefixed(
             author,
             caller_self_perspective,
             master_token_id: None,
+            extensions: McpToolExtensions::with(pg.pool().clone()),
             engine: Some(engine_for_registry(registry, pg)),
         },
         args,
@@ -875,7 +879,6 @@ async fn call_tool_with_engine(
         .expect("registered tool");
     (descriptor.call)(
         McpToolCtx {
-            pool: pg.pool().clone(),
             owner: owner.clone(),
             authz: AuthzContext::single_owner(owner, AuthPath::System),
             handles: Some(handles.clone()),
@@ -884,6 +887,7 @@ async fn call_tool_with_engine(
             author,
             caller_self_perspective: None,
             master_token_id: None,
+            extensions: McpToolExtensions::with(pg.pool().clone()),
             engine,
         },
         args,
@@ -940,6 +944,19 @@ fn registry_with_remember_test_citation() -> Arc<FlavorRegistryFrozen> {
     registry.add_cited_object_schema::<RememberTestCitedObject>();
     registry.add_citation_mapping_schema::<RememberTestCitationMapping>();
     Arc::new(registry.freeze())
+}
+
+async fn fresh_pg_with_remember_sidecars() -> (proxima_storage_pg::PgStorage, String) {
+    let (pg, db_name) = fresh_pg().await;
+    let registry = registry_with_remember_test_citation();
+    let mut sidecars = PgSidecarRegistry::new();
+    register_core_pg_sidecars(&mut sidecars);
+    sidecars.add_cited_object::<RememberTestCitedObject>();
+    sidecars.add_citation_mapping::<RememberTestCitationMapping>();
+    let sidecars = sidecars
+        .freeze_against(registry.schemas())
+        .expect("remember test PG sidecars match schemas");
+    (pg.with_sidecars(sidecars), db_name)
 }
 
 async fn create_remember_citation_sidecars(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {

@@ -1,12 +1,10 @@
 use std::collections::BTreeMap;
 
-use crate::mcp::core_tools::get_memory::sidecar_specs;
+use crate::mcp::core_tools::get_memory::{sidecar_specs, snapshot_payload_value};
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
-use crate::{EdgeId, MemoryId, PersonalityInstanceId};
+use crate::{MemoryId, PersonalityInstanceId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-use super::util::{map_storage, owner_principal};
 
 #[derive(Debug, Serialize)]
 pub struct NeighborEdge {
@@ -23,29 +21,26 @@ pub(crate) async fn load_graph_payloads(
     if memory_ids.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
-    let rows: Vec<GraphPayloadRow> = sqlx::query_as(
-        "SELECT m.memory_id,
-                COALESCE(n.tags, d.tags) AS tags
-         FROM proxima_core.memories m
-         LEFT JOIN proxima_core.agent_note_v1 n USING (memory_id)
-         LEFT JOIN proxima_core.agent_derivation_v1 d USING (memory_id)
-         WHERE m.owner_principal_kind = $1
-           AND m.owner_principal_id = $2
-           AND m.memory_id = ANY($3::uuid[])",
-    )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(memory_ids)
-    .fetch_all(&ctx.pool)
-    .await
-    .map_err(map_storage)?;
-    Ok(rows.into_iter().map(|row| (row.memory_id, row)).collect())
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let ids = memory_ids
+        .iter()
+        .copied()
+        .map(MemoryId::new)
+        .collect::<Vec<_>>();
+    let rows = storage.load_memory_graph_payloads(&ctx.owner, &ids).await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let memory_id = row.memory_id.into_inner();
+            (memory_id, GraphPayloadRow { tags: row.tags })
+        })
+        .collect())
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug)]
 pub(crate) struct GraphPayloadRow {
-    pub(crate) memory_id: uuid::Uuid,
     pub(crate) tags: Option<Vec<String>>,
 }
 
@@ -59,46 +54,31 @@ pub async fn neighbor_edges(
     if memory_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
-    let rows: Vec<EdgeRow> = sqlx::query_as(
-        "SELECT edge_id, relation, source_kind, source_memory_id, target_kind, target_memory_id
-         FROM proxima_core.edges
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND (source_memory_id = ANY($3) OR target_memory_id = ANY($3))
-         ORDER BY edge_id DESC
-         LIMIT 200",
-    )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(memory_ids)
-    .fetch_all(&ctx.pool)
-    .await
-    .map_err(map_storage)?;
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let ids = memory_ids
+        .iter()
+        .copied()
+        .map(MemoryId::new)
+        .collect::<Vec<_>>();
+    let rows = storage
+        .load_neighbor_memory_edges(&ctx.owner, &ids, 200)
+        .await?;
 
     Ok(rows
         .into_iter()
         .map(|row| NeighborEdge {
-            handle: ctx.format_edge(EdgeId::new(row.edge_id)),
+            handle: ctx.format_edge(row.edge_id),
             relation: row.relation,
             source: row
                 .source_memory_id
-                .map(|id| format_memory_by_kind(ctx, MemoryId::new(id), row.source_kind)),
+                .map(|id| format_memory_by_kind(ctx, id, row.source_kind)),
             target: row
                 .target_memory_id
-                .map(|id| format_memory_by_kind(ctx, MemoryId::new(id), row.target_kind)),
+                .map(|id| format_memory_by_kind(ctx, id, row.target_kind)),
         })
         .collect())
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct EdgeRow {
-    edge_id: uuid::Uuid,
-    relation: String,
-    source_kind: crate::EntityKind,
-    source_memory_id: Option<uuid::Uuid>,
-    target_kind: crate::EntityKind,
-    target_memory_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -172,12 +152,13 @@ impl McpTool for OpenTool {
                     McpToolError::InvalidInput(format!("memory {memory_uuid} not found"))
                 })?;
             let neighbor_edges = neighbor_edges(&ctx, &[memory_uuid]).await?;
-            let title = payload_string(&snapshot.payload_json, "title")
-                .or_else(|| payload_string(&snapshot.payload_json, "conversation_id"));
-            let body = payload_string(&snapshot.payload_json, "body")
-                .or_else(|| payload_string(&snapshot.payload_json, "text"))
+            let payload = snapshot_payload_value(snapshot.payload.as_ref())?;
+            let title = payload_string(&payload, "title")
+                .or_else(|| payload_string(&payload, "conversation_id"));
+            let body = payload_string(&payload, "body")
+                .or_else(|| payload_string(&payload, "text"))
                 .or_else(|| snapshot.text.clone());
-            let tags = payload_tags(&snapshot.payload_json);
+            let tags = payload_tags(&payload);
             Ok(OpenOutput {
                 handle: format_memory_by_kind_label(&ctx, snapshot.memory_id, &snapshot.kind),
                 kind: snapshot.kind,

@@ -14,7 +14,7 @@ use crate::personality::types::{
     PersonalityMemoryKind, WakeChainDepth, WakeEntryAuthoredBy, WakeEntryGoalScope,
     WakeEntryTriggerKind,
 };
-use crate::{MemoryId, Owner, RegisteredRelation, SchemaId, SchemaVersion};
+use crate::{MemoryId, Owner, RegisteredRelation, SchemaId, SchemaVersion, SidecarPayload};
 
 use super::personality::{PersonalityInstanceId, PersonalityRef};
 
@@ -73,7 +73,7 @@ pub struct FactRow {
     pub memory_id: MemoryId,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
-    pub payload_json: serde_json::Value,
+    pub payload: Option<SidecarPayload>,
     pub wake_chain_depth: WakeChainDepth,
 }
 
@@ -86,22 +86,23 @@ pub struct MemorySnapshot {
     pub authoring_personality_instance_id: Option<super::PersonalityInstanceId>,
     pub text: Option<String>,
     pub wake_chain_depth: WakeChainDepth,
-    pub payload_json: serde_json::Value,
+    pub payload: Option<SidecarPayload>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AbstractionRow {
     pub memory_id: MemoryId,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub text: String,
-    pub payload_json: serde_json::Value,
+    pub payload: Option<SidecarPayload>,
     pub wake_chain_depth: WakeChainDepth,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct SidecarSpec {
     pub schema_id: SchemaId,
+    pub schema_version: SchemaVersion,
     pub sidecar_table: String,
 }
 
@@ -111,7 +112,7 @@ pub struct PersonalityMemoryDraft {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub text: String,
-    pub typed_payload: serde_json::Value,
+    pub sidecar_payload: crate::SidecarPayload,
     pub provenance: Vec<MemoryId>,
     pub embedding: Vec<f32>,
     pub embedding_model_id: String,
@@ -140,7 +141,6 @@ pub struct PersonalityWriteRequest<'a> {
     pub current_root_perspective_memory_id: MemoryId,
     pub wake_chain_depth: WakeChainDepth,
     pub memories: &'a [PersonalityMemoryDraft],
-    pub sidecar_table: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

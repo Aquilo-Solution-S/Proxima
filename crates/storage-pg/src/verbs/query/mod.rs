@@ -10,9 +10,8 @@
 //! before dispatch when the request is heads-only and `schema_id`
 //! resolves to a stateful Fact schema.
 //!
-//! Payload projection: for each schema with a sidecar table, we
-//! LEFT JOIN the sidecar, project the row into a typed JSON value,
-//! then encode the wire payload as canonical JSON bytes.
+//! Payload projection: the selected memory rows are hydrated through
+//! typed PG sidecar loaders registered by the owning flavor.
 
 use std::collections::HashMap;
 
@@ -46,7 +45,7 @@ pub async fn fact_entity_id_for(
     owner: &Owner,
     schema_id: &SchemaId,
     schema_version: SchemaVersion,
-    natural_key: &serde_json::Value,
+    natural_key: &[String],
 ) -> Result<Option<FactEntityId>, StorageError> {
     fact_entity_id_for_executor(tx, owner, schema_id, schema_version, natural_key).await
 }
@@ -56,7 +55,7 @@ pub(crate) async fn fact_entity_id_for_pool(
     owner: &Owner,
     schema_id: &SchemaId,
     schema_version: SchemaVersion,
-    natural_key: &serde_json::Value,
+    natural_key: &[String],
 ) -> Result<Option<FactEntityId>, StorageError> {
     fact_entity_id_for_executor(pool, owner, schema_id, schema_version, natural_key).await
 }
@@ -66,7 +65,7 @@ async fn fact_entity_id_for_executor<'e, E>(
     owner: &Owner,
     schema_id: &SchemaId,
     schema_version: SchemaVersion,
-    natural_key: &serde_json::Value,
+    natural_key: &[String],
 ) -> Result<Option<FactEntityId>, StorageError>
 where
     E: Executor<'e, Database = Postgres>,
@@ -80,7 +79,7 @@ where
             AND owner_org_id = $3
             AND schema_id = $4
             AND schema_version = $5
-            AND natural_key = $6",
+            AND natural_key = $6::text[]",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)

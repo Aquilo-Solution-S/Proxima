@@ -11,6 +11,8 @@ pub const UPLOADED_BLOB_SCHEMA_ID: &str = proxima_schema_id!("uploaded-blob-v1")
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct UploadedBlobPayload {
     pub content_hash: [u8; 32],
+    pub bucket: String,
+    pub object_key: String,
     pub sha256: [u8; 32],
     pub byte_len: u64,
     pub mime: String,

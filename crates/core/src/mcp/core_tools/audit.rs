@@ -15,15 +15,13 @@
 //!
 //! Emit failures are non-fatal: the verb already succeeded.
 
-use time::OffsetDateTime;
-
 use crate::mcp::McpToolCtx;
 use crate::mcp::core_tools::payload::{
     PersonalityConfigChangeSnapshot, PersonalityConfigChangedCaller,
     PersonalityConfigChangedSubject, PersonalityConfigChangedV1, PersonalityConfigChangedVerb,
 };
 use crate::verbs::event_ingest::{Citation, CitationMappingHint, CitedObjectHint, EventDraft};
-use crate::{FactPayload, SchemaId, SchemaVersion, SourceBatchId, SourceId, canonical_json_bytes};
+use crate::{SchemaId, SchemaVersion, SourceBatchId};
 
 /// Outcome of an audit-emit attempt. Tools surface `Failed` as a
 /// non-fatal warning attached to their successful response (the verb
@@ -97,35 +95,26 @@ async fn write_fact(ctx: &McpToolCtx, payload: &PersonalityConfigChangedV1) -> R
         .storage()
         .ok_or_else(|| "engine storage unavailable".to_string())?;
 
-    let payload_value = serde_json::to_value(payload).map_err(|e| e.to_string())?;
-    let payload_bytes = canonical_json_bytes(&payload_value);
-    let body_hash = blake3::hash(&payload_bytes);
-    let observed_at = OffsetDateTime::now_utc();
-
-    let draft = EventDraft {
-        source_id: SourceId::new("core/mcp-crud"),
-        source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
-        principal: ctx.owner.principal.clone(),
-        org_id: Some(ctx.owner.org_id),
-        author_personality_instance_id: None,
-        schema_id: SchemaId::new(PersonalityConfigChangedV1::SCHEMA_ID.into()),
-        schema_version: SchemaVersion::new(PersonalityConfigChangedV1::SCHEMA_VERSION),
-        payload: payload_bytes,
-        rendered_text: None,
+    let observed_at = time::OffsetDateTime::now_utc();
+    let mut draft = EventDraft::from_payload(
+        &ctx.owner,
+        "core/mcp-crud",
+        SourceBatchId::new(uuid::Uuid::now_v7()),
+        payload,
         observed_at,
-        occurred_at: observed_at,
-        citation: Some(Citation {
-            object: CitedObjectHint {
-                schema_id: SchemaId::new("core/personality_config_changed_object_v1".into()),
-                schema_version: SchemaVersion::new(1),
-                content_hash: *body_hash.as_bytes(),
-            },
-            mapping: CitationMappingHint {
-                schema_id: SchemaId::new("core/personality_config_changed_whole_v1".into()),
-                schema_version: SchemaVersion::new(1),
-            },
-        }),
-    };
+    );
+    let body_hash = blake3::hash(&draft.payload);
+    draft = draft.with_citation(Citation {
+        object: CitedObjectHint {
+            schema_id: SchemaId::new("core/personality_config_changed_object_v1".into()),
+            schema_version: SchemaVersion::new(1),
+            content_hash: *body_hash.as_bytes(),
+        },
+        mapping: CitationMappingHint {
+            schema_id: SchemaId::new("core/personality_config_changed_whole_v1".into()),
+            schema_version: SchemaVersion::new(1),
+        },
+    });
     let embedding_client = ctx.engine().and_then(crate::engine::Engine::embed_client);
     let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
     storage
@@ -141,7 +130,8 @@ mod tests {
     use crate::mcp::HandleTable;
     use crate::mcp::OutputMode;
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, McpAuthorContext, OrgId, Owner, Principal, UserId,
+        AuthPath, AuthzContext, FlavorRegistry, McpAuthorContext, McpToolExtensions, OrgId, Owner,
+        Principal, UserId,
     };
     use std::sync::Arc;
 
@@ -156,7 +146,6 @@ mod tests {
     async fn resolve_caller_returns_failed_when_no_storage() {
         let owner = fake_owner();
         let ctx = McpToolCtx {
-            pool: sqlx::PgPool::connect_lazy("postgres://placeholder/db").expect("lazy connect"),
             owner: owner.clone(),
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(Arc::new(HandleTable::new())),
@@ -171,6 +160,7 @@ mod tests {
             },
             caller_self_perspective: None,
             master_token_id: None,
+            extensions: McpToolExtensions::default(),
             engine: None,
         };
         let outcome = emit_personality_config_changed(
@@ -204,7 +194,6 @@ mod tests {
         let owner = fake_owner();
         let engine = std::sync::Arc::new(Engine::new(FlavorRegistry::new().freeze()));
         let ctx = McpToolCtx {
-            pool: sqlx::PgPool::connect_lazy("postgres://placeholder/db").expect("lazy connect"),
             owner: owner.clone(),
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(Arc::new(HandleTable::new())),
@@ -219,6 +208,7 @@ mod tests {
             },
             caller_self_perspective: None,
             master_token_id: None,
+            extensions: McpToolExtensions::default(),
             engine: Some(engine),
         };
         let outcome = emit_personality_config_changed(

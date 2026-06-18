@@ -146,8 +146,8 @@ async fn self_ingestion_streams_proxima_main() {
              main_count={main_count_before}, facts={facts_after_initial}"
         );
 
-        // Phase 1.5 — payload round-trip check. Query for commit-v1 facts
-        // and verify payload bytes deserialize back to CommitV1.
+        // Phase 1.5 — payload projection check. Query for commit-v1 facts
+        // and verify the typed sidecar projects back to CommitV1.
         let commit_schema = proxima_core::SchemaId::new("proxima-code/commit-v1".into());
         let query_resp = engine
             .query(
@@ -169,22 +169,25 @@ async fn self_ingestion_streams_proxima_main() {
                 },
             )
             .await?;
-        // At least one commit-v1 fact should have a non-empty payload
-        let non_empty_payloads: Vec<_> = query_resp
+        // At least one commit-v1 fact should have a typed payload.
+        let typed_payloads: Vec<_> = query_resp
             .memories
             .iter()
-            .filter(|m| m.schema_id == commit_schema && !m.payload.is_empty())
+            .filter(|m| m.schema_id == commit_schema && m.payload.is_some())
             .collect();
         assert!(
-            !non_empty_payloads.is_empty(),
-            "expected at least one commit-v1 Fact with non-empty payload"
+            !typed_payloads.is_empty(),
+            "expected at least one commit-v1 Fact with a typed payload"
         );
-        // Decode the first one and verify it has a non-empty SHA
-        let first = &non_empty_payloads[0];
-        let commit: proxima_code::payloads::CommitV1 = serde_json::from_slice(&first.payload)
-            .map_err(|e| {
+        // Downcast the first one and verify it has a non-empty SHA.
+        let first = typed_payloads[0];
+        let commit = first
+            .payload
+            .as_ref()
+            .and_then(|payload| payload.downcast_ref::<proxima_code::payloads::CommitV1>())
+            .ok_or_else(|| {
                 format!(
-                    "failed to deserialize commit-v1 payload for memory {:?}: {e}",
+                    "failed to downcast commit-v1 payload for memory {:?}",
                     first.id
                 )
             })?;
@@ -233,16 +236,16 @@ async fn self_ingestion_streams_proxima_main() {
         );
         for m in &unfiltered_commits {
             assert!(
-                !m.payload.is_empty(),
-                "unfiltered query: commit-v1 row {:?} had empty payload — \
-                 likely a CASE-dispatch bug",
+                m.payload.is_some(),
+                "unfiltered query: commit-v1 row {:?} had no typed payload",
                 m.id
             );
-            let _: proxima_code::payloads::CommitV1 =
-                serde_json::from_slice(&m.payload).map_err(|e| {
+            m.payload
+                .as_ref()
+                .and_then(|payload| payload.downcast_ref::<proxima_code::payloads::CommitV1>())
+                .ok_or_else(|| {
                     format!(
-                        "unfiltered query: commit-v1 payload for {:?} \
-                         did not deserialize as CommitV1: {e}",
+                        "unfiltered query: commit-v1 payload for {:?} did not downcast as CommitV1",
                         m.id
                     )
                 })?;

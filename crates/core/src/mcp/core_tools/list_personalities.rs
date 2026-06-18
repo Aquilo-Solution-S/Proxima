@@ -81,7 +81,10 @@ mod tests {
     use crate::authz::{AuthPath, AuthzContext};
     use crate::mcp::HandleTable;
     use crate::mcp::OutputMode;
-    use crate::{Engine, FlavorRegistry, McpAuthorContext, OrgId, Owner, Principal, UserId};
+    use crate::{
+        Engine, FlavorRegistry, McpAuthorContext, McpToolExtensions, OrgId, Owner, Principal,
+        UserId,
+    };
     use std::sync::Arc;
 
     fn make_ctx() -> McpToolCtx {
@@ -91,7 +94,6 @@ mod tests {
         };
         let engine = Arc::new(Engine::new(FlavorRegistry::new().freeze()));
         McpToolCtx {
-            pool: sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy"),
             owner: owner.clone(),
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(Arc::new(HandleTable::new())),
@@ -106,6 +108,7 @@ mod tests {
             },
             caller_self_perspective: None,
             master_token_id: None,
+            extensions: McpToolExtensions::default(),
             engine: Some(engine),
         }
     }

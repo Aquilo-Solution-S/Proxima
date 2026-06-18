@@ -47,8 +47,8 @@ pub use ids::*;
 pub use llm::*;
 pub use mcp::{
     Handle, HandleTable, McpAuthorContext, McpCallFn, McpTool, McpToolCtx, McpToolDescriptor,
-    McpToolError, MemoryHandleClass, OutputMode, PrefixedUuidClass, PrefixedUuidError,
-    format_prefixed_uuid, parse_prefixed_uuid,
+    McpToolError, McpToolExtensions, MemoryHandleClass, OutputMode, PrefixedUuidClass,
+    PrefixedUuidError, format_prefixed_uuid, parse_prefixed_uuid,
 };
 pub use memory::*;
 pub use models::*;

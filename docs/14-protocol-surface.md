@@ -98,7 +98,7 @@ Owner-scoped snapshot read of memories, goals, and edges.
 | tombstones | present-only or include tombstoned |
 | personality roots | include/exclude inactive root Perspectives |
 | pagination | `limit`; cursor pagination deferred |
-| payloads | optional payload bytes; identity hydration by memory/goal/edge ids |
+| payloads | optional typed payload projections; identity hydration by memory/goal/edge ids |
 | stateful Facts | heads by registered natural key; tombstone heads suppress prior present rows |
 | flavor-typed filters | design intent; advertised/validated only when implemented by a linked flavor |
 | edge traversal / time range | deferred |

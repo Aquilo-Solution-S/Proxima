@@ -102,12 +102,21 @@ async fn insert_repo_commit_with_test_request(
 
     sqlx::query(
         "INSERT INTO proxima_code.test_requested_v1
-            (memory_id, repo_id, title, instructions, test_key, criteria_json)
-         VALUES ($1, $2, 'bug 2', 'delete sidecar', 'bug-2',
-             '[\"c\"]'::jsonb)",
+            (memory_id, repo_id, title, instructions, test_key, criteria_count)
+         VALUES ($1, $2, 'bug 2', 'delete sidecar', 'bug-2', 1)",
     )
     .bind(memory_id)
     .bind(repo_id)
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO proxima_code.test_requested_criterion_v1
+            (test_requested_memory_id, criterion_index, criterion_key,
+             description, required, verifier_kind)
+         VALUES ($1, 0, 'c', 'criterion', true, 'reviewer_only')",
+    )
+    .bind(memory_id)
     .execute(pool)
     .await?;
 

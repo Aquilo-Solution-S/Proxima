@@ -11,7 +11,7 @@ use proxima_code::mcp::{
 use proxima_code::{CodeChunkV1, CommitV1, ExecutionRequestV1, FileRevisionV1, register_repo};
 use proxima_core::engine::Engine;
 use proxima_core::mcp::{
-    HandleTable, McpAuthorContext, McpTool, McpToolCtx, McpToolError, OutputMode,
+    HandleTable, McpAuthorContext, McpTool, McpToolCtx, McpToolError, McpToolExtensions, OutputMode,
 };
 use proxima_core::personality::{
     InstantiatePersonalityRequest, InstantiatePersonalityResponse, PersonalityInstanceId,
@@ -694,7 +694,6 @@ async fn run_tool<T: McpTool>(
 fn ctx(pool: PgPool, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpToolCtx {
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     McpToolCtx {
-        pool,
         owner,
         authz,
         handles: Some(Arc::new(HandleTable::new())),
@@ -709,6 +708,7 @@ fn ctx(pool: PgPool, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpTo
         },
         caller_self_perspective: None,
         master_token_id: None,
+        extensions: McpToolExtensions::with(pool),
         engine: None,
     }
 }
@@ -725,7 +725,6 @@ fn shell_ctx(
 ) -> McpToolCtx {
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     McpToolCtx {
-        pool,
         owner,
         authz,
         handles: None,
@@ -740,6 +739,7 @@ fn shell_ctx(
         },
         caller_self_perspective: Some(caller_self_perspective),
         master_token_id: Some(master_token_id),
+        extensions: McpToolExtensions::with(pool),
         engine: None,
     }
 }

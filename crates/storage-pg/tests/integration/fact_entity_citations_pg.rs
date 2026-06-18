@@ -10,10 +10,15 @@ use proxima_core::verbs::event_ingest::{
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    AuthPath, AuthzContext, FactEntityId, FactPayload, FlavorRegistry, FlavorRegistryFrozen, Owner,
-    Role, SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError, canonical_json_bytes,
+    AuthPath, AuthzContext, FactEntityId, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
+    MemoryId, Owner, PayloadKeyBuilder, Role, SchemaId, SchemaVersion, SidecarPayload,
+    SourceBatchId, SourceId, StorageError, canonical_json_bytes,
 };
-use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemoryPayloadFuture};
+use proxima_storage_pg::verbs::event_ingest::{EventIngestSidecarFuture, PgFactSidecar};
+use proxima_storage_pg::{
+    PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -31,6 +36,13 @@ impl FactPayload for StatefulFactV1 {
     const SCHEMA_ID: &'static str = "test/entity-head-cited-fact-v1";
     const SCHEMA_VERSION: u32 = 1;
 
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("entity_key", &self.entity_key);
+        key.field_str("body", &self.body);
+        key.finish()
+    }
+
     fn render(&self) -> String {
         format!("{}: {}", self.entity_key, self.body)
     }
@@ -41,6 +53,41 @@ impl FactPayload for StatefulFactV1 {
 
     fn natural_key_columns() -> &'static [&'static str] {
         &["entity_key"]
+    }
+}
+
+impl PgFactSidecar for StatefulFactV1 {
+    fn insert_sidecar<'t>(
+        self,
+        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
+        memory_id: MemoryId,
+    ) -> EventIngestSidecarFuture<'t>
+    where
+        Self: 't,
+    {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO proxima_test.entity_head_cited_fact_v1
+                    (memory_id, entity_key, body)
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(memory_id.into_inner())
+            .bind(&self.entity_key)
+            .bind(&self.body)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+impl PgMemoryPayload for StatefulFactV1 {
+    fn load_memory_payload(
+        _pool: &sqlx::PgPool,
+        _memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
+        Box::pin(async { Ok(None) })
     }
 }
 
@@ -58,6 +105,21 @@ fn registry_for_test() -> FlavorRegistryFrozen {
         PayloadKind::CitationMapping,
     );
     registry.freeze()
+}
+
+fn pg_sidecars_for_test() -> PgSidecarRegistryFrozen {
+    let registry = registry_for_test();
+    let mut sidecars = PgSidecarRegistry::new();
+    register_core_pg_sidecars(&mut sidecars);
+    sidecars.add_fact::<StatefulFactV1>();
+    sidecars
+        .freeze_against(registry.schemas())
+        .expect("test PG sidecars match test schemas")
+}
+
+async fn fresh_pg_with_sidecars() -> (PgStorage, String) {
+    let (pg, db_name) = fresh_pg().await;
+    (pg.with_sidecars(pg_sidecars_for_test()), db_name)
 }
 
 async fn create_sidecar(pg: &PgStorage) -> Result<(), sqlx::Error> {
@@ -137,13 +199,9 @@ async fn ingest_fact(
     let authorized = engine
         .authorize_event_ingest(&authz, Role::SourceIngest, draft)
         .map_err(|err| StorageError::Internal(err.to_string()))?;
-    pg.ingest_event_with_sidecar(
-        &authorized,
-        StatefulFactV1::sidecar_table().expect("test sidecar"),
-        &payload_value,
-        None,
-    )
-    .await
+    let sidecar_payload = SidecarPayload::fact(payload.clone());
+    pg.ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
+        .await
 }
 
 async fn memory_fact_entity_id(pg: &PgStorage, memory_id: Uuid) -> Result<Uuid, sqlx::Error> {
@@ -161,7 +219,7 @@ async fn memory_fact_entity_id(pg: &PgStorage, memory_id: Uuid) -> Result<Uuid, 
 #[tokio::test]
 async fn citation_of_entity_head_follows_updates_while_fact_citation_pins()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
 
     let result = async {
         pg.run_migrations().await?;

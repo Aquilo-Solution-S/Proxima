@@ -3,14 +3,17 @@ use std::sync::Arc;
 
 use proxima::{
     AppInfo, AuthPath, AuthzContext, CapabilitySet, CoreMcpError, CoreMcpTools, FlavorApp,
-    FlavorBundle, Identity, NamedMigrator, Proxima, RoleSet, ToolScope, company_owner,
+    FlavorBundle, Identity, NamedMigrator, PgSidecarRegistry, Proxima, RoleSet, StorageError,
+    ToolScope, company_owner,
 };
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
     CitationMappingPayload, CitedObjectPayload, FlavorRegistry, MemoryId, Owner, SchemaId,
-    StorageError,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_storage_pg::sidecars::{
+    PgCitationMappingSidecar, PgCitedObjectSidecar, PgSidecarFuture,
+};
 use uuid::Uuid;
 
 struct EmptyApp;
@@ -40,21 +43,23 @@ impl CitedObjectPayload for TestCitedObject {
         out[..len].copy_from_slice(&bytes[..len]);
         out
     }
+}
 
-    fn sidecar_insert<'t>(
+impl PgCitedObjectSidecar for TestCitedObject {
+    fn insert_cited_object_sidecar<'t>(
         &'t self,
-        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
-        sidecar_row_id: uuid::Uuid,
-    ) -> futures::future::BoxFuture<'t, Result<(), StorageError>> {
+        tx: &'t mut sqlx::PgConnection,
+        cited_object_id: Uuid,
+    ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO public.facade_cited_object_v1 (cited_object_id, locator)
                  VALUES ($1, $2)
                  ON CONFLICT (cited_object_id) DO NOTHING",
             )
-            .bind(sidecar_row_id)
+            .bind(cited_object_id)
             .bind(&self.locator)
-            .execute(&mut **tx)
+            .execute(tx)
             .await
             .map_err(|err| StorageError::Internal(err.to_string()))?;
             Ok(())
@@ -78,21 +83,22 @@ impl CitationMappingPayload for TestCitationMapping {
     fn cited_object_schema() -> SchemaId {
         TestCitedObject::schema_id()
     }
+}
 
-    fn sidecar_insert<'t>(
+impl PgCitationMappingSidecar for TestCitationMapping {
+    fn insert_citation_mapping_sidecar<'t>(
         &'t self,
-        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
-        sidecar_row_id: uuid::Uuid,
-    ) -> futures::future::BoxFuture<'t, Result<(), StorageError>> {
+        tx: &'t mut sqlx::PgConnection,
+        citation_mapping_id: Uuid,
+    ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO public.facade_citation_mapping_v1 (citation_mapping_id, section)
-                 VALUES ($1, $2)
-                 ON CONFLICT (citation_mapping_id) DO NOTHING",
+                 VALUES ($1, $2)",
             )
-            .bind(sidecar_row_id)
+            .bind(citation_mapping_id)
             .bind(&self.section)
-            .execute(&mut **tx)
+            .execute(tx)
             .await
             .map_err(|err| StorageError::Internal(err.to_string()))?;
             Ok(())
@@ -122,6 +128,11 @@ impl FlavorBundle for AgentMemoryApp {
     fn register(registry: &mut FlavorRegistry) {
         registry.add_cited_object_schema::<TestCitedObject>();
         registry.add_citation_mapping_schema::<TestCitationMapping>();
+    }
+
+    fn register_pg_sidecars(registry: &mut PgSidecarRegistry) {
+        registry.add_cited_object::<TestCitedObject>();
+        registry.add_citation_mapping::<TestCitationMapping>();
     }
 
     fn migrators() -> Vec<NamedMigrator> {

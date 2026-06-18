@@ -11,7 +11,7 @@ use proxima_core::mcp::core_tools::update_wake_entry::{
     UpdateWakeEntryArgs, UpdateWakeEntryTool, WakeEntryPatch,
 };
 use proxima_core::mcp::core_tools::wake_entry_input::WakeEntryDraftInput;
-use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, OutputMode};
+use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::personality::{
     InstantiatePersonalityRequest, ListReadScopeRequest, SetWakeEntriesRequest,
 };
@@ -40,7 +40,6 @@ fn ctx(owner: &Owner, pg: &proxima_storage_pg::PgStorage, authz: AuthzContext) -
     let registry = FlavorRegistry::default().freeze();
     let engine = Engine::new(registry.clone()).with_storage(pg.clone().into_handle());
     McpToolCtx {
-        pool: pg.pool().clone(),
         owner: owner.clone(),
         authz,
         handles: None,
@@ -55,6 +54,7 @@ fn ctx(owner: &Owner, pg: &proxima_storage_pg::PgStorage, authz: AuthzContext) -
         },
         caller_self_perspective: None,
         master_token_id: None,
+        extensions: McpToolExtensions::with(pg.pool().clone()),
         engine: Some(Arc::new(engine)),
     }
 }

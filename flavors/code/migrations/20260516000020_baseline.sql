@@ -30,6 +30,11 @@ CREATE TYPE proxima_code.acceptance_verifier_kind AS ENUM (
     'reviewer_only'
 );
 
+CREATE TYPE proxima_code.execution_plan_item_kind AS ENUM (
+    'work',
+    'test'
+);
+
 
 --
 -- Name: work_result_status; Type: TYPE; Schema: proxima_code; Owner: -
@@ -577,12 +582,31 @@ ALTER TABLE ONLY proxima_code.repo_ingestion_runs
 CREATE TABLE proxima_code.acceptance_criteria_v1 (
     memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id),
     work_item_memory_id uuid NOT NULL REFERENCES proxima_core.memories(memory_id),
-    criteria_json jsonb NOT NULL,
+    criteria_count integer NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT acceptance_criteria_v1_nonempty_chk CHECK ((jsonb_typeof(criteria_json) = 'array'::text) AND (jsonb_array_length(criteria_json) > 0))
+    CONSTRAINT acceptance_criteria_v1_count_chk CHECK (criteria_count > 0)
 );
 
 CREATE INDEX idx_acceptance_criteria_v1_item ON proxima_code.acceptance_criteria_v1 USING btree (work_item_memory_id);
+
+CREATE TABLE proxima_code.acceptance_criterion_v1 (
+    criteria_memory_id uuid NOT NULL REFERENCES proxima_code.acceptance_criteria_v1(memory_id) ON DELETE CASCADE,
+    criterion_index integer NOT NULL,
+    criterion_key text NOT NULL,
+    description text NOT NULL,
+    required boolean NOT NULL,
+    verifier_kind proxima_code.acceptance_verifier_kind NOT NULL,
+    verifier_path text,
+    verifier_command text[],
+    verifier_pattern text,
+    verifier_note text,
+    PRIMARY KEY (criteria_memory_id, criterion_index),
+    CONSTRAINT acceptance_criterion_v1_index_chk CHECK (criterion_index >= 0),
+    CONSTRAINT acceptance_criterion_v1_key_chk CHECK (((char_length(criterion_key) >= 1) AND (char_length(criterion_key) <= 80))),
+    CONSTRAINT acceptance_criterion_v1_description_chk CHECK (((char_length(description) >= 1) AND (char_length(description) <= 4000))),
+    CONSTRAINT acceptance_criterion_v1_command_chk CHECK ((verifier_command IS NULL) OR (array_position(verifier_command, NULL) IS NULL)),
+    UNIQUE (criteria_memory_id, criterion_key)
+);
 
 
 --
@@ -595,16 +619,35 @@ CREATE TABLE proxima_code.test_requested_v1 (
     title text NOT NULL,
     instructions text NOT NULL,
     test_key text NOT NULL,
-    criteria_json jsonb NOT NULL,
+    criteria_count integer NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT test_requested_v1_title_chk CHECK (((char_length(title) >= 1) AND (char_length(title) <= 240))),
     CONSTRAINT test_requested_v1_instructions_chk CHECK (((char_length(instructions) >= 1) AND (char_length(instructions) <= 20000))),
     CONSTRAINT test_requested_v1_test_key_chk CHECK (((char_length(test_key) >= 1) AND (char_length(test_key) <= 240))),
-    CONSTRAINT test_requested_v1_criteria_nonempty_chk CHECK ((jsonb_typeof(criteria_json) = 'array'::text) AND (jsonb_array_length(criteria_json) > 0))
+    CONSTRAINT test_requested_v1_criteria_count_chk CHECK (criteria_count > 0)
 );
 
 CREATE INDEX idx_test_requested_v1_repo ON proxima_code.test_requested_v1 USING btree (repo_id);
 CREATE UNIQUE INDEX idx_test_requested_v1_repo_key ON proxima_code.test_requested_v1 USING btree (repo_id, test_key);
+
+CREATE TABLE proxima_code.test_requested_criterion_v1 (
+    test_requested_memory_id uuid NOT NULL REFERENCES proxima_code.test_requested_v1(memory_id) ON DELETE CASCADE,
+    criterion_index integer NOT NULL,
+    criterion_key text NOT NULL,
+    description text NOT NULL,
+    required boolean NOT NULL,
+    verifier_kind proxima_code.acceptance_verifier_kind NOT NULL,
+    verifier_path text,
+    verifier_command text[],
+    verifier_pattern text,
+    verifier_note text,
+    PRIMARY KEY (test_requested_memory_id, criterion_index),
+    CONSTRAINT test_requested_criterion_v1_index_chk CHECK (criterion_index >= 0),
+    CONSTRAINT test_requested_criterion_v1_key_chk CHECK (((char_length(criterion_key) >= 1) AND (char_length(criterion_key) <= 80))),
+    CONSTRAINT test_requested_criterion_v1_description_chk CHECK (((char_length(description) >= 1) AND (char_length(description) <= 4000))),
+    CONSTRAINT test_requested_criterion_v1_command_chk CHECK ((verifier_command IS NULL) OR (array_position(verifier_command, NULL) IS NULL)),
+    UNIQUE (test_requested_memory_id, criterion_key)
+);
 
 
 --
@@ -617,16 +660,33 @@ CREATE TABLE proxima_code.execution_plan_v1 (
     plan_key text NOT NULL,
     goal_activated_memory_id uuid NOT NULL REFERENCES proxima_core.memories(memory_id),
     summary text NOT NULL,
-    items jsonb NOT NULL,
+    item_count integer NOT NULL,
     evidence_memory_ids uuid[] NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT execution_plan_v1_plan_key_chk CHECK (((char_length(plan_key) >= 1) AND (char_length(plan_key) <= 240))),
     CONSTRAINT execution_plan_v1_summary_chk CHECK (((char_length(summary) >= 1) AND (char_length(summary) <= 4000))),
-    CONSTRAINT execution_plan_v1_items_chk CHECK ((jsonb_typeof(items) = 'array'::text) AND (jsonb_array_length(items) > 0))
+    CONSTRAINT execution_plan_v1_item_count_chk CHECK (item_count > 0)
 );
 
 CREATE INDEX idx_execution_plan_v1_repo_key ON proxima_code.execution_plan_v1 USING btree (repo_id, plan_key);
 CREATE INDEX idx_execution_plan_v1_goal ON proxima_code.execution_plan_v1 USING btree (goal_activated_memory_id);
+
+CREATE TABLE proxima_code.execution_plan_item_v1 (
+    plan_memory_id uuid NOT NULL REFERENCES proxima_code.execution_plan_v1(memory_id) ON DELETE CASCADE,
+    item_index integer NOT NULL,
+    item_key text NOT NULL,
+    kind proxima_code.execution_plan_item_kind NOT NULL,
+    title text NOT NULL,
+    depends_on text[] NOT NULL,
+    request_key text NOT NULL,
+    PRIMARY KEY (plan_memory_id, item_index),
+    CONSTRAINT execution_plan_item_v1_index_chk CHECK (item_index >= 0),
+    CONSTRAINT execution_plan_item_v1_key_chk CHECK (((char_length(item_key) >= 1) AND (char_length(item_key) <= 120))),
+    CONSTRAINT execution_plan_item_v1_title_chk CHECK (((char_length(title) >= 1) AND (char_length(title) <= 240))),
+    CONSTRAINT execution_plan_item_v1_request_key_chk CHECK (((char_length(request_key) >= 1) AND (char_length(request_key) <= 240))),
+    CONSTRAINT execution_plan_item_v1_depends_chk CHECK (array_position(depends_on, NULL) IS NULL),
+    UNIQUE (plan_memory_id, item_key)
+);
 
 
 --
@@ -639,11 +699,11 @@ CREATE TABLE proxima_code.execution_result_v1 (
     repo_id uuid NOT NULL,
     status proxima_code.work_result_status NOT NULL,
     summary text NOT NULL,
-    artifact_refs jsonb NOT NULL,
+    artifact_refs text[] NOT NULL,
     log_excerpt text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT execution_result_v1_summary_chk CHECK (((char_length(summary) >= 1) AND (char_length(summary) <= 4000))),
-    CONSTRAINT execution_result_v1_artifacts_chk CHECK (jsonb_typeof(artifact_refs) = 'array'::text)
+    CONSTRAINT execution_result_v1_artifacts_chk CHECK (array_position(artifact_refs, NULL) IS NULL)
 );
 
 CREATE INDEX idx_execution_result_v1_work ON proxima_code.execution_result_v1 USING btree (work_requested_memory_id, created_at DESC);
@@ -659,11 +719,11 @@ CREATE TABLE proxima_code.test_result_v1 (
     repo_id uuid NOT NULL,
     status proxima_code.work_result_status NOT NULL,
     summary text NOT NULL,
-    artifact_refs jsonb NOT NULL,
+    artifact_refs text[] NOT NULL,
     log_excerpt text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT test_result_v1_summary_chk CHECK (((char_length(summary) >= 1) AND (char_length(summary) <= 4000))),
-    CONSTRAINT test_result_v1_artifacts_chk CHECK (jsonb_typeof(artifact_refs) = 'array'::text)
+    CONSTRAINT test_result_v1_artifacts_chk CHECK (array_position(artifact_refs, NULL) IS NULL)
 );
 
 CREATE INDEX idx_test_result_v1_test ON proxima_code.test_result_v1 USING btree (test_requested_memory_id, created_at DESC);
@@ -679,12 +739,12 @@ CREATE TABLE proxima_code.acceptance_verification_v1 (
     criterion_key text NOT NULL,
     status proxima_code.acceptance_verification_status NOT NULL,
     summary text NOT NULL,
-    artifact_refs jsonb NOT NULL,
+    artifact_refs text[] NOT NULL,
     verifier_memory_id uuid REFERENCES proxima_core.memories(memory_id),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT acceptance_verification_v1_criterion_key_chk CHECK (((char_length(criterion_key) >= 1) AND (char_length(criterion_key) <= 80))),
     CONSTRAINT acceptance_verification_v1_summary_chk CHECK (((char_length(summary) >= 1) AND (char_length(summary) <= 4000))),
-    CONSTRAINT acceptance_verification_v1_artifacts_chk CHECK (jsonb_typeof(artifact_refs) = 'array'::text)
+    CONSTRAINT acceptance_verification_v1_artifacts_chk CHECK (array_position(artifact_refs, NULL) IS NULL)
 );
 
 CREATE INDEX idx_acceptance_verification_v1_item ON proxima_code.acceptance_verification_v1 USING btree (work_item_memory_id, criterion_key, status);

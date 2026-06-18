@@ -1,5 +1,5 @@
 use proxima_core::{
-    FactPayload, FactTombstone, SearchProjection, SearchProjectionColumnKind,
+    FactPayload, FactTombstone, PayloadKeyBuilder, SearchProjection, SearchProjectionColumnKind,
     SearchProjectionField, proxima_schema_id,
 };
 use schemars::JsonSchema;
@@ -17,8 +17,7 @@ pub struct FileRevisionV1 {
     pub repo_id: uuid::Uuid,
     pub file_path: String,
     pub language: Option<String>,
-    // Hex-encoded under JSON (round-trips through Postgres `bytea`
-    // via `row_to_json`); raw bytes under binary formats.
+    // Hex-encoded under human-readable formats; raw bytes under binary formats.
     #[serde(with = "crate::payloads::content_hash_serde")]
     pub content_sha256: [u8; 32],
     pub size_bytes: u64,
@@ -29,6 +28,15 @@ pub struct FileRevisionV1 {
 impl FactPayload for FileRevisionV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("file-revision-v1");
     const SCHEMA_VERSION: u32 = 1;
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_uuid("repo_id", self.repo_id);
+        key.field_str("file_path", &self.file_path);
+        key.field_str("indexed_commit_sha", &self.indexed_commit_sha);
+        key.field_bytes("content_sha256", &self.content_sha256);
+        key.field_str("state", self.state.as_str());
+        key.finish()
+    }
     fn sidecar_table() -> Option<&'static str> {
         Some("proxima_code.file_revision_v1")
     }
@@ -68,6 +76,16 @@ impl FactPayload for FileRevisionV1 {
         match self.state {
             FileState::Present => format!("{} @ {short}", self.file_path),
             FileState::Tombstone => format!("(deleted) {} @ {short}", self.file_path),
+        }
+    }
+}
+
+impl FileState {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Present => "Present",
+            Self::Tombstone => "Tombstone",
         }
     }
 }

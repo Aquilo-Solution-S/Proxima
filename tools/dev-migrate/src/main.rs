@@ -17,7 +17,7 @@
 //!
 //! Afterwards `cargo sqlx prepare --workspace` has every schema it needs.
 
-use proxima::{NamedMigrator, run_core_and_flavor_migrations};
+use proxima::{FlavorBundle, run_core_and_flavor_migrations};
 use proxima_storage_pg::PgStorage;
 
 #[tokio::main]
@@ -26,11 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         |_| "DATABASE_URL must be set, e.g. postgres://proxima:proxima@localhost/proxima",
     )?;
     let pg = PgStorage::connect(&url).await?;
-    let report = run_core_and_flavor_migrations(
-        &pg,
-        [NamedMigrator::new("proxima-code", proxima_code::migrator())],
-    )
-    .await?;
+    let report = run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators()).await?;
     for source in report.sources {
         println!("{source} migrations applied");
     }

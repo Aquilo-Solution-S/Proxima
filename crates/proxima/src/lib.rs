@@ -39,18 +39,25 @@ pub use proxima_core::{
     CitedObjectPayload, Engine, EngineHandle, FactPayload, FlavorRegistry, GoalPayload, GroupId,
     Identity, McpCallLogInput, McpCallLogOutcome, MemoryId, OrgId, Owner, PerspectivePayload,
     Principal, Role, RoleSet, SchemaId, SchemaVersion, SearchProjection,
-    SearchProjectionColumnKind, SearchProjectionField, SourceBatchId, SourceId, StorageError,
-    ToolScope, UserId, canonical_json_bytes, proxima_flavor,
+    SearchProjectionColumnKind, SearchProjectionField, SidecarPayload, SourceBatchId, SourceId,
+    StorageError, ToolScope, UserId, canonical_json_bytes, proxima_flavor,
 };
 pub use proxima_mcp_server::{McpAuthContext, ResourceServerMetadata};
 #[cfg(feature = "testkit")]
 pub use proxima_pg_testkit as testkit;
+pub use proxima_storage_pg::sidecars::{
+    PgCitationMappingSidecar, PgCitedObjectSidecar, PgEdgeSidecar, PgGoalSidecar, PgMemoryPayload,
+    PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture,
+};
 pub use proxima_storage_pg::verbs::event_ingest::{
     AttachCitationOutcome, attach_citation_in_tx, ingest_fact, ingest_fact_in_tx,
     ingest_fact_with_citation_atomic, ingest_fact_with_citation_in_tx,
 };
 pub use proxima_storage_pg::verbs::fact_embeddings::{
     list_facts_missing_embedding, load_fact_text, load_fact_text_in_tx, upsert_fact_embedding,
+};
+pub use proxima_storage_pg::{
+    PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, register_core_pg_sidecars,
 };
 pub use runtime::{
     BuiltProxima, Proxima, RunningProxima, layered_router, layered_router_with_revalidation, run,
@@ -111,12 +118,14 @@ pub async fn read_mcp_call_history(
 }
 
 type RegisterFn = Box<dyn FnOnce(&mut FlavorRegistry) + Send>;
+type PgSidecarRegisterFn = Box<dyn FnOnce(&mut PgSidecarRegistry) + Send>;
 
 /// Builder for an embedded engine.
 pub struct ProximaBuilder {
     config: EmbedConfig,
     owner: Owner,
     registers: Vec<RegisterFn>,
+    pg_sidecar_registers: Vec<PgSidecarRegisterFn>,
     migrators: Vec<NamedMigrator>,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
     anthropic: Option<Arc<dyn AnthropicClient>>,
@@ -128,6 +137,7 @@ impl std::fmt::Debug for ProximaBuilder {
             .field("config", &self.config)
             .field("owner", &self.owner)
             .field("flavors", &self.registers.len())
+            .field("pg_sidecars", &self.pg_sidecar_registers.len())
             .field("migrators", &self.migrators.len())
             .field("has_embed_client", &self.embed_client.is_some())
             .field("has_anthropic", &self.anthropic.is_some())
@@ -163,6 +173,7 @@ impl ProximaBuilder {
             config,
             owner,
             registers: Vec::new(),
+            pg_sidecar_registers: Vec::new(),
             migrators: Vec::new(),
             embed_client: None,
             anthropic: None,
@@ -194,10 +205,22 @@ impl ProximaBuilder {
         self
     }
 
+    /// Add a backend-specific PG sidecar registration callback.
+    #[must_use]
+    pub fn pg_sidecars(
+        mut self,
+        register: impl FnOnce(&mut PgSidecarRegistry) + Send + 'static,
+    ) -> Self {
+        self.pg_sidecar_registers.push(Box::new(register));
+        self
+    }
+
     /// Link a statically-composed flavor bundle (single flavor or tuple).
     #[must_use]
     pub fn bundle<B: FlavorBundle + 'static>(mut self) -> Self {
         self.registers.push(Box::new(B::register));
+        self.pg_sidecar_registers
+            .push(Box::new(B::register_pg_sidecars));
         self.migrators.extend(B::migrators());
         self
     }
@@ -226,23 +249,44 @@ impl ProximaBuilder {
     /// Returns `EmbedError::Storage` for connection or migration
     /// failures and `EmbedError::Engine` when engine startup fails.
     pub async fn boot(self) -> Result<EmbeddedProxima, EmbedError> {
-        let pg = PgStorage::connect(&self.config.database_url)
+        let Self {
+            config,
+            owner,
+            registers,
+            pg_sidecar_registers,
+            migrators,
+            embed_client,
+            anthropic,
+        } = self;
+
+        let pg = PgStorage::connect(&config.database_url)
             .await
             .map_err(|e| EmbedError::Storage(e.to_string()))?;
-        run_core_and_flavor_migrations(&pg, self.migrators)
+        run_core_and_flavor_migrations(&pg, migrators)
             .await
             .map_err(|e| EmbedError::Storage(e.to_string()))?;
 
-        let registers = self.registers;
-        let mut engine = Engine::compose(Arc::new(pg.clone()), move |registry| {
-            for register in registers {
-                register(registry);
-            }
-        });
-        if let Some(client) = self.embed_client {
+        let mut registry = FlavorRegistry::new();
+        for register in registers {
+            register(&mut registry);
+        }
+        let registry = registry.freeze();
+
+        let mut pg_sidecars = PgSidecarRegistry::new();
+        register_core_pg_sidecars(&mut pg_sidecars);
+        for register in pg_sidecar_registers {
+            register(&mut pg_sidecars);
+        }
+        let pg_sidecars = pg_sidecars
+            .freeze_against(registry.schemas())
+            .map_err(|e| EmbedError::Storage(e.to_string()))?;
+        let pg = pg.with_sidecars(pg_sidecars);
+
+        let mut engine = Engine::new(registry).with_storage(Arc::new(pg.clone()));
+        if let Some(client) = embed_client {
             engine = engine.with_embed(client);
         }
-        if let Some(client) = self.anthropic {
+        if let Some(client) = anthropic {
             engine = engine.with_anthropic(client);
         }
 
@@ -254,17 +298,14 @@ impl ProximaBuilder {
             .map_err(|e| EmbedError::Engine(e.to_string()))?;
         let pool = pg.pool().clone();
         let registry = Arc::new(engine.registry().clone());
-        let blobs = self
-            .config
-            .s3
-            .map(|s3| CitedBlobStore::new(pool.clone(), s3));
+        let blobs = config.s3.map(|s3| CitedBlobStore::new(pool.clone(), s3));
         Ok(EmbeddedProxima {
             engine,
             handle,
             pool,
             registry,
             blobs,
-            owner: self.owner,
+            owner,
         })
     }
 }

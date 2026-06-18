@@ -2,6 +2,8 @@
 
 use proxima_core::{McpToolCtx, McpToolError, Owner, OwnerPrincipalKind};
 
+use super::pg_pool;
+
 pub const CHUNK_HEADS_CTE: &str = r"
 chunk_heads AS (
     SELECT memory_id, repo_id, file_path, chunk_index,
@@ -60,6 +62,7 @@ pub async fn resolve_repo_identifier(
 
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
     let owner_org_id = ctx.owner.org_id.into_inner();
+    let pool = pg_pool(ctx)?;
     let rows: Vec<RepoLookupRow> = sqlx::query_as(
         "SELECT repo_id
          FROM proxima_code.repos
@@ -78,7 +81,7 @@ pub async fn resolve_repo_identifier(
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(trimmed)
-    .fetch_all(&ctx.pool)
+    .fetch_all(pool.as_ref())
     .await
     .map_err(map_storage)?;
 

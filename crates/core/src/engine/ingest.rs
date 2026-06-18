@@ -10,7 +10,7 @@ use crate::verbs::event_ingest::{
     InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
-use crate::verbs::schema::{PayloadKind, SchemaInfo};
+use crate::verbs::schema::{PayloadKind, ProtocolPayload, SchemaInfo};
 use crate::{EntityKind, MemoryId, Owner, Principal, SourceBatchId};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -67,7 +67,6 @@ impl Engine {
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
-        draft.rendered_text = self.render_fact_text(&draft);
         if let Some(citation) = &draft.citation {
             self.ensure_event_ingest_schema(
                 &citation.object.schema_id,
@@ -114,7 +113,6 @@ impl Engine {
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
-        draft.rendered_text = self.render_fact_text(&draft);
         let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
 
         Ok(AuthorizedFactWithCitation::new(
@@ -161,14 +159,14 @@ impl Engine {
         cited_object: InlineCitedObjectDraft,
         mapping: InlineCitationMappingDraft,
     ) -> Result<(AuthorizedInlineCitedObject, AuthorizedInlineCitationMapping), ProtocolError> {
-        let cited_object_info = self.validate_json_payload(
+        let (cited_object_info, cited_object_payload) = self.ingest_protocol_payload(
             &cited_object.schema_id,
             cited_object.schema_version,
             PayloadKind::CitedObject,
             &cited_object.payload_bytes,
             "cited_object.payload_bytes",
         )?;
-        let mapping_info = self.validate_json_payload(
+        let (mapping_info, mapping_payload) = self.ingest_protocol_payload(
             &mapping.schema_id,
             mapping.schema_version,
             PayloadKind::CitationMapping,
@@ -189,39 +187,38 @@ impl Engine {
             )));
         }
 
-        let cited_object_sidecar_inserter =
-            cited_object_info.sidecar_inserter.ok_or_else(|| {
-                ProtocolError::internal(format!(
-                    "cited object schema {} v{} has no sidecar inserter",
-                    cited_object.schema_id.as_str(),
-                    cited_object.schema_version.into_inner(),
-                ))
-            })?;
-        // A pure-link mapping has no sidecar inserter — that's legal, so
-        // pass the Option through rather than erroring on absence.
-        let mapping_sidecar_inserter = mapping_info.sidecar_inserter;
-        let content_hash = self
-            .registry
-            .content_hash_for(
-                &cited_object.schema_id,
-                cited_object.schema_version,
-                &cited_object.payload_bytes,
-            )
-            .map_err(|e| ProtocolError::internal(e.to_string()))?;
+        if cited_object_info.sidecar_table.is_none() {
+            return Err(ProtocolError::internal(format!(
+                "cited object schema {} v{} has no sidecar table",
+                cited_object.schema_id.as_str(),
+                cited_object.schema_version.into_inner(),
+            )));
+        }
+        let content_hash = cited_object_payload.content_hash.ok_or_else(|| {
+            ProtocolError::internal(format!(
+                "cited object schema {} v{} did not produce a content hash",
+                cited_object.schema_id.as_str(),
+                cited_object.schema_version.into_inner(),
+            ))
+        })?;
+        let cited_object_sidecar = cited_object_payload.sidecar_payload;
+        let mapping_sidecar = if mapping_info.sidecar_table.is_some() {
+            Some(mapping_payload.sidecar_payload)
+        } else {
+            None
+        };
 
         Ok((
             AuthorizedInlineCitedObject::new(
                 cited_object.schema_id,
                 cited_object.schema_version,
                 content_hash,
-                cited_object.payload_bytes,
-                cited_object_sidecar_inserter,
+                cited_object_sidecar,
             ),
             AuthorizedInlineCitationMapping::new(
                 mapping.schema_id,
                 mapping.schema_version,
-                mapping.payload_bytes,
-                mapping_sidecar_inserter,
+                mapping_sidecar,
             ),
         ))
     }
@@ -250,25 +247,6 @@ impl Engine {
             .ok_or_else(|| {
                 ProtocolError::unknown_schema(schema_id.as_str(), schema_version.into_inner())
             })
-    }
-
-    fn render_fact_text(&self, draft: &EventDraft) -> Option<String> {
-        match self.registry.try_render_fact_payload(
-            &draft.schema_id,
-            draft.schema_version,
-            &draft.payload,
-        ) {
-            Ok(rendered_text) => rendered_text,
-            Err(err) => {
-                tracing::warn!(
-                    schema_id = %draft.schema_id.as_str(),
-                    schema_version = draft.schema_version.into_inner(),
-                    error = %err,
-                    "fact render failed; m.text left NULL",
-                );
-                None
-            }
-        }
     }
 
     /// Best-effort Fact embedding. Missing text or missing embedding
@@ -396,14 +374,14 @@ impl Engine {
         Ok(outcome)
     }
 
-    pub(super) fn validate_json_payload<'a>(
+    pub(super) fn ingest_protocol_payload<'a>(
         &'a self,
         schema_id: &crate::SchemaId,
         schema_version: SchemaVersion,
         kind: PayloadKind,
         payload_bytes: &[u8],
         field: &str,
-    ) -> Result<&'a SchemaInfo, ProtocolError> {
+    ) -> Result<(&'a SchemaInfo, ProtocolPayload), ProtocolError> {
         let info = self
             .registry
             .lookup_payload(schema_id, schema_version, kind)
@@ -413,10 +391,11 @@ impl Engine {
         let payload: serde_json::Value = serde_json::from_slice(payload_bytes).map_err(|e| {
             ProtocolError::invalid_argument(field, format!("invalid JSON payload: {e}"))
         })?;
-        self.registry
-            .validate_payload(schema_id, schema_version, kind, &payload)
+        let payload = self
+            .registry
+            .ingest_protocol_payload(schema_id, schema_version, kind, &payload)
             .map_err(|e| ProtocolError::invalid_argument(field, e))?;
-        Ok(info)
+        Ok((info, payload))
     }
 
     /// Owner-scoped write of a host-observed MCP activity log.

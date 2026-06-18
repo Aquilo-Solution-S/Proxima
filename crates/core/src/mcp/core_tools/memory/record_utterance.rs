@@ -1,12 +1,10 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::verbs::event_ingest::EventDraft;
-use crate::{
-    FactPayload, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId, canonical_json_bytes,
-};
+use crate::{Role, SourceBatchId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Speaker, UtteranceV1};
+use crate::{SidecarPayload, Speaker, UtteranceV1};
 
 const SOURCE_ID: &str = "core/conversation";
 const UTTERANCE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
@@ -60,9 +58,6 @@ impl McpTool for RecordUtteranceTool {
                 conversation_id: conversation_id.to_string(),
                 text: text.to_string(),
             };
-            let payload_value = serde_json::to_value(&payload)
-                .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-            let payload_bytes = canonical_json_bytes(&payload_value);
             let source_instance_id = args
                 .idempotency_key
                 .as_deref()
@@ -72,20 +67,16 @@ impl McpTool for RecordUtteranceTool {
             let source_id = format!("{SOURCE_ID}/{source_instance_id}");
 
             let observed_at = time::OffsetDateTime::now_utc();
-            let draft = EventDraft {
-                source_id: SourceId::new(source_id),
-                source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
-                principal: ctx.owner.principal.clone(),
-                org_id: Some(ctx.owner.org_id),
-                author_personality_instance_id: ctx.author.personality_instance_id,
-                schema_id: SchemaId::new(UtteranceV1::SCHEMA_ID.into()),
-                schema_version: SchemaVersion::new(UtteranceV1::SCHEMA_VERSION),
-                payload: payload_bytes,
-                rendered_text: None,
+            let mut draft = EventDraft::from_payload(
+                &ctx.owner,
+                source_id,
+                SourceBatchId::new(uuid::Uuid::now_v7()),
+                &payload,
                 observed_at,
-                occurred_at: observed_at,
-                citation: None,
-            };
+            );
+            if let Some(author) = ctx.author.personality_instance_id {
+                draft = draft.author_personality(author);
+            }
 
             let engine = ctx
                 .engine()
@@ -97,10 +88,9 @@ impl McpTool for RecordUtteranceTool {
                 .map_err(|err| McpToolError::Other(err.to_string()))?;
             let outcome = engine
                 .storage()
-                .ingest_event_with_sidecar(
+                .ingest_event_with_typed_sidecar(
                     &authorized,
-                    UtteranceV1::sidecar_table().expect("UtteranceV1 has a sidecar table"),
-                    &payload_value,
+                    &SidecarPayload::fact(payload.clone()),
                     embedding_model_id,
                 )
                 .await?;

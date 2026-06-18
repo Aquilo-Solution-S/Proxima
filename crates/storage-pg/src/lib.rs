@@ -13,6 +13,7 @@ extern crate self as proxima_storage_pg;
 use std::sync::Arc;
 use std::time::Duration;
 
+use proxima_core::SidecarPayload;
 use proxima_core::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, ListReadScopeRequest, ListReadScopeResponse, MemorySnapshot,
@@ -37,12 +38,13 @@ use proxima_core::verbs::query::{
     MemorySearchResult, QueryRequest, QueryResponse,
 };
 use proxima_core::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EmbeddingJobClaim, FactEntityId,
-    MasterTokenPersonality, MemoryDependency, MemoryId, Owner, Principal, SchemaId, SchemaVersion,
-    SourceBatchId, Storage, StorageError, StorageHandle,
+    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EdgeEndpointKindRow, EdgeId,
+    EmbeddingJobClaim, FactEntityId, MasterTokenPersonality, MemoryDependency,
+    MemoryGraphPayloadRow, MemoryId, MemoryKindRow, NeighborEdgeRow, Owner, Principal, SchemaId,
+    SchemaVersion, SourceBatchId, Storage, StorageError, StorageHandle,
 };
+use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{PgPool, Postgres, Transaction};
 pub use verbs::fact_embeddings::{
     EmbeddingInlineDrainOutcome, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
     EmbeddingReconcileScope,
@@ -55,12 +57,17 @@ mod change_event;
 mod error;
 mod pg_ident;
 mod pgvector;
+pub mod sidecars;
 pub mod query {
     pub use crate::verbs::query::{MAX_SNAPSHOT_EDGES, fact_entity_id_for};
 }
 #[cfg(feature = "test-fixtures")]
 pub mod test_fixtures;
 pub mod verbs;
+pub use sidecars::{
+    PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, core_pg_sidecars,
+    register_core_pg_sidecars,
+};
 
 /// Default DB URL when `DATABASE_URL` is unset. Matches the
 /// dev DB created locally via `createdb proxima_dev`.
@@ -80,6 +87,7 @@ pub fn core_migrator() -> sqlx::migrate::Migrator {
 #[derive(Debug, Clone)]
 pub struct PgStorage {
     pool: PgPool,
+    sidecars: PgSidecarRegistryFrozen,
 }
 
 impl PgStorage {
@@ -107,7 +115,10 @@ impl PgStorage {
             .await
             .map_err(|e| StorageError::Unavailable(e.to_string()))?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            sidecars: core_pg_sidecars(),
+        })
     }
 
     /// Read `DATABASE_URL` from env, fallback to
@@ -120,6 +131,17 @@ impl PgStorage {
     #[must_use]
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    #[must_use]
+    pub fn sidecars(&self) -> &PgSidecarRegistryFrozen {
+        &self.sidecars
+    }
+
+    #[must_use]
+    pub fn with_sidecars(mut self, sidecars: PgSidecarRegistryFrozen) -> Self {
+        self.sidecars = sidecars;
+        self
     }
 
     #[must_use]
@@ -174,86 +196,6 @@ impl PgStorage {
         core_migrator().run(&self.pool).await.map_err(internal)?;
         Ok(())
     }
-}
-
-async fn insert_generic_memory_sidecar(
-    tx: &mut Transaction<'_, Postgres>,
-    memory_id: MemoryId,
-    sidecar_table: &str,
-    sidecar_payload: &serde_json::Value,
-) -> Result<(), StorageError> {
-    insert_jsonb_memory_sidecar(tx, memory_id, sidecar_table, sidecar_payload).await
-}
-
-pub(crate) async fn insert_jsonb_memory_sidecar(
-    tx: &mut sqlx::PgConnection,
-    memory_id: MemoryId,
-    sidecar_table: &str,
-    sidecar_payload: &serde_json::Value,
-) -> Result<(), StorageError> {
-    insert_jsonb_sidecar_with_uuid_key(
-        tx,
-        sidecar_table,
-        "memory_id",
-        memory_id.into_inner(),
-        sidecar_payload,
-    )
-    .await
-}
-
-async fn insert_jsonb_sidecar_with_uuid_key(
-    tx: &mut sqlx::PgConnection,
-    sidecar_table: &str,
-    key_column: &str,
-    key_value: uuid::Uuid,
-    sidecar_payload: &serde_json::Value,
-) -> Result<(), StorageError> {
-    let table = pg_ident::PgIdent::table(sidecar_table)?
-        .as_str()
-        .to_string();
-    let key_column = pg_ident::PgIdent::column(key_column)?.as_str().to_string();
-    let payload = sidecar_payload.as_object().ok_or_else(|| {
-        StorageError::ConstraintViolation("sidecar payload must be a JSON object".into())
-    })?;
-
-    let mut value_columns = payload
-        .keys()
-        .filter(|column| column.as_str() != key_column)
-        .map(|column| pg_ident::PgIdent::column(column).map(|ident| ident.as_str().to_string()))
-        .collect::<Result<Vec<_>, _>>()?;
-    value_columns.sort();
-
-    if value_columns.is_empty() {
-        let sql = format!("INSERT INTO {table} ({key_column}) VALUES ($1)");
-        sqlx::query(&sql)
-            .bind(key_value)
-            .execute(tx)
-            .await
-            .map_err(crate::error::map_err)?;
-        return Ok(());
-    }
-
-    let column_list = std::iter::once(key_column.as_str())
-        .chain(value_columns.iter().map(String::as_str))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let value_list = value_columns
-        .iter()
-        .map(|column| format!("payload.{column}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        "INSERT INTO {table} ({column_list})
-         SELECT $1, {value_list}
-           FROM jsonb_populate_record(NULL::{table}, $2::jsonb) AS payload",
-    );
-    sqlx::query(&sql)
-        .bind(key_value)
-        .bind(sidecar_payload)
-        .execute(tx)
-        .await
-        .map_err(crate::error::map_err)?;
-    Ok(())
 }
 
 fn edge_draft_from_spec<'a>(edge: &'a DerivedEdgeSpec<'a>) -> verbs::edge_append::EdgeDraft<'a> {
@@ -391,15 +333,15 @@ impl Storage for PgStorage {
         verbs::persist_mcp_call::persist_mcp_call_atomic(&self.pool, input).await
     }
 
-    async fn ingest_event_with_sidecar(
+    async fn ingest_event_with_typed_sidecar(
         &self,
         authorized: &AuthorizedEventIngest,
-        sidecar_table: &str,
-        sidecar_payload: &serde_json::Value,
+        sidecar_payload: &SidecarPayload,
         embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError> {
         let mut tx = self.pool.begin().await.map_err(internal)?;
-        let table = sidecar_table.to_string();
+        let sidecars = self.sidecars.clone();
+        let fact_sidecars = sidecars.clone();
         let payload = sidecar_payload.clone();
         let outcome = verbs::event_ingest::ingest_event_with_sidecar_in_tx(
             &mut tx,
@@ -407,7 +349,9 @@ impl Storage for PgStorage {
             embedding_model_id,
             move |tx, outcome| {
                 Box::pin(async move {
-                    insert_generic_memory_sidecar(tx, outcome.memory_id, &table, &payload).await
+                    fact_sidecars
+                        .insert_memory_sidecar(tx, outcome.memory_id, &payload)
+                        .await
                 })
             },
         )
@@ -416,23 +360,26 @@ impl Storage for PgStorage {
         Ok(outcome)
     }
 
-    async fn ingest_fact_with_citation_and_sidecar(
+    async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,
-        sidecar_table: &str,
-        sidecar_payload: &serde_json::Value,
+        sidecar_payload: &SidecarPayload,
         embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError> {
         let mut tx = self.pool.begin().await.map_err(internal)?;
-        let table = sidecar_table.to_string();
+        let sidecars = self.sidecars.clone();
+        let fact_sidecars = sidecars.clone();
         let payload = sidecar_payload.clone();
         let outcome = verbs::event_ingest::ingest_fact_with_citation_in_tx(
             &mut tx,
+            &sidecars,
             authorized,
             embedding_model_id,
             move |tx, outcome| {
                 Box::pin(async move {
-                    insert_generic_memory_sidecar(tx, outcome.memory_id, &table, &payload).await
+                    fact_sidecars
+                        .insert_memory_sidecar(tx, outcome.memory_id, &payload)
+                        .await
                 })
             },
         )
@@ -457,18 +404,41 @@ impl Storage for PgStorage {
             operator_kind: req.operator_kind,
             model_id: req.model_id,
             prompt_version: req.prompt_version,
-            sidecar_table: Some(req.sidecar_table),
-            sidecar_payload: Some(req.sidecar_payload.clone()),
             supersedes: req.supersedes,
             embedding: req.embedding.clone(),
             embedding_model_id: req.embedding_model_id,
         };
-        let outcome = verbs::derive_append::append_derived_in_tx(&mut tx, &draft).await?;
+        let sidecars = self.sidecars.clone();
+        let sidecar_payload = req.sidecar_payload.clone();
+        let outcome =
+            verbs::derive_append::append_derived_in_tx(&mut tx, &draft, move |tx, outcome| {
+                Box::pin(async move {
+                    sidecars
+                        .insert_memory_sidecar(tx, outcome.memory_id, &sidecar_payload)
+                        .await
+                })
+            })
+            .await?;
         let mut edge_count = 0;
         if !outcome.idempotent_replay {
             for edge in req.edges {
                 let draft = edge_draft_from_spec(edge);
-                verbs::edge_append::append_edge_in_tx(&mut tx, &draft, edge.edge_payload).await?;
+                if let Some(sidecar_payload) = edge.sidecar_payload {
+                    let sidecars = self.sidecars.clone();
+                    let payload = sidecar_payload.clone();
+                    verbs::edge_append::append_edge_with_sidecar_in_tx(
+                        tx.as_mut(),
+                        &draft,
+                        move |tx, edge_id| {
+                            Box::pin(async move {
+                                sidecars.insert_edge_sidecar(tx, edge_id, &payload).await
+                            })
+                        },
+                    )
+                    .await?;
+                } else {
+                    verbs::edge_append::append_edge_in_tx(tx.as_mut(), &draft).await?;
+                }
                 edge_count += 1;
             }
         }
@@ -480,46 +450,296 @@ impl Storage for PgStorage {
         })
     }
 
-    async fn append_memory_edge(&self, edge: &DerivedEdgeSpec<'_>) -> Result<(), StorageError> {
+    async fn append_memory_edge(&self, edge: &DerivedEdgeSpec<'_>) -> Result<EdgeId, StorageError> {
         let mut tx = self.pool.begin().await.map_err(internal)?;
         let draft = edge_draft_from_spec(edge);
-        verbs::edge_append::append_edge_in_tx(&mut tx, &draft, edge.edge_payload).await?;
-        tx.commit().await.map_err(crate::error::map_err)
+        let edge_id = EdgeId::new(draft.edge_id);
+        if let Some(sidecar_payload) = edge.sidecar_payload {
+            let sidecars = self.sidecars.clone();
+            let payload = sidecar_payload.clone();
+            verbs::edge_append::append_edge_with_sidecar_in_tx(
+                tx.as_mut(),
+                &draft,
+                move |tx, edge_id| {
+                    Box::pin(
+                        async move { sidecars.insert_edge_sidecar(tx, edge_id, &payload).await },
+                    )
+                },
+            )
+            .await?;
+        } else {
+            verbs::edge_append::append_edge_in_tx(tx.as_mut(), &draft).await?;
+        }
+        tx.commit().await.map_err(crate::error::map_err)?;
+        Ok(edge_id)
+    }
+
+    async fn load_memory_kinds(
+        &self,
+        owner: &Owner,
+        memory_ids: &[MemoryId],
+    ) -> Result<Vec<MemoryKindRow>, StorageError> {
+        if memory_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids = memory_ids
+            .iter()
+            .copied()
+            .map(MemoryId::into_inner)
+            .collect::<Vec<_>>();
+        let (owner_kind, owner_principal_id, _) = owner.columns();
+        let rows: Vec<(uuid::Uuid, Option<proxima_core::EntityKind>)> = sqlx::query_as(
+            "SELECT memory_id, kind
+             FROM proxima_core.memories
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND memory_id = ANY($3::uuid[])",
+        )
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .bind(&ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows
+            .into_iter()
+            .map(|(memory_id, kind)| MemoryKindRow {
+                memory_id: MemoryId::new(memory_id),
+                kind,
+            })
+            .collect())
+    }
+
+    async fn load_memory_graph_payloads(
+        &self,
+        owner: &Owner,
+        memory_ids: &[MemoryId],
+    ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
+        if memory_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids = memory_ids
+            .iter()
+            .copied()
+            .map(MemoryId::into_inner)
+            .collect::<Vec<_>>();
+        let (owner_kind, owner_principal_id, _) = owner.columns();
+        let rows: Vec<(uuid::Uuid, Option<Vec<String>>)> = sqlx::query_as(
+            "SELECT m.memory_id,
+                    COALESCE(n.tags, d.tags) AS tags
+             FROM proxima_core.memories m
+             LEFT JOIN proxima_core.agent_note_v1 n USING (memory_id)
+             LEFT JOIN proxima_core.agent_derivation_v1 d USING (memory_id)
+             WHERE m.owner_principal_kind = $1
+               AND m.owner_principal_id = $2
+               AND m.memory_id = ANY($3::uuid[])",
+        )
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .bind(&ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows
+            .into_iter()
+            .map(|(memory_id, tags)| MemoryGraphPayloadRow {
+                memory_id: MemoryId::new(memory_id),
+                tags,
+            })
+            .collect())
+    }
+
+    async fn load_neighbor_memory_edges(
+        &self,
+        owner: &Owner,
+        memory_ids: &[MemoryId],
+        limit: usize,
+    ) -> Result<Vec<NeighborEdgeRow>, StorageError> {
+        if memory_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids = memory_ids
+            .iter()
+            .copied()
+            .map(MemoryId::into_inner)
+            .collect::<Vec<_>>();
+        let limit = i64::try_from(limit).map_err(|err| StorageError::Internal(err.to_string()))?;
+        let (owner_kind, owner_principal_id, _) = owner.columns();
+        let rows: Vec<(
+            uuid::Uuid,
+            String,
+            proxima_core::EntityKind,
+            Option<uuid::Uuid>,
+            proxima_core::EntityKind,
+            Option<uuid::Uuid>,
+        )> = sqlx::query_as(
+            "SELECT edge_id, relation, source_kind, source_memory_id, target_kind, target_memory_id
+             FROM proxima_core.edges
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND (source_memory_id = ANY($3::uuid[]) OR target_memory_id = ANY($3::uuid[]))
+             ORDER BY edge_id DESC
+             LIMIT $4",
+        )
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .bind(&ids)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    edge_id,
+                    relation,
+                    source_kind,
+                    source_memory_id,
+                    target_kind,
+                    target_memory_id,
+                )| {
+                    NeighborEdgeRow {
+                        edge_id: EdgeId::new(edge_id),
+                        relation,
+                        source_kind,
+                        source_memory_id: source_memory_id.map(MemoryId::new),
+                        target_kind,
+                        target_memory_id: target_memory_id.map(MemoryId::new),
+                    }
+                },
+            )
+            .collect())
+    }
+
+    async fn load_memory_edge_ids(
+        &self,
+        owner: &Owner,
+        relation: &str,
+        source_memory_id: MemoryId,
+        target_memory_ids: &[MemoryId],
+    ) -> Result<Vec<EdgeId>, StorageError> {
+        if target_memory_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let target_ids = target_memory_ids
+            .iter()
+            .copied()
+            .map(MemoryId::into_inner)
+            .collect::<Vec<_>>();
+        let (owner_kind, owner_principal_id, _) = owner.columns();
+        let rows: Vec<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT edge_id
+             FROM proxima_core.edges
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND relation = $3
+               AND source_memory_id = $4
+               AND target_memory_id = ANY($5::uuid[])
+             ORDER BY edge_id DESC",
+        )
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .bind(relation)
+        .bind(source_memory_id.into_inner())
+        .bind(&target_ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows.into_iter().map(EdgeId::new).collect())
+    }
+
+    async fn load_edge_endpoint_kinds(
+        &self,
+        edge_ids: &[EdgeId],
+    ) -> Result<Vec<EdgeEndpointKindRow>, StorageError> {
+        if edge_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids = edge_ids
+            .iter()
+            .copied()
+            .map(EdgeId::into_inner)
+            .collect::<Vec<_>>();
+        let rows: Vec<(
+            uuid::Uuid,
+            proxima_core::EntityKind,
+            proxima_core::EntityKind,
+        )> = sqlx::query_as(
+            "SELECT edge_id, source_kind, target_kind
+                 FROM proxima_core.edges
+                 WHERE edge_id = ANY($1::uuid[])",
+        )
+        .bind(&ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows
+            .into_iter()
+            .map(|(edge_id, source_kind, target_kind)| EdgeEndpointKindRow {
+                edge_id: EdgeId::new(edge_id),
+                source_kind,
+                target_kind,
+            })
+            .collect())
+    }
+
+    async fn active_personality_root(
+        &self,
+        owner: &Owner,
+        instance_id: PersonalityInstanceId,
+    ) -> Result<Option<MemoryId>, StorageError> {
+        let (owner_kind, owner_id) = owner.principal.columns();
+        let row: Option<(uuid::Uuid,)> = sqlx::query_as(
+            "SELECT current_root_perspective_memory_id
+             FROM proxima_core.personality
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND personality_instance_id = $3
+               AND status <> 'tombstoned'::proxima_core.personality_status",
+        )
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(instance_id.into_inner())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(row.map(|(memory_id,)| MemoryId::new(memory_id)))
     }
 
     async fn create_goal_atomic(
         &self,
         req: &CreateGoalAtomicRequest<'_>,
     ) -> Result<GoalWriteOutcome, StorageError> {
-        verbs::goal_write::create_goal_atomic(&self.pool, req).await
+        verbs::goal_write::create_goal_atomic(&self.pool, &self.sidecars, req).await
     }
 
     async fn transition_goal_atomic(
         &self,
         req: &TransitionGoalAtomicRequest<'_>,
     ) -> Result<GoalWriteOutcome, StorageError> {
-        verbs::goal_write::transition_goal_atomic(&self.pool, req).await
+        verbs::goal_write::transition_goal_atomic(&self.pool, &self.sidecars, req).await
     }
 
     async fn achieve_goal_atomic(
         &self,
         req: &AchieveGoalAtomicRequest<'_>,
     ) -> Result<GoalWriteOutcome, StorageError> {
-        verbs::goal_write::achieve_goal_atomic(&self.pool, req).await
+        verbs::goal_write::achieve_goal_atomic(&self.pool, &self.sidecars, req).await
     }
 
     async fn modify_goal_atomic(
         &self,
         req: &ModifyGoalAtomicRequest<'_>,
     ) -> Result<GoalWriteOutcome, StorageError> {
-        verbs::goal_write::modify_goal_atomic(&self.pool, req).await
+        verbs::goal_write::modify_goal_atomic(&self.pool, &self.sidecars, req).await
     }
 
     async fn decompose_goal_atomic(
         &self,
         req: &DecomposeGoalAtomicRequest<'_>,
     ) -> Result<DecomposeGoalOutcome, StorageError> {
-        verbs::goal_write::decompose_goal_atomic(&self.pool, req).await
+        verbs::goal_write::decompose_goal_atomic(&self.pool, &self.sidecars, req).await
     }
 
     async fn event_history(
@@ -541,7 +761,7 @@ impl Storage for PgStorage {
         req: &QueryRequest,
         schemas: &[proxima_core::verbs::schema::SchemaInfo],
     ) -> Result<QueryResponse, StorageError> {
-        verbs::query::query_memories(&self.pool, req, schemas).await
+        verbs::query::query_memories(&self.pool, &self.sidecars, req, schemas).await
     }
 
     async fn search_memories(
@@ -557,7 +777,7 @@ impl Storage for PgStorage {
         owner: &Owner,
         schema_id: &SchemaId,
         schema_version: SchemaVersion,
-        natural_key: &serde_json::Value,
+        natural_key: &[String],
     ) -> Result<Option<FactEntityId>, StorageError> {
         verbs::query::fact_entity_id_for_pool(
             &self.pool,
@@ -575,7 +795,14 @@ impl Storage for PgStorage {
         cited_object_id: uuid::Uuid,
         sidecars: &[SidecarSpec],
     ) -> Result<Vec<MemorySnapshot>, StorageError> {
-        verbs::query::facts_citing_object(&self.pool, owner, cited_object_id, sidecars).await
+        verbs::query::facts_citing_object(
+            &self.pool,
+            &self.sidecars,
+            owner,
+            cited_object_id,
+            sidecars,
+        )
+        .await
     }
 
     async fn citation_of_fact(
@@ -760,7 +987,14 @@ impl Storage for PgStorage {
         memory_id: proxima_core::MemoryId,
         sidecars: &[SidecarSpec],
     ) -> Result<Vec<proxima_core::FactRow>, StorageError> {
-        verbs::consolidate::load_memory_batch_facts(&self.pool, owner, memory_id, sidecars).await
+        verbs::consolidate::load_memory_batch_facts(
+            &self.pool,
+            &self.sidecars,
+            owner,
+            memory_id,
+            sidecars,
+        )
+        .await
     }
 
     async fn load_abstraction_heads(
@@ -769,7 +1003,14 @@ impl Storage for PgStorage {
         sidecars: &[SidecarSpec],
         limit: usize,
     ) -> Result<Vec<AbstractionRow>, StorageError> {
-        verbs::consolidate::load_abstraction_heads(&self.pool, owner, sidecars, limit).await
+        verbs::consolidate::load_abstraction_heads(
+            &self.pool,
+            &self.sidecars,
+            owner,
+            sidecars,
+            limit,
+        )
+        .await
     }
 
     async fn load_perspective_heads(
@@ -782,6 +1023,7 @@ impl Storage for PgStorage {
     ) -> Result<Vec<MemorySnapshot>, StorageError> {
         verbs::consolidate::load_perspective_heads(
             &self.pool,
+            &self.sidecars,
             owner,
             instance,
             root_perspective_memory_id,
@@ -805,7 +1047,7 @@ impl Storage for PgStorage {
         &self,
         req: &PersonalityWriteRequest<'_>,
     ) -> Result<PersonalityWriteOutcome, StorageError> {
-        verbs::consolidate::append_personality_memories(&self.pool, req).await
+        verbs::consolidate::append_personality_memories(&self.pool, &self.sidecars, req).await
     }
 
     async fn load_memory_by_id(
@@ -817,6 +1059,7 @@ impl Storage for PgStorage {
     ) -> Result<Option<MemorySnapshot>, StorageError> {
         verbs::consolidate::load_memory_by_id(
             &self.pool,
+            &self.sidecars,
             owner,
             memory_id,
             reader_personality_instance_id,

@@ -89,6 +89,10 @@ Design source of truth:
   `flavors/<name>/`; multi-domain deployments compose via a
   composite crate. No feature flags — the flavor crate is the unit
   of inclusion.
+- [`docs/09-developing-flavors.md`](docs/09-developing-flavors.md) —
+  implementation checklist for flavor crates: typed payload keys,
+  sidecar SQL, PG sidecar insert/load, macro registration, bundle
+  composition, migrations, MCP tools, and verification.
 - [`docs/10-configuration.md`](docs/10-configuration.md) — runtime
   config surface: Postgres / MCP-endpoint / S3 env, MCP authentication
   modes, and an optional host-injected embedding client for retrieval.

@@ -11,7 +11,7 @@ use proxima_core::verbs::goal_write::{
 };
 use proxima_core::{
     FlavorRegistry, FlavorRegistryFrozen, GoalPayload, MemoryId, OrgId, Owner, OwnerPrincipalKind,
-    Principal, SchemaId, SchemaVersion, UserId,
+    PayloadKeyBuilder, Principal, SchemaId, SchemaVersion, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -24,6 +24,12 @@ struct TestCustomGoalPayload {
 impl GoalPayload for TestCustomGoalPayload {
     const SCHEMA_ID: &'static str = "test/custom-goal-v1";
     const SCHEMA_VERSION: u32 = 1;
+
+    fn goal_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("note", &self.note);
+        key.finish()
+    }
 }
 
 fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
@@ -44,6 +50,7 @@ fn fresh_draft(owner: &Owner, request_id: String) -> GoalDraft {
         title: "Test goal".to_string(),
         text: "Test goal text".to_string(),
         payload: b"{}".to_vec(),
+        sidecar_payload: None,
         state: GoalState::Active,
         parent_goal_ids: vec![],
         supersedes_goal_id: None,
@@ -59,6 +66,7 @@ fn replacement_payload(title: &str, text: &str, payload: &[u8]) -> GoalPayloadWr
         title: title.to_string(),
         text: text.to_string(),
         payload: payload.to_vec(),
+        sidecar_payload: None,
     }
 }
 
@@ -385,7 +393,7 @@ async fn goal_create_atom_with_parent_writes_goal_parent() {
 }
 
 #[tokio::test]
-async fn goal_create_atom_rejects_empty_or_non_object_payload() {
+async fn goal_create_atom_rejects_empty_payload_bytes() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
@@ -405,14 +413,7 @@ async fn goal_create_atom_rejects_empty_or_non_object_payload() {
         let err = create_goal(&pg, &registry, self_id, empty)
             .await
             .expect_err("empty payload rejected");
-        assert!(err.to_string().contains("EOF"));
-
-        let mut scalar = fresh_draft(&owner, "req-scalar".to_string());
-        scalar.payload = b"123".to_vec();
-        let err = create_goal(&pg, &registry, self_id, scalar)
-            .await
-            .expect_err("scalar payload rejected");
-        assert!(err.to_string().contains("must be a JSON object"));
+        assert!(err.to_string().contains("goals_payload_nonempty_chk"));
 
         let goals: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
             .fetch_one(pg.pool())

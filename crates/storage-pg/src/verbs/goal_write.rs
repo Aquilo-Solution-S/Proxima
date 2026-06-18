@@ -18,16 +18,72 @@ use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     EdgeAuthorshipKind, EntityKind, FactPayload, GoalId, MemoryId, Owner, OwnerPrincipalKind,
     RegisteredRelation, SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError,
-    canonical_json_bytes,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::authorship::{AuthorshipColumns, authorship_columns};
 use crate::error::{internal, map_err};
+use crate::sidecars::{PgSidecarKey, PgSidecarRegistryFrozen};
 use crate::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use crate::verbs::event_ingest::ingest_event_in_tx;
 
 const LIFECYCLE_SOURCE_ID: &str = "core/goal-lifecycle";
+
+trait GoalLifecyclePayload: FactPayload {
+    const SIDECAR_TABLE: &'static str;
+
+    fn goal_id(&self) -> uuid::Uuid;
+
+    fn transitioned_at(&self) -> time::OffsetDateTime;
+}
+
+impl GoalLifecyclePayload for GoalActivatedV1 {
+    const SIDECAR_TABLE: &'static str = "proxima_core.goal_activated_v1";
+
+    fn goal_id(&self) -> uuid::Uuid {
+        self.goal_id
+    }
+
+    fn transitioned_at(&self) -> time::OffsetDateTime {
+        self.transitioned_at
+    }
+}
+
+impl GoalLifecyclePayload for GoalPausedV1 {
+    const SIDECAR_TABLE: &'static str = "proxima_core.goal_paused_v1";
+
+    fn goal_id(&self) -> uuid::Uuid {
+        self.goal_id
+    }
+
+    fn transitioned_at(&self) -> time::OffsetDateTime {
+        self.transitioned_at
+    }
+}
+
+impl GoalLifecyclePayload for GoalAchievedV1 {
+    const SIDECAR_TABLE: &'static str = "proxima_core.goal_achieved_v1";
+
+    fn goal_id(&self) -> uuid::Uuid {
+        self.goal_id
+    }
+
+    fn transitioned_at(&self) -> time::OffsetDateTime {
+        self.transitioned_at
+    }
+}
+
+impl GoalLifecyclePayload for GoalAbandonedV1 {
+    const SIDECAR_TABLE: &'static str = "proxima_core.goal_abandoned_v1";
+
+    fn goal_id(&self) -> uuid::Uuid {
+        self.goal_id
+    }
+
+    fn transitioned_at(&self) -> time::OffsetDateTime {
+        self.transitioned_at
+    }
+}
 
 #[derive(Debug)]
 struct InsertedGoal {
@@ -102,11 +158,12 @@ struct EvidenceTarget {
 
 pub(crate) async fn create_goal_atomic(
     pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
     req: &CreateGoalAtomicRequest<'_>,
 ) -> Result<GoalWriteOutcome, StorageError> {
     let mut tx = pool.begin().await.map_err(internal)?;
     let evidence = validate_evidence_in_owner(&mut tx, &req.draft.owner(), &req.evidence).await?;
-    let inserted = insert_or_replay_goal(&mut tx, &req.draft, None, req.context).await?;
+    let inserted = insert_or_replay_goal(&mut tx, sidecars, &req.draft, None, req.context).await?;
     let outcome = if inserted.idempotent_replay {
         replay_goal_outcome(
             &mut tx,
@@ -181,6 +238,7 @@ pub(crate) async fn create_goal_atomic(
 
 pub(crate) async fn transition_goal_atomic(
     pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
     req: &TransitionGoalAtomicRequest<'_>,
 ) -> Result<GoalWriteOutcome, StorageError> {
     if matches!(req.next_state, GoalState::Achieved) {
@@ -198,8 +256,14 @@ pub(crate) async fn transition_goal_atomic(
         req.authorship.clone(),
         req.request_id.as_str(),
     );
-    let inserted =
-        insert_or_replay_goal(&mut tx, &draft, Some(req.prior_goal_id), req.context).await?;
+    let inserted = insert_or_replay_goal(
+        &mut tx,
+        sidecars,
+        &draft,
+        Some(req.prior_goal_id),
+        req.context,
+    )
+    .await?;
     let lifecycle = GoalLifecycleFact::for_state(req.next_state);
     let outcome = lifecycle_outcome(&mut tx, &req.owner, req.context, inserted, lifecycle).await?;
     tx.commit().await.map_err(map_err)?;
@@ -208,6 +272,7 @@ pub(crate) async fn transition_goal_atomic(
 
 pub(crate) async fn achieve_goal_atomic(
     pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
     req: &AchieveGoalAtomicRequest<'_>,
 ) -> Result<GoalWriteOutcome, StorageError> {
     if req.evidence.is_empty() {
@@ -226,8 +291,14 @@ pub(crate) async fn achieve_goal_atomic(
         req.authorship.clone(),
         req.request_id.as_str(),
     );
-    let inserted =
-        insert_or_replay_goal(&mut tx, &draft, Some(req.prior_goal_id), req.context).await?;
+    let inserted = insert_or_replay_goal(
+        &mut tx,
+        sidecars,
+        &draft,
+        Some(req.prior_goal_id),
+        req.context,
+    )
+    .await?;
     let outcome = if inserted.idempotent_replay {
         replay_goal_outcome(
             &mut tx,
@@ -291,6 +362,7 @@ pub(crate) async fn achieve_goal_atomic(
 
 pub(crate) async fn modify_goal_atomic(
     pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
     req: &ModifyGoalAtomicRequest<'_>,
 ) -> Result<GoalWriteOutcome, StorageError> {
     let mut tx = pool.begin().await.map_err(internal)?;
@@ -313,8 +385,14 @@ pub(crate) async fn modify_goal_atomic(
         req.authorship.clone(),
         req.request_id.as_str(),
     );
-    let inserted =
-        insert_or_replay_goal(&mut tx, &draft, Some(req.prior_goal_id), req.context).await?;
+    let inserted = insert_or_replay_goal(
+        &mut tx,
+        sidecars,
+        &draft,
+        Some(req.prior_goal_id),
+        req.context,
+    )
+    .await?;
     let outcome = if inserted.idempotent_replay {
         replay_goal_outcome(
             &mut tx,
@@ -367,6 +445,7 @@ pub(crate) async fn modify_goal_atomic(
 
 pub(crate) async fn decompose_goal_atomic(
     pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
     req: &DecomposeGoalAtomicRequest<'_>,
 ) -> Result<DecomposeGoalOutcome, StorageError> {
     let mut tx = pool.begin().await.map_err(internal)?;
@@ -376,7 +455,7 @@ pub(crate) async fn decompose_goal_atomic(
     for child in &req.children {
         let evidence = validate_evidence_in_owner(&mut tx, &req.owner, &child.evidence).await?;
         let draft = child_draft(&req.owner, req.parent_goal_id, &req.authorship, child);
-        let inserted = insert_or_replay_goal(&mut tx, &draft, None, req.context).await?;
+        let inserted = insert_or_replay_goal(&mut tx, sidecars, &draft, None, req.context).await?;
         let outcome = if inserted.idempotent_replay {
             replay_goal_outcome(
                 &mut tx,
@@ -449,11 +528,12 @@ pub(crate) async fn decompose_goal_atomic(
 
 async fn insert_or_replay_goal(
     tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
     draft: &GoalDraft,
     expected_prior: Option<GoalId>,
     context: GoalAtomicContext<'_>,
 ) -> Result<InsertedGoal, StorageError> {
-    validate_goal_payload(context, draft)?;
+    validate_goal_schema(context, draft)?;
     let owner = draft.owner();
     let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let existing: Option<ExistingGoalRow> = sqlx::query_as(
@@ -494,7 +574,15 @@ async fn insert_or_replay_goal(
     let goal_id = uuid::Uuid::now_v7();
     let change_seq = uuid::Uuid::now_v7();
     insert_goal_row(tx, draft, goal_id, expected_prior).await?;
-    insert_goal_sidecar(tx, context, draft, goal_id).await?;
+    insert_goal_sidecar(
+        tx,
+        sidecars,
+        context,
+        draft,
+        GoalId::new(goal_id),
+        expected_prior,
+    )
+    .await?;
     insert_goal_parents(tx, draft, goal_id).await?;
     insert_goal_change_event(tx, draft, goal_id, change_seq, expected_prior).await?;
     Ok(InsertedGoal {
@@ -504,13 +592,11 @@ async fn insert_or_replay_goal(
     })
 }
 
-fn validate_goal_payload(
+fn validate_goal_schema(
     context: GoalAtomicContext<'_>,
     draft: &GoalDraft,
 ) -> Result<(), StorageError> {
-    let value: serde_json::Value = serde_json::from_slice(&draft.payload)
-        .map_err(|err| StorageError::ConstraintViolation(err.to_string()))?;
-    let info = context
+    context
         .registry
         .lookup_payload(&draft.schema_id, draft.schema_version, PayloadKind::Goal)
         .ok_or_else(|| {
@@ -520,32 +606,56 @@ fn validate_goal_payload(
                 draft.schema_version.into_inner(),
             ))
         })?;
-    let _ = info;
-    context
-        .registry
-        .validate_payload(
-            &draft.schema_id,
-            draft.schema_version,
-            PayloadKind::Goal,
-            &value,
-        )
-        .map_err(StorageError::ConstraintViolation)
+    Ok(())
 }
 
 async fn insert_goal_sidecar(
     tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
     context: GoalAtomicContext<'_>,
     draft: &GoalDraft,
-    goal_id: uuid::Uuid,
+    goal_id: GoalId,
+    source_goal_id: Option<GoalId>,
 ) -> Result<(), StorageError> {
-    let inserter = context
+    let Some(sidecar_table) = context
         .registry
         .lookup_payload(&draft.schema_id, draft.schema_version, PayloadKind::Goal)
-        .and_then(|schema| schema.sidecar_inserter);
-    if let Some(insert) = inserter {
-        insert(tx, goal_id, &draft.payload).await?;
+        .and_then(|schema| schema.sidecar_table.as_deref())
+    else {
+        return Ok(());
+    };
+    if let Some(payload) = &draft.sidecar_payload {
+        if payload.kind != PayloadKind::Goal
+            || payload.schema_id != draft.schema_id
+            || payload.schema_version != draft.schema_version
+        {
+            return Err(StorageError::ConstraintViolation(format!(
+                "Goal sidecar payload drift for {} v{} table {sidecar_table}",
+                draft.schema_id.as_str(),
+                draft.schema_version.into_inner(),
+            )));
+        }
+        sidecars.insert_goal_sidecar(tx, goal_id, payload).await?;
+        return Ok(());
     }
-    Ok(())
+
+    if let Some(source_goal_id) = source_goal_id {
+        let key = PgSidecarKey::new(
+            PayloadKind::Goal,
+            draft.schema_id.clone(),
+            draft.schema_version,
+        );
+        sidecars
+            .copy_goal_sidecar(tx, key, goal_id, source_goal_id)
+            .await?;
+        return Ok(());
+    }
+
+    Err(StorageError::ConstraintViolation(format!(
+        "missing typed Goal sidecar payload for {} v{} table {sidecar_table}",
+        draft.schema_id.as_str(),
+        draft.schema_version.into_inner(),
+    )))
 }
 
 async fn existing_goal_body_matches(
@@ -850,6 +960,7 @@ fn draft_from_stored(
         title: stored.title.clone(),
         text: stored.text.clone(),
         payload: stored.payload.clone(),
+        sidecar_payload: None,
         state,
         parent_goal_ids: stored.parent_goal_ids.clone(),
         supersedes_goal_id: supersedes,
@@ -875,6 +986,7 @@ fn draft_from_payload(
         title: payload.title.clone(),
         text: payload.text.clone(),
         payload: payload.payload.clone(),
+        sidecar_payload: payload.sidecar_payload.clone(),
         state,
         parent_goal_ids,
         supersedes_goal_id: supersedes,
@@ -992,28 +1104,28 @@ async fn emit_lifecycle_fact(
                 goal_id: goal_id.into_inner(),
                 transitioned_at: now,
             };
-            ingest_lifecycle_fact(tx, context, owner, &payload, lifecycle).await
+            ingest_lifecycle_fact(tx, context, owner, &payload).await
         }
         GoalLifecycleFact::Paused => {
             let payload = GoalPausedV1 {
                 goal_id: goal_id.into_inner(),
                 transitioned_at: now,
             };
-            ingest_lifecycle_fact(tx, context, owner, &payload, lifecycle).await
+            ingest_lifecycle_fact(tx, context, owner, &payload).await
         }
         GoalLifecycleFact::Achieved => {
             let payload = GoalAchievedV1 {
                 goal_id: goal_id.into_inner(),
                 transitioned_at: now,
             };
-            ingest_lifecycle_fact(tx, context, owner, &payload, lifecycle).await
+            ingest_lifecycle_fact(tx, context, owner, &payload).await
         }
         GoalLifecycleFact::Abandoned => {
             let payload = GoalAbandonedV1 {
                 goal_id: goal_id.into_inner(),
                 transitioned_at: now,
             };
-            ingest_lifecycle_fact(tx, context, owner, &payload, lifecycle).await
+            ingest_lifecycle_fact(tx, context, owner, &payload).await
         }
     }
 }
@@ -1023,22 +1135,10 @@ async fn ingest_lifecycle_fact<T>(
     context: GoalAtomicContext<'_>,
     owner: &Owner,
     payload: &T,
-    lifecycle: GoalLifecycleFact,
 ) -> Result<MemoryId, StorageError>
 where
-    T: FactPayload,
+    T: GoalLifecyclePayload,
 {
-    let value = serde_json::to_value(payload).map_err(internal)?;
-    context
-        .registry
-        .validate_payload(
-            &SchemaId::new(T::SCHEMA_ID.to_string()),
-            SchemaVersion::new(T::SCHEMA_VERSION),
-            PayloadKind::Fact,
-            &value,
-        )
-        .map_err(StorageError::ConstraintViolation)?;
-    let payload_bytes = canonical_json_bytes(&value);
     let now = time::OffsetDateTime::now_utc();
     let draft = EventDraft {
         source_id: SourceId::new(LIFECYCLE_SOURCE_ID),
@@ -1048,7 +1148,7 @@ where
         author_personality_instance_id: None,
         schema_id: SchemaId::new(T::SCHEMA_ID.to_string()),
         schema_version: SchemaVersion::new(T::SCHEMA_VERSION),
-        payload: payload_bytes,
+        payload: payload.event_key(),
         rendered_text: Some(payload.render()),
         observed_at: now,
         occurred_at: now,
@@ -1056,7 +1156,7 @@ where
     };
     let outcome = ingest_event_in_tx(tx, &draft, context.embedding_model_id).await?;
     if !outcome.idempotent_replay {
-        insert_lifecycle_sidecar(tx, outcome.memory_id, payload, lifecycle).await?;
+        insert_lifecycle_sidecar(tx, outcome.memory_id, payload).await?;
     }
     Ok(outcome.memory_id)
 }
@@ -1065,43 +1165,19 @@ async fn insert_lifecycle_sidecar<T>(
     tx: &mut Transaction<'_, Postgres>,
     memory_id: MemoryId,
     payload: &T,
-    lifecycle: GoalLifecycleFact,
 ) -> Result<(), StorageError>
 where
-    T: FactPayload,
+    T: GoalLifecyclePayload,
 {
-    let value = serde_json::to_value(payload).map_err(internal)?;
-    let goal_id = value
-        .get("goal_id")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| StorageError::Internal("lifecycle payload missing goal_id".into()))?;
-    let goal_id = uuid::Uuid::parse_str(goal_id)
-        .map_err(|err| StorageError::Internal(format!("invalid lifecycle goal_id: {err}")))?;
-    let transitioned_at = value
-        .get("transitioned_at")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| {
-            StorageError::Internal("lifecycle payload missing transitioned_at".into())
-        })?;
-    let transitioned_at = time::OffsetDateTime::parse(
-        transitioned_at,
-        &time::format_description::well_known::Rfc3339,
-    )
-    .map_err(|err| StorageError::Internal(format!("invalid lifecycle timestamp: {err}")))?;
-    let table = match lifecycle {
-        GoalLifecycleFact::Activated => "proxima_core.goal_activated_v1",
-        GoalLifecycleFact::Paused => "proxima_core.goal_paused_v1",
-        GoalLifecycleFact::Achieved => "proxima_core.goal_achieved_v1",
-        GoalLifecycleFact::Abandoned => "proxima_core.goal_abandoned_v1",
-    };
+    let table = T::SIDECAR_TABLE;
     let sql = format!(
         "INSERT INTO {table} (memory_id, goal_id, transitioned_at)
          VALUES ($1, $2, $3)"
     );
     sqlx::query(&sql)
         .bind(memory_id.into_inner())
-        .bind(goal_id)
-        .bind(transitioned_at)
+        .bind(payload.goal_id())
+        .bind(payload.transitioned_at())
         .execute(&mut **tx)
         .await
         .map_err(map_err)?;
@@ -1246,7 +1322,7 @@ async fn append_goal_to_self_edge(
         authorship_owner_memory_id: Some(self_memory_id.into_inner()),
         owner,
     };
-    append_edge_in_tx(tx, &draft, None).await?;
+    append_edge_in_tx(tx, &draft).await?;
     Ok(edge_id)
 }
 
@@ -1277,7 +1353,7 @@ async fn append_motivated_by_edges(
             authorship_owner_memory_id: None,
             owner,
         };
-        append_edge_in_tx(tx, &draft, None).await?;
+        append_edge_in_tx(tx, &draft).await?;
         edge_ids.push(edge_id);
     }
     Ok(edge_ids)
@@ -1309,7 +1385,7 @@ async fn append_lifecycle_authored_edge(
         authorship_owner_memory_id: None,
         owner,
     };
-    append_edge_in_tx(tx, &draft, None).await?;
+    append_edge_in_tx(tx, &draft).await?;
     Ok(Some(edge_id))
 }
 
@@ -1342,7 +1418,7 @@ async fn append_lifecycle_derived_from_edges(
             authorship_owner_memory_id: None,
             owner,
         };
-        append_edge_in_tx(tx, &draft, None).await?;
+        append_edge_in_tx(tx, &draft).await?;
         edge_ids.push(edge_id);
     }
     Ok(edge_ids)

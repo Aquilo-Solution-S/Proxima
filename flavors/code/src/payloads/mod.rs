@@ -11,9 +11,8 @@ pub mod personality_self;
 pub mod test_request;
 pub mod work_results;
 
-/// Serde adapter for 32-byte content hashes that round-trips through
-/// Postgres `bytea` (rendered as `"\xDEADBEEF..."` by `row_to_json`)
-/// while staying compact in binary serdes.
+/// Serde adapter for 32-byte content hashes that emits stable hex in
+/// human-readable formats while staying compact in binary serdes.
 pub(crate) mod content_hash_serde {
     use serde::Serializer;
     use serde::de::{self, Deserializer, SeqAccess, Visitor};

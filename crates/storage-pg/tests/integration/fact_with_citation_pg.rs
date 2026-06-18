@@ -6,20 +6,25 @@ use proxima_core::verbs::event_ingest::{
 };
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, Engine, FactPayload,
-    FlavorRegistry, MemoryId, Owner, PersonalityInstanceId, Role, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId, Storage, StorageError, canonical_json_bytes,
+    FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner, PayloadKeyBuilder,
+    PersonalityInstanceId, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId, Storage,
+    StorageError, canonical_json_bytes,
+};
+use proxima_storage_pg::sidecars::{
+    PgCitationMappingSidecar, PgCitedObjectSidecar, PgMemoryPayload, PgMemoryPayloadFuture,
+    PgSidecarFuture,
 };
 use proxima_storage_pg::verbs::event_ingest::{
-    attach_citation_in_tx, ingest_fact_in_tx, ingest_fact_with_citation_atomic,
-    ingest_fact_with_citation_in_tx,
+    EventIngestSidecarFuture, PgFactSidecar, attach_citation_in_tx, ingest_fact_in_tx,
+    ingest_fact_with_citation_atomic, ingest_fact_with_citation_in_tx,
 };
-use std::future::Future;
-use std::pin::Pin;
+use proxima_storage_pg::{
+    PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
+};
+use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
-type SidecarFuture<'t> = Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct TestFact {
     note: String,
 }
@@ -28,12 +33,51 @@ impl FactPayload for TestFact {
     const SCHEMA_ID: &'static str = "test/inline-cited-fact";
     const SCHEMA_VERSION: u32 = 1;
 
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("note", &self.note);
+        key.finish()
+    }
+
     fn render(&self) -> String {
         self.note.clone()
     }
 
     fn sidecar_table() -> Option<&'static str> {
         Some("public.inline_cited_fact_sidecar")
+    }
+}
+
+impl PgFactSidecar for TestFact {
+    fn insert_sidecar<'t>(
+        self,
+        tx: &'t mut Transaction<'_, Postgres>,
+        memory_id: MemoryId,
+    ) -> EventIngestSidecarFuture<'t>
+    where
+        Self: 't,
+    {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO public.inline_cited_fact_sidecar (memory_id, note)
+                 VALUES ($1, $2)",
+            )
+            .bind(memory_id.into_inner())
+            .bind(&self.note)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+impl PgMemoryPayload for TestFact {
+    fn load_memory_payload(
+        _pool: &sqlx::PgPool,
+        _memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
+        Box::pin(async { Ok(None) })
     }
 }
 
@@ -53,21 +97,23 @@ impl CitedObjectPayload for TestCitedObject {
     fn idempotency_key(&self) -> [u8; 32] {
         *blake3::hash(self.body.as_bytes()).as_bytes()
     }
+}
 
-    fn sidecar_insert<'t>(
+impl PgCitedObjectSidecar for TestCitedObject {
+    fn insert_cited_object_sidecar<'t>(
         &'t self,
-        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
-        sidecar_row_id: Uuid,
-    ) -> SidecarFuture<'t> {
+        tx: &'t mut sqlx::PgConnection,
+        cited_object_id: Uuid,
+    ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO public.inline_cited_object_sidecar (cited_object_id, body)
                  VALUES ($1, $2)
                  ON CONFLICT (cited_object_id) DO NOTHING",
             )
-            .bind(sidecar_row_id)
+            .bind(cited_object_id)
             .bind(&self.body)
-            .execute(&mut **tx)
+            .execute(tx)
             .await
             .map_err(|e| StorageError::Internal(e.to_string()))?;
             Ok(())
@@ -92,23 +138,24 @@ impl CitationMappingPayload for TestCitationMapping {
     fn cited_object_schema() -> SchemaId {
         TestCitedObject::schema_id()
     }
+}
 
-    fn sidecar_insert<'t>(
+impl PgCitationMappingSidecar for TestCitationMapping {
+    fn insert_citation_mapping_sidecar<'t>(
         &'t self,
-        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
-        sidecar_row_id: Uuid,
-    ) -> SidecarFuture<'t> {
+        tx: &'t mut sqlx::PgConnection,
+        citation_mapping_id: Uuid,
+    ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO public.inline_citation_mapping_sidecar
                     (citation_mapping_id, byte_start, byte_end)
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (citation_mapping_id) DO NOTHING",
+                 VALUES ($1, $2, $3)",
             )
-            .bind(sidecar_row_id)
+            .bind(citation_mapping_id)
             .bind(self.byte_start)
             .bind(self.byte_end)
-            .execute(&mut **tx)
+            .execute(tx)
             .await
             .map_err(|e| StorageError::Internal(e.to_string()))?;
             Ok(())
@@ -121,12 +168,33 @@ fn json<T: serde::Serialize>(value: &T) -> Vec<u8> {
     canonical_json_bytes(&value)
 }
 
-fn engine() -> Engine {
+fn registry() -> FlavorRegistryFrozen {
     let mut registry = FlavorRegistry::new();
     registry.add_fact_schema::<TestFact>();
     registry.add_cited_object_schema::<TestCitedObject>();
     registry.add_citation_mapping_schema::<TestCitationMapping>();
-    Engine::new(registry.freeze())
+    registry.freeze()
+}
+
+fn engine() -> Engine {
+    Engine::new(registry())
+}
+
+fn pg_sidecars() -> PgSidecarRegistryFrozen {
+    let registry = registry();
+    let mut sidecars = PgSidecarRegistry::new();
+    register_core_pg_sidecars(&mut sidecars);
+    sidecars.add_fact::<TestFact>();
+    sidecars.add_cited_object::<TestCitedObject>();
+    sidecars.add_citation_mapping::<TestCitationMapping>();
+    sidecars
+        .freeze_against(registry.schemas())
+        .expect("inline citation test sidecars match schemas")
+}
+
+async fn fresh_pg_with_sidecars() -> (PgStorage, String) {
+    let (pg, db_name) = fresh_pg().await;
+    (pg.with_sidecars(pg_sidecars()), db_name)
 }
 
 fn draft(owner: &Owner, note: &str, author: Option<PersonalityInstanceId>) -> EventDraft {
@@ -253,7 +321,7 @@ async fn stored_fact_citation_mapping_id(
 #[tokio::test]
 async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -285,8 +353,12 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
         assert_eq!(second.cited_object().content_hash(), &expected_content_hash);
 
         let first_note = "first fact".to_string();
-        let first_outcome =
-            ingest_fact_with_citation_atomic(pg.pool(), &first, None, move |tx, outcome| {
+        let first_outcome = ingest_fact_with_citation_atomic(
+            pg.pool(),
+            pg.sidecars(),
+            &first,
+            None,
+            move |tx, outcome| {
                 Box::pin(async move {
                     sqlx::query(
                         "INSERT INTO public.inline_cited_fact_sidecar (memory_id, note)
@@ -299,11 +371,16 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
                     .map_err(|e| StorageError::Internal(e.to_string()))?;
                     Ok(())
                 })
-            })
-            .await?;
+            },
+        )
+        .await?;
         let second_note = "second fact".to_string();
-        let second_outcome =
-            ingest_fact_with_citation_atomic(pg.pool(), &second, None, move |tx, outcome| {
+        let second_outcome = ingest_fact_with_citation_atomic(
+            pg.pool(),
+            pg.sidecars(),
+            &second,
+            None,
+            move |tx, outcome| {
                 Box::pin(async move {
                     sqlx::query(
                         "INSERT INTO public.inline_cited_fact_sidecar (memory_id, note)
@@ -316,8 +393,9 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
                     .map_err(|e| StorageError::Internal(e.to_string()))?;
                     Ok(())
                 })
-            })
-            .await?;
+            },
+        )
+        .await?;
 
         assert!(!first_outcome.idempotent_replay);
         assert!(!second_outcome.idempotent_replay);
@@ -335,7 +413,7 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
 #[tokio::test]
 async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn std::error::Error>>
 {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -363,7 +441,7 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
         )?;
 
         let mut tx = pg.pool().begin().await?;
-        let first_attach = attach_citation_in_tx(&mut tx, &authorized).await?;
+        let first_attach = attach_citation_in_tx(&mut tx, pg.sidecars(), &authorized).await?;
         tx.commit().await?;
 
         assert!(first_attach.attached);
@@ -391,7 +469,7 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
         );
 
         let mut tx = pg.pool().begin().await?;
-        let second_attach = attach_citation_in_tx(&mut tx, &authorized).await?;
+        let second_attach = attach_citation_in_tx(&mut tx, pg.sidecars(), &authorized).await?;
         tx.commit().await?;
 
         assert!(!second_attach.attached);
@@ -413,7 +491,7 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
             citation_mapping(1, 5),
         )?;
         let mut tx = pg.pool().begin().await?;
-        let err = attach_citation_in_tx(&mut tx, &missing)
+        let err = attach_citation_in_tx(&mut tx, pg.sidecars(), &missing)
             .await
             .expect_err("missing target Fact must return NotFound");
         drop(tx);
@@ -430,7 +508,7 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
 #[tokio::test]
 async fn fact_sidecar_failure_rolls_back_whole_inline_citation_ingest()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -449,9 +527,15 @@ async fn fact_sidecar_failure_rolls_back_whole_inline_citation_ingest()
         let event_id = authorized.draft().event_id();
 
         let mut tx = pg.pool().begin().await?;
-        let err = ingest_fact_with_citation_in_tx(&mut tx, &authorized, None, |_tx, _outcome| {
-            Box::pin(async move { Err(StorageError::Internal("fact sidecar failed".into())) })
-        })
+        let err = ingest_fact_with_citation_in_tx(
+            &mut tx,
+            pg.sidecars(),
+            &authorized,
+            None,
+            |_tx, _outcome| {
+                Box::pin(async move { Err(StorageError::Internal("fact sidecar failed".into())) })
+            },
+        )
         .await
         .expect_err("failing Fact sidecar must abort the verb");
         drop(tx);

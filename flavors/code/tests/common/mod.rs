@@ -7,7 +7,9 @@ use proxima_core::{OrgId, Owner, Principal, UserId};
 use proxima_pg_testkit::{
     FNV_OFFSET_BASIS, create_db_from_template, db_url, drop_db, ensure_template, fnv1a64_extend,
 };
-use proxima_storage_pg::{PgStorage, core_migrator};
+use proxima_storage_pg::{
+    PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, core_migrator, register_core_pg_sidecars,
+};
 use uuid::Uuid;
 
 pub async fn migrated_db() -> (String, PgStorage) {
@@ -34,7 +36,8 @@ pub async fn migrated_db() -> (String, PgStorage) {
             let _ = drop_db(&db_name).await;
             panic!("PG required for tests but unavailable: {err}");
         }
-    };
+    }
+    .with_sidecars(code_pg_sidecars());
     (db_name, pg)
 }
 
@@ -106,4 +109,14 @@ fn code_template_name() -> String {
         hash = fnv1a64_extend(hash, migration.checksum.as_ref());
     }
     format!("proxima_tmpl_code_{hash:016x}")
+}
+
+fn code_pg_sidecars() -> PgSidecarRegistryFrozen {
+    let registry = proxima_code::ingest::schema_registry();
+    let mut sidecars = PgSidecarRegistry::new();
+    register_core_pg_sidecars(&mut sidecars);
+    proxima_code::register_pg_sidecars(&mut sidecars);
+    sidecars
+        .freeze_against(registry.schemas())
+        .expect("code test PG sidecars match code schema registry")
 }
