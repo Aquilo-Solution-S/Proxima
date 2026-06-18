@@ -158,6 +158,7 @@ pub async fn append_code_slice(
         prompt_version: CODE_SLICE_PROMPT_VERSION,
         sidecar_table: Some(CodeChunkV1::sidecar_table()),
         sidecar_payload: Some(sidecar_payload),
+        supersedes: None,
         embedding: None,
         embedding_model_id: None,
     };

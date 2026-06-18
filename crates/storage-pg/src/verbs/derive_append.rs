@@ -24,6 +24,7 @@ pub struct DerivedDraft<'a> {
     pub prompt_version: &'a str,
     pub sidecar_table: Option<&'a str>,
     pub sidecar_payload: Option<serde_json::Value>,
+    pub supersedes: Option<MemoryId>,
     pub embedding: Option<Vec<f32>>,
     pub embedding_model_id: Option<&'a str>,
 }
@@ -53,8 +54,8 @@ pub async fn append_derived_in_tx(
             (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id,
-             wake_chain_depth)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 0)
+             wake_chain_depth, supersedes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 0, $13)
          ON CONFLICT (memory_id) DO NOTHING
          RETURNING memory_id",
     )
@@ -70,6 +71,7 @@ pub async fn append_derived_in_tx(
     .bind(draft.model_id)
     .bind(draft.prompt_version)
     .bind(author_personality_instance_id)
+    .bind(draft.supersedes.map(MemoryId::into_inner))
     .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -106,8 +108,8 @@ pub async fn append_derived_in_tx(
         "INSERT INTO proxima_core.change_event
             (seq, owner_principal_kind, owner_principal_id, owner_org_id,
              kind, entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,
-             wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 'EntityAppend', $5, $6, $7, $8, 0)",
+             wake_chain_depth, supersedes_memory_id)
+         VALUES ($1, $2, $3, $4, 'EntityAppend', $5, $6, $7, $8, 0, $9)",
     )
     .bind(seq)
     .bind(owner_kind)
@@ -117,6 +119,7 @@ pub async fn append_derived_in_tx(
     .bind(draft.memory_id)
     .bind(draft.schema_id.as_str())
     .bind(i32::try_from(draft.schema_version.into_inner()).unwrap_or(1))
+    .bind(draft.supersedes.map(MemoryId::into_inner))
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;

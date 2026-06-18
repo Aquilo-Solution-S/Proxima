@@ -583,6 +583,7 @@ async fn append_execution_plan(
         prompt_version: "proxima-code/code_emit_execution_plan-v1",
         sidecar_table: Some(CodeExecutionPlanV1::sidecar_table()),
         sidecar_payload: Some(sidecar_payload),
+        supersedes: None,
         embedding: None,
         embedding_model_id: None,
     };

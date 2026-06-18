@@ -625,7 +625,7 @@ CREATE TABLE proxima_code.execution_plan_v1 (
     CONSTRAINT execution_plan_v1_items_chk CHECK ((jsonb_typeof(items) = 'array'::text) AND (jsonb_array_length(items) > 0))
 );
 
-CREATE UNIQUE INDEX idx_execution_plan_v1_repo_key ON proxima_code.execution_plan_v1 USING btree (repo_id, plan_key);
+CREATE INDEX idx_execution_plan_v1_repo_key ON proxima_code.execution_plan_v1 USING btree (repo_id, plan_key);
 CREATE INDEX idx_execution_plan_v1_goal ON proxima_code.execution_plan_v1 USING btree (goal_activated_memory_id);
 
 

@@ -89,6 +89,10 @@ pub struct AuthorDerivedRequest<'a> {
     pub author_personality_instance_id: Option<PersonalityInstanceId>,
     pub sidecar_table: &'a str,
     pub sidecar_payload: serde_json::Value,
+    /// Prior A/P memory superseded by this derived memory. Storage must
+    /// persist this on `memories.supersedes` in the same transaction as
+    /// the row, sidecar, and edge writes.
+    pub supersedes: Option<MemoryId>,
     pub embedding: Option<Vec<f32>>,
     pub embedding_model_id: Option<&'a str>,
     pub edges: &'a [DerivedEdgeSpec<'a>],
@@ -239,7 +243,11 @@ pub trait Storage: Send + Sync {
     ) -> Result<EventIngestOutcome, StorageError>;
 
     /// Atomic derived Memory authoring: Memory row, typed sidecar,
-    /// optional embedding row, and already-resolved edge specs.
+    /// optional embedding row, `memories.supersedes`, and
+    /// already-resolved edge specs. Callers that set `supersedes`
+    /// must include the matching `core/supersedes` edge unless they
+    /// enter through [`crate::Engine::author_derived`], which
+    /// synthesizes it.
     async fn author_derived(
         &self,
         req: &AuthorDerivedRequest<'_>,
