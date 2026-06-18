@@ -1,0 +1,6 @@
+target/
+.git/
+.local/
+docs/superpowers/
+.github/
+*.log
