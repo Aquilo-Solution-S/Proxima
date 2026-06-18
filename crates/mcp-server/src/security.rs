@@ -135,6 +135,7 @@ pub struct McpAuthLayerState {
     auth: Arc<McpEdgeAuth>,
     allowlist: OriginAllowlist,
     revalidation: RevalidationConfig,
+    www_authenticate: Option<http::HeaderValue>,
 }
 
 /// Bearer-token middleware that resolves `Authorization: Bearer
@@ -152,6 +153,16 @@ pub fn mcp_auth_layer_with_config(
     allowlist: OriginAllowlist,
     revalidation: RevalidationConfig,
 ) -> McpAuthLayer {
+    mcp_auth_layer_with_metadata(auth, allowlist, revalidation, None)
+}
+
+#[must_use = "apply the returned layer to the MCP router"]
+pub fn mcp_auth_layer_with_metadata(
+    auth: Arc<McpEdgeAuth>,
+    allowlist: OriginAllowlist,
+    revalidation: RevalidationConfig,
+    www_authenticate: Option<http::HeaderValue>,
+) -> McpAuthLayer {
     fn dispatch(
         state: State<McpAuthLayerState>,
         request: Request,
@@ -164,6 +175,7 @@ pub fn mcp_auth_layer_with_config(
             auth,
             allowlist,
             revalidation,
+            www_authenticate,
         },
         dispatch as fn(_, _, _) -> _,
     )
@@ -175,10 +187,10 @@ async fn mcp_auth(
     next: Next,
 ) -> Response {
     let Some(token) = extract_bearer(&request) else {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized(&state);
     };
     let Some(ctx) = state.auth.resolve(&token).await else {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized(&state);
     };
     if request.headers().contains_key(ORIGIN) && !state.allowlist.allows(request.headers()) {
         return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
@@ -196,6 +208,15 @@ async fn mcp_auth(
         epoch_source,
         state.revalidation,
     )
+}
+
+fn unauthorized(state: &McpAuthLayerState) -> Response {
+    let mut resp = StatusCode::UNAUTHORIZED.into_response();
+    if let Some(value) = &state.www_authenticate {
+        resp.headers_mut()
+            .insert(http::header::WWW_AUTHENTICATE, value.clone());
+    }
+    resp
 }
 
 fn revalidate_response(
