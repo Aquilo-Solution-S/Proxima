@@ -23,8 +23,9 @@ use crate::verbs::event_ingest::PgFactSidecar;
 pub type PgSidecarFuture<'t> = Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
 pub type PgMemoryPayloadFuture<'t> =
     Pin<Box<dyn Future<Output = Result<Option<SidecarPayload>, StorageError>> + Send + 't>>;
-pub type PgMemoryPayloadBatchFuture<'t> =
-    Pin<Box<dyn Future<Output = Result<Vec<(MemoryId, SidecarPayload)>, StorageError>> + Send + 't>>;
+pub type PgMemoryPayloadBatchFuture<'t> = Pin<
+    Box<dyn Future<Output = Result<Vec<(MemoryId, SidecarPayload)>, StorageError>> + Send + 't>,
+>;
 
 pub trait PgMemorySidecar: Send + Sync + 'static {
     fn insert_memory_sidecar<'t>(
@@ -120,11 +121,8 @@ type PgMemorySidecarInserter = for<'t> fn(
     &'t SidecarPayload,
 ) -> PgSidecarFuture<'t>;
 type PgMemoryPayloadLoader = for<'t> fn(&'t PgPool, MemoryId) -> PgMemoryPayloadFuture<'t>;
-type PgMemoryPayloadBatchLoader = for<'t> fn(
-    &'t PgPool,
-    PayloadKind,
-    &'t [MemoryId],
-) -> PgMemoryPayloadBatchFuture<'t>;
+type PgMemoryPayloadBatchLoader =
+    for<'t> fn(&'t PgPool, PayloadKind, &'t [MemoryId]) -> PgMemoryPayloadBatchFuture<'t>;
 
 type PgEdgeSidecarInserter =
     for<'t> fn(&'t mut PgConnection, EdgeId, &'t SidecarPayload) -> PgSidecarFuture<'t>;
@@ -862,7 +860,12 @@ where
     P::load_batch(pool, kind, memory_ids)
 }
 
-fn bytes32(bytes: &[u8], column: &str) -> Result<[u8; 32], StorageError> {
+/// Convert a byte slice into a fixed 32-byte array.
+///
+/// # Errors
+///
+/// Returns `StorageError::Internal` when the input is not exactly 32 bytes.
+pub fn bytes32(bytes: &[u8], column: &str) -> Result<[u8; 32], StorageError> {
     <[u8; 32]>::try_from(bytes).map_err(|_| {
         StorageError::Internal(format!(
             "{column} must be exactly 32 bytes, got {}",
@@ -871,11 +874,25 @@ fn bytes32(bytes: &[u8], column: &str) -> Result<[u8; 32], StorageError> {
     })
 }
 
-fn memory_insert_sql(
-    table: &str,
-    key_column: &str,
-    columns: &[(&str, Option<&str>)],
-) -> String {
+/// Convert a signed SQL `integer` value into `u32`.
+///
+/// # Errors
+///
+/// Returns `StorageError::Internal` when the database value is negative.
+pub fn int_to_u32(value: i32, column: &str) -> Result<u32, StorageError> {
+    u32::try_from(value).map_err(|err| StorageError::Internal(format!("invalid {column}: {err}")))
+}
+
+/// Convert a signed SQL `bigint` value into `u64`.
+///
+/// # Errors
+///
+/// Returns `StorageError::Internal` when the database value is negative.
+pub fn int_to_u64(value: i64, column: &str) -> Result<u64, StorageError> {
+    u64::try_from(value).map_err(|err| StorageError::Internal(format!("invalid {column}: {err}")))
+}
+
+fn memory_insert_sql(table: &str, key_column: &str, columns: &[(&str, Option<&str>)]) -> String {
     let mut sql = String::new();
     write!(&mut sql, "INSERT INTO {table} ({key_column}")
         .expect("writing SQL into String cannot fail");
@@ -942,6 +959,9 @@ macro_rules! pg_sidecar_row_ty {
     (u32_as_i32) => {
         i32
     };
+    (u32_as_i64) => {
+        i64
+    };
     (u64_as_i64) => {
         i64
     };
@@ -989,6 +1009,9 @@ macro_rules! pg_sidecar_bind {
             StorageError::ConstraintViolation(format!("{} out of range: {err}", stringify!($field)))
         })?
     };
+    ((u32_as_i64), $self:ident, $field:ident) => {
+        i64::from($self.$field)
+    };
     ((u64_as_i64), $self:ident, $field:ident) => {
         i64::try_from($self.$field).map_err(|err| {
             StorageError::ConstraintViolation(format!("{} out of range: {err}", stringify!($field)))
@@ -1031,12 +1054,15 @@ macro_rules! pg_sidecar_decode {
         bytes32(&$row.$field, stringify!($field))?
     };
     ((u32_as_i32), $row:ident, $field:ident) => {
-        u32::try_from($row.$field)
-            .map_err(|err| StorageError::Internal(format!("invalid {}: {err}", stringify!($field))))?
+        int_to_u32($row.$field, stringify!($field))?
+    };
+    ((u32_as_i64), $row:ident, $field:ident) => {
+        u32::try_from($row.$field).map_err(|err| {
+            StorageError::Internal(format!("invalid {}: {err}", stringify!($field)))
+        })?
     };
     ((u64_as_i64), $row:ident, $field:ident) => {
-        u64::try_from($row.$field)
-            .map_err(|err| StorageError::Internal(format!("invalid {}: {err}", stringify!($field))))?
+        int_to_u64($row.$field, stringify!($field))?
     };
     (
         (
@@ -1344,7 +1370,7 @@ pg_sidecar! {
         actor_upn => actor_upn: (text),
         ok => ok: (bool),
         error => error: (opt_text),
-        latency_ms => latency_ms: (u32_as_i32),
+        latency_ms => latency_ms: (u32_as_i64),
         io_byte_len => io_byte_len: (u64_as_i64),
         io_truncated => io_truncated: (bool),
         io_content_hash => io_content_hash: (bytea32),
