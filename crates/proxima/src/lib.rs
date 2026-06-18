@@ -42,7 +42,7 @@ pub use proxima_core::{
     SearchProjectionColumnKind, SearchProjectionField, SourceBatchId, SourceId, StorageError,
     ToolScope, UserId, canonical_json_bytes, proxima_flavor,
 };
-pub use proxima_mcp_server::McpAuthContext;
+pub use proxima_mcp_server::{McpAuthContext, ResourceServerMetadata};
 #[cfg(feature = "testkit")]
 pub use proxima_pg_testkit as testkit;
 pub use proxima_storage_pg::verbs::event_ingest::{

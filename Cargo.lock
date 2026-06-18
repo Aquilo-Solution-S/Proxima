@@ -2355,6 +2355,8 @@ name = "proxima-mcp"
 version = "0.1.0"
 dependencies = [
  "proxima",
+ "proxima-auth-oidc",
+ "proxima-code",
  "proxima-core",
  "proxima-llm-openai-compat",
  "proxima-storage-pg",
