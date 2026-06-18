@@ -95,6 +95,15 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     }
 
     #[must_use]
+    pub fn resource_metadata(
+        mut self,
+        metadata: proxima_mcp_server::ResourceServerMetadata,
+    ) -> Self {
+        self.overlay = self.overlay.resource_metadata(metadata);
+        self
+    }
+
+    #[must_use]
     pub fn with_mcp(mut self) -> Self {
         self.overlay = self.overlay.with_mcp();
         self
@@ -476,13 +485,24 @@ async fn build_router<A: FlavorApp>(
             owner,
         },
     );
-    layered_router_with_revalidation(
-        mcp_service,
-        app_router,
+    let www = config
+        .resource_metadata
+        .as_ref()
+        .and_then(|md| axum::http::HeaderValue::from_str(&md.www_authenticate_value()).ok());
+    let auth_layer = proxima_mcp_server::mcp_auth_layer_with_metadata(
         edge_auth,
         allowlist,
         config.stream_revalidation,
-    )
+        www,
+    );
+    let mut router = Router::new()
+        .nest_service("/mcp", mcp_service)
+        .merge(app_router)
+        .layer(auth_layer);
+    if let Some(md) = &config.resource_metadata {
+        router = router.merge(proxima_mcp_server::protected_resource_router(md));
+    }
+    router
 }
 
 fn resolve_allowlist(config: &crate::RuntimeConfig) -> Result<OriginAllowlist, ProximaError> {

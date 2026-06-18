@@ -8,6 +8,8 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+proxima-auth-oidc = { path = "../../crates/auth-oidc" }
+proxima-code = { path = "../../flavors/code", optional = true }
 proxima-core = { path = "../../crates/core" }
 proxima-llm-openai-compat = { path = "../../crates/llm-openai-compat" }
 proxima-storage-pg = { path = "../../crates/storage-pg" }
@@ -18,6 +20,10 @@ time = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+default = []
+code = ["dep:proxima-code"]
 
 [dev-dependencies]
 reqwest = { workspace = true }
