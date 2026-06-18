@@ -64,11 +64,9 @@ pub struct SchemaInfo {
     pub natural_key_columns: Vec<String>,
     /// Build-time tombstone discriminator for stateful Fact schemas.
     pub tombstone: Option<SchemaTombstone>,
-    /// Build-time typed parser for protocol-ingress JSON payloads.
-    /// Function pointer is process-local only; not serialized on
-    /// Schema responses.
-    #[serde(skip)]
-    pub protocol_ingress: Option<ProtocolPayloadIngress>,
+    /// Typed/opaque discriminant. The frozen registry owns the actual
+    /// process-local protocol-ingress function pointers.
+    pub has_typed_ingress: bool,
     /// `CitedObjectPayload` schema id accepted by a `CitationMappingPayload`.
     /// Populated only for citation-mapping schemas.
     pub cited_object_schema: Option<SchemaId>,
@@ -81,7 +79,7 @@ impl SchemaInfo {
     /// content hash. An opaque schema carries no validator, no JSON
     /// ingress parser, no JSON schema, and no sidecar table.
     ///
-    /// `protocol_ingress.is_none()` is the typed/opaque discriminant the
+    /// `has_typed_ingress == false` is the typed/opaque discriminant the
     /// registry enforces: `FlavorRegistry::freeze` asserts every schema
     /// either has a protocol-ingress parser or is opaque.
     /// See docs/03 §Registry rules.
@@ -95,7 +93,7 @@ impl SchemaInfo {
             sidecar_table: None,
             natural_key_columns: Vec::new(),
             tombstone: None,
-            protocol_ingress: None,
+            has_typed_ingress: false,
             cited_object_schema: None,
         }
     }
@@ -283,7 +281,7 @@ impl FlavorRegistryFrozen {
     ///
     /// # Panics
     ///
-    /// Panics if any added schema carries a `protocol_ingress` — typed
+    /// Panics if any added schema carries typed ingress — typed
     /// schemas must be registered through `FlavorRegistry` before
     /// `freeze()`.
     #[must_use]
@@ -298,7 +296,7 @@ impl FlavorRegistryFrozen {
         let added: Vec<SchemaInfo> = schemas.into_iter().collect();
         for schema in &added {
             assert!(
-                schema.protocol_ingress.is_none(),
+                !schema.has_typed_ingress,
                 "with_additional_schemas accepts only opaque schemas; \
                  {:?} carries typed process-local functions — register typed schemas \
                  through FlavorRegistry before freeze()",

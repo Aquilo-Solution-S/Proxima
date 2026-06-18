@@ -886,7 +886,7 @@ CREATE TABLE proxima_core.mcp_call_logged_v1 (
     actor_upn text NOT NULL,
     ok boolean NOT NULL,
     error text,
-    latency_ms integer NOT NULL,
+    latency_ms bigint NOT NULL,
     io_byte_len bigint NOT NULL,
     io_truncated boolean NOT NULL,
     io_content_hash bytea NOT NULL,
@@ -1099,14 +1099,6 @@ ALTER TABLE ONLY proxima_core.cited_objects
 
 ALTER TABLE ONLY proxima_core.cited_objects
     ADD CONSTRAINT cited_objects_unique_per_owner UNIQUE (owner_principal_kind, owner_principal_id, owner_org_id, schema_id, content_hash);
-
-
---
--- Name: cited_uploaded_blob_v1 cited_uploaded_blob_object_unique; Type: CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.cited_uploaded_blob_v1
-    ADD CONSTRAINT cited_uploaded_blob_object_unique UNIQUE (bucket, object_key);
 
 
 --

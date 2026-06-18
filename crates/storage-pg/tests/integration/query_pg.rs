@@ -73,7 +73,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             sidecar_table: None,
             natural_key_columns: vec![],
             tombstone: None,
-            protocol_ingress: None,
+            has_typed_ingress: false,
             cited_object_schema: None,
         },
         SchemaInfo {
@@ -84,7 +84,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             sidecar_table: None,
             natural_key_columns: vec![],
             tombstone: None,
-            protocol_ingress: None,
+            has_typed_ingress: false,
             cited_object_schema: None,
         },
         SchemaInfo {
@@ -95,7 +95,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             sidecar_table: None,
             natural_key_columns: vec![],
             tombstone: None,
-            protocol_ingress: None,
+            has_typed_ingress: false,
             cited_object_schema: None,
         },
         SchemaInfo {
@@ -106,7 +106,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             sidecar_table: None,
             natural_key_columns: vec![],
             tombstone: None,
-            protocol_ingress: None,
+            has_typed_ingress: false,
             cited_object_schema: None,
         },
         SchemaInfo {
@@ -117,7 +117,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             sidecar_table: None,
             natural_key_columns: vec![],
             tombstone: None,
-            protocol_ingress: None,
+            has_typed_ingress: false,
             cited_object_schema: None,
         },
         SchemaInfo {
@@ -128,7 +128,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             sidecar_table: None,
             natural_key_columns: vec![],
             tombstone: None,
-            protocol_ingress: None,
+            has_typed_ingress: false,
             cited_object_schema: None,
         },
     ]
