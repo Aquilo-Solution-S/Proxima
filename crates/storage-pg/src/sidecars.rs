@@ -35,6 +35,14 @@ pub trait PgMemorySidecar: Send + Sync + 'static {
     ) -> PgSidecarFuture<'t>;
 }
 
+/// Read-back of a memory's typed sidecar payload.
+///
+/// An implementor MUST override at least one of `load_batch` (the batched
+/// primitive the read path dispatches through — the `pg_sidecar!` macro
+/// generates it) or `load_memory_payload` (the single-row convenience).
+/// `load_batch`'s default fans out over `load_memory_payload`; overriding
+/// NEITHER is a programming error and yields a clear `Internal` error rather
+/// than recursing (the two defaults must not call each other).
 pub trait PgMemoryPayload: Send + Sync + 'static {
     #[must_use]
     fn load_batch<'t>(
@@ -56,10 +64,11 @@ pub trait PgMemoryPayload: Send + Sync + 'static {
 
     #[must_use]
     fn load_memory_payload(pool: &PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_> {
+        let _ = (pool, memory_id);
         Box::pin(async move {
-            let memory_ids = [memory_id];
-            let mut rows = Self::load_batch(pool, PayloadKind::Fact, &memory_ids).await?;
-            Ok(rows.pop().map(|(_memory_id, payload)| payload))
+            Err(StorageError::Internal(
+                "PgMemoryPayload requires overriding load_batch or load_memory_payload".to_string(),
+            ))
         })
     }
 }
