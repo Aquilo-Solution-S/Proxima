@@ -2,10 +2,10 @@ mod common;
 
 use common::{migrated_db, test_owner};
 use proxima_code::{
-    CodeChunkV1, CommitV1, FileRevisionV1, FileState, ingest_code_chunk, ingest_commit,
+    CodeChunkV1, CommitV1, FileRevisionV1, FileState, append_code_slice, ingest_commit,
     ingest_file_revision,
 };
-use proxima_core::{FactPayload, Owner, Principal, SourceBatchId};
+use proxima_core::{AbstractionPayload, FactPayload, Owner, Principal, SourceBatchId};
 use proxima_pg_testkit::drop_db;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -76,10 +76,6 @@ fn file_revision_key(repo_id: Uuid, file_path: &str) -> Value {
     json!([repo_id.to_string(), file_path])
 }
 
-fn code_chunk_key(repo_id: Uuid, file_path: &str, chunk_index: u32) -> Value {
-    json!([repo_id.to_string(), file_path, chunk_index])
-}
-
 async fn fact_entity_rows(
     pool: &PgPool,
     owner: &Owner,
@@ -144,6 +140,20 @@ async fn memory_fact_entity_id(
     .await
 }
 
+async fn memory_kind(
+    pool: &PgPool,
+    memory_id: proxima_core::MemoryId,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT kind::text
+           FROM proxima_core.memories
+          WHERE memory_id = $1",
+    )
+    .bind(memory_id.into_inner())
+    .fetch_optional(pool)
+    .await
+}
+
 #[tokio::test]
 async fn code_stateful_ingest_derives_fact_entity_heads() {
     let (db_name, pg) = migrated_db().await;
@@ -193,19 +203,23 @@ async fn code_stateful_ingest_derives_fact_entity_heads() {
         );
 
         let chunk = code_chunk(repo_id, file_path, 0);
-        let chunk_outcome = ingest_code_chunk(
-            pg.pool(),
-            &owner,
-            source_batch_id(),
-            &chunk,
-            second_file.content_sha256,
-            observed_at,
-        )
-        .await?;
-        let chunk_key = code_chunk_key(repo_id, file_path, 0);
-        let rows = fact_entity_rows(pg.pool(), &owner, CodeChunkV1::SCHEMA_ID, &chunk_key).await?;
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].1, chunk_outcome.memory_id.into_inner());
+        let chunk_outcome =
+            append_code_slice(pg.pool(), &owner, &chunk, second_outcome.memory_id, None).await?;
+        assert_eq!(
+            fact_entity_count_for_schema(
+                pg.pool(),
+                &owner,
+                <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID,
+            )
+            .await?,
+            0
+        );
+        assert_eq!(
+            memory_kind(pg.pool(), chunk_outcome.memory_id)
+                .await?
+                .as_deref(),
+            Some("Abstraction")
+        );
 
         let commit = commit(repo_id);
         ingest_commit(pg.pool(), &owner, source_batch_id(), &commit, observed_at).await?;

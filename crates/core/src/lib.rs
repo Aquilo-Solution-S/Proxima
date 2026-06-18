@@ -84,7 +84,8 @@ macro_rules! proxima_schema_id {
 /// Build-time registration macro. v1 subset — supports
 /// `fact_schemas`, `abstraction_schemas`, `perspective_schemas`,
 /// `goal_schemas`, `edge_schemas`, `cited_object_schemas`,
-/// `citation_mapping_schemas`, `relations`, `mcp_tools`.
+/// `citation_mapping_schemas`, `opaque_cited_object_schemas`,
+/// `opaque_citation_mapping_schemas`, `relations`, `mcp_tools`.
 /// Expands to a
 /// `pub fn register(registry: &mut FlavorRegistry)` that adds each
 /// schema / relation.
@@ -118,6 +119,8 @@ macro_rules! proxima_schema_id {
 ///     edge_schemas = [ EdgeCallsV1 ],
 ///     cited_object_schemas = [ SourceFileV1 ],
 ///     citation_mapping_schemas = [ SourceFileSpanV1 ],
+///     opaque_cited_object_schemas = [ "proxima-code/code-blob-v1" ],
+///     opaque_citation_mapping_schemas = [ "proxima-code/code-blob-whole-v1" ],
 ///     relations = [ RelationDescriptor::typed(
 ///         "proxima-code/calls",
 ///         RelationClass::Structural,
@@ -151,6 +154,26 @@ macro_rules! proxima_flavor {
             $registry.$add::<$ty>();
         )*
     };
+    // Internal: register opaque cited-object / citation-mapping schemas
+    // that intentionally have no Rust payload type or sidecar table.
+    (@opaque_schemas $registry:ident $name:literal $kind:ident [ $($schema_id:expr),* $(,)? ]) => {
+        $(
+            {
+                let schema_id: &str = $schema_id;
+                assert!(
+                    schema_id.starts_with(::std::concat!($name, "/")),
+                    "opaque schema {:?} does not start with crate prefix {:?}",
+                    schema_id,
+                    ::std::concat!($name, "/"),
+                );
+                $registry.add_opaque_schema(
+                    $crate::SchemaId::new(schema_id.to_string()),
+                    $crate::SchemaVersion::new(1),
+                    $crate::verbs::schema::PayloadKind::$kind,
+                );
+            }
+        )*
+    };
     (
         name = $name:literal
         $(, display_name = $display_name:literal)?
@@ -161,6 +184,8 @@ macro_rules! proxima_flavor {
         $(, edge_schemas = [ $($edge:ty),* $(,)? ])?
         $(, cited_object_schemas = [ $($cited:ty),* $(,)? ])?
         $(, citation_mapping_schemas = [ $($citemap:ty),* $(,)? ])?
+        $(, opaque_cited_object_schemas = [ $($opaque_cited:expr),* $(,)? ])?
+        $(, opaque_citation_mapping_schemas = [ $($opaque_citemap:expr),* $(,)? ])?
         $(, relations = [ $($rel:expr),* $(,)? ])?
         $(, mcp_tools = [ $($tool:ty),* $(,)? ])?
         $(, dependency_satisfaction_rules = [ $($dependency_rule:ty),* $(,)? ])?
@@ -206,6 +231,10 @@ macro_rules! proxima_flavor {
                 CitedObjectPayload add_cited_object_schema [ $($cited),* ]);)?
             $($crate::proxima_flavor!(@schemas registry $name
                 CitationMappingPayload add_citation_mapping_schema [ $($citemap),* ]);)?
+            $($crate::proxima_flavor!(@opaque_schemas registry $name
+                CitedObject [ $($opaque_cited),* ]);)?
+            $($crate::proxima_flavor!(@opaque_schemas registry $name
+                CitationMapping [ $($opaque_citemap),* ]);)?
             $($(
                 {
                     let descriptor: $crate::RelationDescriptor = $rel;

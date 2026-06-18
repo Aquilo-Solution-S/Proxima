@@ -77,7 +77,7 @@ pub struct AcceptanceCriterionV1 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AcceptanceCriteriaV1 {
-    pub execution_request_memory_id: uuid::Uuid,
+    pub work_item_memory_id: uuid::Uuid,
     pub criteria: Vec<AcceptanceCriterionV1>,
 }
 

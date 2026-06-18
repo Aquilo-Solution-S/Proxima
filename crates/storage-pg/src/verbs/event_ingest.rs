@@ -15,12 +15,11 @@ use std::pin::Pin;
 
 use proxima_core::verbs::event_ingest::{
     AuthorizedCitationAttachment, AuthorizedInlineCitationMapping, AuthorizedInlineCitedObject,
-    Citation, EventDraft, EventIngestOutcome,
+    Citation, CitationSpec, EventDraft, EventIngestOutcome,
 };
 use proxima_core::{
     AuthorizedEventIngest, AuthorizedFactWithCitation, AuthzContext, Engine, EntityKind,
-    FactPayload, MemoryId, Owner, OwnerPrincipalKind, Role, SchemaVersion, SourceBatchId, SourceId,
-    StorageError,
+    FactPayload, MemoryId, OrgId, Owner, OwnerPrincipalKind, Role, SourceBatchId, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -29,6 +28,58 @@ use crate::pg_ident::PgIdent;
 
 pub type EventIngestSidecarFuture<'t> =
     Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
+
+/// Companion trait for Postgres-backed typed Fact sidecars. Flavor
+/// crates implement this for each `FactPayload` whose sidecar table
+/// is inserted by `proxima-storage-pg` helpers.
+pub trait PgFactSidecar: FactPayload + Sized {
+    /// Insert this payload's sidecar row keyed by `memory_id`.
+    fn insert_sidecar<'t>(
+        self,
+        tx: &'t mut Transaction<'_, Postgres>,
+        memory_id: MemoryId,
+    ) -> EventIngestSidecarFuture<'t>
+    where
+        Self: 't;
+}
+
+/// Common context for typed Fact ingest helpers.
+#[derive(Debug, Clone)]
+pub struct FactIngestContext<'a> {
+    pub owner: &'a Owner,
+    pub source_id: &'a str,
+    pub source_batch_id: SourceBatchId,
+    pub observed_at: time::OffsetDateTime,
+    pub embedding_model_id: Option<&'a str>,
+}
+
+impl<'a> FactIngestContext<'a> {
+    /// Build a context with `observed_at = now` and no embedding model.
+    #[must_use]
+    pub fn new(owner: &'a Owner, source_id: &'a str, source_batch_id: SourceBatchId) -> Self {
+        Self {
+            owner,
+            source_id,
+            source_batch_id,
+            observed_at: time::OffsetDateTime::now_utc(),
+            embedding_model_id: None,
+        }
+    }
+
+    /// Override the observation/occurrence timestamp used by the draft.
+    #[must_use]
+    pub const fn observed_at(mut self, observed_at: time::OffsetDateTime) -> Self {
+        self.observed_at = observed_at;
+        self
+    }
+
+    /// Configure the embedding model id to enqueue for the ingested Fact.
+    #[must_use]
+    pub const fn embedding_model_id(mut self, model_id: Option<&'a str>) -> Self {
+        self.embedding_model_id = model_id;
+        self
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AttachCitationOutcome {
@@ -186,23 +237,20 @@ where
         &'t EventIngestOutcome,
     ) -> EventIngestSidecarFuture<'t>,
 {
-    let payload_value = serde_json::to_value(payload).map_err(internal)?;
-    let payload_bytes = proxima_core::canonical_json_bytes(&payload_value);
     let now = time::OffsetDateTime::now_utc();
-    let draft = EventDraft {
-        source_id: SourceId::new("proxima/fact"),
-        source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
+    let owner = Owner {
         principal: authz.identity.principal.clone(),
-        org_id: None,
-        author_personality_instance_id: None,
-        schema_id: P::schema_id(),
-        schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
-        payload: payload_bytes,
-        rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
-        citation: None,
+        org_id: OrgId::new(authz.identity.org_id.into_inner()),
     };
+    let mut draft = EventDraft::from_payload(
+        &owner,
+        "proxima/fact",
+        SourceBatchId::new(uuid::Uuid::now_v7()),
+        payload,
+        now,
+    )
+    .map_err(internal)?;
+    draft.org_id = None;
     let authorized = engine
         .authorize_event_ingest(authz, role, draft)
         .map_err(internal)?;
@@ -237,6 +285,43 @@ where
     let outcome = ingest_fact_in_tx(&mut tx, engine, authz, role, payload, sidecar).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
+}
+
+/// Build a typed Fact draft with an opaque citation and insert the
+/// Fact plus its Postgres sidecar inside an existing transaction.
+///
+/// # Errors
+///
+/// Returns storage errors from JSON serialization, Fact materialization,
+/// sidecar insertion, Fact-entity derivation, or embedding enqueue.
+pub async fn ingest_fact_with_sidecar<P>(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &FactIngestContext<'_>,
+    payload: &P,
+    citation: CitationSpec,
+) -> Result<EventIngestOutcome, StorageError>
+where
+    P: PgFactSidecar + Clone,
+{
+    let draft = EventDraft::from_payload(
+        ctx.owner,
+        ctx.source_id,
+        ctx.source_batch_id,
+        payload,
+        ctx.observed_at,
+    )
+    .map_err(internal)?
+    .with_citation(citation);
+    let sidecar_payload = payload.clone();
+    ingest_event_with_derived_sidecar_in_tx(
+        tx,
+        &draft,
+        ctx.embedding_model_id,
+        P::sidecar_table(),
+        P::natural_key_columns(),
+        move |tx, outcome| sidecar_payload.insert_sidecar(tx, outcome.memory_id),
+    )
+    .await
 }
 
 /// Run the `EventIngest` body inside an already-open transaction. The

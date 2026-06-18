@@ -4,10 +4,12 @@ pub mod commit;
 pub mod commit_summary;
 pub mod development_perspective;
 pub mod edge_calls;
+pub mod execution_plan;
 pub mod execution_request;
 pub mod file_revision;
 pub mod personality_self;
 pub mod test_request;
+pub mod work_results;
 
 /// Serde adapter for 32-byte content hashes that round-trips through
 /// Postgres `bytea` (rendered as `"\xDEADBEEF..."` by `row_to_json`)
@@ -88,7 +90,12 @@ pub use commit::CommitV1;
 pub use commit_summary::CommitSummaryV1;
 pub use development_perspective::CodeDevelopmentPerspectiveV1;
 pub use edge_calls::EdgeCallsV1;
-pub use execution_request::ExecutionRequestV1;
+pub use execution_plan::{CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1};
+pub use execution_request::{ExecutionRequestV1, WorkRequestedV1};
 pub use file_revision::{FileRevisionV1, FileState};
 pub use personality_self::{CodeCommitSummarizerSelfV1, CodeEngineerSelfV1};
-pub use test_request::TestRequestV1;
+pub use test_request::{TestRequestV1, TestRequestedV1};
+pub use work_results::{
+    AcceptanceSummaryV1, AcceptanceVerificationStatus, AcceptanceVerificationV1, ExecutionResultV1,
+    TestResultV1, WorkResultStatus,
+};

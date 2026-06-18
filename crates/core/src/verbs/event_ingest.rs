@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use crate::verbs::schema::SidecarInserter;
 use crate::{
-    EventId, MemoryId, OrgId, Owner, PersonalityInstanceId, Principal, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId,
+    EventId, FactPayload, MemoryId, OrgId, Owner, PersonalityInstanceId, Principal, SchemaId,
+    SchemaVersion, SourceBatchId, SourceId, canonical_json_bytes,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -29,6 +29,71 @@ pub struct CitationMappingHint {
 pub struct Citation {
     pub object: CitedObjectHint,
     pub mapping: CitationMappingHint,
+}
+
+/// Compact citation input for the common opaque-object / pure-link
+/// mapping path used by event-source Fact ingest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CitationSpec {
+    pub cited_object_schema_id: SchemaId,
+    pub cited_object_schema_version: SchemaVersion,
+    pub content_hash: [u8; 32],
+    pub mapping_schema_id: SchemaId,
+    pub mapping_schema_version: SchemaVersion,
+}
+
+impl CitationSpec {
+    /// Build a v1 opaque cited-object / citation-mapping spec.
+    #[must_use]
+    pub fn v1(
+        cited_object_schema_id: impl Into<String>,
+        content_hash: [u8; 32],
+        mapping_schema_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            cited_object_schema_id: SchemaId::new(cited_object_schema_id.into()),
+            cited_object_schema_version: SchemaVersion::new(1),
+            content_hash,
+            mapping_schema_id: SchemaId::new(mapping_schema_id.into()),
+            mapping_schema_version: SchemaVersion::new(1),
+        }
+    }
+
+    /// Build a v1 citation spec whose cited-object content hash is the
+    /// BLAKE3 hash of the typed payload's canonical JSON bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the serde error if the payload cannot be converted to a JSON
+    /// value for canonical encoding.
+    pub fn v1_for_payload<P: serde::Serialize>(
+        cited_object_schema_id: impl Into<String>,
+        payload: &P,
+        mapping_schema_id: impl Into<String>,
+    ) -> Result<Self, serde_json::Error> {
+        let value = serde_json::to_value(payload)?;
+        Ok(Self::v1(
+            cited_object_schema_id,
+            *blake3::hash(&canonical_json_bytes(&value)).as_bytes(),
+            mapping_schema_id,
+        ))
+    }
+}
+
+impl From<CitationSpec> for Citation {
+    fn from(spec: CitationSpec) -> Self {
+        Self {
+            object: CitedObjectHint {
+                schema_id: spec.cited_object_schema_id,
+                schema_version: spec.cited_object_schema_version,
+                content_hash: spec.content_hash,
+            },
+            mapping: CitationMappingHint {
+                schema_id: spec.mapping_schema_id,
+                schema_version: spec.mapping_schema_version,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -312,6 +377,60 @@ impl AuthorizedFactWithCitation {
 }
 
 impl EventDraft {
+    /// Build a Fact event draft from a typed payload using the payload's
+    /// schema id/version and canonical JSON encoding. The caller supplies
+    /// the source and source-batch boundary explicitly; no runtime
+    /// registration or source inference happens here.
+    ///
+    /// # Errors
+    ///
+    /// Returns the serde error if the typed payload cannot be converted to
+    /// a JSON value for canonical event bytes.
+    pub fn from_payload<P: FactPayload>(
+        owner: &Owner,
+        source_id: impl Into<String>,
+        source_batch_id: SourceBatchId,
+        payload: &P,
+        observed_at: time::OffsetDateTime,
+    ) -> Result<Self, serde_json::Error> {
+        let value = serde_json::to_value(payload)?;
+        Ok(Self {
+            source_id: SourceId::new(source_id.into()),
+            source_batch_id,
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
+            author_personality_instance_id: None,
+            schema_id: P::schema_id(),
+            schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
+            payload: canonical_json_bytes(&value),
+            rendered_text: None,
+            observed_at,
+            occurred_at: observed_at,
+            citation: None,
+        })
+    }
+
+    /// Attach an opaque citation hint to the draft.
+    #[must_use]
+    pub fn with_citation(mut self, citation: impl Into<Citation>) -> Self {
+        self.citation = Some(citation.into());
+        self
+    }
+
+    /// Override the occurrence time while preserving the observation time.
+    #[must_use]
+    pub const fn occurred_at(mut self, occurred_at: time::OffsetDateTime) -> Self {
+        self.occurred_at = occurred_at;
+        self
+    }
+
+    /// Stamp the authoring personality instance for agent-authored Facts.
+    #[must_use]
+    pub const fn author_personality(mut self, author: PersonalityInstanceId) -> Self {
+        self.author_personality_instance_id = Some(author);
+        self
+    }
+
     /// Reconstructs the storage `Owner` after verb-layer stamping.
     ///
     /// # Panics

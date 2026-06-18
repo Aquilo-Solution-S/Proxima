@@ -156,7 +156,7 @@ impl McpTool for CodeOpenFileRevisionTool {
                         args.max_text_bytes,
                     );
                     ChunkSummary {
-                        handle: ctx.format_fact_memory(MemoryId::new(row.memory_id)),
+                        handle: ctx.format_abstraction_memory(MemoryId::new(row.memory_id)),
                         chunk_index: row.chunk_index,
                         chunk_type: row.chunk_type,
                         line_range: (row.line_range_start, row.line_range_end),

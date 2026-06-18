@@ -14,23 +14,23 @@
 
 pub mod blobs;
 pub mod calls;
-pub mod draft;
 pub mod engine;
 pub mod heads;
+mod pg_sidecars;
 pub mod schemas;
 
-pub use blobs::{close_local_git_batch, ingest_code_chunk, ingest_commit, ingest_file_revision};
+pub use blobs::{append_code_slice, close_local_git_batch, ingest_commit, ingest_file_revision};
 pub use calls::{CallEdgeDraft, ingest_calls_edge};
 pub use engine::{build_engine, build_engine_with};
-pub use heads::{
-    FileRevisionHead, file_revision_heads, lookup_present_chunk_memory_id_by_text,
-    present_chunk_indexes,
-};
+pub use heads::{FileRevisionHead, file_revision_heads, present_chunk_indexes};
 pub use schemas::{
-    CODE_BLOB_BYTE_RANGE_SCHEMA, CODE_BLOB_SCHEMA, CODE_BLOB_WHOLE_SCHEMA,
-    CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA, EXECUTION_REQUEST_OBJECT_SCHEMA,
-    EXECUTION_REQUEST_WHOLE_SCHEMA, LOCAL_GIT_SOURCE_ID, TEST_REQUEST_OBJECT_SCHEMA,
-    TEST_REQUEST_WHOLE_SCHEMA, schema_registry, schema_registry_with,
+    ACCEPTANCE_CRITERIA_OBJECT_SCHEMA, ACCEPTANCE_CRITERIA_WHOLE_SCHEMA,
+    ACCEPTANCE_VERIFICATION_OBJECT_SCHEMA, ACCEPTANCE_VERIFICATION_WHOLE_SCHEMA, CODE_BLOB_SCHEMA,
+    CODE_BLOB_WHOLE_SCHEMA, CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA,
+    EXECUTION_REQUEST_OBJECT_SCHEMA, EXECUTION_REQUEST_WHOLE_SCHEMA,
+    EXECUTION_RESULT_OBJECT_SCHEMA, EXECUTION_RESULT_WHOLE_SCHEMA, LOCAL_GIT_SOURCE_ID,
+    TEST_REQUEST_OBJECT_SCHEMA, TEST_REQUEST_WHOLE_SCHEMA, TEST_RESULT_OBJECT_SCHEMA,
+    TEST_RESULT_WHOLE_SCHEMA, schema_registry, schema_registry_with,
 };
 
 use proxima_core::error::ProtocolError;

@@ -27,8 +27,8 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo, SchemaTombstone};
 use proxima_core::{
-    CORE_DERIVED_FROM_RELATION, FactPayload, FlavorRegistry, OrgId, Owner, Principal, SchemaId,
-    SchemaVersion, SourceBatchId, SourceId, UserId,
+    AbstractionPayload, CORE_DERIVED_FROM_RELATION, FactPayload, FlavorRegistry, OrgId, Owner,
+    Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
 use proxima_pg_testkit::drop_db;
 use sqlx::PgPool;
@@ -143,39 +143,6 @@ async fn seed_file_revision_state(
     .execute(pool)
     .await?;
 
-    Ok(memory_id)
-}
-
-async fn seed_code_chunk_state(
-    pool: &PgPool,
-    engine: &Engine,
-    owner: Owner,
-    repo_id: Uuid,
-    file_path: &str,
-    chunk_index: i32,
-    seed: &[u8],
-    state: FileState,
-) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let authz = proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
-    let draft = fresh_draft(owner, CodeChunkV1::SCHEMA_ID, seed);
-    let outcome = engine.event_ingest(&authz, draft).await?;
-    let memory_id = outcome.memory_id.into_inner();
-    sqlx::query(
-        "INSERT INTO proxima_code.code_chunk_v1 \
-            (memory_id, repo_id, file_path, chunk_index, text, language, chunk_type, \
-             byte_range_start, byte_range_end, line_range_start, line_range_end, state) \
-         VALUES ($1, $2, $3, $4, $5, $6, 'function', 0, $7, 1, 1, $8)",
-    )
-    .bind(memory_id)
-    .bind(repo_id)
-    .bind(file_path)
-    .bind(chunk_index)
-    .bind(String::from_utf8_lossy(seed).to_string())
-    .bind(Some("rust"))
-    .bind(i32::try_from(seed.len()).unwrap_or(i32::MAX))
-    .bind(state)
-    .execute(pool)
-    .await?;
     Ok(memory_id)
 }
 
@@ -483,7 +450,7 @@ async fn heads_only_keeps_same_principal_heads_split_by_owner_org() {
 }
 
 #[tokio::test]
-async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
+async fn owner_snapshot_heads_only_folds_stateful_fact_schemas() {
     let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -513,30 +480,6 @@ async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
             FileState::Present,
         )
         .await?;
-        let c_v1 = seed_code_chunk_state(
-            pg.pool(),
-            &engine,
-            owner.clone(),
-            repo_id,
-            "src/a.rs",
-            0,
-            b"c1",
-            FileState::Present,
-        )
-        .await?;
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        let c_v2 = seed_code_chunk_state(
-            pg.pool(),
-            &engine,
-            owner.clone(),
-            repo_id,
-            "src/a.rs",
-            0,
-            b"c2",
-            FileState::Present,
-        )
-        .await?;
-
         let mut req = QueryRequest::for_principal(owner.principal.clone());
         req.limit = 100;
         let resp = engine
@@ -552,14 +495,12 @@ async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
             .collect::<Vec<_>>();
         assert!(!ids.contains(&a_v1));
         assert!(ids.contains(&a_v2));
-        assert!(!ids.contains(&c_v1));
-        assert!(ids.contains(&c_v2));
         Ok(())
     }
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("owner_snapshot_heads_only_folds_all_stateful_fact_schemas failed");
+    result.expect("owner_snapshot_heads_only_folds_stateful_fact_schemas failed");
 }
 
 #[tokio::test]
@@ -775,8 +716,9 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
     result.expect("present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint failed");
 }
 
-// Smoke check the registry-side wiring: code-chunk-v1 also registers NK
-// columns. Lets us catch a regression where someone removes the override.
+// Smoke check the registry-side wiring: raw observations retain NK
+// metadata, while code chunks are derived Abstractions rather than
+// stateful Facts.
 #[test]
 fn flavor_registers_natural_keys() {
     let mut r = FlavorRegistry::new();
@@ -797,14 +739,14 @@ fn flavor_registers_natural_keys() {
         nk_for(FileRevisionV1::SCHEMA_ID),
         Some(vec!["repo_id".to_string(), "file_path".to_string()])
     );
-    assert_eq!(
-        nk_for(CodeChunkV1::SCHEMA_ID),
-        Some(vec![
-            "repo_id".to_string(),
-            "file_path".to_string(),
-            "chunk_index".to_string(),
-        ])
-    );
+    let chunk_schema = registry
+        .lookup(
+            &SchemaId::new(<CodeChunkV1 as AbstractionPayload>::SCHEMA_ID.into()),
+            SchemaVersion::new(1),
+        )
+        .expect("code chunk schema registered");
+    assert_eq!(chunk_schema.kind, PayloadKind::Abstraction);
+    assert!(chunk_schema.natural_key_columns.is_empty());
 }
 
 #[test]
@@ -825,11 +767,8 @@ fn flavor_registers_tombstone_discriminators() {
         })
     );
     assert_eq!(
-        tombstone_for(CodeChunkV1::SCHEMA_ID),
-        Some(SchemaTombstone {
-            column: "state".into(),
-            value: "Tombstone".into(),
-        })
+        tombstone_for(<CodeChunkV1 as AbstractionPayload>::SCHEMA_ID),
+        None
     );
     assert_eq!(tombstone_for(CommitV1::SCHEMA_ID), None);
 }

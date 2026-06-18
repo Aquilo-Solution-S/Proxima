@@ -1,16 +1,33 @@
-use proxima_core::verbs::event_ingest::EventIngestOutcome;
-use proxima_core::{FactPayload, Owner, SourceBatchId};
-use proxima_storage_pg::verbs::event_ingest;
+use proxima_core::verbs::event_ingest::{CitationSpec, EventIngestOutcome};
+use proxima_core::{
+    AbstractionPayload, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind, FactPayload,
+    MemoryId, MemoryOperatorKind, Owner, SchemaVersion, SourceBatchId,
+};
+use proxima_storage_pg::verbs::derive_append::{
+    DerivedDraft, DerivedOutcome, append_derived_in_tx,
+};
+use proxima_storage_pg::verbs::edge_append::{Endpoint, append_edge};
+use proxima_storage_pg::verbs::event_ingest::{FactIngestContext, ingest_fact_with_sidecar};
 use sqlx::PgPool;
 
 use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1};
 
 use super::IngestError;
-use super::draft::{Citation, make_draft};
 use super::schemas::{
-    CODE_BLOB_BYTE_RANGE_SCHEMA, CODE_BLOB_SCHEMA, CODE_BLOB_WHOLE_SCHEMA,
-    CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA,
+    CODE_BLOB_SCHEMA, CODE_BLOB_WHOLE_SCHEMA, CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA,
+    LOCAL_GIT_SOURCE_ID, schema_registry,
 };
+
+const CODE_SLICE_OPERATOR_MODEL: &str = "proxima-code/local-git-source";
+const CODE_SLICE_PROMPT_VERSION: &str = "code-slice-v1";
+
+const CODE_SLICE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+    0x8d, 0xb6, 0x89, 0x67, 0x17, 0x34, 0x44, 0x11, 0xaa, 0xe6, 0x68, 0xef, 0x6c, 0x2a, 0x31, 0x8d,
+]);
+
+const CODE_SLICE_PROVENANCE_EDGE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+    0x59, 0x1f, 0x17, 0x5c, 0x76, 0x04, 0x46, 0x46, 0x9d, 0x17, 0x75, 0x9e, 0x87, 0xf0, 0xe0, 0x7a,
+]);
 
 /// Close a `source_batch` opened by the typed-ingest helpers under a
 /// LocalGitSource poll. Idempotent. Maps `NotFound` to `Ok(())` so
@@ -33,6 +50,32 @@ pub async fn close_local_git_batch(
     }
 }
 
+fn local_git_context(
+    owner: &Owner,
+    source_batch_id: SourceBatchId,
+    observed_at: time::OffsetDateTime,
+) -> FactIngestContext<'_> {
+    FactIngestContext::new(owner, LOCAL_GIT_SOURCE_ID, source_batch_id).observed_at(observed_at)
+}
+
+async fn ingest_local_git_fact<P>(
+    pool: &PgPool,
+    owner: &Owner,
+    source_batch_id: SourceBatchId,
+    payload: &P,
+    citation: CitationSpec,
+    observed_at: time::OffsetDateTime,
+) -> Result<EventIngestOutcome, IngestError>
+where
+    P: FactPayload + proxima_storage_pg::verbs::event_ingest::PgFactSidecar + Clone,
+{
+    let ctx = local_git_context(owner, source_batch_id, observed_at);
+    let mut tx = pool.begin().await?;
+    let outcome = ingest_fact_with_sidecar(&mut tx, &ctx, payload, citation).await?;
+    tx.commit().await?;
+    Ok(outcome)
+}
+
 /// Atomic Fact + sidecar write for `commit-v1`. Cites the commit
 /// object (keyed by blake3 of the commit sha) with a "whole-commit"
 /// CitationMapping.
@@ -43,45 +86,19 @@ pub async fn ingest_commit(
     payload: &CommitV1,
     observed_at: time::OffsetDateTime,
 ) -> Result<EventIngestOutcome, IngestError> {
-    let draft = make_draft(
+    ingest_local_git_fact(
+        pool,
         owner,
         source_batch_id,
         payload,
-        CommitV1::SCHEMA_ID,
-        Citation {
-            cited_object_schema: CODE_COMMIT_OBJECT_SCHEMA,
-            content_hash: blake3::hash(payload.sha.as_bytes()).into(),
-            mapping_schema: CODE_COMMIT_WHOLE_SCHEMA,
-        },
+        CitationSpec::v1(
+            CODE_COMMIT_OBJECT_SCHEMA,
+            blake3::hash(payload.sha.as_bytes()).into(),
+            CODE_COMMIT_WHOLE_SCHEMA,
+        ),
         observed_at,
-    )?;
-
-    let mut tx = pool.begin().await?;
-    let outcome = event_ingest::ingest_event_in_tx(&mut tx, &draft, None).await?;
-    if !outcome.idempotent_replay {
-        sqlx::query(
-            "INSERT INTO proxima_code.commit_v1 \
-                (memory_id, repo_id, sha, parents, author_name, author_email, \
-                 author_time, committer_name, committer_email, committer_time, \
-                 message) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
-        )
-        .bind(outcome.memory_id.into_inner())
-        .bind(payload.repo_id)
-        .bind(&payload.sha)
-        .bind(&payload.parents)
-        .bind(&payload.author_name)
-        .bind(&payload.author_email)
-        .bind(payload.author_time)
-        .bind(&payload.committer_name)
-        .bind(&payload.committer_email)
-        .bind(payload.committer_time)
-        .bind(&payload.message)
-        .execute(&mut *tx)
-        .await?;
-    }
-    tx.commit().await?;
-    Ok(outcome)
+    )
+    .await
 }
 
 /// Atomic Fact + sidecar write for `file-revision-v1`. Cites the
@@ -94,140 +111,147 @@ pub async fn ingest_file_revision(
     payload: &FileRevisionV1,
     observed_at: time::OffsetDateTime,
 ) -> Result<EventIngestOutcome, IngestError> {
-    let draft = make_draft(
+    ingest_local_git_fact(
+        pool,
         owner,
         source_batch_id,
         payload,
-        FileRevisionV1::SCHEMA_ID,
-        Citation {
-            cited_object_schema: CODE_BLOB_SCHEMA,
-            content_hash: payload.content_sha256,
-            mapping_schema: CODE_BLOB_WHOLE_SCHEMA,
-        },
+        CitationSpec::v1(
+            CODE_BLOB_SCHEMA,
+            payload.content_sha256,
+            CODE_BLOB_WHOLE_SCHEMA,
+        ),
         observed_at,
-    )?;
-
-    let repo_id = payload.repo_id;
-    let file_path = payload.file_path.clone();
-    let language = payload.language.clone();
-    let content_sha256 = payload.content_sha256;
-    let size_bytes = i64::try_from(payload.size_bytes).unwrap_or(i64::MAX);
-    let indexed_commit_sha = payload.indexed_commit_sha.clone();
-    let state = payload.state;
-
-    let mut tx = pool.begin().await?;
-    let outcome = event_ingest::ingest_event_with_derived_sidecar_in_tx(
-        &mut tx,
-        &draft,
-        None,
-        FileRevisionV1::sidecar_table(),
-        FileRevisionV1::natural_key_columns(),
-        move |tx, outcome| {
-            Box::pin(async move {
-                sqlx::query(
-                    "INSERT INTO proxima_code.file_revision_v1 \
-                        (memory_id, repo_id, file_path, language, content_sha256, \
-                         size_bytes, indexed_commit_sha, state) \
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-                )
-                .bind(outcome.memory_id.into_inner())
-                .bind(repo_id)
-                .bind(&file_path)
-                .bind(language.as_deref())
-                .bind(content_sha256.to_vec())
-                .bind(size_bytes)
-                .bind(&indexed_commit_sha)
-                .bind(state)
-                .execute(tx.as_mut())
-                .await
-                .map_err(|err| proxima_core::StorageError::Internal(err.to_string()))?;
-                Ok(())
-            })
-        },
     )
-    .await?;
+    .await
+}
+
+/// Atomic derived code-slice Abstraction + sidecar write plus
+/// `core/derived-from` provenance edges to the source file-revision
+/// Fact and, when available, the source commit Fact.
+///
+/// Chunking is deterministic F→A operator work over file/blob Facts;
+/// this helper deliberately does not write an event, source batch, or
+/// Fact citation.
+pub async fn append_code_slice(
+    pool: &PgPool,
+    owner: &Owner,
+    payload: &CodeChunkV1,
+    source_file_revision: MemoryId,
+    source_commit: Option<MemoryId>,
+) -> Result<DerivedOutcome, IngestError> {
+    let memory_id = code_slice_memory_id(payload, source_file_revision);
+    let mut tx = pool.begin().await?;
+    let sidecar_payload = serde_json::to_value(payload)
+        .map_err(|err| IngestError::Serialize(format!("serialize code slice: {err}")))?;
+    let text = render_code_slice(payload);
+    let draft = DerivedDraft {
+        memory_id,
+        owner: owner.clone(),
+        kind: EntityKind::Abstraction,
+        author_personality_instance_id: None,
+        schema_id: <CodeChunkV1 as AbstractionPayload>::schema_id(),
+        schema_version: SchemaVersion::new(CodeChunkV1::SCHEMA_VERSION),
+        text,
+        operator_kind: MemoryOperatorKind::FtoA,
+        model_id: CODE_SLICE_OPERATOR_MODEL,
+        prompt_version: CODE_SLICE_PROMPT_VERSION,
+        sidecar_table: Some(CodeChunkV1::sidecar_table()),
+        sidecar_payload: Some(sidecar_payload),
+        embedding: None,
+        embedding_model_id: None,
+    };
+    let outcome = append_derived_in_tx(&mut tx, &draft).await?;
+    if !outcome.idempotent_replay {
+        append_code_slice_provenance(&mut tx, owner, outcome.memory_id, source_file_revision)
+            .await?;
+        if let Some(commit) = source_commit {
+            append_code_slice_provenance(&mut tx, owner, outcome.memory_id, commit).await?;
+        }
+    }
     tx.commit().await?;
     Ok(outcome)
 }
 
-/// Atomic Fact + sidecar write for `code-chunk-v1`. Cites the parent
-/// blob (the same `cited_object_id` as the chunk's parent
-/// `file-revision-v1`, by way of the substrate's UNIQUE on
-/// `(owner, schema_id, content_hash)`) with a "byte-range"
-/// CitationMapping. Tombstone chunks cite the null blob (`[0u8; 32]`).
-///
-/// `parent_blob_sha256` is the caller's responsibility — for Present
-/// chunks it's the blob the chunker just operated on; for Tombstones
-/// it's `[0u8; 32]`.
-pub async fn ingest_code_chunk(
-    pool: &PgPool,
+fn code_slice_memory_id(payload: &CodeChunkV1, source_file_revision: MemoryId) -> uuid::Uuid {
+    let mut key = Vec::with_capacity(96 + payload.file_path.len());
+    key.extend_from_slice(CODE_SLICE_PROMPT_VERSION.as_bytes());
+    key.push(0);
+    key.extend_from_slice(source_file_revision.into_inner().as_bytes());
+    key.push(0);
+    key.extend_from_slice(payload.repo_id.as_bytes());
+    key.push(0);
+    key.extend_from_slice(payload.file_path.as_bytes());
+    key.push(0);
+    key.extend_from_slice(&payload.chunk_index.to_be_bytes());
+    key.push(0);
+    key.extend_from_slice(payload.state_marker().as_bytes());
+    uuid::Uuid::new_v5(&CODE_SLICE_NAMESPACE, &key)
+}
+
+async fn append_code_slice_provenance(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     owner: &Owner,
-    source_batch_id: SourceBatchId,
-    payload: &CodeChunkV1,
-    parent_blob_sha256: [u8; 32],
-    observed_at: time::OffsetDateTime,
-) -> Result<EventIngestOutcome, IngestError> {
-    let draft = make_draft(
+    code_slice: MemoryId,
+    source_fact: MemoryId,
+) -> Result<(), IngestError> {
+    let registry = schema_registry();
+    let relation = registry
+        .resolve_relation(CORE_DERIVED_FROM_RELATION)
+        .ok_or_else(|| {
+            IngestError::Storage(format!(
+                "missing registered relation {CORE_DERIVED_FROM_RELATION}"
+            ))
+        })?;
+    let edge_id = derived_from_edge_id(code_slice, source_fact);
+    append_edge(
+        tx.as_mut(),
+        edge_id,
+        relation,
+        Endpoint::abstraction(code_slice),
+        Endpoint::fact(source_fact),
+        EdgeAuthorshipKind::OperatorFtoA,
+        Some(code_slice),
         owner,
-        source_batch_id,
-        payload,
-        CodeChunkV1::SCHEMA_ID,
-        Citation {
-            cited_object_schema: CODE_BLOB_SCHEMA,
-            content_hash: parent_blob_sha256,
-            mapping_schema: CODE_BLOB_BYTE_RANGE_SCHEMA,
-        },
-        observed_at,
-    )?;
-
-    let repo_id = payload.repo_id;
-    let file_path = payload.file_path.clone();
-    let chunk_index = i32::try_from(payload.chunk_index).unwrap_or(i32::MAX);
-    let text = payload.text.clone();
-    let language = payload.language.clone();
-    let chunk_type = payload.chunk_type.clone();
-    let byte_range_start = i64::from(payload.byte_range_start);
-    let byte_range_end = i64::from(payload.byte_range_end);
-    let line_range_start = i64::from(payload.line_range_start);
-    let line_range_end = i64::from(payload.line_range_end);
-    let state = payload.state;
-
-    let mut tx = pool.begin().await?;
-    let outcome = event_ingest::ingest_event_with_derived_sidecar_in_tx(
-        &mut tx,
-        &draft,
-        None,
-        CodeChunkV1::sidecar_table(),
-        CodeChunkV1::natural_key_columns(),
-        move |tx, outcome| {
-            Box::pin(async move {
-                sqlx::query(
-                    "INSERT INTO proxima_code.code_chunk_v1 \
-                        (memory_id, repo_id, file_path, chunk_index, \
-                         text, language, chunk_type, byte_range_start, byte_range_end, \
-                         line_range_start, line_range_end, state) \
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
-                )
-                .bind(outcome.memory_id.into_inner())
-                .bind(repo_id)
-                .bind(&file_path)
-                .bind(chunk_index)
-                .bind(&text)
-                .bind(language.as_deref())
-                .bind(&chunk_type)
-                .bind(byte_range_start)
-                .bind(byte_range_end)
-                .bind(line_range_start)
-                .bind(line_range_end)
-                .bind(state)
-                .execute(tx.as_mut())
-                .await
-                .map_err(|err| proxima_core::StorageError::Internal(err.to_string()))?;
-                Ok(())
-            })
-        },
     )
     .await?;
-    tx.commit().await?;
-    Ok(outcome)
+    Ok(())
+}
+
+fn derived_from_edge_id(code_slice: MemoryId, source_fact: MemoryId) -> uuid::Uuid {
+    let mut key = Vec::with_capacity(80);
+    key.extend_from_slice(code_slice.into_inner().as_bytes());
+    key.push(0);
+    key.extend_from_slice(CORE_DERIVED_FROM_RELATION.as_bytes());
+    key.push(0);
+    key.extend_from_slice(source_fact.into_inner().as_bytes());
+    uuid::Uuid::new_v5(&CODE_SLICE_PROVENANCE_EDGE_NAMESPACE, &key)
+}
+
+fn render_code_slice(payload: &CodeChunkV1) -> String {
+    match payload.state {
+        crate::payloads::FileState::Present => format!(
+            "{}:{}-{}",
+            payload.file_path, payload.line_range_start, payload.line_range_end
+        ),
+        crate::payloads::FileState::Tombstone => {
+            format!(
+                "(deleted slice) {}#{}",
+                payload.file_path, payload.chunk_index
+            )
+        }
+    }
+}
+
+trait CodeSliceStateMarker {
+    fn state_marker(&self) -> &'static str;
+}
+
+impl CodeSliceStateMarker for CodeChunkV1 {
+    fn state_marker(&self) -> &'static str {
+        match self.state {
+            crate::payloads::FileState::Present => "Present",
+            crate::payloads::FileState::Tombstone => "Tombstone",
+        }
+    }
 }

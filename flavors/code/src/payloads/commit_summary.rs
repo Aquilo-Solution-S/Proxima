@@ -2,9 +2,9 @@ use proxima_core::{AbstractionPayload, proxima_schema_id};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// First Code F→A output — a per-commit synthesis covering the
-/// commit Fact, its file-revision Facts, and chunk Facts in a
-/// single closed source-batch.
+/// Code F→A output — a per-commit synthesis covering the commit
+/// Fact, its file-revision Facts, and derived code-slice/call
+/// intelligence for the closed source-batch.
 ///
 /// The Abstraction's `text` (operator-authored narrative) lives on
 /// the substrate `memories.text` column; this sidecar carries the

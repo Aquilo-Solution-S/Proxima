@@ -29,7 +29,7 @@ fn fact_schema(schema_id: &str, sidecar_table: &str) -> SchemaInfo {
 fn schemas_for_test() -> Vec<SchemaInfo> {
     vec![
         fact_schema(CommitV1::SCHEMA_ID, "proxima_code.commit_v1"),
-        fact_schema(TestRequestV1::SCHEMA_ID, "proxima_code.test_request_v1"),
+        fact_schema(TestRequestV1::SCHEMA_ID, "proxima_code.test_requested_v1"),
     ]
 }
 
@@ -101,7 +101,7 @@ async fn insert_repo_commit_with_test_request(
     .await?;
 
     sqlx::query(
-        "INSERT INTO proxima_code.test_request_v1
+        "INSERT INTO proxima_code.test_requested_v1
             (memory_id, repo_id, title, instructions, test_key, criteria_json)
          VALUES ($1, $2, 'bug 2', 'delete sidecar', 'bug-2',
              '[\"c\"]'::jsonb)",
@@ -145,7 +145,7 @@ async fn erase_repo_deletes_registry_discovered_fact_sidecars() {
         assert_eq!(
             count_rows(
                 pg.pool(),
-                "SELECT COUNT(*)::bigint FROM proxima_code.test_request_v1 WHERE memory_id = $1",
+                "SELECT COUNT(*)::bigint FROM proxima_code.test_requested_v1 WHERE memory_id = $1",
                 memory_id,
             )
             .await?,
