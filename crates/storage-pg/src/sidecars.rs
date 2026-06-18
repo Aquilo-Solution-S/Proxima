@@ -945,6 +945,9 @@ macro_rules! pg_sidecar_row_ty {
     (uuid_array) => {
         ::std::vec::Vec<::uuid::Uuid>
     };
+    (opt_uuid) => {
+        ::std::option::Option<::uuid::Uuid>
+    };
     (text) => {
         ::std::string::String
     };
@@ -957,6 +960,9 @@ macro_rules! pg_sidecar_row_ty {
     (bool) => {
         bool
     };
+    (f32) => {
+        f32
+    };
     (timestamptz) => {
         ::time::OffsetDateTime
     };
@@ -966,13 +972,22 @@ macro_rules! pg_sidecar_row_ty {
     (u32_as_i32) => {
         i32
     };
+    (u32_as_i32_saturating) => {
+        i32
+    };
     (u32_as_i64) => {
         i64
     };
     (u64_as_i64) => {
         i64
     };
+    (u64_as_i64_saturating) => {
+        i64
+    };
     (enum { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }) => {
+        ::std::string::String
+    };
+    (enum_copy { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }) => {
         ::std::string::String
     };
 }
@@ -982,8 +997,42 @@ macro_rules! pg_sidecar_cast {
     (enum { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }) => {
         ::std::option::Option::Some($pg_type)
     };
+    (enum_copy { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }) => {
+        ::std::option::Option::Some($pg_type)
+    };
     ($kind:ident) => {
         ::std::option::Option::None
+    };
+}
+
+/// Per-column SELECT expression for the batch read. Enum-typed columns are a
+/// PG enum on the read side, so they must be cast back to `text` (aliased to
+/// the field name) for the `String`-typed `FromRow` decode; all other kinds
+/// select the bare column.
+#[macro_export]
+macro_rules! pg_sidecar_select_col {
+    (
+        (enum { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }),
+        $column:ident
+    ) => {
+        ::std::concat!(
+            ::std::stringify!($column),
+            "::text AS ",
+            ::std::stringify!($column)
+        )
+    };
+    (
+        (enum_copy { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }),
+        $column:ident
+    ) => {
+        ::std::concat!(
+            ::std::stringify!($column),
+            "::text AS ",
+            ::std::stringify!($column)
+        )
+    };
+    (($other:tt), $column:ident) => {
+        ::std::stringify!($column)
     };
 }
 
@@ -995,6 +1044,9 @@ macro_rules! pg_sidecar_bind {
     ((uuid_array), $self:ident, $field:ident) => {
         &$self.$field
     };
+    ((opt_uuid), $self:ident, $field:ident) => {
+        $self.$field
+    };
     ((text), $self:ident, $field:ident) => {
         &$self.$field
     };
@@ -1005,6 +1057,9 @@ macro_rules! pg_sidecar_bind {
         &$self.$field
     };
     ((bool), $self:ident, $field:ident) => {
+        $self.$field
+    };
+    ((f32), $self:ident, $field:ident) => {
         $self.$field
     };
     ((timestamptz), $self:ident, $field:ident) => {
@@ -1023,6 +1078,10 @@ macro_rules! pg_sidecar_bind {
             },
         )?
     };
+    ((u32_as_i32_saturating), $self:ident, $field:ident) => {
+        <::std::primitive::i32 as ::std::convert::TryFrom<_>>::try_from($self.$field)
+            .unwrap_or(::std::primitive::i32::MAX)
+    };
     ((u32_as_i64), $self:ident, $field:ident) => {
         ::std::primitive::i64::from($self.$field)
     };
@@ -1036,6 +1095,10 @@ macro_rules! pg_sidecar_bind {
             },
         )?
     };
+    ((u64_as_i64_saturating), $self:ident, $field:ident) => {
+        <::std::primitive::i64 as ::std::convert::TryFrom<_>>::try_from($self.$field)
+            .unwrap_or(::std::primitive::i64::MAX)
+    };
     (
         (
             enum { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }
@@ -1045,6 +1108,15 @@ macro_rules! pg_sidecar_bind {
     ) => {
         $to_str(&$self.$field)
     };
+    (
+        (
+            enum_copy { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }
+        ),
+        $self:ident,
+        $field:ident
+    ) => {
+        $to_str($self.$field)
+    };
 }
 
 #[macro_export]
@@ -1053,6 +1125,9 @@ macro_rules! pg_sidecar_decode {
         $row.$field
     };
     ((uuid_array), $row:ident, $field:ident) => {
+        $row.$field
+    };
+    ((opt_uuid), $row:ident, $field:ident) => {
         $row.$field
     };
     ((text), $row:ident, $field:ident) => {
@@ -1067,6 +1142,9 @@ macro_rules! pg_sidecar_decode {
     ((bool), $row:ident, $field:ident) => {
         $row.$field
     };
+    ((f32), $row:ident, $field:ident) => {
+        $row.$field
+    };
     ((timestamptz), $row:ident, $field:ident) => {
         $row.$field
     };
@@ -1074,6 +1152,9 @@ macro_rules! pg_sidecar_decode {
         $crate::sidecars::bytes32(&$row.$field, ::std::stringify!($field))?
     };
     ((u32_as_i32), $row:ident, $field:ident) => {
+        $crate::sidecars::int_to_u32($row.$field, ::std::stringify!($field))?
+    };
+    ((u32_as_i32_saturating), $row:ident, $field:ident) => {
         $crate::sidecars::int_to_u32($row.$field, ::std::stringify!($field))?
     };
     ((u32_as_i64), $row:ident, $field:ident) => {
@@ -1089,9 +1170,21 @@ macro_rules! pg_sidecar_decode {
     ((u64_as_i64), $row:ident, $field:ident) => {
         $crate::sidecars::int_to_u64($row.$field, ::std::stringify!($field))?
     };
+    ((u64_as_i64_saturating), $row:ident, $field:ident) => {
+        $crate::sidecars::int_to_u64($row.$field, ::std::stringify!($field))?
+    };
     (
         (
             enum { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }
+        ),
+        $row:ident,
+        $field:ident
+    ) => {
+        ($from_str)($row.$field.as_str())?
+    };
+    (
+        (
+            enum_copy { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }
         ),
         $row:ident,
         $field:ident
@@ -1192,7 +1285,7 @@ macro_rules! pg_sidecar {
                     let sql = $crate::sidecars::memory_select_batch_sql(
                         $table,
                         ::std::stringify!($key_column),
-                        &[$(::std::stringify!($column)),+],
+                        &[$($crate::pg_sidecar_select_col!($column_kind, $column)),+],
                     );
                     let rows = ::sqlx::query_as::<_, $row_ty>(&sql)
                         .bind(&raw_memory_ids)

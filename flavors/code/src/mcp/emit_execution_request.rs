@@ -1396,7 +1396,7 @@ async fn ingest_mcp_fact<P>(
     payload: &P,
 ) -> Result<EventIngestOutcome, McpToolError>
 where
-    P: FactPayload + proxima_storage_pg::verbs::event_ingest::PgFactSidecar + Clone,
+    P: FactPayload + PgMemorySidecar + Clone,
 {
     let embedding_client = ctx.engine().and_then(proxima_core::Engine::embed_client);
     let ingest_ctx =
