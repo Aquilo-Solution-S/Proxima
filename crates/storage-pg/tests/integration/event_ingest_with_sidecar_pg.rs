@@ -10,8 +10,8 @@ use proxima_core::verbs::event_ingest::{
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
     AuthPath, AuthzContext, CapabilitySet, Engine, ErrorCode, FactPayload, FlavorRegistryFrozen,
-    Identity, Owner, Role, RoleSet, SchemaId, SchemaVersion, SourceBatchId, SourceId, Storage,
-    StorageError, ToolScope,
+    Identity, Owner, PayloadKeyBuilder, Role, RoleSet, SchemaId, SchemaVersion, SourceBatchId,
+    SourceId, Storage, StorageError, ToolScope,
 };
 use proxima_storage_pg::verbs::event_ingest::{event_ingest_with_sidecar_atomic, ingest_fact};
 use uuid::Uuid;
@@ -24,6 +24,12 @@ struct UncitedFactPayload {
 impl FactPayload for UncitedFactPayload {
     const SCHEMA_ID: &'static str = "test/uncited_fact";
     const SCHEMA_VERSION: u32 = 1;
+
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("note", &self.note);
+        key.finish()
+    }
 
     fn render(&self) -> String {
         self.note.clone()

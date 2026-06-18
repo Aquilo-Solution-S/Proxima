@@ -9,6 +9,7 @@ use crate::mcp::{McpToolCtx, McpToolError};
 
 use super::get_memory::{
     GetMemoryOutput, format_authoring_personality, memory_class, sidecar_specs,
+    snapshot_payload_value,
 };
 
 #[derive(Debug, Default)]
@@ -61,7 +62,7 @@ impl McpTool for FactsCitingObjectTool {
                         ),
                         text: snapshot.text,
                         wake_chain_depth: snapshot.wake_chain_depth.into_inner(),
-                        payload: snapshot.payload_json,
+                        payload: snapshot_payload_value(snapshot.payload.as_ref())?,
                     })
                 })
                 .collect::<Result<Vec<_>, McpToolError>>()?;

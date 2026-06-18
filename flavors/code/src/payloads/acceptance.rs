@@ -1,4 +1,4 @@
-use proxima_core::{FactPayload, proxima_schema_id};
+use proxima_core::{FactPayload, PayloadKeyBuilder, proxima_schema_id};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -84,6 +84,35 @@ pub struct AcceptanceCriteriaV1 {
 impl FactPayload for AcceptanceCriteriaV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("acceptance-criteria-v1");
     const SCHEMA_VERSION: u32 = 1;
+
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_uuid("work_item_memory_id", self.work_item_memory_id);
+        key.list("criteria", self.criteria.len());
+        for criterion in &self.criteria {
+            key.field_str("criterion.key", &criterion.key);
+            key.field_str("criterion.description", &criterion.description);
+            key.field_bool("criterion.required", criterion.required);
+            key.field_str("criterion.verifier_kind", criterion.verifier_kind.as_str());
+            key.field_option_str(
+                "criterion.verifier.path",
+                criterion.verifier_spec.path.as_deref(),
+            );
+            key.field_str_list(
+                "criterion.verifier.command",
+                criterion.verifier_spec.command.as_deref().unwrap_or(&[]),
+            );
+            key.field_option_str(
+                "criterion.verifier.pattern",
+                criterion.verifier_spec.pattern.as_deref(),
+            );
+            key.field_option_str(
+                "criterion.verifier.note",
+                criterion.verifier_spec.note.as_deref(),
+            );
+        }
+        key.finish()
+    }
 
     fn sidecar_table() -> Option<&'static str> {
         Some("proxima_code.acceptance_criteria_v1")

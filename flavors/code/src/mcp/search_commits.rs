@@ -3,6 +3,7 @@ use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::pg_pool;
 use super::sql::{map_storage, owner_principal, resolve_repo_identifier};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -81,6 +82,7 @@ impl McpTool for CodeSearchCommitsTool {
                 Some(handle) => Some(resolve_repo_identifier(&ctx, handle).await?),
                 None => None,
             };
+            let pool = pg_pool(&ctx)?;
 
             let commit_rows: Vec<CommitRow> = sqlx::query_as(COMMIT_SEARCH_SQL)
                 .bind(owner_kind)
@@ -88,7 +90,7 @@ impl McpTool for CodeSearchCommitsTool {
                 .bind(query)
                 .bind(repo_id)
                 .bind(i64::from(limit))
-                .fetch_all(&ctx.pool)
+                .fetch_all(pool.as_ref())
                 .await
                 .map_err(map_storage)?;
             let commits = commit_rows
@@ -115,7 +117,7 @@ impl McpTool for CodeSearchCommitsTool {
                 .bind(repo_id)
                 .bind(args.change_kind.as_deref())
                 .bind(i64::from(limit))
-                .fetch_all(&ctx.pool)
+                .fetch_all(pool.as_ref())
                 .await
                 .map_err(map_storage)?;
             let summaries = summary_rows

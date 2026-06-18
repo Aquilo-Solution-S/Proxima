@@ -139,6 +139,42 @@ proxima_core::proxima_flavor! {
     ],
 }
 
+pub fn register_pg_sidecars(registry: &mut proxima_storage_pg::PgSidecarRegistry) {
+    registry.add_fact::<payloads::CommitV1>();
+    registry.add_fact::<payloads::FileRevisionV1>();
+    registry.add_fact::<payloads::WorkRequestedV1>();
+    registry.add_fact::<payloads::TestRequestedV1>();
+    registry.add_fact::<payloads::AcceptanceCriteriaV1>();
+    registry.add_fact::<payloads::ExecutionResultV1>();
+    registry.add_fact::<payloads::TestResultV1>();
+    registry.add_fact::<payloads::AcceptanceVerificationV1>();
+    registry.add_abstraction::<payloads::CodeChunkV1>();
+    registry.add_abstraction::<payloads::CommitSummaryV1>();
+    registry.add_abstraction::<payloads::CodeExecutionPlanV1>();
+    registry.add_abstraction::<payloads::AcceptanceSummaryV1>();
+    registry.add_perspective::<payloads::CodeDevelopmentPerspectiveV1>();
+    registry.add_perspective::<payloads::CodeCommitSummarizerSelfV1>();
+    registry.add_perspective::<payloads::CodeEngineerSelfV1>();
+    registry.add_edge::<payloads::EdgeCallsV1>();
+}
+
+#[derive(Debug)]
+pub struct CodeFlavor;
+
+impl proxima::FlavorBundle for CodeFlavor {
+    fn register(registry: &mut proxima_core::FlavorRegistry) {
+        self::register(registry);
+    }
+
+    fn register_pg_sidecars(registry: &mut proxima::PgSidecarRegistry) {
+        self::register_pg_sidecars(registry);
+    }
+
+    fn migrators() -> Vec<proxima::NamedMigrator> {
+        vec![proxima::NamedMigrator::new("proxima-code", migrator())]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

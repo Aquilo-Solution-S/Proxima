@@ -8,7 +8,174 @@
 //! `const SCHEMA_ID: SchemaId = ...` shape: that requires
 //! const-construction of `String`, which Rust does not allow.
 
-use crate::{RelationClass, SchemaId, StorageError};
+use crate::{RelationClass, SchemaId};
+
+#[derive(Debug, Clone)]
+pub struct PayloadKeyBuilder {
+    bytes: Vec<u8>,
+}
+
+impl PayloadKeyBuilder {
+    #[must_use]
+    pub fn new(schema_id: &str, schema_version: u32) -> Self {
+        let mut this = Self {
+            bytes: b"PKEY1\0".to_vec(),
+        };
+        this.raw_str(schema_id);
+        this.bytes.extend_from_slice(&schema_version.to_be_bytes());
+        this
+    }
+
+    #[must_use]
+    pub fn finish(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    pub fn field_str(&mut self, name: &str, value: &str) {
+        self.field(name, b's');
+        self.raw_str(value);
+    }
+
+    pub fn field_bool(&mut self, name: &str, value: bool) {
+        self.field(name, b'b');
+        self.bytes.push(u8::from(value));
+    }
+
+    pub fn field_u8(&mut self, name: &str, value: u8) {
+        self.field(name, b'1');
+        self.bytes.push(value);
+    }
+
+    pub fn field_u32(&mut self, name: &str, value: u32) {
+        self.field(name, b'4');
+        self.bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    pub fn field_i32(&mut self, name: &str, value: i32) {
+        self.field(name, b'I');
+        self.bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    pub fn field_i64(&mut self, name: &str, value: i64) {
+        self.field(name, b'L');
+        self.bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    pub fn field_u64(&mut self, name: &str, value: u64) {
+        self.field(name, b'8');
+        self.bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    pub fn field_usize(&mut self, name: &str, value: usize) {
+        self.field_u64(name, u64::try_from(value).unwrap_or(u64::MAX));
+    }
+
+    pub fn field_uuid(&mut self, name: &str, value: uuid::Uuid) {
+        self.field(name, b'u');
+        self.bytes.extend_from_slice(value.as_bytes());
+    }
+
+    pub fn field_bytes(&mut self, name: &str, value: &[u8]) {
+        self.field(name, b'B');
+        self.raw_bytes(value);
+    }
+
+    pub fn field_time(&mut self, name: &str, value: time::OffsetDateTime) {
+        self.field(name, b't');
+        self.bytes
+            .extend_from_slice(&value.unix_timestamp_nanos().to_be_bytes());
+    }
+
+    pub fn field_option_str(&mut self, name: &str, value: Option<&str>) {
+        self.field(name, b'S');
+        match value {
+            Some(value) => {
+                self.bytes.push(1);
+                self.raw_str(value);
+            }
+            None => self.bytes.push(0),
+        }
+    }
+
+    pub fn field_option_uuid(&mut self, name: &str, value: Option<uuid::Uuid>) {
+        self.field(name, b'U');
+        match value {
+            Some(value) => {
+                self.bytes.push(1);
+                self.bytes.extend_from_slice(value.as_bytes());
+            }
+            None => self.bytes.push(0),
+        }
+    }
+
+    pub fn field_option_bool(&mut self, name: &str, value: Option<bool>) {
+        self.field(name, b'O');
+        match value {
+            Some(value) => {
+                self.bytes.push(1);
+                self.bytes.push(u8::from(value));
+            }
+            None => self.bytes.push(0),
+        }
+    }
+
+    pub fn field_option_time(&mut self, name: &str, value: Option<time::OffsetDateTime>) {
+        self.field(name, b'T');
+        match value {
+            Some(value) => {
+                self.bytes.push(1);
+                self.bytes
+                    .extend_from_slice(&value.unix_timestamp_nanos().to_be_bytes());
+            }
+            None => self.bytes.push(0),
+        }
+    }
+
+    pub fn field_str_list(&mut self, name: &str, values: &[String]) {
+        self.field(name, b'[');
+        self.raw_len(values.len());
+        for value in values {
+            self.raw_str(value);
+        }
+    }
+
+    pub fn field_uuid_list(&mut self, name: &str, values: &[uuid::Uuid]) {
+        self.field(name, b'[');
+        self.raw_len(values.len());
+        for value in values {
+            self.bytes.extend_from_slice(value.as_bytes());
+        }
+    }
+
+    pub fn list(&mut self, name: &str, len: usize) {
+        self.field(name, b'[');
+        self.raw_len(len);
+    }
+
+    fn field(&mut self, name: &str, tag: u8) {
+        self.raw_str(name);
+        self.bytes.push(tag);
+    }
+
+    fn raw_str(&mut self, value: &str) {
+        self.raw_bytes(value.as_bytes());
+    }
+
+    fn raw_bytes(&mut self, value: &[u8]) {
+        self.raw_len(value.len());
+        self.bytes.extend_from_slice(value);
+    }
+
+    fn raw_len(&mut self, len: usize) {
+        self.bytes
+            .extend_from_slice(&u64::try_from(len).unwrap_or(u64::MAX).to_be_bytes());
+    }
+}
+
+#[must_use]
+pub fn schema_only_key(schema_id: &str, schema_version: u32) -> Vec<u8> {
+    PayloadKeyBuilder::new(schema_id, schema_version).finish()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SearchProjectionColumnKind {
@@ -34,7 +201,9 @@ pub struct FactTombstone {
     pub value: &'static str,
 }
 
-pub trait FactPayload: serde::Serialize + serde::de::DeserializeOwned + 'static {
+pub trait FactPayload:
+    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
+{
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
     /// GDPR Art. 9 (and analogous regimes') special-category flag.
@@ -43,6 +212,10 @@ pub trait FactPayload: serde::Serialize + serde::de::DeserializeOwned + 'static 
     /// override to `true`. See docs/03 §Special-category declaration
     /// and docs/13 §Compliance vocabulary.
     const SPECIAL_CATEGORY: bool = false;
+    /// Schema-owned event replay key material. This is not a payload
+    /// serialization format; the typed sidecar remains the payload.
+    #[must_use]
+    fn event_key(&self) -> Vec<u8>;
     fn render(&self) -> String;
     /// Per-schema typed Fact sidecar table, or `None` when the Fact
     /// carries no sidecar of its own (its typed payload lives elsewhere,
@@ -83,7 +256,9 @@ pub trait FactPayload: serde::Serialize + serde::de::DeserializeOwned + 'static 
     }
 }
 
-pub trait AbstractionPayload: serde::Serialize + serde::de::DeserializeOwned + 'static {
+pub trait AbstractionPayload:
+    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
+{
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
     /// See `FactPayload::SPECIAL_CATEGORY`.
@@ -103,7 +278,9 @@ pub trait AbstractionPayload: serde::Serialize + serde::de::DeserializeOwned + '
     }
 }
 
-pub trait PerspectivePayload: serde::Serialize + serde::de::DeserializeOwned + 'static {
+pub trait PerspectivePayload:
+    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
+{
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
     /// See `FactPayload::SPECIAL_CATEGORY`.
@@ -134,6 +311,10 @@ pub trait GoalPayload:
     const SCHEMA_VERSION: u32;
     /// See `FactPayload::SPECIAL_CATEGORY`.
     const SPECIAL_CATEGORY: bool = false;
+    /// Schema-owned body key used for `GoalWrite` idempotency conflict
+    /// checks. Title/text and authorship are compared separately.
+    #[must_use]
+    fn goal_key(&self) -> Vec<u8>;
     /// Per-schema typed Goal sidecar table, or `None` when the Goal's
     /// typed payload has no schema-specific storage beyond
     /// `proxima_core.goals.payload`.
@@ -149,22 +330,6 @@ pub trait GoalPayload:
     fn schema_id() -> SchemaId {
         SchemaId::new(Self::SCHEMA_ID.to_string())
     }
-
-    fn sidecar_insert<'t>(
-        &'t self,
-        _tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
-        _goal_id: uuid::Uuid,
-    ) -> futures::future::BoxFuture<'t, Result<(), StorageError>> {
-        Box::pin(async move { Err(Self::missing_inline_sidecar_inserter_error()) })
-    }
-
-    #[must_use]
-    fn missing_inline_sidecar_inserter_error() -> StorageError {
-        StorageError::Internal(format!(
-            "goal schema {} has no inline sidecar inserter",
-            Self::SCHEMA_ID,
-        ))
-    }
 }
 
 /// Typed payload for an edge row in `proxima_core.edges`. Mirrors
@@ -177,7 +342,9 @@ pub trait GoalPayload:
 /// a payload cannot be misfiled across classes.
 ///
 /// See docs/03 §`EdgePayload` and docs/02 §"Typed edge payloads".
-pub trait EdgePayload: serde::Serialize + serde::de::DeserializeOwned + 'static {
+pub trait EdgePayload:
+    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
+{
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
     const RELATION_CLASS: RelationClass;
@@ -223,22 +390,6 @@ pub trait CitedObjectPayload:
     /// the same artifact for the same Owner deduplicates the
     /// `cited_objects` row via `(owner, schema_id, content_hash)`.
     fn idempotency_key(&self) -> [u8; 32];
-
-    fn sidecar_insert<'t>(
-        &'t self,
-        _tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
-        _sidecar_row_id: uuid::Uuid,
-    ) -> futures::future::BoxFuture<'t, Result<(), StorageError>> {
-        Box::pin(async move { Err(Self::missing_inline_sidecar_inserter_error()) })
-    }
-
-    #[must_use]
-    fn missing_inline_sidecar_inserter_error() -> StorageError {
-        StorageError::Internal(format!(
-            "schema {} has no inline sidecar inserter",
-            Self::SCHEMA_ID,
-        ))
-    }
 }
 
 /// Typed payload for a `citation_mappings` row, keyed on
@@ -276,20 +427,4 @@ pub trait CitationMappingPayload:
     /// Schema id of the `CitedObjectPayload` this mapping is allowed
     /// to annotate.
     fn cited_object_schema() -> SchemaId;
-
-    fn sidecar_insert<'t>(
-        &'t self,
-        _tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
-        _sidecar_row_id: uuid::Uuid,
-    ) -> futures::future::BoxFuture<'t, Result<(), StorageError>> {
-        Box::pin(async move { Err(Self::missing_inline_sidecar_inserter_error()) })
-    }
-
-    #[must_use]
-    fn missing_inline_sidecar_inserter_error() -> StorageError {
-        StorageError::Internal(format!(
-            "schema {} has no inline sidecar inserter",
-            Self::SCHEMA_ID,
-        ))
-    }
 }

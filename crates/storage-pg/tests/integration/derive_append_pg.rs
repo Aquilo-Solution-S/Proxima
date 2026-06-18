@@ -1,15 +1,18 @@
 use crate::common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::storage::Storage;
+use proxima_core::storage::{Storage, StorageError};
 use proxima_core::{
-    EntityKind, MemoryOperatorKind, Owner, PersonalityInstanceId, SchemaId, SchemaVersion,
+    AgentDerivationV1, EntityKind, MemoryOperatorKind, Owner, PersonalityInstanceId, SchemaId,
+    SchemaVersion, SidecarPayload,
 };
 use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_in_tx};
+use proxima_storage_pg::{PgSidecarRegistryFrozen, verbs::derive_append::DerivedOutcome};
+use sqlx::{Postgres, Transaction};
 
 fn agent_draft(
     memory_id: uuid::Uuid,
     owner: Owner,
     kind: EntityKind,
-    title: &'static str,
+    _title: &'static str,
     body: &'static str,
     author: Option<PersonalityInstanceId>,
 ) -> DerivedDraft<'static> {
@@ -24,21 +27,46 @@ fn agent_draft(
         operator_kind: MemoryOperatorKind::ExternalAgent,
         model_id: "claude-opus-4.7",
         prompt_version: "mcp-agent-v1",
-        sidecar_table: Some("proxima_core.agent_derivation_v1"),
-        sidecar_payload: Some(serde_json::json!({
-            "title": title,
-            "body": body,
-            "tags": [],
-            "idempotency_key": null,
-            "source_memory_ids": [],
-            "model_id": "claude-opus-4.7",
-            "client_name": "codex",
-            "client_version": "1",
-        })),
         supersedes: None,
         embedding: None,
         embedding_model_id: None,
     }
+}
+
+fn agent_sidecar(kind: EntityKind, title: &'static str, body: &'static str) -> SidecarPayload {
+    let payload = AgentDerivationV1 {
+        title: title.into(),
+        body: body.into(),
+        tags: Vec::new(),
+        idempotency_key: None,
+        source_memory_ids: Vec::new(),
+        model_id: "claude-opus-4.7".into(),
+        client_name: "codex".into(),
+        client_version: "1".into(),
+    };
+    match kind {
+        EntityKind::Abstraction => SidecarPayload::abstraction(payload),
+        EntityKind::Perspective => SidecarPayload::perspective(payload),
+        other => panic!("unexpected derived kind in test: {other:?}"),
+    }
+}
+
+async fn append_with_sidecar(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    draft: &DerivedDraft<'_>,
+    sidecar: &SidecarPayload,
+) -> Result<DerivedOutcome, StorageError> {
+    let sidecars = sidecars.clone();
+    let sidecar = sidecar.clone();
+    append_derived_in_tx(tx, draft, move |tx, outcome| {
+        Box::pin(async move {
+            sidecars
+                .insert_memory_sidecar(tx, outcome.memory_id, &sidecar)
+                .await
+        })
+    })
+    .await
 }
 
 #[tokio::test]
@@ -58,15 +86,16 @@ async fn external_agent_abstraction_persists_with_replay() -> Result<(), Box<dyn
             "the agent view",
             None,
         );
+        let sidecar = agent_sidecar(EntityKind::Abstraction, "x", "the agent view");
 
         let mut tx = pg.pool().begin().await?;
-        let outcome = append_derived_in_tx(&mut tx, &draft).await?;
+        let outcome = append_with_sidecar(&mut tx, pg.sidecars(), &draft, &sidecar).await?;
         tx.commit().await?;
         assert_eq!(outcome.memory_id.into_inner(), memory_id);
         assert!(!outcome.idempotent_replay);
 
         let mut tx = pg.pool().begin().await?;
-        let replay = append_derived_in_tx(&mut tx, &draft).await?;
+        let replay = append_with_sidecar(&mut tx, pg.sidecars(), &draft, &sidecar).await?;
         tx.commit().await?;
         assert!(replay.idempotent_replay);
 
@@ -100,8 +129,9 @@ async fn external_agent_perspective_persists() -> Result<(), Box<dyn std::error:
             "perspective body",
             None,
         );
+        let sidecar = agent_sidecar(EntityKind::Perspective, "p", "perspective body");
         let mut tx = pg.pool().begin().await?;
-        append_derived_in_tx(&mut tx, &draft).await?;
+        append_with_sidecar(&mut tx, pg.sidecars(), &draft, &sidecar).await?;
         tx.commit().await?;
         let kind: EntityKind =
             sqlx::query_scalar("SELECT kind FROM proxima_core.memories WHERE memory_id = $1")
@@ -138,9 +168,11 @@ async fn external_agent_abstraction_stamps_author_without_change_event_author()
             "authored abstraction",
             Some(personality.instance_id),
         );
+        let authored_sidecar =
+            agent_sidecar(EntityKind::Abstraction, "authored", "authored abstraction");
 
         let mut tx = pg.pool().begin().await?;
-        append_derived_in_tx(&mut tx, &authored).await?;
+        append_with_sidecar(&mut tx, pg.sidecars(), &authored, &authored_sidecar).await?;
         tx.commit().await?;
 
         let stamped: uuid::Uuid = sqlx::query_scalar(
@@ -173,9 +205,10 @@ async fn external_agent_abstraction_stamps_author_without_change_event_author()
             "system abstraction",
             None,
         );
+        let system_sidecar = agent_sidecar(EntityKind::Abstraction, "system", "system abstraction");
 
         let mut tx = pg.pool().begin().await?;
-        append_derived_in_tx(&mut tx, &system).await?;
+        append_with_sidecar(&mut tx, pg.sidecars(), &system, &system_sidecar).await?;
         tx.commit().await?;
 
         let system_stamped: uuid::Uuid = sqlx::query_scalar(

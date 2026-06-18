@@ -112,7 +112,7 @@ async fn load_edge_endpoint_kinds(
     let edge_ids = rows
         .iter()
         .filter_map(|row| match &row.event.kind {
-            ChangeEventKind::EdgeAppend { edge_id, .. } => Some(*edge_id),
+            ChangeEventKind::EdgeAppend { edge_id, .. } => Some(EdgeId::new(*edge_id)),
             ChangeEventKind::EntityAppend { .. } | ChangeEventKind::EntityDelete { .. } => None,
         })
         .collect::<Vec<_>>();
@@ -120,19 +120,14 @@ async fn load_edge_endpoint_kinds(
         return Ok(HashMap::new());
     }
 
-    let rows: Vec<EdgeKindRow> = sqlx::query_as(
-        "SELECT edge_id, source_kind, target_kind
-         FROM proxima_core.edges
-         WHERE edge_id = ANY($1)",
-    )
-    .bind(&edge_ids)
-    .fetch_all(&ctx.pool)
-    .await
-    .map_err(|err| map_storage(&err))?;
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let rows = storage.load_edge_endpoint_kinds(&edge_ids).await?;
 
     Ok(rows
         .into_iter()
-        .map(|row| (row.edge_id, (row.source_kind, row.target_kind)))
+        .map(|row| (row.edge_id.into_inner(), (row.source_kind, row.target_kind)))
         .collect())
 }
 
@@ -216,13 +211,6 @@ fn event_item(
     }
 }
 
-#[derive(Debug, sqlx::FromRow)]
-struct EdgeKindRow {
-    edge_id: uuid::Uuid,
-    source_kind: EntityKind,
-    target_kind: EntityKind,
-}
-
 fn format_ref(ctx: &McpToolCtx, r: &EntityRef, kind: EntityKind) -> String {
     match r {
         EntityRef::Goal(g) => ctx.format_goal(*g),
@@ -233,8 +221,4 @@ fn format_ref(ctx: &McpToolCtx, r: &EntityRef, kind: EntityKind) -> String {
             EntityKind::Fact | EntityKind::Goal => ctx.format_fact_memory(*m),
         },
     }
-}
-
-fn map_storage(error: &sqlx::Error) -> McpToolError {
-    McpToolError::Storage(crate::StorageError::Internal(error.to_string()))
 }

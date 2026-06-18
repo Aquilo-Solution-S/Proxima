@@ -1,15 +1,15 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::{
     AbstractionPayload, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
-    CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EdgeId, EndpointBinding, MemoryId, SchemaId,
-    SchemaVersion,
+    CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EndpointBinding, MemoryId, SchemaId,
+    SchemaVersion, SidecarPayload,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::AgentDerivationV1;
 
-use super::util::{map_storage, memory_kind_for_edge, normalize_tags, owner_principal};
+use super::util::{memory_kind_for_edge, normalize_tags};
 
 const DERIVED_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x9d, 0xc1, 0x37, 0x10, 0x4f, 0xa6, 0x4c, 0x4e, 0x95, 0x73, 0xc8, 0x18, 0x9d, 0xfb, 0xa7, 0x40,
@@ -113,7 +113,7 @@ impl McpTool for DeriveTool {
                 source_uuids.push(memory_id.into_inner());
             }
 
-            let source_kinds = load_source_kinds(&ctx.pool, &ctx.owner, &source_uuids).await?;
+            let source_kinds = load_source_kinds(&ctx, &source_uuids).await?;
 
             // Pre-validate provenance edge shapes against the relation's kind
             // masks so layering failures surface as LayeringViolation instead
@@ -152,7 +152,7 @@ impl McpTool for DeriveTool {
                 )
             });
             let memory_id = derived_memory_id(&ctx.owner, args.kind.as_str(), &key);
-            let sidecar = serde_json::to_value(AgentDerivationV1 {
+            let sidecar = AgentDerivationV1 {
                 title: title.to_string(),
                 body: body.to_string(),
                 tags: tags.clone(),
@@ -161,8 +161,7 @@ impl McpTool for DeriveTool {
                 model_id: args.model_id.clone(),
                 client_name: ctx.author.client_name.clone(),
                 client_version: ctx.author.client_version.clone(),
-            })
-            .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+            };
 
             let memory_id = MemoryId::new(memory_id);
             let edges: Vec<_> = relation.map_or_else(Vec::new, |relation| {
@@ -195,8 +194,10 @@ impl McpTool for DeriveTool {
                     model_id: &args.model_id,
                     prompt_version: "mcp-agent-v1",
                     author_personality_instance_id: ctx.author.personality_instance_id,
-                    sidecar_table: AgentDerivationV1::sidecar_table(),
-                    sidecar_payload: sidecar,
+                    sidecar_payload: match args.kind {
+                        DerivedKind::Abstraction => SidecarPayload::abstraction(sidecar),
+                        DerivedKind::Perspective => SidecarPayload::perspective(sidecar),
+                    },
                     supersedes: None,
                     edges: &edges,
                 })
@@ -221,29 +222,28 @@ impl McpTool for DeriveTool {
 }
 
 async fn load_source_kinds(
-    pool: &sqlx::PgPool,
-    owner: &crate::Owner,
+    ctx: &McpToolCtx,
     memory_ids: &[uuid::Uuid],
 ) -> Result<Vec<Option<crate::EntityKind>>, McpToolError> {
-    let (owner_kind, owner_principal_id) = owner_principal(owner);
-    let mut out = Vec::with_capacity(memory_ids.len());
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let ids = memory_ids
+        .iter()
+        .copied()
+        .map(MemoryId::new)
+        .collect::<Vec<_>>();
+    let rows = storage.load_memory_kinds(&ctx.owner, &ids).await?;
+    let by_id = rows
+        .into_iter()
+        .map(|row| (row.memory_id.into_inner(), row.kind))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut out = Vec::with_capacity(ids.len());
     for memory_id in memory_ids {
-        let kind: Option<Option<crate::EntityKind>> = sqlx::query_scalar(
-            "SELECT kind
-             FROM proxima_core.memories
-             WHERE memory_id = $1
-               AND owner_principal_kind = $2
-               AND owner_principal_id = $3",
-        )
-        .bind(memory_id)
-        .bind(owner_kind)
-        .bind(owner_principal_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(map_storage)?;
-        out.push(kind.ok_or_else(|| {
+        let kind = by_id.get(memory_id).copied().ok_or_else(|| {
             McpToolError::InvalidInput(format!("source memory {memory_id} not found for owner"))
-        })?);
+        })?;
+        out.push(kind);
     }
     Ok(out)
 }
@@ -271,27 +271,19 @@ async fn load_provenance_edge_handles(
     if source_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
-    let rows: Vec<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT edge_id
-         FROM proxima_core.edges
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND relation = $3
-           AND source_memory_id = $4
-           AND target_memory_id = ANY($5::uuid[])
-         ORDER BY edge_id DESC",
-    )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(CORE_DERIVED_FROM_RELATION)
-    .bind(memory_id.into_inner())
-    .bind(source_ids)
-    .fetch_all(&ctx.pool)
-    .await
-    .map_err(map_storage)?;
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let targets = source_ids
+        .iter()
+        .copied()
+        .map(MemoryId::new)
+        .collect::<Vec<_>>();
+    let rows = storage
+        .load_memory_edge_ids(&ctx.owner, CORE_DERIVED_FROM_RELATION, memory_id, &targets)
+        .await?;
     Ok(rows
         .into_iter()
-        .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id)))
+        .map(|edge_id| ctx.format_edge(edge_id))
         .collect())
 }

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::payloads::FileState;
 
+use super::pg_pool;
 use super::sql::{
     CHUNK_HEADS_CTE, FILE_REVISION_HEADS_CTE, map_storage, owner_principal, resolve_repo_identifier,
 };
@@ -90,6 +91,7 @@ impl McpTool for CodeOpenFileRevisionTool {
                 args.include_text || line_window.is_some() || args.max_text_bytes.is_some();
             let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
             let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
+            let pool = pg_pool(&ctx)?;
 
             let revision_sql = format!(
                 "WITH {FILE_REVISION_HEADS_CTE}
@@ -103,7 +105,7 @@ impl McpTool for CodeOpenFileRevisionTool {
                 .bind(owner_principal_id)
                 .bind(repo_id)
                 .bind(&args.file_path)
-                .fetch_optional(&ctx.pool)
+                .fetch_optional(pool.as_ref())
                 .await
                 .map_err(map_storage)?
                 .map(|row| FileRevisionInfo {
@@ -142,7 +144,7 @@ impl McpTool for CodeOpenFileRevisionTool {
                 .bind(include_text)
                 .bind(line_window.map(|window| window.0))
                 .bind(line_window.map(|window| window.1))
-                .fetch_all(&ctx.pool)
+                .fetch_all(pool.as_ref())
                 .await
                 .map_err(map_storage)?;
 

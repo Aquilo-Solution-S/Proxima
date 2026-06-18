@@ -6,7 +6,7 @@
 
 use crate::{
     GoalId, MemoryId, ModelId, OperatorId, OrgId, Owner, PersonalityInstanceId, Principal,
-    PromptVersion, SchemaId, SchemaVersion, ToolId,
+    PromptVersion, SchemaId, SchemaVersion, SidecarPayload, ToolId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, sqlx::Type)]
@@ -72,6 +72,8 @@ pub struct GoalDraft {
     pub title: String,
     pub text: String,
     pub payload: Vec<u8>,
+    #[serde(skip)]
+    pub sidecar_payload: Option<SidecarPayload>,
     pub state: GoalState,
     pub parent_goal_ids: Vec<GoalId>,
     pub supersedes_goal_id: Option<GoalId>,
@@ -177,6 +179,7 @@ pub struct GoalPayloadWrite {
     pub title: String,
     pub text: String,
     pub payload: Vec<u8>,
+    pub sidecar_payload: Option<SidecarPayload>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

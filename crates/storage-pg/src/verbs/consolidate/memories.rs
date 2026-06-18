@@ -1,20 +1,25 @@
+use std::collections::HashMap;
+
+use futures_util::future::try_join_all;
 use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::personality::{
     AbstractionRow, FactRow, MemorySnapshot, PersonalityInstanceId, PersonalityRef,
     PersonalityWriteOutcome, PersonalityWriteRequest, SidecarSpec, WakeChainDepth,
 };
+use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     EdgeAuthorshipKind, EntityKind, MemoryId, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion,
-    StorageError,
+    SidecarPayload, StorageError,
 };
 use sqlx::PgPool;
 
 use crate::error::map_err;
-use crate::pg_ident::PgIdent;
+use crate::sidecars::{PgSidecarKey, PgSidecarRegistryFrozen};
 use crate::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 
 pub async fn load_memory_batch_facts(
     pool: &PgPool,
+    pg_sidecars: &PgSidecarRegistryFrozen,
     owner: &Owner,
     memory_id: MemoryId,
     sidecars: &[SidecarSpec],
@@ -33,72 +38,91 @@ pub async fn load_memory_batch_facts(
     let Some(batch_id) = batch_id else {
         return Ok(Vec::new());
     };
-    load_batch_facts_by_id(pool, owner, batch_id, sidecars).await
+    load_batch_facts_by_id(pool, pg_sidecars, owner, batch_id, sidecars).await
 }
 
 async fn load_batch_facts_by_id(
     pool: &PgPool,
+    pg_sidecars: &PgSidecarRegistryFrozen,
     owner: &Owner,
     batch_id: uuid::Uuid,
     sidecars: &[SidecarSpec],
 ) -> Result<Vec<FactRow>, StorageError> {
     let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
-    let mut out = Vec::new();
+    let mut rows_all = Vec::new();
+    let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
     for spec in sidecars {
-        let sidecar = PgIdent::table(&spec.sidecar_table)?;
-        let sql = format!(
-            "SELECT m.memory_id, e.schema_version, row_to_json(s.*) AS payload, m.wake_chain_depth
+        let sql = "SELECT m.memory_id, e.schema_version, m.wake_chain_depth
              FROM proxima_core.memories m
              JOIN proxima_core.events e ON m.event_id = e.event_id
-             JOIN {sidecar} s ON s.memory_id = m.memory_id
              WHERE e.source_batch_id = $1
                AND m.owner_principal_kind = $2
                AND m.owner_principal_id = $3
                AND m.schema_id = $4
-               AND m.tombstoned_at IS NULL",
-            sidecar = sidecar.as_str(),
-        );
-        let rows: Vec<(uuid::Uuid, i32, serde_json::Value, i16)> = sqlx::query_as(&sql)
+               AND e.schema_version = $5
+               AND m.tombstoned_at IS NULL";
+        let rows: Vec<(uuid::Uuid, i32, i16)> = sqlx::query_as(sql)
             .bind(batch_id)
             .bind(owner_kind)
             .bind(owner_principal_id)
             .bind(spec.schema_id.as_str())
+            .bind(i32::try_from(spec.schema_version.into_inner()).unwrap_or(i32::MAX))
             .fetch_all(pool)
             .await
             .map_err(map_err)?;
-        out.extend(
-            rows.into_iter()
-                .map(|(memory_id, schema_version, payload_json, depth)| FactRow {
-                    memory_id: MemoryId::new(memory_id),
-                    schema_id: spec.schema_id.clone(),
-                    schema_version: SchemaVersion::new(u32::try_from(schema_version).unwrap_or(1)),
-                    payload_json,
-                    wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
-                }),
-        );
+        for (memory_id, schema_version, depth) in rows {
+            let memory_id = MemoryId::new(memory_id);
+            let schema_version = SchemaVersion::new(u32::try_from(schema_version).unwrap_or(1));
+            queue_memory_sidecar_payload(
+                &mut ids_by_key,
+                pg_sidecars,
+                PayloadKind::Fact,
+                spec.schema_id.clone(),
+                schema_version,
+                memory_id,
+            );
+            rows_all.push((
+                memory_id,
+                spec.schema_id.clone(),
+                schema_version,
+                WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
+            ));
+        }
     }
-    Ok(out)
+    let mut payloads = load_memory_sidecar_payloads_batch(pool, pg_sidecars, ids_by_key).await?;
+    Ok(rows_all
+        .into_iter()
+        .map(
+            |(memory_id, schema_id, schema_version, wake_chain_depth)| FactRow {
+                memory_id,
+                schema_id,
+                schema_version,
+                payload: payloads.remove(&memory_id),
+                wake_chain_depth,
+            },
+        )
+        .collect())
 }
 
 pub async fn load_abstraction_heads(
     pool: &PgPool,
+    pg_sidecars: &PgSidecarRegistryFrozen,
     owner: &Owner,
     sidecars: &[SidecarSpec],
     limit: usize,
 ) -> Result<Vec<AbstractionRow>, StorageError> {
     let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
     let mut rows_all = Vec::new();
+    let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
     for spec in sidecars {
-        let sidecar = PgIdent::table(&spec.sidecar_table)?;
-        let sql = format!(
-            "SELECT m.memory_id, m.schema_version, m.text, row_to_json(s.*) AS payload,
+        let sql = "SELECT m.memory_id, m.schema_version, m.text,
                     m.created_at, m.wake_chain_depth
              FROM proxima_core.memories m
-             JOIN {sidecar} s ON s.memory_id = m.memory_id
              WHERE m.owner_principal_kind = $1
                AND m.owner_principal_id = $2
                AND m.kind = 'Abstraction'
                AND m.schema_id = $3
+               AND m.schema_version = $4
                AND m.tombstoned_at IS NULL
                AND NOT EXISTS (
                     SELECT 1 FROM proxima_core.memories newer
@@ -106,49 +130,59 @@ pub async fn load_abstraction_heads(
                       AND newer.tombstoned_at IS NULL
                )
              ORDER BY m.created_at DESC, m.memory_id DESC
-             LIMIT $4",
-            sidecar = sidecar.as_str(),
-        );
-        let rows: Vec<(
-            uuid::Uuid,
-            i32,
-            String,
-            serde_json::Value,
-            time::OffsetDateTime,
-            i16,
-        )> = sqlx::query_as(&sql)
+             LIMIT $5";
+        let rows: Vec<(uuid::Uuid, i32, String, time::OffsetDateTime, i16)> = sqlx::query_as(sql)
             .bind(owner_kind)
             .bind(owner_principal_id)
             .bind(spec.schema_id.as_str())
+            .bind(i32::try_from(spec.schema_version.into_inner()).unwrap_or(i32::MAX))
             .bind(i64::try_from(limit).unwrap_or(i64::MAX))
             .fetch_all(pool)
             .await
             .map_err(map_err)?;
-        for (memory_id, schema_version, text, payload_json, created_at, depth) in rows {
+        for (memory_id, schema_version, text, created_at, depth) in rows {
+            let id = MemoryId::new(memory_id);
+            let schema_version = SchemaVersion::new(u32::try_from(schema_version).unwrap_or(1));
+            queue_memory_sidecar_payload(
+                &mut ids_by_key,
+                pg_sidecars,
+                PayloadKind::Abstraction,
+                spec.schema_id.clone(),
+                schema_version,
+                id,
+            );
             rows_all.push((
                 created_at,
                 memory_id,
-                AbstractionRow {
-                    memory_id: MemoryId::new(memory_id),
-                    schema_id: spec.schema_id.clone(),
-                    schema_version: SchemaVersion::new(u32::try_from(schema_version).unwrap_or(1)),
-                    text,
-                    payload_json,
-                    wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
-                },
+                id,
+                spec.schema_id.clone(),
+                schema_version,
+                text,
+                WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
             ));
         }
     }
+    let mut payloads = load_memory_sidecar_payloads_batch(pool, pg_sidecars, ids_by_key).await?;
     rows_all.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
     Ok(rows_all
         .into_iter()
         .take(limit)
-        .map(|(_, _, row)| row)
+        .map(
+            |(_, _, memory_id, schema_id, schema_version, text, wake_chain_depth)| AbstractionRow {
+                memory_id,
+                schema_id,
+                schema_version,
+                text,
+                payload: payloads.remove(&memory_id),
+                wake_chain_depth,
+            },
+        )
         .collect())
 }
 
 pub async fn load_perspective_heads(
     pool: &PgPool,
+    pg_sidecars: &PgSidecarRegistryFrozen,
     owner: &Owner,
     instance: PersonalityInstanceId,
     root_perspective_memory_id: MemoryId,
@@ -157,19 +191,18 @@ pub async fn load_perspective_heads(
 ) -> Result<Vec<MemorySnapshot>, StorageError> {
     let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
     let mut rows_all = Vec::new();
+    let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
     for spec in sidecars {
-        let sidecar = PgIdent::table(&spec.sidecar_table)?;
-        let sql = format!(
-            "SELECT m.memory_id, m.schema_version, m.text, row_to_json(s.*) AS payload,
+        let sql = "SELECT m.memory_id, m.schema_version, m.text,
                     m.created_at, m.wake_chain_depth
              FROM proxima_core.memories m
-             JOIN {sidecar} s ON s.memory_id = m.memory_id
              WHERE m.owner_principal_kind = $1
                AND m.owner_principal_id = $2
                AND m.kind = 'Perspective'
                AND m.schema_id = $3
-               AND m.personality_instance_id = $4
-               AND m.memory_id <> $5
+               AND m.schema_version = $4
+               AND m.personality_instance_id = $5
+               AND m.memory_id <> $6
                AND m.schema_id !~ '-self-v[0-9]+$'
                AND m.tombstoned_at IS NULL
                AND NOT EXISTS (
@@ -178,53 +211,64 @@ pub async fn load_perspective_heads(
                       AND newer.tombstoned_at IS NULL
                )
              ORDER BY m.created_at DESC, m.memory_id DESC
-             LIMIT $6",
-            sidecar = sidecar.as_str(),
-        );
-        let rows: Vec<(
-            uuid::Uuid,
-            i32,
-            Option<String>,
-            serde_json::Value,
-            time::OffsetDateTime,
-            i16,
-        )> = sqlx::query_as(&sql)
-            .bind(owner_kind)
-            .bind(owner_principal_id)
-            .bind(spec.schema_id.as_str())
-            .bind(instance.into_inner())
-            .bind(root_perspective_memory_id.into_inner())
-            .bind(i64::try_from(limit).unwrap_or(i64::MAX))
-            .fetch_all(pool)
-            .await
-            .map_err(map_err)?;
-        for (memory_id, schema_version, text, payload_json, created_at, depth) in rows {
+             LIMIT $7";
+        let rows: Vec<(uuid::Uuid, i32, Option<String>, time::OffsetDateTime, i16)> =
+            sqlx::query_as(sql)
+                .bind(owner_kind)
+                .bind(owner_principal_id)
+                .bind(spec.schema_id.as_str())
+                .bind(i32::try_from(spec.schema_version.into_inner()).unwrap_or(i32::MAX))
+                .bind(instance.into_inner())
+                .bind(root_perspective_memory_id.into_inner())
+                .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+                .fetch_all(pool)
+                .await
+                .map_err(map_err)?;
+        for (memory_id, schema_version, text, created_at, depth) in rows {
+            let id = MemoryId::new(memory_id);
+            let schema_version = SchemaVersion::new(u32::try_from(schema_version).unwrap_or(1));
+            queue_memory_sidecar_payload(
+                &mut ids_by_key,
+                pg_sidecars,
+                PayloadKind::Perspective,
+                spec.schema_id.clone(),
+                schema_version,
+                id,
+            );
             rows_all.push((
                 created_at,
                 memory_id,
-                MemorySnapshot {
-                    memory_id: MemoryId::new(memory_id),
-                    kind: "Perspective".to_string(),
-                    schema_id: spec.schema_id.clone(),
-                    schema_version: SchemaVersion::new(u32::try_from(schema_version).unwrap_or(1)),
-                    authoring_personality_instance_id: Some(instance),
-                    text,
-                    wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
-                    payload_json,
-                },
+                id,
+                spec.schema_id.clone(),
+                schema_version,
+                text,
+                WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
             ));
         }
     }
+    let mut payloads = load_memory_sidecar_payloads_batch(pool, pg_sidecars, ids_by_key).await?;
     rows_all.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
     Ok(rows_all
         .into_iter()
         .take(limit)
-        .map(|(_, _, row)| row)
+        .map(
+            |(_, _, memory_id, schema_id, schema_version, text, wake_chain_depth)| MemorySnapshot {
+                memory_id,
+                kind: "Perspective".to_string(),
+                schema_id,
+                schema_version,
+                authoring_personality_instance_id: Some(instance),
+                text,
+                wake_chain_depth,
+                payload: payloads.remove(&memory_id),
+            },
+        )
         .collect())
 }
 
 pub async fn load_memory_by_id(
     pool: &PgPool,
+    pg_sidecars: &PgSidecarRegistryFrozen,
     owner: &Owner,
     memory_id: MemoryId,
     reader_personality_instance_id: Option<PersonalityInstanceId>,
@@ -269,22 +313,20 @@ pub async fn load_memory_by_id(
         return Ok(None);
     }
     let kind_str = kind.unwrap_or(EntityKind::Fact).as_str().to_string();
-    let payload_json =
-        if let Some(spec) = sidecars.iter().find(|s| s.schema_id.as_str() == schema_id) {
-            let sidecar = PgIdent::table(&spec.sidecar_table)?;
-            let sql = format!(
-                "SELECT row_to_json(s.*) AS payload FROM {sidecar} s WHERE s.memory_id = $1",
-                sidecar = sidecar.as_str(),
-            );
-            let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
-                .bind(memory_id.into_inner())
-                .fetch_optional(pool)
-                .await
-                .map_err(map_err)?;
-            row.map_or(serde_json::Value::Null, |(p,)| p)
-        } else {
-            serde_json::Value::Null
+    let payload = if let Some(spec) = sidecars.iter().find(|s| {
+        s.schema_id.as_str() == schema_id
+            && s.schema_version.into_inner() == u32::try_from(schema_version).unwrap_or(0)
+    }) {
+        let payload_kind = match kind.unwrap_or(EntityKind::Fact) {
+            EntityKind::Fact => PayloadKind::Fact,
+            EntityKind::Abstraction => PayloadKind::Abstraction,
+            EntityKind::Perspective => PayloadKind::Perspective,
+            EntityKind::Goal => return Ok(None),
         };
+        load_memory_sidecar_payload(pool, pg_sidecars, payload_kind, spec, memory_id).await?
+    } else {
+        None
+    };
     Ok(Some(MemorySnapshot {
         memory_id,
         kind: kind_str,
@@ -293,8 +335,54 @@ pub async fn load_memory_by_id(
         authoring_personality_instance_id: decode_personality(personality_instance_id),
         text,
         wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
-        payload_json,
+        payload,
     }))
+}
+
+async fn load_memory_sidecar_payload(
+    pool: &PgPool,
+    pg_sidecars: &PgSidecarRegistryFrozen,
+    kind: PayloadKind,
+    spec: &SidecarSpec,
+    memory_id: MemoryId,
+) -> Result<Option<SidecarPayload>, StorageError> {
+    let key = PgSidecarKey::new(kind, spec.schema_id.clone(), spec.schema_version);
+    if !pg_sidecars.contains(&key) {
+        return Ok(None);
+    }
+    let memory_ids = [memory_id];
+    let mut payloads = pg_sidecars
+        .load_memory_payloads_batch(pool, &key, &memory_ids)
+        .await?;
+    Ok(payloads.pop().map(|(_memory_id, payload)| payload))
+}
+
+fn queue_memory_sidecar_payload(
+    ids_by_key: &mut HashMap<PgSidecarKey, Vec<MemoryId>>,
+    pg_sidecars: &PgSidecarRegistryFrozen,
+    kind: PayloadKind,
+    schema_id: SchemaId,
+    schema_version: SchemaVersion,
+    memory_id: MemoryId,
+) {
+    let key = PgSidecarKey::new(kind, schema_id, schema_version);
+    if pg_sidecars.contains(&key) {
+        ids_by_key.entry(key).or_default().push(memory_id);
+    }
+}
+
+async fn load_memory_sidecar_payloads_batch(
+    pool: &PgPool,
+    pg_sidecars: &PgSidecarRegistryFrozen,
+    ids_by_key: HashMap<PgSidecarKey, Vec<MemoryId>>,
+) -> Result<HashMap<MemoryId, SidecarPayload>, StorageError> {
+    let batches = ids_by_key.into_iter().map(|(key, ids)| async move {
+        pg_sidecars
+            .load_memory_payloads_batch(pool, &key, &ids)
+            .await
+    });
+    let rows = try_join_all(batches).await?;
+    Ok(rows.into_iter().flatten().collect())
 }
 
 fn decode_personality(instance_id: Option<uuid::Uuid>) -> Option<PersonalityInstanceId> {
@@ -386,6 +474,7 @@ pub async fn lookup_prior_personality_head(
 #[allow(clippy::too_many_lines)]
 pub async fn append_personality_memories(
     pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
     req: &PersonalityWriteRequest<'_>,
 ) -> Result<PersonalityWriteOutcome, StorageError> {
     if req.memories.is_empty() {
@@ -393,7 +482,6 @@ pub async fn append_personality_memories(
             memory_ids: Vec::new(),
         });
     }
-    let output_sidecar_table = PgIdent::table(req.sidecar_table)?;
     let (owner_kind, owner_principal_id, owner_org_id) = req.owner.columns();
     let mut tx = pool.begin().await.map_err(map_err)?;
     let mut memory_ids = Vec::with_capacity(req.memories.len());
@@ -434,13 +522,9 @@ pub async fn append_personality_memories(
         .await
         .map_err(map_err)?;
 
-        crate::insert_jsonb_memory_sidecar(
-            &mut tx,
-            MemoryId::new(memory_id),
-            output_sidecar_table.as_str(),
-            &memory.typed_payload,
-        )
-        .await?;
+        sidecars
+            .insert_memory_sidecar(&mut tx, MemoryId::new(memory_id), &memory.sidecar_payload)
+            .await?;
 
         let change_seq = uuid::Uuid::now_v7();
         sqlx::query(
@@ -488,7 +572,7 @@ pub async fn append_personality_memories(
                 authorship_owner_memory_id: Some(memory_id),
                 owner: &req.owner,
             };
-            append_edge_in_tx(&mut tx, &draft, None).await?;
+            append_edge_in_tx(&mut tx, &draft).await?;
         }
 
         if let Some(prior_head) = prior_head {
@@ -507,7 +591,7 @@ pub async fn append_personality_memories(
                 authorship_owner_memory_id: None,
                 owner: &req.owner,
             };
-            append_edge_in_tx(&mut tx, &draft, None).await?;
+            append_edge_in_tx(&mut tx, &draft).await?;
         }
 
         let authored = EdgeDraft {
@@ -525,7 +609,7 @@ pub async fn append_personality_memories(
             authorship_owner_memory_id: None,
             owner: &req.owner,
         };
-        append_edge_in_tx(&mut tx, &authored, None).await?;
+        append_edge_in_tx(&mut tx, &authored).await?;
 
         if memory.embedding.len() != EMBEDDING_DIM {
             return Err(StorageError::ConstraintViolation(

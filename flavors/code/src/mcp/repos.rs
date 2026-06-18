@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::IndexReport;
 use crate::repos::{RepoRecord, RepoRegistryError};
 
+use super::pg_pool;
 use super::sql::{map_storage, resolve_repo_identifier};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -115,8 +116,9 @@ impl McpTool for CodeRegisterRepoTool {
                     ToOwned::to_owned,
                 );
             let repo_id = Uuid::now_v7();
+            let pool = pg_pool(&ctx)?;
             let record = crate::register_repo(
-                &ctx.pool,
+                pool.as_ref(),
                 &ctx.owner,
                 repo_id,
                 &canonical_path,
@@ -152,7 +154,8 @@ impl McpTool for CodeIngestHeadSnapshotTool {
     {
         Box::pin(async move {
             let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
-            let repo = crate::get_repo(&ctx.pool, &ctx.owner, repo_id)
+            let pool = pg_pool(&ctx)?;
+            let repo = crate::get_repo(pool.as_ref(), &ctx.owner, repo_id)
                 .await
                 .map_err(map_repo_registry)?
                 .ok_or_else(|| McpToolError::InvalidInput(format!("repo not found: {repo_id}")))?;
@@ -163,11 +166,11 @@ impl McpTool for CodeIngestHeadSnapshotTool {
                 ctx.owner.clone(),
             );
             let outcome = source
-                .run_head_snapshot(&ctx.pool)
+                .run_head_snapshot(pool.as_ref())
                 .await
                 .map_err(|err| map_index_error(&err))?;
             crate::update_cursor(
-                &ctx.pool,
+                pool.as_ref(),
                 &ctx.owner,
                 repo.repo_id,
                 outcome.cursor.as_bytes(),
@@ -176,7 +179,7 @@ impl McpTool for CodeIngestHeadSnapshotTool {
             .await
             .map_err(map_repo_registry)?;
 
-            let repo = crate::get_repo(&ctx.pool, &ctx.owner, repo.repo_id)
+            let repo = crate::get_repo(pool.as_ref(), &ctx.owner, repo.repo_id)
                 .await
                 .map_err(map_repo_registry)?
                 .ok_or_else(|| McpToolError::InvalidInput(format!("repo not found: {repo_id}")))?;
@@ -207,7 +210,8 @@ impl McpTool for CodeListReposTool {
         _args: CodeListReposArgs,
     ) -> futures::future::BoxFuture<'static, Result<CodeListReposOutput, McpToolError>> {
         Box::pin(async move {
-            let repos = crate::list_repos(&ctx.pool, &ctx.owner)
+            let pool = pg_pool(&ctx)?;
+            let repos = crate::list_repos(pool.as_ref(), &ctx.owner)
                 .await
                 .map_err(map_repo_registry)?
                 .into_iter()
@@ -246,7 +250,8 @@ async fn repo_by_path(
     ctx: &McpToolCtx,
     canonical_path: &str,
 ) -> Result<Option<RepoRecord>, McpToolError> {
-    let row = crate::list_repos(&ctx.pool, &ctx.owner)
+    let pool = pg_pool(ctx)?;
+    let row = crate::list_repos(pool.as_ref(), &ctx.owner)
         .await
         .map_err(map_repo_registry)?
         .into_iter()
@@ -265,9 +270,15 @@ async fn maybe_set_target_branch(
     if target_branch.trim().is_empty() {
         return Ok(record);
     }
-    crate::set_repo_target_branch(&ctx.pool, &ctx.owner, record.repo_id, Some(target_branch))
-        .await
-        .map_err(map_repo_registry)
+    let pool = pg_pool(ctx)?;
+    crate::set_repo_target_branch(
+        pool.as_ref(),
+        &ctx.owner,
+        record.repo_id,
+        Some(target_branch),
+    )
+    .await
+    .map_err(map_repo_registry)
 }
 
 fn repo_item(ctx: &McpToolCtx, record: RepoRecord) -> Result<RepoItem, McpToolError> {

@@ -20,6 +20,11 @@ const MISTRAL_API_KEY: &str = "MISTRAL_API_KEY";
 const PROXIMA_EMBED_MODEL: &str = "PROXIMA_EMBED_MODEL";
 const MISTRAL_API_BASE: &str = "MISTRAL_API_BASE";
 
+#[cfg(feature = "code")]
+type LinkedFlavors = (proxima_code::CodeFlavor,);
+#[cfg(not(feature = "code"))]
+type LinkedFlavors = ();
+
 type OidcBundle = (
     Arc<dyn proxima_core::Authenticator>,
     proxima::ResourceServerMetadata,
@@ -29,25 +34,16 @@ type OidcBundle = (
 pub struct ProximaMcpApp;
 
 impl FlavorBundle for ProximaMcpApp {
-    #[cfg(feature = "code")]
     fn register(registry: &mut FlavorRegistry) {
-        proxima_code::register(registry);
+        <LinkedFlavors as FlavorBundle>::register(registry);
     }
 
-    #[cfg(not(feature = "code"))]
-    fn register(_registry: &mut FlavorRegistry) {}
-
-    #[cfg(feature = "code")]
-    fn migrators() -> Vec<proxima::NamedMigrator> {
-        vec![proxima::NamedMigrator::new(
-            "proxima-code",
-            proxima_code::migrator(),
-        )]
+    fn register_pg_sidecars(registry: &mut proxima::PgSidecarRegistry) {
+        <LinkedFlavors as FlavorBundle>::register_pg_sidecars(registry);
     }
 
-    #[cfg(not(feature = "code"))]
     fn migrators() -> Vec<proxima::NamedMigrator> {
-        Vec::new()
+        <LinkedFlavors as FlavorBundle>::migrators()
     }
 }
 

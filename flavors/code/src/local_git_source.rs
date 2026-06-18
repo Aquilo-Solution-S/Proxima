@@ -21,9 +21,9 @@
 //! authored `proxima-code/calls` edges with provenance to file/commit
 //! Facts. `indexed_commit_sha` is the commit's own sha, not HEAD.
 //!
-//! Cursor format (json bytes inside the opaque `Cursor` newtype):
+//! Cursor format (tagged binary bytes inside the opaque `Cursor` newtype):
 //! ```ignore
-//! { "last_commit_sha": "...", "last_tree_sha": "..." }
+//! b"PXC1" || opt_string(last_commit_sha) || opt_string(last_tree_sha)
 //! ```
 //! `None` for both means "from the beginning"; subsequent polls walk
 //! only commits between `last_commit_sha` and `HEAD`.
@@ -654,16 +654,76 @@ struct CodeCursor {
     last_tree_sha: Option<String>,
 }
 
+const CODE_CURSOR_MAGIC: &[u8; 4] = b"PXC1";
+const CODE_CURSOR_NONE: u32 = u32::MAX;
+
 fn decode_cursor(c: &Cursor) -> Result<CodeCursor, IndexError> {
     if c.is_empty() {
         return Ok(CodeCursor::default());
     }
-    serde_json::from_slice(c.as_bytes()).map_err(|e| IndexError::Cursor(e.to_string()))
+    let bytes = c.as_bytes();
+    let Some(rest) = bytes.strip_prefix(CODE_CURSOR_MAGIC) else {
+        return Err(IndexError::Cursor("invalid cursor magic".into()));
+    };
+    let mut offset = 0;
+    let last_commit_sha = decode_cursor_string(rest, &mut offset)?;
+    let last_tree_sha = decode_cursor_string(rest, &mut offset)?;
+    if offset != rest.len() {
+        return Err(IndexError::Cursor("trailing cursor bytes".into()));
+    }
+    Ok(CodeCursor {
+        last_commit_sha,
+        last_tree_sha,
+    })
 }
 
 fn encode_cursor(c: &CodeCursor) -> Result<Cursor, IndexError> {
-    let bytes = serde_json::to_vec(c).map_err(|e| IndexError::Cursor(e.to_string()))?;
+    let mut bytes = Vec::with_capacity(4 + 4 + 40 + 4 + 40);
+    bytes.extend_from_slice(CODE_CURSOR_MAGIC);
+    encode_cursor_string(&mut bytes, c.last_commit_sha.as_deref())?;
+    encode_cursor_string(&mut bytes, c.last_tree_sha.as_deref())?;
     Ok(Cursor::from_bytes(bytes))
+}
+
+fn encode_cursor_string(out: &mut Vec<u8>, value: Option<&str>) -> Result<(), IndexError> {
+    let Some(value) = value else {
+        out.extend_from_slice(&CODE_CURSOR_NONE.to_le_bytes());
+        return Ok(());
+    };
+    let len = u32::try_from(value.len())
+        .map_err(|err| IndexError::Cursor(format!("cursor string too long: {err}")))?;
+    if len == CODE_CURSOR_NONE {
+        return Err(IndexError::Cursor(
+            "cursor string length is reserved".into(),
+        ));
+    }
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn decode_cursor_string(bytes: &[u8], offset: &mut usize) -> Result<Option<String>, IndexError> {
+    let len_bytes = bytes
+        .get(*offset..*offset + 4)
+        .ok_or_else(|| IndexError::Cursor("truncated cursor string length".into()))?;
+    let len = u32::from_le_bytes(
+        len_bytes
+            .try_into()
+            .map_err(|_| IndexError::Cursor("invalid cursor string length".into()))?,
+    );
+    *offset += 4;
+    if len == CODE_CURSOR_NONE {
+        return Ok(None);
+    }
+    let len = usize::try_from(len)
+        .map_err(|err| IndexError::Cursor(format!("invalid cursor length: {err}")))?;
+    let value_bytes = bytes
+        .get(*offset..*offset + len)
+        .ok_or_else(|| IndexError::Cursor("truncated cursor string".into()))?;
+    *offset += len;
+    String::from_utf8(value_bytes.to_vec())
+        .map(Some)
+        .map_err(|err| IndexError::Cursor(format!("invalid cursor utf8: {err}")))
 }
 
 type BlobAnalysisKey = ([u8; 32], Option<String>);

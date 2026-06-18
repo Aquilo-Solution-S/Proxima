@@ -10,6 +10,7 @@ use proxima_code::{
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::{
     AbstractionPayload, EntityKind, MemoryId, MemoryOperatorKind, SchemaId, SchemaVersion,
+    SidecarPayload,
 };
 use uuid::Uuid;
 
@@ -77,8 +78,7 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
             model_id: "test-planner",
             prompt_version: "proxima-code/test-plan-v1",
             author_personality_instance_id: None,
-            sidecar_table: CodeExecutionPlanV1::sidecar_table(),
-            sidecar_payload: serde_json::to_value(&old_payload).expect("serialize old plan"),
+            sidecar_payload: SidecarPayload::abstraction(old_payload),
             supersedes: None,
             edges: &[],
         })
@@ -99,8 +99,7 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
             model_id: "test-planner",
             prompt_version: "proxima-code/test-plan-v1",
             author_personality_instance_id: None,
-            sidecar_table: CodeExecutionPlanV1::sidecar_table(),
-            sidecar_payload: serde_json::to_value(&new_payload).expect("serialize new plan"),
+            sidecar_payload: SidecarPayload::abstraction(new_payload),
             supersedes: Some(old_memory_id),
             edges: &[],
         })

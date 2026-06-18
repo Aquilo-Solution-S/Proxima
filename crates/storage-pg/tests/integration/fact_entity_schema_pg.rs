@@ -82,7 +82,7 @@ async fn fact_entity_schema_matches_task_1_contract() {
             ("owner_org_id", "uuid"),
             ("schema_id", "text"),
             ("schema_version", "integer"),
-            ("natural_key", "jsonb"),
+            ("natural_key", "ARRAY"),
             ("current_memory_id", "uuid"),
             ("current_created_at", "timestamp with time zone"),
             ("created_at", "timestamp with time zone"),

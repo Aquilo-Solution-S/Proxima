@@ -10,6 +10,7 @@ use proxima_core::{
     AbstractionPayload, EdgeAuthorshipKind, EdgeId, EntityKind, FactPayload, MemoryId,
     MemoryOperatorKind, SchemaVersion, SourceBatchId,
 };
+use proxima_storage_pg::sidecars::PgMemorySidecar;
 use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_in_tx};
 use proxima_storage_pg::verbs::edge_append::{Endpoint, append_edge};
 use proxima_storage_pg::verbs::event_ingest::{FactIngestContext, ingest_fact_with_sidecar};
@@ -28,6 +29,7 @@ use crate::payloads::{
     CodeExecutionPlanItemV1, CodeExecutionPlanV1, ExecutionRequestV1, TestRequestV1,
 };
 
+use super::pg_pool;
 use super::sql::{map_storage, owner_principal, resolve_repo_identifier};
 
 const EXECUTION_REQUEST_SOURCE_ID: &str = "proxima-code/execution-request";
@@ -236,7 +238,8 @@ impl McpTool for CodeEmitExecutionRequestTool {
             let goal_activated_memory_id = ctx.resolve_fact_memory(&args.goal_activated_memory)?;
             let evidence = resolve_evidence(&ctx, &args.evidence)?;
 
-            let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
+            let pool = pg_pool(&ctx)?;
+            let mut tx = pool.begin().await.map_err(map_storage)?;
             let goal_id =
                 validate_goal_activated_fact(&mut tx, &ctx, goal_activated_memory_id).await?;
             validate_active_goal_context(&mut tx, &ctx, goal_id, planner_root).await?;
@@ -357,7 +360,8 @@ impl McpTool for CodeEmitExecutionPlanTool {
             let goal_activated_memory_id = ctx.resolve_fact_memory(&args.goal_activated_memory)?;
             let evidence = resolve_evidence(&ctx, &args.evidence)?;
 
-            let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
+            let pool = pg_pool(&ctx)?;
+            let mut tx = pool.begin().await.map_err(map_storage)?;
             let goal_id =
                 validate_goal_activated_fact(&mut tx, &ctx, goal_activated_memory_id).await?;
             validate_active_goal_context(&mut tx, &ctx, goal_id, planner_root).await?;
@@ -568,8 +572,6 @@ async fn append_execution_plan(
     key.extend_from_slice(goal_activated_memory_id.into_inner().as_bytes());
     key.extend_from_slice(plan_key.as_bytes());
     let memory_id = MemoryId::new(Uuid::new_v5(&Uuid::NAMESPACE_OID, &key));
-    let sidecar_payload = serde_json::to_value(payload)
-        .map_err(|err| McpToolError::InvalidInput(format!("serialize plan: {err}")))?;
     let draft = DerivedDraft {
         memory_id: memory_id.into_inner(),
         owner: ctx.owner.clone(),
@@ -581,15 +583,20 @@ async fn append_execution_plan(
         operator_kind: MemoryOperatorKind::ExternalAgent,
         model_id: &ctx.author.model_id,
         prompt_version: "proxima-code/code_emit_execution_plan-v1",
-        sidecar_table: Some(CodeExecutionPlanV1::sidecar_table()),
-        sidecar_payload: Some(sidecar_payload),
         supersedes: None,
         embedding: None,
         embedding_model_id: None,
     };
-    let outcome = append_derived_in_tx(tx, &draft)
-        .await
-        .map_err(McpToolError::Storage)?;
+    let sidecar_payload = payload.clone();
+    let outcome = append_derived_in_tx(tx, &draft, move |tx, outcome| {
+        Box::pin(async move {
+            sidecar_payload
+                .insert_memory_sidecar(tx, outcome.memory_id)
+                .await
+        })
+    })
+    .await
+    .map_err(McpToolError::Storage)?;
     let mut edge_ids = Vec::new();
     if !outcome.idempotent_replay {
         edge_ids.push(append_plan_authored_edge(tx, ctx, planner_root, memory_id).await?);
@@ -691,7 +698,8 @@ impl McpTool for CodeRetryExecutionRequestTool {
             let request_key = normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
             let explicit_evidence = resolve_evidence(&ctx, &args.evidence)?;
 
-            let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
+            let pool = pg_pool(&ctx)?;
+            let mut tx = pool.begin().await.map_err(map_storage)?;
             let prior = load_execution_request(&mut tx, &ctx, prior_memory_id).await?;
             if let Some(existing) =
                 find_execution_request_by_key(&mut tx, &ctx, prior.repo_id, &request_key).await?
@@ -1214,6 +1222,7 @@ pub(super) async fn push_derived_edge(
 
 async fn validate_repo(ctx: &McpToolCtx, repo_id: Uuid) -> Result<(), McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    let pool = pg_pool(ctx)?;
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(
              SELECT 1
@@ -1226,7 +1235,7 @@ async fn validate_repo(ctx: &McpToolCtx, repo_id: Uuid) -> Result<(), McpToolErr
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(repo_id)
-    .fetch_one(&ctx.pool)
+    .fetch_one(pool.as_ref())
     .await
     .map_err(map_storage)?;
     if !exists {
@@ -1387,14 +1396,13 @@ async fn ingest_mcp_fact<P>(
     payload: &P,
 ) -> Result<EventIngestOutcome, McpToolError>
 where
-    P: FactPayload + proxima_storage_pg::verbs::event_ingest::PgFactSidecar + Clone,
+    P: FactPayload + PgMemorySidecar + Clone,
 {
     let embedding_client = ctx.engine().and_then(proxima_core::Engine::embed_client);
     let ingest_ctx =
         FactIngestContext::new(&ctx.owner, source_id, SourceBatchId::new(Uuid::now_v7()))
             .embedding_model_id(embedding_client.as_ref().map(|client| client.model_id()));
-    let citation = CitationSpec::v1_for_payload(cited_object_schema, payload, mapping_schema)
-        .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+    let citation = CitationSpec::v1_for_payload(cited_object_schema, payload, mapping_schema);
     ingest_fact_with_sidecar(tx, &ingest_ctx, payload, citation)
         .await
         .map_err(McpToolError::Storage)
@@ -1593,7 +1601,7 @@ async fn append_dependency_edge(
 mod tests {
     use std::sync::Arc;
 
-    use proxima_core::mcp::{HandleTable, McpAuthorContext, OutputMode};
+    use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolExtensions, OutputMode};
     use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, GroupId, OrgId, Owner, Principal};
     use sqlx::postgres::PgPoolOptions;
 
@@ -1604,10 +1612,10 @@ mod tests {
             principal: Principal::Group(GroupId::new(Uuid::now_v7())),
             org_id: OrgId::new(Uuid::now_v7()),
         };
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://proxima:proxima@localhost/proxima")
+            .expect("lazy pool");
         McpToolCtx {
-            pool: PgPoolOptions::new()
-                .connect_lazy("postgres://proxima:proxima@localhost/proxima")
-                .expect("lazy pool"),
             owner: owner.clone(),
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(handles),
@@ -1622,6 +1630,7 @@ mod tests {
             },
             caller_self_perspective: None,
             master_token_id: None,
+            extensions: McpToolExtensions::with(pool),
             engine: None,
         }
     }

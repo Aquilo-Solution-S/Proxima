@@ -16,8 +16,8 @@ use proxima_core::verbs::event_ingest::{
 };
 use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
-    InstantiatePersonalityRequest, Owner, PerspectivePayload, ProtocolError, SchemaId,
-    SchemaVersion, SourceBatchId, SourceId,
+    InstantiatePersonalityRequest, Owner, PayloadKeyBuilder, PerspectivePayload, ProtocolError,
+    SchemaId, SchemaVersion, SourceBatchId, SourceId,
 };
 use proxima_core::{FactPayload, MemoryId};
 use proxima_storage_pg::PgStorage;
@@ -41,6 +41,12 @@ impl FactPayload for TestFactV1 {
     const SCHEMA_ID: &'static str = TEST_FACT_SCHEMA;
     const SCHEMA_VERSION: u32 = 1;
 
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("label", &self.label);
+        key.finish()
+    }
+
     fn render(&self) -> String {
         self.label.clone()
     }
@@ -58,6 +64,12 @@ pub struct TestOtherFactV1 {
 impl FactPayload for TestOtherFactV1 {
     const SCHEMA_ID: &'static str = TEST_OTHER_FACT_SCHEMA;
     const SCHEMA_VERSION: u32 = 1;
+
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("label", &self.label);
+        key.finish()
+    }
 
     fn render(&self) -> String {
         self.label.clone()

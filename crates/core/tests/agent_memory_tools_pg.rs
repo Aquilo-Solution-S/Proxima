@@ -1,20 +1,22 @@
 use std::sync::Arc;
-use std::{future::Future, pin::Pin};
 
 mod common;
 
 use common::{ConstantEmbedding, drop_db, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
+use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
-    AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FlavorRegistry,
-    FlavorRegistryFrozen, McpToolError, MemoryId, OrgId, Owner, PersonalityInstanceId, Principal,
-    SchemaId, StorageError, UserId,
+    AgentNoteV1, AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FactPayload,
+    FlavorRegistry, FlavorRegistryFrozen, McpToolError, MemoryId, OrgId, Owner,
+    PersonalityInstanceId, Principal, SchemaId, UserId,
 };
+use proxima_storage_pg::sidecars::{
+    PgCitationMappingSidecar, PgCitedObjectSidecar, PgSidecarFuture,
+};
+use proxima_storage_pg::{PgSidecarRegistry, register_core_pg_sidecars};
 use serde_json::json;
 use time::format_description::well_known::Rfc3339;
-
-type SidecarFuture<'t> = Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
+use uuid::Uuid;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct RememberTestCitedObject {
@@ -37,12 +39,14 @@ impl CitedObjectPayload for RememberTestCitedObject {
         hasher.update(self.locator.as_bytes());
         *hasher.finalize().as_bytes()
     }
+}
 
-    fn sidecar_insert<'t>(
+impl PgCitedObjectSidecar for RememberTestCitedObject {
+    fn insert_cited_object_sidecar<'t>(
         &'t self,
-        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
-        sidecar_row_id: uuid::Uuid,
-    ) -> SidecarFuture<'t> {
+        tx: &'t mut sqlx::PgConnection,
+        cited_object_id: uuid::Uuid,
+    ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO public.remember_test_cited_object_v1
@@ -50,12 +54,12 @@ impl CitedObjectPayload for RememberTestCitedObject {
                  VALUES ($1, $2, $3)
                  ON CONFLICT (cited_object_id) DO NOTHING",
             )
-            .bind(sidecar_row_id)
+            .bind(cited_object_id)
             .bind(&self.artifact_id)
             .bind(&self.locator)
-            .execute(&mut **tx)
+            .execute(tx)
             .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            .map_err(|err| proxima_core::StorageError::Internal(err.to_string()))?;
             Ok(())
         })
     }
@@ -79,26 +83,27 @@ impl CitationMappingPayload for RememberTestCitationMapping {
     fn cited_object_schema() -> SchemaId {
         RememberTestCitedObject::schema_id()
     }
+}
 
-    fn sidecar_insert<'t>(
+impl PgCitationMappingSidecar for RememberTestCitationMapping {
+    fn insert_citation_mapping_sidecar<'t>(
         &'t self,
-        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
-        sidecar_row_id: uuid::Uuid,
-    ) -> SidecarFuture<'t> {
+        tx: &'t mut sqlx::PgConnection,
+        citation_mapping_id: uuid::Uuid,
+    ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO public.remember_test_citation_mapping_v1
                     (citation_mapping_id, section, byte_start, byte_end)
-                 VALUES ($1, $2, $3, $4)
-                 ON CONFLICT (citation_mapping_id) DO NOTHING",
+                 VALUES ($1, $2, $3, $4)",
             )
-            .bind(sidecar_row_id)
+            .bind(citation_mapping_id)
             .bind(&self.section)
             .bind(self.byte_start)
             .bind(self.byte_end)
-            .execute(&mut **tx)
+            .execute(tx)
             .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            .map_err(|err| proxima_core::StorageError::Internal(err.to_string()))?;
             Ok(())
         })
     }
@@ -250,13 +255,140 @@ async fn remember_enqueues_one_embedding_job_and_replay_does_not_duplicate()
 }
 
 #[tokio::test]
+async fn remember_reused_idempotency_key_changed_body_creates_new_stateful_fact()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze());
+    let owner = nil_owner();
+    let handles = Arc::new(HandleTable::new());
+    let author = author_ctx();
+    let base_args = json!({
+        "title": "Stateful remember",
+        "body": "First body.",
+        "tags": ["remember", "stateful"],
+        "idempotency_key": "remember-stateful-changed-body"
+    });
+    let changed_args = json!({
+        "title": "Stateful remember",
+        "body": "Second body.",
+        "tags": ["remember", "stateful"],
+        "idempotency_key": "remember-stateful-changed-body"
+    });
+
+    let first = call_tool(
+        &pg,
+        &owner,
+        &handles,
+        &frozen,
+        author.clone(),
+        "core/remember",
+        base_args,
+    )
+    .await?;
+    let second = call_tool(
+        &pg,
+        &owner,
+        &handles,
+        &frozen,
+        author,
+        "core/remember",
+        changed_args,
+    )
+    .await?;
+
+    assert_eq!(first["idempotent_replay"], json!(false));
+    assert_eq!(second["idempotent_replay"], json!(false));
+    assert_ne!(second["handle"], first["handle"]);
+
+    let first_memory_id =
+        handles.resolve_memory(first["handle"].as_str().expect("first handle"))?;
+    let second_memory_id =
+        handles.resolve_memory(second["handle"].as_str().expect("second handle"))?;
+    assert_ne!(second_memory_id, first_memory_id);
+
+    let first_note_id = agent_note_id(pg.pool(), first_memory_id).await?;
+    let second_note_id = agent_note_id(pg.pool(), second_memory_id).await?;
+    assert_eq!(second_note_id, first_note_id);
+    assert_eq!(agent_note_fact_count(pg.pool(), first_note_id).await?, 2);
+    assert_eq!(
+        agent_note_current_memory_id(pg.pool(), first_note_id).await?,
+        second_memory_id.into_inner()
+    );
+    assert_eq!(
+        supersedes_edge_count_between(pg.pool(), first_memory_id, second_memory_id).await?,
+        0
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn remember_reused_idempotency_key_identical_content_is_idempotent_replay()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze());
+    let owner = nil_owner();
+    let handles = Arc::new(HandleTable::new());
+    let author = author_ctx();
+    let args = json!({
+        "title": "Identical remember",
+        "body": "Same body.",
+        "tags": ["remember", "stateful"],
+        "idempotency_key": "remember-stateful-identical-content"
+    });
+
+    let first = call_tool(
+        &pg,
+        &owner,
+        &handles,
+        &frozen,
+        author.clone(),
+        "core/remember",
+        args.clone(),
+    )
+    .await?;
+    let replay = call_tool(
+        &pg,
+        &owner,
+        &handles,
+        &frozen,
+        author,
+        "core/remember",
+        args,
+    )
+    .await?;
+
+    assert_eq!(first["idempotent_replay"], json!(false));
+    assert_eq!(replay["idempotent_replay"], json!(true));
+    assert_eq!(replay["handle"], first["handle"]);
+
+    let memory_id = handles.resolve_memory(first["handle"].as_str().expect("handle"))?;
+    let note_id = agent_note_id(pg.pool(), memory_id).await?;
+    assert_eq!(agent_note_fact_count(pg.pool(), note_id).await?, 1);
+    assert_eq!(
+        agent_note_current_memory_id(pg.pool(), note_id).await?,
+        memory_id.into_inner()
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "PG integration fixture validates cited and uncited remember rows in one transaction shape"
 )]
 async fn remember_cited_and_uncited_persist_personality_and_citation_rows()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_remember_sidecars().await;
     create_remember_citation_sidecars(pg.pool()).await?;
 
     let frozen = registry_with_remember_test_citation();
@@ -841,7 +973,6 @@ async fn call_tool_prefixed(
     let caller_self_perspective = author.caller_self_perspective;
     (descriptor.call)(
         McpToolCtx {
-            pool: pg.pool().clone(),
             owner: owner.clone(),
             authz: AuthzContext::single_owner(owner, AuthPath::System),
             handles: None,
@@ -850,6 +981,7 @@ async fn call_tool_prefixed(
             author,
             caller_self_perspective,
             master_token_id: None,
+            extensions: McpToolExtensions::with(pg.pool().clone()),
             engine: Some(engine_for_registry(registry, pg)),
         },
         args,
@@ -875,7 +1007,6 @@ async fn call_tool_with_engine(
         .expect("registered tool");
     (descriptor.call)(
         McpToolCtx {
-            pool: pg.pool().clone(),
             owner: owner.clone(),
             authz: AuthzContext::single_owner(owner, AuthPath::System),
             handles: Some(handles.clone()),
@@ -884,6 +1015,7 @@ async fn call_tool_with_engine(
             author,
             caller_self_perspective: None,
             master_token_id: None,
+            extensions: McpToolExtensions::with(pg.pool().clone()),
             engine,
         },
         args,
@@ -942,6 +1074,19 @@ fn registry_with_remember_test_citation() -> Arc<FlavorRegistryFrozen> {
     Arc::new(registry.freeze())
 }
 
+async fn fresh_pg_with_remember_sidecars() -> (proxima_storage_pg::PgStorage, String) {
+    let (pg, db_name) = fresh_pg().await;
+    let registry = registry_with_remember_test_citation();
+    let mut sidecars = PgSidecarRegistry::new();
+    register_core_pg_sidecars(&mut sidecars);
+    sidecars.add_cited_object::<RememberTestCitedObject>();
+    sidecars.add_citation_mapping::<RememberTestCitationMapping>();
+    let sidecars = sidecars
+        .freeze_against(registry.schemas())
+        .expect("remember test PG sidecars match schemas");
+    (pg.with_sidecars(sidecars), db_name)
+}
+
 async fn create_remember_citation_sidecars(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     sqlx::query(
         "CREATE TABLE public.remember_test_cited_object_v1 (
@@ -968,6 +1113,71 @@ async fn create_remember_citation_sidecars(pool: &sqlx::PgPool) -> Result<(), sq
 async fn count_rows(pool: &sqlx::PgPool, table: &str) -> Result<i64, sqlx::Error> {
     let sql = format!("SELECT count(*) FROM {table}");
     sqlx::query_scalar(&sql).fetch_one(pool).await
+}
+
+async fn agent_note_id(pool: &sqlx::PgPool, memory_id: MemoryId) -> Result<Uuid, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT note_id
+           FROM proxima_core.agent_note_v1
+          WHERE memory_id = $1",
+    )
+    .bind(memory_id.into_inner())
+    .fetch_one(pool)
+    .await
+}
+
+async fn agent_note_fact_count(pool: &sqlx::PgPool, note_id: Uuid) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxima_core.memories m
+           JOIN proxima_core.agent_note_v1 n USING (memory_id)
+          WHERE m.schema_id = $1
+            AND m.schema_version = $2
+            AND n.note_id = $3",
+    )
+    .bind(AgentNoteV1::SCHEMA_ID)
+    .bind(i32::try_from(AgentNoteV1::SCHEMA_VERSION).expect("schema version fits i32"))
+    .bind(note_id)
+    .fetch_one(pool)
+    .await
+}
+
+async fn agent_note_current_memory_id(
+    pool: &sqlx::PgPool,
+    note_id: Uuid,
+) -> Result<Uuid, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT current_memory_id
+           FROM proxima_core.fact_entities
+          WHERE schema_id = $1
+            AND schema_version = $2
+            AND natural_key = ARRAY[$3]::text[]",
+    )
+    .bind(AgentNoteV1::SCHEMA_ID)
+    .bind(i32::try_from(AgentNoteV1::SCHEMA_VERSION).expect("schema version fits i32"))
+    .bind(note_id.to_string())
+    .fetch_one(pool)
+    .await
+}
+
+async fn supersedes_edge_count_between(
+    pool: &sqlx::PgPool,
+    first: MemoryId,
+    second: MemoryId,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxima_core.edges
+          WHERE relation = 'core/supersedes'
+            AND (
+                (source_memory_id = $1 AND target_memory_id = $2)
+                OR (source_memory_id = $2 AND target_memory_id = $1)
+            )",
+    )
+    .bind(first.into_inner())
+    .bind(second.into_inner())
+    .fetch_one(pool)
+    .await
 }
 
 async fn embedding_job_count(

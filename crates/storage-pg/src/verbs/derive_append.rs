@@ -8,6 +8,7 @@ use proxima_core::{
 use sqlx::{Postgres, Transaction};
 
 use crate::error::map_err;
+use crate::sidecars::PgSidecarFuture;
 
 #[derive(Debug, Clone)]
 pub struct DerivedDraft<'a> {
@@ -21,8 +22,6 @@ pub struct DerivedDraft<'a> {
     pub operator_kind: MemoryOperatorKind,
     pub model_id: &'a str,
     pub prompt_version: &'a str,
-    pub sidecar_table: Option<&'a str>,
-    pub sidecar_payload: Option<serde_json::Value>,
     pub supersedes: Option<MemoryId>,
     pub embedding: Option<Vec<f32>>,
     pub embedding_model_id: Option<&'a str>,
@@ -42,6 +41,10 @@ pub struct DerivedOutcome {
 pub async fn append_derived_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
+    sidecar: impl for<'t> FnOnce(
+        &'t mut Transaction<'_, Postgres>,
+        &'t DerivedOutcome,
+    ) -> PgSidecarFuture<'t>,
 ) -> Result<DerivedOutcome, StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = draft.owner.columns();
     let author_personality_instance_id = draft
@@ -82,10 +85,11 @@ pub async fn append_derived_in_tx(
         });
     }
 
-    if let (Some(table), Some(payload)) = (draft.sidecar_table, &draft.sidecar_payload) {
-        crate::insert_jsonb_memory_sidecar(tx, MemoryId::new(draft.memory_id), table, payload)
-            .await?;
-    }
+    let outcome = DerivedOutcome {
+        memory_id: MemoryId::new(draft.memory_id),
+        idempotent_replay: false,
+    };
+    sidecar(tx, &outcome).await?;
 
     insert_embedding_in_tx(tx, draft, owner_kind, owner_principal_id, owner_org_id).await?;
 
@@ -110,10 +114,7 @@ pub async fn append_derived_in_tx(
     .await
     .map_err(map_err)?;
 
-    Ok(DerivedOutcome {
-        memory_id: MemoryId::new(draft.memory_id),
-        idempotent_replay: false,
-    })
+    Ok(outcome)
 }
 
 async fn insert_embedding_in_tx(

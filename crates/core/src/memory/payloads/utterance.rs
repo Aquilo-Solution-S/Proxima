@@ -1,4 +1,4 @@
-use crate::FactPayload;
+use crate::{FactPayload, PayloadKeyBuilder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +29,14 @@ pub struct UtteranceV1 {
 impl FactPayload for UtteranceV1 {
     const SCHEMA_ID: &'static str = "core/utterance-v1";
     const SCHEMA_VERSION: u32 = 1;
+
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("speaker", self.speaker.as_str());
+        key.field_str("conversation_id", &self.conversation_id);
+        key.field_str("text", &self.text);
+        key.finish()
+    }
 
     fn render(&self) -> String {
         format!(

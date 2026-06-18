@@ -12,6 +12,7 @@ name = "proxima_code"
 
 [dependencies]
 proxima-core = { path = "../../crates/core" }
+proxima = { path = "../../crates/proxima" }
 proxima-storage-pg = { path = "../../crates/storage-pg" }
 async-trait = { workspace = true }
 futures = { workspace = true }

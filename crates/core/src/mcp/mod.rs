@@ -16,6 +16,8 @@ pub use handles::{
     PrefixedUuidError, ResolveError, format_prefixed_uuid, parse_prefixed_uuid,
 };
 
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
@@ -51,9 +53,53 @@ pub enum OutputMode {
     PrefixedIds,
 }
 
+#[derive(Clone, Default)]
+pub struct McpToolExtensions {
+    values: Arc<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
+}
+
+impl std::fmt::Debug for McpToolExtensions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpToolExtensions")
+            .field("len", &self.values.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl McpToolExtensions {
+    #[must_use]
+    pub fn with<T>(value: T) -> Self
+    where
+        T: Send + Sync + 'static,
+    {
+        let mut extensions = Self::default();
+        extensions.insert(value);
+        extensions
+    }
+
+    pub fn insert<T>(&mut self, value: T) -> Option<Arc<T>>
+    where
+        T: Send + Sync + 'static,
+    {
+        Arc::make_mut(&mut self.values)
+            .insert(TypeId::of::<T>(), Arc::new(value))
+            .and_then(|old| old.downcast::<T>().ok())
+    }
+
+    #[must_use]
+    pub fn get<T>(&self) -> Option<Arc<T>>
+    where
+        T: Send + Sync + 'static,
+    {
+        self.values
+            .get(&TypeId::of::<T>())
+            .cloned()
+            .and_then(|value| value.downcast::<T>().ok())
+    }
+}
+
 #[derive(Clone)]
 pub struct McpToolCtx {
-    pub pool: sqlx::PgPool,
     pub owner: Owner,
     /// Caller's authorization context, threaded from the transport
     /// edge. Tools pass this to engine verbs — never a substituted
@@ -72,6 +118,10 @@ pub struct McpToolCtx {
     /// master-token from wake-token callers without inspecting the
     /// auth context. `None` for wake-token, no-auth, or test calls.
     pub master_token_id: Option<uuid::Uuid>,
+    /// Backend/flavor services supplied by the host. Core does not name
+    /// concrete service types; PG-aware flavors may downcast their own
+    /// dependencies here.
+    pub extensions: McpToolExtensions,
     /// `Some` when the MCP server was constructed with `with_engine`.
     /// Tools that need to call engine verbs (CRUD-via-MCP) require this;
     /// pure read-only / projection tools can ignore it.
@@ -100,6 +150,14 @@ impl McpToolCtx {
     #[must_use]
     pub fn storage(&self) -> Option<&dyn crate::Storage> {
         self.engine.as_ref().map(|e| &**e.storage())
+    }
+
+    #[must_use]
+    pub fn extension<T>(&self) -> Option<Arc<T>>
+    where
+        T: Send + Sync + 'static,
+    {
+        self.extensions.get::<T>()
     }
 
     fn handle_table(&self) -> &HandleTable {
@@ -613,7 +671,6 @@ mod tests {
             org_id: OrgId::new(uuid::Uuid::now_v7()),
         };
         McpToolCtx {
-            pool: sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy"),
             owner: owner.clone(),
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: None,
@@ -628,6 +685,7 @@ mod tests {
             },
             caller_self_perspective: None,
             master_token_id: None,
+            extensions: McpToolExtensions::default(),
             engine: None,
         }
     }
@@ -653,9 +711,7 @@ mod ctx_engine_tests {
             principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
             org_id: OrgId::new(uuid::Uuid::now_v7()),
         };
-        let pool = sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy");
         let ctx = McpToolCtx {
-            pool,
             owner: owner.clone(),
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(Arc::new(HandleTable::new())),
@@ -670,6 +726,7 @@ mod ctx_engine_tests {
             },
             caller_self_perspective: None,
             master_token_id: None,
+            extensions: McpToolExtensions::default(),
             engine: None,
         };
         assert!(ctx.storage().is_none());
@@ -683,9 +740,7 @@ mod ctx_engine_tests {
             org_id: OrgId::new(uuid::Uuid::now_v7()),
         };
         let engine = Arc::new(Engine::new(FlavorRegistry::new().freeze()));
-        let pool = sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy");
         let ctx = McpToolCtx {
-            pool,
             owner: owner.clone(),
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(Arc::new(HandleTable::new())),
@@ -700,6 +755,7 @@ mod ctx_engine_tests {
             },
             caller_self_perspective: None,
             master_token_id: None,
+            extensions: McpToolExtensions::default(),
             engine: Some(engine.clone()),
         };
         assert!(ctx.engine().is_some());

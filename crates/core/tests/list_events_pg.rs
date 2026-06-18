@@ -11,7 +11,7 @@ use proxima_core::mcp::core_tools::memory::derive::{DeriveArgs, DerivedKind};
 use proxima_core::mcp::core_tools::memory::link::LinkArgs;
 use proxima_core::mcp::core_tools::memory::remember::RememberArgs;
 use proxima_core::mcp::core_tools::{DeriveTool, LinkTool, ListEventsTool, RememberTool};
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
+use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
     AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryFrozen, McpTool, McpToolError, Owner,
 };
@@ -237,7 +237,6 @@ impl ToolHarness {
 
     fn ctx(&self) -> McpToolCtx {
         McpToolCtx {
-            pool: self.pg.pool().clone(),
             owner: self.owner.clone(),
             authz: AuthzContext::single_owner(&self.owner, AuthPath::System),
             handles: Some(self.handles.clone()),
@@ -246,6 +245,7 @@ impl ToolHarness {
             author: self.author.clone(),
             caller_self_perspective: None,
             master_token_id: None,
+            extensions: McpToolExtensions::with(self.pg.pool().clone()),
             engine: Some(self.engine.clone()),
         }
     }

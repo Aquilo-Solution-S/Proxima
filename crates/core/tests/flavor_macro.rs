@@ -3,8 +3,8 @@
 
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    CitationMappingPayload, CitedObjectPayload, FactPayload, FlavorRegistry, GoalPayload, SchemaId,
-    proxima_flavor, proxima_schema_id,
+    CitationMappingPayload, CitedObjectPayload, FactPayload, FlavorRegistry, GoalPayload,
+    PayloadKeyBuilder, SchemaId, proxima_flavor, proxima_schema_id,
 };
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -18,6 +18,11 @@ impl FactPayload for TestFactV1 {
     // "proxima-core/test-fact".
     const SCHEMA_ID: &'static str = proxima_schema_id!("test-fact");
     const SCHEMA_VERSION: u32 = 1;
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("body", &self.body);
+        key.finish()
+    }
     fn render(&self) -> String {
         self.body.clone()
     }
@@ -34,6 +39,12 @@ struct TestGoalV1 {
 impl GoalPayload for TestGoalV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("test-goal");
     const SCHEMA_VERSION: u32 = 1;
+
+    fn goal_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("text", &self.text);
+        key.finish()
+    }
 
     fn sidecar_table() -> Option<&'static str> {
         Some("goal_test_goal_v1")

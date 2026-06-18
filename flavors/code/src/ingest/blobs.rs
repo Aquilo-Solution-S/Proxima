@@ -3,6 +3,7 @@ use proxima_core::{
     AbstractionPayload, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind, FactPayload,
     MemoryId, MemoryOperatorKind, Owner, SchemaVersion, SourceBatchId,
 };
+use proxima_storage_pg::sidecars::PgMemorySidecar;
 use proxima_storage_pg::verbs::derive_append::{
     DerivedDraft, DerivedOutcome, append_derived_in_tx,
 };
@@ -67,7 +68,7 @@ async fn ingest_local_git_fact<P>(
     observed_at: time::OffsetDateTime,
 ) -> Result<EventIngestOutcome, IngestError>
 where
-    P: FactPayload + proxima_storage_pg::verbs::event_ingest::PgFactSidecar + Clone,
+    P: FactPayload + PgMemorySidecar + Clone,
 {
     let ctx = local_git_context(owner, source_batch_id, observed_at);
     let mut tx = pool.begin().await?;
@@ -142,8 +143,6 @@ pub async fn append_code_slice(
 ) -> Result<DerivedOutcome, IngestError> {
     let memory_id = code_slice_memory_id(payload, source_file_revision);
     let mut tx = pool.begin().await?;
-    let sidecar_payload = serde_json::to_value(payload)
-        .map_err(|err| IngestError::Serialize(format!("serialize code slice: {err}")))?;
     let text = render_code_slice(payload);
     let draft = DerivedDraft {
         memory_id,
@@ -156,13 +155,19 @@ pub async fn append_code_slice(
         operator_kind: MemoryOperatorKind::FtoA,
         model_id: CODE_SLICE_OPERATOR_MODEL,
         prompt_version: CODE_SLICE_PROMPT_VERSION,
-        sidecar_table: Some(CodeChunkV1::sidecar_table()),
-        sidecar_payload: Some(sidecar_payload),
         supersedes: None,
         embedding: None,
         embedding_model_id: None,
     };
-    let outcome = append_derived_in_tx(&mut tx, &draft).await?;
+    let sidecar_payload = payload.clone();
+    let outcome = append_derived_in_tx(&mut tx, &draft, move |tx, outcome| {
+        Box::pin(async move {
+            sidecar_payload
+                .insert_memory_sidecar(tx, outcome.memory_id)
+                .await
+        })
+    })
+    .await?;
     if !outcome.idempotent_replay {
         append_code_slice_provenance(&mut tx, owner, outcome.memory_id, source_file_revision)
             .await?;

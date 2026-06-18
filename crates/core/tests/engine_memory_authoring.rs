@@ -6,12 +6,11 @@ use common::{ConstantEmbedding, drop_db, fresh_pg, owner_fixture};
 use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::{
-    AbstractionPayload, AuthPath, AuthorshipKindMask, AuthzContext, EdgeAuthorshipKind, EntityKind,
-    EntityKindMask, FactPayload, FlavorRegistry, MemoryId, MemoryOperatorKind, Owner,
-    OwnerPrincipalKind, PersonalityInstanceId, Principal, RelationClass, RelationDescriptor, Role,
-    SchemaId, SchemaVersion, SourceBatchId, SourceId, Storage, canonical_json_bytes,
+    AbstractionPayload, AgentDerivationV1, AgentNoteV1, AuthPath, AuthorshipKindMask, AuthzContext,
+    EdgeAuthorshipKind, EntityKind, EntityKindMask, FlavorRegistry, MemoryId, MemoryOperatorKind,
+    Owner, OwnerPrincipalKind, PersonalityInstanceId, Principal, RelationClass, RelationDescriptor,
+    Role, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, Storage,
 };
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
@@ -31,49 +30,6 @@ fn vector_literal(vec: &[f32]) -> String {
     }
     out.push(']');
     out
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct AgentNoteV1 {
-    note_id: Uuid,
-    title: String,
-    body: String,
-    tags: Vec<String>,
-    idempotency_key: Option<String>,
-}
-
-impl FactPayload for AgentNoteV1 {
-    const SCHEMA_ID: &'static str = "core/agent-note-v1";
-    const SCHEMA_VERSION: u32 = 1;
-
-    fn render(&self) -> String {
-        format!("{}\n\n{}", self.title, self.body)
-    }
-
-    fn sidecar_table() -> Option<&'static str> {
-        Some("proxima_core.agent_note_v1")
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct AgentDerivationV1 {
-    title: String,
-    body: String,
-    tags: Vec<String>,
-    idempotency_key: Option<String>,
-    source_memory_ids: Vec<Uuid>,
-    model_id: String,
-    client_name: String,
-    client_version: String,
-}
-
-impl AbstractionPayload for AgentDerivationV1 {
-    const SCHEMA_ID: &'static str = "core/agent-derivation-v1";
-    const SCHEMA_VERSION: u32 = 1;
-
-    fn sidecar_table() -> &'static str {
-        "proxima_core.agent_derivation_v1"
-    }
 }
 
 #[tokio::test]
@@ -105,7 +61,7 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
         .registry()
         .resolve_relation("test/derived-from-abstraction")
         .expect("test relation registered");
-    let sidecar_payload = serde_json::to_value(AgentDerivationV1 {
+    let sidecar_payload = SidecarPayload::abstraction(AgentDerivationV1 {
         title: "Derived".into(),
         body: "derived body".into(),
         tags: vec!["memory".into()],
@@ -114,7 +70,7 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
         model_id: "agent-model".into(),
         client_name: "test-client".into(),
         client_version: "1".into(),
-    })?;
+    });
     let derived_memory_id = MemoryId::new(Uuid::now_v7());
     let edges = [proxima_core::AuthorDerivedEdgeInput {
         relation,
@@ -138,7 +94,6 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
             model_id: "agent-model",
             prompt_version: "test-prompt",
             author_personality_instance_id: Some(author_personality),
-            sidecar_table: AgentDerivationV1::sidecar_table(),
             sidecar_payload,
             supersedes: None,
             edges: &edges,
@@ -208,7 +163,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
     let old_memory_id = MemoryId::new(Uuid::now_v7());
     let new_memory_id = MemoryId::new(Uuid::now_v7());
 
-    let old_sidecar = serde_json::to_value(AgentDerivationV1 {
+    let old_sidecar = SidecarPayload::abstraction(AgentDerivationV1 {
         title: "Old assertion".into(),
         body: "old assertion body".into(),
         tags: vec!["assertion".into()],
@@ -217,7 +172,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
         model_id: "agent-model".into(),
         client_name: "test-client".into(),
         client_version: "1".into(),
-    })?;
+    });
     let old = engine
         .author_derived(proxima_core::AuthorDerivedRequestInput {
             memory_id: old_memory_id,
@@ -230,7 +185,6 @@ async fn engine_author_derived_supersedes_in_same_transaction()
             model_id: "agent-model",
             prompt_version: "test-prompt",
             author_personality_instance_id: Some(author_personality),
-            sidecar_table: AgentDerivationV1::sidecar_table(),
             sidecar_payload: old_sidecar,
             supersedes: None,
             edges: &[],
@@ -239,7 +193,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
     assert_eq!(old.memory_id, old_memory_id);
     assert_eq!(old.edge_count, 0);
 
-    let new_sidecar = serde_json::to_value(AgentDerivationV1 {
+    let new_sidecar = SidecarPayload::abstraction(AgentDerivationV1 {
         title: "New assertion".into(),
         body: "new assertion body".into(),
         tags: vec!["assertion".into()],
@@ -248,7 +202,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
         model_id: "agent-model".into(),
         client_name: "test-client".into(),
         client_version: "1".into(),
-    })?;
+    });
     let new = engine
         .author_derived(proxima_core::AuthorDerivedRequestInput {
             memory_id: new_memory_id,
@@ -261,7 +215,6 @@ async fn engine_author_derived_supersedes_in_same_transaction()
             model_id: "agent-model",
             prompt_version: "test-prompt",
             author_personality_instance_id: Some(author_personality),
-            sidecar_table: AgentDerivationV1::sidecar_table(),
             sidecar_payload: new_sidecar,
             supersedes: Some(old_memory_id),
             edges: &[],
@@ -388,29 +341,18 @@ async fn ingest_event_with_sidecar_writes_fact_and_note_sidecar()
         tags: vec!["tag".into()],
         idempotency_key: Some("note-1".into()),
     };
-    let payload = serde_json::to_value(&note)?;
-    let draft = EventDraft {
-        source_id: SourceId::new("test/source"),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.principal.clone(),
-        org_id: None,
-        author_personality_instance_id: None,
-        schema_id: AgentNoteV1::schema_id(),
-        schema_version: SchemaVersion::new(AgentNoteV1::SCHEMA_VERSION),
-        payload: canonical_json_bytes(&payload),
-        rendered_text: None,
-        observed_at: time::OffsetDateTime::now_utc(),
-        occurred_at: time::OffsetDateTime::now_utc(),
-        citation: None,
-    };
+    let sidecar_payload = SidecarPayload::fact(note.clone());
+    let mut draft = EventDraft::from_payload(
+        &owner,
+        "test/source",
+        SourceBatchId::new(Uuid::now_v7()),
+        &note,
+        time::OffsetDateTime::now_utc(),
+    );
+    draft.org_id = None;
     let authorized = engine.authorize_event_ingest(&authz, Role::SourceIngest, draft)?;
     let outcome = pg
-        .ingest_event_with_sidecar(
-            &authorized,
-            AgentNoteV1::sidecar_table().expect("agent note has a sidecar table"),
-            &payload,
-            None,
-        )
+        .ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
         .await?;
 
     let memory_row: (Option<EntityKind>, String) =

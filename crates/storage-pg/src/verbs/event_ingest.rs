@@ -25,6 +25,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::error::{internal, map_err};
 use crate::pg_ident::PgIdent;
+use crate::sidecars::{PgMemorySidecar, PgSidecarRegistryFrozen};
 
 pub type EventIngestSidecarFuture<'t> =
     Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
@@ -109,6 +110,7 @@ enum CitationPlan<'a> {
     Inline {
         cited_object: &'a AuthorizedInlineCitedObject,
         mapping: &'a AuthorizedInlineCitationMapping,
+        sidecars: &'a PgSidecarRegistryFrozen,
     },
 }
 
@@ -121,6 +123,7 @@ enum PendingCitation<'a> {
     },
     Inline {
         mapping: &'a AuthorizedInlineCitationMapping,
+        sidecars: &'a PgSidecarRegistryFrozen,
         citation_mapping_id: uuid::Uuid,
         cited_object_id: uuid::Uuid,
     },
@@ -197,6 +200,7 @@ where
 /// sidecar insertion, or transaction commit.
 pub async fn ingest_fact_with_citation_atomic<F>(
     pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedFactWithCitation,
     embedding_model_id: Option<&str>,
     fact_sidecar: F,
@@ -208,9 +212,14 @@ where
     ) -> EventIngestSidecarFuture<'t>,
 {
     let mut tx = pool.begin().await.map_err(internal)?;
-    let outcome =
-        ingest_fact_with_citation_in_tx(&mut tx, authorized, embedding_model_id, fact_sidecar)
-            .await?;
+    let outcome = ingest_fact_with_citation_in_tx(
+        &mut tx,
+        sidecars,
+        authorized,
+        embedding_model_id,
+        fact_sidecar,
+    )
+    .await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }
@@ -220,8 +229,8 @@ where
 ///
 /// # Errors
 ///
-/// Returns storage errors from JSON serialization, authorization/schema
-/// validation, Fact materialization, or sidecar insertion.
+/// Returns storage errors from authorization/schema validation, Fact
+/// materialization, or sidecar insertion.
 pub async fn ingest_fact_in_tx<P, F>(
     tx: &mut Transaction<'_, Postgres>,
     engine: &Engine,
@@ -248,8 +257,7 @@ where
         SourceBatchId::new(uuid::Uuid::now_v7()),
         payload,
         now,
-    )
-    .map_err(internal)?;
+    );
     draft.org_id = None;
     let authorized = engine
         .authorize_event_ingest(authz, role, draft)
@@ -292,8 +300,8 @@ where
 ///
 /// # Errors
 ///
-/// Returns storage errors from JSON serialization, Fact materialization,
-/// sidecar insertion, Fact-entity derivation, or embedding enqueue.
+/// Returns storage errors from Fact materialization, sidecar insertion,
+/// Fact-entity derivation, or embedding enqueue.
 pub async fn ingest_fact_with_sidecar<P>(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &FactIngestContext<'_>,
@@ -301,7 +309,7 @@ pub async fn ingest_fact_with_sidecar<P>(
     citation: CitationSpec,
 ) -> Result<EventIngestOutcome, StorageError>
 where
-    P: PgFactSidecar + Clone,
+    P: FactPayload + PgMemorySidecar + Clone,
 {
     let draft = EventDraft::from_payload(
         ctx.owner,
@@ -310,7 +318,6 @@ where
         payload,
         ctx.observed_at,
     )
-    .map_err(internal)?
     .with_citation(citation);
     let sidecar_payload = payload.clone();
     ingest_event_with_derived_sidecar_in_tx(
@@ -319,7 +326,13 @@ where
         ctx.embedding_model_id,
         P::sidecar_table(),
         P::natural_key_columns(),
-        move |tx, outcome| sidecar_payload.insert_sidecar(tx, outcome.memory_id),
+        move |tx, outcome| {
+            Box::pin(async move {
+                sidecar_payload
+                    .insert_memory_sidecar(tx, outcome.memory_id)
+                    .await
+            })
+        },
     )
     .await
 }
@@ -402,6 +415,7 @@ where
 /// rollback/commit.
 pub async fn ingest_fact_with_citation_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedFactWithCitation,
     embedding_model_id: Option<&str>,
     fact_sidecar: F,
@@ -427,6 +441,7 @@ where
         citation_plan: CitationPlan::Inline {
             cited_object: authorized.cited_object(),
             mapping: authorized.mapping(),
+            sidecars,
         },
         change_event_author_personality_instance_id: Some(author_personality_instance_id),
     };
@@ -444,6 +459,7 @@ where
 /// core row updates. The caller owns transaction rollback/commit.
 pub async fn attach_citation_in_tx(
     tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedCitationAttachment,
 ) -> Result<AttachCitationOutcome, StorageError> {
     let memory_id = authorized.memory_id();
@@ -481,12 +497,14 @@ pub async fn attach_citation_in_tx(
         });
     }
 
-    let cited_object_id = upsert_cited_object_in_tx(tx, owner, authorized.cited_object()).await?;
+    let cited_object_id =
+        upsert_cited_object_in_tx(tx, sidecars, owner, authorized.cited_object()).await?;
     let citation_mapping_id = uuid::Uuid::now_v7();
     insert_citation_mapping_in_tx(
         tx,
         owner,
         authorized.mapping(),
+        sidecars,
         citation_mapping_id,
         memory_uuid,
         cited_object_id,
@@ -558,6 +576,7 @@ async fn cited_object_id_for_mapping_in_tx(
 
 async fn upsert_cited_object_in_tx(
     tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
     owner: &Owner,
     cited_object: &AuthorizedInlineCitedObject,
 ) -> Result<uuid::Uuid, StorageError> {
@@ -583,7 +602,9 @@ async fn upsert_cited_object_in_tx(
     .await
     .map_err(map_err)?;
 
-    (cited_object.sidecar_inserter_fn())(tx, cited_object_id, cited_object.payload_bytes()).await?;
+    sidecars
+        .insert_cited_object_sidecar(tx.as_mut(), cited_object_id, cited_object.sidecar_payload())
+        .await?;
     Ok(cited_object_id)
 }
 
@@ -591,6 +612,7 @@ async fn insert_citation_mapping_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     mapping: &AuthorizedInlineCitationMapping,
+    sidecars: &PgSidecarRegistryFrozen,
     citation_mapping_id: uuid::Uuid,
     memory_id: uuid::Uuid,
     cited_object_id: uuid::Uuid,
@@ -616,8 +638,10 @@ async fn insert_citation_mapping_in_tx(
 
     // A pure-link mapping has no sidecar — the link is fully captured by
     // the citation_mappings row above, so there's nothing more to write.
-    if let Some(insert_sidecar) = mapping.sidecar_inserter_fn() {
-        insert_sidecar(tx, citation_mapping_id, mapping.payload_bytes()).await?;
+    if let Some(sidecar_payload) = mapping.sidecar_payload() {
+        sidecars
+            .insert_citation_mapping_sidecar(tx.as_mut(), citation_mapping_id, sidecar_payload)
+            .await?;
     }
     Ok(())
 }
@@ -742,11 +766,14 @@ where
         CitationPlan::Inline {
             cited_object,
             mapping,
+            sidecars,
         } => {
             let citation_mapping_id = uuid::Uuid::now_v7();
-            let cited_object_id = upsert_cited_object_in_tx(tx, &owner, cited_object).await?;
+            let cited_object_id =
+                upsert_cited_object_in_tx(tx, sidecars, &owner, cited_object).await?;
             Some(PendingCitation::Inline {
                 mapping,
+                sidecars,
                 citation_mapping_id,
                 cited_object_id,
             })
@@ -877,6 +904,7 @@ where
             }
             PendingCitation::Inline {
                 mapping,
+                sidecars,
                 citation_mapping_id,
                 cited_object_id,
             } => {
@@ -884,6 +912,7 @@ where
                     tx,
                     &owner,
                     mapping,
+                    sidecars,
                     citation_mapping_id,
                     memory_id,
                     cited_object_id,
@@ -944,7 +973,7 @@ async fn derive_fact_entity_after_sidecar(
             (fact_entity_id, owner_principal_kind, owner_principal_id, owner_org_id,
              schema_id, schema_version, natural_key, current_memory_id, current_created_at)
          VALUES
-            ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ($1, $2, $3, $4, $5, $6, $7::text[], $8, $9)
          ON CONFLICT (owner_principal_kind, owner_principal_id, owner_org_id,
                       schema_id, schema_version, natural_key)
          DO UPDATE
@@ -981,9 +1010,10 @@ async fn derive_fact_entity_after_sidecar(
         .map(proxima_core::FactEntityId::into_inner)
         .ok_or_else(|| {
             StorageError::Internal(format!(
-                "fact_entities conflict race left no row for schema {} v{} natural key {natural_key}",
+                "fact_entities conflict race left no row for schema {} v{} natural key {:?}",
                 draft.schema_id.as_str(),
                 draft.schema_version.into_inner(),
+                natural_key,
             ))
         })?
     };
@@ -1011,21 +1041,21 @@ async fn fact_natural_key_after_sidecar(
     memory_id: uuid::Uuid,
     sidecar_table: &str,
     natural_key_columns: &[String],
-) -> Result<(serde_json::Value, time::OffsetDateTime), StorageError> {
+) -> Result<(Vec<String>, time::OffsetDateTime), StorageError> {
     let sidecar_table = PgIdent::table(sidecar_table)?;
     let natural_key_exprs = natural_key_columns
         .iter()
-        .map(|column| PgIdent::column(column).map(|ident| format!("s.{}", ident.as_str())))
+        .map(|column| PgIdent::column(column).map(|ident| format!("s.{}::text", ident.as_str())))
         .collect::<Result<Vec<_>, _>>()?;
     let natural_key_sql = format!(
-        "SELECT jsonb_build_array({}) AS natural_key, m.created_at
+        "SELECT ARRAY[{}]::text[] AS natural_key, m.created_at
            FROM {} s
            JOIN proxima_core.memories m ON m.memory_id = s.memory_id
           WHERE s.memory_id = $1",
         natural_key_exprs.join(", "),
         sidecar_table.as_str(),
     );
-    sqlx::query_as::<_, (serde_json::Value, time::OffsetDateTime)>(&natural_key_sql)
+    sqlx::query_as::<_, (Vec<String>, time::OffsetDateTime)>(&natural_key_sql)
         .bind(memory_id)
         .fetch_optional(tx.as_mut())
         .await
