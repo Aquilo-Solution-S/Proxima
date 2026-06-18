@@ -9,13 +9,17 @@ use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::{
-    AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen, OrgId, Owner,
-    Principal, Role, SchemaVersion, SourceBatchId, SourceId, StorageError, UserId,
-    canonical_json_bytes,
+    AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen, MemoryId, OrgId,
+    Owner, PayloadKeyBuilder, Principal, Role, SchemaVersion, SidecarPayload, SourceBatchId,
+    SourceId, StorageError, UserId, canonical_json_bytes,
 };
-use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemoryPayloadFuture};
+use proxima_storage_pg::verbs::event_ingest::{EventIngestSidecarFuture, PgFactSidecar};
+use proxima_storage_pg::{
+    PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
+};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use time::Duration;
 use uuid::Uuid;
 
@@ -34,6 +38,10 @@ impl FactPayload for FileRevisionV1 {
     const SCHEMA_ID: &'static str = "proxima-code/file-revision-v1";
     const SCHEMA_VERSION: u32 = 1;
 
+    fn event_key(&self) -> Vec<u8> {
+        file_revision_key(Self::SCHEMA_ID, Self::SCHEMA_VERSION, self)
+    }
+
     fn render(&self) -> String {
         format!("{} @ {}", self.file_path, self.indexed_commit_sha)
     }
@@ -45,6 +53,57 @@ impl FactPayload for FileRevisionV1 {
     fn natural_key_columns() -> &'static [&'static str] {
         &["repo_id", "file_path"]
     }
+}
+
+impl PgFactSidecar for FileRevisionV1 {
+    fn insert_sidecar<'t>(
+        self,
+        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
+        memory_id: MemoryId,
+    ) -> EventIngestSidecarFuture<'t>
+    where
+        Self: 't,
+    {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO proxima_code.file_revision_v1
+                    (memory_id, repo_id, file_path, language, content_sha256,
+                     size_bytes, indexed_commit_sha, state)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            )
+            .bind(memory_id.into_inner())
+            .bind(self.repo_id)
+            .bind(&self.file_path)
+            .bind(self.language.as_deref())
+            .bind(&self.content_sha256)
+            .bind(self.size_bytes)
+            .bind(&self.indexed_commit_sha)
+            .bind(&self.state)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+impl PgMemoryPayload for FileRevisionV1 {
+    fn load_memory_payload(
+        _pool: &sqlx::PgPool,
+        _memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+}
+
+fn file_revision_key(schema_id: &str, schema_version: u32, payload: &FileRevisionV1) -> Vec<u8> {
+    let mut key = PayloadKeyBuilder::new(schema_id, schema_version);
+    key.field_uuid("repo_id", payload.repo_id);
+    key.field_str("file_path", &payload.file_path);
+    key.field_str("indexed_commit_sha", &payload.indexed_commit_sha);
+    key.field_str("content_sha256", &payload.content_sha256);
+    key.field_str("state", &payload.state);
+    key.finish()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +121,16 @@ impl FactPayload for FileRevisionV2 {
     const SCHEMA_ID: &'static str = FileRevisionV1::SCHEMA_ID;
     const SCHEMA_VERSION: u32 = 2;
 
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_uuid("repo_id", self.repo_id);
+        key.field_str("file_path", &self.file_path);
+        key.field_str("indexed_commit_sha", &self.indexed_commit_sha);
+        key.field_str("content_sha256", &self.content_sha256);
+        key.field_str("state", &self.state);
+        key.finish()
+    }
+
     fn render(&self) -> String {
         format!("{} @ {}", self.file_path, self.indexed_commit_sha)
     }
@@ -72,6 +141,47 @@ impl FactPayload for FileRevisionV2 {
 
     fn natural_key_columns() -> &'static [&'static str] {
         &["repo_id", "file_path"]
+    }
+}
+
+impl PgFactSidecar for FileRevisionV2 {
+    fn insert_sidecar<'t>(
+        self,
+        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
+        memory_id: MemoryId,
+    ) -> EventIngestSidecarFuture<'t>
+    where
+        Self: 't,
+    {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO proxima_code.file_revision_v1
+                    (memory_id, repo_id, file_path, language, content_sha256,
+                     size_bytes, indexed_commit_sha, state)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            )
+            .bind(memory_id.into_inner())
+            .bind(self.repo_id)
+            .bind(&self.file_path)
+            .bind(self.language.as_deref())
+            .bind(&self.content_sha256)
+            .bind(self.size_bytes)
+            .bind(&self.indexed_commit_sha)
+            .bind(&self.state)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+impl PgMemoryPayload for FileRevisionV2 {
+    fn load_memory_payload(
+        _pool: &sqlx::PgPool,
+        _memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
+        Box::pin(async { Ok(None) })
     }
 }
 
@@ -94,6 +204,15 @@ impl FactPayload for CodeChunkV1 {
     const SCHEMA_ID: &'static str = "proxima-code/code-chunk-v1";
     const SCHEMA_VERSION: u32 = 1;
 
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_uuid("repo_id", self.repo_id);
+        key.field_str("file_path", &self.file_path);
+        key.field_i32("chunk_index", self.chunk_index);
+        key.field_str("state", &self.state);
+        key.finish()
+    }
+
     fn render(&self) -> String {
         format!(
             "{}:{}-{}",
@@ -110,6 +229,52 @@ impl FactPayload for CodeChunkV1 {
     }
 }
 
+impl PgFactSidecar for CodeChunkV1 {
+    fn insert_sidecar<'t>(
+        self,
+        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
+        memory_id: MemoryId,
+    ) -> EventIngestSidecarFuture<'t>
+    where
+        Self: 't,
+    {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO proxima_code.code_chunk_v1
+                    (memory_id, repo_id, file_path, chunk_index, text, language,
+                     chunk_type, byte_range_start, byte_range_end, line_range_start,
+                     line_range_end, state)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+            )
+            .bind(memory_id.into_inner())
+            .bind(self.repo_id)
+            .bind(&self.file_path)
+            .bind(self.chunk_index)
+            .bind(&self.text)
+            .bind(self.language.as_deref())
+            .bind(&self.chunk_type)
+            .bind(self.byte_range_start)
+            .bind(self.byte_range_end)
+            .bind(self.line_range_start)
+            .bind(self.line_range_end)
+            .bind(&self.state)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+impl PgMemoryPayload for CodeChunkV1 {
+    fn load_memory_payload(
+        _pool: &sqlx::PgPool,
+        _memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct CommitV1 {
     repo_id: Uuid,
@@ -121,12 +286,55 @@ impl FactPayload for CommitV1 {
     const SCHEMA_ID: &'static str = "proxima-code/commit-v1";
     const SCHEMA_VERSION: u32 = 1;
 
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_uuid("repo_id", self.repo_id);
+        key.field_str("sha", &self.sha);
+        key.finish()
+    }
+
     fn render(&self) -> String {
         format!("{} {}", self.sha, self.message)
     }
 
     fn sidecar_table() -> Option<&'static str> {
         Some("proxima_code.commit_v1")
+    }
+}
+
+impl PgFactSidecar for CommitV1 {
+    fn insert_sidecar<'t>(
+        self,
+        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
+        memory_id: MemoryId,
+    ) -> EventIngestSidecarFuture<'t>
+    where
+        Self: 't,
+    {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO proxima_code.commit_v1
+                    (memory_id, repo_id, sha, message)
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(memory_id.into_inner())
+            .bind(self.repo_id)
+            .bind(&self.sha)
+            .bind(&self.message)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+impl PgMemoryPayload for CommitV1 {
+    fn load_memory_payload(
+        _pool: &sqlx::PgPool,
+        _memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
+        Box::pin(async { Ok(None) })
     }
 }
 
@@ -137,6 +345,24 @@ fn registry_for_test() -> FlavorRegistryFrozen {
     registry.add_fact_schema::<CodeChunkV1>();
     registry.add_fact_schema::<CommitV1>();
     registry.freeze()
+}
+
+fn pg_sidecars_for_test() -> PgSidecarRegistryFrozen {
+    let registry = registry_for_test();
+    let mut sidecars = PgSidecarRegistry::new();
+    register_core_pg_sidecars(&mut sidecars);
+    sidecars.add_fact::<FileRevisionV1>();
+    sidecars.add_fact::<FileRevisionV2>();
+    sidecars.add_fact::<CodeChunkV1>();
+    sidecars.add_fact::<CommitV1>();
+    sidecars
+        .freeze_against(registry.schemas())
+        .expect("test PG sidecars match test schemas")
+}
+
+async fn fresh_pg_with_sidecars() -> (PgStorage, String) {
+    let (pg, db_name) = fresh_pg().await;
+    (pg.with_sidecars(pg_sidecars_for_test()), db_name)
 }
 
 async fn create_code_sidecars(pg: &PgStorage) -> Result<(), sqlx::Error> {
@@ -215,7 +441,7 @@ async fn ingest_payload<P>(
     payload: &P,
 ) -> Result<proxima_core::EventIngestOutcome, StorageError>
 where
-    P: FactPayload,
+    P: FactPayload + Clone + Send + Sync + 'static,
 {
     let payload_value =
         serde_json::to_value(payload).map_err(|err| StorageError::Internal(err.to_string()))?;
@@ -224,13 +450,9 @@ where
     let authorized = engine
         .authorize_event_ingest(&authz, Role::SourceIngest, draft)
         .map_err(|err| StorageError::Internal(err.to_string()))?;
-    pg.ingest_event_with_sidecar(
-        &authorized,
-        P::sidecar_table().expect("test payloads have sidecars"),
-        &payload_value,
-        None,
-    )
-    .await
+    let sidecar_payload = SidecarPayload::fact(payload.clone());
+    pg.ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
+        .await
 }
 
 fn file_revision(repo_id: Uuid, file_path: &str, version: &str) -> FileRevisionV1 {
@@ -281,12 +503,16 @@ fn commit(repo_id: Uuid, sha: &str) -> CommitV1 {
     }
 }
 
-fn file_revision_natural_key(repo_id: Uuid, file_path: &str) -> Value {
-    json!([repo_id.to_string(), file_path])
+fn file_revision_natural_key(repo_id: Uuid, file_path: &str) -> Vec<String> {
+    vec![repo_id.to_string(), file_path.to_string()]
 }
 
-fn code_chunk_natural_key(repo_id: Uuid, file_path: &str, chunk_index: i32) -> Value {
-    json!([repo_id.to_string(), file_path, chunk_index])
+fn code_chunk_natural_key(repo_id: Uuid, file_path: &str, chunk_index: i32) -> Vec<String> {
+    vec![
+        repo_id.to_string(),
+        file_path.to_string(),
+        chunk_index.to_string(),
+    ]
 }
 
 async fn memory_fact_entity_id(
@@ -322,7 +548,7 @@ async fn entity_count(pg: &PgStorage) -> Result<i64, sqlx::Error> {
 
 #[tokio::test]
 async fn stateful_ingest_derives_entity_and_sets_memory_fk() {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
     pg.run_migrations().await.expect("migrate core");
     create_code_sidecars(&pg).await.expect("create sidecars");
 
@@ -336,7 +562,7 @@ async fn stateful_ingest_derives_entity_and_sets_memory_fk() {
         let fact_entity_id = memory_fact_entity_id(&pg, outcome.memory_id)
             .await?
             .expect("stateful memory has fact_entity_id");
-        let row: (Value, Uuid) = sqlx::query_as(
+        let row: (Vec<String>, Uuid) = sqlx::query_as(
             "SELECT natural_key, current_memory_id
                FROM proxima_core.fact_entities
               WHERE fact_entity_id = $1",
@@ -370,7 +596,7 @@ async fn stateful_ingest_derives_entity_and_sets_memory_fk() {
 
 #[tokio::test]
 async fn stateless_fact_skips_entity_derivation() {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
     pg.run_migrations().await.expect("migrate core");
     create_code_sidecars(&pg).await.expect("create sidecars");
 
@@ -390,7 +616,7 @@ async fn stateless_fact_skips_entity_derivation() {
 
 #[tokio::test]
 async fn stateful_head_advances_to_newer_version() {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
     pg.run_migrations().await.expect("migrate core");
     create_code_sidecars(&pg).await.expect("create sidecars");
 
@@ -436,7 +662,7 @@ async fn stateful_head_advances_to_newer_version() {
 
 #[tokio::test]
 async fn guarded_upsert_does_not_regress_to_older_created_at() {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
     pg.run_migrations().await.expect("migrate core");
     create_code_sidecars(&pg).await.expect("create sidecars");
 
@@ -495,7 +721,7 @@ async fn guarded_upsert_does_not_regress_to_older_created_at() {
 
 #[tokio::test]
 async fn replay_is_idempotent_and_does_not_mint_or_move_entity() {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
     pg.run_migrations().await.expect("migrate core");
     create_code_sidecars(&pg).await.expect("create sidecars");
 
@@ -512,24 +738,15 @@ async fn replay_is_idempotent_and_does_not_mint_or_move_entity() {
             draft,
         )?;
 
+        let sidecar_payload = SidecarPayload::fact(payload.clone());
         let first = pg
-            .ingest_event_with_sidecar(
-                &authorized,
-                FileRevisionV1::sidecar_table().expect("sidecar table"),
-                &payload_value,
-                None,
-            )
+            .ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
             .await?;
         let fact_entity_id = memory_fact_entity_id(&pg, first.memory_id)
             .await?
             .expect("first row entity");
         let replay = pg
-            .ingest_event_with_sidecar(
-                &authorized,
-                FileRevisionV1::sidecar_table().expect("sidecar table"),
-                &payload_value,
-                None,
-            )
+            .ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
             .await?;
 
         assert!(replay.idempotent_replay);
@@ -554,7 +771,7 @@ async fn replay_is_idempotent_and_does_not_mint_or_move_entity() {
 
 #[tokio::test]
 async fn full_owner_triple_participates_in_entity_identity() {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
     pg.run_migrations().await.expect("migrate core");
     create_code_sidecars(&pg).await.expect("create sidecars");
 
@@ -586,7 +803,7 @@ async fn full_owner_triple_participates_in_entity_identity() {
 
 #[tokio::test]
 async fn schema_version_participates_in_entity_identity() {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
     pg.run_migrations().await.expect("migrate core");
     create_code_sidecars(&pg).await.expect("create sidecars");
 
@@ -626,7 +843,7 @@ async fn schema_version_participates_in_entity_identity() {
 
 #[tokio::test]
 async fn natural_key_values_split_entities() {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
     pg.run_migrations().await.expect("migrate core");
     create_code_sidecars(&pg).await.expect("create sidecars");
 
@@ -656,12 +873,13 @@ async fn natural_key_values_split_entities() {
             .expect("chunk 1 entity");
         assert_ne!(entity_0, entity_1);
 
+        let natural_key = code_chunk_natural_key(repo_id, "src/lib.rs", 1);
         let lookup_1 = pg
             .fact_entity_id_for(
                 &owner,
                 &CodeChunkV1::schema_id(),
                 SchemaVersion::new(CodeChunkV1::SCHEMA_VERSION),
-                &code_chunk_natural_key(repo_id, "src/lib.rs", 1),
+                &natural_key,
             )
             .await?;
         assert_eq!(
@@ -679,7 +897,7 @@ async fn natural_key_values_split_entities() {
 
 #[tokio::test]
 async fn unique_natural_key_guard_rejects_duplicate_entity_row() {
-    let (pg, db_name) = fresh_pg().await;
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
     pg.run_migrations().await.expect("migrate core");
     create_code_sidecars(&pg).await.expect("create sidecars");
 

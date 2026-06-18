@@ -25,8 +25,7 @@ fn stateful_filters_for_schema_returns_all_versions() {
                 column: "state".into(),
                 value: "Tombstone".into(),
             }),
-            json_encoder: None,
-            sidecar_inserter: None,
+            has_typed_ingress: false,
             cited_object_schema: None,
         },
         SchemaInfo {
@@ -40,8 +39,7 @@ fn stateful_filters_for_schema_returns_all_versions() {
                 column: "state".into(),
                 value: "Tombstone".into(),
             }),
-            json_encoder: None,
-            sidecar_inserter: None,
+            has_typed_ingress: false,
             cited_object_schema: None,
         },
         SchemaInfo {
@@ -52,8 +50,7 @@ fn stateful_filters_for_schema_returns_all_versions() {
             sidecar_table: Some("test_schema.stateless_v1".into()),
             natural_key_columns: vec![],
             tombstone: None,
-            json_encoder: None,
-            sidecar_inserter: None,
+            has_typed_ingress: false,
             cited_object_schema: None,
         },
     ]);

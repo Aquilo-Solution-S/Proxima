@@ -1,4 +1,4 @@
-use proxima_core::{AbstractionPayload, FactPayload, proxima_schema_id};
+use proxima_core::{AbstractionPayload, FactPayload, PayloadKeyBuilder, proxima_schema_id};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +42,17 @@ impl FactPayload for ExecutionResultV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("execution-result-v1");
     const SCHEMA_VERSION: u32 = 1;
 
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_uuid("work_requested_memory_id", self.work_requested_memory_id);
+        key.field_uuid("repo_id", self.repo_id);
+        key.field_str("status", self.status.as_str());
+        key.field_str("summary", &self.summary);
+        key.field_str_list("artifact_refs", &self.artifact_refs);
+        key.field_option_str("log_excerpt", self.log_excerpt.as_deref());
+        key.finish()
+    }
+
     fn sidecar_table() -> Option<&'static str> {
         Some("proxima_code.execution_result_v1")
     }
@@ -71,6 +82,17 @@ pub struct TestResultV1 {
 impl FactPayload for TestResultV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("test-result-v1");
     const SCHEMA_VERSION: u32 = 1;
+
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_uuid("test_requested_memory_id", self.test_requested_memory_id);
+        key.field_uuid("repo_id", self.repo_id);
+        key.field_str("status", self.status.as_str());
+        key.field_str("summary", &self.summary);
+        key.field_str_list("artifact_refs", &self.artifact_refs);
+        key.field_option_str("log_excerpt", self.log_excerpt.as_deref());
+        key.finish()
+    }
 
     fn sidecar_table() -> Option<&'static str> {
         Some("proxima_code.test_result_v1")
@@ -102,6 +124,17 @@ impl FactPayload for AcceptanceVerificationV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("acceptance-verification-v1");
     const SCHEMA_VERSION: u32 = 1;
 
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_uuid("work_item_memory_id", self.work_item_memory_id);
+        key.field_str("criterion_key", &self.criterion_key);
+        key.field_str("status", self.status.as_str());
+        key.field_str("summary", &self.summary);
+        key.field_str_list("artifact_refs", &self.artifact_refs);
+        key.field_option_uuid("verifier_memory_id", self.verifier_memory_id);
+        key.finish()
+    }
+
     fn sidecar_table() -> Option<&'static str> {
         Some("proxima_code.acceptance_verification_v1")
     }
@@ -118,6 +151,30 @@ impl FactPayload for AcceptanceVerificationV1 {
             "Acceptance {} {:?}: {}",
             self.criterion_key, self.status, self.summary
         )
+    }
+}
+
+impl WorkResultStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Blocked => "blocked",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+impl AcceptanceVerificationStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+            Self::Skipped => "skipped",
+            Self::Blocked => "blocked",
+        }
     }
 }
 

@@ -6,19 +6,17 @@
 
 use crate::mcp::schema::mcp_tool_schema;
 use crate::verbs::schema::{
-    CitedObjectContentHasherEntry, FactRendererEntry, FlavorRegistryFrozen, MemorySearchProjection,
-    MemorySearchProjectionField, PayloadKind, PayloadValidator, PayloadValidatorEntry, SchemaInfo,
-    SidecarInserter,
+    FlavorRegistryFrozen, MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
+    ProtocolPayload, ProtocolPayloadIngress, ProtocolPayloadIngressEntry, SchemaInfo,
 };
 use crate::{
     AbstractionPayload, CitationMappingPayload, CitedObjectPayload, DependencySatisfactionRule,
     EdgePayload, FactPayload, GoalPayload, McpCallFn, McpTool, McpToolDescriptor, McpToolError,
-    PerspectivePayload, RelationDescriptor, SchemaId, SchemaVersion, core_relation_descriptors,
+    PerspectivePayload, RelationDescriptor, SchemaId, SchemaVersion, SidecarPayload,
+    core_relation_descriptors,
 };
 
-use sqlx::{Postgres, Transaction};
 use std::sync::Arc;
-use uuid::Uuid;
 
 /// Structured per-flavor metadata. Populated by `proxima_flavor!` at
 /// macro-expansion time so the `package_version` and `author` fields
@@ -66,9 +64,7 @@ pub struct FlavorRegistry {
     pub(crate) schemas: Vec<SchemaInfo>,
     pub(crate) search_projections: Vec<MemorySearchProjection>,
     pub(crate) relations: Vec<RelationDescriptor>,
-    pub(crate) validators: Vec<PayloadValidatorEntry>,
-    pub(crate) cited_object_content_hashers: Vec<CitedObjectContentHasherEntry>,
-    pub(crate) fact_renderers: Vec<FactRendererEntry>,
+    pub(crate) protocol_ingress: Vec<ProtocolPayloadIngressEntry>,
     pub(crate) mcp_tools: Vec<McpToolDescriptor>,
     pub(crate) flavors: Vec<FlavorDescriptor>,
     pub(crate) dependency_satisfaction_rules: Vec<(String, Arc<dyn DependencySatisfactionRule>)>,
@@ -80,9 +76,7 @@ impl Default for FlavorRegistry {
             schemas: Vec::new(),
             search_projections: Vec::new(),
             relations: core_relation_descriptors(),
-            validators: Vec::new(),
-            cited_object_content_hashers: Vec::new(),
-            fact_renderers: Vec::new(),
+            protocol_ingress: Vec::new(),
             mcp_tools: Vec::new(),
             flavors: Vec::new(),
             dependency_satisfaction_rules: Vec::new(),
@@ -108,15 +102,15 @@ impl FlavorRegistry {
     }
 
     /// Shared tail for the typed `add_*_schema` methods: records the
-    /// optional search projection, the `SchemaInfo`, and the payload
-    /// validator entry. Callers build the kind-specific `SchemaInfo`;
-    /// `schema_id` / `schema_version` / `kind` for the validator entry
+    /// optional search projection, the `SchemaInfo`, and the protocol
+    /// ingress entry. Callers build the kind-specific `SchemaInfo`;
+    /// `schema_id` / `schema_version` / `kind` for the ingress entry
     /// are read back off it so they cannot drift from the schema.
     fn register_schema(
         &mut self,
         schema_info: SchemaInfo,
         search_projection: Option<crate::SearchProjection>,
-        validate: PayloadValidator,
+        ingress: ProtocolPayloadIngress,
         json_schema: Option<serde_json::Value>,
     ) {
         maybe_add_search_projection(
@@ -128,11 +122,11 @@ impl FlavorRegistry {
         let schema_version = schema_info.schema_version;
         let kind = schema_info.kind;
         self.schemas.push(schema_info);
-        self.validators.push(PayloadValidatorEntry {
+        self.protocol_ingress.push(ProtocolPayloadIngressEntry {
             schema_id,
             schema_version,
             kind,
-            validate,
+            ingress,
             json_schema,
         });
     }
@@ -153,19 +147,13 @@ impl FlavorRegistry {
                     column: t.column.to_string(),
                     value: t.value.to_string(),
                 }),
-                json_encoder: Some(encode_payload_json::<F>),
-                sidecar_inserter: None,
+                has_typed_ingress: true,
                 cited_object_schema: None,
             },
             F::search_projection(),
-            validate_payload_type::<F>,
+            ingest_fact_payload::<F>,
             F::json_schema(),
         );
-        self.fact_renderers.push(FactRendererEntry {
-            schema_id: F::schema_id(),
-            schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
-            render: render_fact_payload::<F>,
-        });
     }
 
     pub fn add_abstraction_schema<A: AbstractionPayload>(&mut self) {
@@ -178,12 +166,11 @@ impl FlavorRegistry {
                 sidecar_table: Some(A::sidecar_table().to_string()),
                 natural_key_columns: vec![],
                 tombstone: None,
-                json_encoder: Some(encode_payload_json::<A>),
-                sidecar_inserter: None,
+                has_typed_ingress: true,
                 cited_object_schema: None,
             },
             A::search_projection(),
-            validate_payload_type::<A>,
+            ingest_abstraction_payload::<A>,
             A::json_schema(),
         );
     }
@@ -198,44 +185,34 @@ impl FlavorRegistry {
                 sidecar_table: Some(P::sidecar_table().to_string()),
                 natural_key_columns: vec![],
                 tombstone: None,
-                json_encoder: Some(encode_payload_json::<P>),
-                sidecar_inserter: None,
+                has_typed_ingress: true,
                 cited_object_schema: None,
             },
             P::search_projection(),
-            validate_payload_type::<P>,
+            ingest_perspective_payload::<P>,
             P::json_schema(),
         );
     }
 
     pub fn add_goal_schema<G: GoalPayload>(&mut self) {
-        // Goal payload sidecar inserters receive the `goal_id` as the
-        // row id argument. This mirrors cited-object/citation mapping
-        // inserters, where the generic UUID is the owning entity id.
-        let (sidecar_table, sidecar_inserter) = match G::sidecar_table() {
-            Some(table) => (
-                Some(table.to_string()),
-                Some(insert_goal_sidecar::<G> as SidecarInserter),
-            ),
-            None => (None, None),
-        };
+        let sidecar_table = G::sidecar_table();
         self.register_schema(
             SchemaInfo {
                 schema_id: G::schema_id(),
                 schema_version: SchemaVersion::new(G::SCHEMA_VERSION),
                 kind: PayloadKind::Goal,
                 filter_keys: vec![],
-                sidecar_table,
+                sidecar_table: sidecar_table.map(std::string::ToString::to_string),
                 natural_key_columns: vec![],
                 tombstone: None,
-                json_encoder: Some(encode_payload_json::<G>),
-                sidecar_inserter,
+                has_typed_ingress: true,
                 cited_object_schema: None,
             },
             None,
-            validate_payload_type::<G>,
+            ingest_goal_payload::<G>,
             G::json_schema(),
         );
+        let _ = sidecar_table;
     }
 
     /// Register a typed `EdgePayload` schema. The descriptor that
@@ -252,12 +229,11 @@ impl FlavorRegistry {
                 sidecar_table: Some(E::sidecar_table().to_string()),
                 natural_key_columns: vec![],
                 tombstone: None,
-                json_encoder: Some(encode_payload_json::<E>),
-                sidecar_inserter: None,
+                has_typed_ingress: true,
                 cited_object_schema: None,
             },
             None,
-            validate_payload_type::<E>,
+            ingest_edge_payload::<E>,
             E::json_schema(),
         );
     }
@@ -272,47 +248,30 @@ impl FlavorRegistry {
                 sidecar_table: Some(C::sidecar_table().to_string()),
                 natural_key_columns: vec![],
                 tombstone: None,
-                json_encoder: Some(encode_payload_json::<C>),
-                sidecar_inserter: Some(insert_cited_object_sidecar::<C>),
+                has_typed_ingress: true,
                 cited_object_schema: None,
             },
             None,
-            validate_payload_type::<C>,
+            ingest_cited_object_payload::<C>,
             C::json_schema(),
         );
-        self.cited_object_content_hashers
-            .push(CitedObjectContentHasherEntry {
-                schema_id: C::schema_id(),
-                schema_version: SchemaVersion::new(C::SCHEMA_VERSION),
-                hash: content_hash_cited_object_payload::<C>,
-            });
     }
 
     pub fn add_citation_mapping_schema<M: CitationMappingPayload>(&mut self) {
-        // A pure-link mapping (`sidecar_table() == None`) writes no
-        // sidecar row, so it registers neither a table nor an inserter.
-        let (sidecar_table, sidecar_inserter) = match M::sidecar_table() {
-            Some(table) => (
-                Some(table.to_string()),
-                Some(insert_citation_mapping_sidecar::<M> as SidecarInserter),
-            ),
-            None => (None, None),
-        };
         self.register_schema(
             SchemaInfo {
                 schema_id: M::schema_id(),
                 schema_version: SchemaVersion::new(M::SCHEMA_VERSION),
                 kind: PayloadKind::CitationMapping,
                 filter_keys: vec![],
-                sidecar_table,
+                sidecar_table: M::sidecar_table().map(std::string::ToString::to_string),
                 natural_key_columns: vec![],
                 tombstone: None,
-                json_encoder: Some(encode_payload_json::<M>),
-                sidecar_inserter,
+                has_typed_ingress: true,
                 cited_object_schema: Some(M::cited_object_schema()),
             },
             None,
-            validate_payload_type::<M>,
+            ingest_citation_mapping_payload::<M>,
             M::json_schema(),
         );
     }
@@ -320,13 +279,13 @@ impl FlavorRegistry {
     /// Register an *opaque* schema — one with no Rust payload type.
     /// The blessed path for content-addressed `CitedObject`s and
     /// structural `CitationMapping`s whose payload is an opaque blob;
-    /// it carries no validator, no JSON encoder, and no JSON schema, so
-    /// `validate_payload` accepts any object payload for it.
+    /// it carries no typed ingress parser and no JSON schema, so
+    /// `ingest_protocol_payload` accepts any object payload for it.
     ///
     /// This is the *only* sanctioned way to register an untyped schema.
-    /// `freeze()` asserts every other schema is fully typed (matching
-    /// `json_encoder` and validator), so a validator dropped by mistake
-    /// fails the build rather than silently disabling validation.
+    /// `freeze()` asserts every other schema has a typed ingress parser,
+    /// so a dropped parser fails the build rather than silently disabling
+    /// validation and typed sidecar construction.
     pub fn add_opaque_schema(
         &mut self,
         schema_id: SchemaId,
@@ -447,38 +406,27 @@ impl FlavorRegistry {
             }
         }
         self.assert_flavor_descriptors();
-        // Every schema is either typed (a `json_encoder` and a matching
-        // validator) or opaque (neither). A typed schema whose validator
-        // was dropped would make `validate_payload` silently accept any
-        // payload — catch the drift here, not at first write.
+        // Every schema is either typed (a protocol-ingress parser) or
+        // opaque. A typed schema whose ingress parser was dropped would
+        // make `ingest_protocol_payload` silently accept any payload —
+        // catch the drift here, not at first write.
         for schema in &self.schemas {
-            let has_validator = self.validators.iter().any(|v| {
+            let has_ingress = self.protocol_ingress.iter().any(|v| {
                 v.schema_id == schema.schema_id
                     && v.schema_version == schema.schema_version
                     && v.kind == schema.kind
             });
-            let has_fact_renderer = self.fact_renderers.iter().any(|r| {
-                r.schema_id == schema.schema_id && r.schema_version == schema.schema_version
-            });
             assert!(
-                schema.json_encoder.is_some() == has_validator,
-                "schema {:?} v{:?} {:?}: a typed schema needs both a \
-                 json_encoder and a validator, an opaque schema neither \
-                 - found json_encoder={}, validator={}",
+                schema.has_typed_ingress == has_ingress,
+                "schema {:?} v{:?} {:?}: a typed schema needs a \
+                 protocol-ingress parser, an opaque schema has none \
+                 - found has_typed_ingress={}, ingress_entry={}",
                 schema.schema_id.as_str(),
                 schema.schema_version.into_inner(),
                 schema.kind,
-                schema.json_encoder.is_some(),
-                has_validator,
+                schema.has_typed_ingress,
+                has_ingress,
             );
-            if schema.kind == PayloadKind::Fact && schema.json_encoder.is_some() {
-                assert!(
-                    has_fact_renderer,
-                    "Fact schema {:?} v{:?} has no typed renderer",
-                    schema.schema_id.as_str(),
-                    schema.schema_version.into_inner(),
-                );
-            }
         }
         let mut seen_schemas = std::collections::HashSet::new();
         for schema in &self.schemas {
@@ -582,90 +530,105 @@ fn maybe_add_search_projection(
     });
 }
 
-fn validate_payload_type<T>(value: &serde_json::Value) -> Result<(), String>
+fn decode_protocol_payload<T>(value: &serde_json::Value) -> Result<T, String>
 where
     T: serde::de::DeserializeOwned,
 {
-    serde_json::from_value::<T>(value.clone())
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    serde_json::from_value::<T>(value.clone()).map_err(|e| e.to_string())
 }
 
-fn encode_payload_json<T>(value: &serde_json::Value) -> Result<Vec<u8>, String>
+fn ingest_fact_payload<F>(value: &serde_json::Value) -> Result<ProtocolPayload, String>
 where
-    T: serde::Serialize + serde::de::DeserializeOwned,
+    F: FactPayload + Send + Sync,
 {
-    let typed = serde_json::from_value::<T>(value.clone()).map_err(|e| e.to_string())?;
-    let value = serde_json::to_value(typed).map_err(|e| e.to_string())?;
-    Ok(crate::canonical_json_bytes(&value))
-}
-
-fn decode_payload_json<T>(bytes: &[u8], schema_id: &str) -> Result<T, crate::StorageError>
-where
-    T: serde::de::DeserializeOwned,
-{
-    serde_json::from_slice(bytes).map_err(|e| {
-        crate::StorageError::Internal(format!("decode sidecar payload {schema_id}: {e}"))
+    let payload = decode_protocol_payload::<F>(value)?;
+    let key_bytes = Some(payload.event_key());
+    let rendered_text = Some(payload.render());
+    Ok(ProtocolPayload {
+        key_bytes,
+        sidecar_payload: SidecarPayload::fact(payload),
+        rendered_text,
+        content_hash: None,
     })
 }
 
-fn insert_cited_object_sidecar<'t, C>(
-    tx: &'t mut Transaction<'_, Postgres>,
-    sidecar_row_id: Uuid,
-    payload_bytes: &'t [u8],
-) -> futures::future::BoxFuture<'t, Result<(), crate::StorageError>>
+fn ingest_abstraction_payload<A>(value: &serde_json::Value) -> Result<ProtocolPayload, String>
 where
-    C: CitedObjectPayload,
+    A: AbstractionPayload + Send + Sync,
 {
-    Box::pin(async move {
-        let payload = decode_payload_json::<C>(payload_bytes, C::SCHEMA_ID)?;
-        payload.sidecar_insert(tx, sidecar_row_id).await
+    let payload = decode_protocol_payload::<A>(value)?;
+    Ok(ProtocolPayload {
+        key_bytes: None,
+        sidecar_payload: SidecarPayload::abstraction(payload),
+        rendered_text: None,
+        content_hash: None,
     })
 }
 
-fn content_hash_cited_object_payload<C>(
-    payload_bytes: &[u8],
-) -> Result<[u8; 32], crate::StorageError>
+fn ingest_perspective_payload<P>(value: &serde_json::Value) -> Result<ProtocolPayload, String>
 where
-    C: CitedObjectPayload,
+    P: PerspectivePayload + Send + Sync,
 {
-    let payload = decode_payload_json::<C>(payload_bytes, C::SCHEMA_ID)?;
-    Ok(payload.idempotency_key())
+    let payload = decode_protocol_payload::<P>(value)?;
+    Ok(ProtocolPayload {
+        key_bytes: None,
+        sidecar_payload: SidecarPayload::perspective(payload),
+        rendered_text: None,
+        content_hash: None,
+    })
 }
 
-fn render_fact_payload<F>(payload_bytes: &[u8]) -> Result<String, crate::StorageError>
-where
-    F: FactPayload,
-{
-    let payload = decode_payload_json::<F>(payload_bytes, F::SCHEMA_ID)?;
-    Ok(payload.render())
-}
-
-fn insert_goal_sidecar<'t, G>(
-    tx: &'t mut Transaction<'_, Postgres>,
-    goal_id: Uuid,
-    payload_bytes: &'t [u8],
-) -> futures::future::BoxFuture<'t, Result<(), crate::StorageError>>
+fn ingest_goal_payload<G>(value: &serde_json::Value) -> Result<ProtocolPayload, String>
 where
     G: GoalPayload,
 {
-    Box::pin(async move {
-        let payload = decode_payload_json::<G>(payload_bytes, G::SCHEMA_ID)?;
-        payload.sidecar_insert(tx, goal_id).await
+    let payload = decode_protocol_payload::<G>(value)?;
+    let key_bytes = Some(payload.goal_key());
+    Ok(ProtocolPayload {
+        key_bytes,
+        sidecar_payload: SidecarPayload::goal(payload),
+        rendered_text: None,
+        content_hash: None,
     })
 }
 
-fn insert_citation_mapping_sidecar<'t, M>(
-    tx: &'t mut Transaction<'_, Postgres>,
-    sidecar_row_id: Uuid,
-    payload_bytes: &'t [u8],
-) -> futures::future::BoxFuture<'t, Result<(), crate::StorageError>>
+fn ingest_edge_payload<E>(value: &serde_json::Value) -> Result<ProtocolPayload, String>
+where
+    E: EdgePayload + Send + Sync,
+{
+    let payload = decode_protocol_payload::<E>(value)?;
+    Ok(ProtocolPayload {
+        key_bytes: None,
+        sidecar_payload: SidecarPayload::edge(payload),
+        rendered_text: None,
+        content_hash: None,
+    })
+}
+
+fn ingest_cited_object_payload<C>(value: &serde_json::Value) -> Result<ProtocolPayload, String>
+where
+    C: CitedObjectPayload,
+{
+    let payload = decode_protocol_payload::<C>(value)?;
+    let content_hash = Some(payload.idempotency_key());
+    Ok(ProtocolPayload {
+        key_bytes: None,
+        sidecar_payload: SidecarPayload::cited_object(payload),
+        rendered_text: None,
+        content_hash,
+    })
+}
+
+fn ingest_citation_mapping_payload<M>(value: &serde_json::Value) -> Result<ProtocolPayload, String>
 where
     M: CitationMappingPayload,
 {
-    Box::pin(async move {
-        let payload = decode_payload_json::<M>(payload_bytes, M::SCHEMA_ID)?;
-        payload.sidecar_insert(tx, sidecar_row_id).await
+    let payload = decode_protocol_payload::<M>(value)?;
+    Ok(ProtocolPayload {
+        key_bytes: None,
+        sidecar_payload: SidecarPayload::citation_mapping(payload),
+        rendered_text: None,
+        content_hash: None,
     })
 }
 

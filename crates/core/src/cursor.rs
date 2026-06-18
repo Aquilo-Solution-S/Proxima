@@ -1,7 +1,7 @@
 //! Opaque source-decoded cursor.
 //!
-//! Sources own the encoded format (json, bincode, sha, etc.). The
-//! engine treats the bytes as opaque and round-trips them verbatim.
+//! Sources own the encoded format. The engine treats the bytes as
+//! opaque and round-trips them verbatim.
 //!
 //! v1 keeps the cursor in-memory at the call site (bin or test);
 //! persistence to a `source_cursors` table is a follow-up once

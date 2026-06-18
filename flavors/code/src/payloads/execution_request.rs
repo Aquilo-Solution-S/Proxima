@@ -1,4 +1,4 @@
-use proxima_core::{FactPayload, proxima_schema_id};
+use proxima_core::{FactPayload, PayloadKeyBuilder, proxima_schema_id};
 use serde::{Deserialize, Serialize};
 
 /// Dispatch-boundary Fact: a planner requested implementation work for
@@ -15,6 +15,13 @@ pub struct WorkRequestedV1 {
 impl FactPayload for WorkRequestedV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("work-requested-v1");
     const SCHEMA_VERSION: u32 = 1;
+
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_uuid("repo_id", self.repo_id);
+        key.field_str("request_key", &self.request_key);
+        key.finish()
+    }
 
     fn sidecar_table() -> Option<&'static str> {
         Some("proxima_code.work_requested_v1")

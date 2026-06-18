@@ -9,7 +9,7 @@ use crate::change_event::EntityRef;
 use crate::personality::PersonalityInstanceId;
 use crate::verbs::goal_write::GoalState;
 use crate::verbs::schema::SchemaTombstone;
-use crate::{GoalId, MemoryId, Owner, Principal, SchemaId, SchemaVersion};
+use crate::{GoalId, MemoryId, Owner, Principal, SchemaId, SchemaVersion, SidecarPayload};
 
 /// Re-export the canonical `EntityKind` from `change_event` so query
 /// callers don't need a second import path. The duplicate
@@ -226,7 +226,7 @@ pub struct QueryRequest {
     #[serde(default = "default_personality_root_filter")]
     pub personality_roots: PersonalityRootFilter,
     pub limit: u32,
-    /// Include typed payload bytes in returned rows. Broad graph snapshots can
+    /// Include typed payload projections in returned rows. Broad graph snapshots can
     /// set this false and hydrate selected IDs later.
     #[serde(default = "default_include_payloads")]
     pub include_payloads: bool,
@@ -269,18 +269,16 @@ impl QueryRequest {
 
 /// Snapshot of a memory row. Goal rows have their own shape
 /// (M2+); not modelled here.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryRow {
     pub id: MemoryId,
     pub kind: EntityKind,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub owner: Owner,
-    /// Canonical JSON projection of the sidecar row, populated by storage at read
-    /// time. Empty when the schema has no sidecar or when an
-    /// identity-only query mode is added.
-    /// Wire-only field — never persisted (docs/07).
-    pub payload: Vec<u8>,
+    /// Typed sidecar projection populated by storage at read time. Protocol
+    /// adapters serialize it at the transport boundary.
+    pub payload: Option<SidecarPayload>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -308,7 +306,7 @@ pub struct EdgeRow {
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryResponse {
     pub memories: Vec<MemoryRow>,
     pub goals: Vec<GoalRow>,

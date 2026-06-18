@@ -4,7 +4,7 @@ mod common;
 
 use common::{ConstantEmbedding, drop_db, fresh_pg};
 use proxima_core::engine::Engine;
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
+use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
     AuthPath, AuthzContext, FlavorRegistry, OrgId, Owner, PersonalityInstanceId, Principal, UserId,
 };
@@ -37,7 +37,6 @@ async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn
         .expect("registered tool");
     let output = (descriptor.call)(
         McpToolCtx {
-            pool: pg.pool().clone(),
             owner: owner.clone(),
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(Arc::new(HandleTable::new())),
@@ -52,6 +51,7 @@ async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn
             },
             caller_self_perspective: None,
             master_token_id: None,
+            extensions: McpToolExtensions::with(pg.pool().clone()),
             engine: Some(engine),
         },
         json!({

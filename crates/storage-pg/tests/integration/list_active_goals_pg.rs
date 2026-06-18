@@ -117,7 +117,6 @@ async fn link_goal_to_self(
             authorship_owner_memory_id: Some(self_id.into_inner()),
             owner,
         },
-        None,
     )
     .await?;
     tx.commit().await?;

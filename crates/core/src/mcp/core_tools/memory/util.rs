@@ -1,13 +1,4 @@
-use crate::{McpToolError, Owner, OwnerPrincipalKind};
-
-pub fn owner_principal(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid) {
-    owner.principal.columns()
-}
-
-#[allow(clippy::needless_pass_by_value)]
-pub fn map_storage(error: sqlx::Error) -> McpToolError {
-    McpToolError::Storage(crate::StorageError::Internal(error.to_string()))
-}
+use crate::McpToolError;
 
 pub fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, McpToolError> {
     if tags.len() > 16 {

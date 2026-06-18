@@ -2,8 +2,12 @@ use proxima_core::{AbstractionPayload, proxima_schema_id};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, sqlx::Type)]
 #[serde(rename_all = "snake_case")]
+#[sqlx(
+    type_name = "proxima_code.execution_plan_item_kind",
+    rename_all = "snake_case"
+)]
 pub enum CodeExecutionPlanItemKind {
     Work,
     Test,

@@ -19,13 +19,140 @@ use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
 use proxima_core::{
-    EntityKind, MemoryId, Owner, Principal, RegisteredRelation, RelationClass, SchemaId,
-    SchemaVersion, SourceBatchId, SourceId, WakeEntryGoalScope,
+    AbstractionPayload, EntityKind, FlavorRegistry, MemoryId, Owner, PerspectivePayload, Principal,
+    RegisteredRelation, RelationClass, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId,
+    SourceId, StorageError, WakeEntryGoalScope,
+};
+use proxima_storage_pg::sidecars::{
+    PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture,
+};
+use proxima_storage_pg::{
+    PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
 };
 use sqlx::Executor;
+use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use proxima_core::EdgeAuthorshipKind;
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct PersonalityOutputV1 {
+    label: String,
+}
+
+impl AbstractionPayload for PersonalityOutputV1 {
+    const SCHEMA_ID: &'static str = "proxima-test/output-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "proxima_test.personality_output_v1"
+    }
+}
+
+impl PerspectivePayload for PersonalityOutputV1 {
+    const SCHEMA_ID: &'static str = "proxima-test/output-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "proxima_test.personality_output_v1"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct EngineerSelfOutputV1 {
+    label: String,
+}
+
+impl PerspectivePayload for EngineerSelfOutputV1 {
+    const SCHEMA_ID: &'static str = "proxima-test/engineer-self-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "proxima_test.personality_output_v1"
+    }
+}
+
+impl PgMemorySidecar for PersonalityOutputV1 {
+    fn insert_memory_sidecar<'t>(
+        &'t self,
+        tx: &'t mut Transaction<'_, Postgres>,
+        memory_id: MemoryId,
+    ) -> PgSidecarFuture<'t> {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO proxima_test.personality_output_v1 (memory_id, label)
+                 VALUES ($1, $2)",
+            )
+            .bind(memory_id.into_inner())
+            .bind(&self.label)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+impl PgMemoryPayload for PersonalityOutputV1 {
+    fn load_memory_payload(
+        _pool: &sqlx::PgPool,
+        _memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+}
+
+impl PgMemorySidecar for EngineerSelfOutputV1 {
+    fn insert_memory_sidecar<'t>(
+        &'t self,
+        tx: &'t mut Transaction<'_, Postgres>,
+        memory_id: MemoryId,
+    ) -> PgSidecarFuture<'t> {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO proxima_test.personality_output_v1 (memory_id, label)
+                 VALUES ($1, $2)",
+            )
+            .bind(memory_id.into_inner())
+            .bind(&self.label)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+impl PgMemoryPayload for EngineerSelfOutputV1 {
+    fn load_memory_payload(
+        _pool: &sqlx::PgPool,
+        _memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+}
+
+fn personality_pg_sidecars() -> PgSidecarRegistryFrozen {
+    let mut registry = FlavorRegistry::new();
+    registry.add_abstraction_schema::<PersonalityOutputV1>();
+    registry.add_perspective_schema::<PersonalityOutputV1>();
+    registry.add_perspective_schema::<EngineerSelfOutputV1>();
+    let registry = registry.freeze();
+
+    let mut sidecars = PgSidecarRegistry::new();
+    register_core_pg_sidecars(&mut sidecars);
+    sidecars.add_abstraction::<PersonalityOutputV1>();
+    sidecars.add_perspective::<PersonalityOutputV1>();
+    sidecars.add_perspective::<EngineerSelfOutputV1>();
+    sidecars
+        .freeze_against(registry.schemas())
+        .expect("personality test PG sidecars match schemas")
+}
+
+async fn fresh_pg_with_personality_sidecars() -> (PgStorage, String) {
+    let (pg, db) = fresh_pg().await;
+    (pg.with_sidecars(personality_pg_sidecars()), db)
+}
 
 async fn apply_personality_output_sidecar(pool: &sqlx::PgPool) -> sqlx::Result<()> {
     pool.execute(
@@ -92,7 +219,7 @@ async fn current_root_perspective_memory_id(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn personality_wake_schema_replaces_legacy_tables() {
-    let (pg, db) = fresh_pg().await;
+    let (pg, db) = fresh_pg_with_personality_sidecars().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -177,7 +304,7 @@ async fn personality_wake_schema_replaces_legacy_tables() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn personality_wake_schema_enforces_promille() {
-    let (pg, db) = fresh_pg().await;
+    let (pg, db) = fresh_pg_with_personality_sidecars().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -216,7 +343,7 @@ async fn personality_wake_schema_enforces_promille() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn personality_wake_storage_round_trip() {
-    let (pg, db) = fresh_pg().await;
+    let (pg, db) = fresh_pg_with_personality_sidecars().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -301,7 +428,7 @@ async fn personality_wake_storage_round_trip() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn list_personality_instances_populates_wake_entries() {
-    let (pg, db) = fresh_pg().await;
+    let (pg, db) = fresh_pg_with_personality_sidecars().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -377,12 +504,30 @@ fn memory_draft_with_schema(
     label: &str,
     provenance: Vec<MemoryId>,
 ) -> PersonalityMemoryDraft {
+    let sidecar_payload = match (kind, schema_id) {
+        (PersonalityMemoryKind::Abstraction, "proxima-test/output-v1") => {
+            SidecarPayload::abstraction(PersonalityOutputV1 {
+                label: label.to_string(),
+            })
+        }
+        (PersonalityMemoryKind::Perspective, "proxima-test/output-v1") => {
+            SidecarPayload::perspective(PersonalityOutputV1 {
+                label: label.to_string(),
+            })
+        }
+        (PersonalityMemoryKind::Perspective, "proxima-test/engineer-self-v1") => {
+            SidecarPayload::perspective(EngineerSelfOutputV1 {
+                label: label.to_string(),
+            })
+        }
+        other => panic!("unsupported personality test payload: {other:?}"),
+    };
     PersonalityMemoryDraft {
         kind,
         schema_id: SchemaId::new(schema_id.into()),
         schema_version: SchemaVersion::new(1),
         text: label.into(),
-        typed_payload: serde_json::json!({ "label": label }),
+        sidecar_payload,
         provenance,
         embedding: padded_embedding([0.1, 0.2, 0.3]),
         embedding_model_id: "test-embed".into(),
@@ -397,7 +542,7 @@ fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn load_perspective_heads_returns_current_same_personality_learned_heads() {
-    let (pg, db) = fresh_pg().await;
+    let (pg, db) = fresh_pg_with_personality_sidecars().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -439,7 +584,6 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
                     "old perspective",
                     Vec::new(),
                 )],
-                sidecar_table: "proxima_test.personality_output_v1",
             })
             .await?;
         let second = pg
@@ -458,7 +602,6 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
                     "current perspective",
                     Vec::new(),
                 )],
-                sidecar_table: "proxima_test.personality_output_v1",
             })
             .await?;
         pg.append_personality_memories(&PersonalityWriteRequest {
@@ -477,7 +620,6 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
                 "legacy self perspective",
                 Vec::new(),
             )],
-            sidecar_table: "proxima_test.personality_output_v1",
         })
         .await?;
 
@@ -497,7 +639,6 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
                 "sibling perspective",
                 Vec::new(),
             )],
-            sidecar_table: "proxima_test.personality_output_v1",
         })
         .await?;
 
@@ -508,10 +649,12 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
         let sidecars = vec![
             SidecarSpec {
                 schema_id: SchemaId::new("proxima-test/output-v1".into()),
+                schema_version: SchemaVersion::new(1),
                 sidecar_table: "proxima_test.personality_output_v1".into(),
             },
             SidecarSpec {
                 schema_id: SchemaId::new("proxima-test/engineer-self-v1".into()),
+                schema_version: SchemaVersion::new(1),
                 sidecar_table: "proxima_test.personality_output_v1".into(),
             },
         ];
@@ -536,7 +679,7 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
 
 #[tokio::test(flavor = "multi_thread")]
 async fn personality_provenance_edges_use_operator_authorship() {
-    let (pg, db) = fresh_pg().await;
+    let (pg, db) = fresh_pg_with_personality_sidecars().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -580,7 +723,6 @@ async fn personality_provenance_edges_use_operator_authorship() {
                     "abstraction",
                     vec![fact.memory_id],
                 )],
-                sidecar_table: "proxima_test.personality_output_v1",
             })
             .await?;
         let abstraction_id = abstraction.memory_ids[0];
@@ -601,7 +743,6 @@ async fn personality_provenance_edges_use_operator_authorship() {
                     "perspective",
                     vec![abstraction_id],
                 )],
-                sidecar_table: "proxima_test.personality_output_v1",
             })
             .await?;
 
@@ -641,7 +782,7 @@ async fn personality_provenance_edges_use_operator_authorship() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn personality_provenance_skips_perspective_context_targets() {
-    let (pg, db) = fresh_pg().await;
+    let (pg, db) = fresh_pg_with_personality_sidecars().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -684,7 +825,6 @@ async fn personality_provenance_skips_perspective_context_targets() {
                     "abstraction with perspective context",
                     vec![fact.memory_id, root_id],
                 )],
-                sidecar_table: "proxima_test.personality_output_v1",
             })
             .await?;
         let abstraction_id = outcome.memory_ids[0];
@@ -716,7 +856,7 @@ async fn personality_provenance_skips_perspective_context_targets() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn personality_authored_edge_links_root_to_emitted_memory() {
-    let (pg, db) = fresh_pg().await;
+    let (pg, db) = fresh_pg_with_personality_sidecars().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -760,7 +900,6 @@ async fn personality_authored_edge_links_root_to_emitted_memory() {
                     "abstraction",
                     vec![fact.memory_id],
                 )],
-                sidecar_table: "proxima_test.personality_output_v1",
             })
             .await?;
         let abstraction_id = abstraction.memory_ids[0];
@@ -781,7 +920,6 @@ async fn personality_authored_edge_links_root_to_emitted_memory() {
                     "perspective",
                     vec![abstraction_id],
                 )],
-                sidecar_table: "proxima_test.personality_output_v1",
             })
             .await?;
         let perspective_id = perspective.memory_ids[0];

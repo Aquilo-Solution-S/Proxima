@@ -7,7 +7,6 @@ use proxima_code::{
 };
 use proxima_core::{AbstractionPayload, FactPayload, Owner, Principal, SourceBatchId};
 use proxima_pg_testkit::drop_db;
-use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -72,15 +71,15 @@ fn commit(repo_id: Uuid) -> CommitV1 {
     }
 }
 
-fn file_revision_key(repo_id: Uuid, file_path: &str) -> Value {
-    json!([repo_id.to_string(), file_path])
+fn file_revision_key(repo_id: Uuid, file_path: &str) -> Vec<String> {
+    vec![repo_id.to_string(), file_path.to_string()]
 }
 
 async fn fact_entity_rows(
     pool: &PgPool,
     owner: &Owner,
     schema_id: &str,
-    natural_key: &Value,
+    natural_key: &[String],
 ) -> Result<Vec<(Uuid, Uuid)>, sqlx::Error> {
     let (kind, principal_id, org_id) = owner_cols(owner);
     sqlx::query_as(

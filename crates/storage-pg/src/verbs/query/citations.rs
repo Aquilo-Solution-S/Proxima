@@ -4,11 +4,13 @@ use proxima_core::{FactEntityId, MemoryId, Owner, SchemaId, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
+use crate::sidecars::PgSidecarRegistryFrozen;
 use crate::verbs::consolidate::load_memory_by_id;
 use crate::verbs::query::resolve_head;
 
 pub(crate) async fn facts_citing_object(
     pool: &PgPool,
+    pg_sidecars: &PgSidecarRegistryFrozen,
     owner: &Owner,
     cited_object_id: uuid::Uuid,
     sidecars: &[SidecarSpec],
@@ -41,8 +43,15 @@ pub(crate) async fn facts_citing_object(
 
     let mut snapshots = Vec::with_capacity(memory_ids.len());
     for memory_id in memory_ids {
-        if let Some(snapshot) =
-            load_memory_by_id(pool, owner, MemoryId::new(memory_id), None, sidecars).await?
+        if let Some(snapshot) = load_memory_by_id(
+            pool,
+            pg_sidecars,
+            owner,
+            MemoryId::new(memory_id),
+            None,
+            sidecars,
+        )
+        .await?
         {
             snapshots.push(snapshot);
         }

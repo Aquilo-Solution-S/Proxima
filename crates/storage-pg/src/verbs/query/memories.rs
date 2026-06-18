@@ -1,17 +1,20 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
+use futures_util::future::try_join_all;
 use proxima_core::personality::ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID;
 use proxima_core::verbs::query::{
-    EntityKind, MemoryRow, PersonalityRootFilter, QueryRequest, QueryResponse, SupersessionStatus,
+    EntityKind, PersonalityRootFilter, QueryRequest, QueryResponse, SupersessionStatus,
     TombstoneFilter,
 };
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
-use proxima_core::{OwnerPrincipalKind, StorageError};
+use proxima_core::{
+    MemoryId, OwnerPrincipalKind, SchemaId, SchemaVersion, SidecarPayload, StorageError,
+};
 use sqlx::PgPool;
 
 use crate::error::internal;
-use crate::pg_ident::PgIdent;
+use crate::sidecars::{PgSidecarKey, PgSidecarRegistryFrozen};
 
 use super::edges::query_edges;
 use super::goals::query_goals;
@@ -27,6 +30,7 @@ struct StatefulSqlParams {
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn query_memories(
     pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
     req: &QueryRequest,
     schemas: &[SchemaInfo],
 ) -> Result<QueryResponse, StorageError> {
@@ -53,37 +57,13 @@ pub(crate) async fn query_memories(
     let stateful = validated_stateful_filters(req)?;
     let root_schema_ids = active_root_schema_ids(req, schemas);
 
-    // Build payload projection: for each F/A/P schema with a sidecar
-    // table, LEFT JOIN the sidecar and emit a CASE expression that
-    // picks the matching row value for JSON encoding.
-    //
-    // Edge sidecars are keyed on `edge_id`, not `memory_id` — they
-    // don't participate in memory queries. Goal sidecars don't either:
-    // Goals are a distinct entity (AGENTS.md invariant 11), and goal
-    // queries short-circuit above.
-    let schemas_with_sidecar: Vec<&SchemaInfo> = if req.include_payloads {
-        schemas
-            .iter()
-            .filter(|s| {
-                s.sidecar_table.is_some()
-                    && matches!(
-                        s.kind,
-                        PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
-                    )
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-
     let mut sql = String::from(
         "SELECT m.memory_id, m.owner_principal_kind, m.owner_principal_id, \
-                m.owner_org_id, m.schema_id, m.schema_version, m.kind,",
+                m.owner_org_id, m.schema_id, m.schema_version, m.kind \
+         FROM proxima_core.memories m",
     );
 
     // Bindings: $1=owner_kind, $2=owner_principal_id.
-    // Schema-id literals for the payload-projection CASE always come
-    // after optional filters.
     let mut next_param = 3;
     let schema = schema_id_filter.as_ref().map(|_| {
         let param = next_param;
@@ -102,55 +82,9 @@ pub(crate) async fn query_memories(
         next_param += 1;
         param
     });
-    let case_param_base = next_param;
-
-    // If there are schemas with sidecars, add the payload_json CASE expression.
-    // Otherwise, just add NULL as payload_json.
-    if schemas_with_sidecar.is_empty() {
-        sql.push_str(" NULL AS payload_json");
-    } else {
-        sql.push_str(" CASE");
-        for (idx, schema) in schemas_with_sidecar.iter().enumerate() {
-            let sidecar_table = schema.sidecar_table.as_ref().unwrap();
-            PgIdent::table(sidecar_table)?;
-            let alias = format!("s_{idx}");
-            write!(
-                sql,
-                " WHEN m.schema_id = ${} AND m.schema_version = ${} \
-                  THEN row_to_json({alias})::text",
-                case_param_base + (idx * 2),
-                case_param_base + (idx * 2) + 1,
-                alias = alias
-            )
-            .expect("write to String is infallible");
-        }
-        sql.push_str(" ELSE NULL END AS payload_json");
-    }
-
-    sql.push_str(
-        " \
-         FROM proxima_core.memories m",
-    );
-
-    // Add LEFT JOINs for each schema with a sidecar table
-    for (idx, schema) in schemas_with_sidecar.iter().enumerate() {
-        let sidecar_table = PgIdent::table(schema.sidecar_table.as_ref().unwrap())?;
-        let alias = format!("s_{idx}");
-        write!(
-            sql,
-            " LEFT JOIN {sidecar_table} {alias} ON {alias}.memory_id = m.memory_id",
-            sidecar_table = sidecar_table.as_str(),
-        )
-        .expect("write to String is infallible");
-    }
-
     // The stateful JOINs (for head-by-natural-key filtering) use
-    // separate alias to avoid colliding with the payload JOINs. We
-    // use explicit `ON sf_i.memory_id = m.memory_id` rather than
-    // `USING (memory_id)` because the payload LEFT JOINs above each
-    // contribute their own `memory_id` to the left side, and
-    // `USING` would barf with "common column name appears more than
-    // once".
+    // explicit `ON sf_i.memory_id = m.memory_id` so generated aliases
+    // stay unambiguous.
     for (idx, sf) in stateful.iter().enumerate() {
         let alias = stateful_alias(idx);
         write!(
@@ -199,20 +133,19 @@ pub(crate) async fn query_memories(
     if !root_schema_ids.is_empty() {
         q = q.bind(root_schema_ids);
     }
-    // Bind (schema_id, schema_version) values for the CASE expression
-    // in payload projection. Multiple schema versions can share the
-    // same schema_id while living in different sidecar tables.
-    for schema in &schemas_with_sidecar {
-        q = q.bind(schema.schema_id.as_str().to_string());
-        q = q.bind(schema.schema_version.into_inner().cast_signed());
-    }
 
     let rows: Vec<MemoryRowDb> = q.fetch_all(pool).await.map_err(internal)?;
 
-    let memories: Vec<MemoryRow> = rows
-        .into_iter()
-        .map(|row| memory_row_from_db(row, schemas))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut payloads = if req.include_payloads {
+        load_row_payloads_batch(pool, sidecars, &rows).await?
+    } else {
+        HashMap::new()
+    };
+    let mut memories = Vec::with_capacity(rows.len());
+    for row in rows {
+        let payload = payloads.remove(&MemoryId::new(row.memory_id));
+        memories.push(memory_row_from_db(row, payload)?);
+    }
 
     let goals = if req.entity_kind.is_none() || matches!(req.entity_kind, Some(EntityKind::Goal)) {
         query_goals(
@@ -247,6 +180,44 @@ pub(crate) async fn query_memories(
         edges,
         seq_high_water,
     })
+}
+
+async fn load_row_payloads_batch(
+    pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
+    rows: &[MemoryRowDb],
+) -> Result<HashMap<MemoryId, SidecarPayload>, StorageError> {
+    let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
+    for row in rows {
+        let schema_version = u32::try_from(row.schema_version).map_err(|_| {
+            StorageError::Internal(format!(
+                "invalid memory schema_version {} for memory {}",
+                row.schema_version, row.memory_id
+            ))
+        })?;
+        let kind = match row.kind.unwrap_or(EntityKind::Fact) {
+            EntityKind::Fact => PayloadKind::Fact,
+            EntityKind::Abstraction => PayloadKind::Abstraction,
+            EntityKind::Perspective => PayloadKind::Perspective,
+            EntityKind::Goal => continue,
+        };
+        let key = PgSidecarKey::new(
+            kind,
+            SchemaId::new(row.schema_id.clone()),
+            SchemaVersion::new(schema_version),
+        );
+        if sidecars.contains(&key) {
+            ids_by_key
+                .entry(key)
+                .or_default()
+                .push(MemoryId::new(row.memory_id));
+        }
+    }
+    let batches = ids_by_key.into_iter().map(|(key, ids)| async move {
+        sidecars.load_memory_payloads_batch(pool, &key, &ids).await
+    });
+    let rows = try_join_all(batches).await?;
+    Ok(rows.into_iter().flatten().collect())
 }
 
 pub(super) async fn visible_ids_for(

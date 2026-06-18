@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 #[cfg(test)]
 use proxima_core::AuthPath;
-use proxima_core::mcp::{McpAuthorContext, McpToolCtx, McpToolError, OutputMode};
+use proxima_core::mcp::{
+    McpAuthorContext, McpToolCtx, McpToolError, McpToolExtensions, OutputMode,
+};
 use proxima_core::{AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner};
 
 use crate::auth::McpAuthContext;
@@ -98,7 +100,6 @@ impl McpToolHost {
         };
         let master_token_id = auth.and_then(|c| c.master_token_id);
         McpToolCtx {
-            pool: self.pool.clone(),
             owner,
             authz,
             handles: None,
@@ -106,6 +107,7 @@ impl McpToolHost {
             registry: self.registry.clone(),
             caller_self_perspective: author.caller_self_perspective,
             master_token_id,
+            extensions: McpToolExtensions::with(self.pool.clone()),
             author,
             engine: self.engine.clone(),
         }

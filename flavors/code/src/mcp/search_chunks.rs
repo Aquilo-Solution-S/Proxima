@@ -3,6 +3,7 @@ use proxima_core::{EdgeId, MemoryId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::pg_pool;
 use super::sql::{CHUNK_HEADS_CTE, map_storage, owner_principal, resolve_repo_identifier};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -96,6 +97,7 @@ impl McpTool for CodeSearchChunksTool {
                 Some(handle) => Some(resolve_repo_identifier(&ctx, handle).await?),
                 None => None,
             };
+            let pool = pg_pool(&ctx)?;
 
             let sql = format!(
                 "WITH {CHUNK_HEADS_CTE}, q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $3) AS tsq)
@@ -131,7 +133,7 @@ impl McpTool for CodeSearchChunksTool {
                 .bind(exact_pattern)
                 .bind(args.chunk_type.as_deref())
                 .bind(i64::from(limit))
-                .fetch_all(&ctx.pool)
+                .fetch_all(pool.as_ref())
                 .await
                 .map_err(map_storage)?;
 
@@ -214,6 +216,7 @@ async fn load_call_edges(
     ctx: &McpToolCtx,
     chunk_ids: &[uuid::Uuid],
 ) -> Result<Vec<CallEdge>, McpToolError> {
+    let pool = pg_pool(ctx)?;
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
     let rows: Vec<CallEdgeRow> = sqlx::query_as(
         "SELECT e.edge_id, e.source_memory_id, e.target_memory_id,
@@ -230,7 +233,7 @@ async fn load_call_edges(
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(chunk_ids)
-    .fetch_all(&ctx.pool)
+    .fetch_all(pool.as_ref())
     .await
     .map_err(map_storage)?;
 

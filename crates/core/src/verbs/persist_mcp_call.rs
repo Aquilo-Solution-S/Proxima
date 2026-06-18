@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    CitationMappingPayload, CitedObjectPayload, EventId, FactPayload, MemoryId, Owner, SchemaId,
-    SchemaVersion, SourceId, canonical_json_bytes, proxima_schema_id,
+    CitationMappingPayload, CitedObjectPayload, EventId, FactPayload, MemoryId, Owner,
+    PayloadKeyBuilder, SchemaId, SchemaVersion, SourceId, proxima_schema_id,
 };
 
 pub const MCP_CALL_FACT_SCHEMA: &str = proxima_schema_id!("mcp-call-logged-v1");
@@ -59,14 +59,9 @@ impl McpCallLogInput {
     /// timestamps remain distinct Facts while sharing the cited I/O object
     /// through `content_hash`.
     ///
-    /// # Errors
-    ///
-    /// Returns a serialization error if the typed Fact payload cannot
-    /// be encoded for the event hash.
-    pub fn event_id(&self) -> Result<EventId, serde_json::Error> {
-        let payload = serde_json::to_value(self.payload())?;
-        let payload = canonical_json_bytes(&payload);
-
+    #[must_use]
+    pub fn event_id(&self) -> EventId {
+        let payload_key = self.payload().event_key();
         let mut hasher = blake3::Hasher::new();
         hasher.update(SourceId::new(MCP_CALL_SOURCE_ID).as_str().as_bytes());
         hasher.update(b"\0");
@@ -77,12 +72,12 @@ impl McpCallLogInput {
         hasher.update(b"\0");
         hasher.update(org_id.as_bytes());
         hasher.update(b"\0");
-        hasher.update(&payload);
+        hasher.update(&payload_key);
         hasher.update(b"\0");
         hasher.update(&self.observed_at.unix_timestamp_nanos().to_le_bytes());
         hasher.update(b"\0");
         hasher.update(&self.occurred_at.unix_timestamp_nanos().to_le_bytes());
-        Ok(EventId::new(*hasher.finalize().as_bytes()))
+        EventId::new(*hasher.finalize().as_bytes())
     }
 
     #[must_use]
@@ -108,6 +103,20 @@ impl FactPayload for McpCallLoggedV1 {
     const SCHEMA_ID: &'static str = MCP_CALL_FACT_SCHEMA;
     const SCHEMA_VERSION: u32 = 1;
 
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("tool_name", &self.tool_name);
+        key.field_str("actor_oid", &self.actor_oid);
+        key.field_str("actor_upn", &self.actor_upn);
+        key.field_bool("ok", self.ok);
+        key.field_option_str("error", self.error.as_deref());
+        key.field_u32("latency_ms", self.latency_ms);
+        key.field_u64("io_byte_len", self.io_byte_len);
+        key.field_bool("io_truncated", self.io_truncated);
+        key.field_bytes("io_content_hash", &self.io_content_hash);
+        key.finish()
+    }
+
     fn render(&self) -> String {
         let status = if self.ok { "ok" } else { "error" };
         format!(
@@ -126,6 +135,7 @@ pub struct McpCallIoV1 {
     pub content_hash: [u8; 32],
     pub byte_len: u64,
     pub truncated: bool,
+    pub body: Vec<u8>,
 }
 
 impl CitedObjectPayload for McpCallIoV1 {

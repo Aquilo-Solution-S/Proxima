@@ -4,14 +4,9 @@
 mod flavor;
 
 use proxima::Proxima;
-use proxima_core::verbs::event_ingest::{
-    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
-};
+use proxima_core::verbs::event_ingest::{CitationSpec, EventDraft};
 use proxima_core::verbs::query::{EntityKind, QueryRequest, QueryResponse};
-use proxima_core::{
-    FactPayload, SchemaId, SchemaVersion, SourceBatchId, SourceId, UPLOADED_BLOB_SCHEMA_ID,
-    canonical_json_bytes,
-};
+use proxima_core::{FactPayload, SchemaId, SourceBatchId, UPLOADED_BLOB_SCHEMA_ID};
 
 const CORE_CITATION_SCHEMA_ID: &str = "proxima-core/wake-trace-citation-v1";
 
@@ -30,34 +25,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         source_path: "/example/intake/r-2026-0001.pdf".into(),
         title: "Example invoice".into(),
     };
-    let payload_value = serde_json::to_value(payload)?;
-    let payload_bytes = canonical_json_bytes(&payload_value);
-    let content_hash = blake3_hash(&payload_bytes);
+    let citation =
+        CitationSpec::v1_for_payload(UPLOADED_BLOB_SCHEMA_ID, &payload, CORE_CITATION_SCHEMA_ID);
     let now = time::OffsetDateTime::now_utc();
-    let draft = EventDraft {
-        source_id: SourceId::new("embedded-minimal/host"),
-        source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
-        principal: booted.owner.principal.clone(),
-        org_id: Some(booted.owner.org_id),
-        author_personality_instance_id: None,
-        schema_id: SchemaId::new(flavor::DocumentFiledV1::SCHEMA_ID.into()),
-        schema_version: SchemaVersion::new(flavor::DocumentFiledV1::SCHEMA_VERSION),
-        payload: payload_bytes,
-        rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
-        citation: Some(Citation {
-            object: CitedObjectHint {
-                schema_id: SchemaId::new(UPLOADED_BLOB_SCHEMA_ID.into()),
-                schema_version: SchemaVersion::new(1),
-                content_hash,
-            },
-            mapping: CitationMappingHint {
-                schema_id: SchemaId::new(CORE_CITATION_SCHEMA_ID.into()),
-                schema_version: SchemaVersion::new(1),
-            },
-        }),
-    };
+    let draft = EventDraft::from_payload(
+        &booted.owner,
+        "embedded-minimal/host",
+        SourceBatchId::new(uuid::Uuid::now_v7()),
+        &payload,
+        now,
+    )
+    .with_citation(citation);
 
     let outcome = booted.engine.event_ingest(&authz, draft).await?;
     println!("ingested: {outcome:?}");
@@ -82,8 +60,4 @@ fn query_for_schema(owner: &proxima_core::Owner) -> QueryRequest {
 
 fn row_count(response: &QueryResponse) -> usize {
     response.memories.len()
-}
-
-fn blake3_hash(bytes: &[u8]) -> [u8; 32] {
-    *blake3::hash(bytes).as_bytes()
 }

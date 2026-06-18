@@ -1,12 +1,10 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::verbs::event_ingest::{EventDraft, InlineCitationMappingDraft, InlineCitedObjectDraft};
-use crate::{
-    FactPayload, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId, canonical_json_bytes,
-};
+use crate::{Role, SchemaId, SchemaVersion, SourceBatchId, canonical_json_bytes};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::AgentNoteV1;
+use crate::{AgentNoteV1, SidecarPayload};
 
 use super::util::normalize_tags;
 
@@ -92,24 +90,17 @@ impl McpTool for RememberTool {
                 tags,
                 idempotency_key: args.idempotency_key,
             };
-            let payload_value = serde_json::to_value(&payload)
-                .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-            let payload_bytes = canonical_json_bytes(&payload_value);
             let observed_at = time::OffsetDateTime::now_utc();
-            let draft = EventDraft {
-                source_id: SourceId::new(SOURCE_ID),
-                source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
-                principal: ctx.owner.principal.clone(),
-                org_id: Some(ctx.owner.org_id),
-                author_personality_instance_id: ctx.author.personality_instance_id,
-                schema_id: SchemaId::new(AgentNoteV1::SCHEMA_ID.into()),
-                schema_version: SchemaVersion::new(AgentNoteV1::SCHEMA_VERSION),
-                payload: payload_bytes,
-                rendered_text: None,
+            let mut draft = EventDraft::from_payload(
+                &ctx.owner,
+                SOURCE_ID,
+                SourceBatchId::new(uuid::Uuid::now_v7()),
+                &payload,
                 observed_at,
-                occurred_at: observed_at,
-                citation: None,
-            };
+            );
+            if let Some(author) = ctx.author.personality_instance_id {
+                draft = draft.author_personality(author);
+            }
 
             let engine = ctx
                 .engine()
@@ -138,10 +129,9 @@ impl McpTool for RememberTool {
                     .map_err(|err| McpToolError::Other(err.to_string()))?;
                 engine
                     .storage()
-                    .ingest_fact_with_citation_and_sidecar(
+                    .ingest_fact_with_citation_and_typed_sidecar(
                         &authorized,
-                        AgentNoteV1::sidecar_table().expect("AgentNoteV1 has a sidecar table"),
-                        &payload_value,
+                        &SidecarPayload::fact(payload.clone()),
                         embedding_model_id,
                     )
                     .await?
@@ -151,10 +141,9 @@ impl McpTool for RememberTool {
                     .map_err(|err| McpToolError::Other(err.to_string()))?;
                 engine
                     .storage()
-                    .ingest_event_with_sidecar(
+                    .ingest_event_with_typed_sidecar(
                         &authorized,
-                        AgentNoteV1::sidecar_table().expect("AgentNoteV1 has a sidecar table"),
-                        &payload_value,
+                        &SidecarPayload::fact(payload.clone()),
                         embedding_model_id,
                     )
                     .await?

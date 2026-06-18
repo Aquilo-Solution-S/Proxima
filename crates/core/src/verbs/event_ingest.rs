@@ -6,10 +6,9 @@
 
 use uuid::Uuid;
 
-use crate::verbs::schema::SidecarInserter;
 use crate::{
     EventId, FactPayload, MemoryId, OrgId, Owner, PersonalityInstanceId, Principal, SchemaId,
-    SchemaVersion, SourceBatchId, SourceId, canonical_json_bytes,
+    SchemaVersion, SidecarPayload, SourceBatchId, SourceId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -60,23 +59,19 @@ impl CitationSpec {
     }
 
     /// Build a v1 citation spec whose cited-object content hash is the
-    /// BLAKE3 hash of the typed payload's canonical JSON bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns the serde error if the payload cannot be converted to a JSON
-    /// value for canonical encoding.
-    pub fn v1_for_payload<P: serde::Serialize>(
+    /// BLAKE3 hash of the Fact payload's schema-owned event key.
+    #[must_use]
+    pub fn v1_for_payload<P: FactPayload>(
         cited_object_schema_id: impl Into<String>,
         payload: &P,
         mapping_schema_id: impl Into<String>,
-    ) -> Result<Self, serde_json::Error> {
-        let value = serde_json::to_value(payload)?;
-        Ok(Self::v1(
+    ) -> Self {
+        let payload = payload.event_key();
+        Self::v1(
             cited_object_schema_id,
-            *blake3::hash(&canonical_json_bytes(&value)).as_bytes(),
+            *blake3::hash(&payload).as_bytes(),
             mapping_schema_id,
-        ))
+        )
     }
 }
 
@@ -121,6 +116,8 @@ pub struct EventDraft {
     pub author_personality_instance_id: Option<PersonalityInstanceId>,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
+    /// Schema-owned event replay key material. The typed payload itself
+    /// lives in the registered sidecar.
     pub payload: Vec<u8>,
     #[serde(default, skip)]
     pub rendered_text: Option<String>,
@@ -174,8 +171,7 @@ pub struct AuthorizedInlineCitedObject {
     schema_id: SchemaId,
     schema_version: SchemaVersion,
     content_hash: [u8; 32],
-    payload_bytes: Vec<u8>,
-    sidecar_inserter_fn: SidecarInserter,
+    sidecar_payload: SidecarPayload,
 }
 
 impl AuthorizedInlineCitedObject {
@@ -183,15 +179,13 @@ impl AuthorizedInlineCitedObject {
         schema_id: SchemaId,
         schema_version: SchemaVersion,
         content_hash: [u8; 32],
-        payload_bytes: Vec<u8>,
-        sidecar_inserter_fn: SidecarInserter,
+        sidecar_payload: SidecarPayload,
     ) -> Self {
         Self {
             schema_id,
             schema_version,
             content_hash,
-            payload_bytes,
-            sidecar_inserter_fn,
+            sidecar_payload,
         }
     }
 
@@ -211,13 +205,8 @@ impl AuthorizedInlineCitedObject {
     }
 
     #[must_use]
-    pub fn payload_bytes(&self) -> &[u8] {
-        &self.payload_bytes
-    }
-
-    #[must_use]
-    pub const fn sidecar_inserter_fn(&self) -> SidecarInserter {
-        self.sidecar_inserter_fn
+    pub const fn sidecar_payload(&self) -> &SidecarPayload {
+        &self.sidecar_payload
     }
 }
 
@@ -225,23 +214,19 @@ impl AuthorizedInlineCitedObject {
 pub struct AuthorizedInlineCitationMapping {
     schema_id: SchemaId,
     schema_version: SchemaVersion,
-    payload_bytes: Vec<u8>,
-    /// `None` for a pure-link mapping with no sidecar table.
-    sidecar_inserter_fn: Option<SidecarInserter>,
+    sidecar_payload: Option<SidecarPayload>,
 }
 
 impl AuthorizedInlineCitationMapping {
     pub(crate) fn new(
         schema_id: SchemaId,
         schema_version: SchemaVersion,
-        payload_bytes: Vec<u8>,
-        sidecar_inserter_fn: Option<SidecarInserter>,
+        sidecar_payload: Option<SidecarPayload>,
     ) -> Self {
         Self {
             schema_id,
             schema_version,
-            payload_bytes,
-            sidecar_inserter_fn,
+            sidecar_payload,
         }
     }
 
@@ -256,13 +241,8 @@ impl AuthorizedInlineCitationMapping {
     }
 
     #[must_use]
-    pub fn payload_bytes(&self) -> &[u8] {
-        &self.payload_bytes
-    }
-
-    #[must_use]
-    pub const fn sidecar_inserter_fn(&self) -> Option<SidecarInserter> {
-        self.sidecar_inserter_fn
+    pub const fn sidecar_payload(&self) -> Option<&SidecarPayload> {
+        self.sidecar_payload.as_ref()
     }
 }
 
@@ -378,23 +358,17 @@ impl AuthorizedFactWithCitation {
 
 impl EventDraft {
     /// Build a Fact event draft from a typed payload using the payload's
-    /// schema id/version and canonical JSON encoding. The caller supplies
+    /// schema id/version and schema-owned event key. The caller supplies
     /// the source and source-batch boundary explicitly; no runtime
     /// registration or source inference happens here.
-    ///
-    /// # Errors
-    ///
-    /// Returns the serde error if the typed payload cannot be converted to
-    /// a JSON value for canonical event bytes.
     pub fn from_payload<P: FactPayload>(
         owner: &Owner,
         source_id: impl Into<String>,
         source_batch_id: SourceBatchId,
         payload: &P,
         observed_at: time::OffsetDateTime,
-    ) -> Result<Self, serde_json::Error> {
-        let value = serde_json::to_value(payload)?;
-        Ok(Self {
+    ) -> Self {
+        Self {
             source_id: SourceId::new(source_id.into()),
             source_batch_id,
             principal: owner.principal.clone(),
@@ -402,12 +376,12 @@ impl EventDraft {
             author_personality_instance_id: None,
             schema_id: P::schema_id(),
             schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
-            payload: canonical_json_bytes(&value),
-            rendered_text: None,
+            payload: payload.event_key(),
+            rendered_text: Some(payload.render()),
             observed_at,
             occurred_at: observed_at,
             citation: None,
-        })
+        }
     }
 
     /// Attach an opaque citation hint to the draft.
@@ -452,8 +426,8 @@ impl EventDraft {
     }
 
     /// Canonical `event_id` per docs/01: BLAKE3 of
-    /// `source_id` || `owner_components` || payload, separated by
-    /// 0x00 bytes. Re-receipt of the same observation
+    /// `source_id` || `owner_components` || schema-owned event key,
+    /// separated by 0x00 bytes. Re-receipt of the same observation
     /// produces the same hash by construction.
     #[must_use]
     pub fn event_id(&self) -> EventId {
@@ -487,10 +461,9 @@ pub struct EventIngestOutcome {
 mod tests {
     use super::EventDraft;
     use crate::{
-        OrgId, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
-        canonical_json_bytes,
+        OrgId, PayloadKeyBuilder, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+        UserId,
     };
-    use serde_json::json;
     use uuid::Uuid;
 
     fn draft(payload: Vec<u8>) -> EventDraft {
@@ -516,24 +489,14 @@ mod tests {
     }
 
     #[test]
-    fn key_permuted_json_payloads_reencode_to_same_event_id() {
-        let left = json!({
-            "z": {
-                "b": 2,
-                "a": 1
-            },
-            "a": "same"
-        });
-        let right = json!({
-            "a": "same",
-            "z": {
-                "a": 1,
-                "b": 2
-            }
-        });
+    fn identical_schema_owned_keys_produce_same_event_id() {
+        let mut key = PayloadKeyBuilder::new("test/fact", 1);
+        key.field_str("stable_id", "same");
+        let left = draft(key.finish());
 
-        let left = draft(canonical_json_bytes(&left));
-        let right = draft(canonical_json_bytes(&right));
+        let mut key = PayloadKeyBuilder::new("test/fact", 1);
+        key.field_str("stable_id", "same");
+        let right = draft(key.finish());
 
         assert_eq!(left.payload, right.payload);
         assert_eq!(left.event_id(), right.event_id());

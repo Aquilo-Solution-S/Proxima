@@ -1,6 +1,4 @@
-use futures::future::BoxFuture;
-
-use crate::{GoalPayload, StorageError};
+use crate::{GoalPayload, PayloadKeyBuilder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, sqlx::Type)]
 #[sqlx(type_name = "proxima_core.task_priority")]
@@ -32,27 +30,14 @@ impl GoalPayload for TaskGoalV1 {
     const SCHEMA_ID: &'static str = "core/task-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn sidecar_table() -> Option<&'static str> {
-        Some("proxima_core.task_goal_v1")
+    fn goal_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_option_time("due_at", self.due_at);
+        key.field_option_str("priority", self.priority.map(TaskPriority::as_str));
+        key.finish()
     }
 
-    fn sidecar_insert<'t>(
-        &'t self,
-        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
-        goal_id: uuid::Uuid,
-    ) -> BoxFuture<'t, Result<(), StorageError>> {
-        Box::pin(async move {
-            sqlx::query(
-                "INSERT INTO proxima_core.task_goal_v1 (goal_id, due_at, priority)
-                 VALUES ($1, $2, $3::proxima_core.task_priority)",
-            )
-            .bind(goal_id)
-            .bind(self.due_at)
-            .bind(self.priority.map(TaskPriority::as_str))
-            .execute(&mut **tx)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
-            Ok(())
-        })
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_core.task_goal_v1")
     }
 }

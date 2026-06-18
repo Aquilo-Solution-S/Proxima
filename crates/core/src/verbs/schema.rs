@@ -5,44 +5,27 @@
 
 use crate::{
     DependencySatisfactionRule, FlavorDescriptor, McpToolDescriptor, RegisteredRelation,
-    RelationDescriptor, SchemaId, SchemaVersion, SearchProjectionColumnKind, StorageError,
+    RelationDescriptor, SchemaId, SchemaVersion, SearchProjectionColumnKind, SidecarPayload,
 };
-use futures::future::BoxFuture;
-use sqlx::{Postgres, Transaction};
 use std::collections::HashMap;
-use uuid::Uuid;
 
-pub type PayloadValidator = fn(&serde_json::Value) -> Result<(), String>;
-pub type PayloadJsonEncoder = fn(&serde_json::Value) -> Result<Vec<u8>, String>;
-pub type CitedObjectContentHasher = fn(&[u8]) -> Result<[u8; 32], StorageError>;
-pub type FactRenderer = fn(&[u8]) -> Result<String, StorageError>;
-pub type SidecarInserter = for<'t> fn(
-    &'t mut Transaction<'_, Postgres>,
-    Uuid,
-    &'t [u8],
-) -> BoxFuture<'t, Result<(), StorageError>>;
+pub type ProtocolPayloadIngress = fn(&serde_json::Value) -> Result<ProtocolPayload, String>;
 
 #[derive(Debug, Clone)]
-pub(crate) struct PayloadValidatorEntry {
+pub struct ProtocolPayload {
+    pub key_bytes: Option<Vec<u8>>,
+    pub sidecar_payload: SidecarPayload,
+    pub rendered_text: Option<String>,
+    pub content_hash: Option<[u8; 32]>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProtocolPayloadIngressEntry {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub kind: PayloadKind,
-    pub validate: PayloadValidator,
+    pub ingress: ProtocolPayloadIngress,
     pub json_schema: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct CitedObjectContentHasherEntry {
-    pub schema_id: SchemaId,
-    pub schema_version: SchemaVersion,
-    pub hash: CitedObjectContentHasher,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct FactRendererEntry {
-    pub schema_id: SchemaId,
-    pub schema_version: SchemaVersion,
-    pub render: FactRenderer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -81,16 +64,9 @@ pub struct SchemaInfo {
     pub natural_key_columns: Vec<String>,
     /// Build-time tombstone discriminator for stateful Fact schemas.
     pub tombstone: Option<SchemaTombstone>,
-    /// Build-time typed encoder for read-path canonical JSON projection.
-    /// Function pointer is process-local only; not serialized on
-    /// Schema responses.
-    #[serde(skip)]
-    pub json_encoder: Option<PayloadJsonEncoder>,
-    /// Build-time typed sidecar inserter for inline citation writes.
-    /// Function pointer is process-local only; not serialized on
-    /// Schema responses.
-    #[serde(skip)]
-    pub sidecar_inserter: Option<SidecarInserter>,
+    /// Typed/opaque discriminant. The frozen registry owns the actual
+    /// process-local protocol-ingress function pointers.
+    pub has_typed_ingress: bool,
     /// `CitedObjectPayload` schema id accepted by a `CitationMappingPayload`.
     /// Populated only for citation-mapping schemas.
     pub cited_object_schema: Option<SchemaId>,
@@ -101,11 +77,11 @@ impl SchemaInfo {
     /// Used for content-addressed `CitedObject`s and structural
     /// `CitationMapping`s whose payload is an opaque blob addressed by
     /// content hash. An opaque schema carries no validator, no JSON
-    /// encoder, no JSON schema, and no sidecar table.
+    /// ingress parser, no JSON schema, and no sidecar table.
     ///
-    /// `json_encoder.is_none()` is the typed/opaque discriminant the
+    /// `has_typed_ingress == false` is the typed/opaque discriminant the
     /// registry enforces: `FlavorRegistry::freeze` asserts every schema
-    /// either has both a `json_encoder` and a validator, or neither.
+    /// either has a protocol-ingress parser or is opaque.
     /// See docs/03 §Registry rules.
     #[must_use]
     pub fn opaque(schema_id: SchemaId, schema_version: SchemaVersion, kind: PayloadKind) -> Self {
@@ -117,8 +93,7 @@ impl SchemaInfo {
             sidecar_table: None,
             natural_key_columns: Vec::new(),
             tombstone: None,
-            json_encoder: None,
-            sidecar_inserter: None,
+            has_typed_ingress: false,
             cited_object_schema: None,
         }
     }
@@ -179,12 +154,8 @@ struct FrozenIndex {
     /// `schemas` keyed by `(schema_id, version, kind)` — required
     /// because one payload type may register across F/A/P layers.
     schema_by_id_version_kind: HashMap<(SchemaId, SchemaVersion, PayloadKind), usize>,
-    /// `validators` keyed by `(schema_id, version, kind)`.
-    validator_by_key: HashMap<(SchemaId, SchemaVersion, PayloadKind), usize>,
-    /// Cited-object content hashers keyed by `(schema_id, version)`.
-    cited_object_content_hasher_by_key: HashMap<(SchemaId, SchemaVersion), usize>,
-    /// Fact payload renderers keyed by `(schema_id, version)`.
-    fact_renderer_by_key: HashMap<(SchemaId, SchemaVersion), usize>,
+    /// Protocol-ingress parsers keyed by `(schema_id, version, kind)`.
+    protocol_ingress_by_key: HashMap<(SchemaId, SchemaVersion, PayloadKind), usize>,
     /// `relations` keyed by relation id.
     relation_by_name: HashMap<String, usize>,
 }
@@ -192,9 +163,7 @@ struct FrozenIndex {
 impl FrozenIndex {
     fn build(
         schemas: &[SchemaInfo],
-        validators: &[PayloadValidatorEntry],
-        cited_object_content_hashers: &[CitedObjectContentHasherEntry],
-        fact_renderers: &[FactRendererEntry],
+        protocol_ingress: &[ProtocolPayloadIngressEntry],
         relations: &[RelationDescriptor],
     ) -> Self {
         let mut index = Self::default();
@@ -208,26 +177,14 @@ impl FrozenIndex {
                 .entry((schema.schema_id.clone(), schema.schema_version, schema.kind))
                 .or_insert(position);
         }
-        for (position, validator) in validators.iter().enumerate() {
+        for (position, ingress) in protocol_ingress.iter().enumerate() {
             index
-                .validator_by_key
+                .protocol_ingress_by_key
                 .entry((
-                    validator.schema_id.clone(),
-                    validator.schema_version,
-                    validator.kind,
+                    ingress.schema_id.clone(),
+                    ingress.schema_version,
+                    ingress.kind,
                 ))
-                .or_insert(position);
-        }
-        for (position, hasher) in cited_object_content_hashers.iter().enumerate() {
-            index
-                .cited_object_content_hasher_by_key
-                .entry((hasher.schema_id.clone(), hasher.schema_version))
-                .or_insert(position);
-        }
-        for (position, renderer) in fact_renderers.iter().enumerate() {
-            index
-                .fact_renderer_by_key
-                .entry((renderer.schema_id.clone(), renderer.schema_version))
                 .or_insert(position);
         }
         for (position, relation) in relations.iter().enumerate() {
@@ -245,9 +202,7 @@ pub struct FlavorRegistryFrozen {
     schemas: Vec<SchemaInfo>,
     search_projections: Vec<MemorySearchProjection>,
     relations: Vec<RelationDescriptor>,
-    validators: Vec<PayloadValidatorEntry>,
-    cited_object_content_hashers: Vec<CitedObjectContentHasherEntry>,
-    fact_renderers: Vec<FactRendererEntry>,
+    protocol_ingress: Vec<ProtocolPayloadIngressEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
     flavors: Vec<FlavorDescriptor>,
     dependency_satisfaction_rules: Vec<(String, std::sync::Arc<dyn DependencySatisfactionRule>)>,
@@ -268,7 +223,7 @@ impl FlavorRegistryFrozen {
     /// vocabulary field beyond `schemas` empty.
     #[must_use]
     pub fn with_schemas(schemas: Vec<SchemaInfo>) -> Self {
-        let index = FrozenIndex::build(&schemas, &[], &[], &[], &[]);
+        let index = FrozenIndex::build(&schemas, &[], &[]);
         Self {
             schemas,
             index,
@@ -283,7 +238,7 @@ impl FlavorRegistryFrozen {
         schemas: Vec<SchemaInfo>,
         relations: Vec<RelationDescriptor>,
     ) -> Self {
-        let index = FrozenIndex::build(&schemas, &[], &[], &[], &relations);
+        let index = FrozenIndex::build(&schemas, &[], &relations);
         Self {
             schemas,
             relations,
@@ -304,27 +259,17 @@ impl FlavorRegistryFrozen {
             schemas,
             search_projections,
             relations,
-            validators,
-            cited_object_content_hashers,
-            fact_renderers,
+            protocol_ingress,
             mcp_tools,
             flavors,
             dependency_satisfaction_rules,
         } = registry;
-        let index = FrozenIndex::build(
-            &schemas,
-            &validators,
-            &cited_object_content_hashers,
-            &fact_renderers,
-            &relations,
-        );
+        let index = FrozenIndex::build(&schemas, &protocol_ingress, &relations);
         Self {
             schemas,
             search_projections,
             relations,
-            validators,
-            cited_object_content_hashers,
-            fact_renderers,
+            protocol_ingress,
             mcp_tools,
             flavors,
             dependency_satisfaction_rules,
@@ -336,7 +281,7 @@ impl FlavorRegistryFrozen {
     ///
     /// # Panics
     ///
-    /// Panics if any added schema carries a `json_encoder` — typed
+    /// Panics if any added schema carries typed ingress — typed
     /// schemas must be registered through `FlavorRegistry` before
     /// `freeze()`.
     #[must_use]
@@ -344,14 +289,14 @@ impl FlavorRegistryFrozen {
         mut self,
         schemas: impl IntoIterator<Item = SchemaInfo>,
     ) -> Self {
-        // This post-freeze path provides no way to attach a validator,
+        // This post-freeze path provides no way to attach an ingress parser,
         // so it accepts only opaque schemas — a typed schema added here
-        // would be silently unvalidated. Typed schemas go through
+        // would be silently unparsed. Typed schemas go through
         // `FlavorRegistry` before `freeze()`.
         let added: Vec<SchemaInfo> = schemas.into_iter().collect();
         for schema in &added {
             assert!(
-                schema.json_encoder.is_none() && schema.sidecar_inserter.is_none(),
+                !schema.has_typed_ingress,
                 "with_additional_schemas accepts only opaque schemas; \
                  {:?} carries typed process-local functions — register typed schemas \
                  through FlavorRegistry before freeze()",
@@ -361,13 +306,7 @@ impl FlavorRegistryFrozen {
         self.schemas.extend(added);
         // Rebuild the index over the extended schema list — a stale
         // index would silently miss the appended schemas.
-        self.index = FrozenIndex::build(
-            &self.schemas,
-            &self.validators,
-            &self.cited_object_content_hashers,
-            &self.fact_renderers,
-            &self.relations,
-        );
+        self.index = FrozenIndex::build(&self.schemas, &self.protocol_ingress, &self.relations);
         self
     }
 
@@ -396,9 +335,9 @@ impl FlavorRegistryFrozen {
         let position =
             *self
                 .index
-                .validator_by_key
+                .protocol_ingress_by_key
                 .get(&(schema_id.clone(), schema_version, kind))?;
-        self.validators[position].json_schema.as_ref()
+        self.protocol_ingress[position].json_schema.as_ref()
     }
 
     #[must_use]
@@ -505,106 +444,40 @@ impl FlavorRegistryFrozen {
         Some(&self.schemas[position])
     }
 
-    /// Validate a JSON payload against the build-time registered Rust
-    /// payload type when the registry was produced by `FlavorRegistry`.
-    /// Ad-hoc test registries may not carry validators; those still
-    /// enforce the minimum F/A/P sidecar contract that payloads are
-    /// JSON objects before storage casts them into sidecar rows.
+    /// Convert a protocol JSON payload into the build-time registered
+    /// Rust payload type. Opaque schemas are not valid on this path;
+    /// callers that accept opaque content use the explicit opaque
+    /// citation APIs instead.
     ///
     /// # Errors
     ///
-    /// Returns an error string when `payload` is not a JSON object or
-    /// when the registered validator rejects it.
-    pub fn validate_payload(
+    /// Returns an error string when `payload` is not a JSON object or when
+    /// the registered typed parser rejects it.
+    pub fn ingest_protocol_payload(
         &self,
         schema_id: &SchemaId,
         version: SchemaVersion,
         kind: PayloadKind,
         payload: &serde_json::Value,
-    ) -> Result<(), String> {
+    ) -> Result<ProtocolPayload, String> {
         if !payload.is_object() {
             return Err("typed payload must be a JSON object".into());
         }
 
         if let Some(&position) =
             self.index
-                .validator_by_key
+                .protocol_ingress_by_key
                 .get(&(schema_id.clone(), version, kind))
         {
-            (self.validators[position].validate)(payload)?;
+            return (self.protocol_ingress[position].ingress)(payload);
         }
 
-        Ok(())
-    }
-
-    /// Compute a typed cited-object content hash through the frozen
-    /// registry.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StorageError::Internal` when the schema is unknown, is
-    /// not registered as `PayloadKind::CitedObject`, or has no typed
-    /// content hasher.
-    pub fn content_hash_for(
-        &self,
-        schema_id: &SchemaId,
-        schema_version: SchemaVersion,
-        payload_bytes: &[u8],
-    ) -> Result<[u8; 32], StorageError> {
-        let Some(&position) = self
-            .index
-            .cited_object_content_hasher_by_key
-            .get(&(schema_id.clone(), schema_version))
-        else {
-            let reason = if self
-                .lookup_payload(schema_id, schema_version, PayloadKind::CitedObject)
-                .is_some()
-            {
-                "has no typed content hasher"
-            } else {
-                "is not a registered cited-object schema"
-            };
-            return Err(StorageError::Internal(format!(
-                "cited object schema {} v{} {reason}",
-                schema_id.as_str(),
-                schema_version.into_inner(),
-            )));
-        };
-        (self.cited_object_content_hashers[position].hash)(payload_bytes)
-    }
-
-    /// Render typed Fact payload bytes through the build-time registered
-    /// `FactPayload::render` implementation when one exists.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StorageError::Internal` when the schema is unknown, is
-    /// not registered as `PayloadKind::Fact`, or the payload bytes fail
-    /// to decode as the registered JSON type.
-    pub fn try_render_fact_payload(
-        &self,
-        schema_id: &SchemaId,
-        schema_version: SchemaVersion,
-        payload_bytes: &[u8],
-    ) -> Result<Option<String>, StorageError> {
-        let Some(&position) = self
-            .index
-            .fact_renderer_by_key
-            .get(&(schema_id.clone(), schema_version))
-        else {
-            if self
-                .lookup_payload(schema_id, schema_version, PayloadKind::Fact)
-                .is_some()
-            {
-                return Ok(None);
-            }
-            return Err(StorageError::Internal(format!(
-                "Fact schema {} v{} is not a registered Fact schema",
-                schema_id.as_str(),
-                schema_version.into_inner(),
-            )));
-        };
-        (self.fact_renderers[position].render)(payload_bytes).map(Some)
+        Err(format!(
+            "schema {} v{} {:?} has no typed protocol ingress",
+            schema_id.as_str(),
+            version.into_inner(),
+            kind,
+        ))
     }
 
     #[must_use]

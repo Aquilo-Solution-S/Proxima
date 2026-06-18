@@ -65,10 +65,21 @@ impl McpTool for GetMemoryTool {
                 ),
                 text: snapshot.text,
                 wake_chain_depth: snapshot.wake_chain_depth.into_inner(),
-                payload: snapshot.payload_json,
+                payload: snapshot_payload_value(snapshot.payload.as_ref())?,
             })
         })
     }
+}
+
+pub(super) fn snapshot_payload_value(
+    payload: Option<&crate::SidecarPayload>,
+) -> Result<serde_json::Value, McpToolError> {
+    let Some(payload) = payload else {
+        return Ok(serde_json::Value::Null);
+    };
+    payload
+        .to_protocol_json()
+        .map_err(|err| McpToolError::Other(format!("serialize typed payload: {err}")))
 }
 
 pub(super) fn sidecar_specs(ctx: &McpToolCtx) -> Vec<SidecarSpec> {
@@ -83,6 +94,7 @@ pub(super) fn sidecar_specs(ctx: &McpToolCtx) -> Vec<SidecarSpec> {
         })
         .map(|schema| SidecarSpec {
             schema_id: SchemaId::new(schema.schema_id.as_str().to_string()),
+            schema_version: schema.schema_version,
             sidecar_table: schema.sidecar_table.expect("filtered to sidecar schemas"),
         })
         .collect()
