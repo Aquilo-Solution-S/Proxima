@@ -20,6 +20,9 @@ impl FactPayload for AgentNoteV1 {
     fn event_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_uuid("note_id", self.note_id);
+        key.field_str("title", &self.title);
+        key.field_str("body", &self.body);
+        key.field_str_list("tags", &self.tags);
         key.finish()
     }
 
@@ -29,6 +32,10 @@ impl FactPayload for AgentNoteV1 {
 
     fn sidecar_table() -> Option<&'static str> {
         Some("proxima_core.agent_note_v1")
+    }
+
+    fn natural_key_columns() -> &'static [&'static str] {
+        &["note_id"]
     }
 
     fn search_projection() -> Option<SearchProjection> {
