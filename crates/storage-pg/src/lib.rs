@@ -182,20 +182,75 @@ async fn insert_generic_memory_sidecar(
     sidecar_table: &str,
     sidecar_payload: &serde_json::Value,
 ) -> Result<(), StorageError> {
+    insert_jsonb_memory_sidecar(tx, memory_id, sidecar_table, sidecar_payload).await
+}
+
+pub(crate) async fn insert_jsonb_memory_sidecar(
+    tx: &mut sqlx::PgConnection,
+    memory_id: MemoryId,
+    sidecar_table: &str,
+    sidecar_payload: &serde_json::Value,
+) -> Result<(), StorageError> {
+    insert_jsonb_sidecar_with_uuid_key(
+        tx,
+        sidecar_table,
+        "memory_id",
+        memory_id.into_inner(),
+        sidecar_payload,
+    )
+    .await
+}
+
+async fn insert_jsonb_sidecar_with_uuid_key(
+    tx: &mut sqlx::PgConnection,
+    sidecar_table: &str,
+    key_column: &str,
+    key_value: uuid::Uuid,
+    sidecar_payload: &serde_json::Value,
+) -> Result<(), StorageError> {
     let table = pg_ident::PgIdent::table(sidecar_table)?
         .as_str()
         .to_string();
+    let key_column = pg_ident::PgIdent::column(key_column)?.as_str().to_string();
+    let payload = sidecar_payload.as_object().ok_or_else(|| {
+        StorageError::ConstraintViolation("sidecar payload must be a JSON object".into())
+    })?;
+
+    let mut value_columns = payload
+        .keys()
+        .filter(|column| column.as_str() != key_column)
+        .map(|column| pg_ident::PgIdent::column(column).map(|ident| ident.as_str().to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    value_columns.sort();
+
+    if value_columns.is_empty() {
+        let sql = format!("INSERT INTO {table} ({key_column}) VALUES ($1)");
+        sqlx::query(&sql)
+            .bind(key_value)
+            .execute(tx)
+            .await
+            .map_err(crate::error::map_err)?;
+        return Ok(());
+    }
+
+    let column_list = std::iter::once(key_column.as_str())
+        .chain(value_columns.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let value_list = value_columns
+        .iter()
+        .map(|column| format!("payload.{column}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let sql = format!(
-        "INSERT INTO {table}
-         SELECT * FROM jsonb_populate_record(
-             NULL::{table},
-             ($1::jsonb || jsonb_build_object('memory_id', $2::uuid))
-         )",
+        "INSERT INTO {table} ({column_list})
+         SELECT $1, {value_list}
+           FROM jsonb_populate_record(NULL::{table}, $2::jsonb) AS payload",
     );
     sqlx::query(&sql)
+        .bind(key_value)
         .bind(sidecar_payload)
-        .bind(memory_id.into_inner())
-        .execute(&mut **tx)
+        .execute(tx)
         .await
         .map_err(crate::error::map_err)?;
     Ok(())

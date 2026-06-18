@@ -8,7 +8,6 @@ use proxima_core::{
 use sqlx::{Postgres, Transaction};
 
 use crate::error::map_err;
-use crate::pg_ident::PgIdent;
 
 #[derive(Debug, Clone)]
 pub struct DerivedDraft<'a> {
@@ -84,21 +83,8 @@ pub async fn append_derived_in_tx(
     }
 
     if let (Some(table), Some(payload)) = (draft.sidecar_table, &draft.sidecar_payload) {
-        let table = PgIdent::table(table)?;
-        let sql = format!(
-            "INSERT INTO {table}
-             SELECT * FROM jsonb_populate_record(
-                 NULL::{table},
-                 ($1::jsonb || jsonb_build_object('memory_id', $2::uuid))
-             )",
-            table = table.as_str(),
-        );
-        sqlx::query(&sql)
-            .bind(payload)
-            .bind(draft.memory_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?;
+        crate::insert_jsonb_memory_sidecar(tx, MemoryId::new(draft.memory_id), table, payload)
+            .await?;
     }
 
     insert_embedding_in_tx(tx, draft, owner_kind, owner_principal_id, owner_org_id).await?;

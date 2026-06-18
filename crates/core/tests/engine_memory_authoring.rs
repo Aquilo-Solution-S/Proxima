@@ -197,8 +197,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
     let (pg, db_name) = fresh_pg().await;
 
     let owner = owner_fixture();
-    let mut registry = FlavorRegistry::new();
-    registry.add_abstraction_schema::<AgentDerivationV1>();
+    let registry = FlavorRegistry::new();
     let engine = proxima_core::Engine::new(registry.freeze())
         .with_storage(pg.clone().into_handle())
         .with_embed(Arc::new(ConstantEmbedding::prefixed(

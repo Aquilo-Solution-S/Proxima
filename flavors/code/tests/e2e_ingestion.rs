@@ -227,7 +227,10 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         .bind(org_id)
         .fetch_one(pg.pool())
         .await?;
-        assert!(citation_mappings >= facts.0 + facts.1 + facts.2);
+        assert!(
+            citation_mappings >= facts.0 + facts.1,
+            "only Fact rows carry citation mappings; code chunks are derived Abstractions"
+        );
 
         let cited_objects: i64 = sqlx::query_scalar(
             "SELECT COUNT(DISTINCT cm.cited_object_id)::bigint \
