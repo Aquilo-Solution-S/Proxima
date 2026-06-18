@@ -25,7 +25,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::error::{internal, map_err};
 use crate::pg_ident::PgIdent;
-use crate::sidecars::PgSidecarRegistryFrozen;
+use crate::sidecars::{PgMemorySidecar, PgSidecarRegistryFrozen};
 
 pub type EventIngestSidecarFuture<'t> =
     Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
@@ -309,7 +309,7 @@ pub async fn ingest_fact_with_sidecar<P>(
     citation: CitationSpec,
 ) -> Result<EventIngestOutcome, StorageError>
 where
-    P: PgFactSidecar + Clone,
+    P: FactPayload + PgMemorySidecar + Clone,
 {
     let draft = EventDraft::from_payload(
         ctx.owner,
@@ -326,7 +326,13 @@ where
         ctx.embedding_model_id,
         P::sidecar_table(),
         P::natural_key_columns(),
-        move |tx, outcome| sidecar_payload.insert_sidecar(tx, outcome.memory_id),
+        move |tx, outcome| {
+            Box::pin(async move {
+                sidecar_payload
+                    .insert_memory_sidecar(tx, outcome.memory_id)
+                    .await
+            })
+        },
     )
     .await
 }

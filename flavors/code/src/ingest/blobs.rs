@@ -68,7 +68,7 @@ async fn ingest_local_git_fact<P>(
     observed_at: time::OffsetDateTime,
 ) -> Result<EventIngestOutcome, IngestError>
 where
-    P: FactPayload + proxima_storage_pg::verbs::event_ingest::PgFactSidecar + Clone,
+    P: FactPayload + PgMemorySidecar + Clone,
 {
     let ctx = local_git_context(owner, source_batch_id, observed_at);
     let mut tx = pool.begin().await?;
