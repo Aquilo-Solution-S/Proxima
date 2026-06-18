@@ -15,7 +15,7 @@ async fn run_with_handle_serves_tools_list() -> Result<(), Box<dyn std::error::E
             principal: Principal::User(UserId::new(uuid::Uuid::nil())),
             org_id: OrgId::new(uuid::Uuid::nil()),
         },
-        bind: SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
+        bind: Some(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)),
         master_token: Some(uuid::Uuid::nil()),
     };
 

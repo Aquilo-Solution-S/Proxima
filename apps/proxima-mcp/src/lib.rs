@@ -20,12 +20,32 @@ const MISTRAL_API_KEY: &str = "MISTRAL_API_KEY";
 const PROXIMA_EMBED_MODEL: &str = "PROXIMA_EMBED_MODEL";
 const MISTRAL_API_BASE: &str = "MISTRAL_API_BASE";
 
+type OidcBundle = (
+    Arc<dyn proxima_core::Authenticator>,
+    proxima::ResourceServerMetadata,
+);
+
 #[derive(Debug)]
 pub struct ProximaMcpApp;
 
 impl FlavorBundle for ProximaMcpApp {
+    #[cfg(feature = "code")]
+    fn register(registry: &mut FlavorRegistry) {
+        proxima_code::register(registry);
+    }
+
+    #[cfg(not(feature = "code"))]
     fn register(_registry: &mut FlavorRegistry) {}
 
+    #[cfg(feature = "code")]
+    fn migrators() -> Vec<proxima::NamedMigrator> {
+        vec![proxima::NamedMigrator::new(
+            "proxima-code",
+            proxima_code::migrator(),
+        )]
+    }
+
+    #[cfg(not(feature = "code"))]
     fn migrators() -> Vec<proxima::NamedMigrator> {
         Vec::new()
     }
@@ -168,18 +188,68 @@ fn build_app(
     config: McpConfig,
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<Proxima<ProximaMcpApp>, CliError> {
+    let oidc = oidc_from_env(&config, &lookup)?;
     let mut app = Proxima::<ProximaMcpApp>::app()
         .from_env()
         .database_url(config.database_url)
-        .owner(config.owner)
-        .mcp_bind(config.bind);
+        .owner(config.owner.clone());
+    if let Some(bind) = config.bind {
+        app = app.mcp_bind(bind);
+    }
     if let Some(token) = config.master_token {
         app = app.master_token(token.to_string());
     }
-    if let Some(client) = mistral_embedding_client(lookup)? {
+    if let Some((authenticator, metadata)) = oidc {
+        app = app.authenticator(authenticator).resource_metadata(metadata);
+    }
+    if let Some(client) = mistral_embedding_client(&lookup)? {
         app = app.embed_client(Arc::new(client));
     }
     Ok(app)
+}
+
+fn oidc_from_env(
+    config: &McpConfig,
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<OidcBundle>, CliError> {
+    let Some(issuer) = lookup_non_empty(lookup, "PROXIMA_OIDC_ISSUER") else {
+        return Ok(None);
+    };
+    let audience = lookup_non_empty(lookup, "PROXIMA_OIDC_AUDIENCE").ok_or_else(|| {
+        CliError::Runtime(ProximaError::Config(
+            "PROXIMA_OIDC_ISSUER set without PROXIMA_OIDC_AUDIENCE".into(),
+        ))
+    })?;
+    let public_url = lookup_non_empty(lookup, "PROXIMA_PUBLIC_URL").ok_or_else(|| {
+        CliError::Runtime(ProximaError::Config(
+            "PROXIMA_OIDC_ISSUER set without PROXIMA_PUBLIC_URL".into(),
+        ))
+    })?;
+    let jwks_uri = lookup_non_empty(lookup, "PROXIMA_OIDC_JWKS_URI");
+    let allowed_subjects = lookup_non_empty(lookup, "PROXIMA_OIDC_ALLOWED_SUBJECTS").map(|raw| {
+        raw.split(',')
+            .map(str::trim)
+            .filter(|subject| !subject.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<std::collections::HashSet<String>>()
+    });
+    let resolver = proxima_auth_oidc::HttpJwksResolver::new(issuer.clone(), jwks_uri.clone());
+    let authn = proxima_auth_oidc::OidcAuthenticator::new(
+        proxima_auth_oidc::OidcAuthConfig {
+            issuer: issuer.clone(),
+            jwks_uri,
+            audience,
+            owner: config.owner.clone(),
+            allowed_subjects,
+            leeway_secs: 60,
+        },
+        Arc::new(resolver),
+    );
+    let metadata = proxima::ResourceServerMetadata {
+        public_url,
+        authorization_servers: vec![issuer],
+    };
+    Ok(Some((Arc::new(authn), metadata)))
 }
 
 fn mistral_embedding_client(
@@ -256,7 +326,7 @@ mod tests {
                 )),
                 org_id: proxima_core::OrgId::new(uuid::Uuid::nil()),
             },
-            bind: DEFAULT_BIND.parse().expect("valid bind"),
+            bind: Some(DEFAULT_BIND.parse().expect("valid bind")),
             master_token: Some(uuid::Uuid::nil()),
         }
     }
@@ -264,6 +334,17 @@ mod tests {
     #[test]
     fn app_construction_without_mistral_key_keeps_degraded_mode() {
         build_app(config(), |_| None).expect("app construction does not require embeddings");
+    }
+
+    #[test]
+    fn oidc_env_wires_authenticator_and_metadata() {
+        build_app(config(), |key| match key {
+            "PROXIMA_OIDC_ISSUER" => Some("https://idp.test".into()),
+            "PROXIMA_OIDC_AUDIENCE" => Some("proxima-mcp".into()),
+            "PROXIMA_PUBLIC_URL" => Some("https://proxima.test".into()),
+            _ => None,
+        })
+        .expect("app builds with oidc env");
     }
 
     #[test]

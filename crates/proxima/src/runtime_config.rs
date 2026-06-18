@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use proxima_blob_s3::S3RuntimeConfig;
 use proxima_core::{AnthropicClient, Authenticator, EmbeddingClient, Owner, RevalidationConfig};
+use proxima_mcp_server::ResourceServerMetadata;
 
 use crate::config::{parse_bool_value, s3_from_lookup};
 use crate::{EmbedError, company_owner};
@@ -26,6 +27,7 @@ pub struct RuntimeBuilder {
     epoch_check_interval: Option<Duration>,
     insecure_single_owner: bool,
     authenticator: Option<Arc<dyn Authenticator>>,
+    resource_metadata: Option<ResourceServerMetadata>,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
     anthropic: Option<Arc<dyn AnthropicClient>>,
 }
@@ -46,6 +48,7 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("epoch_check_interval", &self.epoch_check_interval)
             .field("insecure_single_owner", &self.insecure_single_owner)
             .field("has_authenticator", &self.authenticator.is_some())
+            .field("has_resource_metadata", &self.resource_metadata.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
             .field("has_anthropic", &self.anthropic.is_some())
             .finish()
@@ -69,6 +72,7 @@ impl RuntimeBuilder {
             epoch_check_interval: self.epoch_check_interval.or(base.epoch_check_interval),
             insecure_single_owner: self.insecure_single_owner || base.insecure_single_owner,
             authenticator: self.authenticator.or(base.authenticator),
+            resource_metadata: self.resource_metadata.or(base.resource_metadata),
             embed_client: self.embed_client.or(base.embed_client),
             anthropic: self.anthropic.or(base.anthropic),
         }
@@ -172,6 +176,14 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn authenticator(mut self, authenticator: Arc<dyn Authenticator>) -> Self {
         self.authenticator = Some(authenticator);
+        self
+    }
+
+    /// Advertise OAuth protected-resource metadata (enables the public
+    /// discovery route + `WWW-Authenticate` on 401).
+    #[must_use]
+    pub fn resource_metadata(mut self, metadata: ResourceServerMetadata) -> Self {
+        self.resource_metadata = Some(metadata);
         self
     }
 
@@ -313,6 +325,7 @@ impl RuntimeBuilder {
             stream_revalidation,
             insecure_single_owner: self.insecure_single_owner,
             has_host_authenticator: parts.authenticator.is_some(),
+            resource_metadata: self.resource_metadata,
         };
         config.validate()?;
         Ok((config, parts))
@@ -332,6 +345,7 @@ pub struct RuntimeConfig {
     pub stream_revalidation: RevalidationConfig,
     pub insecure_single_owner: bool,
     pub has_host_authenticator: bool,
+    pub resource_metadata: Option<ResourceServerMetadata>,
 }
 
 impl RuntimeConfig {
@@ -526,6 +540,7 @@ mod tests {
             stream_revalidation: RevalidationConfig::default(),
             insecure_single_owner: false,
             has_host_authenticator: true,
+            resource_metadata: None,
         }
     }
 

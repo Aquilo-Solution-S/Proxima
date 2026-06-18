@@ -21,8 +21,20 @@ Required:
 
 Optional:
   --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxima_dev)
-  --bind <ADDR:PORT>       Bind address (default: 127.0.0.1:31415; loopback only)
+  --bind <ADDR:PORT>       Bind address override (loopback only)
   -h, --help               Print this message
+
+Environment:
+  PROXIMA_MCP_BIND              Bind address; allows non-loopback with
+                                PROXIMA_EXPOSE_NETWORK=true
+                                (e.g. 0.0.0.0:8080)
+  PROXIMA_EXPOSE_NETWORK        Permit non-loopback MCP exposure
+  PROXIMA_ALLOWED_ORIGINS       Comma-separated CORS origin allowlist
+  PROXIMA_PUBLIC_URL            Public base URL for OAuth discovery
+  PROXIMA_OIDC_ISSUER           OIDC issuer / authorization server
+  PROXIMA_OIDC_AUDIENCE         Expected token audience
+  PROXIMA_OIDC_JWKS_URI         Optional explicit JWKS endpoint
+  PROXIMA_OIDC_ALLOWED_SUBJECTS Optional comma-separated sub allowlist
 
 Maintenance:
   reconcile-embeddings     Enqueue missing embedding jobs globally
@@ -58,7 +70,7 @@ Optional:
 pub struct McpConfig {
     pub database_url: String,
     pub owner: Owner,
-    pub bind: SocketAddr,
+    pub bind: Option<SocketAddr>,
     pub master_token: Option<Uuid>,
 }
 
@@ -143,12 +155,6 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
     let database_url = database_url.unwrap_or_else(|| {
         std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
     });
-    let bind = match bind {
-        Some(bind) => bind,
-        None => DEFAULT_BIND.parse().map_err(|err| {
-            ArgsError::Invalid(format!("invalid default bind {DEFAULT_BIND:?}: {err}"))
-        })?,
-    };
     let master_token = match master_token {
         Some(token) => Some(token),
         None => std::env::var("PROXIMA_MCP_MASTER_TOKEN")
@@ -270,8 +276,25 @@ mod tests {
         ])
         .expect("valid args");
         assert_eq!(cfg.database_url, "postgres://x/y");
-        assert_eq!(cfg.bind.to_string(), DEFAULT_BIND);
+        assert!(cfg.bind.is_none());
         assert_eq!(cfg.master_token, Some(uuid::Uuid::nil()));
+    }
+
+    #[test]
+    fn loopback_bind_parse() {
+        let cfg = parse_args([
+            "--owner-user".into(),
+            uuid::Uuid::nil().to_string(),
+            "--owner-org".into(),
+            uuid::Uuid::nil().to_string(),
+            "--bind".into(),
+            "127.0.0.1:9999".into(),
+        ])
+        .expect("valid args");
+        assert_eq!(
+            cfg.bind,
+            Some("127.0.0.1:9999".parse().expect("valid bind"))
+        );
     }
 
     #[test]
