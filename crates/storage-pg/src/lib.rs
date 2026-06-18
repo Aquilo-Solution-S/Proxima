@@ -404,6 +404,7 @@ impl Storage for PgStorage {
             prompt_version: req.prompt_version,
             sidecar_table: Some(req.sidecar_table),
             sidecar_payload: Some(req.sidecar_payload.clone()),
+            supersedes: req.supersedes,
             embedding: req.embedding.clone(),
             embedding_model_id: req.embedding_model_id,
         };
@@ -412,7 +413,7 @@ impl Storage for PgStorage {
         if !outcome.idempotent_replay {
             for edge in req.edges {
                 let draft = edge_draft_from_spec(edge);
-                verbs::edge_append::append_edge_in_tx(&mut tx, &draft, None).await?;
+                verbs::edge_append::append_edge_in_tx(&mut tx, &draft, edge.edge_payload).await?;
                 edge_count += 1;
             }
         }

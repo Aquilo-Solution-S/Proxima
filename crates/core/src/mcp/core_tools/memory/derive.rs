@@ -197,6 +197,7 @@ impl McpTool for DeriveTool {
                     author_personality_instance_id: ctx.author.personality_instance_id,
                     sidecar_table: AgentDerivationV1::sidecar_table(),
                     sidecar_payload: sidecar,
+                    supersedes: None,
                     edges: &edges,
                 })
                 .await?;

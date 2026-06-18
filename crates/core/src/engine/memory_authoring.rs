@@ -1,8 +1,8 @@
 use super::Engine;
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, StorageError};
 use crate::{
-    EdgeAuthorshipKind, EntityKind, MemoryId, MemoryOperatorKind, Owner, PersonalityInstanceId,
-    RegisteredRelation, SchemaId, SchemaVersion,
+    CORE_SUPERSEDES_RELATION, EdgeAuthorshipKind, EntityKind, MemoryId, MemoryOperatorKind, Owner,
+    PersonalityInstanceId, RegisteredRelation, SchemaId, SchemaVersion,
 };
 
 #[derive(Debug, Clone)]
@@ -30,6 +30,10 @@ pub struct AuthorDerivedRequestInput<'a> {
     pub author_personality_instance_id: Option<PersonalityInstanceId>,
     pub sidecar_table: &'a str,
     pub sidecar_payload: serde_json::Value,
+    /// Prior A/P memory superseded by this derived memory. The engine
+    /// records both `memories.supersedes` and a same-transaction
+    /// `core/supersedes` edge.
+    pub supersedes: Option<MemoryId>,
     pub edges: &'a [AuthorDerivedEdgeInput<'a>],
 }
 
@@ -64,8 +68,22 @@ impl Engine {
             )));
         }
 
+        let supersedes_relation = if req.supersedes.is_some() {
+            Some(
+                self.registry()
+                    .resolve_relation(CORE_SUPERSEDES_RELATION)
+                    .ok_or_else(|| {
+                        StorageError::ConstraintViolation(format!(
+                            "relation {CORE_SUPERSEDES_RELATION} not registered"
+                        ))
+                    })?,
+            )
+        } else {
+            None
+        };
+
         let owner = req.owner;
-        let edges: Vec<DerivedEdgeSpec<'_>> = req
+        let mut edges: Vec<DerivedEdgeSpec<'_>> = req
             .edges
             .iter()
             .map(|edge| DerivedEdgeSpec {
@@ -80,6 +98,19 @@ impl Engine {
                 edge_payload: None,
             })
             .collect();
+        if let (Some(prior), Some(relation)) = (req.supersedes, supersedes_relation) {
+            edges.push(DerivedEdgeSpec {
+                owner: &owner,
+                relation,
+                source_kind: req.kind,
+                source_memory_id: req.memory_id,
+                target_kind: req.kind,
+                target_memory_id: prior,
+                authorship_kind: EdgeAuthorshipKind::Engine,
+                authorship_owner_memory_id: None,
+                edge_payload: None,
+            });
+        }
         let storage_req = AuthorDerivedRequest {
             memory_id: req.memory_id,
             owner: owner.clone(),
@@ -93,6 +124,7 @@ impl Engine {
             author_personality_instance_id: req.author_personality_instance_id,
             sidecar_table: req.sidecar_table,
             sidecar_payload: req.sidecar_payload,
+            supersedes: req.supersedes,
             embedding: Some(embedding),
             embedding_model_id: Some(client.model_id()),
             edges: &edges,

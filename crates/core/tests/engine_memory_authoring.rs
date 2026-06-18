@@ -77,6 +77,7 @@ impl AbstractionPayload for AgentDerivationV1 {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn engine_author_derived_writes_memory_edge_and_embedding()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
@@ -139,6 +140,7 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
             author_personality_instance_id: Some(author_personality),
             sidecar_table: AgentDerivationV1::sidecar_table(),
             sidecar_payload,
+            supersedes: None,
             edges: &edges,
         })
         .await?;
@@ -181,6 +183,162 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
     assert_eq!(edge_row.3, Some(source_abstraction.into_inner()));
 
     assert_embedding_row(pg.pool(), memory_id).await?;
+
+    drop(engine);
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn engine_author_derived_supersedes_in_same_transaction()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let owner = owner_fixture();
+    let mut registry = FlavorRegistry::new();
+    registry.add_abstraction_schema::<AgentDerivationV1>();
+    let engine = proxima_core::Engine::new(registry.freeze())
+        .with_storage(pg.clone().into_handle())
+        .with_embed(Arc::new(ConstantEmbedding::prefixed(
+            "test-embed",
+            &[22.0, 1.0, 2.0],
+        )));
+    let author_personality = PersonalityInstanceId::new(Uuid::now_v7());
+    let old_memory_id = MemoryId::new(Uuid::now_v7());
+    let new_memory_id = MemoryId::new(Uuid::now_v7());
+
+    let old_sidecar = serde_json::to_value(AgentDerivationV1 {
+        title: "Old assertion".into(),
+        body: "old assertion body".into(),
+        tags: vec!["assertion".into()],
+        idempotency_key: Some("assertion-old".into()),
+        source_memory_ids: Vec::new(),
+        model_id: "agent-model".into(),
+        client_name: "test-client".into(),
+        client_version: "1".into(),
+    })?;
+    let old = engine
+        .author_derived(proxima_core::AuthorDerivedRequestInput {
+            memory_id: old_memory_id,
+            owner: owner.clone(),
+            kind: EntityKind::Abstraction,
+            text: "old assertion body".into(),
+            schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
+            schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+            operator_kind: MemoryOperatorKind::ExternalAgent,
+            model_id: "agent-model",
+            prompt_version: "test-prompt",
+            author_personality_instance_id: Some(author_personality),
+            sidecar_table: AgentDerivationV1::sidecar_table(),
+            sidecar_payload: old_sidecar,
+            supersedes: None,
+            edges: &[],
+        })
+        .await?;
+    assert_eq!(old.memory_id, old_memory_id);
+    assert_eq!(old.edge_count, 0);
+
+    let new_sidecar = serde_json::to_value(AgentDerivationV1 {
+        title: "New assertion".into(),
+        body: "new assertion body".into(),
+        tags: vec!["assertion".into()],
+        idempotency_key: Some("assertion-new".into()),
+        source_memory_ids: Vec::new(),
+        model_id: "agent-model".into(),
+        client_name: "test-client".into(),
+        client_version: "1".into(),
+    })?;
+    let new = engine
+        .author_derived(proxima_core::AuthorDerivedRequestInput {
+            memory_id: new_memory_id,
+            owner: owner.clone(),
+            kind: EntityKind::Abstraction,
+            text: "new assertion body".into(),
+            schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
+            schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+            operator_kind: MemoryOperatorKind::ExternalAgent,
+            model_id: "agent-model",
+            prompt_version: "test-prompt",
+            author_personality_instance_id: Some(author_personality),
+            sidecar_table: AgentDerivationV1::sidecar_table(),
+            sidecar_payload: new_sidecar,
+            supersedes: Some(old_memory_id),
+            edges: &[],
+        })
+        .await?;
+    assert_eq!(new.memory_id, new_memory_id);
+    assert_eq!(new.edge_count, 1);
+
+    let stored_supersedes: Option<Uuid> =
+        sqlx::query_scalar("SELECT supersedes FROM proxima_core.memories WHERE memory_id = $1")
+            .bind(new_memory_id.into_inner())
+            .fetch_one(pg.pool())
+            .await?;
+    assert_eq!(stored_supersedes, Some(old_memory_id.into_inner()));
+
+    let supersedes_edge_count: i64 = sqlx::query_scalar(
+        "SELECT count(*)
+           FROM proxima_core.edges
+          WHERE relation = $1
+            AND source_memory_id = $2
+            AND target_memory_id = $3
+            AND relation_class = 'Supersession'",
+    )
+    .bind(proxima_core::CORE_SUPERSEDES_RELATION)
+    .bind(new_memory_id.into_inner())
+    .bind(old_memory_id.into_inner())
+    .fetch_one(pg.pool())
+    .await?;
+    assert_eq!(supersedes_edge_count, 1);
+
+    let head_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT m.memory_id
+           FROM proxima_core.memories m
+          WHERE m.owner_principal_kind = $1
+            AND m.owner_principal_id = $2
+            AND m.schema_id = $3
+            AND m.kind = 'Abstraction'
+            AND m.tombstoned_at IS NULL
+            AND NOT EXISTS (
+                 SELECT 1 FROM proxima_core.memories newer
+                  WHERE newer.supersedes = m.memory_id
+                    AND newer.tombstoned_at IS NULL
+            )",
+    )
+    .bind(OwnerPrincipalKind::of(&owner.principal))
+    .bind(match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
+    })
+    .bind(AgentDerivationV1::SCHEMA_ID)
+    .fetch_all(pg.pool())
+    .await?;
+    assert!(head_ids.contains(&new_memory_id.into_inner()));
+    assert!(!head_ids.contains(&old_memory_id.into_inner()));
+
+    let lineage = pg
+        .walk_memory_lineage(&proxima_core::verbs::query::MemoryLineageRequest {
+            principal: owner.principal.clone(),
+            start_memory_id: new_memory_id,
+            direction: proxima_core::verbs::query::MemoryLineageDirection::Ancestors,
+            depth: 2,
+            limit: 10,
+            reader_personality_instance_id: None,
+        })
+        .await?;
+    assert!(
+        lineage
+            .nodes
+            .iter()
+            .any(|node| node.memory_id == old_memory_id)
+    );
+    assert!(lineage.edges.iter().any(|edge| {
+        edge.relation == proxima_core::CORE_SUPERSEDES_RELATION
+            && edge.source_memory_id == new_memory_id
+            && edge.target_memory_id == old_memory_id
+    }));
 
     drop(engine);
     drop(pg);

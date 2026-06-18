@@ -284,6 +284,41 @@ Default lineage scope is the personality instance that authored the derived
 memory. Cross-personality supersession is an explicit user/API editorial
 gesture, never an operator decision.
 
+## Assertion Lifecycle Pattern
+
+Assertion = typed Abstraction whose sidecar carries a flavor-owned stable
+key plus claim fields. Core owns lifecycle mechanics only.
+
+```
+Fact evidence* --core/derived-from--> Assertion(A)
+Assertion(A_new) --core/supersedes--> Assertion(A_old)
+Assertion(A) --flavor/structural-endpoint--> Fact entity head*
+```
+
+Core requirements:
+
+- assertion payload is an `AbstractionPayload` sidecar; no generic
+  relation entity;
+- evidence is `core/derived-from` to Facts; citations stay Fact-only;
+- endpoint refs use ordinary registered structural edges, preferably
+  `FollowHead` Fact-entity endpoints for stateful entities;
+- supersession writes both `memories.supersedes` and `core/supersedes` in
+  the same transaction;
+- current / superseded state is query-derived from heads, disposition, and
+  flavor-owned validity fields.
+
+Flavor responsibilities:
+
+- stable assertion key shape;
+- endpoint vocabulary and payload fields;
+- validity scope (`Date` interval, repo commit range, etc.);
+- confidence / disposition enums;
+- domain MCP wrappers and projection caches.
+
+Do not add edge citation/status fields, runtime relation vocabularies, a
+core `RelationAssertion` entity, or authoritative materialized relation
+edges for this pattern.
+
 ## Personality
 
 Personality is a flavor-declared decider type plus runtime instances.
