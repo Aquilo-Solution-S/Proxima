@@ -892,7 +892,12 @@ pub fn int_to_u64(value: i64, column: &str) -> Result<u64, StorageError> {
     u64::try_from(value).map_err(|err| StorageError::Internal(format!("invalid {column}: {err}")))
 }
 
-fn memory_insert_sql(table: &str, key_column: &str, columns: &[(&str, Option<&str>)]) -> String {
+#[must_use]
+pub fn memory_insert_sql(
+    table: &str,
+    key_column: &str,
+    columns: &[(&str, Option<&str>)],
+) -> String {
     let mut sql = String::new();
     write!(&mut sql, "INSERT INTO {table} ({key_column}")
         .expect("writing SQL into String cannot fail");
@@ -910,7 +915,8 @@ fn memory_insert_sql(table: &str, key_column: &str, columns: &[(&str, Option<&st
     sql
 }
 
-fn memory_select_batch_sql(table: &str, key_column: &str, columns: &[&str]) -> String {
+#[must_use]
+pub fn memory_select_batch_sql(table: &str, key_column: &str, columns: &[&str]) -> String {
     let mut sql = String::new();
     write!(&mut sql, "SELECT {key_column}").expect("writing SQL into String cannot fail");
     for column in columns {
@@ -931,30 +937,31 @@ fn parse_utterance_speaker(value: &str) -> Result<proxima_core::Speaker, Storage
     }
 }
 
+#[macro_export]
 macro_rules! pg_sidecar_row_ty {
     (uuid) => {
-        uuid::Uuid
+        ::uuid::Uuid
     };
     (uuid_array) => {
-        Vec<uuid::Uuid>
+        ::std::vec::Vec<::uuid::Uuid>
     };
     (text) => {
-        String
+        ::std::string::String
     };
     (opt_text) => {
-        Option<String>
+        ::std::option::Option<::std::string::String>
     };
     (text_array) => {
-        Vec<String>
+        ::std::vec::Vec<::std::string::String>
     };
     (bool) => {
         bool
     };
     (timestamptz) => {
-        time::OffsetDateTime
+        ::time::OffsetDateTime
     };
     (bytea32) => {
-        Vec<u8>
+        ::std::vec::Vec<u8>
     };
     (u32_as_i32) => {
         i32
@@ -966,19 +973,21 @@ macro_rules! pg_sidecar_row_ty {
         i64
     };
     (enum { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }) => {
-        String
+        ::std::string::String
     };
 }
 
+#[macro_export]
 macro_rules! pg_sidecar_cast {
     (enum { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }) => {
-        Some($pg_type)
+        ::std::option::Option::Some($pg_type)
     };
     ($kind:ident) => {
-        None
+        ::std::option::Option::None
     };
 }
 
+#[macro_export]
 macro_rules! pg_sidecar_bind {
     ((uuid), $self:ident, $field:ident) => {
         $self.$field
@@ -1005,17 +1014,27 @@ macro_rules! pg_sidecar_bind {
         $self.$field.to_vec()
     };
     ((u32_as_i32), $self:ident, $field:ident) => {
-        i32::try_from($self.$field).map_err(|err| {
-            StorageError::ConstraintViolation(format!("{} out of range: {err}", stringify!($field)))
-        })?
+        <::std::primitive::i32 as ::std::convert::TryFrom<_>>::try_from($self.$field).map_err(
+            |err| {
+                ::proxima_core::StorageError::ConstraintViolation(::std::format!(
+                    "{} out of range: {err}",
+                    ::std::stringify!($field)
+                ))
+            },
+        )?
     };
     ((u32_as_i64), $self:ident, $field:ident) => {
-        i64::from($self.$field)
+        ::std::primitive::i64::from($self.$field)
     };
     ((u64_as_i64), $self:ident, $field:ident) => {
-        i64::try_from($self.$field).map_err(|err| {
-            StorageError::ConstraintViolation(format!("{} out of range: {err}", stringify!($field)))
-        })?
+        <::std::primitive::i64 as ::std::convert::TryFrom<_>>::try_from($self.$field).map_err(
+            |err| {
+                ::proxima_core::StorageError::ConstraintViolation(::std::format!(
+                    "{} out of range: {err}",
+                    ::std::stringify!($field)
+                ))
+            },
+        )?
     };
     (
         (
@@ -1028,6 +1047,7 @@ macro_rules! pg_sidecar_bind {
     };
 }
 
+#[macro_export]
 macro_rules! pg_sidecar_decode {
     ((uuid), $row:ident, $field:ident) => {
         $row.$field
@@ -1051,18 +1071,23 @@ macro_rules! pg_sidecar_decode {
         $row.$field
     };
     ((bytea32), $row:ident, $field:ident) => {
-        bytes32(&$row.$field, stringify!($field))?
+        $crate::sidecars::bytes32(&$row.$field, ::std::stringify!($field))?
     };
     ((u32_as_i32), $row:ident, $field:ident) => {
-        int_to_u32($row.$field, stringify!($field))?
+        $crate::sidecars::int_to_u32($row.$field, ::std::stringify!($field))?
     };
     ((u32_as_i64), $row:ident, $field:ident) => {
-        u32::try_from($row.$field).map_err(|err| {
-            StorageError::Internal(format!("invalid {}: {err}", stringify!($field)))
-        })?
+        <::std::primitive::u32 as ::std::convert::TryFrom<_>>::try_from($row.$field).map_err(
+            |err| {
+                ::proxima_core::StorageError::Internal(::std::format!(
+                    "invalid {}: {err}",
+                    ::std::stringify!($field)
+                ))
+            },
+        )?
     };
     ((u64_as_i64), $row:ident, $field:ident) => {
-        int_to_u64($row.$field, stringify!($field))?
+        $crate::sidecars::int_to_u64($row.$field, ::std::stringify!($field))?
     };
     (
         (
@@ -1075,29 +1100,33 @@ macro_rules! pg_sidecar_decode {
     };
 }
 
+#[macro_export]
 macro_rules! pg_sidecar_payload {
     (@wrap Fact, $payload:expr) => {
-        SidecarPayload::fact($payload)
+        ::proxima_core::SidecarPayload::fact($payload)
     };
     (@wrap Abstraction, $payload:expr) => {
-        SidecarPayload::abstraction($payload)
+        ::proxima_core::SidecarPayload::abstraction($payload)
     };
     (@wrap Perspective, $payload:expr) => {
-        SidecarPayload::perspective($payload)
+        ::proxima_core::SidecarPayload::perspective($payload)
     };
     ($payload_ty:path, $kind:expr, $payload:expr, [$($payload_kind:ident),+ $(,)?]) => {{
         match $kind {
             $(
-                PayloadKind::$payload_kind => Ok(pg_sidecar_payload!(@wrap $payload_kind, $payload)),
+                ::proxima_core::verbs::schema::PayloadKind::$payload_kind => {
+                    ::std::result::Result::Ok($crate::pg_sidecar_payload!(@wrap $payload_kind, $payload))
+                }
             )+
-            other => Err(StorageError::ConstraintViolation(format!(
+            other => ::std::result::Result::Err(::proxima_core::StorageError::ConstraintViolation(::std::format!(
                 "payload kind {other:?} is not valid for {}",
-                std::any::type_name::<$payload_ty>(),
+                ::std::any::type_name::<$payload_ty>(),
             ))),
         }
     }};
 }
 
+#[macro_export]
 macro_rules! pg_sidecar {
     (
         payload: $($payload_ty:ident)::+,
@@ -1111,76 +1140,76 @@ macro_rules! pg_sidecar {
             ),+ $(,)?
         } $(,)?
     ) => {
-        impl PgMemorySidecar for $($payload_ty)::+ {
+        impl $crate::sidecars::PgMemorySidecar for $($payload_ty)::+ {
             fn insert_memory_sidecar<'t>(
                 &'t self,
-                tx: &'t mut Transaction<'_, Postgres>,
-                memory_id: MemoryId,
-            ) -> PgSidecarFuture<'t> {
-                Box::pin(async move {
-                    let sql = memory_insert_sql(
+                tx: &'t mut ::sqlx::Transaction<'_, ::sqlx::Postgres>,
+                memory_id: ::proxima_core::MemoryId,
+            ) -> $crate::sidecars::PgSidecarFuture<'t> {
+                ::std::boxed::Box::pin(async move {
+                    let sql = $crate::sidecars::memory_insert_sql(
                         $table,
-                        stringify!($key_column),
+                        ::std::stringify!($key_column),
                         &[$(
-                            (stringify!($column), pg_sidecar_cast! $column_kind),
+                            (::std::stringify!($column), $crate::pg_sidecar_cast! $column_kind),
                         )+],
                     );
-                    sqlx::query(&sql)
+                    ::sqlx::query(&sql)
                         .bind(memory_id.into_inner())
                         $(
-                            .bind(pg_sidecar_bind!($column_kind, self, $field))
+                            .bind($crate::pg_sidecar_bind!($column_kind, self, $field))
                         )+
                         .execute(tx.as_mut())
                         .await
-                        .map_err(|err| StorageError::Internal(err.to_string()))?;
-                    Ok(())
+                        .map_err(|err| ::proxima_core::StorageError::Internal(err.to_string()))?;
+                    ::std::result::Result::Ok(())
                 })
             }
         }
 
-        #[derive(Debug, sqlx::FromRow)]
+        #[derive(Debug, ::sqlx::FromRow)]
         struct $row_ty {
-            $key_column: uuid::Uuid,
+            $key_column: ::uuid::Uuid,
             $(
-                $field: pg_sidecar_row_ty! $column_kind,
+                $field: $crate::pg_sidecar_row_ty! $column_kind,
             )+
         }
 
-        impl PgMemoryPayload for $($payload_ty)::+ {
+        impl $crate::sidecars::PgMemoryPayload for $($payload_ty)::+ {
             fn load_batch<'t>(
-                pool: &'t PgPool,
-                kind: PayloadKind,
-                memory_ids: &'t [MemoryId],
-            ) -> PgMemoryPayloadBatchFuture<'t> {
-                Box::pin(async move {
+                pool: &'t ::sqlx::PgPool,
+                kind: ::proxima_core::verbs::schema::PayloadKind,
+                memory_ids: &'t [::proxima_core::MemoryId],
+            ) -> $crate::sidecars::PgMemoryPayloadBatchFuture<'t> {
+                ::std::boxed::Box::pin(async move {
                     if memory_ids.is_empty() {
-                        return Ok(Vec::new());
+                        return ::std::result::Result::Ok(::std::vec::Vec::new());
                     }
                     let raw_memory_ids = memory_ids
                         .iter()
                         .map(|memory_id| (*memory_id).into_inner())
-                        .collect::<Vec<_>>();
-                    let sql = memory_select_batch_sql(
+                        .collect::<::std::vec::Vec<_>>();
+                    let sql = $crate::sidecars::memory_select_batch_sql(
                         $table,
-                        stringify!($key_column),
-                        &[$(stringify!($column)),+],
+                        ::std::stringify!($key_column),
+                        &[$(::std::stringify!($column)),+],
                     );
-                    let rows = sqlx::query_as::<_, $row_ty>(&sql)
+                    let rows = ::sqlx::query_as::<_, $row_ty>(&sql)
                         .bind(&raw_memory_ids)
                         .fetch_all(pool)
                         .await
-                        .map_err(|err| StorageError::Internal(err.to_string()))?;
+                        .map_err(|err| ::proxima_core::StorageError::Internal(err.to_string()))?;
                     rows.into_iter()
                         .map(|row| {
-                            let memory_id = MemoryId::new(row.$key_column);
+                            let memory_id = ::proxima_core::MemoryId::new(row.$key_column);
                             let payload = $($payload_ty)::+ {
                                 $(
-                                    $field: pg_sidecar_decode!($column_kind, row, $field),
+                                    $field: $crate::pg_sidecar_decode!($column_kind, row, $field),
                                 )+
                             };
-                            Ok((
+                            ::std::result::Result::Ok((
                                 memory_id,
-                                pg_sidecar_payload!(
+                                $crate::pg_sidecar_payload!(
                                     $($payload_ty)::+,
                                     kind,
                                     payload,
@@ -1188,16 +1217,17 @@ macro_rules! pg_sidecar {
                                 )?,
                             ))
                         })
-                        .collect::<Result<Vec<_>, StorageError>>()
+                        .collect::<::std::result::Result<::std::vec::Vec<_>, ::proxima_core::StorageError>>()
                 })
             }
         }
     };
 }
 
+#[macro_export]
 macro_rules! goal_lifecycle_fact {
     ($($payload_ty:ident)::+, $row_ty:ident, $table:literal) => {
-        pg_sidecar! {
+        $crate::pg_sidecar! {
             payload: $($payload_ty)::+,
             row: $row_ty,
             kinds: [Fact],
