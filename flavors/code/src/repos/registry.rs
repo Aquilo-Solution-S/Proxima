@@ -251,11 +251,56 @@ pub async fn erase_repo(
          UNION \
          SELECT m.memory_id \
          FROM proxima_core.memories m \
-         JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
+         JOIN proxima_code.work_requested_v1 s USING (memory_id) \
          WHERE m.owner_principal_kind = $1 \
            AND m.owner_principal_id = $2 \
            AND m.owner_org_id = $3 \
-           AND s.repo_id = $4",
+           AND s.repo_id = $4 \
+         UNION \
+         SELECT m.memory_id \
+         FROM proxima_core.memories m \
+         JOIN proxima_code.test_requested_v1 s USING (memory_id) \
+         WHERE m.owner_principal_kind = $1 \
+           AND m.owner_principal_id = $2 \
+           AND m.owner_org_id = $3 \
+           AND s.repo_id = $4 \
+         UNION \
+         SELECT m.memory_id \
+         FROM proxima_core.memories m \
+         JOIN proxima_code.acceptance_criteria_v1 s USING (memory_id) \
+         JOIN proxima_code.work_requested_v1 r \
+           ON r.memory_id = s.work_item_memory_id \
+         WHERE m.owner_principal_kind = $1 \
+           AND m.owner_principal_id = $2 \
+           AND m.owner_org_id = $3 \
+           AND r.repo_id = $4 \
+         UNION \
+         SELECT m.memory_id \
+         FROM proxima_core.memories m \
+         JOIN proxima_code.execution_result_v1 s USING (memory_id) \
+         WHERE m.owner_principal_kind = $1 \
+           AND m.owner_principal_id = $2 \
+           AND m.owner_org_id = $3 \
+           AND s.repo_id = $4 \
+         UNION \
+         SELECT m.memory_id \
+         FROM proxima_core.memories m \
+         JOIN proxima_code.test_result_v1 s USING (memory_id) \
+         WHERE m.owner_principal_kind = $1 \
+           AND m.owner_principal_id = $2 \
+           AND m.owner_org_id = $3 \
+           AND s.repo_id = $4 \
+         UNION \
+         SELECT m.memory_id \
+         FROM proxima_core.memories m \
+         JOIN proxima_code.acceptance_verification_v1 s USING (memory_id) \
+         JOIN proxima_core.memories wi ON wi.memory_id = s.work_item_memory_id \
+         LEFT JOIN proxima_code.work_requested_v1 wr ON wr.memory_id = wi.memory_id \
+         LEFT JOIN proxima_code.test_requested_v1 tr ON tr.memory_id = wi.memory_id \
+         WHERE m.owner_principal_kind = $1 \
+           AND m.owner_principal_id = $2 \
+           AND m.owner_org_id = $3 \
+           AND COALESCE(wr.repo_id, tr.repo_id) = $4",
     )
     .bind(kind)
     .bind(principal_id)
@@ -274,7 +319,31 @@ pub async fn erase_repo(
         "INSERT INTO tmp_proxima_repo_abstractions (memory_id) \
          SELECT m.memory_id \
          FROM proxima_core.memories m \
+         JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
+         WHERE m.owner_principal_kind = $1 \
+           AND m.owner_principal_id = $2 \
+           AND m.owner_org_id = $3 \
+           AND s.repo_id = $4 \
+         UNION \
+         SELECT m.memory_id \
+         FROM proxima_core.memories m \
          JOIN proxima_code.commit_summary_v1 s USING (memory_id) \
+         WHERE m.owner_principal_kind = $1 \
+           AND m.owner_principal_id = $2 \
+           AND m.owner_org_id = $3 \
+           AND s.repo_id = $4 \
+         UNION \
+         SELECT m.memory_id \
+         FROM proxima_core.memories m \
+         JOIN proxima_code.execution_plan_v1 s USING (memory_id) \
+         WHERE m.owner_principal_kind = $1 \
+           AND m.owner_principal_id = $2 \
+           AND m.owner_org_id = $3 \
+           AND s.repo_id = $4 \
+         UNION \
+         SELECT m.memory_id \
+         FROM proxima_core.memories m \
+         JOIN proxima_code.acceptance_summary_v1 s USING (memory_id) \
          WHERE m.owner_principal_kind = $1 \
            AND m.owner_principal_id = $2 \
            AND m.owner_org_id = $3 \

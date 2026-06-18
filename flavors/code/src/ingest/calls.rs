@@ -1,11 +1,14 @@
-use proxima_core::{EdgeAuthorshipKind, EntityKind, Owner};
+use proxima_core::{EdgeAuthorshipKind, MemoryId, Owner};
+use proxima_storage_pg::verbs::edge_append::{Endpoint, append_typed_edge};
 use sqlx::PgPool;
 
 use super::IngestError;
 use super::schemas::schema_registry;
+use crate::payloads::EdgeCallsV1;
 
-/// Typed payload for one `code/calls` edge: caller + callee chunk
-/// memories, callsite byte range, and callee identifier metadata.
+/// Typed payload for one derived `code/calls` edge: caller + callee
+/// code-slice Abstractions, callsite byte range, and callee identifier
+/// metadata.
 ///
 /// `callsite_byte_start_in_source_chunk` is the offset of the call
 /// expression *within the source chunk's text* (not file-level). It
@@ -67,22 +70,19 @@ fn calls_edge_natural_key(
     k
 }
 
-/// Atomic edge + typed sidecar write for `code/calls` edges.
-/// Wraps `proxima_storage_pg::verbs::edge_append::append_edge_in_tx`.
+/// Atomic operator-authored edge + typed sidecar write for derived
+/// `code/calls` edges.
 ///
 /// `edge_id` is derived deterministically from the natural key
 /// (owner ‖ relation ‖ source_memory_id ‖ target_memory_id ‖
-/// chunk-relative callsite offset). Re-ingests of the same call site
-/// produce the same `edge_id` and are dropped by the `ON CONFLICT`
-/// guard inside `append_edge_in_tx` — sidecar + change_event are
-/// gated on the edge insert actually returning a row.
+/// chunk-relative callsite offset). Replays over the same source file
+/// revision produce the same derived code-slice ids and therefore the
+/// same call edge id.
 pub async fn ingest_calls_edge(
     pool: &PgPool,
     owner: &Owner,
     edge: &CallEdgeDraft,
 ) -> Result<(), IngestError> {
-    use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
-
     let registry = schema_registry();
     let relation = registry
         .resolve_relation("proxima-code/calls")
@@ -98,31 +98,26 @@ pub async fn ingest_calls_edge(
     );
     let edge_id = uuid::Uuid::new_v5(&PROXIMA_CODE_EDGE_NAMESPACE, &key);
 
-    let payload = serde_json::json!({
-        "callsite_byte_start": edge.callsite_byte_start,
-        "callsite_byte_end": edge.callsite_byte_end,
-        "callee_name": edge.callee_name,
-        "is_dynamic": edge.is_dynamic,
-    });
-
-    let draft = EdgeDraft {
-        edge_id,
-        relation,
-        source_kind: EntityKind::Fact,
-        source_memory_id: Some(edge.source_memory_id),
-        source_goal_id: None,
-        source_fact_entity_id: None,
-        target_kind: EntityKind::Fact,
-        target_memory_id: Some(edge.target_memory_id),
-        target_goal_id: None,
-        target_fact_entity_id: None,
-        authorship_kind: EdgeAuthorshipKind::EventSource,
-        authorship_owner_memory_id: Some(edge.source_memory_id),
-        owner,
+    let payload = EdgeCallsV1 {
+        callsite_byte_start: edge.callsite_byte_start,
+        callsite_byte_end: edge.callsite_byte_end,
+        callee_name: edge.callee_name.clone(),
+        is_dynamic: edge.is_dynamic,
     };
 
     let mut tx = pool.begin().await?;
-    append_edge_in_tx(&mut tx, &draft, Some(&payload)).await?;
+    append_typed_edge(
+        tx.as_mut(),
+        edge_id,
+        relation,
+        Endpoint::abstraction(MemoryId::new(edge.source_memory_id)),
+        Endpoint::abstraction(MemoryId::new(edge.target_memory_id)),
+        EdgeAuthorshipKind::OperatorFtoA,
+        Some(MemoryId::new(edge.source_memory_id)),
+        owner,
+        &payload,
+    )
+    .await?;
     tx.commit().await?;
 
     Ok(())

@@ -568,7 +568,7 @@ async fn retry_execution_request_succeeds_with_target_execution_wake_entry()
     )
     .await?;
 
-    // Target worker WITH an enabled on_memory wake entry for execution-request-v1.
+    // Target worker WITH an enabled on_memory wake entry for work-requested-v1.
     let target = instantiate_worker(&engine, &authz, &owner, "Retry Worker").await?;
     grant_execution_wake(&engine, &authz, &owner, target.instance_id).await?;
 
@@ -607,7 +607,7 @@ async fn retry_execution_request_succeeds_with_target_execution_wake_entry()
 
     // The retry request actually landed under its idempotency key.
     let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM proxima_code.execution_request_v1
+        "SELECT count(*) FROM proxima_code.work_requested_v1
          WHERE repo_id = $1 AND request_key = $2",
     )
     .bind(repo_id)
@@ -671,7 +671,7 @@ async fn retry_execution_request_rejects_target_without_execution_wake_entry()
 
     // Nothing was authored for the rejected retry.
     let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM proxima_code.execution_request_v1
+        "SELECT count(*) FROM proxima_code.work_requested_v1
          WHERE repo_id = $1 AND request_key = $2",
     )
     .bind(repo_id)
@@ -763,7 +763,7 @@ async fn instantiate_worker(
 }
 
 /// Give `instance` an enabled `on_memory` wake entry for
-/// execution-request-v1 — the gate `validate_target_execution_wake`
+/// work-requested-v1 — the gate `validate_target_execution_wake`
 /// requires before a retry can be assigned.
 async fn grant_execution_wake(
     engine: &Engine,
@@ -810,7 +810,7 @@ async fn ingest_execution_request_fixture(
     )
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_code.execution_request_v1
+        "INSERT INTO proxima_code.work_requested_v1
             (memory_id, repo_id, title, instructions, request_key)
          VALUES ($1, $2, $3, $4, $5)",
     )
@@ -939,6 +939,34 @@ async fn fact_memory(
         .into_inner())
 }
 
+async fn abstraction_memory(
+    pool: &PgPool,
+    owner: &Owner,
+    schema_id: &str,
+    payload: &str,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let memory_id = Uuid::new_v5(&Uuid::NAMESPACE_OID, payload.as_bytes());
+    let (owner_kind, owner_id) = owner_principal(owner);
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+             schema_id, schema_version, kind, text, operator_kind, model_id,
+             prompt_version, personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, $4, $5, 1, 'Abstraction', $6, 'FtoA',
+             'test/code-index', 'test', '00000000-0000-0000-0000-000000000000'::uuid, 0)
+         ON CONFLICT (memory_id) DO NOTHING",
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(owner.org_id.into_inner())
+    .bind(schema_id)
+    .bind(payload)
+    .execute(pool)
+    .await?;
+    Ok(memory_id)
+}
+
 async fn ingest_file_revision(
     pool: &PgPool,
     engine: &Engine,
@@ -1002,12 +1030,18 @@ struct ChunkFixture<'a> {
 
 async fn ingest_code_chunk_with_type(
     pool: &PgPool,
-    engine: &Engine,
+    _engine: &Engine,
     owner: Owner,
     chunk: ChunkFixture<'_>,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let payload = format!("{}:{}:{}", chunk.file_path, chunk.chunk_index, chunk.text);
-    let memory_id = fact_memory(engine, owner, CodeChunkV1::SCHEMA_ID, payload.as_bytes()).await?;
+    let memory_id = abstraction_memory(
+        pool,
+        &owner,
+        <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID,
+        &payload,
+    )
+    .await?;
     let line_count = i64::try_from(chunk.text.lines().count().max(1))?;
     sqlx::query(
         "INSERT INTO proxima_code.code_chunk_v1
@@ -1032,14 +1066,20 @@ async fn ingest_code_chunk_with_type(
 
 async fn ingest_code_chunk_tombstone(
     pool: &PgPool,
-    engine: &Engine,
+    _engine: &Engine,
     owner: Owner,
     repo_id: Uuid,
     file_path: &str,
     chunk_index: i32,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let payload = format!("{file_path}:{chunk_index}:tombstone");
-    let memory_id = fact_memory(engine, owner, CodeChunkV1::SCHEMA_ID, payload.as_bytes()).await?;
+    let memory_id = abstraction_memory(
+        pool,
+        &owner,
+        <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID,
+        &payload,
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO proxima_code.code_chunk_v1
             (memory_id, repo_id, file_path, chunk_index, text, language,
@@ -1148,8 +1188,8 @@ async fn ingest_calls_edge(
              source_kind, source_memory_id, target_kind, target_memory_id,
              authorship_kind, owner_principal_kind, owner_principal_id, owner_org_id)
          VALUES ($1, 'proxima-code/calls', 'Structural',
-             'Fact', $2, 'Fact', $3,
-             'EventSource', $4, $5, $6)",
+             'Abstraction', $2, 'Abstraction', $3,
+             'OperatorFtoA', $4, $5, $6)",
     )
     .bind(edge_id)
     .bind(source_chunk)

@@ -142,7 +142,7 @@ impl McpTool for CodeSearchChunksTool {
                 let (match_kind, matched_line, matched_excerpt) =
                     match_metadata(query, &row.file_path, &row.text, row.line_range_start);
                 matches.push(ChunkMatch {
-                    handle: ctx.format_fact_memory(MemoryId::new(row.memory_id)),
+                    handle: ctx.format_abstraction_memory(MemoryId::new(row.memory_id)),
                     repo_handle: ctx.format_flavor_object(
                         super::REPO_HANDLE_KIND,
                         row.repo_id,
@@ -240,10 +240,10 @@ async fn load_call_edges(
             edge_handle: ctx.format_edge(EdgeId::new(row.edge_id)),
             source: row
                 .source_memory_id
-                .map(|id| ctx.format_fact_memory(MemoryId::new(id))),
+                .map(|id| ctx.format_abstraction_memory(MemoryId::new(id))),
             target: row
                 .target_memory_id
-                .map(|id| ctx.format_fact_memory(MemoryId::new(id))),
+                .map(|id| ctx.format_abstraction_memory(MemoryId::new(id))),
             callee_name: row.callee_name,
             is_dynamic: row.is_dynamic,
         })

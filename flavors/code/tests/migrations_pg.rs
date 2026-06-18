@@ -21,8 +21,14 @@ async fn flavor_migrations_apply_to_fresh_db() {
             "file_revision_v1",
             "code_chunk_v1",
             "commit_summary_v1",
-            "execution_request_v1",
-            "test_request_v1",
+            "work_requested_v1",
+            "test_requested_v1",
+            "acceptance_criteria_v1",
+            "execution_plan_v1",
+            "execution_result_v1",
+            "test_result_v1",
+            "acceptance_verification_v1",
+            "acceptance_summary_v1",
         ] {
             let row = sqlx::query(
                 "SELECT 1 AS ok FROM information_schema.tables
@@ -69,6 +75,9 @@ async fn flavor_migrations_apply_to_fresh_db() {
             ("repo_ingestion_runs", "stage"),
             ("file_revision_v1", "state"),
             ("code_chunk_v1", "state"),
+            ("execution_result_v1", "status"),
+            ("test_result_v1", "status"),
+            ("acceptance_verification_v1", "status"),
         ] {
             assert_enum_column(pg.pool(), "proxima_code", table, column).await?;
         }

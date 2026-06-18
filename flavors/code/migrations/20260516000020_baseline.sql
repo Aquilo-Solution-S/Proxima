@@ -19,6 +19,43 @@ CREATE TYPE proxima_code.file_state AS ENUM (
 
 
 --
+-- Name: acceptance_verifier_kind; Type: TYPE; Schema: proxima_code; Owner: -
+--
+
+CREATE TYPE proxima_code.acceptance_verifier_kind AS ENUM (
+    'file_exists',
+    'command',
+    'browser_smoke',
+    'diff_scope',
+    'reviewer_only'
+);
+
+
+--
+-- Name: work_result_status; Type: TYPE; Schema: proxima_code; Owner: -
+--
+
+CREATE TYPE proxima_code.work_result_status AS ENUM (
+    'succeeded',
+    'failed',
+    'blocked',
+    'cancelled'
+);
+
+
+--
+-- Name: acceptance_verification_status; Type: TYPE; Schema: proxima_code; Owner: -
+--
+
+CREATE TYPE proxima_code.acceptance_verification_status AS ENUM (
+    'passed',
+    'failed',
+    'skipped',
+    'blocked'
+);
+
+
+--
 -- Name: repo_ingestion_run_stage; Type: TYPE; Schema: proxima_code; Owner: -
 --
 
@@ -41,29 +78,6 @@ CREATE TYPE proxima_code.repo_ingestion_run_status AS ENUM (
     'running',
     'succeeded',
     'failed'
-);
-
-
---
--- Name: workspace_decision; Type: TYPE; Schema: proxima_code; Owner: -
---
-
-CREATE TYPE proxima_code.workspace_decision AS ENUM (
-    'rejected',
-    'retry_requested',
-    'accepted',
-    'merged'
-);
-
-
---
--- Name: workspace_review_verdict; Type: TYPE; Schema: proxima_code; Owner: -
---
-
-CREATE TYPE proxima_code.workspace_review_verdict AS ENUM (
-    'approved',
-    'rejected',
-    'needs_user'
 );
 
 
@@ -187,19 +201,19 @@ CREATE TABLE proxima_code.engineer_self_v1 (
 
 
 --
--- Name: execution_request_v1; Type: TABLE; Schema: proxima_code; Owner: -
+-- Name: work_requested_v1; Type: TABLE; Schema: proxima_code; Owner: -
 --
 
-CREATE TABLE proxima_code.execution_request_v1 (
+CREATE TABLE proxima_code.work_requested_v1 (
     memory_id uuid NOT NULL,
     repo_id uuid NOT NULL,
     title text NOT NULL,
     instructions text NOT NULL,
     request_key text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT execution_request_v1_instructions_chk CHECK (((char_length(instructions) >= 1) AND (char_length(instructions) <= 20000))),
-    CONSTRAINT execution_request_v1_request_key_chk CHECK (((char_length(request_key) >= 1) AND (char_length(request_key) <= 240))),
-    CONSTRAINT execution_request_v1_title_chk CHECK (((char_length(title) >= 1) AND (char_length(title) <= 240)))
+    CONSTRAINT work_requested_v1_instructions_chk CHECK (((char_length(instructions) >= 1) AND (char_length(instructions) <= 20000))),
+    CONSTRAINT work_requested_v1_request_key_chk CHECK (((char_length(request_key) >= 1) AND (char_length(request_key) <= 240))),
+    CONSTRAINT work_requested_v1_title_chk CHECK (((char_length(title) >= 1) AND (char_length(title) <= 240)))
 );
 
 
@@ -267,65 +281,6 @@ CREATE TABLE proxima_code.repos (
 
 
 --
--- Name: workspace_decision_v1; Type: TABLE; Schema: proxima_code; Owner: -
---
-
-CREATE TABLE proxima_code.workspace_decision_v1 (
-    memory_id uuid NOT NULL,
-    workspace_run_memory_id uuid NOT NULL,
-    decision proxima_code.workspace_decision NOT NULL,
-    decided_at timestamp with time zone DEFAULT now() NOT NULL,
-    reason_text text,
-    decided_by_owner_id uuid NOT NULL
-);
-
-
---
--- Name: workspace_review_v1; Type: TABLE; Schema: proxima_code; Owner: -
---
-
-CREATE TABLE proxima_code.workspace_review_v1 (
-    memory_id uuid NOT NULL,
-    workspace_run_memory_id uuid NOT NULL,
-    execution_request_memory_id uuid NOT NULL,
-    verdict proxima_code.workspace_review_verdict NOT NULL,
-    round_index integer NOT NULL,
-    summary text NOT NULL,
-    findings_json jsonb NOT NULL,
-    correction_instructions text,
-    verification_summary text,
-    reviewed_at timestamp with time zone DEFAULT now() NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT workspace_review_v1_correction_chk CHECK (((correction_instructions IS NULL) OR ((char_length(correction_instructions) >= 1) AND (char_length(correction_instructions) <= 12000)))),
-    CONSTRAINT workspace_review_v1_round_chk CHECK ((round_index >= 0)),
-    CONSTRAINT workspace_review_v1_summary_chk CHECK (((char_length(summary) >= 1) AND (char_length(summary) <= 4000))),
-    CONSTRAINT workspace_review_v1_verification_chk CHECK (((verification_summary IS NULL) OR ((char_length(verification_summary) >= 1) AND (char_length(verification_summary) <= 4000))))
-);
-
-
---
--- Name: workspace_run_v1; Type: TABLE; Schema: proxima_code; Owner: -
---
-
-CREATE TABLE proxima_code.workspace_run_v1 (
-    memory_id uuid NOT NULL,
-    wake_invocation_id uuid NOT NULL,
-    repo_id uuid NOT NULL,
-    target_branch text NOT NULL,
-    worktree_path text NOT NULL,
-    branch_name text NOT NULL,
-    parent_sha text NOT NULL,
-    head_sha text NOT NULL,
-    diff_stat_json jsonb NOT NULL,
-    exit_code integer,
-    stdout_tail text,
-    stderr_tail text,
-    duration_ms bigint,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-
---
 -- Name: code_calls_v1 code_calls_v1_pkey; Type: CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
@@ -382,11 +337,11 @@ ALTER TABLE ONLY proxima_code.engineer_self_v1
 
 
 --
--- Name: execution_request_v1 execution_request_v1_pkey; Type: CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: work_requested_v1 work_requested_v1_pkey; Type: CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
-ALTER TABLE ONLY proxima_code.execution_request_v1
-    ADD CONSTRAINT execution_request_v1_pkey PRIMARY KEY (memory_id);
+ALTER TABLE ONLY proxima_code.work_requested_v1
+    ADD CONSTRAINT work_requested_v1_pkey PRIMARY KEY (memory_id);
 
 
 --
@@ -419,38 +374,6 @@ ALTER TABLE ONLY proxima_code.repos
 
 ALTER TABLE ONLY proxima_code.repos
     ADD CONSTRAINT repos_unique_path UNIQUE (owner_principal_kind, owner_principal_id, owner_org_id, canonical_path);
-
-
---
--- Name: workspace_decision_v1 workspace_decision_v1_pkey; Type: CONSTRAINT; Schema: proxima_code; Owner: -
---
-
-ALTER TABLE ONLY proxima_code.workspace_decision_v1
-    ADD CONSTRAINT workspace_decision_v1_pkey PRIMARY KEY (memory_id);
-
-
---
--- Name: workspace_review_v1 workspace_review_v1_pkey; Type: CONSTRAINT; Schema: proxima_code; Owner: -
---
-
-ALTER TABLE ONLY proxima_code.workspace_review_v1
-    ADD CONSTRAINT workspace_review_v1_pkey PRIMARY KEY (memory_id);
-
-
---
--- Name: workspace_run_v1 workspace_run_v1_pkey; Type: CONSTRAINT; Schema: proxima_code; Owner: -
---
-
-ALTER TABLE ONLY proxima_code.workspace_run_v1
-    ADD CONSTRAINT workspace_run_v1_pkey PRIMARY KEY (memory_id);
-
-
---
--- Name: workspace_run_v1 workspace_run_v1_wake_invocation_id_key; Type: CONSTRAINT; Schema: proxima_code; Owner: -
---
-
-ALTER TABLE ONLY proxima_code.workspace_run_v1
-    ADD CONSTRAINT workspace_run_v1_wake_invocation_id_key UNIQUE (wake_invocation_id);
 
 
 --
@@ -524,17 +447,17 @@ CREATE INDEX idx_development_perspective_v1_repo ON proxima_code.development_per
 
 
 --
--- Name: idx_execution_request_v1_repo; Type: INDEX; Schema: proxima_code; Owner: -
+-- Name: idx_work_requested_v1_repo; Type: INDEX; Schema: proxima_code; Owner: -
 --
 
-CREATE INDEX idx_execution_request_v1_repo ON proxima_code.execution_request_v1 USING btree (repo_id);
+CREATE INDEX idx_work_requested_v1_repo ON proxima_code.work_requested_v1 USING btree (repo_id);
 
 
 --
--- Name: idx_execution_request_v1_repo_key; Type: INDEX; Schema: proxima_code; Owner: -
+-- Name: idx_work_requested_v1_repo_key; Type: INDEX; Schema: proxima_code; Owner: -
 --
 
-CREATE UNIQUE INDEX idx_execution_request_v1_repo_key ON proxima_code.execution_request_v1 USING btree (repo_id, request_key);
+CREATE UNIQUE INDEX idx_work_requested_v1_repo_key ON proxima_code.work_requested_v1 USING btree (repo_id, request_key);
 
 
 --
@@ -549,34 +472,6 @@ CREATE INDEX idx_file_revision_v1_nk ON proxima_code.file_revision_v1 USING btre
 --
 
 CREATE INDEX idx_file_revision_v1_path_search ON proxima_code.file_revision_v1 USING gin (to_tsvector('simple'::regconfig, file_path));
-
-
---
--- Name: idx_workspace_decision_v1_run; Type: INDEX; Schema: proxima_code; Owner: -
---
-
-CREATE INDEX idx_workspace_decision_v1_run ON proxima_code.workspace_decision_v1 USING btree (workspace_run_memory_id);
-
-
---
--- Name: idx_workspace_review_v1_request; Type: INDEX; Schema: proxima_code; Owner: -
---
-
-CREATE INDEX idx_workspace_review_v1_request ON proxima_code.workspace_review_v1 USING btree (execution_request_memory_id, round_index);
-
-
---
--- Name: idx_workspace_review_v1_run; Type: INDEX; Schema: proxima_code; Owner: -
---
-
-CREATE INDEX idx_workspace_review_v1_run ON proxima_code.workspace_review_v1 USING btree (workspace_run_memory_id, created_at DESC);
-
-
---
--- Name: idx_workspace_run_v1_repo; Type: INDEX; Schema: proxima_code; Owner: -
---
-
-CREATE INDEX idx_workspace_run_v1_repo ON proxima_code.workspace_run_v1 USING btree (repo_id);
 
 
 --
@@ -650,11 +545,11 @@ ALTER TABLE ONLY proxima_code.engineer_self_v1
 
 
 --
--- Name: execution_request_v1 execution_request_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: work_requested_v1 work_requested_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
-ALTER TABLE ONLY proxima_code.execution_request_v1
-    ADD CONSTRAINT execution_request_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+ALTER TABLE ONLY proxima_code.work_requested_v1
+    ADD CONSTRAINT work_requested_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
 
 
 --
@@ -674,52 +569,140 @@ ALTER TABLE ONLY proxima_code.repo_ingestion_runs
 
 
 --
--- Name: workspace_decision_v1 workspace_decision_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
---
-
-ALTER TABLE ONLY proxima_code.workspace_decision_v1
-    ADD CONSTRAINT workspace_decision_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
-
 
 --
--- Name: workspace_decision_v1 workspace_decision_v1_workspace_run_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: acceptance_criteria_v1; Type: TABLE; Schema: proxima_code; Owner: -
 --
 
-ALTER TABLE ONLY proxima_code.workspace_decision_v1
-    ADD CONSTRAINT workspace_decision_v1_workspace_run_memory_id_fkey FOREIGN KEY (workspace_run_memory_id) REFERENCES proxima_core.memories(memory_id);
+CREATE TABLE proxima_code.acceptance_criteria_v1 (
+    memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id),
+    work_item_memory_id uuid NOT NULL REFERENCES proxima_core.memories(memory_id),
+    criteria_json jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT acceptance_criteria_v1_nonempty_chk CHECK ((jsonb_typeof(criteria_json) = 'array'::text) AND (jsonb_array_length(criteria_json) > 0))
+);
 
-
---
--- Name: workspace_review_v1 workspace_review_v1_execution_request_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
---
-
-ALTER TABLE ONLY proxima_code.workspace_review_v1
-    ADD CONSTRAINT workspace_review_v1_execution_request_memory_id_fkey FOREIGN KEY (execution_request_memory_id) REFERENCES proxima_core.memories(memory_id);
+CREATE INDEX idx_acceptance_criteria_v1_item ON proxima_code.acceptance_criteria_v1 USING btree (work_item_memory_id);
 
 
 --
--- Name: workspace_review_v1 workspace_review_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: test_requested_v1; Type: TABLE; Schema: proxima_code; Owner: -
 --
 
-ALTER TABLE ONLY proxima_code.workspace_review_v1
-    ADD CONSTRAINT workspace_review_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+CREATE TABLE proxima_code.test_requested_v1 (
+    memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id),
+    repo_id uuid NOT NULL,
+    title text NOT NULL,
+    instructions text NOT NULL,
+    test_key text NOT NULL,
+    criteria_json jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT test_requested_v1_title_chk CHECK (((char_length(title) >= 1) AND (char_length(title) <= 240))),
+    CONSTRAINT test_requested_v1_instructions_chk CHECK (((char_length(instructions) >= 1) AND (char_length(instructions) <= 20000))),
+    CONSTRAINT test_requested_v1_test_key_chk CHECK (((char_length(test_key) >= 1) AND (char_length(test_key) <= 240))),
+    CONSTRAINT test_requested_v1_criteria_nonempty_chk CHECK ((jsonb_typeof(criteria_json) = 'array'::text) AND (jsonb_array_length(criteria_json) > 0))
+);
 
-
---
--- Name: workspace_review_v1 workspace_review_v1_workspace_run_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
---
-
-ALTER TABLE ONLY proxima_code.workspace_review_v1
-    ADD CONSTRAINT workspace_review_v1_workspace_run_memory_id_fkey FOREIGN KEY (workspace_run_memory_id) REFERENCES proxima_core.memories(memory_id);
-
-
---
--- Name: workspace_run_v1 workspace_run_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
---
-
-ALTER TABLE ONLY proxima_code.workspace_run_v1
-    ADD CONSTRAINT workspace_run_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+CREATE INDEX idx_test_requested_v1_repo ON proxima_code.test_requested_v1 USING btree (repo_id);
+CREATE UNIQUE INDEX idx_test_requested_v1_repo_key ON proxima_code.test_requested_v1 USING btree (repo_id, test_key);
 
 
 --
+-- Name: execution_plan_v1; Type: TABLE; Schema: proxima_code; Owner: -
 --
+
+CREATE TABLE proxima_code.execution_plan_v1 (
+    memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id),
+    repo_id uuid NOT NULL,
+    plan_key text NOT NULL,
+    goal_activated_memory_id uuid NOT NULL REFERENCES proxima_core.memories(memory_id),
+    summary text NOT NULL,
+    items jsonb NOT NULL,
+    evidence_memory_ids uuid[] NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT execution_plan_v1_plan_key_chk CHECK (((char_length(plan_key) >= 1) AND (char_length(plan_key) <= 240))),
+    CONSTRAINT execution_plan_v1_summary_chk CHECK (((char_length(summary) >= 1) AND (char_length(summary) <= 4000))),
+    CONSTRAINT execution_plan_v1_items_chk CHECK ((jsonb_typeof(items) = 'array'::text) AND (jsonb_array_length(items) > 0))
+);
+
+CREATE UNIQUE INDEX idx_execution_plan_v1_repo_key ON proxima_code.execution_plan_v1 USING btree (repo_id, plan_key);
+CREATE INDEX idx_execution_plan_v1_goal ON proxima_code.execution_plan_v1 USING btree (goal_activated_memory_id);
+
+
+--
+-- Name: execution_result_v1; Type: TABLE; Schema: proxima_code; Owner: -
+--
+
+CREATE TABLE proxima_code.execution_result_v1 (
+    memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id),
+    work_requested_memory_id uuid NOT NULL REFERENCES proxima_core.memories(memory_id),
+    repo_id uuid NOT NULL,
+    status proxima_code.work_result_status NOT NULL,
+    summary text NOT NULL,
+    artifact_refs jsonb NOT NULL,
+    log_excerpt text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT execution_result_v1_summary_chk CHECK (((char_length(summary) >= 1) AND (char_length(summary) <= 4000))),
+    CONSTRAINT execution_result_v1_artifacts_chk CHECK (jsonb_typeof(artifact_refs) = 'array'::text)
+);
+
+CREATE INDEX idx_execution_result_v1_work ON proxima_code.execution_result_v1 USING btree (work_requested_memory_id, created_at DESC);
+
+
+--
+-- Name: test_result_v1; Type: TABLE; Schema: proxima_code; Owner: -
+--
+
+CREATE TABLE proxima_code.test_result_v1 (
+    memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id),
+    test_requested_memory_id uuid NOT NULL REFERENCES proxima_core.memories(memory_id),
+    repo_id uuid NOT NULL,
+    status proxima_code.work_result_status NOT NULL,
+    summary text NOT NULL,
+    artifact_refs jsonb NOT NULL,
+    log_excerpt text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT test_result_v1_summary_chk CHECK (((char_length(summary) >= 1) AND (char_length(summary) <= 4000))),
+    CONSTRAINT test_result_v1_artifacts_chk CHECK (jsonb_typeof(artifact_refs) = 'array'::text)
+);
+
+CREATE INDEX idx_test_result_v1_test ON proxima_code.test_result_v1 USING btree (test_requested_memory_id, created_at DESC);
+
+
+--
+-- Name: acceptance_verification_v1; Type: TABLE; Schema: proxima_code; Owner: -
+--
+
+CREATE TABLE proxima_code.acceptance_verification_v1 (
+    memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id),
+    work_item_memory_id uuid NOT NULL REFERENCES proxima_core.memories(memory_id),
+    criterion_key text NOT NULL,
+    status proxima_code.acceptance_verification_status NOT NULL,
+    summary text NOT NULL,
+    artifact_refs jsonb NOT NULL,
+    verifier_memory_id uuid REFERENCES proxima_core.memories(memory_id),
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT acceptance_verification_v1_criterion_key_chk CHECK (((char_length(criterion_key) >= 1) AND (char_length(criterion_key) <= 80))),
+    CONSTRAINT acceptance_verification_v1_summary_chk CHECK (((char_length(summary) >= 1) AND (char_length(summary) <= 4000))),
+    CONSTRAINT acceptance_verification_v1_artifacts_chk CHECK (jsonb_typeof(artifact_refs) = 'array'::text)
+);
+
+CREATE INDEX idx_acceptance_verification_v1_item ON proxima_code.acceptance_verification_v1 USING btree (work_item_memory_id, criterion_key, status);
+
+
+--
+-- Name: acceptance_summary_v1; Type: TABLE; Schema: proxima_code; Owner: -
+--
+
+CREATE TABLE proxima_code.acceptance_summary_v1 (
+    memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id),
+    work_item_memory_id uuid NOT NULL REFERENCES proxima_core.memories(memory_id),
+    repo_id uuid NOT NULL,
+    passed_required boolean NOT NULL,
+    summary text NOT NULL,
+    verification_memory_ids uuid[] NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT acceptance_summary_v1_summary_chk CHECK (((char_length(summary) >= 1) AND (char_length(summary) <= 4000)))
+);
+
+CREATE INDEX idx_acceptance_summary_v1_item ON proxima_code.acceptance_summary_v1 USING btree (work_item_memory_id, created_at DESC);

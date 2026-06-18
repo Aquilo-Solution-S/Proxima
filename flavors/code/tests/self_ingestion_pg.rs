@@ -200,7 +200,7 @@ async fn self_ingestion_streams_proxima_main() {
         // would either be empty or fail to deserialize.
         //
         // High limit so commit-v1 rows aren't drowned out by the much
-        // more numerous file-revision-v1 / code-chunk-v1 facts emitted
+        // more numerous file-revision-v1 Facts / code-chunk-v1 Abstractions emitted
         // per commit.
         let unfiltered = engine
             .query(

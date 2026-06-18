@@ -5,8 +5,8 @@
 //! Exercises the five assertions from M3-PLAN.md:
 //! 1. After initial index: heads-only Query returns chunks for every
 //!    Present file.
-//! 2. After mutation + reindex: head returns new chunk text; old chunk
-//!    Fact still queryable as history.
+//! 2. After mutation + reindex: head returns new chunk text; old derived
+//!    code-slice Abstraction still queryable as history.
 //! 3. After delete + reindex: head returns Tombstone state for that
 //!    file's revisions and chunks.
 //! 4. After rename + reindex: old path Tombstones, new path Present.
@@ -18,7 +18,10 @@ mod common;
 use common::{git, migrated_db, test_owner, write_file};
 use proxima_code::{CodeChunkV1, FileRevisionV1, FileState, LocalGitSource, build_engine};
 use proxima_core::verbs::query::{PersonalityRootFilter, QueryRequest, SupersessionStatus};
-use proxima_core::{FactPayload, Owner, Principal, SchemaId, SchemaVersion};
+use proxima_core::{
+    AbstractionPayload, CORE_DERIVED_FROM_RELATION, FactPayload, Owner, Principal, SchemaId,
+    SchemaVersion,
+};
 use proxima_pg_testkit::drop_db;
 use sqlx::Row;
 use tempfile::TempDir;
@@ -152,40 +155,40 @@ async fn local_git_source_full_cycle() {
         let chunks_after_initial = count_present_chunks(pg.pool(), &owner, repo_id).await;
         assert!(chunks_after_initial >= 3);
 
-        // Citation linkage proof — chunks share `cited_object_id`
-        // with their parent `file-revision-v1` Fact via the
-        // substrate's UNIQUE on (owner, schema_id, content_hash).
-        // This is what makes `parent_file_revision_id` redundant
-        // in the chunk Fact payload (docs/11 §"Three-layer model").
+        // Provenance proof — code chunks are derived code-slice
+        // Abstractions with `core/derived-from` edges back to their
+        // parent `file-revision-v1` Facts.
         let linkage: (i64, i64) = sqlx::query_as(
-            "WITH revision_cited AS ( \
-                 SELECT cm.cited_object_id, fr.repo_id, fr.file_path \
-                 FROM proxima_core.citation_mappings cm \
-                 JOIN proxima_code.file_revision_v1 fr USING (memory_id) \
-                 WHERE fr.repo_id = $1 AND fr.file_path = 'src/lib.rs' \
-             ), \
-             chunk_cited AS ( \
-                 SELECT cm.cited_object_id, ch.repo_id, ch.file_path \
-                 FROM proxima_core.citation_mappings cm \
-                 JOIN proxima_code.code_chunk_v1 ch USING (memory_id) \
+            "WITH chunks AS ( \
+                 SELECT ch.memory_id \
+                 FROM proxima_code.code_chunk_v1 ch \
+                 JOIN proxima_core.memories cm USING (memory_id) \
                  WHERE ch.repo_id = $1 AND ch.file_path = 'src/lib.rs' \
                    AND ch.state = 'Present' \
+                   AND cm.kind = 'Abstraction' \
              ) \
              SELECT \
-                 (SELECT COUNT(*)::bigint FROM chunk_cited), \
-                 (SELECT COUNT(*)::bigint FROM chunk_cited c \
+                 (SELECT COUNT(*)::bigint FROM chunks), \
+                 (SELECT COUNT(*)::bigint FROM chunks c \
                   WHERE EXISTS ( \
-                      SELECT 1 FROM revision_cited r \
-                      WHERE r.cited_object_id = c.cited_object_id))",
+                      SELECT 1 FROM proxima_core.edges e \
+                      JOIN proxima_code.file_revision_v1 fr \
+                        ON fr.memory_id = e.target_memory_id \
+                      WHERE e.relation = $2 \
+                        AND e.source_kind = 'Abstraction' \
+                        AND e.target_kind = 'Fact' \
+                        AND e.source_memory_id = c.memory_id \
+                        AND fr.repo_id = $1 \
+                        AND fr.file_path = 'src/lib.rs'))",
         )
         .bind(repo_id)
+        .bind(CORE_DERIVED_FROM_RELATION)
         .fetch_one(pg.pool())
         .await?;
         assert!(linkage.0 > 0, "expected at least one chunk for src/lib.rs");
         assert_eq!(
             linkage.0, linkage.1,
-            "every chunk must share cited_object_id with a file-revision-v1 \
-             Fact for the same blob — got {} chunks, {} linked",
+            "every derived chunk must have file-revision provenance — got {} chunks, {} linked",
             linkage.0, linkage.1,
         );
 
@@ -194,7 +197,9 @@ async fn local_git_source_full_cycle() {
         let q = QueryRequest {
             principal: owner.principal.clone(),
             entity_kind: None,
-            schema_id: Some(SchemaId::new(CodeChunkV1::SCHEMA_ID.into())),
+            schema_id: Some(SchemaId::new(
+                <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID.into(),
+            )),
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             personality_roots: PersonalityRootFilter::IncludeInactive,

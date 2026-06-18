@@ -11,8 +11,8 @@
 //! check.
 
 /// Embedded migration set. Compile-time `include_str!`s every file under
-/// `flavors/code/migrations/`. Version numbers must not collide with core
-/// (core uses `20260504000001..3`; flavor starts at `20260504000010`).
+/// `flavors/code/migrations/`. Pre-v0.0.1 flavor schema changes stay squashed
+/// into the baseline migration instead of accumulating incremental recipes.
 #[must_use]
 pub fn migrator() -> sqlx::migrate::Migrator {
     let mut m = sqlx::migrate!("./migrations");

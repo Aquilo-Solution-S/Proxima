@@ -12,21 +12,26 @@ pub mod payloads;
 pub mod repos;
 
 pub use ingest::{
-    CODE_BLOB_BYTE_RANGE_SCHEMA, CODE_BLOB_SCHEMA, CODE_BLOB_WHOLE_SCHEMA,
-    CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA, EXECUTION_REQUEST_OBJECT_SCHEMA,
-    EXECUTION_REQUEST_WHOLE_SCHEMA, IngestError, LOCAL_GIT_SOURCE_ID, TEST_REQUEST_OBJECT_SCHEMA,
-    TEST_REQUEST_WHOLE_SCHEMA, build_engine, build_engine_with, ingest_code_chunk, ingest_commit,
-    ingest_file_revision,
+    ACCEPTANCE_CRITERIA_OBJECT_SCHEMA, ACCEPTANCE_CRITERIA_WHOLE_SCHEMA,
+    ACCEPTANCE_VERIFICATION_OBJECT_SCHEMA, ACCEPTANCE_VERIFICATION_WHOLE_SCHEMA, CODE_BLOB_SCHEMA,
+    CODE_BLOB_WHOLE_SCHEMA, CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA,
+    EXECUTION_REQUEST_OBJECT_SCHEMA, EXECUTION_REQUEST_WHOLE_SCHEMA,
+    EXECUTION_RESULT_OBJECT_SCHEMA, EXECUTION_RESULT_WHOLE_SCHEMA, IngestError,
+    LOCAL_GIT_SOURCE_ID, TEST_REQUEST_OBJECT_SCHEMA, TEST_REQUEST_WHOLE_SCHEMA,
+    TEST_RESULT_OBJECT_SCHEMA, TEST_RESULT_WHOLE_SCHEMA, append_code_slice, build_engine,
+    build_engine_with, ingest_commit, ingest_file_revision,
 };
 pub use local_git_source::{
     HeadSnapshotOutcome, IndexError, IndexReport, IngestProgress, LocalGitSource,
 };
 pub use migrations::migrator;
 pub use payloads::{
-    AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1,
-    CodeChunkV1, CodeCommitSummarizerSelfV1, CodeDevelopmentPerspectiveV1, CodeEngineerSelfV1,
-    CommitSummaryV1, CommitV1, EdgeCallsV1, ExecutionRequestV1, FileRevisionV1, FileState,
-    TestRequestV1,
+    AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceSummaryV1, AcceptanceVerificationStatus,
+    AcceptanceVerificationV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1, CodeChunkV1,
+    CodeCommitSummarizerSelfV1, CodeDevelopmentPerspectiveV1, CodeEngineerSelfV1,
+    CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1, CommitSummaryV1,
+    CommitV1, EdgeCallsV1, ExecutionRequestV1, ExecutionResultV1, FileRevisionV1, FileState,
+    TestRequestV1, TestRequestedV1, TestResultV1, WorkRequestedV1, WorkResultStatus,
 };
 
 use proxima_core::{
@@ -46,13 +51,18 @@ proxima_core::proxima_flavor! {
     fact_schemas = [
         payloads::CommitV1,
         payloads::FileRevisionV1,
-        payloads::CodeChunkV1,
-        payloads::ExecutionRequestV1,
-        payloads::TestRequestV1,
+        payloads::WorkRequestedV1,
+        payloads::TestRequestedV1,
         payloads::AcceptanceCriteriaV1,
+        payloads::ExecutionResultV1,
+        payloads::TestResultV1,
+        payloads::AcceptanceVerificationV1,
     ],
     abstraction_schemas = [
+        payloads::CodeChunkV1,
         payloads::CommitSummaryV1,
+        payloads::CodeExecutionPlanV1,
+        payloads::AcceptanceSummaryV1,
     ],
     perspective_schemas = [
         payloads::CodeDevelopmentPerspectiveV1,
@@ -61,6 +71,26 @@ proxima_core::proxima_flavor! {
     ],
     edge_schemas = [
         payloads::EdgeCallsV1,
+    ],
+    opaque_cited_object_schemas = [
+        CODE_BLOB_SCHEMA,
+        CODE_COMMIT_OBJECT_SCHEMA,
+        EXECUTION_REQUEST_OBJECT_SCHEMA,
+        ACCEPTANCE_CRITERIA_OBJECT_SCHEMA,
+        TEST_REQUEST_OBJECT_SCHEMA,
+        EXECUTION_RESULT_OBJECT_SCHEMA,
+        TEST_RESULT_OBJECT_SCHEMA,
+        ACCEPTANCE_VERIFICATION_OBJECT_SCHEMA,
+    ],
+    opaque_citation_mapping_schemas = [
+        CODE_BLOB_WHOLE_SCHEMA,
+        CODE_COMMIT_WHOLE_SCHEMA,
+        EXECUTION_REQUEST_WHOLE_SCHEMA,
+        ACCEPTANCE_CRITERIA_WHOLE_SCHEMA,
+        TEST_REQUEST_WHOLE_SCHEMA,
+        EXECUTION_RESULT_WHOLE_SCHEMA,
+        TEST_RESULT_WHOLE_SCHEMA,
+        ACCEPTANCE_VERIFICATION_WHOLE_SCHEMA,
     ],
     relations = [
         RelationDescriptor::typed(
@@ -72,9 +102,9 @@ proxima_core::proxima_flavor! {
             ),
             EndpointBinding::Pin,
             EndpointBinding::Pin,
-            EntityKindMask::fact(),
-            EntityKindMask::fact(),
-            AuthorshipKindMask::event_source(),
+            EntityKindMask::abstraction(),
+            EntityKindMask::abstraction(),
+            AuthorshipKindMask::operator_f_to_a(),
         ),
         RelationDescriptor::substrate(
             mcp::CODE_TARGETS_EXECUTION_REQUEST_RELATION,
@@ -105,11 +135,20 @@ proxima_core::proxima_flavor! {
         mcp::CodeEmitExecutionRequestTool,
         mcp::CodeEmitExecutionPlanTool,
         mcp::CodeRetryExecutionRequestTool,
+        mcp::CodeWorkItemBundleTool,
     ],
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        ACCEPTANCE_CRITERIA_OBJECT_SCHEMA, ACCEPTANCE_CRITERIA_WHOLE_SCHEMA,
+        ACCEPTANCE_VERIFICATION_OBJECT_SCHEMA, ACCEPTANCE_VERIFICATION_WHOLE_SCHEMA,
+        CODE_BLOB_SCHEMA, CODE_BLOB_WHOLE_SCHEMA, CODE_COMMIT_OBJECT_SCHEMA,
+        CODE_COMMIT_WHOLE_SCHEMA, EXECUTION_REQUEST_OBJECT_SCHEMA, EXECUTION_REQUEST_WHOLE_SCHEMA,
+        EXECUTION_RESULT_OBJECT_SCHEMA, EXECUTION_RESULT_WHOLE_SCHEMA, TEST_REQUEST_OBJECT_SCHEMA,
+        TEST_REQUEST_WHOLE_SCHEMA, TEST_RESULT_OBJECT_SCHEMA, TEST_RESULT_WHOLE_SCHEMA,
+    };
     use proxima_core::{CORE_DERIVED_FROM_RELATION, FlavorRegistry};
     use std::collections::HashSet;
 
@@ -125,18 +164,40 @@ mod tests {
         // Fact schemas
         assert!(schema_ids.contains("proxima-code/commit-v1"));
         assert!(schema_ids.contains("proxima-code/file-revision-v1"));
-        assert!(schema_ids.contains("proxima-code/code-chunk-v1"));
-        assert!(schema_ids.contains("proxima-code/execution-request-v1"));
-        assert!(schema_ids.contains("proxima-code/test-request-v1"));
+        assert!(schema_ids.contains("proxima-code/work-requested-v1"));
+        assert!(schema_ids.contains("proxima-code/test-requested-v1"));
         assert!(schema_ids.contains("proxima-code/acceptance-criteria-v1"));
+        assert!(schema_ids.contains("proxima-code/execution-result-v1"));
+        assert!(schema_ids.contains("proxima-code/test-result-v1"));
+        assert!(schema_ids.contains("proxima-code/acceptance-verification-v1"));
         // Abstraction schemas
+        assert!(schema_ids.contains("proxima-code/code-chunk-v1"));
         assert!(schema_ids.contains("proxima-code/commit-summary-v1"));
+        assert!(schema_ids.contains("proxima-code/execution-plan-v1"));
+        assert!(schema_ids.contains("proxima-code/acceptance-summary-v1"));
         // Perspective schemas
         assert!(schema_ids.contains("proxima-code/development-perspective-v1"));
         assert!(schema_ids.contains("proxima-code/commit-summarizer-self-v1"));
         assert!(schema_ids.contains("proxima-code/engineer-self-v1"));
         // Edge schemas
         assert!(schema_ids.contains("proxima-code/calls"));
+        // Opaque cited-object / citation-mapping schemas
+        assert!(schema_ids.contains(CODE_BLOB_SCHEMA));
+        assert!(schema_ids.contains(CODE_COMMIT_OBJECT_SCHEMA));
+        assert!(schema_ids.contains(EXECUTION_REQUEST_OBJECT_SCHEMA));
+        assert!(schema_ids.contains(ACCEPTANCE_CRITERIA_OBJECT_SCHEMA));
+        assert!(schema_ids.contains(TEST_REQUEST_OBJECT_SCHEMA));
+        assert!(schema_ids.contains(EXECUTION_RESULT_OBJECT_SCHEMA));
+        assert!(schema_ids.contains(TEST_RESULT_OBJECT_SCHEMA));
+        assert!(schema_ids.contains(ACCEPTANCE_VERIFICATION_OBJECT_SCHEMA));
+        assert!(schema_ids.contains(CODE_BLOB_WHOLE_SCHEMA));
+        assert!(schema_ids.contains(CODE_COMMIT_WHOLE_SCHEMA));
+        assert!(schema_ids.contains(EXECUTION_REQUEST_WHOLE_SCHEMA));
+        assert!(schema_ids.contains(ACCEPTANCE_CRITERIA_WHOLE_SCHEMA));
+        assert!(schema_ids.contains(TEST_REQUEST_WHOLE_SCHEMA));
+        assert!(schema_ids.contains(EXECUTION_RESULT_WHOLE_SCHEMA));
+        assert!(schema_ids.contains(TEST_RESULT_WHOLE_SCHEMA));
+        assert!(schema_ids.contains(ACCEPTANCE_VERIFICATION_WHOLE_SCHEMA));
 
         // Check relations
         let relations = frozen.list_relations();
@@ -179,5 +240,6 @@ mod tests {
         assert!(names.contains("proxima-code/code_emit_execution_request"));
         assert!(names.contains("proxima-code/code_emit_execution_plan"));
         assert!(names.contains("proxima-code/code_retry_execution_request"));
+        assert!(names.contains("proxima-code/code_work_item_bundle"));
     }
 }

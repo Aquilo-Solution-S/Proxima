@@ -13,11 +13,13 @@
 //! its boundary is arbitrary cadence, while the commit is the
 //! causal atom F→A consumes per batch.
 //!
-//! Each commit's batch contains: the `commit-v1` Fact, plus the
-//! `file-revision-v1` and `code-chunk-v1` Facts derived from that
-//! commit's tree diff against its first parent (or against the
-//! empty tree, for root commits). `indexed_commit_sha` is the
-//! commit's own sha, not HEAD.
+//! Each commit's batch contains the `commit-v1` Fact plus
+//! `file-revision-v1` Facts for that commit's tree diff against its
+//! first parent (or the empty tree for root commits). Deterministic
+//! chunk/call extraction is F→A operator work over those file Facts:
+//! it emits `code-chunk-v1` code-slice Abstractions and operator-
+//! authored `proxima-code/calls` edges with provenance to file/commit
+//! Facts. `indexed_commit_sha` is the commit's own sha, not HEAD.
 //!
 //! Cursor format (json bytes inside the opaque `Cursor` newtype):
 //! ```ignore
@@ -44,12 +46,11 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use self::git::{CommitInfo, WalkPlan};
-use crate::calls::extract_blob_callgraph;
-use crate::chunker::chunk_blob;
+use crate::calls::{ExtractedCall, ExtractedDefinition, extract_blob_callgraph};
+use crate::chunker::{Chunk, chunk_blob};
 use crate::ingest::{
-    CallEdgeDraft, IngestError, file_revision_heads, ingest_calls_edge, ingest_code_chunk,
-    ingest_commit, ingest_file_revision, lookup_present_chunk_memory_id_by_text,
-    present_chunk_indexes,
+    CallEdgeDraft, IngestError, append_code_slice, file_revision_heads, ingest_calls_edge,
+    ingest_commit, ingest_file_revision, present_chunk_indexes,
 };
 use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
 
@@ -70,11 +71,10 @@ pub enum IndexError {
 /// Counters returned by [`LocalGitSource::run_poll`]. Sums across
 /// every commit-batch the poll opened.
 ///
-/// `chunks_reused` counts chunks where Layer-A dedup found a Present
-/// head with matching text at the same NK and skipped re-emission of
-/// a fresh Fact. It's a separate counter from `chunks_emitted` so
-/// callers can observe how much commit-replay churn the dedup
-/// actually absorbs (one of the M5.5 done-when criteria).
+/// `chunks_reused` counts blob-analysis cache hits where deterministic
+/// chunk/call extraction was reused for another path/commit. Cache hits
+/// never suppress derived code-slice emission; they only avoid repeated
+/// parsing over identical blob bytes.
 #[derive(Debug, Default, Clone)]
 pub struct IndexReport {
     pub commits_emitted: usize,
@@ -151,10 +151,10 @@ impl LocalGitSource {
 
     /// DB-aware ingest. Walks each commit since the cursor, opens a
     /// `source_batch` per commit, emits the commit Fact plus the
-    /// file-revision and chunk Facts derived from that commit's tree
-    /// diff (against its first parent, or against the empty tree for
-    /// root commits), then closes the batch. F→A in M5+ consumes one
-    /// batch = one commit's worth of causally-coherent Facts.
+    /// file-revision Facts from that commit's tree diff, derives
+    /// code-slice Abstractions/call edges from those Facts, then
+    /// closes the batch. F→A in M5+ consumes one batch = one commit's
+    /// worth of causally-coherent Facts.
     pub async fn run_poll(
         &self,
         pool: &PgPool,
@@ -183,20 +183,18 @@ impl LocalGitSource {
         let commit_limit = max_commits.unwrap_or(usize::MAX);
         let selected_total = plan.commits.len().min(commit_limit);
 
-        // Per-poll cache: skip re-running tree-sitter on a blob whose
-        // content_sha256 we've already chunked this poll. Substrate
-        // event_id dedup keeps correctness; this just spares the
-        // chunker work for blobs reused across commits (refactors,
-        // reverts, copies). Resets per poll because cross-poll
-        // dedup is the substrate's job.
-        let mut chunked_this_poll: HashSet<[u8; 32]> = HashSet::new();
+        // Per-poll cache: reuse deterministic chunk/call extraction
+        // for identical blob bytes. This is a parse-work cache only;
+        // every changed path/commit still emits derived code-slice
+        // projection rows tied to its own file-revision Fact.
+        let mut blob_analysis_cache: HashMap<BlobAnalysisKey, BlobAnalysis> = HashMap::new();
 
         // git_log returns newest-first; process oldest-first so each
         // commit's tree diff against its first parent reflects the
         // historical order, and the NK head advances monotonically.
         let mut last_ingested_sha: Option<String> = None;
         for (i, commit_info) in plan.commits.iter().rev().take(selected_total).enumerate() {
-            self.ingest_one_commit(pool, commit_info, &mut report, &mut chunked_this_poll)
+            self.ingest_one_commit(pool, commit_info, &mut report, &mut blob_analysis_cache)
                 .await?;
             last_ingested_sha = Some(commit_info.sha.clone());
             progress(IngestProgress {
@@ -248,7 +246,7 @@ impl LocalGitSource {
             .collect();
 
         let mut report = IndexReport::default();
-        let mut chunked_this_poll = HashSet::new();
+        let mut blob_analysis_cache = HashMap::new();
         for (path, blob) in head_files {
             let content_sha256: [u8; 32] = blake3::hash(&blob).into();
             let already_current = prior_heads.get(&path).is_some_and(|head| {
@@ -264,16 +262,25 @@ impl LocalGitSource {
                 now,
                 &path,
                 &blob,
+                None,
                 &mut report,
-                &mut chunked_this_poll,
+                &mut blob_analysis_cache,
             )
             .await?;
         }
 
         for (path, prior) in prior_heads {
             if prior.state == FileState::Present && !present_paths.contains(&path) {
-                self.tombstone_deleted_path(pool, &head_sha, batch_id, now, &path, &mut report)
-                    .await?;
+                self.tombstone_deleted_path(
+                    pool,
+                    &head_sha,
+                    batch_id,
+                    now,
+                    &path,
+                    None,
+                    &mut report,
+                )
+                .await?;
             }
         }
 
@@ -292,15 +299,15 @@ impl LocalGitSource {
     }
 
     /// Single-commit ingest: one `source_batch_id`, one commit Fact,
-    /// the commit's own tree diff materialised as file-revisions and
-    /// chunks (or tombstones for deletions). Each call is the unit of
-    /// observation per doc 01 §"The contract".
+    /// the commit's own tree diff materialised as file-revision Facts
+    /// plus derived code-slice/call projections. Each call is the unit
+    /// of observation per doc 01 §"The contract".
     async fn ingest_one_commit(
         &self,
         pool: &PgPool,
         commit_info: &CommitInfo,
         report: &mut IndexReport,
-        chunked_this_poll: &mut HashSet<[u8; 32]>,
+        blob_analysis_cache: &mut HashMap<BlobAnalysisKey, BlobAnalysis>,
     ) -> Result<(), IndexError> {
         let now = time::OffsetDateTime::now_utc();
         let batch_id = SourceBatchId::new(Uuid::now_v7());
@@ -339,6 +346,7 @@ impl LocalGitSource {
         } else {
             report.commits_emitted += 1;
         }
+        let commit_memory_id = outcome.memory_id;
 
         // Phase 2 — file revisions + chunks for this commit's changes.
         for path in &changed {
@@ -348,16 +356,25 @@ impl LocalGitSource {
                 batch_id,
                 now,
                 path,
+                Some(commit_memory_id),
                 report,
-                chunked_this_poll,
+                blob_analysis_cache,
             )
             .await?;
         }
 
         // Phase 3 — deletions reported by this commit's diff.
         for path in &deleted {
-            self.tombstone_deleted_path(pool, &commit_info.sha, batch_id, now, path, report)
-                .await?;
+            self.tombstone_deleted_path(
+                pool,
+                &commit_info.sha,
+                batch_id,
+                now,
+                path,
+                Some(commit_memory_id),
+                report,
+            )
+            .await?;
         }
 
         // Close this commit's batch.
@@ -365,9 +382,10 @@ impl LocalGitSource {
         Ok(())
     }
 
-    /// Phase-2 inner loop: emit one file's `file-revision-v1` Fact, the
-    /// chunk batch (or a tombstone burst if the chunk count shrank), and
-    /// resolve intra-file calls into typed `code/calls` edges.
+    /// Phase-2 inner loop: emit one file's `file-revision-v1` Fact,
+    /// derive its code-slice batch (or a tombstone burst if the slice
+    /// count shrank), and resolve intra-file calls into typed
+    /// `code/calls` edges.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn ingest_changed_path(
         &self,
@@ -376,8 +394,9 @@ impl LocalGitSource {
         batch_id: SourceBatchId,
         now: time::OffsetDateTime,
         path: &str,
+        source_commit: Option<MemoryId>,
         report: &mut IndexReport,
-        chunked_this_poll: &mut HashSet<[u8; 32]>,
+        blob_analysis_cache: &mut HashMap<BlobAnalysisKey, BlobAnalysis>,
     ) -> Result<(), IndexError> {
         let blob = git::cat_blob(&self.repo_path, &commit_info.sha, path)?;
         self.ingest_present_blob(
@@ -387,8 +406,9 @@ impl LocalGitSource {
             now,
             path,
             &blob,
+            source_commit,
             report,
-            chunked_this_poll,
+            blob_analysis_cache,
         )
         .await
     }
@@ -405,8 +425,9 @@ impl LocalGitSource {
         now: time::OffsetDateTime,
         path: &str,
         blob: &[u8],
+        source_commit: Option<MemoryId>,
         report: &mut IndexReport,
-        chunked_this_poll: &mut HashSet<[u8; 32]>,
+        blob_analysis_cache: &mut HashMap<BlobAnalysisKey, BlobAnalysis>,
     ) -> Result<(), IndexError> {
         let content_sha256: [u8; 32] = blake3::hash(blob).into();
 
@@ -422,83 +443,80 @@ impl LocalGitSource {
             indexed_commit_sha: indexed_commit_sha.to_string(),
             state: FileState::Present,
         };
-        ingest_file_revision(pool, &self.owner, batch_id, &rev_payload, now).await?;
+        let file_revision =
+            ingest_file_revision(pool, &self.owner, batch_id, &rev_payload, now).await?;
         report.files_present_emitted += 1;
 
-        // Skip re-chunking blobs we've already chunked this poll
-        // (perf only; the chunk Facts are content-keyed via event_id
-        // so repeated calls would just be no-ops at the substrate).
-        if !chunked_this_poll.insert(content_sha256) {
-            return Ok(());
-        }
+        let analysis_key = (content_sha256, language.clone());
+        let analysis = if let Some(cached) = blob_analysis_cache.get(&analysis_key) {
+            report.chunks_reused += cached.chunks.len();
+            cached.clone()
+        } else {
+            let lang_static = crate::chunker::detect_language(path);
+            let chunks = chunk_blob(path, blob);
+            let (definitions, calls) = extract_blob_callgraph(lang_static, blob);
+            let analysis = BlobAnalysis {
+                chunks,
+                definitions,
+                calls,
+            };
+            blob_analysis_cache.insert(analysis_key, analysis.clone());
+            analysis
+        };
 
-        // Re-chunk and tombstone any prior indexes that don't appear
-        // in the new chunk batch (file content shrunk).
-        let chunks = chunk_blob(path, blob);
-        let new_indexes: HashSet<u32> = (0..chunks.len())
+        // Re-derive and tombstone any prior slice indexes that don't
+        // appear in the new slice batch (file content shrunk). These
+        // tombstones are projection rows tied to this file-revision
+        // Fact, not external observations.
+        let new_indexes: HashSet<u32> = (0..analysis.chunks.len())
             .map(|i| u32::try_from(i).unwrap_or(u32::MAX))
             .collect();
         let prior_indexes = present_chunk_indexes(pool, &self.owner, self.repo_id, path).await?;
         for prior in prior_indexes {
             if !new_indexes.contains(&prior) {
                 let tomb = tombstone_chunk(self.repo_id, path, prior, language.clone());
-                ingest_code_chunk(pool, &self.owner, batch_id, &tomb, [0u8; 32], now).await?;
+                append_code_slice(
+                    pool,
+                    &self.owner,
+                    &tomb,
+                    file_revision.memory_id,
+                    source_commit,
+                )
+                .await?;
                 report.chunks_tombstoned += 1;
             }
         }
 
-        // Single tree-sitter parse of the blob: defs + calls come from
-        // the same Tree, mapped through cached Query patterns (see
-        // `calls.rs`). Each definition's byte range is then assigned
-        // to whichever chunk contains it.
-        let lang_static = crate::chunker::detect_language(path);
-        let (definitions, calls) = extract_blob_callgraph(lang_static, blob);
-
         let mut file_chunks: Vec<ChunkInfo> = Vec::new();
-        for (idx, chunk) in chunks.into_iter().enumerate() {
+        for (idx, chunk) in analysis.chunks.iter().enumerate() {
             let chunk_index = u32::try_from(idx).unwrap_or(u32::MAX);
-
-            // Layer-A dedup: if the Present head at this NK already
-            // has identical text, reuse its memory_id. Skipping the
-            // ingest_code_chunk call here means no fresh memory_id,
-            // no duplicate substrate event, and — combined with
-            // Layer B's deterministic edge_id — typed call edges
-            // collapse to one row per logical call site across
-            // arbitrary commit replay.
-            let memory_id = if let Some(existing) = lookup_present_chunk_memory_id_by_text(
+            let payload = CodeChunkV1 {
+                repo_id: self.repo_id,
+                file_path: path.to_string(),
+                chunk_index,
+                text: chunk.text.clone(),
+                language: chunk.language.map(str::to_string),
+                chunk_type: chunk.chunk_type.to_string(),
+                byte_range_start: chunk.byte_range_start,
+                byte_range_end: chunk.byte_range_end,
+                line_range_start: chunk.line_range_start,
+                line_range_end: chunk.line_range_end,
+                state: FileState::Present,
+            };
+            let outcome = append_code_slice(
                 pool,
                 &self.owner,
-                self.repo_id,
-                path,
-                chunk_index,
-                &chunk.text,
+                &payload,
+                file_revision.memory_id,
+                source_commit,
             )
-            .await?
-            {
-                report.chunks_reused += 1;
-                existing
-            } else {
-                let payload = CodeChunkV1 {
-                    repo_id: self.repo_id,
-                    file_path: path.to_string(),
-                    chunk_index,
-                    text: chunk.text.clone(),
-                    language: chunk.language.map(str::to_string),
-                    chunk_type: chunk.chunk_type.to_string(),
-                    byte_range_start: chunk.byte_range_start,
-                    byte_range_end: chunk.byte_range_end,
-                    line_range_start: chunk.line_range_start,
-                    line_range_end: chunk.line_range_end,
-                    state: FileState::Present,
-                };
-                let outcome =
-                    ingest_code_chunk(pool, &self.owner, batch_id, &payload, content_sha256, now)
-                        .await?;
+            .await?;
+            if !outcome.idempotent_replay {
                 report.chunks_emitted += 1;
-                outcome.memory_id
-            };
+            }
 
-            let item_names: Vec<String> = definitions
+            let item_names: Vec<String> = analysis
+                .definitions
                 .iter()
                 .filter(|d| {
                     d.byte_start >= chunk.byte_range_start && d.byte_end <= chunk.byte_range_end
@@ -507,18 +525,18 @@ impl LocalGitSource {
                 .collect();
 
             file_chunks.push(ChunkInfo {
-                memory_id,
+                memory_id: outcome.memory_id,
                 byte_range_start: chunk.byte_range_start,
                 byte_range_end: chunk.byte_range_end,
                 item_names,
             });
         }
 
-        // After all chunks for this file, resolve calls into the
-        // caller/callee chunk pair and emit one typed edge each.
-        // Resolution is purely intra-file v1; cross-file calls wait
-        // for an indexed name table (M6).
-        for call in calls {
+        // After all slices for this file, resolve calls into the
+        // caller/callee code-slice pair and emit one operator-authored
+        // typed edge each. Resolution is intra-file v1; cross-file
+        // calls wait for an indexed name table.
+        for call in analysis.calls {
             let caller_chunk = file_chunks
                 .iter()
                 .filter(|c| {
@@ -536,15 +554,6 @@ impl LocalGitSource {
                 continue;
             }
 
-            // Chunk-relative offset is the dedup-stable component of
-            // the deterministic edge_id (Layer B). When the source
-            // chunk's text is unchanged but its position in the file
-            // has shifted, file-level `call.byte_start` shifts but
-            // `call.byte_start - caller.byte_range_start` does not.
-            // saturating_sub keeps the cast well-defined even on a
-            // pathological mismatch (caller resolved by `max_by_key`,
-            // so call.byte_start should always be >= byte_range_start
-            // in practice).
             let callsite_byte_start_in_source_chunk =
                 call.byte_start.saturating_sub(caller.byte_range_start);
 
@@ -563,13 +572,13 @@ impl LocalGitSource {
             )
             .await?;
         }
-
         Ok(())
     }
 
     /// Phase-3 inner loop: emit a `file-revision-v1` tombstone Fact
-    /// for the deleted path and burst-tombstone every chunk index
-    /// whose head was still `Present`.
+    /// for the deleted path and derive tombstones for every code-slice
+    /// index whose head was still `Present`.
+    #[allow(clippy::too_many_arguments)]
     async fn tombstone_deleted_path(
         &self,
         pool: &PgPool,
@@ -577,6 +586,7 @@ impl LocalGitSource {
         batch_id: SourceBatchId,
         now: time::OffsetDateTime,
         path: &str,
+        source_commit: Option<MemoryId>,
         report: &mut IndexReport,
     ) -> Result<(), IndexError> {
         let rev_payload = FileRevisionV1 {
@@ -588,13 +598,21 @@ impl LocalGitSource {
             indexed_commit_sha: commit_sha.to_string(),
             state: FileState::Tombstone,
         };
-        ingest_file_revision(pool, &self.owner, batch_id, &rev_payload, now).await?;
+        let file_revision =
+            ingest_file_revision(pool, &self.owner, batch_id, &rev_payload, now).await?;
         report.files_tombstoned += 1;
 
         let prior_indexes = present_chunk_indexes(pool, &self.owner, self.repo_id, path).await?;
         for prior in prior_indexes {
             let tomb = tombstone_chunk(self.repo_id, path, prior, None);
-            ingest_code_chunk(pool, &self.owner, batch_id, &tomb, [0u8; 32], now).await?;
+            append_code_slice(
+                pool,
+                &self.owner,
+                &tomb,
+                file_revision.memory_id,
+                source_commit,
+            )
+            .await?;
             report.chunks_tombstoned += 1;
         }
         Ok(())
@@ -646,6 +664,15 @@ fn decode_cursor(c: &Cursor) -> Result<CodeCursor, IndexError> {
 fn encode_cursor(c: &CodeCursor) -> Result<Cursor, IndexError> {
     let bytes = serde_json::to_vec(c).map_err(|e| IndexError::Cursor(e.to_string()))?;
     Ok(Cursor::from_bytes(bytes))
+}
+
+type BlobAnalysisKey = ([u8; 32], Option<String>);
+
+#[derive(Debug, Clone)]
+struct BlobAnalysis {
+    chunks: Vec<Chunk>,
+    definitions: Vec<ExtractedDefinition>,
+    calls: Vec<ExtractedCall>,
 }
 
 /// Chunk info for call resolution.

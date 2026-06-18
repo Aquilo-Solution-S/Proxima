@@ -2,9 +2,10 @@ use proxima_core::{
     FactPayload, FactTombstone, SearchProjection, SearchProjectionColumnKind,
     SearchProjectionField, proxima_schema_id,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, sqlx::Type)]
 #[sqlx(type_name = "proxima_code.file_state")]
 pub enum FileState {
     Present,

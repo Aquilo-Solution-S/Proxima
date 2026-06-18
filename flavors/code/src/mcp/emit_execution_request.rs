@@ -5,38 +5,36 @@ use proxima_core::personality::{PersonalityInstanceId, PersonalityStatus};
 use proxima_core::relation::{
     CORE_AUTHORED_RELATION, CORE_DEPENDS_ON_RELATION, CORE_DERIVED_FROM_RELATION,
 };
-use proxima_core::verbs::event_ingest::{
-    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
-};
+use proxima_core::verbs::event_ingest::{CitationSpec, EventIngestOutcome};
 use proxima_core::{
-    EdgeAuthorshipKind, EdgeId, EntityKind, FactPayload, MemoryId, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId, canonical_json_bytes,
+    AbstractionPayload, EdgeAuthorshipKind, EdgeId, EntityKind, FactPayload, MemoryId,
+    MemoryOperatorKind, SchemaVersion, SourceBatchId,
 };
-use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
-use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
+use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_in_tx};
+use proxima_storage_pg::verbs::edge_append::{Endpoint, append_edge};
+use proxima_storage_pg::verbs::event_ingest::{FactIngestContext, ingest_fact_with_sidecar};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
+use crate::ingest::{
+    ACCEPTANCE_CRITERIA_OBJECT_SCHEMA, ACCEPTANCE_CRITERIA_WHOLE_SCHEMA,
+    EXECUTION_REQUEST_OBJECT_SCHEMA, EXECUTION_REQUEST_WHOLE_SCHEMA, TEST_REQUEST_OBJECT_SCHEMA,
+    TEST_REQUEST_WHOLE_SCHEMA,
+};
 use crate::payloads::{
-    AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, ExecutionRequestV1,
-    TestRequestV1,
+    AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, CodeExecutionPlanItemKind,
+    CodeExecutionPlanItemV1, CodeExecutionPlanV1, ExecutionRequestV1, TestRequestV1,
 };
 
 use super::sql::{map_storage, owner_principal, resolve_repo_identifier};
 
 const EXECUTION_REQUEST_SOURCE_ID: &str = "proxima-code/execution-request";
-const EXECUTION_REQUEST_OBJECT_SCHEMA: &str = "proxima-code/execution-request-object-v1";
-const EXECUTION_REQUEST_WHOLE_SCHEMA: &str = "proxima-code/execution-request-whole-v1";
 pub const CODE_TARGETS_EXECUTION_REQUEST_RELATION: &str = "proxima-code/targets-execution-request";
 pub const CODE_HAS_ACCEPTANCE_CRITERIA_RELATION: &str = "proxima-code/has-acceptance-criteria";
 const ACCEPTANCE_CRITERIA_SOURCE_ID: &str = "proxima-code/acceptance-criteria";
-const ACCEPTANCE_CRITERIA_OBJECT_SCHEMA: &str = "proxima-code/acceptance-criteria-object-v1";
-const ACCEPTANCE_CRITERIA_WHOLE_SCHEMA: &str = "proxima-code/acceptance-criteria-whole-v1";
 const TEST_REQUEST_SOURCE_ID: &str = "proxima-code/test-request";
-const TEST_REQUEST_OBJECT_SCHEMA: &str = "proxima-code/test-request-object-v1";
-const TEST_REQUEST_WHOLE_SCHEMA: &str = "proxima-code/test-request-whole-v1";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeEmitExecutionRequestArgs {
@@ -130,6 +128,14 @@ pub struct CodeEmitExecutionPlanArgs {
     pub goal_activated_memory: String,
     #[serde(default)]
     #[schemars(
+        description = "Optional stable idempotency key for the plan Abstraction. Defaults to a deterministic key from goal + item keys."
+    )]
+    pub plan_key: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional concise summary of the plan synthesis.")]
+    pub plan_summary: Option<String>,
+    #[serde(default)]
+    #[schemars(
         description = "Optional additional Fact memory handles used as evidence for every item."
     )]
     pub evidence: Vec<String>,
@@ -150,13 +156,16 @@ pub struct ExecutionPlanItemOutput {
 
 #[derive(Debug, Serialize)]
 pub struct CodeEmitExecutionPlanOutput {
+    pub plan_handle: String,
+    pub plan_derived_edge_handles: Vec<String>,
+    pub plan_idempotent_replay: bool,
     pub items: Vec<ExecutionPlanItemOutput>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeRetryExecutionRequestArgs {
     #[schemars(
-        description = "`F...` memory handle for the prior proxima-code/execution-request-v1 Fact being retried."
+        description = "`F...` memory handle for the prior proxima-code/work-requested-v1 Fact being retried."
     )]
     pub prior_execution_request: String,
     #[schemars(
@@ -199,16 +208,12 @@ pub struct CodeEmitExecutionRequestTool;
 impl McpTool for CodeEmitExecutionRequestTool {
     const NAME: &'static str = "proxima-code/code_emit_execution_request";
     const DESCRIPTION: &'static str =
-        "Emit a repo-scoped proxima-code/execution-request-v1 Fact for an Active Goal.";
+        "Emit a repo-scoped proxima-code/work-requested-v1 Fact for an Active Goal.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[ExecutionRequestV1::SCHEMA_ID];
 
     type Args = CodeEmitExecutionRequestArgs;
     type Output = CodeEmitExecutionRequestOutput;
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "single emit transaction: goal gate, repo resolve, fact + edges"
-    )]
     fn call(
         ctx: McpToolCtx,
         args: CodeEmitExecutionRequestArgs,
@@ -248,7 +253,6 @@ impl McpTool for CodeEmitExecutionRequestTool {
                 if outcome.idempotent_replay {
                     (None, Vec::new(), None, None)
                 } else {
-                    insert_sidecar(&mut tx, outcome.memory_id, &payload).await?;
                     let authored_edge_id =
                         append_authored_edge(&mut tx, &ctx, planner_root, outcome.memory_id)
                             .await?;
@@ -274,7 +278,7 @@ impl McpTool for CodeEmitExecutionRequestTool {
                         (None, None)
                     } else {
                         let criteria_payload = AcceptanceCriteriaV1 {
-                            execution_request_memory_id: outcome.memory_id.into_inner(),
+                            work_item_memory_id: outcome.memory_id.into_inner(),
                             criteria: acceptance_criteria,
                         };
                         let criteria_outcome =
@@ -282,12 +286,6 @@ impl McpTool for CodeEmitExecutionRequestTool {
                         if criteria_outcome.idempotent_replay {
                             (Some(criteria_outcome.memory_id), None)
                         } else {
-                            insert_acceptance_criteria_sidecar(
-                                &mut tx,
-                                criteria_outcome.memory_id,
-                                &criteria_payload,
-                            )
-                            .await?;
                             let edge_id = append_acceptance_criteria_edge(
                                 &mut tx,
                                 &ctx,
@@ -331,8 +329,11 @@ pub struct CodeEmitExecutionPlanTool;
 impl McpTool for CodeEmitExecutionPlanTool {
     const NAME: &'static str = "proxima-code/code_emit_execution_plan";
     const DESCRIPTION: &'static str = "Atomically emit an ordered set of repo-scoped implementation/test request Facts plus core/depends-on edges.";
-    const PRODUCES_SCHEMA_IDS: &'static [&'static str] =
-        &[ExecutionRequestV1::SCHEMA_ID, TestRequestV1::SCHEMA_ID];
+    const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[
+        CodeExecutionPlanV1::SCHEMA_ID,
+        ExecutionRequestV1::SCHEMA_ID,
+        TestRequestV1::SCHEMA_ID,
+    ];
 
     type Args = CodeEmitExecutionPlanArgs;
     type Output = CodeEmitExecutionPlanOutput;
@@ -362,6 +363,50 @@ impl McpTool for CodeEmitExecutionPlanTool {
             validate_active_goal_context(&mut tx, &ctx, goal_id, planner_root).await?;
             validate_evidence_in_owner(&mut tx, &ctx, &evidence).await?;
 
+            let plan_key = match args.plan_key {
+                Some(value) => normalize_text("plan_key", &value, 1, 240)?,
+                None => default_plan_key(goal_activated_memory_id, &plan_items),
+            };
+            let plan_summary = match args.plan_summary {
+                Some(value) => normalize_text("plan_summary", &value, 1, 4_000)?,
+                None => format!("Plan with {} work/test item(s)", plan_items.len()),
+            };
+            let plan_payload = CodeExecutionPlanV1 {
+                repo_id,
+                plan_key: plan_key.clone(),
+                goal_activated_memory_id: goal_activated_memory_id.into_inner(),
+                summary: plan_summary.clone(),
+                items: plan_items
+                    .iter()
+                    .map(|item| CodeExecutionPlanItemV1 {
+                        key: item.key.clone(),
+                        kind: match item.kind {
+                            ExecutionPlanItemKind::Implementation => {
+                                CodeExecutionPlanItemKind::Work
+                            }
+                            ExecutionPlanItemKind::Test => CodeExecutionPlanItemKind::Test,
+                        },
+                        title: item.title.clone(),
+                        depends_on: item.depends_on.clone(),
+                        request_key: item.idempotency_key.clone(),
+                    })
+                    .collect(),
+                evidence_memory_ids: evidence.iter().map(|id| id.into_inner()).collect(),
+            };
+            let plan_outcome = append_execution_plan(
+                &mut tx,
+                &ctx,
+                planner_root,
+                goal_activated_memory_id,
+                &evidence,
+                &plan_key,
+                &plan_summary,
+                &plan_payload,
+            )
+            .await?;
+            let plan_memory_id = plan_outcome.memory_id;
+            let mut plan_edge_ids = plan_outcome.edge_ids;
+
             let mut emitted: HashMap<String, MemoryId> = HashMap::new();
             let mut outputs = Vec::with_capacity(plan_items.len());
             for item in plan_items {
@@ -376,7 +421,6 @@ impl McpTool for CodeEmitExecutionPlanTool {
                         };
                         let outcome = ingest_execution_request(&mut tx, &ctx, &payload).await?;
                         if !outcome.idempotent_replay {
-                            insert_sidecar(&mut tx, outcome.memory_id, &payload).await?;
                             append_authored_edge(&mut tx, &ctx, planner_root, outcome.memory_id)
                                 .await?;
                             append_derived_edge(
@@ -392,19 +436,13 @@ impl McpTool for CodeEmitExecutionPlanTool {
                             }
                             if !item.acceptance_criteria.is_empty() {
                                 let criteria_payload = AcceptanceCriteriaV1 {
-                                    execution_request_memory_id: outcome.memory_id.into_inner(),
+                                    work_item_memory_id: outcome.memory_id.into_inner(),
                                     criteria: item.acceptance_criteria,
                                 };
                                 let criteria_outcome =
                                     ingest_acceptance_criteria(&mut tx, &ctx, &criteria_payload)
                                         .await?;
                                 if !criteria_outcome.idempotent_replay {
-                                    insert_acceptance_criteria_sidecar(
-                                        &mut tx,
-                                        criteria_outcome.memory_id,
-                                        &criteria_payload,
-                                    )
-                                    .await?;
                                     append_acceptance_criteria_edge(
                                         &mut tx,
                                         &ctx,
@@ -427,8 +465,6 @@ impl McpTool for CodeEmitExecutionPlanTool {
                         };
                         let outcome = ingest_test_request(&mut tx, &ctx, &payload).await?;
                         if !outcome.idempotent_replay {
-                            insert_test_request_sidecar(&mut tx, outcome.memory_id, &payload)
-                                .await?;
                             append_authored_edge(&mut tx, &ctx, planner_root, outcome.memory_id)
                                 .await?;
                             append_derived_edge(
@@ -446,6 +482,10 @@ impl McpTool for CodeEmitExecutionPlanTool {
                         outcome
                     }
                 };
+                plan_edge_ids.push(
+                    append_plan_derived_edge(&mut tx, &ctx, plan_memory_id, outcome.memory_id)
+                        .await?,
+                );
                 let mut dependency_edges = Vec::new();
                 for dependency_key in &item.depends_on {
                     let dependency_memory_id =
@@ -473,9 +513,148 @@ impl McpTool for CodeEmitExecutionPlanTool {
                 });
             }
             tx.commit().await.map_err(map_storage)?;
-            Ok(CodeEmitExecutionPlanOutput { items: outputs })
+            Ok(CodeEmitExecutionPlanOutput {
+                plan_handle: ctx.format_abstraction_memory(plan_memory_id),
+                plan_derived_edge_handles: plan_edge_ids
+                    .into_iter()
+                    .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id)))
+                    .collect(),
+                plan_idempotent_replay: plan_outcome.idempotent_replay,
+                items: outputs,
+            })
         })
     }
+}
+
+#[derive(Debug)]
+struct PlanAppendOutcome {
+    memory_id: MemoryId,
+    edge_ids: Vec<Uuid>,
+    idempotent_replay: bool,
+}
+
+fn default_plan_key(goal_activated_memory_id: MemoryId, items: &[ExecutionPlanItemArgs]) -> String {
+    let item_keys = items
+        .iter()
+        .map(|item| item.key.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let candidate = format!("plan:{}:{item_keys}", goal_activated_memory_id.into_inner());
+    if candidate.len() <= 240 {
+        candidate
+    } else {
+        format!(
+            "plan:{}",
+            Uuid::new_v5(&Uuid::NAMESPACE_OID, candidate.as_bytes())
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn append_execution_plan(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    planner_root: MemoryId,
+    goal_activated_memory_id: MemoryId,
+    evidence: &[MemoryId],
+    plan_key: &str,
+    plan_summary: &str,
+    payload: &CodeExecutionPlanV1,
+) -> Result<PlanAppendOutcome, McpToolError> {
+    let mut key = Vec::new();
+    key.extend_from_slice(ctx.owner.principal.columns().1.as_bytes());
+    key.extend_from_slice(ctx.owner.org_id.into_inner().as_bytes());
+    key.extend_from_slice(payload.repo_id.as_bytes());
+    key.extend_from_slice(goal_activated_memory_id.into_inner().as_bytes());
+    key.extend_from_slice(plan_key.as_bytes());
+    let memory_id = MemoryId::new(Uuid::new_v5(&Uuid::NAMESPACE_OID, &key));
+    let sidecar_payload = serde_json::to_value(payload)
+        .map_err(|err| McpToolError::InvalidInput(format!("serialize plan: {err}")))?;
+    let draft = DerivedDraft {
+        memory_id: memory_id.into_inner(),
+        owner: ctx.owner.clone(),
+        kind: EntityKind::Abstraction,
+        author_personality_instance_id: ctx.author.personality_instance_id,
+        schema_id: <CodeExecutionPlanV1 as AbstractionPayload>::schema_id(),
+        schema_version: SchemaVersion::new(CodeExecutionPlanV1::SCHEMA_VERSION),
+        text: plan_summary.to_string(),
+        operator_kind: MemoryOperatorKind::ExternalAgent,
+        model_id: &ctx.author.model_id,
+        prompt_version: "proxima-code/code_emit_execution_plan-v1",
+        sidecar_table: Some(CodeExecutionPlanV1::sidecar_table()),
+        sidecar_payload: Some(sidecar_payload),
+        embedding: None,
+        embedding_model_id: None,
+    };
+    let outcome = append_derived_in_tx(tx, &draft)
+        .await
+        .map_err(McpToolError::Storage)?;
+    let mut edge_ids = Vec::new();
+    if !outcome.idempotent_replay {
+        edge_ids.push(append_plan_authored_edge(tx, ctx, planner_root, memory_id).await?);
+        edge_ids
+            .push(append_plan_derived_edge(tx, ctx, memory_id, goal_activated_memory_id).await?);
+        for memory_id in evidence {
+            edge_ids.push(append_plan_derived_edge(tx, ctx, outcome.memory_id, *memory_id).await?);
+        }
+    }
+    Ok(PlanAppendOutcome {
+        memory_id: outcome.memory_id,
+        edge_ids,
+        idempotent_replay: outcome.idempotent_replay,
+    })
+}
+
+async fn append_plan_authored_edge(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    planner_root: MemoryId,
+    plan_memory_id: MemoryId,
+) -> Result<Uuid, McpToolError> {
+    let relation = ctx
+        .registry
+        .resolve_relation(CORE_AUTHORED_RELATION)
+        .ok_or_else(|| McpToolError::Other("core/authored relation not registered".into()))?;
+    let edge_id = Uuid::now_v7();
+    append_edge(
+        tx.as_mut(),
+        edge_id,
+        relation,
+        Endpoint::perspective(planner_root),
+        Endpoint::abstraction(plan_memory_id),
+        EdgeAuthorshipKind::ExternalAgent,
+        Some(planner_root),
+        &ctx.owner,
+    )
+    .await
+    .map_err(McpToolError::Storage)?;
+    Ok(edge_id)
+}
+
+async fn append_plan_derived_edge(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    plan_memory_id: MemoryId,
+    target_memory_id: MemoryId,
+) -> Result<Uuid, McpToolError> {
+    let relation = ctx
+        .registry
+        .resolve_relation(CORE_DERIVED_FROM_RELATION)
+        .ok_or_else(|| McpToolError::Other("core/derived-from relation not registered".into()))?;
+    let edge_id = Uuid::now_v7();
+    append_edge(
+        tx.as_mut(),
+        edge_id,
+        relation,
+        Endpoint::abstraction(plan_memory_id),
+        Endpoint::fact(target_memory_id),
+        EdgeAuthorshipKind::ExternalAgent,
+        ctx.caller_self_perspective,
+        &ctx.owner,
+    )
+    .await
+    .map_err(McpToolError::Storage)?;
+    Ok(edge_id)
 }
 
 #[derive(Debug)]
@@ -483,7 +662,7 @@ pub struct CodeRetryExecutionRequestTool;
 
 impl McpTool for CodeRetryExecutionRequestTool {
     const NAME: &'static str = "proxima-code/code_retry_execution_request";
-    const DESCRIPTION: &'static str = "Shell-author override: retry a prior proxima-code/execution-request-v1 Fact for a target worker.";
+    const DESCRIPTION: &'static str = "Shell-author override: retry a prior proxima-code/work-requested-v1 Fact for a target worker.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[ExecutionRequestV1::SCHEMA_ID];
 
     type Args = CodeRetryExecutionRequestArgs;
@@ -552,7 +731,6 @@ impl McpTool for CodeRetryExecutionRequestTool {
             {
                 (None, None, Vec::new())
             } else {
-                insert_sidecar(&mut tx, outcome.memory_id, &payload).await?;
                 let authored_edge_id =
                     append_authored_edge(&mut tx, &ctx, shell_author_root, outcome.memory_id)
                         .await?;
@@ -859,7 +1037,7 @@ pub(super) async fn load_execution_request(
                 r.title,
                 r.instructions
          FROM proxima_core.memories m
-         LEFT JOIN proxima_code.execution_request_v1 r USING (memory_id)
+         LEFT JOIN proxima_code.work_requested_v1 r USING (memory_id)
          WHERE m.memory_id = $1
            AND m.owner_principal_kind = $2
            AND m.owner_principal_id = $3",
@@ -878,7 +1056,7 @@ pub(super) async fn load_execution_request(
     };
     if kind != EntityKind::Fact || schema_id != ExecutionRequestV1::SCHEMA_ID {
         return Err(McpToolError::InvalidInput(
-            "prior_execution_request must be a proxima-code/execution-request-v1 Fact".into(),
+            "prior_execution_request must be a proxima-code/work-requested-v1 Fact".into(),
         ));
     }
     let (Some(repo_id), Some(title), Some(instructions)) = (repo_id, title, instructions) else {
@@ -902,7 +1080,7 @@ pub(super) async fn find_execution_request_by_key(
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
     let existing: Option<Uuid> = sqlx::query_scalar(
         "SELECT r.memory_id
-         FROM proxima_code.execution_request_v1 r
+         FROM proxima_code.work_requested_v1 r
          JOIN proxima_core.memories m USING (memory_id)
          WHERE r.repo_id = $1
            AND r.request_key = $2
@@ -981,7 +1159,7 @@ pub(super) async fn validate_target_execution_wake(
     .map_err(map_storage)?;
     if !exists {
         return Err(McpToolError::InvalidInput(
-            "target_personality has no enabled wake entry for proxima-code/execution-request-v1"
+            "target_personality has no enabled wake entry for proxima-code/work-requested-v1"
                 .into(),
         ));
     }
@@ -1199,198 +1377,74 @@ async fn validate_evidence_in_owner(
     Ok(())
 }
 
-pub(super) async fn ingest_execution_request(
+async fn ingest_mcp_fact<P>(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
-    payload: &ExecutionRequestV1,
-) -> Result<proxima_core::verbs::event_ingest::EventIngestOutcome, McpToolError> {
-    let payload_bytes = encode_payload_json(payload)?;
-    let content_hash = blake3::hash(&payload_bytes);
-    let observed_at = time::OffsetDateTime::now_utc();
-    let draft = EventDraft {
-        source_id: SourceId::new(EXECUTION_REQUEST_SOURCE_ID),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: ctx.owner.principal.clone(),
-        org_id: Some(ctx.owner.org_id),
-        author_personality_instance_id: None,
-        schema_id: SchemaId::new(ExecutionRequestV1::SCHEMA_ID.into()),
-        schema_version: SchemaVersion::new(ExecutionRequestV1::SCHEMA_VERSION),
-        payload: payload_bytes,
-        rendered_text: None,
-        observed_at,
-        occurred_at: observed_at,
-        citation: Some(Citation {
-            object: CitedObjectHint {
-                schema_id: SchemaId::new(EXECUTION_REQUEST_OBJECT_SCHEMA.into()),
-                schema_version: SchemaVersion::new(1),
-                content_hash: *content_hash.as_bytes(),
-            },
-            mapping: CitationMappingHint {
-                schema_id: SchemaId::new(EXECUTION_REQUEST_WHOLE_SCHEMA.into()),
-                schema_version: SchemaVersion::new(1),
-            },
-        }),
-    };
+    source_id: &'static str,
+    cited_object_schema: &'static str,
+    mapping_schema: &'static str,
+    payload: &P,
+) -> Result<EventIngestOutcome, McpToolError>
+where
+    P: FactPayload + proxima_storage_pg::verbs::event_ingest::PgFactSidecar + Clone,
+{
     let embedding_client = ctx.engine().and_then(proxima_core::Engine::embed_client);
-    let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
-    ingest_event_in_tx(tx, &draft, embedding_model_id)
+    let ingest_ctx =
+        FactIngestContext::new(&ctx.owner, source_id, SourceBatchId::new(Uuid::now_v7()))
+            .embedding_model_id(embedding_client.as_ref().map(|client| client.model_id()));
+    let citation = CitationSpec::v1_for_payload(cited_object_schema, payload, mapping_schema)
+        .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+    ingest_fact_with_sidecar(tx, &ingest_ctx, payload, citation)
         .await
         .map_err(McpToolError::Storage)
 }
 
-fn encode_payload_json<T>(payload: &T) -> Result<Vec<u8>, McpToolError>
-where
-    T: Serialize,
-{
-    let value =
-        serde_json::to_value(payload).map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-    Ok(canonical_json_bytes(&value))
-}
-
-pub(super) async fn insert_sidecar(
+pub(super) async fn ingest_execution_request(
     tx: &mut Transaction<'_, Postgres>,
-    memory_id: MemoryId,
+    ctx: &McpToolCtx,
     payload: &ExecutionRequestV1,
-) -> Result<(), McpToolError> {
-    sqlx::query(
-        "INSERT INTO proxima_code.execution_request_v1
-            (memory_id, repo_id, title, instructions, request_key)
-         VALUES ($1, $2, $3, $4, $5)",
+) -> Result<EventIngestOutcome, McpToolError> {
+    ingest_mcp_fact(
+        tx,
+        ctx,
+        EXECUTION_REQUEST_SOURCE_ID,
+        EXECUTION_REQUEST_OBJECT_SCHEMA,
+        EXECUTION_REQUEST_WHOLE_SCHEMA,
+        payload,
     )
-    .bind(memory_id.into_inner())
-    .bind(payload.repo_id)
-    .bind(&payload.title)
-    .bind(&payload.instructions)
-    .bind(&payload.request_key)
-    .execute(&mut **tx)
     .await
-    .map_err(map_storage)?;
-    Ok(())
 }
 
 pub(super) async fn ingest_acceptance_criteria(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     payload: &AcceptanceCriteriaV1,
-) -> Result<proxima_core::verbs::event_ingest::EventIngestOutcome, McpToolError> {
-    let payload_bytes = encode_payload_json(payload)?;
-    let content_hash = blake3::hash(&payload_bytes);
-    let observed_at = time::OffsetDateTime::now_utc();
-    let draft = EventDraft {
-        source_id: SourceId::new(ACCEPTANCE_CRITERIA_SOURCE_ID),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: ctx.owner.principal.clone(),
-        org_id: Some(ctx.owner.org_id),
-        author_personality_instance_id: None,
-        schema_id: SchemaId::new(AcceptanceCriteriaV1::SCHEMA_ID.into()),
-        schema_version: SchemaVersion::new(AcceptanceCriteriaV1::SCHEMA_VERSION),
-        payload: payload_bytes,
-        rendered_text: None,
-        observed_at,
-        occurred_at: observed_at,
-        citation: Some(Citation {
-            object: CitedObjectHint {
-                schema_id: SchemaId::new(ACCEPTANCE_CRITERIA_OBJECT_SCHEMA.into()),
-                schema_version: SchemaVersion::new(1),
-                content_hash: *content_hash.as_bytes(),
-            },
-            mapping: CitationMappingHint {
-                schema_id: SchemaId::new(ACCEPTANCE_CRITERIA_WHOLE_SCHEMA.into()),
-                schema_version: SchemaVersion::new(1),
-            },
-        }),
-    };
-    let embedding_client = ctx.engine().and_then(proxima_core::Engine::embed_client);
-    let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
-    ingest_event_in_tx(tx, &draft, embedding_model_id)
-        .await
-        .map_err(McpToolError::Storage)
-}
-
-pub(super) async fn insert_acceptance_criteria_sidecar(
-    tx: &mut Transaction<'_, Postgres>,
-    memory_id: MemoryId,
-    payload: &AcceptanceCriteriaV1,
-) -> Result<(), McpToolError> {
-    sqlx::query(
-        "INSERT INTO proxima_code.acceptance_criteria_v1
-            (memory_id, execution_request_memory_id, criteria_json)
-         VALUES ($1, $2, $3)",
+) -> Result<EventIngestOutcome, McpToolError> {
+    ingest_mcp_fact(
+        tx,
+        ctx,
+        ACCEPTANCE_CRITERIA_SOURCE_ID,
+        ACCEPTANCE_CRITERIA_OBJECT_SCHEMA,
+        ACCEPTANCE_CRITERIA_WHOLE_SCHEMA,
+        payload,
     )
-    .bind(memory_id.into_inner())
-    .bind(payload.execution_request_memory_id)
-    .bind(
-        serde_json::to_value(&payload.criteria)
-            .map_err(|err| McpToolError::InvalidInput(format!("serialize criteria: {err}")))?,
-    )
-    .execute(&mut **tx)
     .await
-    .map_err(map_storage)?;
-    Ok(())
 }
 
 pub(super) async fn ingest_test_request(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     payload: &TestRequestV1,
-) -> Result<proxima_core::verbs::event_ingest::EventIngestOutcome, McpToolError> {
-    let payload_bytes = encode_payload_json(payload)?;
-    let content_hash = blake3::hash(&payload_bytes);
-    let observed_at = time::OffsetDateTime::now_utc();
-    let draft = EventDraft {
-        source_id: SourceId::new(TEST_REQUEST_SOURCE_ID),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: ctx.owner.principal.clone(),
-        org_id: Some(ctx.owner.org_id),
-        author_personality_instance_id: None,
-        schema_id: SchemaId::new(TestRequestV1::SCHEMA_ID.into()),
-        schema_version: SchemaVersion::new(TestRequestV1::SCHEMA_VERSION),
-        payload: payload_bytes,
-        rendered_text: None,
-        observed_at,
-        occurred_at: observed_at,
-        citation: Some(Citation {
-            object: CitedObjectHint {
-                schema_id: SchemaId::new(TEST_REQUEST_OBJECT_SCHEMA.into()),
-                schema_version: SchemaVersion::new(1),
-                content_hash: *content_hash.as_bytes(),
-            },
-            mapping: CitationMappingHint {
-                schema_id: SchemaId::new(TEST_REQUEST_WHOLE_SCHEMA.into()),
-                schema_version: SchemaVersion::new(1),
-            },
-        }),
-    };
-    let embedding_client = ctx.engine().and_then(proxima_core::Engine::embed_client);
-    let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
-    ingest_event_in_tx(tx, &draft, embedding_model_id)
-        .await
-        .map_err(McpToolError::Storage)
-}
-
-pub(super) async fn insert_test_request_sidecar(
-    tx: &mut Transaction<'_, Postgres>,
-    memory_id: MemoryId,
-    payload: &TestRequestV1,
-) -> Result<(), McpToolError> {
-    sqlx::query(
-        "INSERT INTO proxima_code.test_request_v1
-            (memory_id, repo_id, title, instructions, test_key, criteria_json)
-         VALUES ($1, $2, $3, $4, $5, $6)",
+) -> Result<EventIngestOutcome, McpToolError> {
+    ingest_mcp_fact(
+        tx,
+        ctx,
+        TEST_REQUEST_SOURCE_ID,
+        TEST_REQUEST_OBJECT_SCHEMA,
+        TEST_REQUEST_WHOLE_SCHEMA,
+        payload,
     )
-    .bind(memory_id.into_inner())
-    .bind(payload.repo_id)
-    .bind(&payload.title)
-    .bind(&payload.instructions)
-    .bind(&payload.test_key)
-    .bind(
-        serde_json::to_value(&payload.criteria)
-            .map_err(|err| McpToolError::InvalidInput(format!("serialize criteria: {err}")))?,
-    )
-    .execute(&mut **tx)
     .await
-    .map_err(map_storage)?;
-    Ok(())
 }
 
 pub(super) async fn append_acceptance_criteria_edge(
@@ -1408,24 +1462,15 @@ pub(super) async fn append_acceptance_criteria_edge(
             ))
         })?;
     let edge_id = Uuid::now_v7();
-    append_edge_in_tx(
-        tx,
-        &EdgeDraft {
-            edge_id,
-            relation,
-            source_kind: EntityKind::Fact,
-            source_memory_id: Some(request_memory_id.into_inner()),
-            source_goal_id: None,
-            source_fact_entity_id: None,
-            target_kind: EntityKind::Fact,
-            target_memory_id: Some(criteria_memory_id.into_inner()),
-            target_goal_id: None,
-            target_fact_entity_id: None,
-            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
-            authorship_owner_memory_id: ctx.caller_self_perspective.map(MemoryId::into_inner),
-            owner: &ctx.owner,
-        },
-        None,
+    append_edge(
+        tx.as_mut(),
+        edge_id,
+        relation,
+        Endpoint::fact(request_memory_id),
+        Endpoint::fact(criteria_memory_id),
+        EdgeAuthorshipKind::ExternalAgent,
+        ctx.caller_self_perspective,
+        &ctx.owner,
     )
     .await
     .map_err(McpToolError::Storage)?;
@@ -1443,24 +1488,15 @@ pub(super) async fn append_authored_edge(
         .resolve_relation(CORE_AUTHORED_RELATION)
         .ok_or_else(|| McpToolError::Other("core/authored relation not registered".into()))?;
     let edge_id = Uuid::now_v7();
-    append_edge_in_tx(
-        tx,
-        &EdgeDraft {
-            edge_id,
-            relation,
-            source_kind: EntityKind::Perspective,
-            source_memory_id: Some(planner_root.into_inner()),
-            source_goal_id: None,
-            source_fact_entity_id: None,
-            target_kind: EntityKind::Fact,
-            target_memory_id: Some(request_memory_id.into_inner()),
-            target_goal_id: None,
-            target_fact_entity_id: None,
-            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
-            authorship_owner_memory_id: Some(planner_root.into_inner()),
-            owner: &ctx.owner,
-        },
-        None,
+    append_edge(
+        tx.as_mut(),
+        edge_id,
+        relation,
+        Endpoint::perspective(planner_root),
+        Endpoint::fact(request_memory_id),
+        EdgeAuthorshipKind::ExternalAgent,
+        Some(planner_root),
+        &ctx.owner,
     )
     .await
     .map_err(McpToolError::Storage)?;
@@ -1482,24 +1518,15 @@ pub(super) async fn append_target_edge(
             ))
         })?;
     let edge_id = Uuid::now_v7();
-    append_edge_in_tx(
-        tx,
-        &EdgeDraft {
-            edge_id,
-            relation,
-            source_kind: EntityKind::Perspective,
-            source_memory_id: Some(target_root.into_inner()),
-            source_goal_id: None,
-            source_fact_entity_id: None,
-            target_kind: EntityKind::Fact,
-            target_memory_id: Some(request_memory_id.into_inner()),
-            target_goal_id: None,
-            target_fact_entity_id: None,
-            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
-            authorship_owner_memory_id: ctx.caller_self_perspective.map(MemoryId::into_inner),
-            owner: &ctx.owner,
-        },
-        None,
+    append_edge(
+        tx.as_mut(),
+        edge_id,
+        relation,
+        Endpoint::perspective(target_root),
+        Endpoint::fact(request_memory_id),
+        EdgeAuthorshipKind::ExternalAgent,
+        ctx.caller_self_perspective,
+        &ctx.owner,
     )
     .await
     .map_err(McpToolError::Storage)?;
@@ -1517,24 +1544,15 @@ pub(super) async fn append_derived_edge(
         .resolve_relation(CORE_DERIVED_FROM_RELATION)
         .ok_or_else(|| McpToolError::Other("core/derived-from relation not registered".into()))?;
     let edge_id = Uuid::now_v7();
-    append_edge_in_tx(
-        tx,
-        &EdgeDraft {
-            edge_id,
-            relation,
-            source_kind: EntityKind::Fact,
-            source_memory_id: Some(request_memory_id.into_inner()),
-            source_goal_id: None,
-            source_fact_entity_id: None,
-            target_kind: EntityKind::Fact,
-            target_memory_id: Some(evidence_memory_id.into_inner()),
-            target_goal_id: None,
-            target_fact_entity_id: None,
-            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
-            authorship_owner_memory_id: ctx.caller_self_perspective.map(MemoryId::into_inner),
-            owner: &ctx.owner,
-        },
-        None,
+    append_edge(
+        tx.as_mut(),
+        edge_id,
+        relation,
+        Endpoint::fact(request_memory_id),
+        Endpoint::fact(evidence_memory_id),
+        EdgeAuthorshipKind::ExternalAgent,
+        ctx.caller_self_perspective,
+        &ctx.owner,
     )
     .await
     .map_err(McpToolError::Storage)?;
@@ -1555,24 +1573,15 @@ async fn append_dependency_edge(
     name.extend_from_slice(dependent_memory_id.into_inner().as_bytes());
     name.extend_from_slice(dependency_memory_id.into_inner().as_bytes());
     let edge_id = Uuid::new_v5(&Uuid::NAMESPACE_OID, &name);
-    append_edge_in_tx(
-        tx,
-        &EdgeDraft {
-            edge_id,
-            relation,
-            source_kind: EntityKind::Fact,
-            source_memory_id: Some(dependent_memory_id.into_inner()),
-            source_goal_id: None,
-            source_fact_entity_id: None,
-            target_kind: EntityKind::Fact,
-            target_memory_id: Some(dependency_memory_id.into_inner()),
-            target_goal_id: None,
-            target_fact_entity_id: None,
-            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
-            authorship_owner_memory_id: ctx.caller_self_perspective.map(MemoryId::into_inner),
-            owner: &ctx.owner,
-        },
-        None,
+    append_edge(
+        tx.as_mut(),
+        edge_id,
+        relation,
+        Endpoint::fact(dependent_memory_id),
+        Endpoint::fact(dependency_memory_id),
+        EdgeAuthorshipKind::ExternalAgent,
+        ctx.caller_self_perspective,
+        &ctx.owner,
     )
     .await
     .map_err(McpToolError::Storage)?;
