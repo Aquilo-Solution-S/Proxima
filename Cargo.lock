@@ -2354,13 +2354,16 @@ dependencies = [
 name = "proxima-mcp"
 version = "0.1.0"
 dependencies = [
+ "jsonwebtoken",
  "proxima",
  "proxima-auth-oidc",
  "proxima-code",
  "proxima-core",
  "proxima-llm-openai-compat",
  "proxima-storage-pg",
+ "rand 0.8.6",
  "reqwest",
+ "rsa",
  "serde_json",
  "thiserror",
  "time",
