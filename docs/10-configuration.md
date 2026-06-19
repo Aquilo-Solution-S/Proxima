@@ -56,6 +56,9 @@ Proxima::<App>::app().from_env().authenticator(auth).run().await?;
 | `MISTRAL_API_KEY` | Enables `proxima-mcp` embeddings with Mistral. |
 | `PROXIMA_EMBED_MODEL` | Optional embedding model for `proxima-mcp`; defaults to `mistral-embed`. |
 | `MISTRAL_API_BASE` | Optional Mistral-compatible API base; defaults to `https://api.mistral.ai/v1`. |
+| `PROXIMA_TOOL_PROFILE` | `proxima-mcp` deployment tool profile: `full` (default) or `memory`. |
+| `PROXIMA_TOOL_ALLOW` | Optional comma-separated canonical tool ids unioned into the resolved profile. |
+| `PROXIMA_TOOL_DENY` | Optional comma-separated canonical tool ids subtracted from the resolved profile. |
 | `PROXIMA_S3_BUCKET` | Enables cited-blob S3 storage. |
 | `PROXIMA_S3_REGION` | S3 region for cited-blob storage. |
 | `PROXIMA_S3_ENDPOINT_URL` | Optional S3-compatible endpoint URL. |
@@ -91,6 +94,26 @@ binds accept loopback hosts only, and a network-exposed bind must
 resolve at least one public host (`PROXIMA_ALLOWED_HOSTS`, else the host
 of `PROXIMA_PUBLIC_URL` / the allowed origins) or `validate()` fails
 closed. Secrets are never streamed to clients.
+
+### Tool Surface Profile
+
+`apps/proxima-mcp` resolves one deployment-wide `ToolScope` at boot:
+
+```text
+profile -> + PROXIMA_TOOL_ALLOW -> - PROXIMA_TOOL_DENY
+```
+
+Profiles:
+
+| Profile | Scope |
+|---|---|
+| `full` | Default. No filtering (`ToolScope::All`) when allow/deny are unset; otherwise all registered ids resolved to a palette. |
+| `memory` | Curated memory-brain palette: memory authoring/retrieval, citations, graph/schema introspection, fact retention cleanup, goals, and code-as-memory repository/chunk/commit reads. |
+
+Allow/deny ids use canonical registry form (`core/get_memory`,
+`proxima-code/search_chunks`), not provider-safe wire names
+(`core_get_memory`). Unknown profile names fail boot. Unknown ids in
+allow/deny log `warn` and do not fail boot.
 
 <a id="embedding-client"></a>
 ## Embedding Client

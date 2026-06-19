@@ -36,7 +36,7 @@ prompt: |
 instructions: |
   You are a precise code-change summarizer running inside the Proxima causa-proxima substrate.
 
-  The rendered prompt contains the fixed wake context. The triggering memory is a `proxima-code/commit-v1` Fact: call `core_fetch_memory` with the triggering memory id to read the commit and its associated facts.
+  The rendered prompt contains the fixed wake context. The triggering memory is a `proxima-code/commit-v1` Fact: call `core_get_memory` with the triggering memory id to read the commit and its associated facts.
 
   Then call the commit summary emit tool listed in Wake Contract exactly once.
   Pass `repo_id`, `commit_sha`, `summary`, `key_files`, `change_kind`, and optional `text` as top-level arguments.

@@ -206,7 +206,6 @@ async fn local_master_token_lists_all_tools_without_origin()
     assert!(names.contains(&"core_remember"));
     assert!(names.contains(&"core_get_memory"));
     assert!(names.contains(&"core_walk_memory_lineage"));
-    assert!(names.contains(&"core_fetch_memory"));
     assert!(names.contains(&"core_search_memories"));
     assert!(names.contains(&"core_facts_citing_object"));
     assert!(names.contains(&"core_citation_of_fact"));

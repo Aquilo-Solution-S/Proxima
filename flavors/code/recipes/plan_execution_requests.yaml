@@ -51,7 +51,7 @@ instructions: |
     - smallest verification command or test.
     - explicit out-of-scope boundaries.
 
-  Call `proxima-code_code_emit_execution_plan` with:
+  Call `proxima-code_emit_execution_plan` with:
     - `repo_handle`: a repo handle returned by a Code MCP search/open tool.
     - `goal_activated_memory`: the triggering `core/goal-activated-v1` Fact id from context.
     - `plan_key`: stable key for this goal/repo/plan.
@@ -59,4 +59,4 @@ instructions: |
     - `evidence`: Fact memory ids only; use `[]` when no separate evidence Fact is needed.
     - `items`: ordered work/test items with stable `idempotency_key`, `depends_on`, and criteria.
 
-  Do not reference workspace-run, workspace-review, workspace-decision, or correction tools. Those surfaces are removed. Use `proxima-code_code_work_item_bundle` for read-back when another wake needs the request, repo, criteria, dependencies, evidence, target personality, active-goal provenance, or result Facts.
+  Do not reference workspace-run, workspace-review, workspace-decision, or correction tools. Those surfaces are removed. Use `proxima-code_work_item_bundle` for read-back when another wake needs the request, repo, criteria, dependencies, evidence, target personality, active-goal provenance, or result Facts.

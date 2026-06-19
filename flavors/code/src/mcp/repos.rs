@@ -44,7 +44,7 @@ pub struct CodeListReposOutput {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeIngestHeadSnapshotArgs {
     #[schemars(
-        description = "Repo handle returned by code_register_repo or code_list_repos, for example `R1`."
+        description = "Repo handle returned by proxima-code_register_repo or proxima-code_list_repos, for example `R1`."
     )]
     pub repo_handle: String,
 }
@@ -84,7 +84,7 @@ pub struct IndexReportItem {
 pub struct CodeRegisterRepoTool;
 
 impl McpTool for CodeRegisterRepoTool {
-    const NAME: &'static str = "proxima-code/code_register_repo";
+    const NAME: &'static str = "proxima-code/register_repo";
     const DESCRIPTION: &'static str = "Register one local Git repository for the current owner. Returns a repo_handle for code MCP tools.";
 
     type Args = CodeRegisterRepoArgs;
@@ -141,7 +141,7 @@ impl McpTool for CodeRegisterRepoTool {
 pub struct CodeIngestHeadSnapshotTool;
 
 impl McpTool for CodeIngestHeadSnapshotTool {
-    const NAME: &'static str = "proxima-code/code_ingest_head_snapshot";
+    const NAME: &'static str = "proxima-code/ingest_head_snapshot";
     const DESCRIPTION: &'static str = "Ingest the current HEAD tree for one registered local Git repository and advance its cursor to HEAD. Does not walk commit history.";
 
     type Args = CodeIngestHeadSnapshotArgs;
@@ -198,7 +198,7 @@ impl McpTool for CodeIngestHeadSnapshotTool {
 pub struct CodeListReposTool;
 
 impl McpTool for CodeListReposTool {
-    const NAME: &'static str = "proxima-code/code_list_repos";
+    const NAME: &'static str = "proxima-code/list_repos";
     const DESCRIPTION: &'static str =
         "List local Git repositories registered for the current owner.";
 

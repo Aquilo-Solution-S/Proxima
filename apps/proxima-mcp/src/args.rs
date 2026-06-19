@@ -39,6 +39,9 @@ Environment:
   PROXIMA_OIDC_AUDIENCE         Expected token audience
   PROXIMA_OIDC_JWKS_URI         Optional explicit JWKS endpoint
   PROXIMA_OIDC_ALLOWED_SUBJECTS Optional comma-separated sub allowlist
+  PROXIMA_TOOL_PROFILE          Tool profile: full (default) or memory
+  PROXIMA_TOOL_ALLOW            Comma-separated canonical tool ids added to profile
+  PROXIMA_TOOL_DENY             Comma-separated canonical tool ids removed from profile
 
 Maintenance:
   reconcile-embeddings     Enqueue missing embedding jobs globally
@@ -48,7 +51,7 @@ Endpoint:
 
 Tools:
   core/search_memories
-  core/open
+  core/get_memory
   core/remember
   core/derive
   core/link

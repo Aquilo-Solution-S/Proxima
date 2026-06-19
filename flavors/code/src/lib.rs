@@ -268,14 +268,14 @@ mod tests {
             .iter()
             .map(|tool| tool.name)
             .collect();
-        assert!(names.contains("proxima-code/code_list_repos"));
-        assert!(names.contains("proxima-code/code_register_repo"));
-        assert!(names.contains("proxima-code/code_search_chunks"));
-        assert!(names.contains("proxima-code/code_open_file_revision"));
-        assert!(names.contains("proxima-code/code_search_commits"));
-        assert!(names.contains("proxima-code/code_emit_execution_request"));
-        assert!(names.contains("proxima-code/code_emit_execution_plan"));
-        assert!(names.contains("proxima-code/code_retry_execution_request"));
-        assert!(names.contains("proxima-code/code_work_item_bundle"));
+        assert!(names.contains("proxima-code/list_repos"));
+        assert!(names.contains("proxima-code/register_repo"));
+        assert!(names.contains("proxima-code/search_chunks"));
+        assert!(names.contains("proxima-code/open_file_revision"));
+        assert!(names.contains("proxima-code/search_commits"));
+        assert!(names.contains("proxima-code/emit_execution_request"));
+        assert!(names.contains("proxima-code/emit_execution_plan"));
+        assert!(names.contains("proxima-code/retry_execution_request"));
+        assert!(names.contains("proxima-code/work_item_bundle"));
     }
 }

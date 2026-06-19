@@ -11,17 +11,18 @@ pub struct SetFactRetentionTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetFactRetentionArgs {
-    pub retention_seconds: u64,
+    pub retention_seconds: Option<u64>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SetFactRetentionOutput {
-    pub retention_seconds: u64,
+    pub retention_seconds: Option<i64>,
 }
 
 impl McpTool for SetFactRetentionTool {
     const NAME: &'static str = "core/set_fact_retention";
-    const DESCRIPTION: &'static str = "Set the owner Fact-retention duration in seconds.";
+    const DESCRIPTION: &'static str =
+        "Set or clear the owner Fact-retention duration. Omit/null retention_seconds to clear.";
     type Args = SetFactRetentionArgs;
     type Output = SetFactRetentionOutput;
 
@@ -33,13 +34,22 @@ impl McpTool for SetFactRetentionTool {
             let engine = ctx
                 .engine()
                 .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
-            engine
-                .set_fact_retention(&ctx.authz, &ctx.owner, args.retention_seconds)
+            if let Some(retention_seconds) = args.retention_seconds {
+                engine
+                    .set_fact_retention(&ctx.authz, &ctx.owner, retention_seconds)
+                    .await
+                    .map_err(|e| McpToolError::Other(e.to_string()))?;
+            } else {
+                engine
+                    .clear_fact_retention(&ctx.authz, &ctx.owner)
+                    .await
+                    .map_err(|e| McpToolError::Other(e.to_string()))?;
+            }
+            let retention_seconds = engine
+                .get_fact_retention(&ctx.authz, &ctx.owner)
                 .await
                 .map_err(|e| McpToolError::Other(e.to_string()))?;
-            Ok(SetFactRetentionOutput {
-                retention_seconds: args.retention_seconds,
-            })
+            Ok(SetFactRetentionOutput { retention_seconds })
         })
     }
 }

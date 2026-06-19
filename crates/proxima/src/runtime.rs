@@ -10,7 +10,7 @@ use axum::response::IntoResponse;
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
 use proxima_core::{
     AnthropicClient, AuthPath, Authenticator, AuthzContext, EmbeddingClient, FlavorRegistryFrozen,
-    RevalidationConfig,
+    RevalidationConfig, ToolScope,
 };
 use proxima_core::{Engine, EngineHandle, Owner};
 use proxima_mcp_server::{
@@ -130,6 +130,12 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     #[must_use]
     pub fn allowed_hosts(mut self, allowed_hosts: Vec<String>) -> Self {
         self.overlay = self.overlay.allowed_hosts(allowed_hosts);
+        self
+    }
+
+    #[must_use]
+    pub fn tool_scope(mut self, tool_scope: ToolScope) -> Self {
+        self.overlay = self.overlay.tool_scope(tool_scope);
         self
     }
 
@@ -465,7 +471,7 @@ async fn build_router<A: FlavorApp>(
     config: &crate::RuntimeConfig,
 ) -> Router {
     let owner = config.owner.clone();
-    let mut edge_auth = McpEdgeAuth::headless();
+    let mut edge_auth = McpEdgeAuth::headless().with_tool_scope(config.tool_scope.clone());
     if let Some(authenticator) = authenticator {
         edge_auth = edge_auth.with_host(authenticator, owner.clone());
     }

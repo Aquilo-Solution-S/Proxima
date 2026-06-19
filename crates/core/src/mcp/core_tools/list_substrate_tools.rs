@@ -38,6 +38,9 @@ impl McpTool for ListSubstrateToolsTool {
         Box::pin(async move {
             let mut tools = Vec::new();
             for desc in ctx.registry.list_mcp_tools() {
+                if !ctx.authz.capabilities.tool_scope.allows(desc.name) {
+                    continue;
+                }
                 let source = if desc.name.starts_with("core/") {
                     "substrate".into()
                 } else {

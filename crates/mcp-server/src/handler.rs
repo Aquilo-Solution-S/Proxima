@@ -107,7 +107,9 @@ impl ServerHandler for DynamicHandler {
                 .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
             let text = serde_json::to_string(&output)
                 .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
-            Ok(CallToolResult::success(vec![Content::text(text)]))
+            let mut result = CallToolResult::success(vec![Content::text(text)]);
+            result.structured_content = Some(output);
+            Ok(result)
         }
     }
 }

@@ -155,8 +155,8 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         .collect();
     assert_eq!(
         code_tools.len(),
-        9,
-        "expected the 9 Code-flavor tools, got {}: {code_tools:?}",
+        10,
+        "expected the 10 Code-flavor tools, got {}: {code_tools:?}",
         code_tools.len()
     );
 

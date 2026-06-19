@@ -86,7 +86,7 @@ transaction**, following `emit_personality_memory`:
 | `core/derive` | `Engine::author_derived` (new) | `ExternalAgent`-authored A/P + provenance edges; **embeds in-tx** (mirrors emit). Subsumes Spec B's embed-on-derive. |
 | `core/link` | `Engine::append_edge` (new/confirm) | edge author |
 | `core/search_graph` | `Engine::search_memories` (exists) | absorbs `core/search_memories`'s `kind`/`schema`/`reader` params; hybrid + neighbor edges + sidecar-aware |
-| `core/open` | a point-read engine accessor | payload + neighbor edges |
+| `core/get_memory` | a point-read engine accessor | payload + optional neighbor edges |
 | `core/trace` | `Engine::walk_memory_lineage` (exists) | handle-fronted lineage |
 
 storage-pg gains/keeps the concrete implementations (`append_derived_in_tx`,
@@ -141,7 +141,7 @@ UUIDs (`project_no_uuids_in_model_context`); the subsumed UUID-based tools
 - **Tool count:** core default registry asserts a substrate-tool count
   (`flavor.rs:769-803`, currently 25). Net = **+7 added** (`core/remember`,
   `core/record_utterance`, `core/derive`, `core/link`, `core/search_graph`,
-  `core/open`, `core/trace`) **−2 removed** (`core/search_memories`,
+  `core/get_memory`, `core/trace`) **−2 removed** (`core/search_memories`,
   `core/walk_memory_lineage`) → **30**. Confirm the exact number by running the
   registration test (whether `emit_*` sit inside this count or are registered
   separately changes nothing about the +7/−2 delta).

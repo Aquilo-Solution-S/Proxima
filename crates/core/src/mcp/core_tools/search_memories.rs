@@ -114,6 +114,7 @@ pub struct SearchMemoriesArgs {
 #[derive(Debug, Serialize)]
 pub struct SearchMemoriesOutput {
     pub mode: String,
+    pub degraded_to_lexical: bool,
     pub memories: Vec<SearchMemoryOutput>,
     pub neighbor_edges: Vec<NeighborEdge>,
 }
@@ -202,6 +203,7 @@ impl McpTool for SearchMemoriesTool {
             let rows = storage
                 .search_memories(&req, ctx.registry.search_projections())
                 .await?;
+            let degraded_to_lexical = semantic_search_degraded_to_lexical(mode, &rows);
             let memory_ids: Vec<_> = rows.iter().map(|row| row.memory_id.into_inner()).collect();
             let payloads = load_graph_payloads(&ctx, &memory_ids).await?;
             let neighbor_edges = if args.include_neighbor_edges {
@@ -239,11 +241,33 @@ impl McpTool for SearchMemoriesTool {
 
             Ok(SearchMemoriesOutput {
                 mode: format!("{mode:?}").to_lowercase(),
+                degraded_to_lexical,
                 memories,
                 neighbor_edges,
             })
         })
     }
+}
+
+fn semantic_search_degraded_to_lexical(
+    mode: SearchMode,
+    rows: &[crate::verbs::query::MemorySearchResult],
+) -> bool {
+    degraded_to_lexical(
+        mode,
+        rows.is_empty(),
+        rows.iter().any(|row| row.similarity_score > 0.0),
+    )
+}
+
+/// A `Hybrid` search has silently fallen back to lexical-only ranking when it
+/// returned results but none carry a positive semantic similarity — the symptom
+/// of an empty or unavailable embedding store (Aquilo FJ#3674). Restricted to
+/// `Hybrid`: pure `Semantic` runs no lexical branch (storage gates the lexical
+/// query to `Lexical`/`Hybrid`), and an empty result set is a genuine no-match,
+/// not a degradation.
+fn degraded_to_lexical(mode: SearchMode, no_rows: bool, any_semantic_score: bool) -> bool {
+    matches!(mode, SearchMode::Hybrid) && !no_rows && !any_semantic_score
 }
 
 fn parse_rfc3339(
@@ -262,4 +286,24 @@ fn format_rfc3339(value: time::OffsetDateTime) -> Result<String, McpToolError> {
     value
         .format(&Rfc3339)
         .map_err(|err| McpToolError::Other(format!("format created_at: {err}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::degraded_to_lexical;
+    use crate::verbs::query::SearchMode;
+
+    #[test]
+    fn degraded_flag_only_fires_for_hybrid_with_results_and_no_semantic() {
+        // Hybrid returned rows but none carried a semantic score → degraded.
+        assert!(degraded_to_lexical(SearchMode::Hybrid, false, false));
+        // Hybrid with a real semantic score → healthy.
+        assert!(!degraded_to_lexical(SearchMode::Hybrid, false, true));
+        // Hybrid with no results at all → a genuine no-match, not degradation.
+        assert!(!degraded_to_lexical(SearchMode::Hybrid, true, false));
+        // Pure Semantic never reports lexical degradation (no lexical branch runs).
+        assert!(!degraded_to_lexical(SearchMode::Semantic, false, false));
+        // Lexical is never degraded.
+        assert!(!degraded_to_lexical(SearchMode::Lexical, false, false));
+    }
 }

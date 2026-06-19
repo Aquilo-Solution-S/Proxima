@@ -281,7 +281,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
             .map(|tool| tool.name)
             .collect();
         assert!(tool_names.contains("core/search_memories"));
-        assert!(tool_names.contains("core/fetch_memory"));
+        assert!(tool_names.contains("core/get_memory"));
         assert!(tool_names.contains("core/facts_citing_object"));
         assert!(tool_names.contains("core/citation_of_fact"));
         let substrate_listing = tools
@@ -300,7 +300,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
             .filter_map(|tool| tool["tool_id"].as_str())
             .collect();
         assert!(substrate_tool_ids.contains("core/search_memories"));
-        assert!(substrate_tool_ids.contains("core/fetch_memory"));
+        assert!(substrate_tool_ids.contains("core/get_memory"));
         assert!(substrate_tool_ids.contains("core/facts_citing_object"));
         assert!(substrate_tool_ids.contains("core/citation_of_fact"));
 
@@ -354,7 +354,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
             &tools,
             authz,
             owner.clone(),
-            "core/fetch_memory",
+            "core/get_memory",
             serde_json::json!({ "memory": memory }),
         )
         .await?;
