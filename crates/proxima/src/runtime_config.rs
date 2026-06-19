@@ -23,6 +23,7 @@ pub struct RuntimeBuilder {
     mcp_bind: Option<SocketAddr>,
     expose_network: Option<bool>,
     allowed_origins: Option<Vec<String>>,
+    allowed_hosts: Option<Vec<String>>,
     stream_max_lifetime: Option<Duration>,
     epoch_check_interval: Option<Duration>,
     insecure_single_owner: bool,
@@ -44,6 +45,7 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("mcp_bind", &self.mcp_bind)
             .field("expose_network", &self.expose_network)
             .field("allowed_origins", &self.allowed_origins)
+            .field("allowed_hosts", &self.allowed_hosts)
             .field("stream_max_lifetime", &self.stream_max_lifetime)
             .field("epoch_check_interval", &self.epoch_check_interval)
             .field("insecure_single_owner", &self.insecure_single_owner)
@@ -68,6 +70,7 @@ impl RuntimeBuilder {
             mcp_bind: self.mcp_bind.or(base.mcp_bind),
             expose_network: self.expose_network.or(base.expose_network),
             allowed_origins: self.allowed_origins.or(base.allowed_origins),
+            allowed_hosts: self.allowed_hosts.or(base.allowed_hosts),
             stream_max_lifetime: self.stream_max_lifetime.or(base.stream_max_lifetime),
             epoch_check_interval: self.epoch_check_interval.or(base.epoch_check_interval),
             insecure_single_owner: self.insecure_single_owner || base.insecure_single_owner,
@@ -141,6 +144,17 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn allowed_origins(mut self, allowed_origins: Vec<String>) -> Self {
         self.allowed_origins = Some(allowed_origins);
+        self
+    }
+
+    /// Set the inbound `Host` allowlist for the exposed MCP transport
+    /// (rmcp's DNS-rebinding guard). Entries are bare hostnames or
+    /// `host:port`; loopback is always added on top. When unset, the
+    /// host(s) are derived from `PROXIMA_PUBLIC_URL` and the allowed
+    /// origins. Env equivalent (comma-separated): `PROXIMA_ALLOWED_HOSTS`.
+    #[must_use]
+    pub fn allowed_hosts(mut self, allowed_hosts: Vec<String>) -> Self {
+        self.allowed_hosts = Some(allowed_hosts);
         self
     }
 
@@ -256,6 +270,10 @@ impl RuntimeBuilder {
             self.allowed_origins =
                 lookup("PROXIMA_ALLOWED_ORIGINS").map(|raw| parse_allowed_origins(&raw));
         }
+        if self.allowed_hosts.is_none() {
+            self.allowed_hosts =
+                lookup("PROXIMA_ALLOWED_HOSTS").map(|raw| parse_allowed_hosts(&raw));
+        }
         if self.stream_max_lifetime.is_none() {
             self.stream_max_lifetime = lookup("PROXIMA_STREAM_MAX_LIFETIME")
                 .map(|raw| parse_duration_seconds("PROXIMA_STREAM_MAX_LIFETIME", &raw))
@@ -322,6 +340,7 @@ impl RuntimeBuilder {
             mcp,
             expose_network: self.expose_network.unwrap_or(false),
             allowed_origins: self.allowed_origins.unwrap_or_default(),
+            allowed_hosts: self.allowed_hosts.unwrap_or_default(),
             stream_revalidation,
             insecure_single_owner: self.insecure_single_owner,
             has_host_authenticator: parts.authenticator.is_some(),
@@ -342,6 +361,10 @@ pub struct RuntimeConfig {
     pub mcp: Option<McpSettings>,
     pub expose_network: bool,
     pub allowed_origins: Vec<String>,
+    /// Explicit inbound `Host` allowlist (`PROXIMA_ALLOWED_HOSTS`). Empty
+    /// ⇒ derive from `resource_metadata.public_url` + `allowed_origins`.
+    /// Bare hostnames or `host:port`; the transport always adds loopback.
+    pub allowed_hosts: Vec<String>,
     pub stream_revalidation: RevalidationConfig,
     pub insecure_single_owner: bool,
     pub has_host_authenticator: bool,
@@ -385,6 +408,23 @@ impl RuntimeConfig {
                 "network exposure forbids wildcard allowed origins".into(),
             ));
         }
+        if self.expose_network && self.allowed_hosts.iter().any(|host| host.contains('*')) {
+            // rmcp has no wildcard Host semantics — a `*` entry matches
+            // nothing and fails closed, locking the operator out silently.
+            // Reject it loudly instead of letting it look like "allow all".
+            return Err(ProximaError::Security(
+                "network exposure forbids wildcard allowed hosts; list each host explicitly \
+                 (PROXIMA_ALLOWED_HOSTS), or rely on PROXIMA_PUBLIC_URL"
+                    .into(),
+            ));
+        }
+        if self.expose_network && self.public_allowed_hosts().is_empty() {
+            return Err(ProximaError::Security(
+                "network exposure requires a resolvable public host: set PROXIMA_ALLOWED_HOSTS, \
+                 PROXIMA_PUBLIC_URL, or a non-loopback host in PROXIMA_ALLOWED_ORIGINS"
+                    .into(),
+            ));
+        }
         if self.expose_network && !self.has_host_authenticator {
             return Err(ProximaError::Security(
                 "network exposure requires a host authenticator".into(),
@@ -405,6 +445,33 @@ impl RuntimeConfig {
         }
 
         Ok(())
+    }
+
+    /// Non-loopback public hosts for the inbound `Host` allowlist.
+    ///
+    /// Explicit `allowed_hosts` (`PROXIMA_ALLOWED_HOSTS`) win verbatim;
+    /// otherwise hosts are derived from `resource_metadata.public_url`
+    /// (i.e. `PROXIMA_PUBLIC_URL`) and `allowed_origins`, with loopback
+    /// dropped — loopback is added unconditionally by the transport, so
+    /// it never counts as a resolvable *public* host here. Empty ⇒ a
+    /// network-exposed deployment would 403 every real request.
+    #[must_use]
+    pub fn public_allowed_hosts(&self) -> Vec<String> {
+        if !self.allowed_hosts.is_empty() {
+            return dedup_hosts(
+                self.allowed_hosts
+                    .iter()
+                    .map(|host| host.trim().to_ascii_lowercase()),
+            );
+        }
+        let derived = self
+            .resource_metadata
+            .as_ref()
+            .and_then(|md| host_of_url(&md.public_url))
+            .into_iter()
+            .chain(self.allowed_origins.iter().filter_map(|o| host_of_url(o)))
+            .filter(|host| !is_loopback_host(host));
+        dedup_hosts(derived)
     }
 }
 
@@ -468,6 +535,55 @@ fn parse_allowed_origins(raw: &str) -> Vec<String> {
         .map(str::trim)
         .filter(|origin| !origin.is_empty())
         .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn parse_allowed_hosts(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+/// Extract the bare, lowercased host from a URL or origin — scheme,
+/// userinfo, port, and path stripped; IPv6 brackets removed. Returns
+/// `None` for input with no host part.
+fn host_of_url(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let after_scheme = raw.split_once("://").map_or(raw, |(_, rest)| rest);
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        rest.split_once(']').map(|(host, _)| host)?
+    } else {
+        authority.split(':').next().unwrap_or(authority)
+    };
+    let host = host.trim().to_ascii_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+fn dedup_hosts(hosts: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    hosts
+        .into_iter()
+        .filter(|host| !host.is_empty())
+        .filter(|host| seen.insert(host.clone()))
         .collect()
 }
 
@@ -537,6 +653,7 @@ mod tests {
             mcp: mcp.map(|bind| McpSettings { bind }),
             expose_network: false,
             allowed_origins: Vec::new(),
+            allowed_hosts: Vec::new(),
             stream_revalidation: RevalidationConfig::default(),
             insecure_single_owner: false,
             has_host_authenticator: true,
@@ -663,6 +780,126 @@ mod tests {
         config.expose_network = true;
 
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_exposed_network_rejects_wildcard_allowed_host() {
+        // `*` has no rmcp wildcard meaning; it must be rejected loudly,
+        // not silently fail closed as if it were "allow all".
+        let mut config = base_config(Some(addr([127, 0, 0, 1])));
+        config.expose_network = true;
+        config.allowed_origins = vec!["https://app.test".to_string()];
+        config.allowed_hosts = vec!["*".to_string()];
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("wildcard allowed hosts"));
+    }
+
+    #[test]
+    fn validate_exposed_network_requires_resolvable_public_host() {
+        // Exposed, origins present (so the empty-origins rule passes) but
+        // loopback-only and no public_url ⇒ no resolvable public host, so
+        // every real request would 403. Must fail closed at startup.
+        let mut config = base_config(Some(addr([127, 0, 0, 1])));
+        config.expose_network = true;
+        config.allowed_origins = vec!["http://localhost:8080".to_string()];
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("resolvable public host"));
+    }
+
+    #[test]
+    fn validate_exposed_network_accepts_public_url_host() {
+        let mut config = base_config(Some(addr([127, 0, 0, 1])));
+        config.expose_network = true;
+        config.allowed_origins = vec!["http://localhost:8080".to_string()];
+        config.resource_metadata = Some(ResourceServerMetadata {
+            public_url: "https://proxima.aqs-dev.cloud".to_string(),
+            authorization_servers: vec!["https://idp.test".to_string()],
+        });
+
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn host_of_url_extracts_bare_lowercased_host() {
+        assert_eq!(
+            host_of_url("https://proxima.aqs-dev.cloud").as_deref(),
+            Some("proxima.aqs-dev.cloud")
+        );
+        assert_eq!(
+            host_of_url("https://Example.COM:8443/mcp").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(host_of_url("http://[::1]:8080").as_deref(), Some("::1"));
+        assert_eq!(
+            host_of_url("https://user@host.test:9000/p?q=1").as_deref(),
+            Some("host.test")
+        );
+        assert_eq!(
+            host_of_url("tauri://localhost").as_deref(),
+            Some("localhost")
+        );
+        assert_eq!(host_of_url("   "), None);
+    }
+
+    #[test]
+    fn is_loopback_host_detects_loopback_forms() {
+        assert!(is_loopback_host("localhost"));
+        assert!(is_loopback_host("127.0.0.1"));
+        assert!(is_loopback_host("::1"));
+        assert!(!is_loopback_host("proxima.aqs-dev.cloud"));
+        assert!(!is_loopback_host("10.0.0.5"));
+    }
+
+    #[test]
+    fn public_allowed_hosts_derives_from_public_url_and_origins() {
+        let mut config = base_config(Some(addr([127, 0, 0, 1])));
+        config.resource_metadata = Some(ResourceServerMetadata {
+            public_url: "https://proxima.aqs-dev.cloud".to_string(),
+            authorization_servers: vec![],
+        });
+        config.allowed_origins = vec![
+            "https://app.test".to_string(),
+            "http://localhost:5173".to_string(),
+        ];
+
+        // public_url host first, then non-loopback origin hosts; loopback dropped.
+        assert_eq!(
+            config.public_allowed_hosts(),
+            vec!["proxima.aqs-dev.cloud".to_string(), "app.test".to_string()]
+        );
+    }
+
+    #[test]
+    fn public_allowed_hosts_explicit_overrides_derivation() {
+        let mut config = base_config(Some(addr([127, 0, 0, 1])));
+        config.resource_metadata = Some(ResourceServerMetadata {
+            public_url: "https://derived.test".to_string(),
+            authorization_servers: vec![],
+        });
+        config.allowed_origins = vec!["https://app.test".to_string()];
+        config.allowed_hosts = vec!["Proxima.Internal:8443".to_string(), "10.0.0.5".to_string()];
+
+        assert_eq!(
+            config.public_allowed_hosts(),
+            vec!["proxima.internal:8443".to_string(), "10.0.0.5".to_string()]
+        );
+    }
+
+    #[test]
+    fn allowed_hosts_env_is_split_trimmed_and_lowercased() {
+        let builder = RuntimeBuilder::default()
+            .apply_lookup(lookup(&[(
+                "PROXIMA_ALLOWED_HOSTS",
+                " Proxima.Test, ,host:8443 , ",
+            )]))
+            .unwrap();
+
+        assert_eq!(
+            builder.allowed_hosts.unwrap(),
+            ["proxima.test".to_string(), "host:8443".to_string()]
+        );
     }
 
     #[test]

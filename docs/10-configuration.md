@@ -50,6 +50,7 @@ Proxima::<App>::app().from_env().authenticator(auth).run().await?;
 | `PROXIMA_MCP_MASTER_TOKEN` | Master bearer token for MCP when no host authenticator is wired. |
 | `PROXIMA_EXPOSE_NETWORK` | Network exposure gate for non-loopback binds. |
 | `PROXIMA_ALLOWED_ORIGINS` | Comma-separated MCP origin allowlist. |
+| `PROXIMA_ALLOWED_HOSTS` | Comma-separated inbound `Host` allowlist (hostnames or `host:port`, no wildcards) for the DNS-rebinding guard; defaults to the host of `PROXIMA_PUBLIC_URL` + the allowed origins. Loopback always permitted. |
 | `PROXIMA_STREAM_MAX_LIFETIME` | Max lifetime (seconds) of a subscribe stream. |
 | `PROXIMA_STREAM_EPOCH_INTERVAL` | Stream epoch re-check interval (seconds). |
 | `MISTRAL_API_KEY` | Enables `proxima-mcp` embeddings with Mistral. |
@@ -84,8 +85,12 @@ is present:
 | Master token | `--master-token` / `PROXIMA_MCP_MASTER_TOKEN` | single trusted bearer for the configured Owner |
 | Insecure single-owner | `.allow_insecure_single_owner()` | dev only; no auth, one Owner |
 
-Origins are gated by `PROXIMA_ALLOWED_ORIGINS`. Secrets are never
-streamed to clients.
+Origins are gated by `PROXIMA_ALLOWED_ORIGINS`. The inbound `Host`
+header is independently gated by rmcp's DNS-rebinding guard: loopback
+binds accept loopback hosts only, and a network-exposed bind must
+resolve at least one public host (`PROXIMA_ALLOWED_HOSTS`, else the host
+of `PROXIMA_PUBLIC_URL` / the allowed origins) or `validate()` fails
+closed. Secrets are never streamed to clients.
 
 <a id="embedding-client"></a>
 ## Embedding Client

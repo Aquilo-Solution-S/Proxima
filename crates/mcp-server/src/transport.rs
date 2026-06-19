@@ -28,15 +28,26 @@ use crate::handler::DynamicHandler;
 use crate::security::{OriginAllowlist, assert_loopback, mcp_auth_layer_with_config};
 use crate::server::McpToolHost;
 
+/// `allowed_hosts` is the inbound `Host`/`:authority` allowlist for
+/// rmcp's DNS-rebinding guard (bare hostnames or `host:port`). An empty
+/// slice keeps rmcp's loopback-only default, which is correct for
+/// loopback binds; network-exposed deployments must pass their own
+/// public host(s) here or every non-loopback `Host` is rejected with
+/// 403 before auth runs. The facade resolves this from
+/// `PROXIMA_ALLOWED_HOSTS` / `PROXIMA_PUBLIC_URL` / allowed origins.
 #[must_use]
 pub fn streamable_http_service(
     server: McpToolHost,
     allowlist: &OriginAllowlist,
+    allowed_hosts: &[String],
     cancel: &CancellationToken,
 ) -> StreamableHttpService<DynamicHandler, LocalSessionManager> {
-    let config = StreamableHttpServerConfig::default()
+    let mut config = StreamableHttpServerConfig::default()
         .with_allowed_origins(allowlist.origins())
         .with_cancellation_token(cancel.child_token());
+    if !allowed_hosts.is_empty() {
+        config = config.with_allowed_hosts(allowed_hosts.iter().cloned());
+    }
     StreamableHttpService::new(
         move || {
             Ok(DynamicHandler {
@@ -83,7 +94,9 @@ pub async fn serve_streamable_http_with_revalidation(
     assert_loopback(&addr)?;
 
     let cancellation_token = CancellationToken::new();
-    let service = streamable_http_service(server, &allowlist, &cancellation_token);
+    // These helpers bind loopback only (asserted above), so rmcp's
+    // loopback-only Host default is exactly right — no extra hosts.
+    let service = streamable_http_service(server, &allowlist, &[], &cancellation_token);
     // Layer order is bottom-up: auth runs first, then perf recording, then
     // the rmcp service. The auth guard also validates any present Origin;
     // native CLI clients commonly omit Origin, which is allowed after a
