@@ -23,7 +23,8 @@ operates in degraded lexical-only mode.
 | `PROXIMA_MCP_BIND` | yes | `0.0.0.0:8080` | MCP listener address. |
 | `PROXIMA_EXPOSE_NETWORK=true` | yes | `true` | Required for non-loopback bind. |
 | `PROXIMA_ALLOWED_ORIGINS` | yes | `https://claude.example.com,https://codex.example.com` | Comma-separated origin allowlist; never `*`. |
-| `PROXIMA_PUBLIC_URL` | yes | `https://proxima.example.com` | Public HTTPS base for OIDC. |
+| `PROXIMA_ALLOWED_HOSTS` | no | `proxima.example.com` | Inbound `Host` allowlist (hostnames or `host:port`, no wildcards) for the DNS-rebinding guard. Defaults to the host of `PROXIMA_PUBLIC_URL` + the allowed origins; loopback always permitted. Set only to override. |
+| `PROXIMA_PUBLIC_URL` | yes | `https://proxima.example.com` | Public HTTPS base for OIDC; its host is auto-allowed as an inbound `Host`. |
 | `PROXIMA_OIDC_ISSUER` | yes | `https://zitadel.example.com` | Zitadel issuer URL. |
 | `PROXIMA_OIDC_AUDIENCE` | yes | `https://proxima.example.com/mcp` | Resource id expected in token `aud`. |
 | `PROXIMA_OIDC_JWKS_URI` | no | `https://zitadel.example.com/oauth/v2/keys` | Overrides OIDC discovery. |
@@ -51,6 +52,13 @@ endpoints require an `aud`-bound Zitadel JWT, validated in-process.
 401 responses carry `WWW-Authenticate: Bearer resource_metadata="…"`
 (RFC 9728). Defense in depth: the same JWT MUST be validated at the
 cluster edge (see [§Edge defense-in-depth](#edge-defense-in-depth)).
+
+The inbound `Host` header is gated by rmcp's DNS-rebinding guard
+*before* auth runs: only loopback plus the resolved public host(s) are
+accepted; any other `Host` is rejected with 403. The public host is
+taken from `PROXIMA_ALLOWED_HOSTS` (else the host of `PROXIMA_PUBLIC_URL`
+and the allowed origins), so the gateway forwards the real `Host`
+unchanged — no `Host`-rewrite-to-localhost workaround is needed.
 
 ## Build & run
 

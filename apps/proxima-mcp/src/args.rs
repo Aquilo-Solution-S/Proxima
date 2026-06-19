@@ -30,6 +30,10 @@ Environment:
                                 (e.g. 0.0.0.0:8080)
   PROXIMA_EXPOSE_NETWORK        Permit non-loopback MCP exposure
   PROXIMA_ALLOWED_ORIGINS       Comma-separated CORS origin allowlist
+  PROXIMA_ALLOWED_HOSTS         Comma-separated inbound Host allowlist
+                                (hostnames or host:port). Defaults to the
+                                host of PROXIMA_PUBLIC_URL + the allowed
+                                origins; loopback is always permitted
   PROXIMA_PUBLIC_URL            Public base URL for OAuth discovery
   PROXIMA_OIDC_ISSUER           OIDC issuer / authorization server
   PROXIMA_OIDC_AUDIENCE         Expected token audience

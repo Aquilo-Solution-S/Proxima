@@ -128,6 +128,12 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     }
 
     #[must_use]
+    pub fn allowed_hosts(mut self, allowed_hosts: Vec<String>) -> Self {
+        self.overlay = self.overlay.allowed_hosts(allowed_hosts);
+        self
+    }
+
+    #[must_use]
     pub fn stream_max_lifetime(mut self, duration: std::time::Duration) -> Self {
         self.overlay = self.overlay.stream_max_lifetime(duration);
         self
@@ -475,7 +481,8 @@ async fn build_router<A: FlavorApp>(
         Arc::new(engine.registry().clone()),
     )
     .with_engine(engine.clone());
-    let mcp_service = streamable_http_service(mcp_host, &allowlist, cancel);
+    let allowed_hosts = resolve_allowed_hosts(config);
+    let mcp_service = streamable_http_service(mcp_host, &allowlist, &allowed_hosts, cancel);
     let app_router = A::mount_http(
         Router::new(),
         AppContext {
@@ -511,6 +518,31 @@ fn resolve_allowlist(config: &crate::RuntimeConfig) -> Result<OriginAllowlist, P
     }
     OriginAllowlist::parse(&config.allowed_origins)
         .map_err(|err| ProximaError::Security(err.to_string()))
+}
+
+/// Inbound `Host` allowlist for rmcp's DNS-rebinding guard.
+///
+/// Loopback binds return empty, keeping rmcp's loopback-only default.
+/// Network-exposed binds get loopback (so a gateway may still rewrite
+/// `Host` to localhost, and port-forwards work) plus the resolved
+/// public host(s) — without which every public request 403s before
+/// auth. `validate` has already guaranteed the public set is non-empty
+/// when exposed.
+fn resolve_allowed_hosts(config: &crate::RuntimeConfig) -> Vec<String> {
+    if !config.expose_network {
+        return Vec::new();
+    }
+    let mut hosts = vec![
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+        "::1".to_string(),
+    ];
+    for host in config.public_allowed_hosts() {
+        if !hosts.contains(&host) {
+            hosts.push(host);
+        }
+    }
+    hosts
 }
 
 #[cfg(test)]
@@ -619,6 +651,83 @@ mod tests {
 
     fn owner() -> Owner {
         company_owner(Uuid::now_v7())
+    }
+
+    // --- Host-allowlist exposure invariants (DNS-rebinding guard) ---
+    //
+    // The hazard when configuring rmcp's guard is its allow-all state:
+    // an EMPTY `allowed_hosts` makes rmcp accept any inbound Host. These
+    // lock the two properties that keep that from happening accidentally.
+
+    #[test]
+    fn resolve_allowed_hosts_is_empty_for_loopback_bind() {
+        let owner = owner();
+        let (config, _) = RuntimeBuilder::default()
+            .database_url("postgres://unused/db")
+            .owner(owner.clone())
+            .with_mcp()
+            .authenticator(Arc::new(StubAuth { owner }))
+            .resolve()
+            .unwrap();
+
+        // Not exposed ⇒ no override; the transport keeps rmcp's
+        // loopback-only DEFAULT. Empty here means "don't override",
+        // never reaches `with_allowed_hosts`, so rmcp's allow-all
+        // (its own empty-list state) is unreachable from this path.
+        assert!(!config.expose_network);
+        assert!(resolve_allowed_hosts(&config).is_empty());
+    }
+
+    #[test]
+    fn resolve_allowed_hosts_exposed_is_loopback_plus_public_and_never_empty() {
+        let owner = owner();
+        let (config, _) = RuntimeBuilder::default()
+            .database_url("postgres://unused/db")
+            .owner(owner.clone())
+            .with_mcp()
+            .mcp_bind("0.0.0.0:8080".parse().unwrap())
+            .expose_network(true)
+            .allowed_origins(vec!["https://app.example.com".to_string()])
+            .authenticator(Arc::new(StubAuth { owner }))
+            .resolve()
+            .unwrap();
+
+        let hosts = resolve_allowed_hosts(&config);
+        // Loopback stays (gateway Host-rewrite + port-forward keep working)…
+        assert!(hosts.contains(&"localhost".to_string()));
+        assert!(hosts.contains(&"127.0.0.1".to_string()));
+        assert!(hosts.contains(&"::1".to_string()));
+        // …and the public host is present, but the list is NEVER empty —
+        // so an exposed bind always hands rmcp a non-empty allowlist and
+        // can never trip its allow-all state.
+        assert!(hosts.contains(&"app.example.com".to_string()));
+        assert!(!hosts.is_empty());
+    }
+
+    #[test]
+    fn resolve_allowed_hosts_includes_public_url_host_distinct_from_origins() {
+        // Split deployment: browser app origin differs from the MCP host.
+        // Deriving from origins alone would miss the real Host; the
+        // public_url host (the bug's `proxima.aqs-dev.cloud`) must be in.
+        let owner = owner();
+        let (config, _) = RuntimeBuilder::default()
+            .database_url("postgres://unused/db")
+            .owner(owner.clone())
+            .with_mcp()
+            .mcp_bind("0.0.0.0:8080".parse().unwrap())
+            .expose_network(true)
+            .allowed_origins(vec!["https://app.example.com".to_string()])
+            .resource_metadata(proxima_mcp_server::ResourceServerMetadata {
+                public_url: "https://proxima.aqs-dev.cloud".to_string(),
+                authorization_servers: vec!["https://idp.test".to_string()],
+            })
+            .authenticator(Arc::new(StubAuth { owner }))
+            .resolve()
+            .unwrap();
+
+        let hosts = resolve_allowed_hosts(&config);
+        assert!(hosts.contains(&"proxima.aqs-dev.cloud".to_string()));
+        assert!(hosts.contains(&"app.example.com".to_string()));
     }
 
     #[test]
