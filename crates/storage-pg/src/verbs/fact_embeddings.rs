@@ -364,6 +364,18 @@ pub async fn list_facts_missing_embedding(
 
 /// Atomically claim pending Fact embedding jobs for one model.
 ///
+/// Stale `processing` jobs orphaned by a crashed or restarted drainer are
+/// reclaimed after fifteen minutes. The window MUST exceed the embedding
+/// client's request timeout (currently ten minutes,
+/// `crates/llm-openai-compat/src/openai_compat.rs:29`), and the worker drains
+/// one job per claim, so a row is `processing` for at most one embed call.
+/// Therefore, a row older than the window can only belong to a dead worker,
+/// never a slow live one. The claim `UPDATE` resets `updated_at = now()`, so a
+/// reclaimed orphan restarts its clock. Reclaim does not increment attempts;
+/// crash-loop poison-pill bounding is out of scope, while embed-error retries
+/// still go through
+/// `fail_embedding_job`.
+///
 /// # Errors
 ///
 /// Returns `ConstraintViolation` for negative limits, otherwise maps SQL
@@ -382,8 +394,10 @@ pub async fn claim_pending_embedding_jobs(
              SELECT owner_principal_kind, owner_principal_id, owner_org_id,
                     entity_kind, entity_id, model_id, embedding_version
                FROM proxima_core.embedding_jobs
-              WHERE status = 'pending'
-                AND model_id = $1
+              WHERE model_id = $1
+                AND (status = 'pending'
+                     OR (status = 'processing'
+                         AND updated_at < now() - interval '15 minutes'))
               ORDER BY enqueued_at ASC,
                        owner_principal_kind ASC,
                        owner_principal_id ASC,
@@ -552,6 +566,34 @@ pub async fn enqueue_missing_embedding_jobs(
     .await
     .map_err(map_err)?;
     Ok(result.rows_affected())
+}
+
+/// Owner-scoped count of embedding jobs not yet embedded.
+///
+/// # Errors
+///
+/// Maps SQL failures through the shared mapper.
+pub async fn count_pending_embedding_jobs(
+    pool: &PgPool,
+    owner: &Owner,
+) -> Result<u64, StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
+    let row: (i64,) = sqlx::query_as(
+        "SELECT count(*)
+           FROM proxima_core.embedding_jobs
+          WHERE owner_principal_kind = $1
+            AND owner_principal_id = $2
+            AND owner_org_id = $3
+            AND status IN ('pending', 'processing')",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .fetch_one(pool)
+    .await
+    .map_err(map_err)?;
+    u64::try_from(row.0)
+        .map_err(|_| StorageError::Internal("pending embedding job count is negative".into()))
 }
 
 /// Global enqueue-only reconciliation for embeddable memories.

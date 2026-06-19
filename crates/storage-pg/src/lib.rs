@@ -331,6 +331,10 @@ impl Storage for PgStorage {
             .await
     }
 
+    async fn count_pending_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError> {
+        verbs::fact_embeddings::count_pending_embedding_jobs(&self.pool, owner).await
+    }
+
     async fn persist_mcp_call_atomic(
         &self,
         input: &McpCallLogInput,

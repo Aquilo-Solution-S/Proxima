@@ -33,8 +33,15 @@ pub struct GetGraphArgs {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct GetGraphOutput {
-    /// Whether the current engine has an embedding client installed.
-    pub embeddings_available: bool,
+    /// Whether an embedding client is installed (semantic/hybrid search can
+    /// embed queries). Note: `true` does NOT imply stored vectors exist —
+    /// check `pending_embedding_jobs`.
+    pub embeddings_client_configured: bool,
+    /// Counts the owner's embedding jobs in `pending` or `processing` state
+    /// across all embedding models; excludes permanently-`failed` jobs, so `0`
+    /// means no retryable/in-flight backlog remains (not a proof that every
+    /// memory embedded successfully).
+    pub pending_embedding_jobs: u64,
     /// Every personality the owner owns, fully expanded — same shape as
     /// `core/get_personality` output.
     pub personalities: Vec<GetPersonalityOutput>,
@@ -74,10 +81,14 @@ impl McpTool for GetGraphTool {
             let storage = ctx
                 .storage()
                 .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-            let embeddings_available = ctx
+            let embeddings_client_configured = ctx
                 .engine()
                 .and_then(crate::engine::Engine::embed_client)
                 .is_some();
+            let pending_embedding_jobs = storage
+                .count_pending_embedding_jobs(&ctx.owner)
+                .await
+                .map_err(McpToolError::Storage)?;
 
             let personality_rows = storage
                 .list_personality_instances(&ctx.owner, args.include_tombstoned)
@@ -155,7 +166,8 @@ impl McpTool for GetGraphTool {
                 .collect();
 
             Ok(GetGraphOutput {
-                embeddings_available,
+                embeddings_client_configured,
+                pending_embedding_jobs,
                 personalities,
                 schemas,
                 edge_types,

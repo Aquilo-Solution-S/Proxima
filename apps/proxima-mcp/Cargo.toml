@@ -14,7 +14,7 @@ proxima-core = { path = "../../crates/core" }
 proxima-llm-openai-compat = { path = "../../crates/llm-openai-compat" }
 proxima-storage-pg = { path = "../../crates/storage-pg" }
 proxima = { path = "../../crates/proxima" }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 uuid = { workspace = true }
 time = { workspace = true }
 thiserror = { workspace = true }

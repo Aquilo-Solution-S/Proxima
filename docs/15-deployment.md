@@ -10,7 +10,8 @@ Zitadel bearer JWT, with a single unauthenticated route:
 Postgres must have the `vector` extension with `hnsw` index type
 (pgvector-enabled image). Migrations run automatically on first boot.
 Optional dependencies: S3 for cited-blob storage (see [10](10-configuration.md#large-artefact-s3)),
-and a Mistral-compatible embedding client; without embeddings the server
+and a Mistral-compatible embedding client; when configured, the server
+drains embeddings in-process automatically. Without embeddings the server
 operates in degraded lexical-only mode.
 
 ## Environment contract

@@ -419,6 +419,11 @@ pub trait Storage: Send + Sync {
         limit: i64,
     ) -> Result<u64, StorageError>;
 
+    /// Owner-scoped count of embedding jobs not yet embedded (status
+    /// `pending` or `processing`). Surfaces drain backlog so a caller can
+    /// distinguish "semantic recall still warming up" from "genuinely empty".
+    async fn count_pending_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError>;
+
     /// Atomic MCP-call activity materialization. One transaction writes
     /// the call Fact, inline I/O `CitedObject`, `CitationMapping`, typed
     /// sidecars, and entity change event. Whole-verb replay returns the
@@ -979,6 +984,10 @@ impl Storage for NoopStorage {
         _limit: i64,
     ) -> Result<u64, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn count_pending_embedding_jobs(&self, _owner: &Owner) -> Result<u64, StorageError> {
+        Ok(0)
     }
 
     async fn create_goal_atomic(

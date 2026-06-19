@@ -120,12 +120,15 @@ is present:
 | `MISTRAL_API_BASE` | no | `https://api.mistral.ai/v1` | OpenAI-compatible embeddings API base. |
 
 When `MISTRAL_API_KEY` is absent, `proxima-mcp` starts in degraded mode:
-no embedding client is installed, `core/get_graph.embeddings_available`
-is `false`, semantic/hybrid search reports the missing capability, and
-lexical-only paths remain available.
+no embedding client is installed,
+`core/get_graph.embeddings_client_configured` is `false`,
+semantic/hybrid search reports the missing capability, and lexical-only
+paths remain available. When a client is configured, `proxima-mcp`
+drains queued embedding jobs automatically in-process every few seconds;
+no external drain cron is required.
 
-Embedding job reconciliation is a global maintenance command, not an
-owner-scoped MCP tool:
+Embedding job reconciliation remains a global maintenance command for
+backfill / stale re-embedding, not an owner-scoped MCP tool:
 
 ```sh
 proxima-mcp reconcile-embeddings
@@ -138,7 +141,8 @@ command: ["proxima-mcp", "reconcile-embeddings"]
 ```
 
 `--drain` processes queued jobs inline with the same Mistral client and
-therefore requires `MISTRAL_API_KEY`.
+therefore requires `MISTRAL_API_KEY`; it is no longer required for
+steady-state draining.
 
 `EmbedCaps { dim, matryoshka }` and `LlmCaps { tool_use, json_mode,
 long_context, vision }` remain core vocabulary types but are not a
