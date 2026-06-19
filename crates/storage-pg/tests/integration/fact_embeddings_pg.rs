@@ -7,7 +7,8 @@ use proxima_core::llm::{EMBEDDING_DIM, EMBEDDING_JOB_MAX_ATTEMPTS, EmbeddingClie
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::{
-    AuthPath, AuthzContext, EntityKind, FlavorRegistry, Owner, SourceBatchId, Storage,
+    AuthPath, AuthzContext, EntityKind, FlavorRegistry, Owner, OwnerPrincipalKind, SourceBatchId,
+    Storage,
 };
 use proxima_storage_pg::{
     EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
@@ -333,6 +334,57 @@ async fn claimed_embedding_job_is_not_claimed_again() -> Result<(), Box<dyn std:
 }
 
 #[tokio::test]
+async fn stale_processing_embedding_job_is_reclaimed() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner_fixture();
+        let engine = engine_for(
+            pg.clone(),
+            Some(Arc::new(ConstantEmbedding::prefixed(
+                "stub-fact-embed",
+                &[0.25, 0.5, 0.75],
+            ))),
+        );
+        let outcome = engine
+            .event_ingest(
+                &AuthzContext::single_owner(&owner, AuthPath::System),
+                fact_draft(&owner, "stale processing fact"),
+            )
+            .await?;
+
+        let claims = pg
+            .claim_pending_embedding_jobs("stub-fact-embed", 1)
+            .await?;
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].entity_id, outcome.memory_id);
+        let second_claims = pg
+            .claim_pending_embedding_jobs("stub-fact-embed", 1)
+            .await?;
+        assert!(second_claims.is_empty());
+
+        sqlx::query(
+            "UPDATE proxima_core.embedding_jobs
+                SET updated_at = now() - interval '20 minutes'
+              WHERE entity_id = $1",
+        )
+        .bind(outcome.memory_id.into_inner())
+        .execute(pg.pool())
+        .await?;
+
+        let reclaimed = pg
+            .claim_pending_embedding_jobs("stub-fact-embed", 1)
+            .await?;
+        assert_eq!(reclaimed.len(), 1);
+        assert_eq!(reclaimed[0].entity_id, outcome.memory_id);
+        Ok(())
+    }
+    .await;
+    drop(pg);
+    drop_db(&db_name).await?;
+    result
+}
+
+#[tokio::test]
 async fn fact_embedding_backfill_heals_no_client_ingest() -> Result<(), Box<dyn std::error::Error>>
 {
     let (pg, db_name) = fresh_pg().await;
@@ -519,6 +571,52 @@ async fn reconcile_embedding_drain_writes_fact_embeddings() -> Result<(), Box<dy
             1
         );
         assert_eq!(count_embedding_jobs(pg.pool(), outcome.memory_id).await?, 0);
+        Ok(())
+    }
+    .await;
+    drop(pg);
+    drop_db(&db_name).await?;
+    result
+}
+
+#[tokio::test]
+async fn count_pending_embedding_jobs_counts_outstanding() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner_fixture();
+        let other_owner =
+            Owner::with_uuid(OwnerPrincipalKind::User, Uuid::now_v7(), Uuid::now_v7());
+        let engine = engine_for(
+            pg.clone(),
+            Some(Arc::new(ConstantEmbedding::prefixed(
+                "stub-fact-embed",
+                &[0.25, 0.5, 0.75],
+            ))),
+        );
+        for label in ["pending count one", "pending count two"] {
+            engine
+                .event_ingest(
+                    &AuthzContext::single_owner(&owner, AuthPath::System),
+                    fact_draft(&owner, label),
+                )
+                .await?;
+        }
+        engine
+            .event_ingest(
+                &AuthzContext::single_owner(&other_owner, AuthPath::System),
+                fact_draft(&other_owner, "other owner pending count"),
+            )
+            .await?;
+
+        assert_eq!(pg.count_pending_embedding_jobs(&owner).await?, 2);
+        assert_eq!(pg.count_pending_embedding_jobs(&other_owner).await?, 1);
+
+        let drain = engine.drain_embedding_jobs(10).await?;
+        assert_eq!(drain.processed, 3);
+        assert_eq!(drain.failed, 0);
+        assert_eq!(pg.count_pending_embedding_jobs(&owner).await?, 0);
+        assert_eq!(pg.count_pending_embedding_jobs(&other_owner).await?, 0);
         Ok(())
     }
     .await;
