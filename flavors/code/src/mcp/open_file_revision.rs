@@ -71,7 +71,7 @@ pub struct ChunkSummary {
 pub struct CodeOpenFileRevisionTool;
 
 impl McpTool for CodeOpenFileRevisionTool {
-    const NAME: &'static str = "proxima-code/code_open_file_revision";
+    const NAME: &'static str = "proxima-code/open_file_revision";
     const DESCRIPTION: &'static str =
         "Return the current head revision and head chunks for one repo_handle/file_path pair.";
 

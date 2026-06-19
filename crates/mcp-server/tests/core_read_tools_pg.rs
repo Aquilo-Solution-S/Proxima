@@ -47,6 +47,31 @@ async fn core_read_tools_return_prefixed_ids_and_author() -> Result<(), Box<dyn 
         fetched["authoring_personality_instance_id"],
         format!("I:{author}")
     );
+    assert_eq!(fetched["handle"], format!("A:{derived}"));
+    assert_eq!(fetched["body"], "derived lineage memory");
+    assert!(
+        fetched.get("neighbor_edges").is_none(),
+        "neighbor_edges should be omitted unless expand_neighbors is true"
+    );
+
+    let expanded = server
+        .call_tool(
+            "core/get_memory",
+            json!({"memory": derived.to_string(), "expand_neighbors": true}),
+            author_ctx(),
+            None,
+        )
+        .await?;
+    assert_eq!(expanded["memory"], format!("A:{derived}"));
+    assert_eq!(expanded["neighbor_edges"][0]["handle"], format!("E:{edge}"));
+    assert_eq!(
+        expanded["neighbor_edges"][0]["source"],
+        format!("A:{derived}")
+    );
+    assert_eq!(
+        expanded["neighbor_edges"][0]["target"],
+        format!("A:{source}")
+    );
 
     let lineage = server
         .call_tool(

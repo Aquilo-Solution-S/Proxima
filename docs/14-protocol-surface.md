@@ -34,8 +34,8 @@ Canonical substrate memory tools:
 | `core/record_utterance` | write utterance Fact |
 | `core/derive` | write agent-authored Abstraction |
 | `core/link` | write registered relation edge |
-| `core/search_memories` | search memories; may include neighbor edges and per-result tags |
-| `core/open` | hydrate memory by id |
+| `core/search_memories` | search memories; may include neighbor edges, per-result tags, and lexical-degradation status |
+| `core/get_memory` | hydrate memory by id/handle; optional neighbor edges |
 | `core/walk_memory_lineage` | traverse provenance / supersession lineage |
 
 Graph search is unified into `core/search_memories`; there is no

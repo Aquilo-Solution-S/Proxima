@@ -30,6 +30,9 @@ operates in degraded lexical-only mode.
 | `PROXIMA_OIDC_AUDIENCE` | yes | `https://proxima.example.com/mcp` | Resource id expected in token `aud`. |
 | `PROXIMA_OIDC_JWKS_URI` | no | `https://zitadel.example.com/oauth/v2/keys` | Overrides OIDC discovery. |
 | `PROXIMA_OIDC_ALLOWED_SUBJECTS` | no | `user1,user2` | Comma-separated `sub` allowlist. |
+| `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile: `full` default, or curated `memory`. |
+| `PROXIMA_TOOL_ALLOW` | no | `core/add_wake_entry` | Comma-separated canonical tool ids added after profile resolution. |
+| `PROXIMA_TOOL_DENY` | no | `core/cleanup_facts` | Comma-separated canonical tool ids removed after allow. |
 | `MISTRAL_API_KEY` | no | `sk-...` | Enables Mistral embeddings. |
 | `PROXIMA_EMBED_MODEL` | no | `mistral-embed` | Embedding model id. |
 | `MISTRAL_API_BASE` | no | `https://api.mistral.ai/v1` | Mistral-compatible API base. |
@@ -77,6 +80,26 @@ docker run -p 8080:8080 \
   -e PROXIMA_OIDC_AUDIENCE=https://proxima.example.com/mcp \
   proxima-mcp --owner-user 550e8400-e29b-41d4-a716-446655440000 --owner-org 550e8400-e29b-41d4-a716-446655440001
 ```
+
+Memory-brain surface:
+
+```sh
+docker run -p 8080:8080 \
+  -e DATABASE_URL=postgres://... \
+  -e PROXIMA_MCP_BIND=0.0.0.0:8080 \
+  -e PROXIMA_EXPOSE_NETWORK=true \
+  -e PROXIMA_ALLOWED_ORIGINS=https://claude.example.com \
+  -e PROXIMA_PUBLIC_URL=https://proxima.example.com \
+  -e PROXIMA_OIDC_ISSUER=https://zitadel.example.com \
+  -e PROXIMA_OIDC_AUDIENCE=https://proxima.example.com/mcp \
+  -e PROXIMA_TOOL_PROFILE=memory \
+  proxima-mcp --owner-user 550e8400-e29b-41d4-a716-446655440000 --owner-org 550e8400-e29b-41d4-a716-446655440001
+```
+
+`PROXIMA_TOOL_PROFILE=memory` shrinks the advertised MCP surface for
+better LLM tool selection and lower operational blast radius. It is not a
+security boundary: every tool call remains gated by per-actor authz and
+role checks.
 
 ## Zitadel setup
 

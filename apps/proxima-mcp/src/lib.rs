@@ -5,12 +5,13 @@ pub use args::{
     ReconcileScope, USAGE, parse_args, parse_reconcile_args,
 };
 
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 use proxima::{
     AppInfo, FlavorApp, FlavorBundle, Proxima, ProximaError, RunningProxima, RuntimeBuilder,
 };
-use proxima_core::{Engine, FlavorRegistry, llm::EmbeddingClient};
+use proxima_core::{Engine, FlavorRegistry, ToolScope, llm::EmbeddingClient};
 use proxima_llm_openai_compat::{
     MISTRAL_EMBED_BASE_URL, MISTRAL_EMBED_MODEL, OpenAiCompatEmbeddingClient,
 };
@@ -19,6 +20,77 @@ use proxima_storage_pg::{EmbeddingReconcileOptions, EmbeddingReconcileScope, PgS
 const MISTRAL_API_KEY: &str = "MISTRAL_API_KEY";
 const PROXIMA_EMBED_MODEL: &str = "PROXIMA_EMBED_MODEL";
 const MISTRAL_API_BASE: &str = "MISTRAL_API_BASE";
+const PROXIMA_TOOL_PROFILE: &str = "PROXIMA_TOOL_PROFILE";
+const PROXIMA_TOOL_ALLOW: &str = "PROXIMA_TOOL_ALLOW";
+const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
+
+/// Tool ids advertised by the `memory` profile. Each entry references the
+/// owning tool's own `McpTool::NAME` constant rather than re-typing the
+/// string, so the tool is the single source of truth: renaming a tool's id
+/// updates the keep set automatically, and deleting a tool turns into a
+/// compile error here rather than a silently-stale palette entry.
+fn memory_keep_set() -> Vec<&'static str> {
+    use proxima_core::mcp::McpTool;
+    use proxima_core::mcp::core_tools::{
+        CitationOfEntityHeadTool, CitationOfFactTool, CleanupFactsTool, DeriveTool,
+        FactsCitingObjectTool, GetGraphTool, GetMemoryTool, GoalDecomposeTool, GoalMarkAchievedTool,
+        GoalModifyTool, GoalSetTool, GoalTransitionTool, LinkTool, ListEdgeTypesTool,
+        ListEventsTool, ListSchemasTool, ListSubstrateToolsTool, RecordUtteranceTool, RememberTool,
+        SearchMemoriesTool, SetFactRetentionTool, WalkMemoryLineageTool,
+    };
+
+    #[allow(unused_mut)]
+    let mut ids = vec![
+        // authoring
+        RememberTool::NAME,
+        DeriveTool::NAME,
+        LinkTool::NAME,
+        RecordUtteranceTool::NAME,
+        // retrieval
+        SearchMemoriesTool::NAME,
+        GetMemoryTool::NAME,
+        FactsCitingObjectTool::NAME,
+        CitationOfFactTool::NAME,
+        CitationOfEntityHeadTool::NAME,
+        WalkMemoryLineageTool::NAME,
+        ListEventsTool::NAME,
+        GetGraphTool::NAME,
+        // architecture / governance
+        ListSchemasTool::NAME,
+        ListEdgeTypesTool::NAME,
+        SetFactRetentionTool::NAME,
+        CleanupFactsTool::NAME,
+        ListSubstrateToolsTool::NAME,
+        // goals (intent that drives memory)
+        GoalSetTool::NAME,
+        GoalTransitionTool::NAME,
+        GoalMarkAchievedTool::NAME,
+        GoalModifyTool::NAME,
+        GoalDecomposeTool::NAME,
+    ];
+
+    #[cfg(feature = "code")]
+    {
+        use proxima_code::mcp::open_file_revision::CodeOpenFileRevisionTool;
+        use proxima_code::mcp::repos::{
+            CodeIngestHeadSnapshotTool, CodeListReposTool, CodeRegisterRepoTool,
+        };
+        use proxima_code::mcp::search_chunks::CodeSearchChunksTool;
+        use proxima_code::mcp::search_commits::CodeSearchCommitsTool;
+
+        ids.extend([
+            // code-as-memory
+            CodeRegisterRepoTool::NAME,
+            CodeListReposTool::NAME,
+            CodeIngestHeadSnapshotTool::NAME,
+            CodeSearchChunksTool::NAME,
+            CodeOpenFileRevisionTool::NAME,
+            CodeSearchCommitsTool::NAME,
+        ]);
+    }
+
+    ids
+}
 
 #[cfg(feature = "code")]
 type LinkedFlavors = (proxima_code::CodeFlavor,);
@@ -221,11 +293,14 @@ fn build_app(
     config: McpConfig,
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<Proxima<ProximaMcpApp>, CliError> {
+    let registered_ids = registered_tool_ids();
+    let tool_scope = tool_scope_from_env(&lookup, &registered_ids)?;
     let oidc = oidc_from_env(&config, &lookup)?;
     let mut app = Proxima::<ProximaMcpApp>::app()
         .from_env()
         .database_url(config.database_url)
-        .owner(config.owner.clone());
+        .owner(config.owner.clone())
+        .tool_scope(tool_scope);
     if let Some(bind) = config.bind {
         app = app.mcp_bind(bind);
     }
@@ -239,6 +314,91 @@ fn build_app(
         app = app.embed_client(Arc::new(client));
     }
     Ok(app)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolProfile {
+    Full,
+    Memory,
+}
+
+fn registered_tool_ids() -> Vec<&'static str> {
+    let mut registry = FlavorRegistry::new();
+    <ProximaMcpApp as FlavorBundle>::register(&mut registry);
+    let frozen = registry.freeze();
+    frozen
+        .list_mcp_tools()
+        .iter()
+        .map(|tool| tool.name)
+        .collect()
+}
+
+fn tool_scope_from_env(
+    lookup: &impl Fn(&str) -> Option<String>,
+    registered_ids: &[&str],
+) -> Result<ToolScope, CliError> {
+    resolve_tool_scope(
+        lookup_non_empty(lookup, PROXIMA_TOOL_PROFILE).as_deref(),
+        lookup_non_empty(lookup, PROXIMA_TOOL_ALLOW).as_deref(),
+        lookup_non_empty(lookup, PROXIMA_TOOL_DENY).as_deref(),
+        registered_ids,
+    )
+}
+
+fn resolve_tool_scope(
+    profile_name: Option<&str>,
+    allow_raw: Option<&str>,
+    deny_raw: Option<&str>,
+    registered_ids: &[&str],
+) -> Result<ToolScope, CliError> {
+    let profile = parse_tool_profile(profile_name.unwrap_or("full"))?;
+    let allow = parse_tool_id_csv(allow_raw);
+    let deny = parse_tool_id_csv(deny_raw);
+    warn_unknown_tool_ids(&allow, registered_ids, PROXIMA_TOOL_ALLOW);
+    warn_unknown_tool_ids(&deny, registered_ids, PROXIMA_TOOL_DENY);
+
+    if profile == ToolProfile::Full && allow.is_empty() && deny.is_empty() {
+        return Ok(ToolScope::All);
+    }
+
+    let mut palette: BTreeSet<String> = match profile {
+        ToolProfile::Full => registered_ids.iter().map(|id| (*id).to_string()).collect(),
+        ToolProfile::Memory => memory_keep_set().into_iter().map(String::from).collect(),
+    };
+    palette.extend(allow);
+    for id in deny {
+        palette.remove(&id);
+    }
+    Ok(ToolScope::Palette(palette.into_iter().collect()))
+}
+
+fn parse_tool_profile(raw: &str) -> Result<ToolProfile, CliError> {
+    match raw.trim() {
+        "full" => Ok(ToolProfile::Full),
+        "memory" => Ok(ToolProfile::Memory),
+        other => Err(CliError::Runtime(ProximaError::Config(format!(
+            "unknown {PROXIMA_TOOL_PROFILE} {other:?}; expected \"full\" or \"memory\""
+        )))),
+    }
+}
+
+fn parse_tool_id_csv(raw: Option<&str>) -> Vec<String> {
+    raw.map_or_else(Vec::new, |raw| {
+        raw.split(',')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    })
+}
+
+fn warn_unknown_tool_ids(ids: &[String], registered_ids: &[&str], env_var: &str) {
+    let registered: HashSet<&str> = registered_ids.iter().copied().collect();
+    for id in ids {
+        if !registered.contains(id.as_str()) {
+            tracing::warn!(env_var, tool_id = %id, "tool id is not registered in this build");
+        }
+    }
 }
 
 fn oidc_from_env(
@@ -378,6 +538,51 @@ mod tests {
             _ => None,
         })
         .expect("app builds with oidc env");
+    }
+
+    #[test]
+    fn tool_profile_resolver_builds_deployment_scope() {
+        let registered_ids = [
+            "core/get_memory",
+            "core/search_memories",
+            "core/instantiate_personality",
+            "core/add_wake_entry",
+            "proxima-code/register_repo",
+            "proxima-code/emit_execution_request",
+        ];
+
+        let full = resolve_tool_scope(None, None, None, &registered_ids).expect("full profile");
+        assert_eq!(full, ToolScope::All);
+
+        let memory = resolve_tool_scope(Some("memory"), None, None, &registered_ids)
+            .expect("memory profile");
+        assert!(memory.allows("core/get_memory"));
+        assert!(memory.allows("core/search_memories"));
+        // Code-flavor tools join the memory keep set only when the `code`
+        // flavor is compiled in (the keep set references their `NAME`
+        // consts under the same cfg).
+        #[cfg(feature = "code")]
+        assert!(memory.allows("proxima-code/register_repo"));
+        assert!(!memory.allows("core/instantiate_personality"));
+        assert!(!memory.allows("core/add_wake_entry"));
+        assert!(!memory.allows("proxima-code/emit_execution_request"));
+
+        let overridden = resolve_tool_scope(
+            Some("memory"),
+            Some("core/add_wake_entry"),
+            Some("core/get_memory"),
+            &registered_ids,
+        )
+        .expect("overridden memory profile");
+        assert!(!overridden.allows("core/get_memory"));
+        assert!(overridden.allows("core/add_wake_entry"));
+    }
+
+    #[test]
+    fn unknown_tool_profile_fails_closed() {
+        let err =
+            resolve_tool_scope(Some("unknown"), None, None, &[]).expect_err("unknown profile");
+        assert!(err.to_string().contains("unknown PROXIMA_TOOL_PROFILE"));
     }
 
     #[test]

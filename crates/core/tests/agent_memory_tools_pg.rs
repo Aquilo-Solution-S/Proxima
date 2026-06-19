@@ -717,8 +717,8 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
         &owner,
         &frozen,
         author_ctx().with_self_perspective(personality_b_root),
-        "core/open",
-        json!({"handle": authored_handle.clone()}),
+        "core/get_memory",
+        json!({"memory": authored_handle.clone()}),
     )
     .await?;
     assert_eq!(
@@ -731,8 +731,8 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
         &owner,
         &frozen,
         author_ctx().with_self_perspective(personality_b_root),
-        "core/open",
-        json!({"handle": nil_handle}),
+        "core/get_memory",
+        json!({"memory": nil_handle}),
     )
     .await?;
     assert!(

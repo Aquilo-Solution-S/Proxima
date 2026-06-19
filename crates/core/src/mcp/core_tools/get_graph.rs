@@ -42,6 +42,8 @@ pub struct GetGraphOutput {
     /// means no retryable/in-flight backlog remains (not a proof that every
     /// memory embedded successfully).
     pub pending_embedding_jobs: u64,
+    /// Owner Fact-retention duration in seconds, if configured.
+    pub fact_retention_seconds: Option<i64>,
     /// Every personality the owner owns, fully expanded — same shape as
     /// `core/get_personality` output.
     pub personalities: Vec<GetPersonalityOutput>,
@@ -89,6 +91,13 @@ impl McpTool for GetGraphTool {
                 .count_pending_embedding_jobs(&ctx.owner)
                 .await
                 .map_err(McpToolError::Storage)?;
+            let engine = ctx
+                .engine()
+                .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+            let fact_retention_seconds = engine
+                .get_fact_retention(&ctx.authz, &ctx.owner)
+                .await
+                .map_err(|err| McpToolError::Other(err.to_string()))?;
 
             let personality_rows = storage
                 .list_personality_instances(&ctx.owner, args.include_tombstoned)
@@ -146,28 +155,12 @@ impl McpTool for GetGraphTool {
                 })
                 .collect();
 
-            let substrate_tools = ctx
-                .registry
-                .list_mcp_tools()
-                .iter()
-                .map(|desc| {
-                    let source = if desc.name.starts_with("core/") {
-                        "substrate".into()
-                    } else {
-                        let flavor = desc.name.split('/').next().unwrap_or("flavor");
-                        format!("flavor:{flavor}")
-                    };
-                    SubstrateToolItem {
-                        tool_id: desc.name.to_string(),
-                        source,
-                        description: desc.description.to_string(),
-                    }
-                })
-                .collect();
+            let substrate_tools = scoped_substrate_tools(&ctx);
 
             Ok(GetGraphOutput {
                 embeddings_client_configured,
                 pending_embedding_jobs,
+                fact_retention_seconds,
                 personalities,
                 schemas,
                 edge_types,
@@ -175,4 +168,28 @@ impl McpTool for GetGraphTool {
             })
         })
     }
+}
+
+/// Build the owner's substrate-tool inventory, filtered to the caller's
+/// `ToolScope` so a deployment profile that hides tools is not defeated by
+/// `get_graph` re-advertising them.
+fn scoped_substrate_tools(ctx: &McpToolCtx) -> Vec<SubstrateToolItem> {
+    ctx.registry
+        .list_mcp_tools()
+        .iter()
+        .filter(|desc| ctx.authz.capabilities.tool_scope.allows(desc.name))
+        .map(|desc| {
+            let source = if desc.name.starts_with("core/") {
+                "substrate".into()
+            } else {
+                let flavor = desc.name.split('/').next().unwrap_or("flavor");
+                format!("flavor:{flavor}")
+            };
+            SubstrateToolItem {
+                tool_id: desc.name.to_string(),
+                source,
+                description: desc.description.to_string(),
+            }
+        })
+        .collect()
 }

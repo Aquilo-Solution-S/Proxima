@@ -142,7 +142,7 @@ Default personality tools:
 
 | Read | Write |
 |---|---|
-| `core/fetch_memory` | `core/emit_abstraction` |
+| `core/get_memory` | `core/emit_abstraction` |
 | `core/list_self_perspectives` | `core/emit_perspective` |
 | `core/walk_lineage` |  |
 | `core/search_memories` |  |

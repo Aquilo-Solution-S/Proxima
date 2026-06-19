@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use proxima_core::{
-    AuthPath, Authenticator, AuthzContext, CapabilitySet, Credentials, Identity, Owner,
+    AuthPath, Authenticator, AuthzContext, CapabilitySet, Credentials, Identity, Owner, ToolScope,
 };
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -88,6 +88,7 @@ impl McpAuthContext {
 pub struct McpEdgeAuth {
     master_tokens: RwLock<HashMap<Uuid, Owner>>,
     host: Option<(Arc<dyn Authenticator>, Owner)>,
+    tool_scope: ToolScope,
 }
 
 impl std::fmt::Debug for McpEdgeAuth {
@@ -105,7 +106,18 @@ impl McpEdgeAuth {
         Self {
             master_tokens: RwLock::new(HashMap::new()),
             host: None,
+            tool_scope: ToolScope::All,
         }
+    }
+
+    /// Layer a deployment-wide MCP tool surface over every resolved request.
+    /// The deployment scope is INTERSECTED with each caller's own scope (see
+    /// [`ToolScope::intersect`]), so it can only ever narrow a caller, never
+    /// widen one — a future per-actor palette stays respected.
+    #[must_use]
+    pub fn with_tool_scope(mut self, tool_scope: ToolScope) -> Self {
+        self.tool_scope = tool_scope;
+        self
     }
 
     /// Attach a host authenticator for non-reserved bearer material.
@@ -139,7 +151,10 @@ impl McpEdgeAuth {
 
     async fn resolve_master(&self, token: Uuid) -> Option<McpAuthContext> {
         let owner = self.master_tokens.read().await.get(&token).cloned()?;
-        Some(McpAuthContext::for_master(token, owner))
+        let mut ctx = McpAuthContext::for_master(token, owner);
+        ctx.authz.capabilities.tool_scope =
+            ctx.authz.capabilities.tool_scope.intersect(&self.tool_scope);
+        Some(ctx)
     }
 
     async fn resolve_host(&self, material: String) -> Option<McpAuthContext> {
@@ -154,6 +169,9 @@ impl McpEdgeAuth {
         if !authz.identity.can_access_principal(&owner.principal) {
             return None;
         }
+        let mut authz = authz;
+        authz.capabilities.tool_scope =
+            authz.capabilities.tool_scope.intersect(&self.tool_scope);
         Some(McpAuthContext {
             owner: authz.scoped_owner(owner.principal.clone()),
             authz,

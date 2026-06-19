@@ -1,4 +1,4 @@
-//! `core/get_memory` — wire-facing single-memory read by prefixed UUID.
+//! `core/get_memory` — wire-facing single-memory read by id or handle.
 
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
@@ -7,19 +7,25 @@ use serde::{Deserialize, Serialize};
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::personality::{PersonalityInstanceId, SidecarSpec};
 use crate::verbs::schema::PayloadKind;
-use crate::{McpTool, MemoryHandleClass, SchemaId};
+use crate::{McpTool, MemoryHandleClass, MemoryId, SchemaId};
+
+use super::memory::search::{NeighborEdge, neighbor_edges};
 
 #[derive(Debug, Default)]
 pub struct GetMemoryTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetMemoryArgs {
-    /// `F:<uuid>`, `A:<uuid>`, or `P:<uuid>` memory id.
+    /// Memory reference: `F:<uuid>`, `A:<uuid>`, `P:<uuid>`, raw uuid, or handle.
     pub memory: String,
+    /// Include edges touching the memory. Default: false.
+    #[serde(default)]
+    pub expand_neighbors: bool,
 }
 
 #[derive(Debug, Serialize)]
 pub struct GetMemoryOutput {
+    pub handle: String,
     pub memory: String,
     pub kind: String,
     pub schema_id: String,
@@ -29,11 +35,16 @@ pub struct GetMemoryOutput {
     pub text: Option<String>,
     pub wake_chain_depth: u16,
     pub payload: serde_json::Value,
+    pub title: Option<String>,
+    pub body: Option<String>,
+    pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub neighbor_edges: Option<Vec<NeighborEdge>>,
 }
 
 impl McpTool for GetMemoryTool {
     const NAME: &'static str = "core/get_memory";
-    const DESCRIPTION: &'static str = "Fetch one owner-scoped memory by prefixed id. Returns kind, schema, text, payload, and author.";
+    const DESCRIPTION: &'static str = "Fetch one owner-scoped memory by id/handle. Returns kind, schema, text, payload, title/body/tags, author, and optional neighbor edges.";
     type Args = GetMemoryArgs;
     type Output = GetMemoryOutput;
 
@@ -42,7 +53,8 @@ impl McpTool for GetMemoryTool {
         args: GetMemoryArgs,
     ) -> BoxFuture<'static, Result<GetMemoryOutput, McpToolError>> {
         Box::pin(async move {
-            let memory_id = ctx.resolve_memory(&args.memory)?;
+            let memory_id = resolve_memory_reference(&ctx, &args.memory)?;
+            let memory_uuid = memory_id.into_inner();
             let storage = ctx
                 .storage()
                 .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
@@ -54,8 +66,22 @@ impl McpTool for GetMemoryTool {
                     McpToolError::InvalidInput(format!("memory {memory_id:?} not found"))
                 })?;
             let class = memory_class(&snapshot.kind)?;
+            let handle = ctx.format_memory_with_class(snapshot.memory_id, class);
+            let payload = snapshot_payload_value(snapshot.payload.as_ref())?;
+            let title = payload_string(&payload, "title")
+                .or_else(|| payload_string(&payload, "conversation_id"));
+            let body = payload_string(&payload, "body")
+                .or_else(|| payload_string(&payload, "text"))
+                .or_else(|| snapshot.text.clone());
+            let tags = payload_tags(&payload);
+            let neighbor_edges = if args.expand_neighbors {
+                Some(neighbor_edges(&ctx, &[memory_uuid]).await?)
+            } else {
+                None
+            };
             Ok(GetMemoryOutput {
-                memory: ctx.format_memory_with_class(snapshot.memory_id, class),
+                handle: handle.clone(),
+                memory: handle,
                 kind: snapshot.kind,
                 schema_id: snapshot.schema_id.as_str().to_string(),
                 schema_version: snapshot.schema_version.into_inner(),
@@ -65,9 +91,28 @@ impl McpTool for GetMemoryTool {
                 ),
                 text: snapshot.text,
                 wake_chain_depth: snapshot.wake_chain_depth.into_inner(),
-                payload: snapshot_payload_value(snapshot.payload.as_ref())?,
+                payload,
+                title,
+                body,
+                tags,
+                neighbor_edges,
             })
         })
+    }
+}
+
+/// Resolve a memory reference accepting a prefixed id (`F:…`), a handle, or a
+/// bare uuid. The bare-uuid fallback serves the prefixed-id / raw-id wire
+/// surfaces; in `Handles` mode it would bypass the per-wake handle table, but
+/// `get_memory` has no live `Handles`-mode surface and the subsequent
+/// `load_memory_by_id` is owner-scoped, so no cross-owner read is possible.
+fn resolve_memory_reference(ctx: &McpToolCtx, raw: &str) -> Result<MemoryId, McpToolError> {
+    match ctx.resolve_memory(raw) {
+        Ok(memory_id) => Ok(memory_id),
+        Err(resolve_err) => raw
+            .parse::<uuid::Uuid>()
+            .map(MemoryId::new)
+            .map_err(|_| resolve_err),
     }
 }
 
@@ -110,4 +155,21 @@ pub(super) fn format_authoring_personality(
     instance_id: Option<PersonalityInstanceId>,
 ) -> Option<String> {
     instance_id.map(|id| ctx.format_personality(id))
+}
+
+pub(super) fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
+pub(super) fn payload_tags(payload: &serde_json::Value) -> Vec<String> {
+    payload
+        .get("tags")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|tag| tag.as_str().map(ToOwned::to_owned))
+        .collect()
 }

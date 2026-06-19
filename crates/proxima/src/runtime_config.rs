@@ -3,7 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proxima_blob_s3::S3RuntimeConfig;
-use proxima_core::{AnthropicClient, Authenticator, EmbeddingClient, Owner, RevalidationConfig};
+use proxima_core::{
+    AnthropicClient, Authenticator, EmbeddingClient, Owner, RevalidationConfig, ToolScope,
+};
 use proxima_mcp_server::ResourceServerMetadata;
 
 use crate::config::{parse_bool_value, s3_from_lookup};
@@ -24,6 +26,7 @@ pub struct RuntimeBuilder {
     expose_network: Option<bool>,
     allowed_origins: Option<Vec<String>>,
     allowed_hosts: Option<Vec<String>>,
+    tool_scope: Option<ToolScope>,
     stream_max_lifetime: Option<Duration>,
     epoch_check_interval: Option<Duration>,
     insecure_single_owner: bool,
@@ -46,6 +49,7 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("expose_network", &self.expose_network)
             .field("allowed_origins", &self.allowed_origins)
             .field("allowed_hosts", &self.allowed_hosts)
+            .field("tool_scope", &self.tool_scope)
             .field("stream_max_lifetime", &self.stream_max_lifetime)
             .field("epoch_check_interval", &self.epoch_check_interval)
             .field("insecure_single_owner", &self.insecure_single_owner)
@@ -71,6 +75,7 @@ impl RuntimeBuilder {
             expose_network: self.expose_network.or(base.expose_network),
             allowed_origins: self.allowed_origins.or(base.allowed_origins),
             allowed_hosts: self.allowed_hosts.or(base.allowed_hosts),
+            tool_scope: self.tool_scope.or(base.tool_scope),
             stream_max_lifetime: self.stream_max_lifetime.or(base.stream_max_lifetime),
             epoch_check_interval: self.epoch_check_interval.or(base.epoch_check_interval),
             insecure_single_owner: self.insecure_single_owner || base.insecure_single_owner,
@@ -155,6 +160,13 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn allowed_hosts(mut self, allowed_hosts: Vec<String>) -> Self {
         self.allowed_hosts = Some(allowed_hosts);
+        self
+    }
+
+    /// Set the deployment-wide MCP tool surface.
+    #[must_use]
+    pub fn tool_scope(mut self, tool_scope: ToolScope) -> Self {
+        self.tool_scope = Some(tool_scope);
         self
     }
 
@@ -341,6 +353,7 @@ impl RuntimeBuilder {
             expose_network: self.expose_network.unwrap_or(false),
             allowed_origins: self.allowed_origins.unwrap_or_default(),
             allowed_hosts: self.allowed_hosts.unwrap_or_default(),
+            tool_scope: self.tool_scope.unwrap_or(ToolScope::All),
             stream_revalidation,
             insecure_single_owner: self.insecure_single_owner,
             has_host_authenticator: parts.authenticator.is_some(),
@@ -365,6 +378,7 @@ pub struct RuntimeConfig {
     /// ⇒ derive from `resource_metadata.public_url` + `allowed_origins`.
     /// Bare hostnames or `host:port`; the transport always adds loopback.
     pub allowed_hosts: Vec<String>,
+    pub tool_scope: ToolScope,
     pub stream_revalidation: RevalidationConfig,
     pub insecure_single_owner: bool,
     pub has_host_authenticator: bool,
@@ -654,6 +668,7 @@ mod tests {
             expose_network: false,
             allowed_origins: Vec::new(),
             allowed_hosts: Vec::new(),
+            tool_scope: ToolScope::All,
             stream_revalidation: RevalidationConfig::default(),
             insecure_single_owner: false,
             has_host_authenticator: true,

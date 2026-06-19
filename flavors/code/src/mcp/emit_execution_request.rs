@@ -208,7 +208,7 @@ pub struct CodeRetryExecutionRequestOutput {
 pub struct CodeEmitExecutionRequestTool;
 
 impl McpTool for CodeEmitExecutionRequestTool {
-    const NAME: &'static str = "proxima-code/code_emit_execution_request";
+    const NAME: &'static str = "proxima-code/emit_execution_request";
     const DESCRIPTION: &'static str =
         "Emit a repo-scoped proxima-code/work-requested-v1 Fact for an Active Goal.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[ExecutionRequestV1::SCHEMA_ID];
@@ -330,7 +330,7 @@ impl McpTool for CodeEmitExecutionRequestTool {
 pub struct CodeEmitExecutionPlanTool;
 
 impl McpTool for CodeEmitExecutionPlanTool {
-    const NAME: &'static str = "proxima-code/code_emit_execution_plan";
+    const NAME: &'static str = "proxima-code/emit_execution_plan";
     const DESCRIPTION: &'static str = "Atomically emit an ordered set of repo-scoped implementation/test request Facts plus core/depends-on edges.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[
         CodeExecutionPlanV1::SCHEMA_ID,
@@ -582,7 +582,7 @@ async fn append_execution_plan(
         text: plan_summary.to_string(),
         operator_kind: MemoryOperatorKind::ExternalAgent,
         model_id: &ctx.author.model_id,
-        prompt_version: "proxima-code/code_emit_execution_plan-v1",
+        prompt_version: "proxima-code/emit_execution_plan-v1",
         supersedes: None,
         embedding: None,
         embedding_model_id: None,
@@ -669,7 +669,7 @@ async fn append_plan_derived_edge(
 pub struct CodeRetryExecutionRequestTool;
 
 impl McpTool for CodeRetryExecutionRequestTool {
-    const NAME: &'static str = "proxima-code/code_retry_execution_request";
+    const NAME: &'static str = "proxima-code/retry_execution_request";
     const DESCRIPTION: &'static str = "Shell-author override: retry a prior proxima-code/work-requested-v1 Fact for a target worker.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[ExecutionRequestV1::SCHEMA_ID];
 

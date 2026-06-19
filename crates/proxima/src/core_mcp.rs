@@ -4,10 +4,9 @@ use proxima_core::{AuthzContext, Engine, FlavorRegistryFrozen, McpAuthorContext,
 use proxima_mcp_server::{McpAuthContext, McpToolHost, ToolInvocationError};
 use sqlx::PgPool;
 
-const FACT_RETENTION_TOOL_NAMES: [&str; 4] = [
-    "core/get_fact_retention",
+const FACT_RETENTION_SURFACE_TOOL_NAMES: [&str; 3] = [
+    "core/get_graph",
     "core/set_fact_retention",
-    "core/clear_fact_retention",
     "core/cleanup_facts",
 ];
 
@@ -69,10 +68,10 @@ impl CoreMcpTools {
             })
             .collect::<Vec<_>>();
         debug_assert!(
-            FACT_RETENTION_TOOL_NAMES
+            FACT_RETENTION_SURFACE_TOOL_NAMES
                 .iter()
                 .all(|name| tools.iter().any(|tool| tool.name == *name)),
-            "fact-retention tools must be present in CoreMcpTools"
+            "fact-retention surface tools must be present in CoreMcpTools"
         );
         tools
     }
