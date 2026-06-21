@@ -143,6 +143,7 @@ cannot see payloads.
 | CF-57/58 | Registry ownership per flavor; prefixes kept in composite | CF-B + CF-C |
 | CF-60 | Cross-flavor reads obey owner/read-scope | axioms `edge_scope_single_owner`, def `personality_may_read` (already universal) |
 | CF-61 | Cross-flavor edges use registered descriptors | THEOREM `edges_use_registered_relations` (projection of `entities_use_registered_vocabulary`) |
+| CF-61b | Relation endpoint descriptors may require opaque schema capability tags; admitted endpoints declare the required side tags | axiom `relation_endpoint_required_tags_valid` |
 | CF-43..46 | Goal entity core-owned; flavor owns payload/tools | structural: Goal axioms live in kernel; payloads opaque |
 
 **CF exclusions:** CF-4..19, CF-25..42, CF-47..53, CF-59, CF-62 — macro
