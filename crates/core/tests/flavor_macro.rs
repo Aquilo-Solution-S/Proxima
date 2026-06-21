@@ -94,6 +94,10 @@ proxima_flavor! {
     goal_schemas = [ TestGoalV1 ],
     cited_object_schemas = [ TestCitedObjectV1 ],
     citation_mapping_schemas = [ TestCitationMappingV1 ],
+    schema_capability_tags = [
+        (Fact, TestFactV1) => ["actor", "shared-vocab"],
+        (Goal, TestGoalV1) => ["task"],
+    ],
 }
 
 #[test]
@@ -122,6 +126,43 @@ fn flavor_macro_registers_fact_schema() {
     );
     assert_eq!(macro_schemas[1].schema_version.into_inner(), 1);
     assert_eq!(macro_schemas[1].kind, PayloadKind::Goal);
+}
+
+#[test]
+fn flavor_macro_registers_schema_capability_tags() {
+    let mut registry = FlavorRegistry::new();
+    register(&mut registry);
+    let frozen = registry.freeze();
+
+    let fact_tags = frozen
+        .schema_capability_tags(
+            &TestFactV1::schema_id(),
+            proxima_core::SchemaVersion::new(TestFactV1::SCHEMA_VERSION),
+            PayloadKind::Fact,
+        )
+        .expect("fact capability tags registered");
+    assert_eq!(
+        fact_tags
+            .iter()
+            .map(proxima_core::CapabilityTag::as_str)
+            .collect::<Vec<_>>(),
+        ["actor", "shared-vocab"],
+    );
+
+    let goal_tags = frozen
+        .schema_capability_tags(
+            &TestGoalV1::schema_id(),
+            proxima_core::SchemaVersion::new(TestGoalV1::SCHEMA_VERSION),
+            PayloadKind::Goal,
+        )
+        .expect("goal capability tags registered");
+    assert_eq!(
+        goal_tags
+            .iter()
+            .map(proxima_core::CapabilityTag::as_str)
+            .collect::<Vec<_>>(),
+        ["task"],
+    );
 }
 
 #[test]

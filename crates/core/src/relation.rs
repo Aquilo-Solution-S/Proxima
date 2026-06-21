@@ -14,7 +14,10 @@
 //! walking) require a fixed vocabulary. Flavors differentiate within
 //! a class via the `relation: text` discriminator on the edge row.
 //!
-use crate::{SchemaId, SchemaVersion};
+use std::collections::BTreeSet;
+
+use crate::verbs::schema::FlavorRegistryFrozen;
+use crate::{CapabilityTag, SchemaId, SchemaVersion};
 
 pub const CORE_DERIVED_FROM_RELATION: &str = "core/derived-from";
 pub const CORE_SUPERSEDES_RELATION: &str = "core/supersedes";
@@ -338,6 +341,10 @@ pub struct RelationDescriptor {
     pub target_binding: EndpointBinding,
     /// Edge authorship kinds permitted for this relation.
     pub authorship_mask: AuthorshipKindMask,
+    /// Capability tags required on the source endpoint schema.
+    pub source_required_tags: BTreeSet<CapabilityTag>,
+    /// Capability tags required on the target endpoint schema.
+    pub target_required_tags: BTreeSet<CapabilityTag>,
     /// Some(SchemaRef) iff edges of this relation carry a typed
     /// `EdgePayload` sidecar. None for substrate-only relations
     /// (e.g. `core/derived-from` carries all needed state on the
@@ -365,6 +372,8 @@ impl RelationDescriptor {
             source_binding,
             target_binding,
             authorship_mask,
+            source_required_tags: BTreeSet::new(),
+            target_required_tags: BTreeSet::new(),
             payload_schema: None,
         }
     }
@@ -391,8 +400,84 @@ impl RelationDescriptor {
             source_binding,
             target_binding,
             authorship_mask,
+            source_required_tags: BTreeSet::new(),
+            target_required_tags: BTreeSet::new(),
             payload_schema: Some(payload_schema),
         }
+    }
+
+    /// Add endpoint capability constraints to an existing descriptor.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any tag is invalid.
+    #[must_use]
+    pub fn with_required_tags(mut self, source: &[&str], target: &[&str]) -> Self {
+        self.source_required_tags = parse_required_tags(&self.relation, "source", source);
+        self.target_required_tags = parse_required_tags(&self.relation, "target", target);
+        self
+    }
+
+    /// Untyped relation with endpoint capability constraints.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any tag is invalid.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn substrate_with_required_tags(
+        relation: impl Into<String>,
+        class: RelationClass,
+        source_binding: EndpointBinding,
+        target_binding: EndpointBinding,
+        source_kind_mask: EntityKindMask,
+        target_kind_mask: EntityKindMask,
+        authorship_mask: AuthorshipKindMask,
+        source_required_tags: &[&str],
+        target_required_tags: &[&str],
+    ) -> Self {
+        Self::substrate(
+            relation,
+            class,
+            source_binding,
+            target_binding,
+            source_kind_mask,
+            target_kind_mask,
+            authorship_mask,
+        )
+        .with_required_tags(source_required_tags, target_required_tags)
+    }
+
+    /// Typed relation with endpoint capability constraints.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any tag is invalid.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn typed_with_required_tags(
+        relation: impl Into<String>,
+        class: RelationClass,
+        payload_schema: SchemaRef,
+        source_binding: EndpointBinding,
+        target_binding: EndpointBinding,
+        source_kind_mask: EntityKindMask,
+        target_kind_mask: EntityKindMask,
+        authorship_mask: AuthorshipKindMask,
+        source_required_tags: &[&str],
+        target_required_tags: &[&str],
+    ) -> Self {
+        Self::typed(
+            relation,
+            class,
+            payload_schema,
+            source_binding,
+            target_binding,
+            source_kind_mask,
+            target_kind_mask,
+            authorship_mask,
+        )
+        .with_required_tags(source_required_tags, target_required_tags)
     }
 
     /// Validate descriptor-local masks against a proposed edge shape.
@@ -608,6 +693,24 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
 pub struct RegisteredRelation<'a> {
     pub descriptor: &'a RelationDescriptor,
     pub payload_sidecar_table: Option<&'a str>,
+    pub(crate) registry: &'a FlavorRegistryFrozen,
+}
+
+impl RegisteredRelation<'_> {
+    #[must_use]
+    pub fn registry(&self) -> &FlavorRegistryFrozen {
+        self.registry
+    }
+}
+
+fn parse_required_tags(relation: &str, side: &str, tags: &[&str]) -> BTreeSet<CapabilityTag> {
+    tags.iter()
+        .map(|tag| {
+            CapabilityTag::parse(*tag).unwrap_or_else(|err| {
+                panic!("RelationDescriptor {relation:?} has invalid {side} capability tag: {err}")
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -663,6 +766,74 @@ mod tests {
             super::AuthorshipKindMask::perspective_link(),
         );
         assert!(descriptor.validate_descriptor().is_err());
+    }
+
+    #[test]
+    fn untagged_relations_have_empty_required_tags() {
+        let substrate = super::RelationDescriptor::substrate(
+            "test/untagged-substrate",
+            RelationClass::Structural,
+            EndpointBinding::Pin,
+            EndpointBinding::Pin,
+            EntityKindMask::fact(),
+            EntityKindMask::fact(),
+            super::AuthorshipKindMask::external_agent(),
+        );
+        assert!(substrate.source_required_tags.is_empty());
+        assert!(substrate.target_required_tags.is_empty());
+
+        let typed = super::RelationDescriptor::typed(
+            "test/untagged-typed",
+            RelationClass::Structural,
+            SchemaRef::new(SchemaId::new("test/edge-v1".into()), SchemaVersion::new(1)),
+            EndpointBinding::Pin,
+            EndpointBinding::Pin,
+            EntityKindMask::fact(),
+            EntityKindMask::fact(),
+            super::AuthorshipKindMask::external_agent(),
+        );
+        assert!(typed.source_required_tags.is_empty());
+        assert!(typed.target_required_tags.is_empty());
+    }
+
+    #[test]
+    fn tagged_descriptor_preserves_shape_validation() {
+        let descriptor = super::RelationDescriptor::substrate(
+            "test/assigned-to",
+            RelationClass::Structural,
+            EndpointBinding::Pin,
+            EndpointBinding::Pin,
+            EntityKindMask::fact(),
+            EntityKindMask::goal(),
+            super::AuthorshipKindMask::external_agent(),
+        )
+        .with_required_tags(&["task"], &["actor"]);
+
+        descriptor
+            .validate_edge_shape(
+                "Fact",
+                EndpointBinding::Pin,
+                "Goal",
+                EndpointBinding::Pin,
+                "ExternalAgent",
+            )
+            .expect("capability tags do not change relation shape validation");
+        assert_eq!(
+            descriptor
+                .source_required_tags
+                .iter()
+                .map(super::CapabilityTag::as_str)
+                .collect::<Vec<_>>(),
+            ["task"],
+        );
+        assert_eq!(
+            descriptor
+                .target_required_tags
+                .iter()
+                .map(super::CapabilityTag::as_str)
+                .collect::<Vec<_>>(),
+            ["actor"],
+        );
     }
 
     #[test]
