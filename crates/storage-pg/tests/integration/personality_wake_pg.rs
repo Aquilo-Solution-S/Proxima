@@ -12,16 +12,15 @@ use proxima_core::personality::{
 };
 use proxima_core::relation::{
     CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, CORE_SUPERSEDES_RELATION,
-    core_relation_descriptors,
 };
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
 use proxima_core::{
-    AbstractionPayload, EntityKind, FlavorRegistry, MemoryId, Owner, PerspectivePayload, Principal,
-    RegisteredRelation, RelationClass, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId,
-    SourceId, StorageError, WakeEntryGoalScope,
+    AbstractionPayload, EntityKind, FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner,
+    PerspectivePayload, Principal, RegisteredRelation, RelationClass, SchemaId, SchemaVersion,
+    SidecarPayload, SourceBatchId, SourceId, StorageError, WakeEntryGoalScope,
 };
 use proxima_storage_pg::sidecars::{
     PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture,
@@ -540,6 +539,15 @@ fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
     embedding
 }
 
+fn resolve_registered_relation<'a>(
+    registry: &'a FlavorRegistryFrozen,
+    relation: &str,
+) -> RegisteredRelation<'a> {
+    registry
+        .resolve_relation(relation)
+        .expect("relation registered")
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn load_perspective_heads_returns_current_same_personality_learned_heads() {
     let (pg, db) = fresh_pg_with_personality_sidecars().await;
@@ -552,20 +560,11 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
         let seed = seed_test_personality(&pg, &owner).await?;
         let sibling = seed_test_personality(&pg, &owner).await?;
         let root_id = current_root_perspective_memory_id(&pg, seed.instance_id).await?;
-        let descriptors = core_relation_descriptors();
-        let resolve = |id: &str| {
-            let descriptor = descriptors
-                .iter()
-                .find(|descriptor| descriptor.relation == id)
-                .expect("relation registered");
-            RegisteredRelation {
-                descriptor,
-                payload_sidecar_table: None,
-            }
-        };
-        let provenance_relation = resolve(CORE_DERIVED_FROM_RELATION);
-        let supersedes_relation = resolve(CORE_SUPERSEDES_RELATION);
-        let authored_relation = resolve(CORE_AUTHORED_RELATION);
+        let registry = FlavorRegistry::new().freeze();
+        let provenance_relation =
+            resolve_registered_relation(&registry, CORE_DERIVED_FROM_RELATION);
+        let supersedes_relation = resolve_registered_relation(&registry, CORE_SUPERSEDES_RELATION);
+        let authored_relation = resolve_registered_relation(&registry, CORE_AUTHORED_RELATION);
 
         let instance = PersonalityRef::new(seed.instance_id);
         let first = pg
@@ -691,20 +690,11 @@ async fn personality_provenance_edges_use_operator_authorship() {
         let fact = pg
             .ingest_event_atomic(&fact_draft(owner.clone()), None)
             .await?;
-        let descriptors = core_relation_descriptors();
-        let resolve = |id: &str| {
-            let descriptor = descriptors
-                .iter()
-                .find(|descriptor| descriptor.relation == id)
-                .expect("relation registered");
-            RegisteredRelation {
-                descriptor,
-                payload_sidecar_table: None,
-            }
-        };
-        let provenance_relation = resolve(CORE_DERIVED_FROM_RELATION);
-        let supersedes_relation = resolve(CORE_SUPERSEDES_RELATION);
-        let authored_relation = resolve(CORE_AUTHORED_RELATION);
+        let registry = FlavorRegistry::new().freeze();
+        let provenance_relation =
+            resolve_registered_relation(&registry, CORE_DERIVED_FROM_RELATION);
+        let supersedes_relation = resolve_registered_relation(&registry, CORE_SUPERSEDES_RELATION);
+        let authored_relation = resolve_registered_relation(&registry, CORE_AUTHORED_RELATION);
         let instance = PersonalityRef::new(seed.instance_id);
 
         let abstraction = pg
@@ -794,20 +784,11 @@ async fn personality_provenance_skips_perspective_context_targets() {
         let fact = pg
             .ingest_event_atomic(&fact_draft(owner.clone()), None)
             .await?;
-        let descriptors = core_relation_descriptors();
-        let resolve = |id: &str| {
-            let descriptor = descriptors
-                .iter()
-                .find(|descriptor| descriptor.relation == id)
-                .expect("relation registered");
-            RegisteredRelation {
-                descriptor,
-                payload_sidecar_table: None,
-            }
-        };
-        let provenance_relation = resolve(CORE_DERIVED_FROM_RELATION);
-        let supersedes_relation = resolve(CORE_SUPERSEDES_RELATION);
-        let authored_relation = resolve(CORE_AUTHORED_RELATION);
+        let registry = FlavorRegistry::new().freeze();
+        let provenance_relation =
+            resolve_registered_relation(&registry, CORE_DERIVED_FROM_RELATION);
+        let supersedes_relation = resolve_registered_relation(&registry, CORE_SUPERSEDES_RELATION);
+        let authored_relation = resolve_registered_relation(&registry, CORE_AUTHORED_RELATION);
 
         let outcome = pg
             .append_personality_memories(&PersonalityWriteRequest {
@@ -868,20 +849,11 @@ async fn personality_authored_edge_links_root_to_emitted_memory() {
         let fact = pg
             .ingest_event_atomic(&fact_draft(owner.clone()), None)
             .await?;
-        let descriptors = core_relation_descriptors();
-        let resolve = |id: &str| {
-            let descriptor = descriptors
-                .iter()
-                .find(|descriptor| descriptor.relation == id)
-                .expect("relation registered");
-            RegisteredRelation {
-                descriptor,
-                payload_sidecar_table: None,
-            }
-        };
-        let provenance_relation = resolve(CORE_DERIVED_FROM_RELATION);
-        let supersedes_relation = resolve(CORE_SUPERSEDES_RELATION);
-        let authored_relation = resolve(CORE_AUTHORED_RELATION);
+        let registry = FlavorRegistry::new().freeze();
+        let provenance_relation =
+            resolve_registered_relation(&registry, CORE_DERIVED_FROM_RELATION);
+        let supersedes_relation = resolve_registered_relation(&registry, CORE_SUPERSEDES_RELATION);
+        let authored_relation = resolve_registered_relation(&registry, CORE_AUTHORED_RELATION);
         let instance = PersonalityRef::new(seed.instance_id);
 
         let abstraction = pg

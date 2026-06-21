@@ -7,15 +7,17 @@
 use crate::mcp::schema::mcp_tool_schema;
 use crate::verbs::schema::{
     FlavorRegistryFrozen, MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
-    ProtocolPayload, ProtocolPayloadIngress, ProtocolPayloadIngressEntry, SchemaInfo,
+    ProtocolPayload, ProtocolPayloadIngress, ProtocolPayloadIngressEntry, SchemaCapabilityTags,
+    SchemaInfo,
 };
 use crate::{
-    AbstractionPayload, CitationMappingPayload, CitedObjectPayload, DependencySatisfactionRule,
-    EdgePayload, FactPayload, GoalPayload, McpCallFn, McpTool, McpToolDescriptor, McpToolError,
-    PerspectivePayload, RelationDescriptor, SchemaId, SchemaVersion, SidecarPayload,
-    core_relation_descriptors,
+    AbstractionPayload, CapabilityTag, CitationMappingPayload, CitedObjectPayload,
+    DependencySatisfactionRule, EdgePayload, FactPayload, GoalPayload, McpCallFn, McpTool,
+    McpToolDescriptor, McpToolError, PerspectivePayload, RelationDescriptor, SchemaId,
+    SchemaVersion, SidecarPayload, core_relation_descriptors,
 };
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// Structured per-flavor metadata. Populated by `proxima_flavor!` at
@@ -62,6 +64,7 @@ pub enum FlavorProvenance {
 #[derive(Debug)]
 pub struct FlavorRegistry {
     pub(crate) schemas: Vec<SchemaInfo>,
+    pub(crate) schema_capability_tags: Vec<SchemaCapabilityTags>,
     pub(crate) search_projections: Vec<MemorySearchProjection>,
     pub(crate) relations: Vec<RelationDescriptor>,
     pub(crate) protocol_ingress: Vec<ProtocolPayloadIngressEntry>,
@@ -74,6 +77,7 @@ impl Default for FlavorRegistry {
     fn default() -> Self {
         let mut registry = Self {
             schemas: Vec::new(),
+            schema_capability_tags: Vec::new(),
             search_projections: Vec::new(),
             relations: core_relation_descriptors(),
             protocol_ingress: Vec::new(),
@@ -303,6 +307,41 @@ impl FlavorRegistry {
         self.relations.push(descriptor);
     }
 
+    /// Attach opaque capability tags to a registered payload schema.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any tag fails [`CapabilityTag::parse`]. The schema
+    /// existence check runs at [`Self::freeze`], after every flavor has
+    /// registered its schemas.
+    pub fn add_schema_capability_tags<'a>(
+        &mut self,
+        kind: PayloadKind,
+        schema_id: SchemaId,
+        version: SchemaVersion,
+        tags: impl IntoIterator<Item = &'a str>,
+    ) {
+        let tags = tags
+            .into_iter()
+            .map(|tag| {
+                CapabilityTag::parse(tag).unwrap_or_else(|err| {
+                    panic!(
+                        "schema {} v{} {:?} has invalid capability tag: {err}",
+                        schema_id.as_str(),
+                        version.into_inner(),
+                        kind,
+                    )
+                })
+            })
+            .collect();
+        self.schema_capability_tags.push(SchemaCapabilityTags {
+            schema_id,
+            schema_version: version,
+            kind,
+            tags,
+        });
+    }
+
     pub fn add_dependency_satisfaction_rule(
         &mut self,
         schema_id: impl Into<String>,
@@ -405,6 +444,8 @@ impl FlavorRegistry {
                 let _ = info;
             }
         }
+        self.assert_schema_capability_tags_resolve();
+        self.assert_required_relation_tags_satisfiable();
         self.assert_flavor_descriptors();
         // Every schema is either typed (a protocol-ingress parser) or
         // opaque. A typed schema whose ingress parser was dropped would
@@ -463,6 +504,69 @@ impl FlavorRegistry {
             );
         }
         FlavorRegistryFrozen::from_registry(self)
+    }
+
+    fn assert_schema_capability_tags_resolve(&self) {
+        for binding in &self.schema_capability_tags {
+            assert!(
+                self.schemas.iter().any(|schema| {
+                    schema.schema_id == binding.schema_id
+                        && schema.schema_version == binding.schema_version
+                        && schema.kind == binding.kind
+                }),
+                "schema capability tags reference unregistered schema: {:?} v{:?} {:?}",
+                binding.schema_id.as_str(),
+                binding.schema_version.into_inner(),
+                binding.kind,
+            );
+        }
+    }
+
+    fn assert_required_relation_tags_satisfiable(&self) {
+        let declared = schema_capability_map(&self.schema_capability_tags);
+        for relation in &self.relations {
+            self.assert_relation_side_tags_satisfiable(
+                relation,
+                "source",
+                relation.source_kind_mask,
+                &relation.source_required_tags,
+                &declared,
+            );
+            self.assert_relation_side_tags_satisfiable(
+                relation,
+                "target",
+                relation.target_kind_mask,
+                &relation.target_required_tags,
+                &declared,
+            );
+        }
+    }
+
+    fn assert_relation_side_tags_satisfiable(
+        &self,
+        relation: &RelationDescriptor,
+        side: &str,
+        kind_mask: crate::EntityKindMask,
+        required_tags: &BTreeSet<CapabilityTag>,
+        declared: &std::collections::HashMap<
+            (SchemaId, SchemaVersion, PayloadKind),
+            BTreeSet<CapabilityTag>,
+        >,
+    ) {
+        if required_tags.is_empty() {
+            return;
+        }
+        let admitted = self.schemas.iter().any(|schema| {
+            payload_kind_admitted_by_mask(schema.kind, kind_mask)
+                && declared
+                    .get(&(schema.schema_id.clone(), schema.schema_version, schema.kind))
+                    .is_some_and(|tags| required_tags.is_subset(tags))
+        });
+        assert!(
+            admitted,
+            "RelationDescriptor {:?} has unsatisfiable {side} required capability tags",
+            relation.relation,
+        );
     }
 
     /// Cross-check: every `FlavorDescriptor::flavor_id` is unique.
@@ -528,6 +632,33 @@ fn maybe_add_search_projection(
             .collect(),
         tag_column: projection.tag_column,
     });
+}
+
+pub(crate) fn schema_capability_map(
+    bindings: &[SchemaCapabilityTags],
+) -> std::collections::HashMap<(SchemaId, SchemaVersion, PayloadKind), BTreeSet<CapabilityTag>> {
+    let mut out: std::collections::HashMap<_, BTreeSet<CapabilityTag>> =
+        std::collections::HashMap::new();
+    for binding in bindings {
+        out.entry((
+            binding.schema_id.clone(),
+            binding.schema_version,
+            binding.kind,
+        ))
+        .or_default()
+        .extend(binding.tags.iter().cloned());
+    }
+    out
+}
+
+fn payload_kind_admitted_by_mask(kind: PayloadKind, mask: crate::EntityKindMask) -> bool {
+    match kind {
+        PayloadKind::Fact => mask.contains_str("Fact"),
+        PayloadKind::Abstraction => mask.contains_str("Abstraction"),
+        PayloadKind::Perspective => mask.contains_str("Perspective"),
+        PayloadKind::Goal => mask.contains_str("Goal"),
+        PayloadKind::Edge | PayloadKind::CitedObject | PayloadKind::CitationMapping => false,
+    }
 }
 
 fn decode_protocol_payload<T>(value: &serde_json::Value) -> Result<T, String>
@@ -697,6 +828,43 @@ mod tests {
         let schema_id = SchemaId::new("proxima-test/duplicate".to_string());
         registry.add_opaque_schema(schema_id.clone(), SchemaVersion::new(1), PayloadKind::Fact);
         registry.add_opaque_schema(schema_id, SchemaVersion::new(1), PayloadKind::Fact);
+        let _ = registry.freeze();
+    }
+
+    #[test]
+    #[should_panic(expected = "schema capability tags reference unregistered schema")]
+    fn freeze_rejects_capability_tags_for_unregistered_schema() {
+        let mut registry = FlavorRegistry::new();
+        registry.add_schema_capability_tags(
+            PayloadKind::Fact,
+            SchemaId::new("proxima-test/missing".to_string()),
+            SchemaVersion::new(1),
+            ["actor"],
+        );
+        let _ = registry.freeze();
+    }
+
+    #[test]
+    #[should_panic(expected = "unsatisfiable target required capability tags")]
+    fn freeze_rejects_unsatisfiable_required_tag_relation() {
+        let mut registry = FlavorRegistry::new();
+        registry.add_opaque_schema(
+            SchemaId::new("proxima-test/plain-fact".to_string()),
+            SchemaVersion::new(1),
+            PayloadKind::Fact,
+        );
+        registry.add_relation(
+            RelationDescriptor::substrate(
+                "proxima-test/requires-actor",
+                crate::RelationClass::Structural,
+                crate::EndpointBinding::Pin,
+                crate::EndpointBinding::Pin,
+                crate::EntityKindMask::fact(),
+                crate::EntityKindMask::fact(),
+                crate::AuthorshipKindMask::external_agent(),
+            )
+            .with_required_tags(&[], &["actor"]),
+        );
         let _ = registry.freeze();
     }
 
