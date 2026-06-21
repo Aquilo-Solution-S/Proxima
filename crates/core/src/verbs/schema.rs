@@ -4,10 +4,11 @@
 //! docs/03-schema-registry.md.
 
 use crate::{
-    DependencySatisfactionRule, FlavorDescriptor, McpToolDescriptor, RegisteredRelation,
-    RelationDescriptor, SchemaId, SchemaVersion, SearchProjectionColumnKind, SidecarPayload,
+    CapabilityTag, DependencySatisfactionRule, FlavorDescriptor, McpToolDescriptor,
+    RegisteredRelation, RelationDescriptor, SchemaId, SchemaVersion, SearchProjectionColumnKind,
+    SidecarPayload,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 pub type ProtocolPayloadIngress = fn(&serde_json::Value) -> Result<ProtocolPayload, String>;
 
@@ -17,6 +18,14 @@ pub struct ProtocolPayload {
     pub sidecar_payload: SidecarPayload,
     pub rendered_text: Option<String>,
     pub content_hash: Option<[u8; 32]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaCapabilityTags {
+    pub schema_id: SchemaId,
+    pub schema_version: SchemaVersion,
+    pub kind: PayloadKind,
+    pub tags: BTreeSet<CapabilityTag>,
 }
 
 #[derive(Debug, Clone)]
@@ -200,6 +209,8 @@ impl FrozenIndex {
 #[derive(Debug, Clone, Default)]
 pub struct FlavorRegistryFrozen {
     schemas: Vec<SchemaInfo>,
+    schema_capability_tags:
+        HashMap<(SchemaId, SchemaVersion, PayloadKind), BTreeSet<CapabilityTag>>,
     search_projections: Vec<MemorySearchProjection>,
     relations: Vec<RelationDescriptor>,
     protocol_ingress: Vec<ProtocolPayloadIngressEntry>,
@@ -226,6 +237,7 @@ impl FlavorRegistryFrozen {
         let index = FrozenIndex::build(&schemas, &[], &[]);
         Self {
             schemas,
+            schema_capability_tags: HashMap::new(),
             index,
             ..Self::default()
         }
@@ -241,6 +253,7 @@ impl FlavorRegistryFrozen {
         let index = FrozenIndex::build(&schemas, &[], &relations);
         Self {
             schemas,
+            schema_capability_tags: HashMap::new(),
             relations,
             index,
             ..Self::default()
@@ -257,6 +270,7 @@ impl FlavorRegistryFrozen {
     pub(crate) fn from_registry(registry: crate::FlavorRegistry) -> Self {
         let crate::FlavorRegistry {
             schemas,
+            schema_capability_tags,
             search_projections,
             relations,
             protocol_ingress,
@@ -264,9 +278,11 @@ impl FlavorRegistryFrozen {
             flavors,
             dependency_satisfaction_rules,
         } = registry;
+        let schema_capability_tags = crate::flavor::schema_capability_map(&schema_capability_tags);
         let index = FrozenIndex::build(&schemas, &protocol_ingress, &relations);
         Self {
             schemas,
+            schema_capability_tags,
             search_projections,
             relations,
             protocol_ingress,
@@ -318,6 +334,17 @@ impl FlavorRegistryFrozen {
     #[must_use]
     pub fn schemas(&self) -> &[SchemaInfo] {
         &self.schemas
+    }
+
+    #[must_use]
+    pub fn schema_capability_tags(
+        &self,
+        schema_id: &SchemaId,
+        version: SchemaVersion,
+        kind: PayloadKind,
+    ) -> Option<&BTreeSet<CapabilityTag>> {
+        self.schema_capability_tags
+            .get(&(schema_id.clone(), version, kind))
     }
 
     #[must_use]
@@ -413,6 +440,7 @@ impl FlavorRegistryFrozen {
         Some(RegisteredRelation {
             descriptor,
             payload_sidecar_table,
+            registry: self,
         })
     }
 

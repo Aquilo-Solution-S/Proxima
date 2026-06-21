@@ -82,6 +82,10 @@ noncomputable def NodeRef.owner : NodeRef → Owner
   | .memory m => memory_owner m
   | .goal g   => goal_owner g
 
+noncomputable def NodeRef.schema : NodeRef → SchemaRef
+  | .memory m => memory_schema m
+  | .goal g   => goal_schema g
+
 -- ============================================================
 -- Relations and edges
 -- ============================================================

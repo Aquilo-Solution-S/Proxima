@@ -7,9 +7,11 @@
 //!
 //! Used by M5.5 typed F-layer edges (e.g. `proxima-code/calls`).
 
+use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    EdgeAuthorshipKind, EdgeId, EdgePayload, EndpointBinding, EntityKind, FactEntityId, GoalId,
-    MemoryId, Owner, RegisteredRelation, StorageError,
+    CapabilityTag, EdgeAuthorshipKind, EdgeId, EdgePayload, EndpointBinding, EntityKind,
+    FactEntityId, GoalId, MemoryId, Owner, RegisteredRelation, SchemaId, SchemaVersion,
+    StorageError,
 };
 
 use crate::error::map_err;
@@ -235,6 +237,7 @@ pub async fn append_edge_in_tx(
     draft: &EdgeDraft<'_>,
 ) -> Result<(), StorageError> {
     validate_edge_draft(draft, false)?;
+    validate_endpoint_required_tags(tx, draft).await?;
 
     if !insert_edge_row(tx, draft).await? {
         return Ok(());
@@ -256,6 +259,7 @@ pub async fn append_edge_with_sidecar_in_tx(
     sidecar: impl for<'t> FnOnce(&'t mut sqlx::PgConnection, EdgeId) -> PgSidecarFuture<'t>,
 ) -> Result<(), StorageError> {
     validate_edge_draft(draft, true)?;
+    validate_endpoint_required_tags(tx, draft).await?;
 
     if !insert_edge_row(tx, draft).await? {
         return Ok(());
@@ -319,6 +323,195 @@ fn validate_edge_draft(draft: &EdgeDraft<'_>, payload_present: bool) -> Result<(
         )
         .map_err(StorageError::ConstraintViolation)?;
     Ok(())
+}
+
+async fn validate_endpoint_required_tags(
+    tx: &mut sqlx::PgConnection,
+    draft: &EdgeDraft<'_>,
+) -> Result<(), StorageError> {
+    let descriptor = draft.relation.descriptor;
+    if descriptor.source_required_tags.is_empty() && descriptor.target_required_tags.is_empty() {
+        return Ok(());
+    }
+    if !descriptor.source_required_tags.is_empty() {
+        validate_endpoint_side_required_tags(
+            tx,
+            draft,
+            EndpointSide::Source,
+            &descriptor.source_required_tags,
+        )
+        .await?;
+    }
+    if !descriptor.target_required_tags.is_empty() {
+        validate_endpoint_side_required_tags(
+            tx,
+            draft,
+            EndpointSide::Target,
+            &descriptor.target_required_tags,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn validate_endpoint_side_required_tags(
+    tx: &mut sqlx::PgConnection,
+    draft: &EdgeDraft<'_>,
+    side: EndpointSide,
+    required_tags: &std::collections::BTreeSet<CapabilityTag>,
+) -> Result<(), StorageError> {
+    let endpoint = resolve_endpoint_schema(tx, draft, side).await?;
+    let declared = draft.relation.registry().schema_capability_tags(
+        &endpoint.schema_id,
+        endpoint.schema_version,
+        endpoint.kind,
+    );
+    let missing = required_tags
+        .iter()
+        .filter(|tag| declared.is_none_or(|tags| !tags.contains(*tag)))
+        .map(CapabilityTag::as_str)
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(StorageError::ConstraintViolation(format!(
+        "edge: endpoint missing required capability tag(s) on {}: {}",
+        side.as_str(),
+        missing.join(", "),
+    )))
+}
+
+#[derive(Clone, Copy)]
+enum EndpointSide {
+    Source,
+    Target,
+}
+
+impl EndpointSide {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Source => "source",
+            Self::Target => "target",
+        }
+    }
+}
+
+struct EndpointSchema {
+    schema_id: SchemaId,
+    schema_version: SchemaVersion,
+    kind: PayloadKind,
+}
+
+async fn resolve_endpoint_schema(
+    tx: &mut sqlx::PgConnection,
+    draft: &EdgeDraft<'_>,
+    side: EndpointSide,
+) -> Result<EndpointSchema, StorageError> {
+    match endpoint_columns(draft, side) {
+        (Some(memory_id), None, None) => {
+            let row: Option<(String, i32, Option<EntityKind>)> = sqlx::query_as(
+                "SELECT schema_id, schema_version, kind
+                   FROM proxima_core.memories
+                  WHERE memory_id = $1",
+            )
+            .bind(memory_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(map_err)?;
+            let (schema_id, schema_version, kind) = row.ok_or_else(|| {
+                StorageError::ConstraintViolation(format!(
+                    "edge: {} endpoint not found while checking capability tags",
+                    side.as_str(),
+                ))
+            })?;
+            Ok(EndpointSchema {
+                schema_id: SchemaId::new(schema_id),
+                schema_version: schema_version_from_i32(schema_version)?,
+                kind: payload_kind_for_entity(kind.unwrap_or(EntityKind::Fact)),
+            })
+        }
+        (None, Some(goal_id), None) => {
+            let row: Option<(String, i32)> = sqlx::query_as(
+                "SELECT schema_id, schema_version
+                   FROM proxima_core.goals
+                  WHERE goal_id = $1",
+            )
+            .bind(goal_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(map_err)?;
+            let (schema_id, schema_version) = row.ok_or_else(|| {
+                StorageError::ConstraintViolation(format!(
+                    "edge: {} endpoint not found while checking capability tags",
+                    side.as_str(),
+                ))
+            })?;
+            Ok(EndpointSchema {
+                schema_id: SchemaId::new(schema_id),
+                schema_version: schema_version_from_i32(schema_version)?,
+                kind: PayloadKind::Goal,
+            })
+        }
+        (None, None, Some(fact_entity_id)) => {
+            let row: Option<(String, i32)> = sqlx::query_as(
+                "SELECT schema_id, schema_version
+                   FROM proxima_core.fact_entities
+                  WHERE fact_entity_id = $1",
+            )
+            .bind(fact_entity_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(map_err)?;
+            let (schema_id, schema_version) = row.ok_or_else(|| {
+                StorageError::ConstraintViolation(format!(
+                    "edge: {} endpoint not found while checking capability tags",
+                    side.as_str(),
+                ))
+            })?;
+            Ok(EndpointSchema {
+                schema_id: SchemaId::new(schema_id),
+                schema_version: schema_version_from_i32(schema_version)?,
+                kind: PayloadKind::Fact,
+            })
+        }
+        _ => Err(StorageError::ConstraintViolation(format!(
+            "edge: {} endpoint columns violate exactly-one invariant",
+            side.as_str(),
+        ))),
+    }
+}
+
+fn endpoint_columns(
+    draft: &EdgeDraft<'_>,
+    side: EndpointSide,
+) -> (Option<uuid::Uuid>, Option<uuid::Uuid>, Option<uuid::Uuid>) {
+    match side {
+        EndpointSide::Source => (
+            draft.source_memory_id,
+            draft.source_goal_id,
+            draft.source_fact_entity_id,
+        ),
+        EndpointSide::Target => (
+            draft.target_memory_id,
+            draft.target_goal_id,
+            draft.target_fact_entity_id,
+        ),
+    }
+}
+
+fn payload_kind_for_entity(kind: EntityKind) -> PayloadKind {
+    match kind {
+        EntityKind::Fact => PayloadKind::Fact,
+        EntityKind::Abstraction => PayloadKind::Abstraction,
+        EntityKind::Perspective => PayloadKind::Perspective,
+        EntityKind::Goal => PayloadKind::Goal,
+    }
+}
+
+fn schema_version_from_i32(value: i32) -> Result<SchemaVersion, StorageError> {
+    let version = u32::try_from(value)
+        .map_err(|_| StorageError::Internal(format!("schema_version does not fit u32: {value}")))?;
+    Ok(SchemaVersion::new(version))
 }
 
 async fn insert_edge_row(

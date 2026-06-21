@@ -152,8 +152,11 @@ impl McpEdgeAuth {
     async fn resolve_master(&self, token: Uuid) -> Option<McpAuthContext> {
         let owner = self.master_tokens.read().await.get(&token).cloned()?;
         let mut ctx = McpAuthContext::for_master(token, owner);
-        ctx.authz.capabilities.tool_scope =
-            ctx.authz.capabilities.tool_scope.intersect(&self.tool_scope);
+        ctx.authz.capabilities.tool_scope = ctx
+            .authz
+            .capabilities
+            .tool_scope
+            .intersect(&self.tool_scope);
         Some(ctx)
     }
 
@@ -170,8 +173,7 @@ impl McpEdgeAuth {
             return None;
         }
         let mut authz = authz;
-        authz.capabilities.tool_scope =
-            authz.capabilities.tool_scope.intersect(&self.tool_scope);
+        authz.capabilities.tool_scope = authz.capabilities.tool_scope.intersect(&self.tool_scope);
         Some(McpAuthContext {
             owner: authz.scoped_owner(owner.principal.clone()),
             authz,

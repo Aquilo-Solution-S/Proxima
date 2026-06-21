@@ -12,6 +12,7 @@ use proxima_core::storage::Storage;
 use proxima_core::verbs::event_history::EventHistoryRequest;
 use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::verbs::query::{QueryRequest, TombstoneFilter};
+use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthPath, AuthorshipKindMask, AuthzContext, ChangeEventKind, EdgeAuthorshipKind,
     EndpointBinding, EntityKind, EntityKindMask, EntityRef, FactPayload, FactTombstone,
@@ -31,6 +32,9 @@ use uuid::Uuid;
 
 const TEST_FOLLOW_RELATION: &str = "test/follows-head";
 const TEST_PIN_RELATION: &str = "test/pins-version";
+const TEST_FOLLOW_ACTOR_RELATION: &str = "test/follows-actor-head";
+const TEST_PIN_ACTOR_RELATION: &str = "test/pins-actor-version";
+const CROSS_FLAVOR_ASSIGNED_TO_RELATION: &str = "test-flavor-a/assigned-to";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct StatefulFactV1 {
@@ -107,9 +111,166 @@ impl PgMemoryPayload for StatefulFactV1 {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PlainFactV1 {
+    entity_key: String,
+    body: String,
+    state: String,
+}
+
+impl FactPayload for PlainFactV1 {
+    const SCHEMA_ID: &'static str = "test/plain-fact-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("entity_key", &self.entity_key);
+        key.field_str("body", &self.body);
+        key.field_str("state", &self.state);
+        key.finish()
+    }
+
+    fn render(&self) -> String {
+        format!("{}: {}", self.entity_key, self.body)
+    }
+
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_test.stateful_fact_v1")
+    }
+
+    fn natural_key_columns() -> &'static [&'static str] {
+        &["entity_key"]
+    }
+
+    fn tombstone() -> Option<FactTombstone> {
+        Some(FactTombstone {
+            column: "state",
+            value: "Deleted",
+        })
+    }
+}
+
+impl PgFactSidecar for PlainFactV1 {
+    fn insert_sidecar<'t>(
+        self,
+        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
+        memory_id: MemoryId,
+    ) -> EventIngestSidecarFuture<'t>
+    where
+        Self: 't,
+    {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO proxima_test.stateful_fact_v1
+                    (memory_id, entity_key, body, state)
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(memory_id.into_inner())
+            .bind(&self.entity_key)
+            .bind(&self.body)
+            .bind(&self.state)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+impl PgMemoryPayload for PlainFactV1 {
+    fn load_memory_payload(
+        _pool: &sqlx::PgPool,
+        _memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct CrossFlavorActorFactV1 {
+    entity_key: String,
+    body: String,
+    state: String,
+}
+
+impl FactPayload for CrossFlavorActorFactV1 {
+    const SCHEMA_ID: &'static str = "test-flavor-b/actor-fact-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("entity_key", &self.entity_key);
+        key.field_str("body", &self.body);
+        key.field_str("state", &self.state);
+        key.finish()
+    }
+
+    fn render(&self) -> String {
+        format!("{}: {}", self.entity_key, self.body)
+    }
+
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_test.stateful_fact_v1")
+    }
+
+    fn natural_key_columns() -> &'static [&'static str] {
+        &["entity_key"]
+    }
+
+    fn tombstone() -> Option<FactTombstone> {
+        Some(FactTombstone {
+            column: "state",
+            value: "Deleted",
+        })
+    }
+}
+
+impl PgFactSidecar for CrossFlavorActorFactV1 {
+    fn insert_sidecar<'t>(
+        self,
+        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
+        memory_id: MemoryId,
+    ) -> EventIngestSidecarFuture<'t>
+    where
+        Self: 't,
+    {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO proxima_test.stateful_fact_v1
+                    (memory_id, entity_key, body, state)
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(memory_id.into_inner())
+            .bind(&self.entity_key)
+            .bind(&self.body)
+            .bind(&self.state)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+impl PgMemoryPayload for CrossFlavorActorFactV1 {
+    fn load_memory_payload(
+        _pool: &sqlx::PgPool,
+        _memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+}
+
 fn registry_for_test() -> FlavorRegistryFrozen {
     let mut registry = FlavorRegistry::new();
     registry.add_fact_schema::<StatefulFactV1>();
+    registry.add_fact_schema::<PlainFactV1>();
+    registry.add_schema_capability_tags(
+        PayloadKind::Fact,
+        StatefulFactV1::schema_id(),
+        SchemaVersion::new(StatefulFactV1::SCHEMA_VERSION),
+        ["actor"],
+    );
     registry.add_relation(RelationDescriptor::substrate(
         TEST_FOLLOW_RELATION,
         RelationClass::Structural,
@@ -128,6 +289,30 @@ fn registry_for_test() -> FlavorRegistryFrozen {
         EntityKindMask::fact(),
         AuthorshipKindMask::event_source().union(AuthorshipKindMask::external_agent()),
     ));
+    registry.add_relation(
+        RelationDescriptor::substrate(
+            TEST_FOLLOW_ACTOR_RELATION,
+            RelationClass::Structural,
+            EndpointBinding::FollowHead,
+            EndpointBinding::FollowHead,
+            EntityKindMask::fact(),
+            EntityKindMask::fact(),
+            AuthorshipKindMask::event_source().union(AuthorshipKindMask::external_agent()),
+        )
+        .with_required_tags(&["actor"], &["actor"]),
+    );
+    registry.add_relation(
+        RelationDescriptor::substrate(
+            TEST_PIN_ACTOR_RELATION,
+            RelationClass::Structural,
+            EndpointBinding::Pin,
+            EndpointBinding::Pin,
+            EntityKindMask::fact(),
+            EntityKindMask::fact(),
+            AuthorshipKindMask::event_source().union(AuthorshipKindMask::external_agent()),
+        )
+        .with_required_tags(&["actor"], &["actor"]),
+    );
     registry.freeze()
 }
 
@@ -136,14 +321,96 @@ fn pg_sidecars_for_test() -> PgSidecarRegistryFrozen {
     let mut sidecars = PgSidecarRegistry::new();
     register_core_pg_sidecars(&mut sidecars);
     sidecars.add_fact::<StatefulFactV1>();
+    sidecars.add_fact::<PlainFactV1>();
     sidecars
         .freeze_against(registry.schemas())
         .expect("test PG sidecars match test schemas")
 }
 
+mod cross_flavor_a {
+    use super::*;
+
+    proxima_core::proxima_flavor! {
+        name = "test-flavor-a",
+        relations = [
+            RelationDescriptor::substrate(
+                CROSS_FLAVOR_ASSIGNED_TO_RELATION,
+                RelationClass::Structural,
+                EndpointBinding::FollowHead,
+                EndpointBinding::FollowHead,
+                EntityKindMask::fact(),
+                EntityKindMask::fact(),
+                AuthorshipKindMask::external_agent(),
+            ).with_required_tags(&[], &["actor"]),
+        ],
+    }
+}
+
+mod cross_flavor_b {
+    use super::*;
+
+    proxima_core::proxima_flavor! {
+        name = "test-flavor-b",
+        fact_schemas = [ CrossFlavorActorFactV1 ],
+        schema_capability_tags = [
+            (Fact, CrossFlavorActorFactV1) => ["actor"],
+        ],
+    }
+}
+
+trait TestFlavorBundle {
+    fn register(registry: &mut FlavorRegistry);
+}
+
+impl<A: TestFlavorBundle, B: TestFlavorBundle> TestFlavorBundle for (A, B) {
+    fn register(registry: &mut FlavorRegistry) {
+        A::register(registry);
+        B::register(registry);
+    }
+}
+
+struct CrossFlavorA;
+struct CrossFlavorB;
+
+impl TestFlavorBundle for CrossFlavorA {
+    fn register(registry: &mut FlavorRegistry) {
+        cross_flavor_a::register(registry);
+    }
+}
+
+impl TestFlavorBundle for CrossFlavorB {
+    fn register(registry: &mut FlavorRegistry) {
+        cross_flavor_b::register(registry);
+    }
+}
+
+fn cross_flavor_registry_for_test() -> FlavorRegistryFrozen {
+    let mut registry = FlavorRegistry::new();
+    <(CrossFlavorA, CrossFlavorB) as TestFlavorBundle>::register(&mut registry);
+    registry.freeze()
+}
+
+fn cross_flavor_pg_sidecars_for_test() -> PgSidecarRegistryFrozen {
+    let registry = cross_flavor_registry_for_test();
+    let mut sidecars = PgSidecarRegistry::new();
+    register_core_pg_sidecars(&mut sidecars);
+    sidecars.add_fact::<CrossFlavorActorFactV1>();
+    sidecars
+        .freeze_against(registry.schemas())
+        .expect("cross-flavor PG sidecars match test schemas")
+}
+
 async fn fresh_pg_with_sidecars() -> (PgStorage, String) {
     let (pg, db_name) = fresh_pg().await;
     (pg.with_sidecars(pg_sidecars_for_test()), db_name)
+}
+
+async fn fresh_pg_with_cross_flavor_sidecars() -> (PgStorage, String) {
+    let (pg, db_name) = fresh_pg().await;
+    (
+        pg.with_sidecars(cross_flavor_pg_sidecars_for_test()),
+        db_name,
+    )
 }
 
 async fn create_sidecar(pg: &PgStorage) -> Result<(), sqlx::Error> {
@@ -174,7 +441,23 @@ fn fact(entity_key: &str, body: &str, state: &str) -> StatefulFactV1 {
     }
 }
 
-fn draft_for(owner: &Owner, payload_value: &Value) -> EventDraft {
+fn plain_fact(entity_key: &str, body: &str, state: &str) -> PlainFactV1 {
+    PlainFactV1 {
+        entity_key: entity_key.to_string(),
+        body: body.to_string(),
+        state: state.to_string(),
+    }
+}
+
+fn cross_actor_fact(entity_key: &str, body: &str, state: &str) -> CrossFlavorActorFactV1 {
+    CrossFlavorActorFactV1 {
+        entity_key: entity_key.to_string(),
+        body: body.to_string(),
+        state: state.to_string(),
+    }
+}
+
+fn draft_for_payload<F: FactPayload>(owner: &Owner, payload_value: &Value) -> EventDraft {
     let now = time::OffsetDateTime::now_utc();
     EventDraft {
         source_id: SourceId::new(format!("test/fact-entity-edge/{}", Uuid::now_v7())),
@@ -182,8 +465,8 @@ fn draft_for(owner: &Owner, payload_value: &Value) -> EventDraft {
         principal: owner.principal.clone(),
         org_id: Some(owner.org_id),
         author_personality_instance_id: None,
-        schema_id: StatefulFactV1::schema_id(),
-        schema_version: SchemaVersion::new(StatefulFactV1::SCHEMA_VERSION),
+        schema_id: F::schema_id(),
+        schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
         payload: canonical_json_bytes(payload_value),
         rendered_text: None,
         observed_at: now,
@@ -198,9 +481,21 @@ async fn ingest_fact(
     owner: &Owner,
     payload: &StatefulFactV1,
 ) -> Result<proxima_core::EventIngestOutcome, StorageError> {
+    ingest_fact_payload(pg, engine, owner, payload).await
+}
+
+async fn ingest_fact_payload<F>(
+    pg: &PgStorage,
+    engine: &Engine,
+    owner: &Owner,
+    payload: &F,
+) -> Result<proxima_core::EventIngestOutcome, StorageError>
+where
+    F: FactPayload + Clone,
+{
     let payload_value =
         serde_json::to_value(payload).map_err(|err| StorageError::Internal(err.to_string()))?;
-    let draft = draft_for(owner, &payload_value);
+    let draft = draft_for_payload::<F>(owner, &payload_value);
     let authz = AuthzContext::single_owner(owner, AuthPath::System);
     let authorized = engine
         .authorize_event_ingest(&authz, Role::SourceIngest, draft)
@@ -232,8 +527,27 @@ async fn append_follow_head_edge(
     source_fact_entity_id: Uuid,
     target_fact_entity_id: Uuid,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
+    append_follow_head_edge_for_relation(
+        pg,
+        registry,
+        owner,
+        TEST_FOLLOW_RELATION,
+        source_fact_entity_id,
+        target_fact_entity_id,
+    )
+    .await
+}
+
+async fn append_follow_head_edge_for_relation(
+    pg: &PgStorage,
+    registry: &FlavorRegistryFrozen,
+    owner: &Owner,
+    relation_id: &str,
+    source_fact_entity_id: Uuid,
+    target_fact_entity_id: Uuid,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
     let relation = registry
-        .resolve_relation(TEST_FOLLOW_RELATION)
+        .resolve_relation(relation_id)
         .expect("follow relation");
     let edge_id = Uuid::now_v7();
     let mut tx = pg.pool().begin().await?;
@@ -267,8 +581,27 @@ async fn append_pinned_edge(
     source_memory_id: Uuid,
     target_memory_id: Uuid,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
+    append_pinned_edge_for_relation(
+        pg,
+        registry,
+        owner,
+        TEST_PIN_RELATION,
+        source_memory_id,
+        target_memory_id,
+    )
+    .await
+}
+
+async fn append_pinned_edge_for_relation(
+    pg: &PgStorage,
+    registry: &FlavorRegistryFrozen,
+    owner: &Owner,
+    relation_id: &str,
+    source_memory_id: Uuid,
+    target_memory_id: Uuid,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
     let relation = registry
-        .resolve_relation(TEST_PIN_RELATION)
+        .resolve_relation(relation_id)
         .expect("pin relation");
     let edge_id = Uuid::now_v7();
     let mut tx = pg.pool().begin().await?;
@@ -452,6 +785,246 @@ async fn follow_head_tombstoned_head_uses_existing_visibility()
             .expect("IncludeTombstoned shows follow-head edge");
         assert_eq!(edge.source, EntityRef::Memory(source.memory_id));
         assert_eq!(edge.target, EntityRef::Memory(target_tombstone.memory_id));
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn follow_head_required_tag_accepts_matching_fact_schema()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
+
+    let result = async {
+        pg.run_migrations().await?;
+        create_sidecar(&pg).await?;
+        let owner = owner_fixture();
+        let registry = registry_for_test();
+        let engine = engine_for(&pg, registry.clone());
+
+        let source = ingest_fact(&pg, &engine, &owner, &fact("source", "v1", "Present")).await?;
+        let target = ingest_fact(&pg, &engine, &owner, &fact("target", "v1", "Present")).await?;
+        let source_entity = memory_fact_entity_id(&pg, source.memory_id).await?;
+        let target_entity = memory_fact_entity_id(&pg, target.memory_id).await?;
+        let edge_id = append_follow_head_edge_for_relation(
+            &pg,
+            &registry,
+            &owner,
+            TEST_FOLLOW_ACTOR_RELATION,
+            source_entity,
+            target_entity,
+        )
+        .await?;
+
+        let relation: (String,) =
+            sqlx::query_as("SELECT relation FROM proxima_core.edges WHERE edge_id = $1")
+                .bind(edge_id)
+                .fetch_one(pg.pool())
+                .await?;
+        assert_eq!(relation.0, TEST_FOLLOW_ACTOR_RELATION);
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn required_tag_rejects_endpoint_schema_missing_tag() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
+
+    let result = async {
+        pg.run_migrations().await?;
+        create_sidecar(&pg).await?;
+        let owner = owner_fixture();
+        let registry = registry_for_test();
+        let engine = engine_for(&pg, registry.clone());
+
+        let source = ingest_fact(&pg, &engine, &owner, &fact("source", "v1", "Present")).await?;
+        let target =
+            ingest_fact_payload(&pg, &engine, &owner, &plain_fact("target", "v1", "Present"))
+                .await?;
+        let source_entity = memory_fact_entity_id(&pg, source.memory_id).await?;
+        let target_entity = memory_fact_entity_id(&pg, target.memory_id).await?;
+        let relation = registry
+            .resolve_relation(TEST_FOLLOW_ACTOR_RELATION)
+            .expect("tagged follow relation");
+
+        let mut tx = pg.pool().begin().await?;
+        let err = append_edge_in_tx(
+            &mut tx,
+            &EdgeDraft {
+                edge_id: Uuid::now_v7(),
+                relation,
+                source_kind: EntityKind::Fact,
+                source_memory_id: None,
+                source_goal_id: None,
+                source_fact_entity_id: Some(source_entity),
+                target_kind: EntityKind::Fact,
+                target_memory_id: None,
+                target_goal_id: None,
+                target_fact_entity_id: Some(target_entity),
+                authorship_kind: EdgeAuthorshipKind::ExternalAgent,
+                authorship_owner_memory_id: None,
+                owner: &owner,
+            },
+        )
+        .await
+        .expect_err("target schema lacks required actor tag");
+        let StorageError::ConstraintViolation(err_msg) = err else {
+            panic!("unexpected error: {err}");
+        };
+        assert!(
+            err_msg.contains("endpoint missing required capability tag")
+                && err_msg.contains("target")
+                && err_msg.contains("actor"),
+            "unexpected error: {err_msg}",
+        );
+        tx.rollback().await?;
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn pinned_memory_required_tag_accepts_matching_schema()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
+
+    let result = async {
+        pg.run_migrations().await?;
+        create_sidecar(&pg).await?;
+        let owner = owner_fixture();
+        let registry = registry_for_test();
+        let engine = engine_for(&pg, registry.clone());
+
+        let source = ingest_fact(&pg, &engine, &owner, &fact("source", "v1", "Present")).await?;
+        let target = ingest_fact(&pg, &engine, &owner, &fact("target", "v1", "Present")).await?;
+        let edge_id = append_pinned_edge_for_relation(
+            &pg,
+            &registry,
+            &owner,
+            TEST_PIN_ACTOR_RELATION,
+            source.memory_id.into_inner(),
+            target.memory_id.into_inner(),
+        )
+        .await?;
+
+        let raw: (Option<Uuid>, Option<Uuid>) = sqlx::query_as(
+            "SELECT source_memory_id, target_memory_id
+               FROM proxima_core.edges
+              WHERE edge_id = $1",
+        )
+        .bind(edge_id)
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(
+            raw,
+            (
+                Some(source.memory_id.into_inner()),
+                Some(target.memory_id.into_inner())
+            )
+        );
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn untagged_relation_edge_append_unchanged() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
+
+    let result = async {
+        pg.run_migrations().await?;
+        create_sidecar(&pg).await?;
+        let owner = owner_fixture();
+        let registry = registry_for_test();
+        let engine = engine_for(&pg, registry.clone());
+        let source =
+            ingest_fact_payload(&pg, &engine, &owner, &plain_fact("source", "v1", "Present"))
+                .await?;
+        let target =
+            ingest_fact_payload(&pg, &engine, &owner, &plain_fact("target", "v1", "Present"))
+                .await?;
+        let source_entity = memory_fact_entity_id(&pg, source.memory_id).await?;
+        let target_entity = memory_fact_entity_id(&pg, target.memory_id).await?;
+        let relation = registry
+            .resolve_relation(TEST_FOLLOW_RELATION)
+            .expect("untagged follow relation");
+        assert!(relation.descriptor.source_required_tags.is_empty());
+        assert!(relation.descriptor.target_required_tags.is_empty());
+
+        let edge_id =
+            append_follow_head_edge(&pg, &registry, &owner, source_entity, target_entity).await?;
+        let relation: (String,) =
+            sqlx::query_as("SELECT relation FROM proxima_core.edges WHERE edge_id = $1")
+                .bind(edge_id)
+                .fetch_one(pg.pool())
+                .await?;
+        assert_eq!(relation.0, TEST_FOLLOW_RELATION);
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn cross_flavor_relation_accepts_schema_tagged_by_other_flavor()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg_with_cross_flavor_sidecars().await;
+
+    let result = async {
+        pg.run_migrations().await?;
+        create_sidecar(&pg).await?;
+        let owner = owner_fixture();
+        let registry = cross_flavor_registry_for_test();
+        let engine = engine_for(&pg, registry.clone());
+
+        let source = ingest_fact_payload(
+            &pg,
+            &engine,
+            &owner,
+            &cross_actor_fact("source", "v1", "Present"),
+        )
+        .await?;
+        let target = ingest_fact_payload(
+            &pg,
+            &engine,
+            &owner,
+            &cross_actor_fact("target", "v1", "Present"),
+        )
+        .await?;
+        let source_entity = memory_fact_entity_id(&pg, source.memory_id).await?;
+        let target_entity = memory_fact_entity_id(&pg, target.memory_id).await?;
+        let edge_id = append_follow_head_edge_for_relation(
+            &pg,
+            &registry,
+            &owner,
+            CROSS_FLAVOR_ASSIGNED_TO_RELATION,
+            source_entity,
+            target_entity,
+        )
+        .await?;
+
+        let row: (String,) =
+            sqlx::query_as("SELECT relation FROM proxima_core.edges WHERE edge_id = $1")
+                .bind(edge_id)
+                .fetch_one(pg.pool())
+                .await?;
+        assert_eq!(row.0, CROSS_FLAVOR_ASSIGNED_TO_RELATION);
         Ok(())
     }
     .await;
