@@ -534,9 +534,8 @@ mod tests {
 
     #[test]
     fn tool_scope_intersect_only_narrows_never_widens() {
-        let palette = |ids: &[&str]| {
-            ToolScope::Palette(ids.iter().map(|id| (*id).to_string()).collect())
-        };
+        let palette =
+            |ids: &[&str]| ToolScope::Palette(ids.iter().map(|id| (*id).to_string()).collect());
         let mem = palette(&["core/get_memory", "core/search_memories"]);
 
         // `All` is the identity element in both positions.

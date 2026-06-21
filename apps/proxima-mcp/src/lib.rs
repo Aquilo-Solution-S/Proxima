@@ -33,10 +33,11 @@ fn memory_keep_set() -> Vec<&'static str> {
     use proxima_core::mcp::McpTool;
     use proxima_core::mcp::core_tools::{
         CitationOfEntityHeadTool, CitationOfFactTool, CleanupFactsTool, DeriveTool,
-        FactsCitingObjectTool, GetGraphTool, GetMemoryTool, GoalDecomposeTool, GoalMarkAchievedTool,
-        GoalModifyTool, GoalSetTool, GoalTransitionTool, LinkTool, ListEdgeTypesTool,
-        ListEventsTool, ListSchemasTool, ListSubstrateToolsTool, RecordUtteranceTool, RememberTool,
-        SearchMemoriesTool, SetFactRetentionTool, WalkMemoryLineageTool,
+        FactsCitingObjectTool, GetGraphTool, GetMemoryTool, GoalDecomposeTool,
+        GoalMarkAchievedTool, GoalModifyTool, GoalSetTool, GoalTransitionTool, LinkTool,
+        ListEdgeTypesTool, ListEventsTool, ListSchemasTool, ListSubstrateToolsTool,
+        RecordUtteranceTool, RememberTool, SearchMemoriesTool, SetFactRetentionTool,
+        WalkMemoryLineageTool,
     };
 
     #[allow(unused_mut)]
