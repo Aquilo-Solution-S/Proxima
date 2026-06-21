@@ -5,6 +5,7 @@ extern crate self as proxima_core;
 pub mod auth;
 pub mod authz;
 pub mod canonical_json;
+pub mod capability;
 pub mod change_event;
 pub mod citations;
 pub mod cursor;
@@ -32,6 +33,7 @@ pub mod verbs;
 pub use auth::*;
 pub use authz::*;
 pub use canonical_json::canonical_json_bytes;
+pub use capability::*;
 pub use change_event::*;
 pub use citations::*;
 pub use cursor::*;
@@ -85,7 +87,8 @@ macro_rules! proxima_schema_id {
 /// `fact_schemas`, `abstraction_schemas`, `perspective_schemas`,
 /// `goal_schemas`, `edge_schemas`, `cited_object_schemas`,
 /// `citation_mapping_schemas`, `opaque_cited_object_schemas`,
-/// `opaque_citation_mapping_schemas`, `relations`, `mcp_tools`.
+/// `opaque_citation_mapping_schemas`, `schema_capability_tags`,
+/// `relations`, `mcp_tools`.
 /// Expands to a
 /// `pub fn register(registry: &mut FlavorRegistry)` that adds each
 /// schema / relation.
@@ -174,6 +177,87 @@ macro_rules! proxima_flavor {
             }
         )*
     };
+    (@schema_capability_tags $registry:ident $name:literal [ $(($kind:ident, $ty:ty) => [ $($tag:expr),* $(,)? ]),* $(,)? ]) => {
+        $(
+            $crate::proxima_flavor!(@schema_capability_tag $registry $name $kind $ty [ $($tag),* ]);
+        )*
+    };
+    (@schema_capability_tag $registry:ident $name:literal Fact $ty:ty [ $($tag:expr),* $(,)? ]) => {
+        const _: () = ::std::assert!(
+            $crate::schema_id_has_prefix(
+                <$ty as $crate::FactPayload>::SCHEMA_ID,
+                ::std::concat!($name, "/"),
+            ),
+            ::std::concat!(
+                "FactPayload SCHEMA_ID for ",
+                ::std::stringify!($ty),
+                " must start with \"", $name, "/\"",
+            ),
+        );
+        $registry.add_schema_capability_tags(
+            $crate::verbs::schema::PayloadKind::Fact,
+            <$ty as $crate::FactPayload>::schema_id(),
+            $crate::SchemaVersion::new(<$ty as $crate::FactPayload>::SCHEMA_VERSION),
+            [ $($tag),* ],
+        );
+    };
+    (@schema_capability_tag $registry:ident $name:literal Abstraction $ty:ty [ $($tag:expr),* $(,)? ]) => {
+        const _: () = ::std::assert!(
+            $crate::schema_id_has_prefix(
+                <$ty as $crate::AbstractionPayload>::SCHEMA_ID,
+                ::std::concat!($name, "/"),
+            ),
+            ::std::concat!(
+                "AbstractionPayload SCHEMA_ID for ",
+                ::std::stringify!($ty),
+                " must start with \"", $name, "/\"",
+            ),
+        );
+        $registry.add_schema_capability_tags(
+            $crate::verbs::schema::PayloadKind::Abstraction,
+            <$ty as $crate::AbstractionPayload>::schema_id(),
+            $crate::SchemaVersion::new(<$ty as $crate::AbstractionPayload>::SCHEMA_VERSION),
+            [ $($tag),* ],
+        );
+    };
+    (@schema_capability_tag $registry:ident $name:literal Perspective $ty:ty [ $($tag:expr),* $(,)? ]) => {
+        const _: () = ::std::assert!(
+            $crate::schema_id_has_prefix(
+                <$ty as $crate::PerspectivePayload>::SCHEMA_ID,
+                ::std::concat!($name, "/"),
+            ),
+            ::std::concat!(
+                "PerspectivePayload SCHEMA_ID for ",
+                ::std::stringify!($ty),
+                " must start with \"", $name, "/\"",
+            ),
+        );
+        $registry.add_schema_capability_tags(
+            $crate::verbs::schema::PayloadKind::Perspective,
+            <$ty as $crate::PerspectivePayload>::schema_id(),
+            $crate::SchemaVersion::new(<$ty as $crate::PerspectivePayload>::SCHEMA_VERSION),
+            [ $($tag),* ],
+        );
+    };
+    (@schema_capability_tag $registry:ident $name:literal Goal $ty:ty [ $($tag:expr),* $(,)? ]) => {
+        const _: () = ::std::assert!(
+            $crate::schema_id_has_prefix(
+                <$ty as $crate::GoalPayload>::SCHEMA_ID,
+                ::std::concat!($name, "/"),
+            ),
+            ::std::concat!(
+                "GoalPayload SCHEMA_ID for ",
+                ::std::stringify!($ty),
+                " must start with \"", $name, "/\"",
+            ),
+        );
+        $registry.add_schema_capability_tags(
+            $crate::verbs::schema::PayloadKind::Goal,
+            <$ty as $crate::GoalPayload>::schema_id(),
+            $crate::SchemaVersion::new(<$ty as $crate::GoalPayload>::SCHEMA_VERSION),
+            [ $($tag),* ],
+        );
+    };
     (
         name = $name:literal
         $(, display_name = $display_name:literal)?
@@ -186,6 +270,7 @@ macro_rules! proxima_flavor {
         $(, citation_mapping_schemas = [ $($citemap:ty),* $(,)? ])?
         $(, opaque_cited_object_schemas = [ $($opaque_cited:expr),* $(,)? ])?
         $(, opaque_citation_mapping_schemas = [ $($opaque_citemap:expr),* $(,)? ])?
+        $(, schema_capability_tags = [ $(($cap_kind:ident, $cap_ty:ty) => [ $($cap_tag:expr),* $(,)? ]),* $(,)? ])?
         $(, relations = [ $($rel:expr),* $(,)? ])?
         $(, mcp_tools = [ $($tool:ty),* $(,)? ])?
         $(, dependency_satisfaction_rules = [ $($dependency_rule:ty),* $(,)? ])?
@@ -235,6 +320,9 @@ macro_rules! proxima_flavor {
                 CitedObject [ $($opaque_cited),* ]);)?
             $($crate::proxima_flavor!(@opaque_schemas registry $name
                 CitationMapping [ $($opaque_citemap),* ]);)?
+            $($crate::proxima_flavor!(@schema_capability_tags registry $name [
+                $(($cap_kind, $cap_ty) => [ $($cap_tag),* ]),*
+            ]);)?
             $($(
                 {
                     let descriptor: $crate::RelationDescriptor = $rel;

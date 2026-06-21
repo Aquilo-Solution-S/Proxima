@@ -61,6 +61,12 @@ axiom core_namespace : FlavorId
 axiom SchemaId : Type
 axiom schema_ref_id : SchemaRef → SchemaId
 
+/-- Opaque, domainless capability tags declared by schema version.
+    Descriptor masks may test set membership; no tag/schema accessor
+    reaches payload content. -/
+axiom CapabilityTag : Type
+axiom schema_capabilities : SchemaRef → Set CapabilityTag
+
 /-- CF-B carriers — every schema and relation id wears exactly one
     namespace. Identity carries namespace, so cross-flavor collision
     is impossible by construction (CF-C: two equal ids trivially
@@ -217,5 +223,23 @@ theorem edges_use_registered_relations :
     accessor's domain — SchemaId, not Memory — carries the per-schema
     rule structurally. -/
 axiom schema_special_category : SchemaId → Bool
+
+-- ============================================================
+-- Capability-tag endpoint admission (descriptor-mask refinement)
+-- ============================================================
+
+/-- Per-relation opaque capability tags required on each endpoint. -/
+axiom relation_source_required_tags : RelationId → Set CapabilityTag
+axiom relation_target_required_tags : RelationId → Set CapabilityTag
+
+/-- Descriptor-mask admission implies endpoint schema tag coverage.
+    Written extensionally; the minimal kernel `Set` has no `⊆`. -/
+axiom relation_endpoint_required_tags_valid :
+  ∀ r s t,
+    relation_endpoint_admitted r s t →
+      (∀ tag, tag ∈ relation_source_required_tags r →
+        tag ∈ schema_capabilities (NodeRef.schema s)) ∧
+      (∀ tag, tag ∈ relation_target_required_tags r →
+        tag ∈ schema_capabilities (NodeRef.schema t))
 
 end Proxima
