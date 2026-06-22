@@ -35,7 +35,7 @@ async fn persist_writes_fact_inline_io_citation_and_change_event() {
         .bind(outcome.fact_memory_id.into_inner())
         .fetch_one(pg.pool())
         .await?;
-        assert_eq!(fact.0, "core/search_memories");
+        assert_eq!(fact.0, "core_search_memories");
         assert_eq!(fact.1, "agent@example.com");
         assert!(fact.2);
         assert_eq!(fact.3, 42);
@@ -246,7 +246,7 @@ fn sample_input(
         owner: owner.clone(),
         actor_oid: "00000000-0000-0000-0000-000000000001".into(),
         actor_upn: "agent@example.com".into(),
-        tool_name: "core/search_memories".into(),
+        tool_name: "core_search_memories".into(),
         ok: true,
         error: None,
         latency_ms: 42,

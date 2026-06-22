@@ -153,10 +153,8 @@ mod tests {
         let owner = Principal::User(UserId::new(
             Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
         ));
-        let source =
-            Uuid::parse_str("00000000-0000-0000-0000-0000000000aa").expect("uuid literal");
-        let target =
-            Uuid::parse_str("00000000-0000-0000-0000-0000000000bb").expect("uuid literal");
+        let source = Uuid::parse_str("00000000-0000-0000-0000-0000000000aa").expect("uuid literal");
+        let target = Uuid::parse_str("00000000-0000-0000-0000-0000000000bb").expect("uuid literal");
         let id = calls_edge_id(&owner, source, target, 7);
         assert_eq!(
             id,

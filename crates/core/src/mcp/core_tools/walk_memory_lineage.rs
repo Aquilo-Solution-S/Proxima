@@ -85,7 +85,7 @@ fn default_limit() -> u32 {
 }
 
 impl McpTool for WalkMemoryLineageTool {
-    const NAME: &'static str = "core/walk_memory_lineage";
+    const NAME: &'static str = "core_walk_memory_lineage";
     const DESCRIPTION: &'static str =
         "Walk owner-scoped Provenance/Supersession memory lineage from a prefixed memory id.";
     type Args = WalkMemoryLineageArgs;

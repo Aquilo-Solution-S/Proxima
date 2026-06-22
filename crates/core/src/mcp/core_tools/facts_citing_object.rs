@@ -28,7 +28,7 @@ pub struct FactsCitingObjectOutput {
 }
 
 impl McpTool for FactsCitingObjectTool {
-    const NAME: &'static str = "core/facts_citing_object";
+    const NAME: &'static str = "core_facts_citing_object";
     const DESCRIPTION: &'static str =
         "Return owner-scoped Facts whose citation mapping points at cited_object_id.";
     type Args = FactsCitingObjectArgs;

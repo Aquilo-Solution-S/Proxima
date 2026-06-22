@@ -30,7 +30,7 @@ pub struct SetWakeEntriesOutput {
 }
 
 impl McpTool for SetWakeEntriesTool {
-    const NAME: &'static str = "core/set_wake_entries";
+    const NAME: &'static str = "core_set_wake_entries";
     const DESCRIPTION: &'static str = "Replace all wake entries for a personality. Carry-over entries \
          keep their identity by passing the W-handle from list_wake_entries \
          in wake_entry_id; omit wake_entry_id for new entries.";

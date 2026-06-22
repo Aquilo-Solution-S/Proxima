@@ -32,7 +32,7 @@ async fn core_read_tools_return_prefixed_ids_and_author() -> Result<(), Box<dyn 
 
     let fetched = server
         .call_tool(
-            "core/get_memory",
+            "core_get_memory",
             json!({"memory": format!("A:{derived}")}),
             author_ctx(),
             None,
@@ -53,7 +53,7 @@ async fn core_read_tools_return_prefixed_ids_and_author() -> Result<(), Box<dyn 
 
     let expanded = server
         .call_tool(
-            "core/get_memory",
+            "core_get_memory",
             json!({"memory": derived.to_string(), "expand_neighbors": true}),
             author_ctx(),
             None,
@@ -72,7 +72,7 @@ async fn core_read_tools_return_prefixed_ids_and_author() -> Result<(), Box<dyn 
 
     let lineage = server
         .call_tool(
-            "core/walk_memory_lineage",
+            "core_walk_memory_lineage",
             json!({"memory": format!("A:{derived}"), "direction": "ancestors", "depth": 1}),
             author_ctx(),
             None,

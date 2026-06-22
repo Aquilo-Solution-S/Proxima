@@ -27,8 +27,8 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo, SchemaTombstone};
 use proxima_core::{
-    AbstractionPayload, CORE_DERIVED_FROM_RELATION, FactPayload, FlavorRegistry, Owner,
-    Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+    AbstractionPayload, CORE_DERIVED_FROM_RELATION, FactPayload, FlavorRegistry, Owner, Principal,
+    SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
 use proxima_pg_testkit::drop_db;
 use sqlx::PgPool;

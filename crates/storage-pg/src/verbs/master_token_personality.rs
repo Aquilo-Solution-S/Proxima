@@ -58,15 +58,7 @@ pub async fn ensure_master_token_personality(
         .await
         .map_err(map_err)?;
 
-    let result = mint_under_lock(
-        &mut conn,
-        pool,
-        owner,
-        master_token_id,
-        kind,
-        principal_id,
-    )
-    .await;
+    let result = mint_under_lock(&mut conn, pool, owner, master_token_id, kind, principal_id).await;
 
     // Always release on the success path. On error or cancellation the
     // connection drop returns it to the pool with the lock still held;

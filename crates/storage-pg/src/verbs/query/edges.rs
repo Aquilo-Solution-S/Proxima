@@ -188,10 +188,8 @@ async fn hydrate_fact_entity_heads(
     pool: &PgPool,
     rows: &mut [EdgeRowDb],
 ) -> Result<(), StorageError> {
-    let mut groups = std::collections::HashMap::<
-        (OwnerPrincipalKind, uuid::Uuid),
-        Vec<uuid::Uuid>,
-    >::new();
+    let mut groups =
+        std::collections::HashMap::<(OwnerPrincipalKind, uuid::Uuid), Vec<uuid::Uuid>>::new();
     for row in rows.iter() {
         let key = (row.owner_principal_kind, row.owner_principal_id);
         if let Some(id) = row.source_fact_entity_id {

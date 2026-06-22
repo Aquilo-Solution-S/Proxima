@@ -5,9 +5,9 @@ use proxima_mcp_server::{McpAuthContext, McpToolHost, ToolInvocationError};
 use sqlx::PgPool;
 
 const FACT_RETENTION_SURFACE_TOOL_NAMES: [&str; 3] = [
-    "core/get_graph",
-    "core/set_fact_retention",
-    "core/cleanup_facts",
+    "core_get_graph",
+    "core_set_fact_retention",
+    "core_cleanup_facts",
 ];
 
 /// Facade handle for listing and dispatching the composed engine MCP tools
