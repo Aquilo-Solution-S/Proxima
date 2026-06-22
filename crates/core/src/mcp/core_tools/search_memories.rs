@@ -136,7 +136,7 @@ pub struct SearchMemoryOutput {
 }
 
 impl McpTool for SearchMemoriesTool {
-    const NAME: &'static str = "core/search_memories";
+    const NAME: &'static str = "core_search_memories";
     const DESCRIPTION: &'static str = "Search owner-scoped memories by lexical, semantic, or hybrid ranking. Optional reader_personality applies read-scope filtering for Abstractions/Perspectives; omitted reader uses no-reader owner-visible semantics.";
     type Args = SearchMemoriesArgs;
     type Output = SearchMemoriesOutput;

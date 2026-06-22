@@ -26,7 +26,7 @@ pub struct ListReadScopeOutput {
 }
 
 impl McpTool for ListReadScopeTool {
-    const NAME: &'static str = "core/list_read_scope";
+    const NAME: &'static str = "core_list_read_scope";
     const DESCRIPTION: &'static str = "List explicit cross-personality read grants for one reader \
          personality. The identity diagonal is always allowed and is reported separately.";
     type Args = ListReadScopeArgs;

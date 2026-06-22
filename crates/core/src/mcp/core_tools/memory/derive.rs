@@ -76,7 +76,7 @@ pub struct DeriveOutput {
 pub struct DeriveTool;
 
 impl McpTool for DeriveTool {
-    const NAME: &'static str = "core/derive";
+    const NAME: &'static str = "core_derive";
     const DESCRIPTION: &'static str =
         "Author an Abstraction or Perspective derived from existing memory handles.";
     type Args = DeriveArgs;

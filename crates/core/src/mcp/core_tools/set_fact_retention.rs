@@ -20,7 +20,7 @@ pub struct SetFactRetentionOutput {
 }
 
 impl McpTool for SetFactRetentionTool {
-    const NAME: &'static str = "core/set_fact_retention";
+    const NAME: &'static str = "core_set_fact_retention";
     const DESCRIPTION: &'static str =
         "Set or clear the owner Fact-retention duration. Omit/null retention_seconds to clear.";
     type Args = SetFactRetentionArgs;

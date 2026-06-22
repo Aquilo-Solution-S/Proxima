@@ -68,7 +68,7 @@ async fn master_token_call_mints_per_token_self_perspective()
     // ensure step.
     server
         .call_tool(
-            "core/list_personalities",
+            "core_list_personalities",
             serde_json::json!({}),
             author,
             Some(auth),

@@ -1,8 +1,6 @@
 //! Smoke tests for core type serialization.
 
-use proxima_core::{
-    GoalId, GroupId, MemoryId, Owner, SchemaId, SchemaVersion, UserId,
-};
+use proxima_core::{GoalId, GroupId, MemoryId, Owner, SchemaId, SchemaVersion, UserId};
 use uuid::Uuid;
 
 #[test]

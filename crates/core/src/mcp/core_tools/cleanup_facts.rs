@@ -22,7 +22,7 @@ pub struct CleanupFactsOutput {
 }
 
 impl McpTool for CleanupFactsTool {
-    const NAME: &'static str = "core/cleanup_facts";
+    const NAME: &'static str = "core_cleanup_facts";
     const DESCRIPTION: &'static str = "Hard-erase due owner Facts, tombstone transitive derived memory dependents, and garbage-collect orphaned citation backing rows while surfacing orphaned S3 blob references.";
     type Args = CleanupFactsArgs;
     type Output = CleanupFactsOutput;

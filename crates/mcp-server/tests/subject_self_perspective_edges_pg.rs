@@ -38,7 +38,7 @@ async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
 
     let remembered = server
         .call_tool(
-            "core/remember",
+            "core_remember",
             json!({
                 "title": "Subject self source",
                 "body": "A source Fact for subject self-perspective attribution.",
@@ -53,7 +53,7 @@ async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
 
     let derived = server
         .call_tool(
-            "core/derive",
+            "core_derive",
             json!({
                 "kind": "Abstraction",
                 "title": "Subject self derivation",
@@ -75,7 +75,7 @@ async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
 
     let linked = server
         .call_tool(
-            "core/link",
+            "core_link",
             json!({
                 "source": derived_handle,
                 "target": source_handle,
@@ -89,9 +89,7 @@ async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
     let link_edge_handle = linked["edge_handle"].as_str().expect("link edge handle");
     let link_edge_id = parse_prefixed_uuid(link_edge_handle, PrefixedUuidClass::Edge)?;
 
-    let identity = pg
-        .ensure_subject_personality(&owner, &owner)
-        .await?;
+    let identity = pg.ensure_subject_personality(&owner, &owner).await?;
     let subject_self = identity.self_perspective_memory_id.into_inner();
     let subject_instance = identity.instance_id.into_inner();
 

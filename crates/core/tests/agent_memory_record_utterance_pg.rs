@@ -30,7 +30,7 @@ async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn
     let descriptor = frozen
         .list_mcp_tools()
         .iter()
-        .find(|tool| tool.name == "core/record_utterance")
+        .find(|tool| tool.name == "core_record_utterance")
         .expect("registered tool");
     let output = (descriptor.call)(
         McpToolCtx {

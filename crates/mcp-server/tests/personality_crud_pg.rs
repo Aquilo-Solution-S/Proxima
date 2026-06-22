@@ -85,7 +85,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         &url,
         &session,
         &bearer,
-        "core/list_substrate_tools",
+        "core_list_substrate_tools",
         json!({}),
     )
     .await?;
@@ -95,11 +95,11 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         .map(|t| t["tool_id"].as_str().unwrap().to_string())
         .collect();
     assert!(
-        names.contains("core/list_personalities"),
+        names.contains("core_list_personalities"),
         "MCP CRUD tool present in discovery output"
     );
     assert!(
-        names.contains("core/instantiate_personality"),
+        names.contains("core_instantiate_personality"),
         "MCP CRUD tool present in discovery output"
     );
 
@@ -109,7 +109,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         &url,
         &session,
         &bearer,
-        "core/instantiate_personality",
+        "core_instantiate_personality",
         json!({ "display_name": "TestSubject", "purpose": "smoke test" }),
     )
     .await?;
@@ -124,7 +124,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         &url,
         &session,
         &bearer,
-        "core/list_personalities",
+        "core_list_personalities",
         json!({}),
     )
     .await?;
@@ -142,7 +142,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         &url,
         &session,
         &bearer,
-        "core/tombstone_personality",
+        "core_tombstone_personality",
         json!({ "personality": p_handle }),
     )
     .await?;
@@ -156,7 +156,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         &url,
         &session,
         &bearer,
-        "core/tombstone_personality",
+        "core_tombstone_personality",
         json!({ "personality": p_handle }),
     )
     .await?;

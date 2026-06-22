@@ -118,28 +118,15 @@ async fn cleanup_due_facts_in_tx(
     }
 
     let due_memory_ids = due.iter().map(|row| row.memory_id).collect::<Vec<_>>();
-    let fact_entity_ids_to_delete = fact_entity_ids_reaching_zero(
-        tx,
-        owner_kind,
-        owner_principal_id,
-        &due_memory_ids,
-    )
-    .await?;
-    let follow_head_edge_ids = repoint_or_delete_fact_entities(
-        tx,
-        owner_kind,
-        owner_principal_id,
-        &due_memory_ids,
-    )
-    .await?;
+    let fact_entity_ids_to_delete =
+        fact_entity_ids_reaching_zero(tx, owner_kind, owner_principal_id, &due_memory_ids).await?;
+    let follow_head_edge_ids =
+        repoint_or_delete_fact_entities(tx, owner_kind, owner_principal_id, &due_memory_ids)
+            .await?;
     let candidate_cited_object_ids = candidate_cited_object_ids(tx, &due_memory_ids).await?;
-    let tombstoned = tombstone_transitive_derivatives(
-        tx,
-        owner_kind,
-        owner_principal_id,
-        &due_memory_ids,
-    )
-    .await?;
+    let tombstoned =
+        tombstone_transitive_derivatives(tx, owner_kind, owner_principal_id, &due_memory_ids)
+            .await?;
     let tombstoned_memory_ids = tombstoned
         .iter()
         .map(|row| row.memory_id)
@@ -173,13 +160,8 @@ async fn cleanup_due_facts_in_tx(
         .await?;
     }
 
-    let edge_ids = edge_ids_referencing_facts(
-        tx,
-        owner_kind,
-        owner_principal_id,
-        &due_memory_ids,
-    )
-    .await?;
+    let edge_ids =
+        edge_ids_referencing_facts(tx, owner_kind, owner_principal_id, &due_memory_ids).await?;
     let edge_ids = merged_edge_ids(edge_ids, follow_head_edge_ids);
     execute_hard_delete(
         tx,
@@ -237,27 +219,10 @@ pub(crate) async fn repoint_or_delete_fact_entities(
         return Ok(Vec::new());
     }
 
-    repoint_fact_entity_heads(
-        tx,
-        owner_kind,
-        owner_principal_id,
-        due_memory_ids,
-    )
-    .await?;
-    let fact_entity_ids = fact_entity_ids_reaching_zero(
-        tx,
-        owner_kind,
-        owner_principal_id,
-        due_memory_ids,
-    )
-    .await?;
-    follow_head_edge_ids_for_entities(
-        tx,
-        owner_kind,
-        owner_principal_id,
-        &fact_entity_ids,
-    )
-    .await
+    repoint_fact_entity_heads(tx, owner_kind, owner_principal_id, due_memory_ids).await?;
+    let fact_entity_ids =
+        fact_entity_ids_reaching_zero(tx, owner_kind, owner_principal_id, due_memory_ids).await?;
+    follow_head_edge_ids_for_entities(tx, owner_kind, owner_principal_id, &fact_entity_ids).await
 }
 
 async fn repoint_fact_entity_heads(

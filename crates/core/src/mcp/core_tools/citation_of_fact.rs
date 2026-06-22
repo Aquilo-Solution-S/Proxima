@@ -48,7 +48,7 @@ pub struct FactCitationOutput {
 }
 
 impl McpTool for CitationOfFactTool {
-    const NAME: &'static str = "core/citation_of_fact";
+    const NAME: &'static str = "core_citation_of_fact";
     const DESCRIPTION: &'static str =
         "Return the owner-scoped citation mapping and cited object for one Fact, or none.";
     type Args = CitationOfFactArgs;
@@ -81,7 +81,7 @@ impl McpTool for CitationOfFactTool {
 }
 
 impl McpTool for CitationOfEntityHeadTool {
-    const NAME: &'static str = "core/citation_of_entity_head";
+    const NAME: &'static str = "core_citation_of_entity_head";
     const DESCRIPTION: &'static str = "Return the owner-scoped citation mapping and cited object for a stateful Fact entity's current head, or none.";
     type Args = CitationOfEntityHeadArgs;
     type Output = CitationOfEntityHeadOutput;

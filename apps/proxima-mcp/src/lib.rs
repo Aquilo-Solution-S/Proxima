@@ -539,10 +539,10 @@ mod tests {
     #[test]
     fn tool_profile_resolver_builds_deployment_scope() {
         let registered_ids = [
-            "core/get_memory",
-            "core/search_memories",
-            "core/instantiate_personality",
-            "core/add_wake_entry",
+            "core_get_memory",
+            "core_search_memories",
+            "core_instantiate_personality",
+            "core_add_wake_entry",
             "proxima-code/register_repo",
             "proxima-code/emit_execution_request",
         ];
@@ -552,26 +552,26 @@ mod tests {
 
         let memory = resolve_tool_scope(Some("memory"), None, None, &registered_ids)
             .expect("memory profile");
-        assert!(memory.allows("core/get_memory"));
-        assert!(memory.allows("core/search_memories"));
+        assert!(memory.allows("core_get_memory"));
+        assert!(memory.allows("core_search_memories"));
         // Code-flavor tools join the memory keep set only when the `code`
         // flavor is compiled in (the keep set references their `NAME`
         // consts under the same cfg).
         #[cfg(feature = "code")]
         assert!(memory.allows("proxima-code/register_repo"));
-        assert!(!memory.allows("core/instantiate_personality"));
-        assert!(!memory.allows("core/add_wake_entry"));
+        assert!(!memory.allows("core_instantiate_personality"));
+        assert!(!memory.allows("core_add_wake_entry"));
         assert!(!memory.allows("proxima-code/emit_execution_request"));
 
         let overridden = resolve_tool_scope(
             Some("memory"),
-            Some("core/add_wake_entry"),
-            Some("core/get_memory"),
+            Some("core_add_wake_entry"),
+            Some("core_get_memory"),
             &registered_ids,
         )
         .expect("overridden memory profile");
-        assert!(!overridden.allows("core/get_memory"));
-        assert!(overridden.allows("core/add_wake_entry"));
+        assert!(!overridden.allows("core_get_memory"));
+        assert!(overridden.allows("core_add_wake_entry"));
     }
 
     #[test]

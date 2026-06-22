@@ -198,7 +198,7 @@ fn sample_mcp_input(owner: &Owner) -> McpCallLogInput {
         owner: owner.clone(),
         actor_oid: "oid-1".into(),
         actor_upn: "agent@example.com".into(),
-        tool_name: "core/search_memories".into(),
+        tool_name: "core_search_memories".into(),
         ok: true,
         error: None,
         latency_ms: 42,

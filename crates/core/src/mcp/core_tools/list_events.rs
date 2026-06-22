@@ -64,7 +64,7 @@ pub struct EventItem {
 }
 
 impl McpTool for ListEventsTool {
-    const NAME: &'static str = "core/list_events";
+    const NAME: &'static str = "core_list_events";
     const DESCRIPTION: &'static str = "Forward, owner-scoped poll of the change-event pull log. Returns events with seq > `since`, ascending, so a harness wake loop can advance a durable cursor. Pass the prior `next_since` back as `since`; omit `since` to read from the start. `has_more` is true when more events may be waiting.";
     type Args = ListEventsArgs;
     type Output = ListEventsOutput;

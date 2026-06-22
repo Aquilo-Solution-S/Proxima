@@ -25,7 +25,7 @@ pub struct ListEdgeTypesOutput {
 }
 
 impl McpTool for ListEdgeTypesTool {
-    const NAME: &'static str = "core/list_edge_types";
+    const NAME: &'static str = "core_list_edge_types";
     const DESCRIPTION: &'static str =
         "List registered edge types. OnEdge triggers reference these.";
     type Args = ListEdgeTypesArgs;

@@ -37,7 +37,7 @@ pub struct ListWakeEntriesOutput {
 }
 
 impl McpTool for ListWakeEntriesTool {
-    const NAME: &'static str = "core/list_wake_entries";
+    const NAME: &'static str = "core_list_wake_entries";
     const DESCRIPTION: &'static str = "List wake entries on one personality. Args: \
          `{\"personality\": \"I1\"}`. Each item carries a `wake_entry` field (W-handle) — pass that \
          value as the `wake_entry` argument to update_wake_entry, remove_wake_entry, or \
@@ -89,10 +89,7 @@ mod tests {
     use crate::authz::{AuthPath, AuthzContext};
     use crate::mcp::HandleTable;
     use crate::mcp::OutputMode;
-    use crate::{
-        Engine, FlavorRegistry, McpAuthorContext, McpToolExtensions, Principal,
-        UserId,
-    };
+    use crate::{Engine, FlavorRegistry, McpAuthorContext, McpToolExtensions, Principal, UserId};
     use std::sync::Arc;
 
     #[tokio::test]

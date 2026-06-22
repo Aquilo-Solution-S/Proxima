@@ -40,29 +40,29 @@ fn core_tool_annotations(canonical_name: &str) -> Option<ToolAnnotations> {
     let base = ToolAnnotations::new().open_world(false);
     let annotations = match canonical_name {
         // Reads — never modify the substrate.
-        "core/citation_of_fact"
-        | "core/citation_of_entity_head"
-        | "core/facts_citing_object"
-        | "core/get_graph"
-        | "core/get_memory"
-        | "core/get_personality"
-        | "core/list_edge_types"
-        | "core/list_events"
-        | "core/list_personalities"
-        | "core/list_read_scope"
-        | "core/list_schemas"
-        | "core/list_substrate_tools"
-        | "core/list_wake_entries"
-        | "core/search_memories"
-        | "core/walk_memory_lineage" => base.read_only(true),
+        "core_citation_of_fact"
+        | "core_citation_of_entity_head"
+        | "core_facts_citing_object"
+        | "core_get_graph"
+        | "core_get_memory"
+        | "core_get_personality"
+        | "core_list_edge_types"
+        | "core_list_events"
+        | "core_list_personalities"
+        | "core_list_read_scope"
+        | "core_list_schemas"
+        | "core_list_substrate_tools"
+        | "core_list_wake_entries"
+        | "core_search_memories"
+        | "core_walk_memory_lineage" => base.read_only(true),
 
         // Additive writes that converge on replay: a required idempotency key
         // (goal_decompose), a set-to-value retention, or an id-keyed wake-entry
         // update — re-running with the same args lands the same state.
-        "core/derive"
-        | "core/goal_decompose"
-        | "core/set_fact_retention"
-        | "core/update_wake_entry" => base.read_only(false).destructive(false).idempotent(true),
+        "core_derive"
+        | "core_goal_decompose"
+        | "core_set_fact_retention"
+        | "core_update_wake_entry" => base.read_only(false).destructive(false).idempotent(true),
 
         // Additive writes that are NOT replay-safe. remember / record_utterance
         // and the optional-key goal writes allocate a fresh id when the
@@ -71,22 +71,22 @@ fn core_tool_annotations(canonical_name: &str) -> Option<ToolAnnotations> {
         // instantiate_personality mint a fresh entity each call; set_read_scope
         // converges its grant rows but emits a before/after audit Fact whose key
         // differs on the post-change replay.
-        "core/remember"
-        | "core/record_utterance"
-        | "core/goal_set"
-        | "core/goal_transition"
-        | "core/goal_mark_achieved"
-        | "core/goal_modify"
-        | "core/set_read_scope"
-        | "core/link"
-        | "core/add_wake_entry"
-        | "core/instantiate_personality" => {
+        "core_remember"
+        | "core_record_utterance"
+        | "core_goal_set"
+        | "core_goal_transition"
+        | "core_goal_mark_achieved"
+        | "core_goal_modify"
+        | "core_set_read_scope"
+        | "core_link"
+        | "core_add_wake_entry"
+        | "core_instantiate_personality" => {
             base.read_only(false).destructive(false).idempotent(false)
         }
 
         // Destructive writes that converge on replay: erase due facts /
         // remove one entry — a second same-args call is a no-op.
-        "core/cleanup_facts" | "core/remove_wake_entry" => {
+        "core_cleanup_facts" | "core_remove_wake_entry" => {
             base.read_only(false).destructive(true).idempotent(true)
         }
 
@@ -94,7 +94,7 @@ fn core_tool_annotations(canonical_name: &str) -> Option<ToolAnnotations> {
         // allocates fresh ids for keyless entries (replace churns ids);
         // tombstone_personality emits a before-snapshot audit Fact that differs
         // once the personality is already tombstoned.
-        "core/set_wake_entries" | "core/tombstone_personality" => {
+        "core_set_wake_entries" | "core_tombstone_personality" => {
             base.read_only(false).destructive(true).idempotent(false)
         }
 
@@ -448,37 +448,37 @@ mod tests {
     #[test]
     fn core_tool_annotations_encode_expected_semantics() {
         // Closed substrate: open_world is always false.
-        let read = core_tool_annotations("core/search_memories").expect("read tool");
+        let read = core_tool_annotations("core_search_memories").expect("read tool");
         assert_eq!(read.read_only_hint, Some(true));
         assert_eq!(read.open_world_hint, Some(false));
 
         // Convergent additive write (required idempotency key).
-        let derive = core_tool_annotations("core/derive").expect("write tool");
+        let derive = core_tool_annotations("core_derive").expect("write tool");
         assert_eq!(derive.read_only_hint, Some(false));
         assert_eq!(derive.destructive_hint, Some(false));
         assert_eq!(derive.idempotent_hint, Some(true));
 
         // Additive write with an OPTIONAL idempotency key: identical args
         // without a key create a new Fact, so it is not replay-safe.
-        let remember = core_tool_annotations("core/remember").expect("non-idempotent write");
+        let remember = core_tool_annotations("core_remember").expect("non-idempotent write");
         assert_eq!(remember.read_only_hint, Some(false));
         assert_eq!(remember.destructive_hint, Some(false));
         assert_eq!(remember.idempotent_hint, Some(false));
 
         // Destructive write that converges (a second call is a no-op).
-        let cleanup = core_tool_annotations("core/cleanup_facts").expect("destructive tool");
+        let cleanup = core_tool_annotations("core_cleanup_facts").expect("destructive tool");
         assert_eq!(cleanup.read_only_hint, Some(false));
         assert_eq!(cleanup.destructive_hint, Some(true));
         assert_eq!(cleanup.idempotent_hint, Some(true));
 
         // Destructive write that is NOT replay-safe (audit-Fact divergence).
         let tombstone =
-            core_tool_annotations("core/tombstone_personality").expect("destructive tool");
+            core_tool_annotations("core_tombstone_personality").expect("destructive tool");
         assert_eq!(tombstone.destructive_hint, Some(true));
         assert_eq!(tombstone.idempotent_hint, Some(false));
 
         // Create-new-each-call write is not replay-safe.
-        let link = core_tool_annotations("core/link").expect("create tool");
+        let link = core_tool_annotations("core_link").expect("create tool");
         assert_eq!(link.idempotent_hint, Some(false));
 
         // Flavor-shipped / unknown tools get no substrate hints here.

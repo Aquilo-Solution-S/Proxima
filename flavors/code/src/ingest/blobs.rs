@@ -39,9 +39,7 @@ pub async fn close_local_git_batch(
     owner: &Owner,
     source_batch_id: SourceBatchId,
 ) -> Result<(), IngestError> {
-    match proxima_storage_pg::verbs::close_batch::close_batch(pool, owner, source_batch_id)
-    .await
-    {
+    match proxima_storage_pg::verbs::close_batch::close_batch(pool, owner, source_batch_id).await {
         Ok(_) | Err(proxima_core::StorageError::NotFound) => Ok(()),
         Err(e) => Err(e.into()),
     }
