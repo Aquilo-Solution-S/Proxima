@@ -367,14 +367,18 @@ impl FlavorRegistry {
     ///
     /// # Panics
     ///
-    /// Panics if `T::NAME` does not start with `"<expected_prefix>/"`.
+    /// Panics if `T::NAME` starts with neither `"<expected_prefix>/"` nor
+    /// `"<expected_prefix>_"`. (Tool wire names may use `_` to stay valid under
+    /// Anthropic's MCP tool-name rule; schema ids still require `/`.)
     pub fn add_mcp_tool<T: McpTool>(&mut self, expected_prefix: &str) {
-        let prefix = format!("{expected_prefix}/");
+        let slash = format!("{expected_prefix}/");
+        let under = format!("{expected_prefix}_");
         assert!(
-            T::NAME.starts_with(&prefix),
-            "McpTool::NAME {:?} must start with prefix {:?}",
+            T::NAME.starts_with(&slash) || T::NAME.starts_with(&under),
+            "McpTool::NAME {:?} must start with prefix {:?} or {:?}",
             T::NAME,
-            prefix,
+            slash,
+            under,
         );
         let args_schema = mcp_tool_schema::<T::Args>();
         let call: McpCallFn = |ctx, args| {

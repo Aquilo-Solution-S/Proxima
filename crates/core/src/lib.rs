@@ -336,14 +336,21 @@ macro_rules! proxima_flavor {
             )*)?
             $($(
                 {
+                    // Tool wire names may use the "<flavor>/" namespace separator
+                    // OR "<flavor>_": the latter keeps the MCP tool name valid
+                    // under Anthropic's ^[a-zA-Z0-9_-]{1,64}$ rule. Schema ids
+                    // (asserted elsewhere) still require "<flavor>/".
                     const _: () = ::std::assert!(
                         $crate::schema_id_has_prefix(
                             <$tool as $crate::McpTool>::NAME,
                             ::std::concat!($name, "/"),
+                        ) || $crate::schema_id_has_prefix(
+                            <$tool as $crate::McpTool>::NAME,
+                            ::std::concat!($name, "_"),
                         ),
                         ::std::concat!(
                             "McpTool::NAME for ", ::std::stringify!($tool),
-                            " must start with \"", $name, "/\"",
+                            " must start with \"", $name, "/\" or \"", $name, "_\"",
                         ),
                     );
                     registry.add_mcp_tool::<$tool>($name);
