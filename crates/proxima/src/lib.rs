@@ -85,7 +85,7 @@ pub fn company_owner(id: uuid::Uuid) -> Owner {
 ///
 /// `authz` is the authenticated context of the served MCP call (the
 /// host already holds it from dispatch); the engine authorizes the log
-/// Owner against it rather than trusting a caller-supplied org.
+/// Owner against it rather than trusting a caller-supplied Owner.
 ///
 /// # Errors
 ///

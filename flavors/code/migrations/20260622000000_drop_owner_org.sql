@@ -4,9 +4,39 @@
 -- DDL-drop strategy as the core 0002 migration — single-org brain, identity
 -- ids/keys retained, only the org column and its composite keys removed.
 --
--- Order: drop the runs→repos composite FK → drop/recreate both
--- repo-ingestion indexes principal-only → shrink repos_pkey + repos_unique_path
--- to principal-only → drop both owner_org_id columns.
+-- Order: single-org guard → drop the runs→repos composite FK → drop/recreate
+-- both repo-ingestion indexes principal-only → shrink repos_pkey +
+-- repos_unique_path to principal-only → drop both owner_org_id columns.
+
+-- 0. Single-org precondition guard — fail-closed BEFORE any DDL (mirrors the
+--    core 0002 Step 0, scoped to proxima_code). Self-maintaining over every
+--    owner_org_id column in the flavor schema; aborts on a multi-org brain.
+DO $$
+DECLARE
+    union_sql     text;
+    distinct_orgs bigint;
+BEGIN
+    SELECT string_agg(
+               format('SELECT DISTINCT owner_org_id FROM %I.%I', table_schema, table_name),
+               ' UNION ')
+      INTO union_sql
+      FROM information_schema.columns
+     WHERE table_schema = 'proxima_code'
+       AND column_name  = 'owner_org_id';
+
+    IF union_sql IS NULL THEN
+        RETURN;  -- no owner_org_id columns: fresh or already-collapsed schema.
+    END IF;
+
+    EXECUTE format('SELECT count(*) FROM (%s) distinct_orgs', union_sql)
+      INTO distinct_orgs;
+
+    IF distinct_orgs > 1 THEN
+        RAISE EXCEPTION
+            'S0 single-org precondition violated: % distinct owner_org_id values in proxima_code; DDL-drop aborted (a multi-org brain needs a re-key migration, not a column drop).',
+            distinct_orgs;
+    END IF;
+END $$;
 
 -- 1. Drop the composite FK (references the repos composite key).
 ALTER TABLE proxima_code.repo_ingestion_runs

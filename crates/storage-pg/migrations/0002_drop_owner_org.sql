@@ -7,13 +7,49 @@
 -- S3 object keys are opaque/stored and are NOT recomputed. Only future writes
 -- go org-free.
 --
--- Order: composite FKs → composite PK/UNIQUE constraints → owner indexes →
--- recreate shrunk principal-only keys → rewrite edge-invariant trigger →
--- drop the owner_org_id column from all 18 core tables.
+-- Order: single-org guard → composite FKs → composite PK/UNIQUE constraints →
+-- owner indexes → recreate shrunk principal-only keys → rewrite edge-invariant
+-- trigger → drop the owner_org_id column from all 18 core tables.
 --
 -- All objects are schema-qualified; no `SET search_path` (it would persist on
 -- the pooled migration connection and leak `proxima_core` into the search_path
 -- of later queries, breaking `to_regclass(...)::text` schema-qualification).
+
+-- 0. Single-org precondition guard — fail-closed BEFORE any DDL.
+--    DDL-drop is collision-safe only if owner_org_id is constant across every
+--    org-bearing row (uniqueness of (K, const_org) ⟹ uniqueness of K). Recompute
+--    that distinct-org count from the live catalog — self-maintaining over every
+--    owner_org_id column in proxima_core, so it can never miss the non-keyed
+--    tables (events/memories/edges) whose opaque PKs would otherwise drop the
+--    column with no uniqueness failure. Abort the whole migration on a multi-org
+--    brain (it needs a re-key, not a column drop). Empty / already-collapsed
+--    schemas pass (0 or 1 distinct value).
+DO $$
+DECLARE
+    union_sql     text;
+    distinct_orgs bigint;
+BEGIN
+    SELECT string_agg(
+               format('SELECT DISTINCT owner_org_id FROM %I.%I', table_schema, table_name),
+               ' UNION ')
+      INTO union_sql
+      FROM information_schema.columns
+     WHERE table_schema = 'proxima_core'
+       AND column_name  = 'owner_org_id';
+
+    IF union_sql IS NULL THEN
+        RETURN;  -- no owner_org_id columns: fresh or already-collapsed schema.
+    END IF;
+
+    EXECUTE format('SELECT count(*) FROM (%s) distinct_orgs', union_sql)
+      INTO distinct_orgs;
+
+    IF distinct_orgs > 1 THEN
+        RAISE EXCEPTION
+            'S0 single-org precondition violated: % distinct owner_org_id values in proxima_core; DDL-drop aborted (a multi-org brain needs a re-key migration, not a column drop).',
+            distinct_orgs;
+    END IF;
+END $$;
 
 -- 1. Composite FKs first (they reference the personality composite key).
 ALTER TABLE proxima_core.personality_wake_entries

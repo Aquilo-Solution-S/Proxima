@@ -54,8 +54,10 @@ axiom group_members : GroupId → Set UserId
 -- ============================================================
 
 /-- Owner IS the principal (doc 01 §Owner, renegotiated 2026-06-11 —
-    decision `2026-06-11-org-out-of-kernel.md`). The engine's
-    `owner_org_id` billing annotation has no kernel face. -/
+    decision `2026-06-11-org-out-of-kernel.md`). The former engine
+    `owner_org_id` billing annotation was dropped from Core storage
+    entirely in S0 (Track B, 2026-06); tenancy is now a flavor/app
+    concern, with no kernel face. -/
 def Owner : Type := Principal
 
 def owner_principal (o : Owner) : Principal := o
