@@ -8,6 +8,7 @@ mod error;
 mod handler;
 pub mod oauth;
 pub mod security;
+pub mod selfdoc;
 mod server;
 mod transport;
 
