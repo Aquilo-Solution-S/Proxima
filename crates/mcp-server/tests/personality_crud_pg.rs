@@ -8,7 +8,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use common::{create_db, db_url, drop_db, initialize, initialized, post_rpc};
-use proxima_core::{Engine, FlavorRegistry, OrgId, Owner, Principal, UserId};
+use proxima_core::{Engine, FlavorRegistry, Principal, UserId};
 use proxima_mcp_server::{McpEdgeAuth, McpToolHost, default_allowlist, serve_streamable_http};
 use proxima_storage_pg::PgStorage;
 use serde_json::{Value, json};
@@ -47,10 +47,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
 
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
-    let owner = Owner {
-        principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
-        org_id: OrgId::new(uuid::Uuid::now_v7()),
-    };
+    let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
     // The personality CRUD core tools dispatch through an attached engine,
     // so wire one over the same PG storage (Engine::compose embedding shape).
     let pg = PgStorage::connect(&database_url).await?;

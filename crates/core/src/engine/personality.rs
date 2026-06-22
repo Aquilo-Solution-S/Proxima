@@ -34,10 +34,9 @@ impl Engine {
     pub async fn tombstone_personality(
         &self,
         authz: &AuthzContext,
-        mut req: TombstonePersonalityRequest,
+        req: TombstonePersonalityRequest,
     ) -> Result<TombstonePersonalityResponse, ProtocolError> {
         super::authorize(authz, &req.principal, Role::Admin)?;
-        req.stamp_owner(authz.scoped_owner(req.principal.clone()));
         self.storage
             .tombstone_personality(&req)
             .await
@@ -57,10 +56,9 @@ impl Engine {
     pub async fn instantiate_personality(
         &self,
         authz: &AuthzContext,
-        mut req: InstantiatePersonalityRequest,
+        req: InstantiatePersonalityRequest,
     ) -> Result<InstantiatePersonalityResponse, ProtocolError> {
         super::authorize(authz, &req.principal, Role::Admin)?;
-        req.stamp_owner(authz.scoped_owner(req.principal.clone()));
         if req.display_name.trim().is_empty() {
             return Err(ProtocolError::invalid_argument(
                 "display_name",

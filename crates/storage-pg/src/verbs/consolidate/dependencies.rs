@@ -10,7 +10,7 @@ pub async fn list_memory_dependencies(
     owner: &Owner,
     source_memory_id: MemoryId,
 ) -> Result<Vec<MemoryDependency>, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let rows = sqlx::query(
         "SELECT e.target_memory_id, m.schema_id
          FROM proxima_core.edges e

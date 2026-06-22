@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use aws_sdk_s3::presigning::PresigningConfig;
-use proxima_core::{OrgId, Owner, OwnerPrincipalKind, Principal, UPLOADED_BLOB_SCHEMA_ID};
+use proxima_core::{Owner, OwnerPrincipalKind, Principal, UPLOADED_BLOB_SCHEMA_ID};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use time::OffsetDateTime;
@@ -16,8 +16,6 @@ use crate::error::BlobError;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobUploadPrepareTs {
     pub principal: Principal,
-    #[serde(skip)]
-    pub org_id: Option<OrgId>,
     pub filename: String,
     pub mime: String,
     pub byte_len: u64,
@@ -43,8 +41,6 @@ pub struct PresignedHeaderTs {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobUploadCompleteTs {
     pub principal: Principal,
-    #[serde(skip)]
-    pub org_id: Option<OrgId>,
     pub upload_id: String,
 }
 
@@ -65,8 +61,6 @@ pub struct CitedBlobUploadCompleteOutcomeTs {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobUploadAbortTs {
     pub principal: Principal,
-    #[serde(skip)]
-    pub org_id: Option<OrgId>,
     pub upload_id: String,
 }
 
@@ -80,8 +74,6 @@ pub struct CitedBlobUploadAbortOutcomeTs {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobReadUrlTs {
     pub principal: Principal,
-    #[serde(skip)]
-    pub org_id: Option<OrgId>,
     pub cited_object_id: String,
 }
 
@@ -92,79 +84,35 @@ pub struct CitedBlobReadUrlOutcomeTs {
     pub expires_at: String,
 }
 
-fn request_owner(principal: &Principal, org_id: Option<OrgId>, name: &str) -> Owner {
-    Owner {
-        principal: principal.clone(),
-        org_id: org_id
-            .unwrap_or_else(|| panic!("{name} org_id must be stamped before storage/hash use")),
-    }
-}
-
 impl CitedBlobUploadPrepareTs {
-    /// Reconstructs the storage `Owner` after verb-layer stamping.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    /// The storage `Owner` (= principal) for this request.
     #[must_use]
     pub fn owner(&self) -> Owner {
-        request_owner(&self.principal, self.org_id, "CitedBlobUploadPrepareTs")
-    }
-
-    pub fn stamp_owner(&mut self, stamped: Owner) {
-        self.principal = stamped.principal;
-        self.org_id = Some(stamped.org_id);
+        self.principal.clone()
     }
 }
 
 impl CitedBlobUploadCompleteTs {
-    /// Reconstructs the storage `Owner` after verb-layer stamping.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    /// The storage `Owner` (= principal) for this request.
     #[must_use]
     pub fn owner(&self) -> Owner {
-        request_owner(&self.principal, self.org_id, "CitedBlobUploadCompleteTs")
-    }
-
-    pub fn stamp_owner(&mut self, stamped: Owner) {
-        self.principal = stamped.principal;
-        self.org_id = Some(stamped.org_id);
+        self.principal.clone()
     }
 }
 
 impl CitedBlobUploadAbortTs {
-    /// Reconstructs the storage `Owner` after verb-layer stamping.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    /// The storage `Owner` (= principal) for this request.
     #[must_use]
     pub fn owner(&self) -> Owner {
-        request_owner(&self.principal, self.org_id, "CitedBlobUploadAbortTs")
-    }
-
-    pub fn stamp_owner(&mut self, stamped: Owner) {
-        self.principal = stamped.principal;
-        self.org_id = Some(stamped.org_id);
+        self.principal.clone()
     }
 }
 
 impl CitedBlobReadUrlTs {
-    /// Reconstructs the storage `Owner` after verb-layer stamping.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    /// The storage `Owner` (= principal) for this request.
     #[must_use]
     pub fn owner(&self) -> Owner {
-        request_owner(&self.principal, self.org_id, "CitedBlobReadUrlTs")
-    }
-
-    pub fn stamp_owner(&mut self, stamped: Owner) {
-        self.principal = stamped.principal;
-        self.org_id = Some(stamped.org_id);
+        self.principal.clone()
     }
 }
 
@@ -211,16 +159,15 @@ impl CitedBlobStore {
             .await
             .map_err(|e| BlobError::S3(format!("prepare upload URL failed: {e}")))?;
 
-        let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&owner);
+        let (owner_kind, owner_principal_id) = owner_columns(&owner);
         sqlx::query(
             "INSERT INTO proxima_core.cited_object_uploads \
-                (owner_principal_kind, owner_principal_id, owner_org_id, upload_id, \
+                (owner_principal_kind, owner_principal_id, upload_id, \
                  bucket, object_key, filename, mime, expected_byte_len, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(owner_kind)
         .bind(owner_principal_id)
-        .bind(owner_org_id)
         .bind(upload_id)
         .bind(&self.config.bucket)
         .bind(&object_key)
@@ -380,19 +327,17 @@ impl CitedBlobStore {
             .await
             .map_err(|e| BlobError::S3(format!("delete pending upload failed: {e}")))?;
 
-        let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&owner);
+        let (owner_kind, owner_principal_id) = owner_columns(&owner);
         sqlx::query(
             "UPDATE proxima_core.cited_object_uploads \
                 SET status = 'aborted', aborted_at = now() \
               WHERE owner_principal_kind = $1 \
                 AND owner_principal_id = $2 \
-                AND owner_org_id = $3 \
-                AND upload_id = $4 \
+                AND upload_id = $3 \
                 AND status = 'pending'",
         )
         .bind(owner_kind)
         .bind(owner_principal_id)
-        .bind(owner_org_id)
         .bind(upload_id)
         .execute(&self.pool)
         .await
@@ -469,19 +414,17 @@ async fn load_upload(
     owner: &Owner,
     upload_id: Uuid,
 ) -> Result<UploadRow, BlobError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id) = owner_columns(owner);
     let row = sqlx::query(
         "SELECT bucket, object_key, filename, mime, expected_byte_len, \
                 status::text AS status, cited_object_id, expires_at \
            FROM proxima_core.cited_object_uploads \
           WHERE owner_principal_kind = $1 \
             AND owner_principal_id = $2 \
-            AND owner_org_id = $3 \
-            AND upload_id = $4",
+            AND upload_id = $3",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(upload_id)
     .fetch_optional(pool)
     .await
@@ -505,19 +448,17 @@ async fn mark_upload_expired(
     owner: &Owner,
     upload_id: Uuid,
 ) -> Result<(), BlobError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id) = owner_columns(owner);
     sqlx::query(
         "UPDATE proxima_core.cited_object_uploads \
             SET status = 'expired', error_message = 'upload expired' \
           WHERE owner_principal_kind = $1 \
             AND owner_principal_id = $2 \
-            AND owner_org_id = $3 \
-            AND upload_id = $4 \
+            AND upload_id = $3 \
             AND status = 'pending'",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(upload_id)
     .execute(pool)
     .await
@@ -574,16 +515,16 @@ async fn persist_completed_blob(
     streamed: &StreamedObject,
     etag: Option<&str>,
 ) -> Result<CompletedBlob, BlobError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id) = owner_columns(owner);
     let mut tx = pool.begin().await.map_err(BlobError::Db)?;
 
     let row = sqlx::query(
         "WITH ins AS ( \
              INSERT INTO proxima_core.cited_objects \
                  (cited_object_id, schema_id, owner_principal_kind, \
-                  owner_principal_id, owner_org_id, content_hash) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
-             ON CONFLICT (owner_principal_kind, owner_principal_id, owner_org_id, schema_id, content_hash) \
+                  owner_principal_id, content_hash) \
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (owner_principal_kind, owner_principal_id, schema_id, content_hash) \
              DO NOTHING \
              RETURNING cited_object_id \
          ) \
@@ -593,9 +534,8 @@ async fn persist_completed_blob(
            FROM proxima_core.cited_objects \
           WHERE owner_principal_kind = $3 \
             AND owner_principal_id = $4 \
-            AND owner_org_id = $5 \
             AND schema_id = $2 \
-            AND content_hash = $6 \
+            AND content_hash = $5 \
             AND NOT EXISTS (SELECT 1 FROM ins) \
           LIMIT 1",
     )
@@ -603,7 +543,6 @@ async fn persist_completed_blob(
     .bind(UPLOADED_BLOB_SCHEMA_ID)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(&streamed.blake3[..])
     .fetch_one(tx.as_mut())
     .await
@@ -634,13 +573,11 @@ async fn persist_completed_blob(
             SET status = 'completed', cited_object_id = $1, completed_at = now() \
           WHERE owner_principal_kind = $2 \
             AND owner_principal_id = $3 \
-            AND owner_org_id = $4 \
-            AND upload_id = $5",
+            AND upload_id = $4",
     )
     .bind(cited_object_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(upload_id)
     .execute(tx.as_mut())
     .await
@@ -659,7 +596,7 @@ async fn load_completed_blob(
     cited_object_id: Uuid,
     idempotent_replay: bool,
 ) -> Result<CitedBlobUploadCompleteOutcomeTs, BlobError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id) = owner_columns(owner);
     let row = sqlx::query(
         "SELECT encode(co.content_hash, 'hex') AS content_hash, \
                 encode(b.sha256, 'hex') AS sha256, b.byte_len, b.mime, b.filename \
@@ -668,13 +605,11 @@ async fn load_completed_blob(
           WHERE co.cited_object_id = $1 \
             AND co.owner_principal_kind = $2 \
             AND co.owner_principal_id = $3 \
-            AND co.owner_org_id = $4 \
-            AND co.schema_id = $5",
+            AND co.schema_id = $4",
     )
     .bind(cited_object_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(UPLOADED_BLOB_SCHEMA_ID)
     .fetch_optional(pool)
     .await
@@ -698,7 +633,7 @@ async fn load_blob_location(
     owner: &Owner,
     cited_object_id: Uuid,
 ) -> Result<BlobLocation, BlobError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id) = owner_columns(owner);
     let row = sqlx::query(
         "SELECT b.bucket, b.object_key \
            FROM proxima_core.cited_objects co \
@@ -706,13 +641,11 @@ async fn load_blob_location(
           WHERE co.cited_object_id = $1 \
             AND co.owner_principal_kind = $2 \
             AND co.owner_principal_id = $3 \
-            AND co.owner_org_id = $4 \
-            AND co.schema_id = $5",
+            AND co.schema_id = $4",
     )
     .bind(cited_object_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(UPLOADED_BLOB_SCHEMA_ID)
     .fetch_optional(pool)
     .await
@@ -746,30 +679,20 @@ fn parse_uuid(value: &str) -> Result<Uuid, BlobError> {
     Uuid::parse_str(value).map_err(|_| BlobError::State(format!("invalid uuid: {value}")))
 }
 
-fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
-    match &owner.principal {
-        Principal::User(user) => (
-            OwnerPrincipalKind::User,
-            user.into_inner(),
-            owner.org_id.into_inner(),
-        ),
-        Principal::Group(group) => (
-            OwnerPrincipalKind::Group,
-            group.into_inner(),
-            owner.org_id.into_inner(),
-        ),
+fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
+    match owner {
+        Principal::User(user) => (OwnerPrincipalKind::User, user.into_inner()),
+        Principal::Group(group) => (OwnerPrincipalKind::Group, group.into_inner()),
     }
 }
 
 fn owner_hash_hex(owner: &Owner) -> String {
-    let (kind, principal_id, org_id) = owner_columns(owner);
+    let (kind, principal_id) = owner_columns(owner);
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"proxima-owner-s3-key-v1\0");
     hasher.update(kind.as_str().as_bytes());
     hasher.update(b"\0");
     hasher.update(principal_id.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(org_id.as_bytes());
     hex::encode(hasher.finalize().as_bytes())
 }
 
@@ -789,17 +712,14 @@ fn format_time(value: OffsetDateTime) -> Result<String, BlobError> {
 
 #[cfg(test)]
 mod tests {
-    use proxima_core::{OrgId, UserId};
+    use proxima_core::UserId;
 
     use super::*;
 
     #[test]
     fn object_keys_do_not_embed_raw_owner_ids() {
-        let owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
-        let (owner_kind, principal_id, org_id) = owner_columns(&owner);
+        let owner = Principal::User(UserId::new(Uuid::now_v7()));
+        let (owner_kind, principal_id) = owner_columns(&owner);
         let owner_hash = owner_hash_hex(&owner);
         let pending = pending_object_key(&owner_hash, Uuid::now_v7());
         let canonical = canonical_object_key(&owner_hash, &"a".repeat(64));
@@ -807,7 +727,6 @@ mod tests {
         assert_eq!(owner_hash.len(), 64);
         assert!(!pending.contains(owner_kind.as_str()));
         assert!(!pending.contains(&principal_id.to_string()));
-        assert!(!pending.contains(&org_id.to_string()));
         assert!(pending.starts_with("pending/"));
         assert!(canonical.contains(UPLOADED_BLOB_SCHEMA_ID));
         assert!(canonical.starts_with("objects/"));
@@ -815,15 +734,23 @@ mod tests {
 
     #[test]
     fn owner_hash_is_owner_scoped() {
-        let org_id = OrgId::new(Uuid::now_v7());
-        let a = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id,
-        };
-        let b = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id,
-        };
+        let a = Principal::User(UserId::new(Uuid::now_v7()));
+        let b = Principal::User(UserId::new(Uuid::now_v7()));
         assert_ne!(owner_hash_hex(&a), owner_hash_hex(&b));
+    }
+
+    /// Pins the org-free S3 `owner_hash_hex` against drift. Track B / S0:
+    /// the BLAKE3 folds the domain tag ‖ principal kind/id — no org. A
+    /// fixed principal must reproduce exactly this hex (and thus the same
+    /// stored S3 object path) forever.
+    #[test]
+    fn owner_hash_hex_golden_is_org_free() {
+        let owner = Principal::User(UserId::new(
+            Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
+        ));
+        assert_eq!(
+            owner_hash_hex(&owner),
+            "ff5a53f4084b4ac3d3d62e55ba003304c6a7cb57065c0477ff5b95fbb6a82efd"
+        );
     }
 }

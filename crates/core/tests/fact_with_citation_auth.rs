@@ -6,7 +6,7 @@ use proxima_core::verbs::event_ingest::{
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FactPayload,
-    FlavorRegistry, OrgId, Owner, PayloadKeyBuilder, Principal, Role, SchemaId, SchemaVersion,
+    FlavorRegistry, Owner, PayloadKeyBuilder, Principal, Role, SchemaId, SchemaVersion,
     SourceBatchId, SourceId, UserId, canonical_json_bytes,
 };
 use serde::{Deserialize, Serialize};
@@ -98,10 +98,7 @@ fn json<T: Serialize>(value: &T) -> Vec<u8> {
 }
 
 fn owner() -> Owner {
-    Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    }
+    Principal::User(UserId::new(Uuid::now_v7()))
 }
 
 fn engine() -> Engine {
@@ -118,8 +115,7 @@ fn draft(owner: &Owner) -> EventDraft {
     EventDraft {
         source_id: SourceId::new("test/source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.principal.clone(),
-        org_id: None,
+        principal: owner.clone(),
         author_personality_instance_id: None,
         schema_id: TestFact::schema_id(),
         schema_version: SchemaVersion::new(TestFact::SCHEMA_VERSION),
@@ -230,7 +226,7 @@ fn authorize_citation_attachment_accepts_valid_pair() {
         .authorize_citation_attachment(
             &authz,
             Role::SourceIngest,
-            owner.principal.clone(),
+            owner.clone(),
             memory_id,
             cited_object(),
             mapping(TestCitationMapping::schema_id()),
@@ -255,7 +251,7 @@ fn authorize_citation_attachment_rejects_mapping_target_mismatch() {
         .authorize_citation_attachment(
             &authz,
             Role::SourceIngest,
-            owner.principal.clone(),
+            owner.clone(),
             proxima_core::MemoryId::new(Uuid::now_v7()),
             cited_object(),
             mapping(MismatchedCitationMapping::schema_id()),

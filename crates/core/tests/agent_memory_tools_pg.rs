@@ -7,7 +7,7 @@ use proxima_core::engine::Engine;
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
     AgentNoteV1, AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FactPayload,
-    FlavorRegistry, FlavorRegistryFrozen, McpToolError, MemoryId, OrgId, Owner,
+    FlavorRegistry, FlavorRegistryFrozen, McpToolError, MemoryId, Owner,
     PersonalityInstanceId, Principal, SchemaId, UserId,
 };
 use proxima_storage_pg::sidecars::{
@@ -754,10 +754,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     let frozen = Arc::new(registry.freeze());
     let frozen_b = frozen.clone();
     let owner_a = nil_owner();
-    let owner_b = Owner {
-        principal: Principal::User(UserId::new(uuid::Uuid::from_u128(1))),
-        org_id: OrgId::new(uuid::Uuid::nil()),
-    };
+    let owner_b: Owner = Principal::User(UserId::new(uuid::Uuid::from_u128(1)));
 
     let shared_args = || {
         json!({

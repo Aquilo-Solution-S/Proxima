@@ -3,17 +3,12 @@
 use crate::common::{create_db, db_url, drop_db};
 
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{OrgId, Owner, OwnerPrincipalKind, Principal, UserId};
+use proxima_core::{Owner, OwnerPrincipalKind, Principal, UserId};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
-fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
-    let kind = OwnerPrincipalKind::of(&owner.principal);
-    let principal_id = match owner.principal {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
-    (kind, principal_id, owner.org_id.into_inner())
+fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
+    owner.columns()
 }
 
 async fn insert_external_seed(
@@ -22,22 +17,21 @@ async fn insert_external_seed(
     state: GoalState,
     request_id: &str,
 ) -> Result<(), sqlx::Error> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
+    let (owner_kind, owner_principal_id) = owner_parts(owner);
     sqlx::query(
         "INSERT INTO proxima_core.goals
             (goal_id, schema_id, schema_version,
-             owner_principal_kind, owner_principal_id, owner_org_id,
+             owner_principal_kind, owner_principal_id,
              title, text, payload, state,
              authorship_kind, request_id)
          VALUES ($1, 'core/simple-text-v1', 1,
-                 $2, $3, $4,
-                 $5, $5, convert_to('{}', 'UTF8'), $6,
-                 'External', $7)",
+                 $2, $3,
+                 $4, $4, convert_to('{}', 'UTF8'), $5,
+                 'External', $6)",
     )
     .bind(Uuid::now_v7())
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(request_id)
     .bind(state)
     .bind(request_id)
@@ -55,10 +49,7 @@ async fn external_authorship_cannot_seed_goal_state() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = Principal::User(UserId::new(Uuid::now_v7()));
 
         for state in [
             GoalState::Active,

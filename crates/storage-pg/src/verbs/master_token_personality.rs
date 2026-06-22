@@ -5,7 +5,7 @@
 //!
 //! The slow path (cold start for a `(token, owner)` pair) serializes
 //! concurrent callers using a session-level PG advisory lock keyed on
-//! `(org_id, master_token_id)`. Without it, two callers could both
+//! `master_token_id`. Without it, two callers could both
 //! observe an empty mapping, both mint a personality, and only one of
 //! the two `INSERT ... ON CONFLICT DO NOTHING` rows would land — the
 //! losing caller's personality (plus its memories) becomes an orphan,
@@ -15,7 +15,7 @@
 //! Lock leak window: if the calling future is cancelled mid-section,
 //! the lock is released only when the underlying connection is recycled
 //! by the pool. A leaked lock blocks future calls for the same
-//! `(org, token)` only — it does not block the rest of the system.
+//! `token` only — it does not block the rest of the system.
 
 use proxima_core::{
     InstantiatePersonalityRequest, MasterTokenPersonality, MemoryId, Owner, OwnerPrincipalKind,
@@ -42,17 +42,17 @@ pub async fn ensure_master_token_personality(
     owner: &Owner,
     master_token_id: Uuid,
 ) -> Result<MasterTokenPersonality, StorageError> {
-    let (kind, principal_id, org_id) = owner.columns();
+    let (kind, principal_id) = owner.columns();
 
     // Fast path: lock-free read. Hits on every call after the first.
-    if let Some(found) = lookup_pool(pool, master_token_id, kind, principal_id, org_id).await? {
+    if let Some(found) = lookup_pool(pool, master_token_id, kind, principal_id).await? {
         return Ok(found);
     }
 
     // Slow path: take a session-level advisory lock on a pinned
     // connection so concurrent first-connects can't both mint.
     let mut conn = pool.acquire().await.map_err(map_err)?;
-    let key = lock_key(owner.org_id.into_inner(), master_token_id);
+    let key = lock_key(master_token_id);
     sqlx::query!("SELECT pg_advisory_lock($1)", key)
         .fetch_one(&mut *conn)
         .await
@@ -65,7 +65,6 @@ pub async fn ensure_master_token_personality(
         master_token_id,
         kind,
         principal_id,
-        org_id,
     )
     .await;
 
@@ -87,16 +86,14 @@ async fn mint_under_lock(
     master_token_id: Uuid,
     kind: OwnerPrincipalKind,
     principal_id: Uuid,
-    org_id: Uuid,
 ) -> Result<MasterTokenPersonality, StorageError> {
     // Re-check inside the lock: a peer may have minted while we waited.
-    if let Some(found) = lookup_conn(conn, master_token_id, kind, principal_id, org_id).await? {
+    if let Some(found) = lookup_conn(conn, master_token_id, kind, principal_id).await? {
         return Ok(found);
     }
 
     let req = InstantiatePersonalityRequest {
-        principal: owner.principal.clone(),
-        org_id: Some(owner.org_id),
+        principal: owner.clone(),
         display_name: SHELL_AUTHOR_DISPLAY_NAME.into(),
     };
     let resp = consolidate::instantiate_personality(pool, &req).await?;
@@ -105,12 +102,11 @@ async fn mint_under_lock(
     sqlx::query!(
         r#"INSERT INTO proxima_core.master_token_personality (
              master_token_id, owner_principal_kind, owner_principal_id,
-             owner_org_id, personality_instance_id
-         ) VALUES ($1, $2, $3, $4, $5)"#,
+             personality_instance_id
+         ) VALUES ($1, $2, $3, $4)"#,
         master_token_id,
         kind as OwnerPrincipalKind,
         principal_id,
-        org_id,
         instance_id.into_inner(),
     )
     .execute(&mut *conn)
@@ -138,7 +134,6 @@ async fn lookup_pool(
     master_token_id: Uuid,
     kind: OwnerPrincipalKind,
     principal_id: Uuid,
-    org_id: Uuid,
 ) -> Result<Option<MasterTokenPersonality>, StorageError> {
     let row = sqlx::query!(
         r#"SELECT mtp.personality_instance_id,
@@ -149,12 +144,10 @@ async fn lookup_pool(
              WHERE mtp.master_token_id = $1
                AND mtp.owner_principal_kind = $2
                AND mtp.owner_principal_id = $3
-               AND mtp.owner_org_id = $4
              LIMIT 1"#,
         master_token_id,
         kind as OwnerPrincipalKind,
         principal_id,
-        org_id,
     )
     .fetch_optional(pool)
     .await
@@ -172,7 +165,6 @@ async fn lookup_conn(
     master_token_id: Uuid,
     kind: OwnerPrincipalKind,
     principal_id: Uuid,
-    org_id: Uuid,
 ) -> Result<Option<MasterTokenPersonality>, StorageError> {
     let row = sqlx::query!(
         r#"SELECT mtp.personality_instance_id,
@@ -183,12 +175,10 @@ async fn lookup_conn(
              WHERE mtp.master_token_id = $1
                AND mtp.owner_principal_kind = $2
                AND mtp.owner_principal_id = $3
-               AND mtp.owner_org_id = $4
              LIMIT 1"#,
         master_token_id,
         kind as OwnerPrincipalKind,
         principal_id,
-        org_id,
     )
     .fetch_optional(&mut *conn)
     .await
@@ -208,10 +198,9 @@ fn into_personality((instance_id, root_id): (Uuid, Uuid)) -> MasterTokenPersonal
     }
 }
 
-fn lock_key(org_id: Uuid, master_token_id: Uuid) -> i64 {
+fn lock_key(master_token_id: Uuid) -> i64 {
     let mut hasher = blake3::Hasher::new();
     hasher.update(LOCK_KEY_DOMAIN);
-    hasher.update(org_id.as_bytes());
     hasher.update(master_token_id.as_bytes());
     let hash = hasher.finalize();
     let bytes: [u8; 8] = hash.as_bytes()[..8]

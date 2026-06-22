@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO proxima_core.change_event\n            (seq, owner_principal_kind, owner_principal_id,\n             owner_org_id, kind, entity_kind,\n             entity_memory_id, entity_schema_id,\n             entity_schema_version)\n         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Fact', $5, $6, $7)",
+  "query": "INSERT INTO proxima_core.change_event\n            (seq, owner_principal_kind, owner_principal_id, kind,\n             entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,\n             entity_personality_instance_id, wake_chain_depth)\n         VALUES ($1, $2, $3, 'EntityAppend', 'Perspective', $4, $5, 1, $6, 0)",
   "describe": {
     "columns": [],
     "parameters": {
@@ -19,12 +19,11 @@
         },
         "Uuid",
         "Uuid",
-        "Uuid",
         "Text",
-        "Int4"
+        "Uuid"
       ]
     },
     "nullable": []
   },
-  "hash": "f2a95e8f15ffe960b5d8f3fd78a6a52c33a40f3e623571a1da4c897d229b93d9"
+  "hash": "582392cbb89eed20395cb2ad6e7c0ba31b6c2f6c3c20b178b868cdb4ee4e6382"
 }

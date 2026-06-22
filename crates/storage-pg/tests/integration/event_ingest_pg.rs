@@ -10,9 +10,7 @@ use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
-use proxima_core::{
-    OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
-};
+use proxima_core::{Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
@@ -61,8 +59,7 @@ fn fresh_draft(owner: Owner) -> EventDraft {
     EventDraft {
         source_id: SourceId::new("test/source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.principal,
-        org_id: Some(owner.org_id),
+        principal: owner,
         author_personality_instance_id: None,
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
@@ -96,10 +93,7 @@ async fn event_ingest_writes_fact_and_change_event() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
-        let owner = Owner {
-            principal: Principal::User(user),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = Principal::User(user);
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
@@ -165,11 +159,8 @@ async fn event_ingest_stamps_fact_author_without_change_event_author() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
 
-        let owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
-        let subject = owner.principal.clone();
+        let owner = Principal::User(UserId::new(Uuid::now_v7()));
+        let subject = owner.clone();
         let personality = pg.ensure_subject_personality(&owner, &subject).await?;
 
         let mut authored = fresh_draft(owner.clone());
@@ -238,14 +229,8 @@ async fn list_change_events_for_replay_respects_bounds_and_owner() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
-        let owner = Owner {
-            principal: Principal::User(user),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
-        let other_owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = Principal::User(user);
+        let other_owner = Principal::User(UserId::new(Uuid::now_v7()));
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
@@ -289,12 +274,12 @@ async fn list_change_events_for_replay_respects_bounds_and_owner() {
     result.expect("replay scan bounds failed");
 }
 
-/// The `change_event` pull scopes by principal, not the `(principal, org)`
-/// triple — matching the memories read path (`query_owner_scope_ignores_org_id`)
-/// and the event-history scan. A harness polling with a divergent `org_id`
-/// must still see its events; `org_id` is a denormalized tag, not a scope filter.
+/// The `change_event` pull scopes by principal — matching the memories read
+/// path (`query_owner_scope_is_principal`) and the event-history scan. Owner is
+/// the principal (Track B: org left Core); a harness re-deriving the same
+/// principal must see its events.
 #[tokio::test]
-async fn list_change_events_after_scopes_by_principal_ignoring_org_id() {
+async fn list_change_events_after_scopes_by_principal() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
@@ -305,14 +290,8 @@ async fn list_change_events_after_scopes_by_principal_ignoring_org_id() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let principal = Principal::User(UserId::new(Uuid::now_v7()));
-        let stored_owner = Owner {
-            principal: principal.clone(),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
-        let requested_owner = Owner {
-            principal: principal.clone(),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let stored_owner = principal.clone();
+        let requested_owner = principal.clone();
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
@@ -327,16 +306,12 @@ async fn list_change_events_after_scopes_by_principal_ignoring_org_id() {
             )
             .await?;
 
-        // Pull with a different org_id under the same principal: the event is
-        // still returned, and its stored owner carries the original org_id.
+        // Pull under the same principal: the event is returned, scoped by
+        // principal alone.
         let rows = pg
             .list_change_events_after(&requested_owner, Uuid::nil(), 10)
             .await?;
-        assert_eq!(
-            rows.len(),
-            1,
-            "pull must ignore org_id and scope by principal"
-        );
+        assert_eq!(rows.len(), 1, "pull scopes by principal");
         assert_eq!(rows[0].event.seq, ingested.change_event_seq);
         assert_eq!(rows[0].event.owner, stored_owner);
         Ok(())

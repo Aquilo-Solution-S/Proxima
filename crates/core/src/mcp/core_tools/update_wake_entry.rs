@@ -62,7 +62,7 @@ impl McpTool for UpdateWakeEntryTool {
         args: UpdateWakeEntryArgs,
     ) -> BoxFuture<'static, Result<UpdateWakeEntryOutput, McpToolError>> {
         Box::pin(async move {
-            crate::engine::authorize(&ctx.authz, &ctx.owner.principal, Role::Admin)
+            crate::engine::authorize(&ctx.authz, &ctx.owner, Role::Admin)
                 .map_err(|e| McpToolError::Other(e.to_string()))?;
             let wid = ctx.resolve_wake_entry(&args.wake_entry)?;
             let storage = ctx

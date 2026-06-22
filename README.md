@@ -13,7 +13,7 @@ Users write their own app. The app owns the product, UX, domain workflow, auth b
 ## Start
 
 ```sh
-cargo run -p proxima-mcp -- --owner-user <uuid> --owner-org <uuid>
+cargo run -p proxima-mcp -- --owner-user <uuid>
 ```
 
 Headless MCP server at `http://127.0.0.1:31415/mcp`. Agent-harness users use
@@ -74,9 +74,10 @@ Design source of truth:
   distinct entity (DAG, supersession-only lifecycle, embedded text
   for retrieval). Self as pure query. Conversation-extraction
   writes Goal + `SYSTEM` action-Fact in one transaction.
-  `Owner = (Principal, OrgId)` defined in 01: principal
-  (User | Group) for access, org_id for billing. Per-memory ACL is a
-  v2+ extension.
+  `Owner = Principal` defined in 01: principal (User | Group) is the
+  whole scoping primitive; there is no org/tenant field in Core
+  (tenancy is a flavor/app concern). Per-memory ACL is a v2+
+  extension.
 - [`docs/07-storage.md`](docs/07-storage.md) — abstract storage
   layer. ID types, identity rules, core tables, append-only
   discipline. Vector store is **independent** of the entity tables

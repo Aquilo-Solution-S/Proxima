@@ -19,7 +19,7 @@ use proxima_core::verbs::event_ingest::{
 };
 use proxima_core::{
     AuthorizedEventIngest, AuthorizedFactWithCitation, AuthzContext, Engine, EntityKind,
-    FactPayload, MemoryId, OrgId, Owner, OwnerPrincipalKind, Role, SourceBatchId, StorageError,
+    FactPayload, MemoryId, Owner, OwnerPrincipalKind, Role, SourceBatchId, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -247,18 +247,14 @@ where
     ) -> EventIngestSidecarFuture<'t>,
 {
     let now = time::OffsetDateTime::now_utc();
-    let owner = Owner {
-        principal: authz.identity.principal.clone(),
-        org_id: OrgId::new(authz.identity.org_id.into_inner()),
-    };
-    let mut draft = EventDraft::from_payload(
+    let owner = authz.identity.principal.clone();
+    let draft = EventDraft::from_payload(
         &owner,
         "proxima/fact",
         SourceBatchId::new(uuid::Uuid::now_v7()),
         payload,
         now,
     );
-    draft.org_id = None;
     let authorized = engine
         .authorize_event_ingest(authz, role, draft)
         .map_err(internal)?;
@@ -465,7 +461,7 @@ pub async fn attach_citation_in_tx(
     let memory_id = authorized.memory_id();
     let memory_uuid = memory_id.into_inner();
     let owner = authorized.owner();
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
 
     let existing_mapping_id = sqlx::query_scalar::<_, Option<uuid::Uuid>>(
         r"SELECT citation_mapping_id
@@ -473,14 +469,12 @@ pub async fn attach_citation_in_tx(
            WHERE memory_id = $1
              AND owner_principal_kind = $2
              AND owner_principal_id = $3
-             AND owner_org_id = $4
              AND kind IS NULL
              AND tombstoned_at IS NULL",
     )
     .bind(memory_uuid)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .fetch_optional(tx.as_mut())
     .await
     .map_err(map_err)?
@@ -517,14 +511,12 @@ pub async fn attach_citation_in_tx(
            WHERE memory_id = $1
              AND owner_principal_kind = $3
              AND owner_principal_id = $4
-             AND owner_org_id = $5
              AND citation_mapping_id IS NULL",
     )
     .bind(memory_uuid)
     .bind(citation_mapping_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -549,21 +541,19 @@ async fn cited_object_id_for_mapping_in_tx(
     memory_id: uuid::Uuid,
     citation_mapping_id: uuid::Uuid,
 ) -> Result<uuid::Uuid, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query_scalar::<_, uuid::Uuid>(
         r"SELECT cm.cited_object_id
             FROM proxima_core.citation_mappings cm
            WHERE cm.citation_mapping_id = $1
              AND cm.memory_id = $2
              AND cm.owner_principal_kind = $3
-             AND cm.owner_principal_id = $4
-             AND cm.owner_org_id = $5",
+             AND cm.owner_principal_id = $4",
     )
     .bind(citation_mapping_id)
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .fetch_optional(tx.as_mut())
     .await
     .map_err(map_err)?
@@ -580,15 +570,15 @@ async fn upsert_cited_object_in_tx(
     owner: &Owner,
     cited_object: &AuthorizedInlineCitedObject,
 ) -> Result<uuid::Uuid, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let cited_object_id_new = uuid::Uuid::now_v7();
     let cited_object_id = sqlx::query_scalar::<_, uuid::Uuid>(
         r"INSERT INTO proxima_core.cited_objects
             (cited_object_id, schema_id, owner_principal_kind,
-             owner_principal_id, owner_org_id, content_hash)
-         VALUES ($1, $2, $3, $4, $5, $6)
+             owner_principal_id, content_hash)
+         VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (owner_principal_kind, owner_principal_id,
-                      owner_org_id, schema_id, content_hash)
+                      schema_id, content_hash)
          DO UPDATE SET schema_id = EXCLUDED.schema_id
          RETURNING cited_object_id",
     )
@@ -596,7 +586,6 @@ async fn upsert_cited_object_in_tx(
     .bind(cited_object.schema_id().as_str())
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(&cited_object.content_hash()[..])
     .fetch_one(tx.as_mut())
     .await
@@ -617,13 +606,13 @@ async fn insert_citation_mapping_in_tx(
     memory_id: uuid::Uuid,
     cited_object_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         r"INSERT INTO proxima_core.citation_mappings
             (citation_mapping_id, schema_id, memory_id,
              cited_object_id, owner_principal_kind,
-             owner_principal_id, owner_org_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+             owner_principal_id)
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(citation_mapping_id)
     .bind(mapping.schema_id().as_str())
@@ -631,7 +620,6 @@ async fn insert_citation_mapping_in_tx(
     .bind(cited_object_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -697,7 +685,7 @@ where
     let event_id = draft.event_id();
     let event_id_bytes = event_id.into_inner();
     let owner = draft.owner();
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
 
     let existing = sqlx::query_scalar::<_, uuid::Uuid>(
         r"SELECT memory_id FROM proxima_core.memories
@@ -738,10 +726,10 @@ where
                 let cited_object_id = sqlx::query_scalar::<_, uuid::Uuid>(
                     r"INSERT INTO proxima_core.cited_objects
                         (cited_object_id, schema_id, owner_principal_kind,
-                         owner_principal_id, owner_org_id, content_hash)
-                     VALUES ($1, $2, $3, $4, $5, $6)
+                         owner_principal_id, content_hash)
+                     VALUES ($1, $2, $3, $4, $5)
                      ON CONFLICT (owner_principal_kind, owner_principal_id,
-                                  owner_org_id, schema_id, content_hash)
+                                  schema_id, content_hash)
                      DO UPDATE SET schema_id = EXCLUDED.schema_id
                      RETURNING cited_object_id",
                 )
@@ -749,7 +737,6 @@ where
                 .bind(citation.object.schema_id.as_str())
                 .bind(owner_kind)
                 .bind(owner_principal_id)
-                .bind(owner_org_id)
                 .bind(&citation.object.content_hash[..])
                 .fetch_one(tx.as_mut())
                 .await
@@ -786,15 +773,14 @@ where
     sqlx::query(
         r"INSERT INTO proxima_core.source_batches
             (id, source_id, owner_principal_kind,
-             owner_principal_id, owner_org_id)
-         VALUES ($1, $2, $3, $4, $5)
+             owner_principal_id)
+         VALUES ($1, $2, $3, $4)
          ON CONFLICT (id) DO NOTHING",
     )
     .bind(draft.source_batch_id.into_inner())
     .bind(draft.source_id.as_str())
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -802,16 +788,15 @@ where
     sqlx::query(
         r"INSERT INTO proxima_core.events
             (event_id, source_id, source_batch_id,
-             owner_principal_kind, owner_principal_id, owner_org_id,
+             owner_principal_kind, owner_principal_id,
              schema_id, schema_version, observed_at, occurred_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(&event_id_bytes[..])
     .bind(draft.source_id.as_str())
     .bind(draft.source_batch_id.into_inner())
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(draft.schema_id.as_str())
     .bind(draft.schema_version.into_inner().cast_signed())
     .bind(draft.observed_at)
@@ -828,15 +813,14 @@ where
     sqlx::query(
         r"INSERT INTO proxima_core.memories
             (memory_id, owner_principal_kind, owner_principal_id,
-             owner_org_id, schema_id, schema_version, event_id, citation_mapping_id,
+             schema_id, schema_version, event_id, citation_mapping_id,
              text, personality_instance_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
-                 $9, $10)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7,
+                 $8, $9)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(draft.schema_id.as_str())
     .bind(draft.schema_version.into_inner().cast_signed())
     .bind(&event_id_bytes[..])
@@ -870,7 +854,6 @@ where
         tx,
         owner_kind,
         owner_principal_id,
-        owner_org_id,
         EntityKind::Fact,
         memory_id,
         options.embedding_model_id,
@@ -888,8 +871,8 @@ where
                     r"INSERT INTO proxima_core.citation_mappings
                         (citation_mapping_id, schema_id, memory_id,
                          cited_object_id, owner_principal_kind,
-                         owner_principal_id, owner_org_id)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                         owner_principal_id)
+                     VALUES ($1, $2, $3, $4, $5, $6)",
                 )
                 .bind(citation_mapping_id)
                 .bind(citation.mapping.schema_id.as_str())
@@ -897,7 +880,6 @@ where
                 .bind(cited_object_id)
                 .bind(owner_kind)
                 .bind(owner_principal_id)
-                .bind(owner_org_id)
                 .execute(tx.as_mut())
                 .await
                 .map_err(map_err)?;
@@ -925,15 +907,14 @@ where
     sqlx::query(
         r"INSERT INTO proxima_core.change_event
             (seq, owner_principal_kind, owner_principal_id,
-             owner_org_id, kind, entity_kind,
+             kind, entity_kind,
              entity_memory_id, entity_schema_id,
              entity_schema_version, entity_personality_instance_id)
-         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Fact', $5, $6, $7, $8)",
+         VALUES ($1, $2, $3, 'EntityAppend', 'Fact', $4, $5, $6, $7)",
     )
     .bind(change_seq)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(memory_id)
     .bind(draft.schema_id.as_str())
     .bind(draft.schema_version.into_inner().cast_signed())
@@ -967,14 +948,14 @@ async fn derive_fact_entity_after_sidecar(
     let (natural_key, created_at) =
         fact_natural_key_after_sidecar(tx, memory_id, sidecar_table, natural_key_columns).await?;
 
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let fact_entity_id = sqlx::query_scalar::<_, uuid::Uuid>(
         r"INSERT INTO proxima_core.fact_entities
-            (fact_entity_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (fact_entity_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, natural_key, current_memory_id, current_created_at)
          VALUES
-            ($1, $2, $3, $4, $5, $6, $7::text[], $8, $9)
-         ON CONFLICT (owner_principal_kind, owner_principal_id, owner_org_id,
+            ($1, $2, $3, $4, $5, $6::text[], $7, $8)
+         ON CONFLICT (owner_principal_kind, owner_principal_id,
                       schema_id, schema_version, natural_key)
          DO UPDATE
              SET current_memory_id = EXCLUDED.current_memory_id,
@@ -986,7 +967,6 @@ async fn derive_fact_entity_after_sidecar(
     .bind(uuid::Uuid::now_v7())
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(draft.schema_id.as_str())
     .bind(draft.schema_version.into_inner().cast_signed())
     .bind(&natural_key)
@@ -1072,7 +1052,6 @@ async fn enqueue_embedding_job_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     owner_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
-    owner_org_id: uuid::Uuid,
     entity_kind: EntityKind,
     entity_id: uuid::Uuid,
     model_id: Option<&str>,
@@ -1083,16 +1062,15 @@ async fn enqueue_embedding_job_in_tx(
 
     sqlx::query(
         "INSERT INTO proxima_core.embedding_jobs
-            (owner_principal_kind, owner_principal_id, owner_org_id,
+            (owner_principal_kind, owner_principal_id,
              entity_kind, entity_id, model_id)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (owner_principal_kind, owner_principal_id, owner_org_id,
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (owner_principal_kind, owner_principal_id,
                       entity_kind, entity_id, model_id, embedding_version)
          DO NOTHING",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(entity_kind)
     .bind(entity_id)
     .bind(model_id)

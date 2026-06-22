@@ -243,13 +243,11 @@ async fn load_work_item(
           WHERE m.memory_id = $1
             AND m.owner_principal_kind = $2
             AND m.owner_principal_id = $3
-            AND m.owner_org_id = $4
             AND m.tombstoned_at IS NULL",
     )
     .bind(memory_id.into_inner())
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(ctx.owner.org_id.into_inner())
     .fetch_optional(pool.as_ref())
     .await
     .map_err(map_storage)?;
@@ -323,12 +321,10 @@ async fn load_repo(ctx: &McpToolCtx, repo_id: Uuid) -> Result<RepoBundle, McpToo
            FROM proxima_code.repos
           WHERE owner_principal_kind = $1
             AND owner_principal_id = $2
-            AND owner_org_id = $3
-            AND repo_id = $4",
+            AND repo_id = $3",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(ctx.owner.org_id.into_inner())
     .bind(repo_id)
     .fetch_optional(pool.as_ref())
     .await
@@ -455,7 +451,6 @@ async fn load_memory_edge_targets(
             AND relation = $2
             AND owner_principal_kind = $3
             AND owner_principal_id = $4
-            AND owner_org_id = $5
             AND {target_column} IS NOT NULL
           ORDER BY created_at ASC"
     );
@@ -464,7 +459,6 @@ async fn load_memory_edge_targets(
         .bind(relation)
         .bind(owner_kind)
         .bind(owner_principal_id)
-        .bind(ctx.owner.org_id.into_inner())
         .fetch_all(pool.as_ref())
         .await
         .map_err(map_storage)?;

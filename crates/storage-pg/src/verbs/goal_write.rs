@@ -147,7 +147,6 @@ struct EvidenceRow {
     kind: Option<EntityKind>,
     owner_principal_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
-    owner_org_id: uuid::Uuid,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -535,21 +534,19 @@ async fn insert_or_replay_goal(
 ) -> Result<InsertedGoal, StorageError> {
     validate_goal_schema(context, draft)?;
     let owner = draft.owner();
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let existing: Option<ExistingGoalRow> = sqlx::query_as(
         "SELECT g.goal_id, ce.seq
            FROM proxima_core.goals g
            JOIN proxima_core.change_event ce ON ce.entity_goal_id = g.goal_id
           WHERE g.owner_principal_kind = $1
             AND g.owner_principal_id = $2
-            AND g.owner_org_id = $3
-            AND g.request_id = $4
+            AND g.request_id = $3
           ORDER BY ce.seq ASC
           LIMIT 1",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(&draft.request_id)
     .fetch_optional(&mut **tx)
     .await
@@ -723,24 +720,23 @@ async fn insert_goal_row(
     supersedes: Option<GoalId>,
 ) -> Result<(), StorageError> {
     let owner = draft.owner();
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let authorship = authorship_columns(&draft.authorship);
     sqlx::query(
         "INSERT INTO proxima_core.goals
             (goal_id, schema_id, schema_version, owner_principal_kind,
-             owner_principal_id, owner_org_id, title, text, payload, state, supersedes,
+             owner_principal_id, title, text, payload, state, supersedes,
              authorship_kind, authorship_origin, authorship_operator_id,
              authorship_tool_id, operator_kind, model_id, prompt_version,
              personality_instance_id, request_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                 $12, $13, $14, $15, $16, $17, $18, $19, $20)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                 $11, $12, $13, $14, $15, $16, $17, $18, $19)",
     )
     .bind(goal_id)
     .bind(draft.schema_id.as_str())
     .bind(draft.schema_version.into_inner().cast_signed())
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(&draft.title)
     .bind(&draft.text)
     .bind(&draft.payload)
@@ -800,18 +796,17 @@ async fn insert_goal_change_event(
     supersedes_goal_id: Option<GoalId>,
 ) -> Result<(), StorageError> {
     let owner = draft.owner();
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.change_event
-            (seq, owner_principal_kind, owner_principal_id, owner_org_id,
+            (seq, owner_principal_kind, owner_principal_id,
              kind, entity_kind, entity_goal_id, entity_schema_id,
              entity_schema_version, supersedes_goal_id)
-         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Goal', $5, $6, $7, $8)",
+         VALUES ($1, $2, $3, 'EntityAppend', 'Goal', $4, $5, $6, $7)",
     )
     .bind(change_seq)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(goal_id)
     .bind(draft.schema_id.as_str())
     .bind(draft.schema_version.into_inner().cast_signed())
@@ -827,19 +822,17 @@ async fn load_prior_goal(
     owner: &Owner,
     goal_id: GoalId,
 ) -> Result<StoredGoal, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let row: Option<StoredGoalRow> = sqlx::query_as(
         "SELECT schema_id, schema_version, title, text, payload, state
            FROM proxima_core.goals
           WHERE goal_id = $1
             AND owner_principal_kind = $2
-            AND owner_principal_id = $3
-            AND owner_org_id = $4",
+            AND owner_principal_id = $3",
     )
     .bind(goal_id.into_inner())
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -879,7 +872,7 @@ async fn validate_parent_owner(
     owner: &Owner,
     parent_id: GoalId,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1
@@ -887,13 +880,11 @@ async fn validate_parent_owner(
               WHERE goal_id = $1
                 AND owner_principal_kind = $2
                 AND owner_principal_id = $3
-                AND owner_org_id = $4
          )",
     )
     .bind(parent_id.into_inner())
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .fetch_one(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -917,7 +908,7 @@ async fn validate_active_head(
             "parent_goal must be Active".into(),
         ));
     }
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let newer_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1
@@ -925,13 +916,11 @@ async fn validate_active_head(
               WHERE supersedes = $1
                 AND owner_principal_kind = $2
                 AND owner_principal_id = $3
-                AND owner_org_id = $4
          )",
     )
     .bind(goal_id.into_inner())
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .fetch_one(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -953,8 +942,7 @@ fn draft_from_stored(
     request_id: &str,
 ) -> GoalDraft {
     GoalDraft {
-        principal: owner.principal.clone(),
-        org_id: Some(owner.org_id),
+        principal: owner.clone(),
         schema_id: stored.schema_id.clone(),
         schema_version: stored.schema_version,
         title: stored.title.clone(),
@@ -979,8 +967,7 @@ fn draft_from_payload(
     request_id: &str,
 ) -> GoalDraft {
     GoalDraft {
-        principal: owner.principal.clone(),
-        org_id: Some(owner.org_id),
+        principal: owner.clone(),
         schema_id: payload.schema_id.clone(),
         schema_version: payload.schema_version,
         title: payload.title.clone(),
@@ -1017,11 +1004,11 @@ async fn validate_evidence_in_owner(
     owner: &Owner,
     evidence: &[GoalEvidenceRef],
 ) -> Result<Vec<EvidenceTarget>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let mut out = Vec::with_capacity(evidence.len());
     for item in evidence {
         let row: Option<EvidenceRow> = sqlx::query_as(
-            "SELECT kind, owner_principal_kind, owner_principal_id, owner_org_id
+            "SELECT kind, owner_principal_kind, owner_principal_id
                FROM proxima_core.memories
               WHERE memory_id = $1",
         )
@@ -1032,10 +1019,7 @@ async fn validate_evidence_in_owner(
         let Some(row) = row else {
             return Err(StorageError::NotFound);
         };
-        if row.owner_principal_kind != owner_kind
-            || row.owner_principal_id != owner_principal_id
-            || row.owner_org_id != owner_org_id
-        {
+        if row.owner_principal_kind != owner_kind || row.owner_principal_id != owner_principal_id {
             return Err(StorageError::ConstraintViolation(
                 "evidence crosses Owner boundary".into(),
             ));
@@ -1061,7 +1045,7 @@ async fn outgoing_motivated_by_evidence(
     owner: &Owner,
     goal_id: GoalId,
 ) -> Result<Vec<EvidenceTarget>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let rows: Vec<(EntityKind, uuid::Uuid)> = sqlx::query_as(
         "SELECT target_kind, target_memory_id
            FROM proxima_core.edges
@@ -1069,7 +1053,6 @@ async fn outgoing_motivated_by_evidence(
             AND source_goal_id = $2
             AND owner_principal_kind = $3
             AND owner_principal_id = $4
-            AND owner_org_id = $5
             AND target_memory_id IS NOT NULL
           ORDER BY created_at ASC",
     )
@@ -1077,7 +1060,6 @@ async fn outgoing_motivated_by_evidence(
     .bind(goal_id.into_inner())
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .fetch_all(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -1143,8 +1125,7 @@ where
     let draft = EventDraft {
         source_id: SourceId::new(LIFECYCLE_SOURCE_ID),
         source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
-        principal: owner.principal.clone(),
-        org_id: Some(owner.org_id),
+        principal: owner.clone(),
         author_personality_instance_id: None,
         schema_id: SchemaId::new(T::SCHEMA_ID.to_string()),
         schema_version: SchemaVersion::new(T::SCHEMA_VERSION),

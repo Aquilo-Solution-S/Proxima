@@ -19,8 +19,7 @@ operates in degraded lexical-only mode.
 | Var | Required | Example | Purpose |
 |---|---|---|---|
 | `DATABASE_URL` | yes | `postgres://user:pass@host:5432/db` | Postgres connection string. |
-| `--owner-user <UUID>` | yes (CLI flag) | `550e8400-e29b-41d4-a716-446655440000` | Fixed owner user id. |
-| `--owner-org <UUID>` | yes (CLI flag) | `550e8400-e29b-41d4-a716-446655440001` | Fixed owner org id. |
+| `--owner-user <UUID>` | yes (CLI flag) | `550e8400-e29b-41d4-a716-446655440000` | Fixed owner principal (`Owner = Principal`; no org field). |
 | `PROXIMA_MCP_BIND` | yes | `0.0.0.0:8080` | MCP listener address. |
 | `PROXIMA_EXPOSE_NETWORK=true` | yes | `true` | Required for non-loopback bind. |
 | `PROXIMA_ALLOWED_ORIGINS` | yes | `https://claude.example.com,https://codex.example.com` | Comma-separated origin allowlist; never `*`. |
@@ -78,7 +77,7 @@ docker run -p 8080:8080 \
   -e PROXIMA_PUBLIC_URL=https://proxima.example.com \
   -e PROXIMA_OIDC_ISSUER=https://zitadel.example.com \
   -e PROXIMA_OIDC_AUDIENCE=https://proxima.example.com/mcp \
-  proxima-mcp --owner-user 550e8400-e29b-41d4-a716-446655440000 --owner-org 550e8400-e29b-41d4-a716-446655440001
+  proxima-mcp --owner-user 550e8400-e29b-41d4-a716-446655440000
 ```
 
 Memory-brain surface:
@@ -93,7 +92,7 @@ docker run -p 8080:8080 \
   -e PROXIMA_OIDC_ISSUER=https://zitadel.example.com \
   -e PROXIMA_OIDC_AUDIENCE=https://proxima.example.com/mcp \
   -e PROXIMA_TOOL_PROFILE=memory \
-  proxima-mcp --owner-user 550e8400-e29b-41d4-a716-446655440000 --owner-org 550e8400-e29b-41d4-a716-446655440001
+  proxima-mcp --owner-user 550e8400-e29b-41d4-a716-446655440000
 ```
 
 `PROXIMA_TOOL_PROFILE=memory` shrinks the advertised MCP surface for

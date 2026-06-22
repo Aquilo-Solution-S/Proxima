@@ -32,7 +32,7 @@ pub async fn ensure_subject_personality(
     owner: &Owner,
     subject: &Principal,
 ) -> Result<MasterTokenPersonality, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let (subject_kind, subject_principal_id) = subject.columns();
 
     // Fast path: lock-free read. Hits on every call after the first.
@@ -40,7 +40,6 @@ pub async fn ensure_subject_personality(
         pool,
         owner_kind,
         owner_principal_id,
-        owner_org_id,
         subject_kind,
         subject_principal_id,
     )
@@ -52,11 +51,7 @@ pub async fn ensure_subject_personality(
     // Slow path: take a session-level advisory lock on a pinned
     // connection so concurrent first-connects can't both mint.
     let mut conn = pool.acquire().await.map_err(map_err)?;
-    let key = lock_key(
-        owner.org_id.into_inner(),
-        subject_kind,
-        subject_principal_id,
-    );
+    let key = lock_key(subject_kind, subject_principal_id);
     sqlx::query("SELECT pg_advisory_lock($1)")
         .bind(key)
         .fetch_one(&mut *conn)
@@ -69,7 +64,6 @@ pub async fn ensure_subject_personality(
         owner,
         owner_kind,
         owner_principal_id,
-        owner_org_id,
         subject_kind,
         subject_principal_id,
     )
@@ -90,7 +84,6 @@ async fn mint_under_lock(
     owner: &Owner,
     owner_kind: OwnerPrincipalKind,
     owner_principal_id: Uuid,
-    owner_org_id: Uuid,
     subject_kind: OwnerPrincipalKind,
     subject_principal_id: Uuid,
 ) -> Result<MasterTokenPersonality, StorageError> {
@@ -99,7 +92,6 @@ async fn mint_under_lock(
         conn,
         owner_kind,
         owner_principal_id,
-        owner_org_id,
         subject_kind,
         subject_principal_id,
     )
@@ -109,8 +101,7 @@ async fn mint_under_lock(
     }
 
     let req = InstantiatePersonalityRequest {
-        principal: owner.principal.clone(),
-        org_id: Some(owner.org_id),
+        principal: owner.clone(),
         display_name: SUBJECT_DISPLAY_NAME.into(),
     };
     let resp = consolidate::instantiate_personality(pool, &req).await?;
@@ -118,14 +109,13 @@ async fn mint_under_lock(
 
     sqlx::query(
         r"INSERT INTO proxima_core.subject_personality (
-             owner_principal_kind, owner_principal_id, owner_org_id,
+             owner_principal_kind, owner_principal_id,
              subject_principal_kind, subject_principal_id,
              personality_instance_id
-         ) VALUES ($1, $2, $3, $4, $5, $6)",
+         ) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(subject_kind)
     .bind(subject_principal_id)
     .bind(instance_id.into_inner())
@@ -154,7 +144,6 @@ async fn lookup_pool(
     pool: &PgPool,
     owner_kind: OwnerPrincipalKind,
     owner_principal_id: Uuid,
-    owner_org_id: Uuid,
     subject_kind: OwnerPrincipalKind,
     subject_principal_id: Uuid,
 ) -> Result<Option<MasterTokenPersonality>, StorageError> {
@@ -166,14 +155,12 @@ async fn lookup_pool(
                ON p.personality_instance_id = sp.personality_instance_id
              WHERE sp.owner_principal_kind = $1
                AND sp.owner_principal_id = $2
-               AND sp.owner_org_id = $3
-               AND sp.subject_principal_kind = $4
-               AND sp.subject_principal_id = $5
+               AND sp.subject_principal_kind = $3
+               AND sp.subject_principal_id = $4
              LIMIT 1",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(subject_kind)
     .bind(subject_principal_id)
     .fetch_optional(pool)
@@ -186,7 +173,6 @@ async fn lookup_conn(
     conn: &mut PgConnection,
     owner_kind: OwnerPrincipalKind,
     owner_principal_id: Uuid,
-    owner_org_id: Uuid,
     subject_kind: OwnerPrincipalKind,
     subject_principal_id: Uuid,
 ) -> Result<Option<MasterTokenPersonality>, StorageError> {
@@ -198,14 +184,12 @@ async fn lookup_conn(
                ON p.personality_instance_id = sp.personality_instance_id
              WHERE sp.owner_principal_kind = $1
                AND sp.owner_principal_id = $2
-               AND sp.owner_org_id = $3
-               AND sp.subject_principal_kind = $4
-               AND sp.subject_principal_id = $5
+               AND sp.subject_principal_kind = $3
+               AND sp.subject_principal_id = $4
              LIMIT 1",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(subject_kind)
     .bind(subject_principal_id)
     .fetch_optional(&mut *conn)
@@ -221,10 +205,9 @@ fn into_personality(row: &sqlx::postgres::PgRow) -> MasterTokenPersonality {
     }
 }
 
-fn lock_key(org_id: Uuid, subject_kind: OwnerPrincipalKind, subject_id: Uuid) -> i64 {
+fn lock_key(subject_kind: OwnerPrincipalKind, subject_id: Uuid) -> i64 {
     let mut hasher = blake3::Hasher::new();
     hasher.update(LOCK_KEY_DOMAIN);
-    hasher.update(org_id.as_bytes());
     hasher.update(subject_kind.as_str().as_bytes());
     hasher.update(subject_id.as_bytes());
     let hash = hasher.finalize();

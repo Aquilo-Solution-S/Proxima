@@ -1,7 +1,7 @@
 //! PG coverage for the per-master-token shell-author identity.
 use crate::common::{drop_db, fresh_pg};
 use proxima_core::storage::Storage;
-use proxima_core::{OrgId, Owner, Principal, UserId};
+use proxima_core::{Principal, UserId};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -9,10 +9,7 @@ use uuid::Uuid;
 async fn ensure_master_token_personality_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
-    let owner = Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    };
+    let owner = Principal::User(UserId::new(Uuid::now_v7()));
     let token = Uuid::now_v7();
 
     let first = pg.ensure_master_token_personality(&owner, token).await?;
@@ -28,10 +25,7 @@ async fn distinct_tokens_resolve_to_distinct_personalities()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
-    let owner = Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    };
+    let owner = Principal::User(UserId::new(Uuid::now_v7()));
 
     let a = pg
         .ensure_master_token_personality(&owner, Uuid::now_v7())
@@ -58,10 +52,7 @@ async fn concurrent_callers_resolve_to_single_personality() -> Result<(), Box<dy
 
     let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
-    let owner = Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    };
+    let owner = Principal::User(UserId::new(Uuid::now_v7()));
     let token = Uuid::now_v7();
     let pg = Arc::new(pg);
 
@@ -95,14 +86,12 @@ async fn concurrent_callers_resolve_to_single_personality() -> Result<(), Box<dy
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM proxima_core.personality
          WHERE owner_principal_kind = 'User'
-           AND owner_principal_id = $1
-           AND owner_org_id = $2",
+           AND owner_principal_id = $1",
     )
-    .bind(match &owner.principal {
+    .bind(match &owner {
         Principal::User(u) => u.into_inner(),
         Principal::Group(g) => g.into_inner(),
     })
-    .bind(owner.org_id.into_inner())
     .fetch_one(pg.pool())
     .await?;
     assert_eq!(count, 1, "expected exactly one personality, got {count}");

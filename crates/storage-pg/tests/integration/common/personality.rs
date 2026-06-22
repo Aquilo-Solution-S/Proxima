@@ -182,7 +182,7 @@ pub fn build_test_engine(pg: PgStorage, anthropic: Arc<dyn AnthropicClient>) -> 
     registry.add_perspective_schema::<TestPersonalitySelfV1>();
     registry.add_abstraction_schema::<TestAbstractionV1>();
     let frozen = registry.freeze();
-    let _principal: Principal = owner.principal.clone();
+    let _principal: Principal = owner.clone();
     Engine::new(frozen)
         .with_storage(Arc::new(pg))
         .with_anthropic(anthropic)
@@ -198,8 +198,7 @@ pub async fn instantiate_test_personality(
         .instantiate_personality(
             &AuthzContext::single_owner(owner, AuthPath::System),
             InstantiatePersonalityRequest {
-                principal: owner.principal.clone(),
-                org_id: None,
+                principal: owner.clone(),
                 display_name: "Test Personality".into(),
             },
         )
@@ -218,8 +217,7 @@ pub async fn ingest_test_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Mem
     let draft = EventDraft {
         source_id: SourceId::new(TEST_SOURCE_ID),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.principal.clone(),
-        org_id: Some(owner.org_id),
+        principal: owner.clone(),
         author_personality_instance_id: None,
         schema_id: SchemaId::new(TEST_FACT_SCHEMA.into()),
         schema_version: SchemaVersion::new(1),
@@ -259,8 +257,7 @@ pub async fn ingest_other_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Me
     let draft = EventDraft {
         source_id: SourceId::new(TEST_SOURCE_ID),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.principal.clone(),
-        org_id: Some(owner.org_id),
+        principal: owner.clone(),
         author_personality_instance_id: None,
         schema_id: SchemaId::new(TEST_OTHER_FACT_SCHEMA.into()),
         schema_version: SchemaVersion::new(1),

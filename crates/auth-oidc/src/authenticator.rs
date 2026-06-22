@@ -77,7 +77,7 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, encode};
-    use proxima_core::{OrgId, Owner, Principal, UserId};
+    use proxima_core::{Owner, Principal, UserId};
     use rand::rngs::OsRng;
     use rsa::{
         RsaPrivateKey,
@@ -107,10 +107,7 @@ mod tests {
     }
 
     fn test_owner() -> Owner {
-        Owner {
-            principal: Principal::User(UserId::new(Uuid::new_v4())),
-            org_id: OrgId::new(Uuid::new_v4()),
-        }
+        Principal::User(UserId::new(Uuid::new_v4()))
     }
 
     fn test_keys() -> TestKeys {
@@ -190,7 +187,7 @@ mod tests {
             .expect("authenticate valid token");
 
         assert_eq!(ctx.auth_path, AuthPath::HostBearer);
-        assert_eq!(ctx.identity.principal, owner.principal);
+        assert_eq!(ctx.identity.principal, owner);
         assert!(ctx.identity.expires_at.is_some());
     }
 

@@ -77,12 +77,6 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     }
 
     #[must_use]
-    pub fn org_id(mut self, org_id: uuid::Uuid) -> Self {
-        self.overlay = self.overlay.org_id(org_id);
-        self
-    }
-
-    #[must_use]
     pub fn master_token(mut self, master_token: impl Into<String>) -> Self {
         self.overlay = self.overlay.master_token(master_token);
         self

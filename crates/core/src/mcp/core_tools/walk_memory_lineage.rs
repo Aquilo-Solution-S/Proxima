@@ -103,7 +103,7 @@ impl McpTool for WalkMemoryLineageTool {
                 .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
             let response = storage
                 .walk_memory_lineage(&MemoryLineageRequest {
-                    principal: ctx.owner.principal.clone(),
+                    principal: ctx.owner.clone(),
                     start_memory_id: start,
                     direction,
                     depth: args.depth.clamp(1, 8),

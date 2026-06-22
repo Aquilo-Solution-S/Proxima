@@ -86,6 +86,22 @@ async fn flavor_migrations_apply_to_fresh_db() {
             assert_enum_column(pg.pool(), "proxima_code", table, column).await?;
         }
 
+        // S0 (Owner = Principal collapse, Track B): the full-collapse decision
+        // removes owner_org_id from proxima_code too. Keystone gate for the
+        // flavor DDL-drop migration — a missed column would silently keep org
+        // in the flavor schema and pass every check above.
+        let org_cols: (i64,) = sqlx::query_as(
+            "SELECT count(*)::bigint FROM information_schema.columns \
+             WHERE table_schema = 'proxima_code' AND column_name = 'owner_org_id'",
+        )
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(
+            org_cols.0, 0,
+            "owner_org_id must be absent from proxima_code after S0; found {}",
+            org_cols.0
+        );
+
         // Idempotency — a second run must not error.
         proxima_code::migrator().run(pg.pool()).await?;
 

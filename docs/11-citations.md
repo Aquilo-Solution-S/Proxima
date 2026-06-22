@@ -81,8 +81,6 @@ cited_objects(
     created_at,
     UNIQUE (owner_principal_kind, owner_principal_id,
             schema_id, content_hash)
-    -- owner_org_id is a billing annotation, deliberately NOT in the
-    -- dedup key (doc 01 §Owner, renegotiated 2026-06-11)
 )
 -- Per-schema sidecar (one per registered CitedObjectPayload):
 cited_uploaded_blob_v1(cited_object_id pk FK, bucket, object_key, sha256, byte_len, mime, filename, etag, uploaded_at)
