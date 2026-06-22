@@ -48,7 +48,7 @@ async fn load_batch_facts_by_id(
     batch_id: uuid::Uuid,
     sidecars: &[SidecarSpec],
 ) -> Result<Vec<FactRow>, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let mut rows_all = Vec::new();
     let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
     for spec in sidecars {
@@ -111,7 +111,7 @@ pub async fn load_abstraction_heads(
     sidecars: &[SidecarSpec],
     limit: usize,
 ) -> Result<Vec<AbstractionRow>, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let mut rows_all = Vec::new();
     let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
     for spec in sidecars {
@@ -189,7 +189,7 @@ pub async fn load_perspective_heads(
     sidecars: &[SidecarSpec],
     limit: usize,
 ) -> Result<Vec<MemorySnapshot>, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let mut rows_all = Vec::new();
     let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
     for spec in sidecars {
@@ -274,7 +274,7 @@ pub async fn load_memory_by_id(
     reader_personality_instance_id: Option<PersonalityInstanceId>,
     sidecars: &[SidecarSpec],
 ) -> Result<Option<MemorySnapshot>, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let head: Option<(
         Option<EntityKind>,
         String,
@@ -443,7 +443,7 @@ pub async fn lookup_prior_personality_head(
     instance: &PersonalityRef,
     schema_id: &SchemaId,
 ) -> Result<Option<MemoryId>, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let row: Option<(uuid::Uuid,)> = sqlx::query_as(
         "SELECT memory_id
          FROM proxima_core.memories
@@ -482,7 +482,7 @@ pub async fn append_personality_memories(
             memory_ids: Vec::new(),
         });
     }
-    let (owner_kind, owner_principal_id, owner_org_id) = req.owner.columns();
+    let (owner_kind, owner_principal_id) = req.owner.columns();
     let mut tx = pool.begin().await.map_err(map_err)?;
     let mut memory_ids = Vec::with_capacity(req.memories.len());
 
@@ -498,17 +498,16 @@ pub async fn append_personality_memories(
         memory_ids.push(MemoryId::new(memory_id));
         sqlx::query(
             "INSERT INTO proxima_core.memories
-                (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+                (memory_id, owner_principal_kind, owner_principal_id,
                  schema_id, schema_version, kind, text, operator_kind, model_id,
                  prompt_version, personality_instance_id,
                  wake_chain_depth, supersedes)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Wake',
-                     $9, $10, $11, $12, $13)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'Wake',
+                     $8, $9, $10, $11, $12)",
         )
         .bind(memory_id)
         .bind(owner_kind)
         .bind(owner_principal_id)
-        .bind(owner_org_id)
         .bind(memory.schema_id.as_str())
         .bind(i32::try_from(memory.schema_version.into_inner()).unwrap_or(1))
         .bind(memory.kind.entity_kind())
@@ -529,17 +528,16 @@ pub async fn append_personality_memories(
         let change_seq = uuid::Uuid::now_v7();
         sqlx::query(
             "INSERT INTO proxima_core.change_event
-                (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind,
+                (seq, owner_principal_kind, owner_principal_id, kind,
                  entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,
                  entity_personality_instance_id,
                  wake_chain_depth, supersedes_memory_id)
-             VALUES ($1, $2, $3, $4, 'EntityAppend',
-                     $5, $6, $7, $8, $9, $10, $11)",
+             VALUES ($1, $2, $3, 'EntityAppend',
+                     $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(change_seq)
         .bind(owner_kind)
         .bind(owner_principal_id)
-        .bind(owner_org_id)
         .bind(memory.kind.entity_kind())
         .bind(memory_id)
         .bind(memory.schema_id.as_str())
@@ -620,8 +618,8 @@ pub async fn append_personality_memories(
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
                 (entity_kind, entity_id, embedding_version, model_id, vec,
-                 owner_principal_kind, owner_principal_id, owner_org_id)
-             VALUES ($1, $2, 1, $3, $4::vector, $5, $6, $7)",
+                 owner_principal_kind, owner_principal_id)
+             VALUES ($1, $2, 1, $3, $4::vector, $5, $6)",
         )
         .bind(memory.kind.entity_kind())
         .bind(memory_id)
@@ -629,7 +627,6 @@ pub async fn append_personality_memories(
         .bind(vec_literal)
         .bind(owner_kind)
         .bind(owner_principal_id)
-        .bind(owner_org_id)
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;

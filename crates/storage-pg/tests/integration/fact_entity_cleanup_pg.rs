@@ -14,7 +14,7 @@ use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthPath, AuthorshipKindMask, AuthzContext, EdgeAuthorshipKind, EdgeId, EdgePayload,
     EndpointBinding, EntityKind, EntityKindMask, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
-    MemoryId, OrgId, Owner, PayloadKeyBuilder, Principal, RelationClass, RelationDescriptor, Role,
+    MemoryId, Owner, PayloadKeyBuilder, Principal, RelationClass, RelationDescriptor, Role,
     SchemaId, SchemaRef, SchemaVersion, SidecarPayload, SourceBatchId, SourceId, StorageError,
     UserId, canonical_json_bytes,
 };
@@ -238,8 +238,7 @@ fn draft_for(owner: &Owner, payload_value: &Value, cited: bool) -> EventDraft {
     EventDraft {
         source_id: SourceId::new(format!("test/fact-entity-cleanup/{}", Uuid::now_v7())),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.principal.clone(),
-        org_id: Some(owner.org_id),
+        principal: owner.clone(),
         author_personality_instance_id: None,
         schema_id: StatefulFactV1::schema_id(),
         schema_version: SchemaVersion::new(StatefulFactV1::SCHEMA_VERSION),
@@ -598,10 +597,7 @@ async fn cleanup_is_owner_scoped_for_identical_natural_keys()
         pg.run_migrations().await?;
         create_sidecar(&pg).await?;
         let owner = owner_fixture();
-        let other = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let other = Principal::User(UserId::new(Uuid::now_v7()));
         let registry = registry_for_test();
         let engine = engine_for(&pg, registry);
         let owner_fact =
@@ -699,20 +695,19 @@ async fn insert_direct_derivative(
     fact_id: Uuid,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let derivative_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (memory_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 'test/cleanup-abstraction-v1', 1,
+         VALUES ($1, $2, $3, 'test/cleanup-abstraction-v1', 1,
                  'Abstraction', 'derivative', 'FtoA', 'test-model',
                  'test-prompt', '00000000-0000-0000-0000-000000000000'::uuid, 0)",
     )
     .bind(derivative_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .execute(pg.pool())
     .await?;
 
@@ -722,19 +717,18 @@ async fn insert_direct_derivative(
              source_kind, source_memory_id,
              target_kind, target_memory_id,
              authorship_kind, authorship_owner_memory_id,
-             owner_principal_kind, owner_principal_id, owner_org_id)
+             owner_principal_kind, owner_principal_id)
          VALUES ($1, 'core/derived-from', 'Provenance',
                  'Abstraction', $2,
                  'Fact', $3,
                  'OperatorFtoA', $2,
-                 $4, $5, $6)",
+                 $4, $5)",
     )
     .bind(Uuid::now_v7())
     .bind(derivative_id)
     .bind(fact_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .execute(pg.pool())
     .await?;
     Ok(derivative_id)

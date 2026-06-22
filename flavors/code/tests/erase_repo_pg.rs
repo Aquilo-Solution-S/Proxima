@@ -3,17 +3,12 @@ mod common;
 use common::{migrated_db, test_owner};
 use proxima_code::{CommitV1, TestRequestV1, erase_repo, register_repo};
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
-use proxima_core::{FactPayload, Owner, OwnerPrincipalKind, Principal, SchemaId, SchemaVersion};
+use proxima_core::{FactPayload, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion};
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
 
 fn owner_principal(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
-    let kind = OwnerPrincipalKind::of(&owner.principal);
-    let id = match &owner.principal {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
-    (kind, id)
+    owner.columns()
 }
 
 fn fact_schema(schema_id: &str, sidecar_table: &str) -> SchemaInfo {
@@ -40,49 +35,45 @@ async fn insert_repo_commit_with_test_request(
     memory_id: Uuid,
 ) -> Result<(), sqlx::Error> {
     let (owner_kind, owner_id) = owner_principal(owner);
-    let org_id = owner.org_id.into_inner();
     let source_batch_id = Uuid::now_v7();
     let event_id = Uuid::now_v7().as_bytes().to_vec();
 
     sqlx::query(
         "INSERT INTO proxima_core.source_batches
-            (id, source_id, owner_principal_kind, owner_principal_id, owner_org_id)
-         VALUES ($1, 'test/erase-repo', $2, $3, $4)",
+            (id, source_id, owner_principal_kind, owner_principal_id)
+         VALUES ($1, 'test/erase-repo', $2, $3)",
     )
     .bind(source_batch_id)
     .bind(owner_kind)
     .bind(owner_id)
-    .bind(org_id)
     .execute(pool)
     .await?;
 
     sqlx::query(
         "INSERT INTO proxima_core.events
             (event_id, source_id, source_batch_id, owner_principal_kind,
-             owner_principal_id, owner_org_id, schema_id, schema_version,
+             owner_principal_id, schema_id, schema_version,
              observed_at, occurred_at)
-         VALUES ($1, 'test/erase-repo', $2, $3, $4, $5, $6, 1, now(), now())",
+         VALUES ($1, 'test/erase-repo', $2, $3, $4, $5, 1, now(), now())",
     )
     .bind(&event_id)
     .bind(source_batch_id)
     .bind(owner_kind)
     .bind(owner_id)
-    .bind(org_id)
     .bind(CommitV1::SCHEMA_ID)
     .execute(pool)
     .await?;
 
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (memory_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, event_id, personality_instance_id)
-         VALUES ($1, $2, $3, $4, $5, 1, $6,
+         VALUES ($1, $2, $3, $4, 1, $5,
              '00000000-0000-0000-0000-000000000000'::uuid)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_id)
-    .bind(org_id)
     .bind(CommitV1::SCHEMA_ID)
     .bind(&event_id)
     .execute(pool)

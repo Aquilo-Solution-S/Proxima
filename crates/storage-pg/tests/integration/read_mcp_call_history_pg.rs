@@ -2,7 +2,7 @@
 
 use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
 use proxima_core::verbs::persist_mcp_call::McpCallLogInput;
-use proxima_core::{OrgId, Owner, Principal, Storage, UserId};
+use proxima_core::{Owner, Principal, Storage, UserId};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::persist_mcp_call::persist_mcp_call_atomic;
 use uuid::Uuid;
@@ -15,10 +15,7 @@ async fn read_mcp_call_history_returns_owner_scoped_newest_first() {
         pg.run_migrations().await?;
 
         let owner1 = crate::common::owner_fixture();
-        let owner2 = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner2 = Principal::User(UserId::new(Uuid::now_v7()));
 
         seed_history_fixture(&pg, &owner1, &owner2).await?;
 
@@ -123,7 +120,7 @@ async fn seed_history_fixture(
 
 fn history_req(owner: &Owner, actor_oid: Option<&str>, limit: u32) -> McpCallHistoryRequest {
     McpCallHistoryRequest {
-        principal: owner.principal.clone(),
+        principal: owner.clone(),
         actor_oid: actor_oid.map(str::to_string),
         limit,
     }

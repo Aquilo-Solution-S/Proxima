@@ -259,8 +259,8 @@ async fn engine_author_derived_supersedes_in_same_transaction()
                     AND newer.tombstoned_at IS NULL
             )",
     )
-    .bind(OwnerPrincipalKind::of(&owner.principal))
-    .bind(match &owner.principal {
+    .bind(OwnerPrincipalKind::of(&owner))
+    .bind(match &owner {
         Principal::User(user) => user.into_inner(),
         Principal::Group(group) => group.into_inner(),
     })
@@ -272,7 +272,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
 
     let lineage = pg
         .walk_memory_lineage(&proxima_core::verbs::query::MemoryLineageRequest {
-            principal: owner.principal.clone(),
+            principal: owner.clone(),
             start_memory_id: new_memory_id,
             direction: proxima_core::verbs::query::MemoryLineageDirection::Ancestors,
             depth: 2,
@@ -342,14 +342,13 @@ async fn ingest_event_with_sidecar_writes_fact_and_note_sidecar()
         idempotency_key: Some("note-1".into()),
     };
     let sidecar_payload = SidecarPayload::fact(note.clone());
-    let mut draft = EventDraft::from_payload(
+    let draft = EventDraft::from_payload(
         &owner,
         "test/source",
         SourceBatchId::new(Uuid::now_v7()),
         &note,
         time::OffsetDateTime::now_utc(),
     );
-    draft.org_id = None;
     let authorized = engine.authorize_event_ingest(&authz, Role::SourceIngest, draft)?;
     let outcome = pg
         .ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
@@ -386,24 +385,23 @@ async fn insert_source_abstraction(
     owner: &Owner,
 ) -> Result<MemoryId, sqlx::Error> {
     let memory_id = Uuid::now_v7();
-    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
-    let owner_principal_id = match &owner.principal {
+    let owner_kind = OwnerPrincipalKind::of(owner);
+    let owner_principal_id = match owner {
         Principal::User(user) => user.into_inner(),
         Principal::Group(group) => group.into_inner(),
     };
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (memory_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, $5, 1, 'Abstraction',
+         VALUES ($1, $2, $3, $4, 1, 'Abstraction',
                  'source abstraction', 'ExternalAgent', 'source-model',
-                 'source-prompt', $6, 0)",
+                 'source-prompt', $5, 0)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner.org_id.into_inner())
     .bind(AgentDerivationV1::SCHEMA_ID)
     .bind(Uuid::nil())
     .execute(pg.pool())

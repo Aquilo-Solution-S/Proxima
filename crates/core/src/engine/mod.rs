@@ -136,8 +136,7 @@ impl Engine {
         req: &SetWakeEntriesRequest,
     ) -> Result<SetWakeEntriesResponse, ProtocolError> {
         authorize(authz, &req.principal, Role::Admin)?;
-        let mut effective = req.clone();
-        effective.stamp_owner(authz.scoped_owner(req.principal.clone()));
+        let effective = req.clone();
         crate::personality::validate_wake_entries_detect_config(&effective.entries)?;
         self.storage
             .set_wake_entries(&effective)

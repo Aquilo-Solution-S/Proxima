@@ -30,6 +30,22 @@ async fn migrations_apply_to_fresh_db() {
             "expected >=7 tables in proxima_core, got {}",
             row.0
         );
+
+        // S0 (Owner = Principal collapse, Track B): owner_org_id must be GONE
+        // from every proxima_core table. This is the keystone gate for the
+        // DDL-drop migration — a single missed column would silently keep org
+        // in storage and pass the table-count check above.
+        let org_cols: (i64,) = sqlx::query_as(
+            "SELECT count(*)::bigint FROM information_schema.columns \
+             WHERE table_schema = 'proxima_core' AND column_name = 'owner_org_id'",
+        )
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(
+            org_cols.0, 0,
+            "owner_org_id must be absent from proxima_core after S0; found {} column(s)",
+            org_cols.0
+        );
         Ok(())
     }
     .await;

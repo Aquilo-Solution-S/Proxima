@@ -37,7 +37,7 @@ pub use proxima_core::verbs::schema::PayloadKind;
 pub use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, CapabilitySet, CitationMappingPayload,
     CitedObjectPayload, Engine, EngineHandle, FactPayload, FlavorRegistry, GoalPayload, GroupId,
-    Identity, McpCallLogInput, McpCallLogOutcome, MemoryId, OrgId, Owner, PerspectivePayload,
+    Identity, McpCallLogInput, McpCallLogOutcome, MemoryId, Owner, PerspectivePayload,
     Principal, Role, RoleSet, SchemaId, SchemaVersion, SearchProjection,
     SearchProjectionColumnKind, SearchProjectionField, SidecarPayload, SourceBatchId, SourceId,
     StorageError, ToolScope, UserId, canonical_json_bytes, proxima_flavor,
@@ -71,17 +71,14 @@ use proxima_core::llm::{AnthropicClient, EmbeddingClient};
 use proxima_storage_pg::PgStorage;
 use sqlx::PgPool;
 
-/// One org-wide Owner: a Group principal carrying the org id.
+/// One Owner per embedded host: a Group principal.
 ///
-/// This is the single place embedded hosts construct `Owner`. When
-/// the kernel's `Owner := Principal` refactor lands in code, only this
-/// function changes.
+/// This is the single place embedded hosts construct `Owner`. Since the
+/// `Owner = Principal` collapse (S0, Track B), the former org scalar is
+/// gone — tenancy is a flavor/app concern, not a substrate one.
 #[must_use]
-pub fn company_owner(org: uuid::Uuid) -> Owner {
-    Owner {
-        principal: Principal::Group(GroupId::new(org)),
-        org_id: OrgId::new(org),
-    }
+pub fn company_owner(id: uuid::Uuid) -> Owner {
+    Principal::Group(GroupId::new(id))
 }
 
 /// Persist one host-observed MCP tool call through an embedded engine.
@@ -326,9 +323,9 @@ mod tests {
     use proxima_core::Principal;
 
     #[test]
-    fn company_owner_is_group_scoped_to_org() {
-        let org = uuid::Uuid::now_v7();
-        let owner = super::company_owner(org);
-        assert!(matches!(owner.principal, Principal::Group(_)));
+    fn company_owner_is_group_scoped() {
+        let id = uuid::Uuid::now_v7();
+        let owner = super::company_owner(id);
+        assert!(matches!(owner, Principal::Group(_)));
     }
 }

@@ -72,8 +72,7 @@ fn fresh_draft(owner: &Owner) -> EventDraft {
     EventDraft {
         source_id: SourceId::new("test/sidecar-source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.principal.clone(),
-        org_id: Some(owner.org_id),
+        principal: owner.clone(),
         author_personality_instance_id: None,
         schema_id: SchemaId::new("test/sidecar_fact".into()),
         schema_version: SchemaVersion::new(1),
@@ -97,11 +96,10 @@ fn fresh_draft(owner: &Owner) -> EventDraft {
 
 fn reduced_authz(owner: &Owner) -> AuthzContext {
     let mut accessible_principals = HashSet::with_capacity(1);
-    accessible_principals.insert(owner.principal.clone());
+    accessible_principals.insert(owner.clone());
     AuthzContext {
         identity: Identity {
-            principal: owner.principal.clone(),
-            org_id: owner.org_id,
+            principal: owner.clone(),
             accessible_principals,
             expires_at: None,
             auth_epoch: 0,

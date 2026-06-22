@@ -5,18 +5,13 @@ use proxima_code::{
     CodeChunkV1, CommitV1, FileRevisionV1, FileState, append_code_slice, ingest_commit,
     ingest_file_revision,
 };
-use proxima_core::{AbstractionPayload, FactPayload, Owner, Principal, SourceBatchId};
+use proxima_core::{AbstractionPayload, FactPayload, Owner, SourceBatchId};
 use proxima_pg_testkit::drop_db;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-fn owner_cols(owner: &Owner) -> (proxima_core::OwnerPrincipalKind, Uuid, Uuid) {
-    let kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
-    let principal_id = match &owner.principal {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
-    (kind, principal_id, owner.org_id.into_inner())
+fn owner_cols(owner: &Owner) -> (proxima_core::OwnerPrincipalKind, Uuid) {
+    owner.columns()
 }
 
 fn source_batch_id() -> SourceBatchId {
@@ -81,21 +76,19 @@ async fn fact_entity_rows(
     schema_id: &str,
     natural_key: &[String],
 ) -> Result<Vec<(Uuid, Uuid)>, sqlx::Error> {
-    let (kind, principal_id, org_id) = owner_cols(owner);
+    let (kind, principal_id) = owner_cols(owner);
     sqlx::query_as(
         "SELECT fact_entity_id, current_memory_id
            FROM proxima_core.fact_entities
           WHERE owner_principal_kind = $1
             AND owner_principal_id = $2
-            AND owner_org_id = $3
-            AND schema_id = $4
+            AND schema_id = $3
             AND schema_version = 1
-            AND natural_key = $5
+            AND natural_key = $4
           ORDER BY fact_entity_id",
     )
     .bind(kind)
     .bind(principal_id)
-    .bind(org_id)
     .bind(schema_id)
     .bind(natural_key)
     .fetch_all(pool)
@@ -107,19 +100,17 @@ async fn fact_entity_count_for_schema(
     owner: &Owner,
     schema_id: &str,
 ) -> Result<i64, sqlx::Error> {
-    let (kind, principal_id, org_id) = owner_cols(owner);
+    let (kind, principal_id) = owner_cols(owner);
     sqlx::query_scalar(
         "SELECT count(*)::bigint
            FROM proxima_core.fact_entities
           WHERE owner_principal_kind = $1
             AND owner_principal_id = $2
-            AND owner_org_id = $3
-            AND schema_id = $4
+            AND schema_id = $3
             AND schema_version = 1",
     )
     .bind(kind)
     .bind(principal_id)
-    .bind(org_id)
     .bind(schema_id)
     .fetch_one(pool)
     .await

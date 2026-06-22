@@ -23,12 +23,11 @@ async fn author_inspires_edge(
     source_goal_id: Uuid,
     target_memory_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let owner_kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
-    let owner_principal_id = match &owner.principal {
+    let owner_kind = proxima_core::OwnerPrincipalKind::of(owner);
+    let owner_principal_id = match owner {
         Principal::User(u) => u.into_inner(),
         Principal::Group(g) => g.into_inner(),
     };
-    let owner_org_id = owner.org_id.into_inner();
     let edge_id = Uuid::now_v7();
     let mut tx = pg.pool().begin().await?;
     sqlx::query(
@@ -37,9 +36,9 @@ async fn author_inspires_edge(
              source_kind, source_memory_id, source_goal_id,
              target_kind, target_memory_id, target_goal_id,
              authorship_kind,
-             owner_principal_kind, owner_principal_id, owner_org_id)
+             owner_principal_kind, owner_principal_id)
          VALUES ($1, $2, 'Causal', 'Goal', NULL, $3, 'Perspective', $4, NULL,
-                 'User', $5, $6, $7)",
+                 'User', $5, $6)",
     )
     .bind(edge_id)
     .bind(CORE_INSPIRES_RELATION)
@@ -47,24 +46,22 @@ async fn author_inspires_edge(
     .bind(target_memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .execute(&mut *tx)
     .await?;
 
     let seq = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.change_event
-            (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind,
+            (seq, owner_principal_kind, owner_principal_id, kind,
              edge_id, edge_relation,
              edge_source_goal_id,
              edge_target_memory_id)
-         VALUES ($1, $2, $3, $4, 'EdgeAppend', $5, $6,
-                 $7, $8)",
+         VALUES ($1, $2, $3, 'EdgeAppend', $4, $5,
+                 $6, $7)",
     )
     .bind(seq)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(edge_id)
     .bind(CORE_INSPIRES_RELATION)
     .bind(source_goal_id)
@@ -79,27 +76,25 @@ async fn seed_active_goal(
     pg: &PgStorage,
     owner: &Owner,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let owner_kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
-    let owner_principal_id = match &owner.principal {
+    let owner_kind = proxima_core::OwnerPrincipalKind::of(owner);
+    let owner_principal_id = match owner {
         Principal::User(u) => u.into_inner(),
         Principal::Group(g) => g.into_inner(),
     };
-    let owner_org_id = owner.org_id.into_inner();
     let goal_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.goals
             (goal_id, schema_id, schema_version,
-             owner_principal_kind, owner_principal_id, owner_org_id,
+             owner_principal_kind, owner_principal_id,
              title, text, state, authorship_kind, request_id, payload)
          VALUES ($1, 'core/simple-text-v1', 1,
-                 $2, $3, $4,
+                 $2, $3,
                  'goal targeting', 'target Alice only', 'Active', 'User',
                  'goal-targeting-e2e', convert_to('{}', 'UTF8'))",
     )
     .bind(goal_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .execute(pg.pool())
     .await?;
     Ok(goal_id)
@@ -143,8 +138,7 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
             .instantiate_personality(
                 &authz,
                 InstantiatePersonalityRequest {
-                    principal: owner.principal.clone(),
-                    org_id: None,
+                    principal: owner.clone(),
                     display_name: "Alice".into(),
                 },
             )
@@ -153,8 +147,7 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
             .instantiate_personality(
                 &authz,
                 InstantiatePersonalityRequest {
-                    principal: owner.principal.clone(),
-                    org_id: None,
+                    principal: owner.clone(),
                     display_name: "Bob".into(),
                 },
             )

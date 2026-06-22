@@ -151,11 +151,10 @@ impl FlavorApp for AgentMemoryApp {
 }
 
 fn host_authz(owner: &Owner, tool_scope: ToolScope) -> AuthzContext {
-    let accessible_principals = HashSet::from([owner.principal.clone()]);
+    let accessible_principals = HashSet::from([owner.clone()]);
     AuthzContext {
         identity: Identity {
-            principal: owner.principal.clone(),
-            org_id: owner.org_id,
+            principal: owner.clone(),
             accessible_principals,
             expires_at: None,
             auth_epoch: 0,

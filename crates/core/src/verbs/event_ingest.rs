@@ -7,7 +7,7 @@
 use uuid::Uuid;
 
 use crate::{
-    EventId, FactPayload, MemoryId, OrgId, Owner, PersonalityInstanceId, Principal, SchemaId,
+    EventId, FactPayload, MemoryId, Owner, PersonalityInstanceId, Principal, SchemaId,
     SchemaVersion, SidecarPayload, SourceBatchId, SourceId,
 };
 
@@ -110,8 +110,6 @@ pub struct EventDraft {
     pub source_id: SourceId,
     pub source_batch_id: SourceBatchId,
     pub principal: Principal,
-    #[serde(skip)]
-    pub org_id: Option<OrgId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author_personality_instance_id: Option<PersonalityInstanceId>,
     pub schema_id: SchemaId,
@@ -371,8 +369,7 @@ impl EventDraft {
         Self {
             source_id: SourceId::new(source_id.into()),
             source_batch_id,
-            principal: owner.principal.clone(),
-            org_id: Some(owner.org_id),
+            principal: owner.clone(),
             author_personality_instance_id: None,
             schema_id: P::schema_id(),
             schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
@@ -405,24 +402,10 @@ impl EventDraft {
         self
     }
 
-    /// Reconstructs the storage `Owner` after verb-layer stamping.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    /// The storage `Owner` (= principal) for this draft.
     #[must_use]
     pub fn owner(&self) -> Owner {
-        Owner {
-            principal: self.principal.clone(),
-            org_id: self
-                .org_id
-                .expect("EventDraft org_id must be stamped before storage/hash use"),
-        }
-    }
-
-    pub fn stamp_owner(&mut self, stamped: Owner) {
-        self.principal = stamped.principal;
-        self.org_id = Some(stamped.org_id);
+        self.principal.clone()
     }
 
     /// Canonical `event_id` per docs/01: BLAKE3 of
@@ -435,12 +418,10 @@ impl EventDraft {
         let mut hasher = blake3::Hasher::new();
         hasher.update(self.source_id.as_str().as_bytes());
         hasher.update(b"\x00");
-        let (kind, id, org_id) = owner.columns();
+        let (kind, id) = owner.columns();
         hasher.update(kind.as_str().as_bytes());
         hasher.update(b"\x00");
         hasher.update(id.as_bytes());
-        hasher.update(b"\x00");
-        hasher.update(org_id.as_bytes());
         hasher.update(b"\x00");
         hasher.update(&self.payload);
         EventId::new(*hasher.finalize().as_bytes())
@@ -461,8 +442,7 @@ pub struct EventIngestOutcome {
 mod tests {
     use super::EventDraft;
     use crate::{
-        OrgId, PayloadKeyBuilder, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-        UserId,
+        PayloadKeyBuilder, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
     };
     use uuid::Uuid;
 
@@ -473,9 +453,6 @@ mod tests {
             source_batch_id: SourceBatchId::new(Uuid::nil()),
             principal: Principal::User(UserId::new(
                 Uuid::parse_str("018f0f4e-6b45-7c00-9bb5-b89b28d9c0a1").expect("uuid literal"),
-            )),
-            org_id: Some(OrgId::new(
-                Uuid::parse_str("018f0f4e-6b45-7c00-9bb5-b89b28d9c0a2").expect("uuid literal"),
             )),
             author_personality_instance_id: None,
             schema_id: SchemaId::new("test/fact".to_string()),
@@ -500,5 +477,32 @@ mod tests {
 
         assert_eq!(left.payload, right.payload);
         assert_eq!(left.event_id(), right.event_id());
+    }
+
+    /// Pins the org-free `event_id` BLAKE3 against drift. Track B / S0:
+    /// the hash folds source ‖ principal kind/id ‖ payload — no org. A
+    /// fixed input must reproduce exactly this hex forever.
+    #[test]
+    fn event_id_golden_is_org_free() {
+        let principal = Principal::User(UserId::new(
+            Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
+        ));
+        let draft = EventDraft {
+            source_id: SourceId::new("golden/source"),
+            source_batch_id: SourceBatchId::new(Uuid::nil()),
+            principal,
+            author_personality_instance_id: None,
+            schema_id: SchemaId::new("golden/fact".to_string()),
+            schema_version: SchemaVersion::new(1),
+            payload: b"golden-payload".to_vec(),
+            rendered_text: None,
+            observed_at: time::OffsetDateTime::UNIX_EPOCH,
+            occurred_at: time::OffsetDateTime::UNIX_EPOCH,
+            citation: None,
+        };
+        assert_eq!(
+            hex::encode(draft.event_id().into_inner()),
+            "53524338fdad41da1d4cac66bc82ab04eeb7755fd6dd31b38cc906b0b5e11541"
+        );
     }
 }

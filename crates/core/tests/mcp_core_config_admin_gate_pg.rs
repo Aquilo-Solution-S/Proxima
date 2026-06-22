@@ -66,8 +66,7 @@ async fn instantiate(
 ) -> Result<PersonalityInstanceId, Box<dyn std::error::Error>> {
     let response = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            principal: owner.principal.clone(),
-            org_id: Some(owner.org_id),
+            principal: owner.clone(),
             display_name: display_name.into(),
         })
         .await?;
@@ -180,8 +179,7 @@ async fn update_wake_entry_requires_admin_and_preserves_storage_on_denial()
     let pid = instantiate(&pg, &owner, "update gate").await?;
     let wid = Uuid::now_v7();
     pg.set_wake_entries(&SetWakeEntriesRequest {
-        principal: owner.principal.clone(),
-        org_id: Some(owner.org_id),
+        principal: owner.clone(),
         personality_instance_id: pid,
         entries: vec![wake_entry(wid, pid, "original", "test/update")],
     })
@@ -232,8 +230,7 @@ async fn remove_wake_entry_requires_admin_and_preserves_storage_on_denial()
     let pid = instantiate(&pg, &owner, "remove gate").await?;
     let wid = Uuid::now_v7();
     pg.set_wake_entries(&SetWakeEntriesRequest {
-        principal: owner.principal.clone(),
-        org_id: Some(owner.org_id),
+        principal: owner.clone(),
         personality_instance_id: pid,
         entries: vec![wake_entry(wid, pid, "remove-me", "test/remove")],
     })
@@ -286,8 +283,7 @@ async fn set_read_scope_requires_admin_and_preserves_storage_on_denial()
     assert_admin_denied(&err);
     assert!(
         pg.list_read_scope(&ListReadScopeRequest {
-            principal: owner.principal.clone(),
-            org_id: Some(owner.org_id),
+            principal: owner.clone(),
             reader_personality_instance_id: reader,
         })
         .await?
@@ -309,8 +305,7 @@ async fn set_read_scope_requires_admin_and_preserves_storage_on_denial()
     .await?;
     assert_eq!(
         pg.list_read_scope(&ListReadScopeRequest {
-            principal: owner.principal.clone(),
-            org_id: Some(owner.org_id),
+            principal: owner.clone(),
             reader_personality_instance_id: reader,
         })
         .await?

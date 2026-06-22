@@ -15,7 +15,7 @@ pub(crate) async fn facts_citing_object(
     cited_object_id: uuid::Uuid,
     sidecars: &[SidecarSpec],
 ) -> Result<Vec<MemorySnapshot>, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let memory_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
         "SELECT m.memory_id
            FROM proxima_core.memories m
@@ -64,7 +64,7 @@ pub(crate) async fn citation_of_fact(
     owner: &Owner,
     fact_memory_id: MemoryId,
 ) -> Result<Option<FactCitationReadback>, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let row: Option<(uuid::Uuid, String, uuid::Uuid, String)> = sqlx::query_as(
         "SELECT cm.citation_mapping_id,
                 cm.schema_id AS mapping_schema_id,
@@ -109,16 +109,9 @@ pub(crate) async fn citation_of_entity_head(
     owner: &Owner,
     fact_entity_id: FactEntityId,
 ) -> Result<Option<FactCitationReadback>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let fact_entity_uuid = fact_entity_id.into_inner();
-    let heads = resolve_head(
-        pool,
-        owner_kind,
-        owner_principal_id,
-        owner_org_id,
-        &[fact_entity_uuid],
-    )
-    .await?;
+    let heads = resolve_head(pool, owner_kind, owner_principal_id, &[fact_entity_uuid]).await?;
     let Some(head) = heads.get(&fact_entity_uuid).copied() else {
         return Ok(None);
     };

@@ -156,7 +156,7 @@ async fn external_agent_abstraction_stamps_author_without_change_event_author()
         pg.run_migrations().await?;
 
         let owner = owner_fixture();
-        let subject = owner.principal.clone();
+        let subject = owner.clone();
         let personality = pg.ensure_subject_personality(&owner, &subject).await?;
 
         let authored_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"derive-author-test-1");

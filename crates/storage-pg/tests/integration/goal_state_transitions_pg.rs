@@ -2,17 +2,12 @@ use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::verbs::goal_write::GoalAuthorshipKind::{External, System, User};
 use proxima_core::verbs::goal_write::GoalState::{Abandoned, Achieved, Active, Paused};
 use proxima_core::verbs::goal_write::{GoalAuthorshipKind, GoalAuthorshipOrigin, GoalState};
-use proxima_core::{Owner, OwnerPrincipalKind, Principal};
+use proxima_core::{Owner, OwnerPrincipalKind};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
-fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
-    let kind = OwnerPrincipalKind::of(&owner.principal);
-    let principal_id = match owner.principal {
-        Principal::User(u) => u.into_inner(),
-        Principal::Group(g) => g.into_inner(),
-    };
-    (kind, principal_id, owner.org_id.into_inner())
+fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
+    owner.columns()
 }
 
 async fn insert_goal(
@@ -22,7 +17,7 @@ async fn insert_goal(
     authorship_kind: GoalAuthorshipKind,
     supersedes: Option<Uuid>,
 ) -> Result<Uuid, sqlx::Error> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
+    let (owner_kind, owner_principal_id) = owner_parts(owner);
     let goal_id = Uuid::now_v7();
     let request_id = format!("req-{}", Uuid::now_v7());
     let (authorship_origin, authorship_tool_id): (Option<GoalAuthorshipOrigin>, Option<&str>) =
@@ -35,16 +30,15 @@ async fn insert_goal(
     sqlx::query_scalar(
         "INSERT INTO proxima_core.goals
             (goal_id, schema_id, schema_version, owner_principal_kind,
-             owner_principal_id, owner_org_id, title, text, payload, state, supersedes,
+             owner_principal_id, title, text, payload, state, supersedes,
              authorship_kind, authorship_origin, authorship_tool_id, request_id)
-         VALUES ($1, 'test/goal_blob', 1, $2, $3, $4, 'goal', 'goal',
-                 convert_to('{}', 'UTF8'), $5, $6, $7, $8, $9, $10)
+         VALUES ($1, 'test/goal_blob', 1, $2, $3, 'goal', 'goal',
+                 convert_to('{}', 'UTF8'), $4, $5, $6, $7, $8, $9)
          RETURNING goal_id",
     )
     .bind(goal_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(state)
     .bind(supersedes)
     .bind(authorship_kind)

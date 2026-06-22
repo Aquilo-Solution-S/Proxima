@@ -8,7 +8,7 @@ use proxima_core::relation::{
 use proxima_core::verbs::event_ingest::{CitationSpec, EventIngestOutcome};
 use proxima_core::{
     AbstractionPayload, EdgeAuthorshipKind, EdgeId, EntityKind, FactPayload, MemoryId,
-    MemoryOperatorKind, SchemaVersion, SourceBatchId,
+    MemoryOperatorKind, Owner, SchemaVersion, SourceBatchId,
 };
 use proxima_storage_pg::sidecars::PgMemorySidecar;
 use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_in_tx};
@@ -554,6 +554,26 @@ fn default_plan_key(goal_activated_memory_id: MemoryId, items: &[ExecutionPlanIt
     }
 }
 
+/// Deterministic, idempotent `MemoryId` for an execution plan.
+///
+/// Org-free (Track B / S0): the key folds the owner *principal* id, the
+/// repo, the activated-goal memory, and the plan key — never a tenant/org
+/// scalar. Re-issuing the same plan under the same principal reproduces
+/// this id by construction.
+fn execution_plan_memory_id(
+    owner: &Owner,
+    repo_id: Uuid,
+    goal_activated_memory_id: MemoryId,
+    plan_key: &str,
+) -> MemoryId {
+    let mut key = Vec::new();
+    key.extend_from_slice(owner.columns().1.as_bytes());
+    key.extend_from_slice(repo_id.as_bytes());
+    key.extend_from_slice(goal_activated_memory_id.into_inner().as_bytes());
+    key.extend_from_slice(plan_key.as_bytes());
+    MemoryId::new(Uuid::new_v5(&Uuid::NAMESPACE_OID, &key))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn append_execution_plan(
     tx: &mut Transaction<'_, Postgres>,
@@ -565,13 +585,12 @@ async fn append_execution_plan(
     plan_summary: &str,
     payload: &CodeExecutionPlanV1,
 ) -> Result<PlanAppendOutcome, McpToolError> {
-    let mut key = Vec::new();
-    key.extend_from_slice(ctx.owner.principal.columns().1.as_bytes());
-    key.extend_from_slice(ctx.owner.org_id.into_inner().as_bytes());
-    key.extend_from_slice(payload.repo_id.as_bytes());
-    key.extend_from_slice(goal_activated_memory_id.into_inner().as_bytes());
-    key.extend_from_slice(plan_key.as_bytes());
-    let memory_id = MemoryId::new(Uuid::new_v5(&Uuid::NAMESPACE_OID, &key));
+    let memory_id = execution_plan_memory_id(
+        &ctx.owner,
+        payload.repo_id,
+        goal_activated_memory_id,
+        plan_key,
+    );
     let draft = DerivedDraft {
         memory_id: memory_id.into_inner(),
         owner: ctx.owner.clone(),
@@ -1602,16 +1621,33 @@ mod tests {
     use std::sync::Arc;
 
     use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolExtensions, OutputMode};
-    use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, GroupId, OrgId, Owner, Principal};
+    use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, GroupId, Principal, UserId};
     use sqlx::postgres::PgPoolOptions;
 
     use super::*;
 
+    /// Pins the org-free execution-plan `MemoryId` against drift. Track B
+    /// / S0: the v5 key folds the owner *principal* id ‖ repo ‖ goal
+    /// memory ‖ plan key — no org. A fixed input must reproduce exactly
+    /// this uuid so re-issued plans stay idempotent.
+    #[test]
+    fn execution_plan_memory_id_golden_is_org_free() {
+        let owner = Principal::User(UserId::new(
+            Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
+        ));
+        let repo_id = Uuid::parse_str("00000000-0000-0000-0000-0000000000aa").expect("uuid literal");
+        let goal_activated = MemoryId::new(
+            Uuid::parse_str("00000000-0000-0000-0000-0000000000bb").expect("uuid literal"),
+        );
+        let id = execution_plan_memory_id(&owner, repo_id, goal_activated, "plan:golden");
+        assert_eq!(
+            id.into_inner(),
+            Uuid::parse_str("ec0bf05d-c797-559d-bdf8-9583028201cf").expect("uuid literal")
+        );
+    }
+
     fn test_ctx(handles: Arc<HandleTable>) -> McpToolCtx {
-        let owner = Owner {
-            principal: Principal::Group(GroupId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = Principal::Group(GroupId::new(Uuid::now_v7()));
         let pool = PgPoolOptions::new()
             .connect_lazy("postgres://proxima:proxima@localhost/proxima")
             .expect("lazy pool");

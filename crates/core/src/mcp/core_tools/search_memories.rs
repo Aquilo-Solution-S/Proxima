@@ -162,7 +162,7 @@ impl McpTool for SearchMemoriesTool {
                 .map(|raw| ctx.resolve_personality(raw))
                 .transpose()?;
             let mut req = MemorySearchRequest {
-                principal: ctx.owner.principal.clone(),
+                principal: ctx.owner.clone(),
                 query: query.to_string(),
                 mode,
                 limit: args.limit.clamp(1, 50),

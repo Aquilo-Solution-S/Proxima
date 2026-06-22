@@ -50,8 +50,7 @@ impl McpTool for InstantiatePersonalityTool {
                 .engine()
                 .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
             let req = InstantiatePersonalityRequest {
-                principal: ctx.owner.principal.clone(),
-                org_id: None,
+                principal: ctx.owner.clone(),
                 display_name: display_name.clone(),
             };
             let resp = engine

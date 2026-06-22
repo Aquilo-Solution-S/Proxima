@@ -13,19 +13,18 @@ pub async fn upsert_fact_retention(
     owner: &Owner,
     seconds: i64,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.owner_fact_retention
-            (owner_principal_kind, owner_principal_id, owner_org_id, retention_seconds)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (owner_principal_kind, owner_principal_id, owner_org_id)
+            (owner_principal_kind, owner_principal_id, retention_seconds)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (owner_principal_kind, owner_principal_id)
          DO UPDATE SET
              retention_seconds = EXCLUDED.retention_seconds,
              updated_at = now()",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(seconds)
     .execute(pool)
     .await
@@ -39,17 +38,15 @@ pub async fn upsert_fact_retention(
 ///
 /// Returns `StorageError::Internal` for SQL failures.
 pub async fn get_fact_retention(pool: &PgPool, owner: &Owner) -> Result<Option<i64>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query_scalar(
         "SELECT retention_seconds
            FROM proxima_core.owner_fact_retention
           WHERE owner_principal_kind = $1
-            AND owner_principal_id = $2
-            AND owner_org_id = $3",
+            AND owner_principal_id = $2",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .fetch_optional(pool)
     .await
     .map_err(map_err)
@@ -59,17 +56,15 @@ pub(crate) async fn get_fact_retention_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
 ) -> Result<Option<i64>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query_scalar(
         "SELECT retention_seconds
            FROM proxima_core.owner_fact_retention
           WHERE owner_principal_kind = $1
-            AND owner_principal_id = $2
-            AND owner_org_id = $3",
+            AND owner_principal_id = $2",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)
@@ -81,16 +76,14 @@ pub(crate) async fn get_fact_retention_in_tx(
 ///
 /// Returns `StorageError::Internal` for SQL failures.
 pub async fn clear_fact_retention(pool: &PgPool, owner: &Owner) -> Result<bool, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let result = sqlx::query(
         "DELETE FROM proxima_core.owner_fact_retention
           WHERE owner_principal_kind = $1
-            AND owner_principal_id = $2
-            AND owner_org_id = $3",
+            AND owner_principal_id = $2",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .execute(pool)
     .await
     .map_err(map_err)?;

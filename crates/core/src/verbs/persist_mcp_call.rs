@@ -65,12 +65,10 @@ impl McpCallLogInput {
         let mut hasher = blake3::Hasher::new();
         hasher.update(SourceId::new(MCP_CALL_SOURCE_ID).as_str().as_bytes());
         hasher.update(b"\0");
-        let (kind, id, org_id) = self.owner.columns();
+        let (kind, id) = self.owner.columns();
         hasher.update(kind.as_str().as_bytes());
         hasher.update(b"\0");
         hasher.update(id.as_bytes());
-        hasher.update(b"\0");
-        hasher.update(org_id.as_bytes());
         hasher.update(b"\0");
         hasher.update(&payload_key);
         hasher.update(b"\0");
@@ -174,4 +172,39 @@ pub struct McpCallLogOutcome {
     pub citation_mapping_id: Uuid,
     pub change_event_seq: Uuid,
     pub idempotent_replay: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::McpCallLogInput;
+    use crate::{Principal, UserId};
+    use uuid::Uuid;
+
+    /// Pins the org-free MCP-call replay key against drift. Track B / S0:
+    /// the BLAKE3 folds source ‖ principal kind/id ‖ payload key ‖
+    /// timestamps — no org. A fixed input must reproduce exactly this hex.
+    #[test]
+    fn mcp_call_event_id_golden_is_org_free() {
+        let owner = Principal::User(UserId::new(
+            Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
+        ));
+        let input = McpCallLogInput {
+            owner,
+            actor_oid: "actor-oid".to_string(),
+            actor_upn: "actor@example.com".to_string(),
+            tool_name: "golden/tool".to_string(),
+            ok: true,
+            error: None,
+            latency_ms: 42,
+            io_body: b"golden-io".to_vec(),
+            io_byte_len_original: 9,
+            io_truncated: false,
+            observed_at: time::OffsetDateTime::UNIX_EPOCH,
+            occurred_at: time::OffsetDateTime::UNIX_EPOCH,
+        };
+        assert_eq!(
+            hex::encode(input.event_id().into_inner()),
+            "f3da70e0028a32b08d2861663f86c2810a91107590fdbc4b49a03f9e63556811"
+        );
+    }
 }

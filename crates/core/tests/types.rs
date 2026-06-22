@@ -1,37 +1,28 @@
 //! Smoke tests for core type serialization.
 
 use proxima_core::{
-    GoalId, GroupId, MemoryId, OrgId, Owner, Principal, SchemaId, SchemaVersion, UserId,
+    GoalId, GroupId, MemoryId, Owner, SchemaId, SchemaVersion, UserId,
 };
 use uuid::Uuid;
 
 #[test]
 fn test_owner_principal_roundtrip() {
     let user_id = UserId::new(Uuid::now_v7());
-    let org_id = OrgId::new(Uuid::now_v7());
 
-    let owner = Owner {
-        principal: Principal::User(user_id),
-        org_id,
-    };
+    let owner = Owner::User(user_id);
 
     let json = serde_json::to_string(&owner).unwrap();
     let decoded: Owner = serde_json::from_str(&json).unwrap();
 
-    assert_eq!(owner.principal, decoded.principal);
-    assert_eq!(owner.org_id, decoded.org_id);
+    assert_eq!(owner, decoded);
 
     let group_id = GroupId::new(Uuid::now_v7());
-    let owner_group = Owner {
-        principal: Principal::Group(group_id),
-        org_id,
-    };
+    let owner_group = Owner::Group(group_id);
 
     let json_group = serde_json::to_string(&owner_group).unwrap();
     let decoded_group: Owner = serde_json::from_str(&json_group).unwrap();
 
-    assert_eq!(owner_group.principal, decoded_group.principal);
-    assert_eq!(owner_group.org_id, decoded_group.org_id);
+    assert_eq!(owner_group, decoded_group);
 }
 
 #[test]

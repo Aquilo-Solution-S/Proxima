@@ -7,7 +7,7 @@ mod test_fixtures;
 
 use proxima_core::engine::{EmbeddingClientReloader, Engine};
 use proxima_core::error::ErrorCode;
-use proxima_core::ids::{OrgId, SourceBatchId, UserId};
+use proxima_core::ids::{SourceBatchId, UserId};
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient};
 use proxima_core::owner::{Owner, Principal};
 use proxima_core::verbs::event_history::EventHistoryRequest;
@@ -21,10 +21,7 @@ use uuid::Uuid;
 fn fresh_owner() -> (Principal, Owner) {
     let user = UserId::new(Uuid::now_v7());
     let principal = Principal::User(user);
-    let owner = Owner {
-        principal: principal.clone(),
-        org_id: OrgId::new(Uuid::now_v7()),
-    };
+    let owner = principal.clone();
     (principal, owner)
 }
 
@@ -101,10 +98,7 @@ async fn query_verb_returns_empty_for_configured_owner() {
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
 
     let resp = engine
-        .query(
-            &authz,
-            &QueryRequest::for_principal(owner.principal.clone()),
-        )
+        .query(&authz, &QueryRequest::for_principal(owner.clone()))
         .await
         .expect("single-owner query must succeed");
 
@@ -116,27 +110,6 @@ async fn query_verb_returns_empty_for_configured_owner() {
 }
 
 #[tokio::test]
-async fn query_verb_allows_same_principal_with_different_org() {
-    let (principal, configured) = fresh_owner();
-    let engine = boot_engine(principal, configured.clone());
-    let authz = AuthzContext::single_owner(&configured, AuthPath::System);
-    let same_principal_different_org = Owner {
-        principal: configured.principal,
-        org_id: OrgId::new(Uuid::now_v7()),
-    };
-
-    let resp = engine
-        .query(
-            &authz,
-            &QueryRequest::for_principal(same_principal_different_org.principal.clone()),
-        )
-        .await
-        .expect("access is scoped by principal, not org_id");
-
-    assert!(resp.memories.is_empty());
-}
-
-#[tokio::test]
 async fn query_verb_rejects_foreign_owner_with_forbidden() {
     let (principal, configured) = fresh_owner();
     let engine = boot_engine(principal, configured.clone());
@@ -144,10 +117,7 @@ async fn query_verb_rejects_foreign_owner_with_forbidden() {
     let (_, foreign) = fresh_owner();
 
     let err = engine
-        .query(
-            &authz,
-            &QueryRequest::for_principal(foreign.principal.clone()),
-        )
+        .query(&authz, &QueryRequest::for_principal(foreign.clone()))
         .await
         .expect_err("foreign owner must be rejected");
     assert_eq!(err.code, ErrorCode::Forbidden);
@@ -162,8 +132,7 @@ async fn tombstone_personality_rejects_noop_storage_write() {
         .tombstone_personality(
             &authz,
             proxima_core::TombstonePersonalityRequest {
-                principal: owner.principal.clone(),
-                org_id: None,
+                principal: owner.clone(),
                 personality_instance_id: proxima_core::PersonalityInstanceId::new(Uuid::now_v7()),
             },
         )
@@ -185,11 +154,7 @@ async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
     };
 
     let ingest_err = engine
-        .close_batch(
-            &authz,
-            owner.principal.clone(),
-            SourceBatchId::new(Uuid::now_v7()),
-        )
+        .close_batch(&authz, owner.clone(), SourceBatchId::new(Uuid::now_v7()))
         .await
         .expect_err("wake context must not close batches");
     assert!(
@@ -199,7 +164,7 @@ async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
     );
 
     let admin_err = engine
-        .list_personality_instances(&authz, &owner.principal, false)
+        .list_personality_instances(&authz, &owner, false)
         .await
         .expect_err("wake context must not touch config verbs");
     assert!(admin_err.to_string().contains("requires admin role"));
@@ -215,7 +180,7 @@ async fn cross_owner_context_is_forbidden_on_graph_read() {
         .event_history(
             &authz,
             &EventHistoryRequest {
-                principal: owner_b.principal,
+                principal: owner_b,
                 limit: 1,
                 before: None,
             },
@@ -302,7 +267,7 @@ async fn read_mcp_call_history_rejects_context_without_graph_read_role() {
         .read_mcp_call_history(
             &authz,
             &McpCallHistoryRequest {
-                principal: owner.principal,
+                principal: owner,
                 actor_oid: None,
                 limit: 1,
             },

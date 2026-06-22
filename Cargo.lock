@@ -2317,6 +2317,7 @@ dependencies = [
  "blake3",
  "futures",
  "futures-util",
+ "hex",
  "proxima-pg-testkit",
  "proxima-storage-pg",
  "schemars",

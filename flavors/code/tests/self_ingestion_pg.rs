@@ -84,24 +84,21 @@ fn count_main_commits(repo: &Path) -> usize {
 }
 
 async fn count_commit_v1_facts(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) -> i64 {
-    let kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
-    let principal_id = match &owner.principal {
+    let kind = proxima_core::OwnerPrincipalKind::of(owner);
+    let principal_id = match owner {
         Principal::User(u) => u.into_inner(),
         Principal::Group(g) => g.into_inner(),
     };
-    let org_id = owner.org_id.into_inner();
     let row: (i64,) = sqlx::query_as(
         "SELECT COUNT(*)::bigint \
          FROM proxima_core.memories m \
          JOIN proxima_code.commit_v1 s USING (memory_id) \
          WHERE m.owner_principal_kind = $1 \
            AND m.owner_principal_id = $2 \
-           AND m.owner_org_id = $3 \
-           AND s.repo_id = $4",
+           AND s.repo_id = $3",
     )
     .bind(kind)
     .bind(principal_id)
-    .bind(org_id)
     .bind(repo_id)
     .fetch_one(pool)
     .await
@@ -153,7 +150,7 @@ async fn self_ingestion_streams_proxima_main() {
             .query(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 &proxima_core::verbs::query::QueryRequest {
-                    principal: owner.principal.clone(),
+                    principal: owner.clone(),
                     entity_kind: Some(proxima_core::verbs::query::EntityKind::Fact),
                     schema_id: Some(commit_schema.clone()),
                     supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,
@@ -209,7 +206,7 @@ async fn self_ingestion_streams_proxima_main() {
             .query(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 &proxima_core::verbs::query::QueryRequest {
-                    principal: owner.principal.clone(),
+                    principal: owner.clone(),
                     entity_kind: Some(proxima_core::verbs::query::EntityKind::Fact),
                     schema_id: None,
                     supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,
