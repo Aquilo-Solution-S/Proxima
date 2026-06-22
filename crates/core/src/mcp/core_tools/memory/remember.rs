@@ -29,17 +29,31 @@ pub struct RememberArgs {
     )]
     pub idempotency_key: Option<String>,
     #[serde(default)]
-    #[schemars(description = "Optional typed inline citation for an external artifact.")]
+    #[schemars(
+        description = "Optional typed inline citation linking this Fact to an external artifact; the object/mapping schemas must be registered (`CitedObject`/`CitationMapping` kinds — see `core_list_schemas`)."
+    )]
     pub citation: Option<RememberCitation>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RememberCitation {
+    #[schemars(
+        description = "Schema id of the cited external object (a registered `CitedObject` schema — see `core_list_schemas`)."
+    )]
     pub object_schema_id: String,
+    #[schemars(description = "Version of the cited-object schema.")]
     pub object_schema_version: u32,
+    #[schemars(description = "The cited object payload as JSON, conforming to its schema.")]
     pub object_payload: serde_json::Value,
+    #[schemars(
+        description = "Schema id of the citation mapping (a registered `CitationMapping` schema — see `core_list_schemas`)."
+    )]
     pub mapping_schema_id: String,
+    #[schemars(description = "Version of the citation-mapping schema.")]
     pub mapping_schema_version: u32,
+    #[schemars(
+        description = "The citation mapping payload as JSON (e.g. a locator within the cited object), conforming to its schema."
+    )]
     pub mapping_payload: serde_json::Value,
 }
 

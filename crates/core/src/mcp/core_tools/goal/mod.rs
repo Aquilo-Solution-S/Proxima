@@ -17,12 +17,23 @@ const MAX_CHILD_GOALS: usize = 50;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GoalPayloadArgs {
+    #[schemars(
+        description = "Registered Goal-payload schema id (PayloadKind::Goal). Discover valid ids with `core_list_schemas` (kind=Goal)."
+    )]
     pub schema_id: String,
+    #[schemars(description = "Goal-payload schema version. Omit to default to 1.")]
     pub schema_version: Option<u32>,
+    #[schemars(description = "Short, human-readable goal title, 1 to 240 chars.")]
     pub title: String,
+    #[schemars(
+        description = "The goal stated in prose, 1 to 20000 chars — what pursuing or achieving it means."
+    )]
     pub text: String,
     #[serde(default)]
-    #[schemars(with = "std::collections::BTreeMap<String, serde_json::Value>")]
+    #[schemars(
+        with = "std::collections::BTreeMap<String, serde_json::Value>",
+        description = "Structured goal payload conforming to `schema_id`@`schema_version`; must be a JSON object."
+    )]
     pub body: serde_json::Value,
 }
 
@@ -31,8 +42,17 @@ pub struct GoalSetArgs {
     #[serde(flatten)]
     pub payload: GoalPayloadArgs,
     #[serde(default)]
+    #[schemars(
+        description = "Optional memory handles (`F.../A.../P...`) that motivate this goal. Use `[]` when there is none."
+    )]
     pub evidence: Vec<String>,
+    #[schemars(
+        description = "Optional `I`-handle to set the goal on another personality; omit to target the calling personality."
+    )]
     pub target_personality: Option<String>,
+    #[schemars(
+        description = "Optional stable idempotency key so a replayed call is a no-op, not a duplicate goal."
+    )]
     pub idempotency_key: Option<String>,
 }
 
@@ -49,7 +69,7 @@ pub struct GoalSetTool;
 
 impl McpTool for GoalSetTool {
     const NAME: &'static str = "core/goal_set";
-    const DESCRIPTION: &'static str = "Set an Active Goal.";
+    const DESCRIPTION: &'static str = "Set (create) an Active Goal for the calling personality (or `target_personality`). Goals are typed by a registered Goal schema — discover ids with `core_list_schemas` (kind=Goal). `title`/`text` are the human-facing statement; `body` is the structured payload for that schema.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] =
         &[<crate::GoalActivatedV1 as crate::FactPayload>::SCHEMA_ID];
     type Args = GoalSetArgs;
@@ -109,8 +129,13 @@ pub enum GoalTransition {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GoalTransitionArgs {
+    #[schemars(
+        description = "Goal handle to transition (the `handle` returned by `core_goal_set`/`core_goal_decompose`)."
+    )]
     pub goal: String,
+    #[schemars(description = "Lifecycle transition to apply: `pause`, `resume`, or `abandon`.")]
     pub transition: GoalTransition,
+    #[schemars(description = "Optional stable idempotency key for replay-safe transitions.")]
     pub idempotency_key: Option<String>,
 }
 
@@ -119,7 +144,7 @@ pub struct GoalTransitionTool;
 
 impl McpTool for GoalTransitionTool {
     const NAME: &'static str = "core/goal_transition";
-    const DESCRIPTION: &'static str = "Pause, resume, or abandon a Goal head.";
+    const DESCRIPTION: &'static str = "Pause, resume, or abandon a Goal head — a lifecycle transition that does not change the goal's content (use `core_goal_modify` for that).";
     type Args = GoalTransitionArgs;
     type Output = GoalWriteOutput;
 
@@ -158,8 +183,15 @@ impl McpTool for GoalTransitionTool {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GoalMarkAchievedArgs {
+    #[schemars(
+        description = "Goal handle to mark Achieved (from `core_goal_set`/`core_goal_decompose`)."
+    )]
     pub goal: String,
+    #[schemars(
+        description = "Memory handles (`F.../A.../P...`) evidencing completion; at least one is required."
+    )]
     pub evidence: Vec<String>,
+    #[schemars(description = "Optional stable idempotency key for replay-safe completion.")]
     pub idempotency_key: Option<String>,
 }
 
@@ -168,7 +200,7 @@ pub struct GoalMarkAchievedTool;
 
 impl McpTool for GoalMarkAchievedTool {
     const NAME: &'static str = "core/goal_mark_achieved";
-    const DESCRIPTION: &'static str = "Mark a Goal head Achieved with evidence.";
+    const DESCRIPTION: &'static str = "Mark a Goal head Achieved, recording the evidence memory handles that justify completion (at least one).";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] =
         &[<crate::GoalAchievedV1 as crate::FactPayload>::SCHEMA_ID];
     type Args = GoalMarkAchievedArgs;
@@ -212,10 +244,17 @@ impl McpTool for GoalMarkAchievedTool {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GoalModifyArgs {
+    #[schemars(
+        description = "Goal handle whose Active head is replaced (from `core_goal_set`/`core_goal_decompose`)."
+    )]
     pub goal: String,
     #[serde(flatten)]
     pub payload: GoalPayloadArgs,
+    #[schemars(
+        description = "Optional evidence handles (`F.../A.../P...`) to attach to the modified goal head."
+    )]
     pub evidence: Option<Vec<String>>,
+    #[schemars(description = "Optional stable idempotency key for replay-safe modification.")]
     pub idempotency_key: Option<String>,
 }
 
@@ -224,7 +263,7 @@ pub struct GoalModifyTool;
 
 impl McpTool for GoalModifyTool {
     const NAME: &'static str = "core/goal_modify";
-    const DESCRIPTION: &'static str = "Replace an Active Goal head's content.";
+    const DESCRIPTION: &'static str = "Replace an Active Goal head's content (title/text/body), producing a new head version. Same schema rules as `core_goal_set`.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] =
         &[<crate::GoalActivatedV1 as crate::FactPayload>::SCHEMA_ID];
     type Args = GoalModifyArgs;
@@ -267,9 +306,21 @@ impl McpTool for GoalModifyTool {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GoalDecomposeArgs {
+    #[schemars(
+        description = "Handle of the parent goal the children attach under (from `core_goal_set`)."
+    )]
     pub parent_goal: String,
+    #[schemars(
+        description = "Child goals to create (1 to 50); each is set Active and linked to the parent."
+    )]
     pub children: Vec<ChildGoalInput>,
+    #[schemars(
+        description = "Optional `I`-handle to create the children on another personality; omit for the caller."
+    )]
     pub target_personality: Option<String>,
+    #[schemars(
+        description = "Required stable idempotency key; each child's key derives from it deterministically, so replays are no-ops."
+    )]
     pub idempotency_key: String,
 }
 
@@ -278,6 +329,9 @@ pub struct ChildGoalInput {
     #[serde(flatten)]
     pub payload: GoalPayloadArgs,
     #[serde(default)]
+    #[schemars(
+        description = "Optional motivating memory handles for this child goal. Use `[]` when there is none."
+    )]
     pub evidence: Vec<String>,
 }
 
@@ -293,7 +347,7 @@ pub struct GoalDecomposeTool;
 
 impl McpTool for GoalDecomposeTool {
     const NAME: &'static str = "core/goal_decompose";
-    const DESCRIPTION: &'static str = "Create Active child Goals under a parent Goal.";
+    const DESCRIPTION: &'static str = "Create Active child Goals under a parent Goal, linking each child to it in the goal hierarchy (`goal_parents`, not memory edges). `idempotency_key` is required and each child key derives from it.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] =
         &[<crate::GoalActivatedV1 as crate::FactPayload>::SCHEMA_ID];
     type Args = GoalDecomposeArgs;
