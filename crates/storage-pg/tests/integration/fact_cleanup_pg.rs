@@ -10,8 +10,8 @@ use proxima_core::verbs::event_ingest::{
 use proxima_core::verbs::query::{MemoryLineageDirection, MemoryLineageRequest, QueryRequest};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
-    AuthPath, AuthzContext, EntityKind, MemoryId, Owner, OwnerPrincipalKind, Principal, SchemaId,
-    SchemaVersion, SourceBatchId, SourceId, Storage,
+    AuthPath, AuthzContext, EntityKind, MemoryId, Owner, SchemaId, SchemaVersion, SourceBatchId,
+    SourceId, Storage,
 };
 use uuid::Uuid;
 
@@ -67,8 +67,7 @@ fn fresh_draft_with_content_hash(owner: Owner, content_hash: [u8; 32]) -> EventD
     EventDraft {
         source_id: SourceId::new("test/cleanup-source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.principal,
-        org_id: Some(owner.org_id),
+        principal: owner,
         author_personality_instance_id: None,
         schema_id: SchemaId::new("test/cleanup-fact-v1".into()),
         schema_version: SchemaVersion::new(1),
@@ -511,14 +510,14 @@ async fn assert_tombstoned_derivative_filtered(
     owner: &Owner,
     derivative_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut req = QueryRequest::for_principal(owner.principal.clone());
+    let mut req = QueryRequest::for_principal(owner.clone());
     req.memory_ids = vec![MemoryId::new(derivative_id)];
     let query = engine.query(authz, &req).await?;
     assert!(query.memories.is_empty());
 
     let lineage = pg
         .walk_memory_lineage(&MemoryLineageRequest {
-            principal: owner.principal.clone(),
+            principal: owner.clone(),
             start_memory_id: MemoryId::new(derivative_id),
             direction: MemoryLineageDirection::Ancestors,
             depth: 2,
@@ -639,25 +638,20 @@ async fn insert_derivative(
     text: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let derivative_id = Uuid::now_v7();
-    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
-    let owner_principal_id = match &owner.principal {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
+    let (owner_kind, owner_principal_id) = owner.columns();
 
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (memory_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 'test/cleanup-abstraction-v1', 1,
-                 'Abstraction', $5, 'FtoA', 'test-model',
+         VALUES ($1, $2, $3, 'test/cleanup-abstraction-v1', 1,
+                 'Abstraction', $4, 'FtoA', 'test-model',
                  'test-prompt', '00000000-0000-0000-0000-000000000000'::uuid, 0)",
     )
     .bind(derivative_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner.org_id.into_inner())
     .bind(text)
     .execute(pg.pool())
     .await?;
@@ -673,35 +667,29 @@ async fn insert_embedding_artifacts(
     kind: EntityKind,
     memory_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
-    let owner_principal_id = match &owner.principal {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
+    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
             (entity_kind, entity_id, embedding_version, model_id, vec,
-             owner_principal_kind, owner_principal_id, owner_org_id)
-         VALUES ($1, $2, 1, 'cleanup-embed', $3::vector, $4, $5, $6)",
+             owner_principal_kind, owner_principal_id)
+         VALUES ($1, $2, 1, 'cleanup-embed', $3::vector, $4, $5)",
     )
     .bind(kind)
     .bind(memory_id)
     .bind(zero_vector_literal())
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner.org_id.into_inner())
     .execute(pg.pool())
     .await?;
 
     sqlx::query(
         "INSERT INTO proxima_core.embedding_jobs
-            (owner_principal_kind, owner_principal_id, owner_org_id,
+            (owner_principal_kind, owner_principal_id,
              entity_kind, entity_id, model_id)
-         VALUES ($1, $2, $3, $4, $5, 'cleanup-embed')",
+         VALUES ($1, $2, $3, $4, 'cleanup-embed')",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner.org_id.into_inner())
     .bind(kind)
     .bind(memory_id)
     .execute(pg.pool())
@@ -730,11 +718,7 @@ async fn insert_provenance_edge(
     origin_kind: EntityKind,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let edge_id = Uuid::now_v7();
-    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
-    let owner_principal_id = match &owner.principal {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
+    let (owner_kind, owner_principal_id) = owner.columns();
 
     sqlx::query(
         "INSERT INTO proxima_core.edges
@@ -742,12 +726,12 @@ async fn insert_provenance_edge(
              source_kind, source_memory_id, source_goal_id,
              target_kind, target_memory_id, target_goal_id,
              authorship_kind, authorship_owner_memory_id,
-             owner_principal_kind, owner_principal_id, owner_org_id)
+             owner_principal_kind, owner_principal_id)
          VALUES ($1, 'core/derived-from', 'Provenance',
                  'Abstraction', $2, NULL,
                  $3, $4, NULL,
                  'OperatorFtoA', $2,
-                 $5, $6, $7)",
+                 $5, $6)",
     )
     .bind(edge_id)
     .bind(derivative_id)
@@ -755,7 +739,6 @@ async fn insert_provenance_edge(
     .bind(origin_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner.org_id.into_inner())
     .execute(pg.pool())
     .await?;
 

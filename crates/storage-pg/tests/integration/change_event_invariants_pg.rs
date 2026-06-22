@@ -5,16 +5,11 @@
 //! the pull-read decode in `change_event.rs` relies on, so a raw INSERT
 //! cannot persist an undecodable row. Mirrors the edges endpoint CHECKs.
 
-use proxima_core::{Owner, OwnerPrincipalKind, Principal};
+use proxima_core::{Owner, OwnerPrincipalKind};
 use uuid::Uuid;
 
-fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
-    let kind = OwnerPrincipalKind::of(&owner.principal);
-    let principal_id = match &owner.principal {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
-    (kind, principal_id, owner.org_id.into_inner())
+fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
+    owner.columns()
 }
 
 #[tokio::test]
@@ -25,20 +20,19 @@ async fn check_rejects_undecodable_change_event_rows() {
         pg.run_migrations().await?;
 
         let owner = crate::common::owner_fixture();
-        let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(&owner);
+        let (owner_kind, owner_principal_id) = owner_parts(&owner);
 
         // Positive control: a well-formed EntityAppend (memory side) is
         // accepted. entity_memory_id has no FK, so a synthetic id is fine.
         sqlx::query(
             "INSERT INTO proxima_core.change_event
-                (seq, owner_principal_kind, owner_principal_id, owner_org_id,
+                (seq, owner_principal_kind, owner_principal_id,
                  kind, entity_kind, entity_memory_id, entity_schema_id, entity_schema_version)
-             VALUES ($1, $2, $3, $4, 'EntityAppend', 'Fact', $5, 'proxima/test', 1)",
+             VALUES ($1, $2, $3, 'EntityAppend', 'Fact', $4, 'proxima/test', 1)",
         )
         .bind(Uuid::now_v7())
         .bind(owner_kind)
         .bind(owner_principal_id)
-        .bind(owner_org_id)
         .bind(Uuid::now_v7())
         .execute(pg.pool())
         .await?;
@@ -46,14 +40,13 @@ async fn check_rejects_undecodable_change_event_rows() {
         // 1. EntityAppend with neither entity endpoint -> XOR violated.
         let err = sqlx::query(
             "INSERT INTO proxima_core.change_event
-                (seq, owner_principal_kind, owner_principal_id, owner_org_id,
+                (seq, owner_principal_kind, owner_principal_id,
                  kind, entity_kind, entity_schema_id, entity_schema_version)
-             VALUES ($1, $2, $3, $4, 'EntityAppend', 'Fact', 'proxima/test', 1)",
+             VALUES ($1, $2, $3, 'EntityAppend', 'Fact', 'proxima/test', 1)",
         )
         .bind(Uuid::now_v7())
         .bind(owner_kind)
         .bind(owner_principal_id)
-        .bind(owner_org_id)
         .execute(pg.pool())
         .await
         .expect_err("EntityAppend with no entity endpoint must be rejected");
@@ -62,15 +55,14 @@ async fn check_rejects_undecodable_change_event_rows() {
         // 2. EntityAppend that also populates an edge endpoint -> cross-population.
         let err = sqlx::query(
             "INSERT INTO proxima_core.change_event
-                (seq, owner_principal_kind, owner_principal_id, owner_org_id,
+                (seq, owner_principal_kind, owner_principal_id,
                  kind, entity_kind, entity_memory_id, entity_schema_id,
                  entity_schema_version, edge_source_memory_id)
-             VALUES ($1, $2, $3, $4, 'EntityAppend', 'Fact', $5, 'proxima/test', 1, $6)",
+             VALUES ($1, $2, $3, 'EntityAppend', 'Fact', $4, 'proxima/test', 1, $5)",
         )
         .bind(Uuid::now_v7())
         .bind(owner_kind)
         .bind(owner_principal_id)
-        .bind(owner_org_id)
         .bind(Uuid::now_v7())
         .bind(Uuid::now_v7())
         .execute(pg.pool())
@@ -81,14 +73,13 @@ async fn check_rejects_undecodable_change_event_rows() {
         // 3. EntityAppend missing schema columns -> not-null companion violated.
         let err = sqlx::query(
             "INSERT INTO proxima_core.change_event
-                (seq, owner_principal_kind, owner_principal_id, owner_org_id,
+                (seq, owner_principal_kind, owner_principal_id,
                  kind, entity_kind, entity_memory_id)
-             VALUES ($1, $2, $3, $4, 'EntityAppend', 'Fact', $5)",
+             VALUES ($1, $2, $3, 'EntityAppend', 'Fact', $4)",
         )
         .bind(Uuid::now_v7())
         .bind(owner_kind)
         .bind(owner_principal_id)
-        .bind(owner_org_id)
         .bind(Uuid::now_v7())
         .execute(pg.pool())
         .await
@@ -100,15 +91,14 @@ async fn check_rejects_undecodable_change_event_rows() {
         // reaches the CHECK rather than tripping referential integrity first.
         let err = sqlx::query(
             "INSERT INTO proxima_core.change_event
-                (seq, owner_principal_kind, owner_principal_id, owner_org_id,
+                (seq, owner_principal_kind, owner_principal_id,
                  kind, edge_id, edge_relation,
                  edge_source_memory_id, edge_source_goal_id, edge_target_memory_id)
-             VALUES ($1, $2, $3, $4, 'EdgeAppend', $5, 'test/relation', $6, $7, $8)",
+             VALUES ($1, $2, $3, 'EdgeAppend', $4, 'test/relation', $5, $6, $7)",
         )
         .bind(Uuid::now_v7())
         .bind(owner_kind)
         .bind(owner_principal_id)
-        .bind(owner_org_id)
         .bind(Uuid::now_v7())
         .bind(Uuid::now_v7())
         .bind(Uuid::now_v7())

@@ -69,8 +69,7 @@ impl McpTool for GoalSetTool {
                     .map_err(McpToolError::InvalidInput)?;
             let authorship = system_operator_authorship(&ctx, "goal_set")?;
             let draft = GoalDraft {
-                principal: ctx.owner.principal.clone(),
-                org_id: Some(ctx.owner.org_id),
+                principal: ctx.owner.clone(),
                 schema_id: payload.schema_id.clone(),
                 schema_version: payload.schema_version,
                 title: payload.title.clone(),

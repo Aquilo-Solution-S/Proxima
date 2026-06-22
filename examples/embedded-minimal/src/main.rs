@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn query_for_schema(owner: &proxima_core::Owner) -> QueryRequest {
-    let mut req = QueryRequest::for_principal(owner.principal.clone());
+    let mut req = QueryRequest::for_principal(owner.clone());
     req.entity_kind = Some(EntityKind::Fact);
     req.schema_id = Some(SchemaId::new(flavor::DocumentFiledV1::SCHEMA_ID.into()));
     req.limit = 10;

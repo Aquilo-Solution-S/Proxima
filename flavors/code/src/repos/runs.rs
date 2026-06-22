@@ -26,15 +26,15 @@ pub async fn start_run_with_created(
     owner: &Owner,
     repo_id: Uuid,
 ) -> Result<(RepoIngestionRun, bool), RepoRegistryError> {
-    let (kind, principal_id, org_id) = owner.columns();
+    let (kind, principal_id) = owner.columns();
     let new_run_id = Uuid::now_v7();
 
     let inserted = sqlx::query_as::<_, RunRow>(
         "INSERT INTO proxima_code.repo_ingestion_runs \
-            (run_id, owner_principal_kind, owner_principal_id, owner_org_id, \
+            (run_id, owner_principal_kind, owner_principal_id, \
              repo_id, status, stage) \
-         VALUES ($1, $2, $3, $4, $5, 'queued', 'starting') \
-         ON CONFLICT (owner_principal_kind, owner_principal_id, owner_org_id, repo_id) \
+         VALUES ($1, $2, $3, $4, 'queued', 'starting') \
+         ON CONFLICT (owner_principal_kind, owner_principal_id, repo_id) \
              WHERE status IN ('queued', 'running') \
          DO NOTHING \
          RETURNING run_id, repo_id, status, stage, \
@@ -46,7 +46,6 @@ pub async fn start_run_with_created(
     .bind(new_run_id)
     .bind(kind)
     .bind(principal_id)
-    .bind(org_id)
     .bind(repo_id)
     .fetch_optional(pool)
     .await?;
@@ -70,7 +69,7 @@ pub async fn get_active_run(
     owner: &Owner,
     repo_id: Uuid,
 ) -> Result<Option<RepoIngestionRun>, RepoRegistryError> {
-    let (kind, principal_id, org_id) = owner.columns();
+    let (kind, principal_id) = owner.columns();
     let row = sqlx::query_as::<_, RunRow>(
         "SELECT run_id, repo_id, status, stage, \
                 commits_emitted, files_emitted, chunks_emitted, chunks_reused, \
@@ -79,14 +78,13 @@ pub async fn get_active_run(
                 error_message, started_at, updated_at, finished_at \
          FROM proxima_code.repo_ingestion_runs \
          WHERE owner_principal_kind = $1 AND owner_principal_id = $2 \
-           AND owner_org_id = $3 AND repo_id = $4 \
+           AND repo_id = $3 \
            AND status IN ('queued', 'running') \
          ORDER BY started_at DESC \
          LIMIT 1",
     )
     .bind(kind)
     .bind(principal_id)
-    .bind(org_id)
     .bind(repo_id)
     .fetch_optional(pool)
     .await?;

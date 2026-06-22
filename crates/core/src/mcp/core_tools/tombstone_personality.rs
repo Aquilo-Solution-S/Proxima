@@ -61,8 +61,7 @@ impl McpTool for TombstonePersonalityTool {
                 wake_entry_count: Some(r.wake_entries.len()),
             });
             let req = TombstonePersonalityRequest {
-                principal: ctx.owner.principal.clone(),
-                org_id: None,
+                principal: ctx.owner.clone(),
                 personality_instance_id: pid,
             };
             let resp = engine

@@ -3,26 +3,18 @@ use crate::common::personality::{
     ingest_test_fact,
 };
 use proxima_core::{
-    EntityKind, MemoryId, MemoryOperatorKind, OrgId, Owner, OwnerPrincipalKind, Principal,
-    RelationClass, UserId,
+    EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerPrincipalKind, Principal, RelationClass,
+    UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
-fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
-    let kind = OwnerPrincipalKind::of(&owner.principal);
-    let principal_id = match &owner.principal {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
-    (kind, principal_id, owner.org_id.into_inner())
+fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
+    owner.columns()
 }
 
 fn other_owner() -> Owner {
-    Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::nil()),
-    }
+    Principal::User(UserId::new(Uuid::now_v7()))
 }
 
 async fn insert_derived_memory(
@@ -30,7 +22,7 @@ async fn insert_derived_memory(
     owner: &Owner,
     kind: EntityKind,
 ) -> Result<MemoryId, sqlx::Error> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
+    let (owner_kind, owner_principal_id) = owner_parts(owner);
     let memory_id = Uuid::now_v7();
     let schema_id = match kind {
         EntityKind::Perspective => TEST_PERSPECTIVE_SCHEMA,
@@ -42,16 +34,15 @@ async fn insert_derived_memory(
     };
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (memory_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id)
-         VALUES ($1, $2, $3, $4, $5, 1, $6, 'derived', $7, 'test-model',
-                 'v1', $8)",
+         VALUES ($1, $2, $3, $4, 1, $5, 'derived', $6, 'test-model',
+                 'v1', $7)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(schema_id)
     .bind(kind)
     .bind(operator_kind)
@@ -71,19 +62,19 @@ async fn insert_memory_edge(
     target_kind: EntityKind,
     target_memory_id: MemoryId,
 ) -> Result<(), sqlx::Error> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
+    let (owner_kind, owner_principal_id) = owner_parts(owner);
     sqlx::query(
         "INSERT INTO proxima_core.edges
             (edge_id, relation, relation_class,
              source_kind, source_memory_id, source_goal_id,
              target_kind, target_memory_id, target_goal_id,
              authorship_kind, authorship_owner_memory_id,
-             owner_principal_kind, owner_principal_id, owner_org_id)
+             owner_principal_kind, owner_principal_id)
          VALUES ($1, 'test/relation', $2,
                  $3, $4, NULL,
                  $5, $6, NULL,
                  'Engine', NULL,
-                 $7, $8, $9)",
+                 $7, $8)",
     )
     .bind(Uuid::now_v7())
     .bind(relation_class)
@@ -93,7 +84,6 @@ async fn insert_memory_edge(
     .bind(target_memory_id.into_inner())
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .execute(pg.pool())
     .await?;
     Ok(())

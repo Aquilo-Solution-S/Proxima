@@ -43,19 +43,18 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
 
     let repo_id = Uuid::now_v7();
     let goal_activated_memory_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (memory_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 'test/goal-activation', 1, 'Abstraction',
-                 'goal activation evidence', 'ExternalAgent', 'test', 'test', $5, 0)",
+         VALUES ($1, $2, $3, 'test/goal-activation', 1, 'Abstraction',
+                 'goal activation evidence', 'ExternalAgent', 'test', 'test', $4, 0)",
     )
     .bind(goal_activated_memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(Uuid::nil())
     .execute(db.pg.pool())
     .await

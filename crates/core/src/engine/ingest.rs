@@ -59,11 +59,9 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         role: Role,
-        mut draft: EventDraft,
+        draft: EventDraft,
     ) -> Result<AuthorizedEventIngest, ProtocolError> {
         super::authorize(authz, &draft.principal, role)?;
-        let owner = authz.scoped_owner(draft.principal.clone());
-        draft.stamp_owner(owner);
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
@@ -98,13 +96,11 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         role: Role,
-        mut draft: EventDraft,
+        draft: EventDraft,
         cited_object: InlineCitedObjectDraft,
         mapping: InlineCitationMappingDraft,
     ) -> Result<AuthorizedFactWithCitation, ProtocolError> {
         super::authorize(authz, &draft.principal, role)?;
-        let owner = authz.scoped_owner(draft.principal.clone());
-        draft.stamp_owner(owner);
 
         // Validate the Fact only by schema-existence, matching
         // `authorize_event_ingest`. The Fact payload is built from a
@@ -400,9 +396,9 @@ impl Engine {
 
     /// Owner-scoped write of a host-observed MCP activity log.
     ///
-    /// Authorizes the caller against the log's Owner and derives the
-    /// stamped org from the authenticated identity — never trusting a
-    /// caller-supplied org — mirroring [`Self::event_ingest`]. The
+    /// Authorizes the caller against the log's Owner and derives that
+    /// Owner from the authenticated identity — never trusting a
+    /// caller-supplied Owner — mirroring [`Self::event_ingest`]. The
     /// per-user actor (`actor_oid` / `actor_upn`) is recorded as Fact
     /// data; the graph Owner is what gets authorized here.
     ///
@@ -416,8 +412,8 @@ impl Engine {
         authz: &AuthzContext,
         mut input: McpCallLogInput,
     ) -> Result<McpCallLogOutcome, ProtocolError> {
-        let owner = authz.scoped_owner(input.owner.principal.clone());
-        super::authorize(authz, &owner.principal, Role::SourceIngest)?;
+        let owner = authz.scoped_owner(input.owner.clone());
+        super::authorize(authz, &owner, Role::SourceIngest)?;
         input.owner = owner;
         self.storage
             .persist_mcp_call_atomic(&input)

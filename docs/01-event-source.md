@@ -20,17 +20,17 @@ enum Owner {                    // = Principal
 
 **Organizations are not an ontology concept** (renegotiated
 2026-06-11 — decision `domain/decisions/2026-06-11-org-out-of-kernel.md`;
-previously `Owner` was a `{ principal, org_id }` record). Billing /
-quota attribution (`org_id`) is engine metadata annotated on storage
-rows. It never enters access, and it never enters **identity**:
-operator gates, edge scoping, and dedup keys compare principals, never
-org. The same user under two orgs is one identity, not two.
+previously `Owner` was a `{ principal, org_id }` record). Track B (S0)
+removed the tenant field from Core entirely: `Owner = Principal`. Tenancy
+/ billing attribution is a flavor/app concern, not part of Core access,
+**identity**, or storage. Operator gates, edge scoping, and dedup keys
+compare principals; the same user under two tenants is one identity, not
+two.
 
 Used identically across components 01 / 02 / 05 / 06. Storage: two
-identity columns (`owner_principal_kind`, `owner_principal_id`), plus
-the engine-side billing annotation `owner_org_id` (not part of any
-identity comparison); `owner_principal_kind` is a SQL enum. Schemas
-([03](03-schema-registry.md)) are binary-scoped (per
+identity columns (`owner_principal_kind`, `owner_principal_id`); there is
+no org/tenant column in Core. `owner_principal_kind` is a SQL enum.
+Schemas ([03](03-schema-registry.md)) are binary-scoped (per
 [03 §Scoping](03-schema-registry.md#scoping-one-namespace-per-binary)).
 
 Access rule (org does not exist at this layer):
@@ -46,9 +46,8 @@ alongside org membership.
 
 v1 constraints:
 
-- Group lives in one org: `group.org_id` set at creation — a
-  usermanager fact the engine uses to fill the `owner_org_id` billing
-  annotation on group-owned rows. Cross-org groups deferred (v2+).
+- Tenant/org membership of a group is a flavor/app concern (a
+  usermanager fact); Core stores no org column and never consults one.
 - "Org-wide visible" expressed as a default `<org>-everyone` group
   whose membership auto-syncs with org membership. No `Principal::Org`
   variant.

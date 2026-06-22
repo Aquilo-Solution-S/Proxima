@@ -22,7 +22,7 @@ pub async fn file_revision_heads(
     owner: &Owner,
     repo_id: uuid::Uuid,
 ) -> Result<Vec<FileRevisionHead>, IngestError> {
-    let (kind, principal_id, org_id) = owner.columns();
+    let (kind, principal_id) = owner.columns();
 
     // DISTINCT ON over (file_path) ordered by created_at DESC picks
     // the latest revision per NK in a single index scan. Replaces a
@@ -39,14 +39,12 @@ pub async fn file_revision_heads(
              JOIN proxima_code.file_revision_v1 s USING (memory_id) \
              WHERE m.owner_principal_kind = $1 \
                AND m.owner_principal_id = $2 \
-               AND m.owner_org_id = $3 \
-               AND s.repo_id = $4 \
+               AND s.repo_id = $3 \
              ORDER BY s.file_path, m.created_at DESC \
          ) latest",
     )
     .bind(kind)
     .bind(principal_id)
-    .bind(org_id)
     .bind(repo_id)
     .fetch_all(pool)
     .await?;
@@ -76,7 +74,7 @@ pub async fn present_chunk_indexes(
     repo_id: uuid::Uuid,
     file_path: &str,
 ) -> Result<Vec<u32>, IngestError> {
-    let (kind, principal_id, org_id) = owner.columns();
+    let (kind, principal_id) = owner.columns();
 
     // DISTINCT ON per (chunk_index) finds the latest head per NK in a
     // single pass; we then filter to Present so tombstoned-latest
@@ -93,16 +91,14 @@ pub async fn present_chunk_indexes(
              JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
              WHERE m.owner_principal_kind = $1 \
                AND m.owner_principal_id = $2 \
-               AND m.owner_org_id = $3 \
-               AND s.repo_id = $4 \
-               AND s.file_path = $5 \
+               AND s.repo_id = $3 \
+               AND s.file_path = $4 \
              ORDER BY s.chunk_index, m.created_at DESC \
          ) latest \
          WHERE latest.state = 'Present'",
     )
     .bind(kind)
     .bind(principal_id)
-    .bind(org_id)
     .bind(repo_id)
     .bind(file_path)
     .fetch_all(pool)

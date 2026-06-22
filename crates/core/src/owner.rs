@@ -2,20 +2,15 @@
 //!
 //! See docs/01-event-source.md §"Owner — scoping primitive" for semantics.
 
-use crate::{GroupId, OrgId, UserId};
+use crate::{GroupId, UserId};
 
-/// Storage/row annotation assembled from an [`AuthzContext`](crate::AuthzContext).
+/// Owner scoping annotation — now a pure alias of [`Principal`].
 ///
-/// Public request surfaces carry [`Principal`], not `Owner`. The verb layer
-/// checks that principal against the caller identity, then stamps `org_id`
-/// from auth context to reconstruct this pair for rows, storage drafts, wake
-/// internals, and stable hash inputs. `org_id` is NOT part of the access
-/// predicate (AGENTS.md invariant 4).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct Owner {
-    pub principal: Principal,
-    pub org_id: OrgId,
-}
+/// Track B (S0, 2026-06): the former tenant scalar was removed from Core
+/// entirely. There is no tenant field in the access predicate, the identity
+/// hashes, or storage rows; tenancy is a flavor/app concern. Mirrors the Lean
+/// kernel `def Owner : Type := Principal` (docs/lean/Foundations/Owner.lean).
+pub type Owner = Principal;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Principal {
@@ -29,26 +24,6 @@ impl Principal {
         match self {
             Self::User(user) => (OwnerPrincipalKind::User, user.into_inner()),
             Self::Group(group) => (OwnerPrincipalKind::Group, group.into_inner()),
-        }
-    }
-}
-
-impl Owner {
-    #[must_use]
-    pub fn columns(&self) -> (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid) {
-        let (kind, principal_id) = self.principal.columns();
-        (kind, principal_id, self.org_id.into_inner())
-    }
-
-    #[must_use]
-    pub fn with_uuid(
-        principal_kind: OwnerPrincipalKind,
-        principal_id: uuid::Uuid,
-        org_id: uuid::Uuid,
-    ) -> Self {
-        Self {
-            principal: principal_kind.with_uuid(principal_id),
-            org_id: OrgId::new(org_id),
         }
     }
 }

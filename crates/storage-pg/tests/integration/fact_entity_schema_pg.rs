@@ -79,7 +79,6 @@ async fn fact_entity_schema_matches_task_1_contract() {
             ("fact_entity_id", "uuid"),
             ("owner_principal_kind", "USER-DEFINED"),
             ("owner_principal_id", "uuid"),
-            ("owner_org_id", "uuid"),
             ("schema_id", "text"),
             ("schema_version", "integer"),
             ("natural_key", "ARRAY"),
@@ -105,7 +104,6 @@ async fn fact_entity_schema_matches_task_1_contract() {
         for column in [
             "owner_principal_kind",
             "owner_principal_id",
-            "owner_org_id",
             "schema_id",
             "schema_version",
             "natural_key",

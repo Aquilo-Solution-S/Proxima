@@ -38,7 +38,6 @@ struct OrphanedS3BlobRow {
 struct OwnerColumns {
     kind: OwnerPrincipalKind,
     principal_id: Uuid,
-    org_id: Uuid,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,27 +90,24 @@ async fn cleanup_due_facts_in_tx(
         return Ok(empty_outcome());
     };
 
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let owner_columns = OwnerColumns {
         kind: owner_kind,
         principal_id: owner_principal_id,
-        org_id: owner_org_id,
     };
     let due: Vec<DueFactRow> = sqlx::query_as(
         "SELECT memory_id, event_id, schema_id, schema_version
            FROM proxima_core.memories
           WHERE owner_principal_kind = $1
             AND owner_principal_id = $2
-            AND owner_org_id = $3
             AND event_id IS NOT NULL
             AND citation_mapping_id IS NOT NULL
             AND tombstoned_at IS NULL
-            AND created_at < now() - ($4::double precision * INTERVAL '1 second')
+            AND created_at < now() - ($3::double precision * INTERVAL '1 second')
           ORDER BY created_at ASC, memory_id ASC",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(retention_seconds)
     .fetch_all(&mut **tx)
     .await
@@ -126,7 +122,6 @@ async fn cleanup_due_facts_in_tx(
         tx,
         owner_kind,
         owner_principal_id,
-        owner_org_id,
         &due_memory_ids,
     )
     .await?;
@@ -134,7 +129,6 @@ async fn cleanup_due_facts_in_tx(
         tx,
         owner_kind,
         owner_principal_id,
-        owner_org_id,
         &due_memory_ids,
     )
     .await?;
@@ -143,7 +137,6 @@ async fn cleanup_due_facts_in_tx(
         tx,
         owner_kind,
         owner_principal_id,
-        owner_org_id,
         &due_memory_ids,
     )
     .await?;
@@ -184,7 +177,6 @@ async fn cleanup_due_facts_in_tx(
         tx,
         owner_kind,
         owner_principal_id,
-        owner_org_id,
         &due_memory_ids,
     )
     .await?;
@@ -239,7 +231,6 @@ pub(crate) async fn repoint_or_delete_fact_entities(
     tx: &mut Transaction<'_, Postgres>,
     owner_kind: OwnerPrincipalKind,
     owner_principal_id: Uuid,
-    owner_org_id: Uuid,
     due_memory_ids: &[Uuid],
 ) -> Result<Vec<Uuid>, StorageError> {
     if due_memory_ids.is_empty() {
@@ -250,7 +241,6 @@ pub(crate) async fn repoint_or_delete_fact_entities(
         tx,
         owner_kind,
         owner_principal_id,
-        owner_org_id,
         due_memory_ids,
     )
     .await?;
@@ -258,7 +248,6 @@ pub(crate) async fn repoint_or_delete_fact_entities(
         tx,
         owner_kind,
         owner_principal_id,
-        owner_org_id,
         due_memory_ids,
     )
     .await?;
@@ -266,7 +255,6 @@ pub(crate) async fn repoint_or_delete_fact_entities(
         tx,
         owner_kind,
         owner_principal_id,
-        owner_org_id,
         &fact_entity_ids,
     )
     .await
@@ -276,7 +264,6 @@ async fn repoint_fact_entity_heads(
     tx: &mut Transaction<'_, Postgres>,
     owner_kind: OwnerPrincipalKind,
     owner_principal_id: Uuid,
-    owner_org_id: Uuid,
     due_memory_ids: &[Uuid],
 ) -> Result<(), StorageError> {
     if due_memory_ids.is_empty() {
@@ -289,8 +276,7 @@ async fn repoint_fact_entity_heads(
                FROM proxima_core.memories m
               WHERE m.owner_principal_kind = $1
                 AND m.owner_principal_id = $2
-                AND m.owner_org_id = $3
-                AND m.memory_id = ANY($4::uuid[])
+                AND m.memory_id = ANY($3::uuid[])
                 AND m.fact_entity_id IS NOT NULL
          ),
          next_versions AS (
@@ -301,8 +287,7 @@ async fn repoint_fact_entity_heads(
                  ON de.fact_entity_id = m.fact_entity_id
               WHERE m.owner_principal_kind = $1
                 AND m.owner_principal_id = $2
-                AND m.owner_org_id = $3
-                AND m.memory_id <> ALL($4::uuid[])
+                AND m.memory_id <> ALL($3::uuid[])
                 AND m.tombstoned_at IS NULL
               ORDER BY m.fact_entity_id, m.created_at DESC, m.memory_id DESC
          )
@@ -313,12 +298,10 @@ async fn repoint_fact_entity_heads(
           WHERE fe.fact_entity_id = nv.fact_entity_id
             AND fe.owner_principal_kind = $1
             AND fe.owner_principal_id = $2
-            AND fe.owner_org_id = $3
-            AND fe.current_memory_id = ANY($4::uuid[])",
+            AND fe.current_memory_id = ANY($3::uuid[])",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(due_memory_ids)
     .execute(&mut **tx)
     .await
@@ -330,7 +313,6 @@ async fn fact_entity_ids_reaching_zero(
     tx: &mut Transaction<'_, Postgres>,
     owner_kind: OwnerPrincipalKind,
     owner_principal_id: Uuid,
-    owner_org_id: Uuid,
     due_memory_ids: &[Uuid],
 ) -> Result<Vec<Uuid>, StorageError> {
     if due_memory_ids.is_empty() {
@@ -343,8 +325,7 @@ async fn fact_entity_ids_reaching_zero(
                FROM proxima_core.memories m
               WHERE m.owner_principal_kind = $1
                 AND m.owner_principal_id = $2
-                AND m.owner_org_id = $3
-                AND m.memory_id = ANY($4::uuid[])
+                AND m.memory_id = ANY($3::uuid[])
                 AND m.fact_entity_id IS NOT NULL
          )
          SELECT de.fact_entity_id
@@ -354,16 +335,14 @@ async fn fact_entity_ids_reaching_zero(
                       FROM proxima_core.memories survivor
                      WHERE survivor.owner_principal_kind = $1
                        AND survivor.owner_principal_id = $2
-                       AND survivor.owner_org_id = $3
                        AND survivor.fact_entity_id = de.fact_entity_id
-                       AND survivor.memory_id <> ALL($4::uuid[])
+                       AND survivor.memory_id <> ALL($3::uuid[])
                        AND survivor.tombstoned_at IS NULL
                 )
           ORDER BY de.fact_entity_id",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(due_memory_ids)
     .fetch_all(&mut **tx)
     .await
@@ -374,7 +353,6 @@ async fn follow_head_edge_ids_for_entities(
     tx: &mut Transaction<'_, Postgres>,
     owner_kind: OwnerPrincipalKind,
     owner_principal_id: Uuid,
-    owner_org_id: Uuid,
     fact_entity_ids: &[Uuid],
 ) -> Result<Vec<Uuid>, StorageError> {
     if fact_entity_ids.is_empty() {
@@ -386,15 +364,13 @@ async fn follow_head_edge_ids_for_entities(
            FROM proxima_core.edges
           WHERE owner_principal_kind = $1
             AND owner_principal_id = $2
-            AND owner_org_id = $3
             AND (
-                source_fact_entity_id = ANY($4::uuid[])
-                OR target_fact_entity_id = ANY($4::uuid[])
+                source_fact_entity_id = ANY($3::uuid[])
+                OR target_fact_entity_id = ANY($3::uuid[])
             )",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(fact_entity_ids)
     .fetch_all(&mut **tx)
     .await
@@ -405,7 +381,6 @@ async fn tombstone_transitive_derivatives(
     tx: &mut Transaction<'_, Postgres>,
     owner_kind: OwnerPrincipalKind,
     owner_principal_id: Uuid,
-    owner_org_id: Uuid,
     due_memory_ids: &[Uuid],
 ) -> Result<Vec<TombstonedDerivativeRow>, StorageError> {
     sqlx::query_as(
@@ -414,9 +389,8 @@ async fn tombstone_transitive_derivatives(
                FROM proxima_core.edges e
               WHERE e.owner_principal_kind = $1
                 AND e.owner_principal_id = $2
-                AND e.owner_org_id = $3
                 AND e.relation_class = 'Provenance'
-                AND e.target_memory_id = ANY($4::uuid[])
+                AND e.target_memory_id = ANY($3::uuid[])
                 AND e.source_memory_id IS NOT NULL
              UNION
              SELECT e.source_memory_id
@@ -424,7 +398,6 @@ async fn tombstone_transitive_derivatives(
                JOIN proxima_core.edges e
                  ON e.owner_principal_kind = $1
                 AND e.owner_principal_id = $2
-                AND e.owner_org_id = $3
                 AND e.relation_class = 'Provenance'
                 AND e.target_memory_id = d.memory_id
                 AND e.source_memory_id IS NOT NULL
@@ -435,14 +408,12 @@ async fn tombstone_transitive_derivatives(
           WHERE m.memory_id = d.memory_id
             AND m.owner_principal_kind = $1
             AND m.owner_principal_id = $2
-            AND m.owner_org_id = $3
             AND m.kind IS NOT NULL
             AND m.tombstoned_at IS NULL
           RETURNING m.memory_id, m.kind, m.schema_id, m.schema_version",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(due_memory_ids)
     .fetch_all(&mut **tx)
     .await
@@ -456,14 +427,13 @@ async fn insert_entity_delete_event(
 ) -> Result<(), StorageError> {
     sqlx::query(
         "INSERT INTO proxima_core.change_event
-            (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind,
+            (seq, owner_principal_kind, owner_principal_id, kind,
              entity_kind, entity_memory_id, entity_schema_id, entity_schema_version)
-         VALUES ($1, $2, $3, $4, 'EntityDelete', $5, $6, $7, $8)",
+         VALUES ($1, $2, $3, 'EntityDelete', $4, $5, $6, $7)",
     )
     .bind(Uuid::now_v7())
     .bind(owner.kind)
     .bind(owner.principal_id)
-    .bind(owner.org_id)
     .bind(entity.kind)
     .bind(entity.memory_id)
     .bind(entity.schema_id)
@@ -478,7 +448,6 @@ async fn edge_ids_referencing_facts(
     tx: &mut Transaction<'_, Postgres>,
     owner_kind: OwnerPrincipalKind,
     owner_principal_id: Uuid,
-    owner_org_id: Uuid,
     due_memory_ids: &[Uuid],
 ) -> Result<Vec<Uuid>, StorageError> {
     sqlx::query_scalar(
@@ -486,16 +455,14 @@ async fn edge_ids_referencing_facts(
            FROM proxima_core.edges
           WHERE owner_principal_kind = $1
             AND owner_principal_id = $2
-            AND owner_org_id = $3
             AND (
-                source_memory_id = ANY($4::uuid[])
-                OR target_memory_id = ANY($4::uuid[])
-                OR authorship_owner_memory_id = ANY($4::uuid[])
+                source_memory_id = ANY($3::uuid[])
+                OR target_memory_id = ANY($3::uuid[])
+                OR authorship_owner_memory_id = ANY($3::uuid[])
             )",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(due_memory_ids)
     .fetch_all(&mut **tx)
     .await

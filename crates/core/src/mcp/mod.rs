@@ -584,7 +584,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::{AuthPath, FlavorRegistry, OrgId, Owner, Principal, UserId};
+    use crate::{AuthPath, FlavorRegistry, Principal, UserId};
 
     #[test]
     fn provider_safe_tool_name_replaces_runner_invalid_separators() {
@@ -666,10 +666,7 @@ mod tests {
     }
 
     fn prefixed_ctx() -> McpToolCtx {
-        let owner = Owner {
-            principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
-            org_id: OrgId::new(uuid::Uuid::now_v7()),
-        };
+        let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
         McpToolCtx {
             owner: owner.clone(),
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
@@ -702,15 +699,12 @@ mod tests {
 mod ctx_engine_tests {
     use super::*;
     use crate::AuthPath;
-    use crate::{Engine, FlavorRegistry, OrgId, Owner, Principal, UserId};
+    use crate::{Engine, FlavorRegistry, Principal, UserId};
     use std::sync::Arc;
 
     #[tokio::test]
     async fn ctx_storage_returns_none_when_engine_unwired() {
-        let owner = Owner {
-            principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
-            org_id: OrgId::new(uuid::Uuid::now_v7()),
-        };
+        let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
         let ctx = McpToolCtx {
             owner: owner.clone(),
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
@@ -735,10 +729,7 @@ mod ctx_engine_tests {
 
     #[tokio::test]
     async fn ctx_storage_returns_some_when_engine_wired() {
-        let owner = Owner {
-            principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
-            org_id: OrgId::new(uuid::Uuid::now_v7()),
-        };
+        let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
         let engine = Arc::new(Engine::new(FlavorRegistry::new().freeze()));
         let ctx = McpToolCtx {
             owner: owner.clone(),

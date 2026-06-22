@@ -41,11 +41,11 @@ const PROXIMA_CODE_EDGE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
 ]);
 
 /// Derive the natural-key bytes for a `proxima-code/calls` edge.
-/// Components: owner principal kind / id / org-id, the relation
-/// string, both endpoint memory ids, and the **chunk-relative**
-/// callsite byte start. File-level offsets are deliberately omitted
-/// so the key is stable when chunk content is stable but the chunk
-/// has shifted in the file.
+/// Components: owner principal kind / id, the relation string, both
+/// endpoint memory ids, and the **chunk-relative** callsite byte
+/// start. File-level offsets are deliberately omitted so the key is
+/// stable when chunk content is stable but the chunk has shifted in
+/// the file.
 fn calls_edge_natural_key(
     owner: &Owner,
     source_memory_id: uuid::Uuid,
@@ -53,12 +53,10 @@ fn calls_edge_natural_key(
     callsite_byte_start_in_source_chunk: u32,
 ) -> Vec<u8> {
     let mut k = Vec::with_capacity(128);
-    let (kind, principal_id, org_id) = owner.columns();
+    let (kind, principal_id) = owner.columns();
     k.extend_from_slice(kind.as_str().as_bytes());
     k.push(0);
     k.extend_from_slice(principal_id.as_bytes());
-    k.push(0);
-    k.extend_from_slice(org_id.as_bytes());
     k.push(0);
     k.extend_from_slice(b"proxima-code/calls");
     k.push(0);
@@ -68,6 +66,24 @@ fn calls_edge_natural_key(
     k.push(0);
     k.extend_from_slice(&callsite_byte_start_in_source_chunk.to_be_bytes());
     k
+}
+
+/// Deterministic `edge_id` for a `proxima-code/calls` edge: the v5 of
+/// the natural key under [`PROXIMA_CODE_EDGE_NAMESPACE`]. Org-free
+/// (Track B / S0) — the key folds the owner *principal* only.
+fn calls_edge_id(
+    owner: &Owner,
+    source_memory_id: uuid::Uuid,
+    target_memory_id: uuid::Uuid,
+    callsite_byte_start_in_source_chunk: u32,
+) -> uuid::Uuid {
+    let key = calls_edge_natural_key(
+        owner,
+        source_memory_id,
+        target_memory_id,
+        callsite_byte_start_in_source_chunk,
+    );
+    uuid::Uuid::new_v5(&PROXIMA_CODE_EDGE_NAMESPACE, &key)
 }
 
 /// Atomic operator-authored edge + typed sidecar write for derived
@@ -90,13 +106,12 @@ pub async fn ingest_calls_edge(
             IngestError::Storage("missing registered relation proxima-code/calls".into())
         })?;
 
-    let key = calls_edge_natural_key(
+    let edge_id = calls_edge_id(
         owner,
         edge.source_memory_id,
         edge.target_memory_id,
         edge.callsite_byte_start_in_source_chunk,
     );
-    let edge_id = uuid::Uuid::new_v5(&PROXIMA_CODE_EDGE_NAMESPACE, &key);
 
     let payload = EdgeCallsV1 {
         callsite_byte_start: edge.callsite_byte_start,
@@ -121,4 +136,31 @@ pub async fn ingest_calls_edge(
     tx.commit().await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::calls_edge_id;
+    use proxima_core::{Principal, UserId};
+    use uuid::Uuid;
+
+    /// Pins the org-free call-edge `edge_id` against drift. Track B / S0:
+    /// the natural key folds the owner *principal* ‖ relation ‖ endpoints
+    /// ‖ chunk-relative callsite — no org. A fixed input must reproduce
+    /// exactly this uuid so re-ingested call sites dedup by `edge_id`.
+    #[test]
+    fn calls_edge_id_golden_is_org_free() {
+        let owner = Principal::User(UserId::new(
+            Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
+        ));
+        let source =
+            Uuid::parse_str("00000000-0000-0000-0000-0000000000aa").expect("uuid literal");
+        let target =
+            Uuid::parse_str("00000000-0000-0000-0000-0000000000bb").expect("uuid literal");
+        let id = calls_edge_id(&owner, source, target, 7);
+        assert_eq!(
+            id,
+            Uuid::parse_str("93435b9b-6842-5914-871a-ab6e79c7c4a3").expect("uuid literal")
+        );
+    }
 }

@@ -202,8 +202,7 @@ fn draft(owner: &Owner, note: &str, author: Option<PersonalityInstanceId>) -> Ev
     EventDraft {
         source_id: SourceId::new("test/inline-cited-source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.principal.clone(),
-        org_id: None,
+        principal: owner.clone(),
         author_personality_instance_id: author,
         schema_id: TestFact::schema_id(),
         schema_version: SchemaVersion::new(TestFact::SCHEMA_VERSION),
@@ -434,7 +433,7 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
         let authorized = engine.authorize_citation_attachment(
             &authz,
             Role::SourceIngest,
-            owner.principal.clone(),
+            owner.clone(),
             fact_outcome.memory_id,
             cited_object(),
             citation_mapping(1, 5),
@@ -485,7 +484,7 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
         let missing = engine.authorize_citation_attachment(
             &authz,
             Role::SourceIngest,
-            owner.principal.clone(),
+            owner.clone(),
             MemoryId::new(Uuid::now_v7()),
             cited_object(),
             citation_mapping(1, 5),

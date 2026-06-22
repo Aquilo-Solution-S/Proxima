@@ -495,19 +495,18 @@ async fn seed_personality_self(
 ) -> Result<(PersonalityInstanceId, MemoryId), Box<dyn std::error::Error>> {
     let personality_id = PersonalityInstanceId::new(Uuid::now_v7());
     let root_memory_id = MemoryId::new(Uuid::now_v7());
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
+    let (owner_kind, owner_principal_id) = owner_parts(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (memory_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 'test/self-perspective-v1', 1, $5,
-                 'goal tool self perspective', $6, 'codex-test', 'self-v1', $7, 0)",
+         VALUES ($1, $2, $3, 'test/self-perspective-v1', 1, $4,
+                 'goal tool self perspective', $5, 'codex-test', 'self-v1', $6, 0)",
     )
     .bind(root_memory_id.into_inner())
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(EntityKind::Perspective)
     .bind(MemoryOperatorKind::AtoP)
     .bind(personality_id.into_inner())
@@ -515,13 +514,12 @@ async fn seed_personality_self(
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.personality
-            (owner_principal_kind, owner_principal_id, owner_org_id,
+            (owner_principal_kind, owner_principal_id,
              personality_instance_id, current_root_perspective_memory_id, status)
-         VALUES ($1, $2, $3, $4, $5, $6)",
+         VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(personality_id.into_inner())
     .bind(root_memory_id.into_inner())
     .bind(PersonalityStatus::Active)
@@ -538,45 +536,42 @@ async fn seed_fact_memory(
     let memory_id = MemoryId::new(Uuid::now_v7());
     let source_batch_id = Uuid::now_v7();
     let event_id = Uuid::now_v7().as_bytes().to_vec();
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
+    let (owner_kind, owner_principal_id) = owner_parts(owner);
     let now = time::OffsetDateTime::now_utc();
     sqlx::query(
         "INSERT INTO proxima_core.source_batches
-            (id, source_id, owner_principal_kind, owner_principal_id, owner_org_id)
-         VALUES ($1, 'test/goal-tools', $2, $3, $4)",
+            (id, source_id, owner_principal_kind, owner_principal_id)
+         VALUES ($1, 'test/goal-tools', $2, $3)",
     )
     .bind(source_batch_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .execute(pg.pool())
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.events
             (event_id, source_id, source_batch_id, owner_principal_kind,
-             owner_principal_id, owner_org_id, schema_id, schema_version,
+             owner_principal_id, schema_id, schema_version,
              observed_at, occurred_at)
-         VALUES ($1, 'test/goal-tools', $2, $3, $4, $5,
-                 'test/evidence-v1', 1, $6, $6)",
+         VALUES ($1, 'test/goal-tools', $2, $3, $4,
+                 'test/evidence-v1', 1, $5, $5)",
     )
     .bind(&event_id)
     .bind(source_batch_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(now)
     .execute(pg.pool())
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (memory_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, event_id, personality_instance_id)
-         VALUES ($1, $2, $3, $4, 'test/evidence-v1', 1, $5, $6)",
+         VALUES ($1, $2, $3, 'test/evidence-v1', 1, $4, $5)",
     )
     .bind(memory_id.into_inner())
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(event_id)
     .bind(Uuid::nil())
     .execute(pg.pool())
@@ -779,13 +774,13 @@ fn nil_owner() -> Owner {
     owner_fixture()
 }
 
-fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
-    let kind = OwnerPrincipalKind::of(&owner.principal);
-    let principal_id = match &owner.principal {
+fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
+    let kind = OwnerPrincipalKind::of(owner);
+    let principal_id = match owner {
         Principal::User(user) => user.into_inner(),
         Principal::Group(group) => group.into_inner(),
     };
-    (kind, principal_id, owner.org_id.into_inner())
+    (kind, principal_id)
 }
 
 fn author_ctx() -> McpAuthorContext {

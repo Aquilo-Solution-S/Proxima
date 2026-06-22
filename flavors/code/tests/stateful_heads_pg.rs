@@ -27,7 +27,7 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo, SchemaTombstone};
 use proxima_core::{
-    AbstractionPayload, CORE_DERIVED_FROM_RELATION, FactPayload, FlavorRegistry, OrgId, Owner,
+    AbstractionPayload, CORE_DERIVED_FROM_RELATION, FactPayload, FlavorRegistry, Owner,
     Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
 use proxima_pg_testkit::drop_db;
@@ -36,10 +36,7 @@ use uuid::Uuid;
 
 fn make_owner() -> (UserId, Owner) {
     let user = UserId::new(Uuid::now_v7());
-    let owner = Owner {
-        principal: Principal::User(user),
-        org_id: OrgId::new(Uuid::now_v7()),
-    };
+    let owner = Principal::User(user);
     (user, owner)
 }
 
@@ -67,8 +64,7 @@ fn fresh_draft(owner: Owner, schema: &str, payload: &[u8]) -> EventDraft {
     EventDraft {
         source_id: SourceId::new("test/source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.principal,
-        org_id: Some(owner.org_id),
+        principal: owner,
         author_personality_instance_id: None,
         schema_id: SchemaId::new(schema.into()),
         schema_version: SchemaVersion::new(1),
@@ -153,8 +149,8 @@ async fn insert_memory_edge(
     target_memory_id: Uuid,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let edge_id = Uuid::now_v7();
-    let owner_kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
-    let owner_principal_id = match &owner.principal {
+    let owner_kind = proxima_core::OwnerPrincipalKind::of(owner);
+    let owner_principal_id = match owner {
         Principal::User(u) => u.into_inner(),
         Principal::Group(g) => g.into_inner(),
     };
@@ -162,8 +158,8 @@ async fn insert_memory_edge(
         "INSERT INTO proxima_core.edges \
             (edge_id, relation, relation_class, source_kind, source_memory_id, \
              target_kind, target_memory_id, authorship_kind, owner_principal_kind, \
-             owner_principal_id, owner_org_id) \
-         VALUES ($1, $2, 'Provenance', 'Fact', $3, 'Fact', $4, 'Engine', $5, $6, $7)",
+             owner_principal_id) \
+         VALUES ($1, $2, 'Provenance', 'Fact', $3, 'Fact', $4, 'Engine', $5, $6)",
     )
     .bind(edge_id)
     .bind(CORE_DERIVED_FROM_RELATION)
@@ -171,7 +167,6 @@ async fn insert_memory_edge(
     .bind(target_memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner.org_id.into_inner())
     .execute(pool)
     .await?;
     Ok(edge_id)
@@ -236,7 +231,7 @@ async fn heads_only_returns_latest_per_natural_key() {
         // Heads-only query — engine populates stateful_heads from the
         // registered NK columns on FileRevisionV1.
         let req = QueryRequest {
-            principal: owner.principal.clone(),
+            principal: owner.clone(),
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -273,7 +268,7 @@ async fn heads_only_returns_latest_per_natural_key() {
 
         // IncludeSuperseded — all 4 rows visible.
         let req_all = QueryRequest {
-            principal: owner.principal.clone(),
+            principal: owner.clone(),
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
@@ -334,7 +329,7 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
         }
 
         let req = QueryRequest {
-            principal: owner.principal.clone(),
+            principal: owner.clone(),
             entity_kind: None,
             schema_id: Some(SchemaId::new(CommitV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -368,41 +363,34 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
 }
 
 #[tokio::test]
-async fn heads_only_keeps_same_principal_heads_split_by_owner_org() {
+async fn heads_only_supersedes_older_same_principal_nk_revision() {
     let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
         let user = UserId::new(Uuid::now_v7());
-        let owner_a = Owner {
-            principal: Principal::User(user),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
-        let owner_b = Owner {
-            principal: Principal::User(user),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner: Owner = Principal::User(user);
         let engine = Engine::new(registry_for_test()).with_storage(storage);
         let repo_id = Uuid::now_v7();
 
-        let first_org_memory = seed_file_revision_state(
+        let first_memory = seed_file_revision_state(
             pg.pool(),
             &engine,
-            owner_a.clone(),
+            owner.clone(),
             repo_id,
             "src/shared.rs",
-            b"org-a",
+            b"rev-1",
             FileState::Present,
         )
         .await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
-        let second_org_memory = seed_file_revision_state(
+        let second_memory = seed_file_revision_state(
             pg.pool(),
             &engine,
-            owner_b,
+            owner.clone(),
             repo_id,
             "src/shared.rs",
-            b"org-b",
+            b"rev-2",
             FileState::Present,
         )
         .await?;
@@ -423,7 +411,7 @@ async fn heads_only_keeps_same_principal_heads_split_by_owner_org() {
         };
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner_a, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 &req,
             )
             .await?;
@@ -433,12 +421,13 @@ async fn heads_only_keeps_same_principal_heads_split_by_owner_org() {
             .map(|m| m.id.into_inner())
             .collect::<Vec<_>>();
 
+        // Same owner, same NK: only the newer revision is a head.
         assert!(
-            ids.contains(&first_org_memory),
-            "same-principal heads must not be suppressed across owner_org_id"
+            !ids.contains(&first_memory),
+            "older same-NK revision is superseded under HeadsOnly"
         );
         assert!(
-            ids.contains(&second_org_memory),
+            ids.contains(&second_memory),
             "newer same-principal head remains visible"
         );
         Ok(())
@@ -446,7 +435,7 @@ async fn heads_only_keeps_same_principal_heads_split_by_owner_org() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("heads_only_keeps_same_principal_heads_split_by_owner_org failed");
+    result.expect("heads_only_supersedes_older_same_principal_nk_revision failed");
 }
 
 #[tokio::test]
@@ -480,7 +469,7 @@ async fn owner_snapshot_heads_only_folds_stateful_fact_schemas() {
             FileState::Present,
         )
         .await?;
-        let mut req = QueryRequest::for_principal(owner.principal.clone());
+        let mut req = QueryRequest::for_principal(owner.clone());
         req.limit = 100;
         let resp = engine
             .query(
@@ -537,7 +526,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
         )
         .await?;
 
-        let mut req = QueryRequest::for_principal(owner.principal.clone());
+        let mut req = QueryRequest::for_principal(owner.clone());
         req.schema_id = Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into()));
         req.limit = 100;
         let resp = engine.query(&authz, &req).await?;
@@ -629,7 +618,7 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
         .await?;
         let edge_id = insert_memory_edge(pg.pool(), &owner, active, deleted).await?;
 
-        let mut req = QueryRequest::for_principal(owner.principal.clone());
+        let mut req = QueryRequest::for_principal(owner.clone());
         req.limit = 100;
         let resp = engine
             .query(
@@ -689,7 +678,7 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
         .await?;
         let edge_id = insert_memory_edge(pg.pool(), &owner, active, deleted).await?;
 
-        let mut req = QueryRequest::for_principal(owner.principal.clone());
+        let mut req = QueryRequest::for_principal(owner.clone());
         req.edge_ids = vec![edge_id];
         req.limit = 1;
         let resp = engine

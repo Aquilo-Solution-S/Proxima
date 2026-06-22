@@ -32,9 +32,9 @@ impl Engine {
         owner: &Owner,
         seconds: u64,
     ) -> Result<(), ProtocolError> {
-        super::authorize(authz, &owner.principal, Role::Admin)?;
+        super::authorize(authz, owner, Role::Admin)?;
         let seconds = retention_seconds_to_i64(seconds)?;
-        let owner = authz.scoped_owner(owner.principal.clone());
+        let owner = authz.scoped_owner(owner.clone());
         self.storage
             .upsert_fact_retention(&owner, seconds)
             .await
@@ -52,8 +52,8 @@ impl Engine {
         authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<Option<i64>, ProtocolError> {
-        super::authorize(authz, &owner.principal, Role::Admin)?;
-        let owner = authz.scoped_owner(owner.principal.clone());
+        super::authorize(authz, owner, Role::Admin)?;
+        let owner = authz.scoped_owner(owner.clone());
         self.storage
             .get_fact_retention(&owner)
             .await
@@ -71,8 +71,8 @@ impl Engine {
         authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<bool, ProtocolError> {
-        super::authorize(authz, &owner.principal, Role::Admin)?;
-        let owner = authz.scoped_owner(owner.principal.clone());
+        super::authorize(authz, owner, Role::Admin)?;
+        let owner = authz.scoped_owner(owner.clone());
         self.storage
             .clear_fact_retention(&owner)
             .await
@@ -91,8 +91,8 @@ impl Engine {
         authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<CleanupDueFactsOutcome, ProtocolError> {
-        super::authorize(authz, &owner.principal, Role::Admin)?;
-        let owner = authz.scoped_owner(owner.principal.clone());
+        super::authorize(authz, owner, Role::Admin)?;
+        let owner = authz.scoped_owner(owner.clone());
         let fact_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Fact);
         let edge_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Edge);
         let citation_mapping_sidecar_tables =

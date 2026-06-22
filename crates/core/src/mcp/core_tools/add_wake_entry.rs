@@ -54,7 +54,7 @@ impl McpTool for AddWakeEntryTool {
         args: AddWakeEntryArgs,
     ) -> BoxFuture<'static, Result<AddWakeEntryOutput, McpToolError>> {
         Box::pin(async move {
-            crate::engine::authorize(&ctx.authz, &ctx.owner.principal, Role::Admin)
+            crate::engine::authorize(&ctx.authz, &ctx.owner, Role::Admin)
                 .map_err(|e| McpToolError::Other(e.to_string()))?;
             let pid = ctx.resolve_personality(&args.personality)?;
             let storage = ctx

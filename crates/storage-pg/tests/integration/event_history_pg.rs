@@ -10,9 +10,7 @@ use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
-use proxima_core::{
-    OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
-};
+use proxima_core::{Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
@@ -59,8 +57,7 @@ fn fresh_event_draft(owner: Owner, payload: Vec<u8>) -> EventDraft {
     EventDraft {
         source_id: SourceId::new("test/source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.principal,
-        org_id: Some(owner.org_id),
+        principal: owner,
         author_personality_instance_id: None,
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
@@ -100,14 +97,8 @@ async fn event_history_returns_owner_scoped_newest_first() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
         let user1 = UserId::new(Uuid::now_v7());
         let user2 = UserId::new(Uuid::now_v7());
-        let owner1 = Owner {
-            principal: Principal::User(user1),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
-        let owner2 = Owner {
-            principal: Principal::User(user2),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner1 = Principal::User(user1);
+        let owner2 = Principal::User(user2);
         let engine1 = build_engine(storage.clone(), owner1.clone(), Principal::User(user1));
         let engine2 = build_engine(storage, owner2.clone(), Principal::User(user2));
         let authz1 =
@@ -128,7 +119,7 @@ async fn event_history_returns_owner_scoped_newest_first() {
             .event_history(
                 &authz1,
                 &EventHistoryRequest {
-                    principal: owner1.principal.clone(),
+                    principal: owner1.clone(),
                     limit: 100,
                     before: None,
                 },
@@ -149,7 +140,7 @@ async fn event_history_returns_owner_scoped_newest_first() {
             .event_history(
                 &authz2,
                 &EventHistoryRequest {
-                    principal: owner2.principal.clone(),
+                    principal: owner2.clone(),
                     limit: 100,
                     before: None,
                 },
@@ -161,7 +152,7 @@ async fn event_history_returns_owner_scoped_newest_first() {
             .event_history(
                 &authz1,
                 &EventHistoryRequest {
-                    principal: owner1.principal.clone(),
+                    principal: owner1.clone(),
                     limit: 2,
                     before: None,
                 },
@@ -173,7 +164,7 @@ async fn event_history_returns_owner_scoped_newest_first() {
             .event_history(
                 &authz1,
                 &EventHistoryRequest {
-                    principal: owner1.principal,
+                    principal: owner1,
                     limit: 2,
                     before: Some(page1.events[1].seq),
                 },

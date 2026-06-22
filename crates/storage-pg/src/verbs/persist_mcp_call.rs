@@ -39,7 +39,7 @@ pub async fn persist_mcp_call_in_tx(
     let event_id = input.event_id();
     let event_id_bytes = event_id.into_inner();
 
-    let (owner_kind, owner_principal_id, owner_org_id) = input.owner.columns();
+    let (owner_kind, owner_principal_id) = input.owner.columns();
 
     let existing = sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
         r"SELECT m.memory_id,
@@ -85,10 +85,10 @@ pub async fn persist_mcp_call_in_tx(
     let cited_object_id = sqlx::query_scalar::<_, Uuid>(
         r"INSERT INTO proxima_core.cited_objects
             (cited_object_id, schema_id, owner_principal_kind,
-             owner_principal_id, owner_org_id, content_hash)
-         VALUES ($1, $2, $3, $4, $5, $6)
+             owner_principal_id, content_hash)
+         VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (owner_principal_kind, owner_principal_id,
-                      owner_org_id, schema_id, content_hash)
+                      schema_id, content_hash)
          DO UPDATE SET schema_id = EXCLUDED.schema_id
          RETURNING cited_object_id",
     )
@@ -96,7 +96,6 @@ pub async fn persist_mcp_call_in_tx(
     .bind(MCP_CALL_IO_SCHEMA)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(&io_content_hash[..])
     .fetch_one(tx.as_mut())
     .await
@@ -119,15 +118,14 @@ pub async fn persist_mcp_call_in_tx(
     sqlx::query(
         r"INSERT INTO proxima_core.source_batches
             (id, source_id, owner_principal_kind,
-             owner_principal_id, owner_org_id)
-         VALUES ($1, $2, $3, $4, $5)
+             owner_principal_id)
+         VALUES ($1, $2, $3, $4)
          ON CONFLICT (id) DO NOTHING",
     )
     .bind(source_batch_id)
     .bind(MCP_CALL_SOURCE_ID)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -135,16 +133,15 @@ pub async fn persist_mcp_call_in_tx(
     sqlx::query(
         r"INSERT INTO proxima_core.events
             (event_id, source_id, source_batch_id,
-             owner_principal_kind, owner_principal_id, owner_org_id,
+             owner_principal_kind, owner_principal_id,
              schema_id, schema_version, observed_at, occurred_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 1, $8, $9)",
+         VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8)",
     )
     .bind(&event_id_bytes[..])
     .bind(MCP_CALL_SOURCE_ID)
     .bind(source_batch_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(MCP_CALL_FACT_SCHEMA)
     .bind(input.observed_at)
     .bind(input.occurred_at)
@@ -155,15 +152,14 @@ pub async fn persist_mcp_call_in_tx(
     sqlx::query(
         r"INSERT INTO proxima_core.memories
             (memory_id, owner_principal_kind, owner_principal_id,
-             owner_org_id, schema_id, schema_version, event_id, citation_mapping_id,
+             schema_id, schema_version, event_id, citation_mapping_id,
              personality_instance_id)
-         VALUES ($1, $2, $3, $4, $5, 1, $6, $7,
+         VALUES ($1, $2, $3, $4, 1, $5, $6,
                  '00000000-0000-0000-0000-000000000000'::uuid)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(MCP_CALL_FACT_SCHEMA)
     .bind(&event_id_bytes[..])
     .bind(citation_mapping_id)
@@ -175,8 +171,8 @@ pub async fn persist_mcp_call_in_tx(
         r"INSERT INTO proxima_core.citation_mappings
             (citation_mapping_id, schema_id, memory_id,
              cited_object_id, owner_principal_kind,
-             owner_principal_id, owner_org_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+             owner_principal_id)
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(citation_mapping_id)
     .bind(MCP_CALL_CITATION_SCHEMA)
@@ -184,7 +180,6 @@ pub async fn persist_mcp_call_in_tx(
     .bind(cited_object_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -215,16 +210,15 @@ pub async fn persist_mcp_call_in_tx(
     sqlx::query(
         r"INSERT INTO proxima_core.change_event
             (seq, owner_principal_kind, owner_principal_id,
-             owner_org_id, kind, entity_kind,
+             kind, entity_kind,
              entity_memory_id, entity_schema_id, entity_schema_version,
              entity_personality_instance_id)
-         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Fact', $5, $6, 1,
+         VALUES ($1, $2, $3, 'EntityAppend', 'Fact', $4, $5, 1,
                  '00000000-0000-0000-0000-000000000000'::uuid)",
     )
     .bind(change_seq)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(memory_id)
     .bind(MCP_CALL_FACT_SCHEMA)
     .execute(&mut **tx)

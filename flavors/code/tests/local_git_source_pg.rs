@@ -52,20 +52,18 @@ fn fixture_repo() -> TempDir {
 }
 
 async fn count_present_chunks(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) -> i64 {
-    let kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
-    let principal_id = match &owner.principal {
+    let kind = proxima_core::OwnerPrincipalKind::of(owner);
+    let principal_id = match owner {
         Principal::User(u) => u.into_inner(),
         Principal::Group(g) => g.into_inner(),
     };
-    let org_id = owner.org_id.into_inner();
     let row = sqlx::query(
         "SELECT COUNT(*)::bigint AS c \
          FROM proxima_core.memories m \
          JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
          WHERE m.owner_principal_kind = $1 \
            AND m.owner_principal_id = $2 \
-           AND m.owner_org_id = $3 \
-           AND s.repo_id = $4 \
+           AND s.repo_id = $3 \
            AND s.state = 'Present' \
            AND NOT EXISTS ( \
                  SELECT 1 FROM proxima_core.memories m2 \
@@ -73,7 +71,6 @@ async fn count_present_chunks(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid)
                  WHERE m2.schema_id = m.schema_id \
                    AND m2.owner_principal_kind = m.owner_principal_kind \
                    AND m2.owner_principal_id = m.owner_principal_id \
-                   AND m2.owner_org_id = m.owner_org_id \
                    AND s2.repo_id = s.repo_id \
                    AND s2.file_path = s.file_path \
                    AND s2.chunk_index = s.chunk_index \
@@ -82,7 +79,6 @@ async fn count_present_chunks(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid)
     )
     .bind(kind)
     .bind(principal_id)
-    .bind(org_id)
     .bind(repo_id)
     .fetch_one(pool)
     .await
@@ -96,28 +92,25 @@ async fn fetch_file_revision_state(
     repo_id: Uuid,
     file_path: &str,
 ) -> Option<FileState> {
-    let kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
-    let principal_id = match &owner.principal {
+    let kind = proxima_core::OwnerPrincipalKind::of(owner);
+    let principal_id = match owner {
         Principal::User(u) => u.into_inner(),
         Principal::Group(g) => g.into_inner(),
     };
-    let org_id = owner.org_id.into_inner();
     let row: Option<(FileState,)> = sqlx::query_as(
         "SELECT s.state \
          FROM proxima_core.memories m \
          JOIN proxima_code.file_revision_v1 s USING (memory_id) \
          WHERE m.owner_principal_kind = $1 \
            AND m.owner_principal_id = $2 \
-           AND m.owner_org_id = $3 \
-           AND s.repo_id = $4 \
-           AND s.file_path = $5 \
+           AND s.repo_id = $3 \
+           AND s.file_path = $4 \
            AND NOT EXISTS ( \
                  SELECT 1 FROM proxima_core.memories m2 \
                  JOIN proxima_code.file_revision_v1 s2 USING (memory_id) \
                  WHERE m2.schema_id = m.schema_id \
                    AND m2.owner_principal_kind = m.owner_principal_kind \
                    AND m2.owner_principal_id = m.owner_principal_id \
-                   AND m2.owner_org_id = m.owner_org_id \
                    AND s2.repo_id = s.repo_id \
                    AND s2.file_path = s.file_path \
                    AND m2.created_at > m.created_at \
@@ -125,7 +118,6 @@ async fn fetch_file_revision_state(
     )
     .bind(kind)
     .bind(principal_id)
-    .bind(org_id)
     .bind(repo_id)
     .bind(file_path)
     .fetch_optional(pool)
@@ -195,7 +187,7 @@ async fn local_git_source_full_cycle() {
         // Heads-only chunk Query through the Engine — the path that
         // matters for downstream consumers.
         let q = QueryRequest {
-            principal: owner.principal.clone(),
+            principal: owner.clone(),
             entity_kind: None,
             schema_id: Some(SchemaId::new(
                 <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID.into(),
@@ -269,7 +261,7 @@ async fn local_git_source_full_cycle() {
 
         // Old revision still exists as history (IncludeSuperseded view).
         let q_all = QueryRequest {
-            principal: owner.principal.clone(),
+            principal: owner.clone(),
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,

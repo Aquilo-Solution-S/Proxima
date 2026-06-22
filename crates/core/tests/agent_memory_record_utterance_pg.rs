@@ -6,7 +6,7 @@ use common::{ConstantEmbedding, drop_db, fresh_pg};
 use proxima_core::engine::Engine;
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
-    AuthPath, AuthzContext, FlavorRegistry, OrgId, Owner, PersonalityInstanceId, Principal, UserId,
+    AuthPath, AuthzContext, FlavorRegistry, Owner, PersonalityInstanceId, Principal, UserId,
 };
 use serde_json::json;
 use sqlx::Row;
@@ -19,10 +19,7 @@ async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn
     let registry = FlavorRegistry::new();
     let frozen_inner = registry.freeze();
     let frozen = Arc::new(frozen_inner.clone());
-    let owner = Owner {
-        principal: Principal::User(UserId::new(uuid::Uuid::nil())),
-        org_id: OrgId::new(uuid::Uuid::nil()),
-    };
+    let owner: Owner = Principal::User(UserId::new(uuid::Uuid::nil()));
     let personality = PersonalityInstanceId::new(uuid::Uuid::now_v7());
     let engine = Arc::new(
         Engine::new(frozen_inner)

@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use proxima_core::{OrgId, Owner, Principal, UserId};
+use proxima_core::{Owner, Principal, UserId};
 use proxima_pg_testkit::{
     FNV_OFFSET_BASIS, create_db_from_template, db_url, drop_db, ensure_template, fnv1a64_extend,
 };
@@ -43,10 +43,7 @@ pub async fn migrated_db() -> (String, PgStorage) {
 
 #[must_use]
 pub fn test_owner() -> Owner {
-    Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    }
+    Principal::User(UserId::new(Uuid::now_v7()))
 }
 
 pub fn git(repo: &Path, args: &[&str]) {

@@ -42,10 +42,9 @@ fn parse_wire_token(raw: &str) -> WireToken {
 
 fn self_scoped_identity(owner: &Owner) -> Identity {
     let mut accessible = HashSet::with_capacity(1);
-    accessible.insert(owner.principal.clone());
+    accessible.insert(owner.clone());
     Identity {
-        principal: owner.principal.clone(),
-        org_id: owner.org_id,
+        principal: owner.clone(),
         accessible_principals: accessible,
         // Wake-store TTL / master rotation govern today; stream
         // expiry lands with the revalidation slice.
@@ -169,13 +168,13 @@ impl McpEdgeAuth {
         if authz.auth_path != AuthPath::HostBearer {
             return None;
         }
-        if !authz.identity.can_access_principal(&owner.principal) {
+        if !authz.identity.can_access_principal(owner) {
             return None;
         }
         let mut authz = authz;
         authz.capabilities.tool_scope = authz.capabilities.tool_scope.intersect(&self.tool_scope);
         Some(McpAuthContext {
-            owner: authz.scoped_owner(owner.principal.clone()),
+            owner: authz.scoped_owner(owner.clone()),
             authz,
             model_id: None,
             master_token_id: None,
@@ -187,13 +186,10 @@ impl McpEdgeAuth {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use proxima_core::{AuthError, OrgId, Principal, UserId};
+    use proxima_core::{AuthError, Principal, UserId};
 
     fn fake_owner() -> Owner {
-        Owner {
-            principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
-            org_id: OrgId::new(uuid::Uuid::now_v7()),
-        }
+        Principal::User(UserId::new(uuid::Uuid::now_v7()))
     }
 
     struct StubHostAuth {
@@ -270,11 +266,10 @@ mod tests {
     async fn host_path_accepts_host_bearer_scoped_to_owner() {
         let owner = fake_owner();
         let mut accessible = HashSet::new();
-        accessible.insert(owner.principal.clone());
+        accessible.insert(owner.clone());
         let authz = AuthzContext {
             identity: Identity {
-                principal: owner.principal.clone(),
-                org_id: owner.org_id,
+                principal: owner.clone(),
                 accessible_principals: accessible,
                 expires_at: None,
                 auth_epoch: 0,
@@ -296,11 +291,10 @@ mod tests {
         let owner = fake_owner();
         for path in [AuthPath::System, AuthPath::Wake, AuthPath::MasterDev] {
             let mut accessible = HashSet::new();
-            accessible.insert(owner.principal.clone());
+            accessible.insert(owner.clone());
             let authz = AuthzContext {
                 identity: Identity {
-                    principal: owner.principal.clone(),
-                    org_id: owner.org_id,
+                    principal: owner.clone(),
                     accessible_principals: accessible,
                     expires_at: None,
                     auth_epoch: 0,
@@ -322,11 +316,10 @@ mod tests {
         let owner = fake_owner();
         let stranger = fake_owner();
         let mut accessible = HashSet::new();
-        accessible.insert(stranger.principal.clone());
+        accessible.insert(stranger.clone());
         let authz = AuthzContext {
             identity: Identity {
-                principal: stranger.principal.clone(),
-                org_id: stranger.org_id,
+                principal: stranger.clone(),
                 accessible_principals: accessible,
                 expires_at: None,
                 auth_epoch: 0,
@@ -343,11 +336,10 @@ mod tests {
     async fn malformed_reserved_prefix_is_not_forwarded_to_host() {
         let owner = fake_owner();
         let mut accessible = HashSet::new();
-        accessible.insert(owner.principal.clone());
+        accessible.insert(owner.clone());
         let authz = AuthzContext {
             identity: Identity {
-                principal: owner.principal.clone(),
-                org_id: owner.org_id,
+                principal: owner.clone(),
                 accessible_principals: accessible,
                 expires_at: None,
                 auth_epoch: 0,

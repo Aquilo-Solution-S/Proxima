@@ -6,9 +6,7 @@ use common::{create_db, db_url, drop_db};
 use proxima_core::mcp::{McpAuthorContext, PrefixedUuidClass, parse_prefixed_uuid};
 use proxima_core::storage::Storage;
 use proxima_core::test_fixtures::ConstantEmbedding;
-use proxima_core::{
-    AuthPath, AuthzContext, Engine, FlavorRegistry, OrgId, Owner, Principal, UserId,
-};
+use proxima_core::{AuthPath, AuthzContext, Engine, FlavorRegistry, Owner, Principal, UserId};
 use proxima_mcp_server::{McpAuthContext, McpToolHost};
 use proxima_storage_pg::PgStorage;
 use serde_json::json;
@@ -22,10 +20,7 @@ async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
 
-    let owner = Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    };
+    let owner = Principal::User(UserId::new(Uuid::now_v7()));
 
     let registry = FlavorRegistry::new();
     let frozen = registry.freeze();
@@ -95,7 +90,7 @@ async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
     let link_edge_id = parse_prefixed_uuid(link_edge_handle, PrefixedUuidClass::Edge)?;
 
     let identity = pg
-        .ensure_subject_personality(&owner, &owner.principal)
+        .ensure_subject_personality(&owner, &owner)
         .await?;
     let subject_self = identity.self_perspective_memory_id.into_inner();
     let subject_instance = identity.instance_id.into_inner();

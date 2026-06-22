@@ -514,12 +514,7 @@ mod tests {
     fn config() -> McpConfig {
         McpConfig {
             database_url: DEFAULT_DATABASE_URL.to_string(),
-            owner: proxima_core::Owner {
-                principal: proxima_core::Principal::User(proxima_core::UserId::new(
-                    uuid::Uuid::nil(),
-                )),
-                org_id: proxima_core::OrgId::new(uuid::Uuid::nil()),
-            },
+            owner: proxima_core::Principal::User(proxima_core::UserId::new(uuid::Uuid::nil())),
             bind: Some(DEFAULT_BIND.parse().expect("valid bind")),
             master_token: Some(uuid::Uuid::nil()),
         }

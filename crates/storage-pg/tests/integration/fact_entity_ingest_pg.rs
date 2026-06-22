@@ -9,9 +9,9 @@ use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::{
-    AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen, MemoryId, OrgId,
-    Owner, PayloadKeyBuilder, Principal, Role, SchemaVersion, SidecarPayload, SourceBatchId,
-    SourceId, StorageError, UserId, canonical_json_bytes,
+    AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner,
+    PayloadKeyBuilder, Role, SchemaVersion, SidecarPayload, SourceBatchId, SourceId, StorageError,
+    canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemoryPayloadFuture};
 use proxima_storage_pg::verbs::event_ingest::{EventIngestSidecarFuture, PgFactSidecar};
@@ -409,20 +409,13 @@ fn engine_for(pg: &PgStorage) -> Engine {
     Engine::new(registry_for_test()).with_storage(storage)
 }
 
-fn owner_with(user: UserId, org_id: OrgId) -> Owner {
-    Owner {
-        principal: Principal::User(user),
-        org_id,
-    }
-}
 
 fn draft_for<P: FactPayload>(owner: &Owner, payload_value: &Value) -> EventDraft {
     let now = time::OffsetDateTime::now_utc();
     EventDraft {
         source_id: SourceId::new(format!("test/fact-entity/{}", Uuid::now_v7())),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.principal.clone(),
-        org_id: Some(owner.org_id),
+        principal: owner.clone(),
         author_personality_instance_id: None,
         schema_id: P::schema_id(),
         schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
@@ -769,37 +762,11 @@ async fn replay_is_idempotent_and_does_not_mint_or_move_entity() {
     result.expect("replay_is_idempotent_and_does_not_mint_or_move_entity failed");
 }
 
-#[tokio::test]
-async fn full_owner_triple_participates_in_entity_identity() {
-    let (pg, db_name) = fresh_pg_with_sidecars().await;
-    pg.run_migrations().await.expect("migrate core");
-    create_code_sidecars(&pg).await.expect("create sidecars");
-
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let user = UserId::new(Uuid::now_v7());
-        let owner_a = owner_with(user, OrgId::new(Uuid::now_v7()));
-        let owner_b = owner_with(user, OrgId::new(Uuid::now_v7()));
-        let engine = engine_for(&pg);
-        let repo_id = Uuid::now_v7();
-        let payload = file_revision(repo_id, "src/lib.rs", "same");
-
-        let first = ingest_payload(&pg, &engine, &owner_a, &payload).await?;
-        let second = ingest_payload(&pg, &engine, &owner_b, &payload).await?;
-        let first_entity = memory_fact_entity_id(&pg, first.memory_id)
-            .await?
-            .expect("first owner entity");
-        let second_entity = memory_fact_entity_id(&pg, second.memory_id)
-            .await?
-            .expect("second owner entity");
-        assert_ne!(first_entity, second_entity);
-        assert_eq!(entity_count(&pg).await?, 2);
-        Ok(())
-    }
-    .await;
-
-    let _ = drop_db(&db_name).await;
-    result.expect("full_owner_triple_participates_in_entity_identity failed");
-}
+// Removed: `full_owner_triple_participates_in_entity_identity`. Track B (S0)
+// collapsed `Owner = Principal` — org no longer participates in Fact-entity
+// identity, so two owners differing only by org are now the same Owner and
+// must collapse to one entity. The org-invariance assertion that replaces this
+// is a separate verification-test task (see the S0 plan, Step 8).
 
 #[tokio::test]
 async fn schema_version_participates_in_entity_identity() {
@@ -912,17 +879,16 @@ async fn unique_natural_key_guard_rejects_duplicate_entity_row() {
             &file_revision(repo_id, "src/lib.rs", "v1"),
         )
         .await?;
-        let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+        let (owner_kind, owner_principal_id) = owner.columns();
         let err = sqlx::query(
             "INSERT INTO proxima_core.fact_entities
-                (fact_entity_id, owner_principal_kind, owner_principal_id, owner_org_id,
+                (fact_entity_id, owner_principal_kind, owner_principal_id,
                  schema_id, schema_version, natural_key, current_memory_id, current_created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, now())",
         )
         .bind(Uuid::now_v7())
         .bind(owner_kind)
         .bind(owner_principal_id)
-        .bind(owner_org_id)
         .bind(FileRevisionV1::SCHEMA_ID)
         .bind(1_i32)
         .bind(file_revision_natural_key(repo_id, "src/lib.rs"))

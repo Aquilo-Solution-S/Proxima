@@ -112,16 +112,13 @@ mod tests {
     use crate::mcp::HandleTable;
     use crate::mcp::OutputMode;
     use crate::{
-        Engine, FlavorRegistry, McpAuthorContext, McpToolExtensions, OrgId, Owner, Principal,
+        Engine, FlavorRegistry, McpAuthorContext, McpToolExtensions, Principal,
         UserId,
     };
     use std::sync::Arc;
 
     fn make_ctx() -> McpToolCtx {
-        let owner = Owner {
-            principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
-            org_id: OrgId::new(uuid::Uuid::now_v7()),
-        };
+        let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
         let engine = Arc::new(Engine::new(FlavorRegistry::new().freeze()));
         McpToolCtx {
             owner: owner.clone(),

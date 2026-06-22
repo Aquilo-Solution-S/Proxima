@@ -14,7 +14,7 @@ pub async fn list_read_scope(
     req: &ListReadScopeRequest,
 ) -> Result<ListReadScopeResponse, StorageError> {
     let owner = req.owner();
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     ensure_active_personality(
         pool,
         owner_kind,
@@ -51,7 +51,7 @@ pub async fn set_read_scope(
     req: &SetReadScopeRequest,
 ) -> Result<SetReadScopeResponse, StorageError> {
     let owner = req.owner();
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let reader_id = req.reader_personality_instance_id.into_inner();
     let readable_ids: Vec<_> = req
         .readable_personality_instance_ids
@@ -120,13 +120,12 @@ pub async fn set_read_scope(
     for readable_id in &readable_ids {
         sqlx::query(
             "INSERT INTO proxima_core.read_scope_matrix
-                (owner_principal_kind, owner_principal_id, owner_org_id,
+                (owner_principal_kind, owner_principal_id,
                  reader_personality_instance_id, readable_personality_instance_id)
-             VALUES ($1, $2, $3, $4, $5)",
+             VALUES ($1, $2, $3, $4)",
         )
         .bind(owner_kind)
         .bind(owner_principal_id)
-        .bind(owner_org_id)
         .bind(reader_id)
         .bind(*readable_id)
         .execute(&mut *tx)

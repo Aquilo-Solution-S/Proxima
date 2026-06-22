@@ -9,7 +9,7 @@ use proxima_core::{
 use proxima_mcp_server::ResourceServerMetadata;
 
 use crate::config::{parse_bool_value, s3_from_lookup};
-use crate::{EmbedError, company_owner};
+use crate::EmbedError;
 
 const DEFAULT_MCP_BIND: &str = "127.0.0.1:31415";
 
@@ -19,7 +19,6 @@ pub struct RuntimeBuilder {
     database_url: Option<String>,
     s3: Option<S3RuntimeConfig>,
     owner: Option<Owner>,
-    org_id: Option<uuid::Uuid>,
     master_token: Option<String>,
     mcp_enabled: bool,
     mcp_bind: Option<SocketAddr>,
@@ -42,7 +41,6 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("database_url", &self.database_url)
             .field("s3", &self.s3)
             .field("owner", &self.owner)
-            .field("org_id", &self.org_id)
             .field("has_master_token", &self.master_token.is_some())
             .field("mcp_enabled", &self.mcp_enabled)
             .field("mcp_bind", &self.mcp_bind)
@@ -68,7 +66,6 @@ impl RuntimeBuilder {
             database_url: self.database_url.or(base.database_url),
             s3: self.s3.or(base.s3),
             owner: self.owner.or(base.owner),
-            org_id: self.org_id.or(base.org_id),
             master_token: self.master_token.or(base.master_token),
             mcp_enabled: self.mcp_enabled || base.mcp_enabled,
             mcp_bind: self.mcp_bind.or(base.mcp_bind),
@@ -100,17 +97,10 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Set the engine `Owner` explicitly. Mutually exclusive with [`Self::org_id`].
+    /// Set the engine `Owner` (= principal) explicitly.
     #[must_use]
     pub fn owner(mut self, owner: Owner) -> Self {
         self.owner = Some(owner);
-        self
-    }
-
-    /// Derive the company `Owner` from an org id. Env equivalent: `PROXIMA_ORG_ID`.
-    #[must_use]
-    pub fn org_id(mut self, org_id: uuid::Uuid) -> Self {
-        self.org_id = Some(org_id);
         self
     }
 
@@ -251,15 +241,6 @@ impl RuntimeBuilder {
         if self.s3.is_none() {
             self.s3 = s3_from_lookup(&lookup)?;
         }
-        if self.owner.is_none() && self.org_id.is_none() {
-            self.org_id = lookup("PROXIMA_ORG_ID")
-                .map(|raw| {
-                    raw.parse().map_err(|_| {
-                        ProximaError::Config(format!("PROXIMA_ORG_ID must be a UUID, got {raw:?}"))
-                    })
-                })
-                .transpose()?;
-        }
         if self.master_token.is_none() {
             self.master_token = lookup("PROXIMA_MCP_MASTER_TOKEN");
         }
@@ -309,15 +290,9 @@ impl RuntimeBuilder {
         let database_url = self
             .database_url
             .ok_or_else(|| ProximaError::Config("DATABASE_URL is required".into()))?;
-        let owner = match (self.owner, self.org_id) {
-            (Some(owner), _) => owner,
-            (None, Some(org_id)) => company_owner(org_id),
-            (None, None) => {
-                return Err(ProximaError::Config(
-                    "owner or PROXIMA_ORG_ID is required".into(),
-                ));
-            }
-        };
+        let owner = self
+            .owner
+            .ok_or_else(|| ProximaError::Config("owner is required".into()))?;
         let mcp = if self.mcp_enabled {
             Some(McpSettings {
                 bind: self.mcp_bind.unwrap_or_else(default_mcp_bind),
@@ -638,9 +613,10 @@ fn validate_revalidation_config(config: RevalidationConfig) -> Result<(), Proxim
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
-    use proxima_core::{GroupId, OrgId, Principal};
+    use proxima_core::{GroupId, Principal};
 
     use super::*;
+    use crate::company_owner;
 
     fn lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |key| {
@@ -652,10 +628,7 @@ mod tests {
     }
 
     fn owner(id: uuid::Uuid) -> Owner {
-        Owner {
-            principal: Principal::Group(GroupId::new(id)),
-            org_id: OrgId::new(id),
-        }
+        Principal::Group(GroupId::new(id))
     }
 
     fn base_config(mcp: Option<SocketAddr>) -> RuntimeConfig {
@@ -918,20 +891,6 @@ mod tests {
     }
 
     #[test]
-    fn org_id_env_resolves_to_company_owner() {
-        let org_id = uuid::Uuid::now_v7();
-        let org_id_raw = org_id.to_string();
-        let (config, _) = RuntimeBuilder::default()
-            .database_url("postgres://localhost/proxima")
-            .apply_lookup(lookup(&[("PROXIMA_ORG_ID", &org_id_raw)]))
-            .unwrap()
-            .resolve()
-            .unwrap();
-
-        assert_eq!(config.owner, company_owner(org_id));
-    }
-
-    #[test]
     fn master_token_env_fills_unset_and_accepts_wire_prefix() {
         let token = uuid::Uuid::now_v7();
         let token_raw = format!("pxm_{token}");
@@ -976,32 +935,6 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("PROXIMA_MCP_MASTER_TOKEN"));
-    }
-
-    #[test]
-    fn explicit_owner_wins_over_org_id_env() {
-        let explicit = owner(uuid::Uuid::now_v7());
-        let env_org = uuid::Uuid::now_v7();
-        let env_org_raw = env_org.to_string();
-        let (config, _) = RuntimeBuilder::default()
-            .database_url("postgres://localhost/proxima")
-            .owner(explicit.clone())
-            .apply_lookup(lookup(&[("PROXIMA_ORG_ID", &env_org_raw)]))
-            .unwrap()
-            .resolve()
-            .unwrap();
-
-        assert_eq!(config.owner, explicit);
-    }
-
-    #[test]
-    fn missing_owner_or_org_id_errors() {
-        let err = RuntimeBuilder::default()
-            .database_url("postgres://localhost/proxima")
-            .resolve()
-            .unwrap_err();
-
-        assert!(err.to_string().contains("owner or PROXIMA_ORG_ID"));
     }
 
     #[test]

@@ -130,16 +130,13 @@ mod tests {
     use crate::mcp::HandleTable;
     use crate::mcp::OutputMode;
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, McpAuthorContext, McpToolExtensions, OrgId, Owner,
+        AuthPath, AuthzContext, FlavorRegistry, McpAuthorContext, McpToolExtensions, Owner,
         Principal, UserId,
     };
     use std::sync::Arc;
 
     fn fake_owner() -> Owner {
-        Owner {
-            principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
-            org_id: OrgId::new(uuid::Uuid::now_v7()),
-        }
+        Principal::User(UserId::new(uuid::Uuid::now_v7()))
     }
 
     #[tokio::test]

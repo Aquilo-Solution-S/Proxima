@@ -24,7 +24,7 @@ use proxima_core::verbs::event_ingest::{
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
-    MemoryId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    MemoryId, Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId,
 };
 use proxima_storage_pg::PgStorage;
 use serde_json::json;
@@ -754,8 +754,7 @@ async fn instantiate_worker(
         .instantiate_personality(
             authz,
             InstantiatePersonalityRequest {
-                principal: owner.principal.clone(),
-                org_id: None,
+                principal: owner.clone(),
                 display_name: display_name.into(),
             },
         )
@@ -775,8 +774,7 @@ async fn grant_execution_wake(
         .set_wake_entries(
             authz,
             &SetWakeEntriesRequest {
-                principal: owner.principal.clone(),
-                org_id: None,
+                principal: owner.clone(),
                 personality_instance_id: instance,
                 entries: vec![WakeEntryDraft::new(
                     Uuid::now_v7(),
@@ -900,8 +898,7 @@ fn fact_draft(owner: Owner, schema_id: &str, payload: &[u8]) -> EventDraft {
     EventDraft {
         source_id: SourceId::new("test/source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.principal,
-        org_id: Some(owner.org_id),
+        principal: owner,
         author_personality_instance_id: None,
         schema_id: SchemaId::new(schema_id.into()),
         schema_version: SchemaVersion::new(1),
@@ -949,17 +946,16 @@ async fn abstraction_memory(
     let (owner_kind, owner_id) = owner_principal(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (memory_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, $5, 1, 'Abstraction', $6, 'FtoA',
+         VALUES ($1, $2, $3, $4, 1, 'Abstraction', $5, 'FtoA',
              'test/code-index', 'test', '00000000-0000-0000-0000-000000000000'::uuid, 0)
          ON CONFLICT (memory_id) DO NOTHING",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_id)
-    .bind(owner.org_id.into_inner())
     .bind(schema_id)
     .bind(payload)
     .execute(pool)
@@ -1138,16 +1134,15 @@ async fn ingest_commit_summary(
     let (owner_kind, owner_id) = owner_principal(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (memory_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, kind, text, operator_kind, model_id, prompt_version,
              personality_instance_id)
-         VALUES ($1, $2, $3, $4, $5, 1, $6, $7,
-             $8, 'test/0', 'test', $9)",
+         VALUES ($1, $2, $3, $4, 1, $5, $6,
+             $7, 'test/0', 'test', $8)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_id)
-    .bind(owner.org_id.into_inner())
     .bind(proxima_code::CommitSummaryV1::schema_id().into_inner())
     .bind(proxima_core::EntityKind::Abstraction)
     .bind(summary)
@@ -1186,17 +1181,16 @@ async fn ingest_calls_edge(
         "INSERT INTO proxima_core.edges
             (edge_id, relation, relation_class,
              source_kind, source_memory_id, target_kind, target_memory_id,
-             authorship_kind, owner_principal_kind, owner_principal_id, owner_org_id)
+             authorship_kind, owner_principal_kind, owner_principal_id)
          VALUES ($1, 'proxima-code/calls', 'Structural',
              'Abstraction', $2, 'Abstraction', $3,
-             'OperatorFtoA', $4, $5, $6)",
+             'OperatorFtoA', $4, $5)",
     )
     .bind(edge_id)
     .bind(source_chunk)
     .bind(target_chunk)
     .bind(owner_kind)
     .bind(owner_id)
-    .bind(owner.org_id.into_inner())
     .execute(pool)
     .await?;
     sqlx::query(
@@ -1212,10 +1206,5 @@ async fn ingest_calls_edge(
 }
 
 fn owner_principal(owner: &Owner) -> (proxima_core::OwnerPrincipalKind, Uuid) {
-    let kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
-    let principal_id = match &owner.principal {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
-    (kind, principal_id)
+    owner.columns()
 }
