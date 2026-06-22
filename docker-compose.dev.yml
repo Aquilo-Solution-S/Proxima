@@ -1,13 +1,22 @@
 services:
   postgres:
-    image: postgres:18
+    # pgvector image (NOT plain postgres:18) — the substrate needs the `vector`
+    # extension (embeddings; `vector(1024)`) and pg-init/pg-testkit do `CREATE
+    # EXTENSION vector`, which needs the .so present in the image.
+    image: pgvector/pgvector:pg18
     container_name: proxima_dev_pg
+    # Survive Docker/Mac restarts so local Proxima (and aquilo wkh, which shares
+    # PROXIMA_TEST_PG_URL) don't silently fail when the box reboots.
+    restart: unless-stopped
     environment:
       POSTGRES_USER: proxima
       POSTGRES_PASSWORD: proxima
       POSTGRES_DB: proxima
     ports:
-      - "5432:5432"
+      # Host 5434 (NOT 5432) — the Homebrew postgresql@17 owns 5432 for
+      # prometheus/rechnungen/Strassberger. Point Proxima at this via
+      # PROXIMA_TEST_PG_URL=postgres://proxima:proxima@localhost:5434/proxima.
+      - "5434:5432"
     # Bumped from the 64MB default — test parallelism creates many
     # transient databases and PG's per-backend hash/sort memory plus
     # FK validation scans during `run_migrations` blow the 64MB cap
