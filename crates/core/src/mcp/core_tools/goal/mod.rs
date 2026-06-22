@@ -68,7 +68,7 @@ pub struct GoalWriteOutput {
 pub struct GoalSetTool;
 
 impl McpTool for GoalSetTool {
-    const NAME: &'static str = "core/goal_set";
+    const NAME: &'static str = "core_goal_set";
     const DESCRIPTION: &'static str = "Set (create) an Active Goal for the calling personality (or `target_personality`). Goals are typed by a registered Goal schema — discover ids with `core_list_schemas` (kind=Goal). `title`/`text` are the human-facing statement; `body` is the structured payload for that schema.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] =
         &[<crate::GoalActivatedV1 as crate::FactPayload>::SCHEMA_ID];
@@ -143,7 +143,7 @@ pub struct GoalTransitionArgs {
 pub struct GoalTransitionTool;
 
 impl McpTool for GoalTransitionTool {
-    const NAME: &'static str = "core/goal_transition";
+    const NAME: &'static str = "core_goal_transition";
     const DESCRIPTION: &'static str = "Pause, resume, or abandon a Goal head — a lifecycle transition that does not change the goal's content (use `core_goal_modify` for that).";
     type Args = GoalTransitionArgs;
     type Output = GoalWriteOutput;
@@ -199,7 +199,7 @@ pub struct GoalMarkAchievedArgs {
 pub struct GoalMarkAchievedTool;
 
 impl McpTool for GoalMarkAchievedTool {
-    const NAME: &'static str = "core/goal_mark_achieved";
+    const NAME: &'static str = "core_goal_mark_achieved";
     const DESCRIPTION: &'static str = "Mark a Goal head Achieved, recording the evidence memory handles that justify completion (at least one).";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] =
         &[<crate::GoalAchievedV1 as crate::FactPayload>::SCHEMA_ID];
@@ -262,7 +262,7 @@ pub struct GoalModifyArgs {
 pub struct GoalModifyTool;
 
 impl McpTool for GoalModifyTool {
-    const NAME: &'static str = "core/goal_modify";
+    const NAME: &'static str = "core_goal_modify";
     const DESCRIPTION: &'static str = "Replace an Active Goal head's content (title/text/body), producing a new head version. Same schema rules as `core_goal_set`.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] =
         &[<crate::GoalActivatedV1 as crate::FactPayload>::SCHEMA_ID];
@@ -346,7 +346,7 @@ pub struct GoalDecomposeOutput {
 pub struct GoalDecomposeTool;
 
 impl McpTool for GoalDecomposeTool {
-    const NAME: &'static str = "core/goal_decompose";
+    const NAME: &'static str = "core_goal_decompose";
     const DESCRIPTION: &'static str = "Create Active child Goals under a parent Goal, linking each child to it in the goal hierarchy (`goal_parents`, not memory edges). `idempotency_key` is required and each child key derives from it.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] =
         &[<crate::GoalActivatedV1 as crate::FactPayload>::SCHEMA_ID];

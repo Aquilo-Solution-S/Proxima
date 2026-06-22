@@ -36,7 +36,7 @@ pub struct ListPersonalitiesOutput {
 }
 
 impl McpTool for ListPersonalitiesTool {
-    const NAME: &'static str = "core/list_personalities";
+    const NAME: &'static str = "core_list_personalities";
     const DESCRIPTION: &'static str = "List personality instances for the authenticated owner. Each item \
          carries a `personality` field (I-prefixed handle) — pass that value as the `personality` argument \
          to get_personality, tombstone_personality, list_wake_entries, add_wake_entry, set_wake_entries, \
@@ -81,10 +81,7 @@ mod tests {
     use crate::authz::{AuthPath, AuthzContext};
     use crate::mcp::HandleTable;
     use crate::mcp::OutputMode;
-    use crate::{
-        Engine, FlavorRegistry, McpAuthorContext, McpToolExtensions, Principal,
-        UserId,
-    };
+    use crate::{Engine, FlavorRegistry, McpAuthorContext, McpToolExtensions, Principal, UserId};
     use std::sync::Arc;
 
     fn make_ctx() -> McpToolCtx {

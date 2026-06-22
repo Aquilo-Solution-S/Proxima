@@ -33,7 +33,7 @@ pub struct SetReadScopeOutput {
 }
 
 impl McpTool for SetReadScopeTool {
-    const NAME: &'static str = "core/set_read_scope";
+    const NAME: &'static str = "core_set_read_scope";
     const DESCRIPTION: &'static str = "Replace explicit cross-personality read grants for one \
          personality. Identity reads are implicit; list only additional readable I-handles.";
     type Args = SetReadScopeArgs;

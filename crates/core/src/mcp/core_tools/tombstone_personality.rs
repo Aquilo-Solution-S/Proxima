@@ -30,7 +30,7 @@ pub struct TombstonePersonalityOutput {
 }
 
 impl McpTool for TombstonePersonalityTool {
-    const NAME: &'static str = "core/tombstone_personality";
+    const NAME: &'static str = "core_tombstone_personality";
     const DESCRIPTION: &'static str =
         "Tombstone a personality. Idempotent: replay returns idempotent_replay=true.";
     type Args = TombstonePersonalityArgs;

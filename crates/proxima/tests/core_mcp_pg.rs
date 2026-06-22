@@ -202,7 +202,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         let listed = tools.list_core_tools();
         let list_personalities = listed
             .iter()
-            .find(|tool| tool.name == "core/list_personalities")
+            .find(|tool| tool.name == "core_list_personalities")
             .expect("core/list_personalities registered");
         assert!(!listed.is_empty(), "core tool registry is non-empty");
         assert!(
@@ -217,7 +217,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
             &tools,
             host_authz(&owner, ToolScope::All),
             owner.clone(),
-            "core/list_personalities",
+            "core_list_personalities",
             serde_json::json!({}),
         )
         .await?;
@@ -231,11 +231,11 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
                 host_authz(&owner, ToolScope::Palette(Vec::new())),
                 owner.clone(),
                 None,
-                "core/list_personalities",
+                "core_list_personalities",
                 serde_json::json!({}),
             )
             .await;
-        assert!(matches!(denied, Err(CoreMcpError::NotAuthorized(tool)) if tool == "core/list_personalities"));
+        assert!(matches!(denied, Err(CoreMcpError::NotAuthorized(tool)) if tool == "core_list_personalities"));
 
         let unknown = tools
             .call_core_tool(
@@ -279,16 +279,16 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
             .into_iter()
             .map(|tool| tool.name)
             .collect();
-        assert!(tool_names.contains("core/search_memories"));
-        assert!(tool_names.contains("core/get_memory"));
-        assert!(tool_names.contains("core/facts_citing_object"));
-        assert!(tool_names.contains("core/citation_of_fact"));
+        assert!(tool_names.contains("core_search_memories"));
+        assert!(tool_names.contains("core_get_memory"));
+        assert!(tool_names.contains("core_facts_citing_object"));
+        assert!(tool_names.contains("core_citation_of_fact"));
         let substrate_listing = tools
             .call_core_tool(
                 authz.clone(),
                 owner.clone(),
                 Some("test-model".to_string()),
-                "core/list_substrate_tools",
+                "core_list_substrate_tools",
                 serde_json::json!({}),
             )
             .await?;
@@ -298,16 +298,16 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
             .iter()
             .filter_map(|tool| tool["tool_id"].as_str())
             .collect();
-        assert!(substrate_tool_ids.contains("core/search_memories"));
-        assert!(substrate_tool_ids.contains("core/get_memory"));
-        assert!(substrate_tool_ids.contains("core/facts_citing_object"));
-        assert!(substrate_tool_ids.contains("core/citation_of_fact"));
+        assert!(substrate_tool_ids.contains("core_search_memories"));
+        assert!(substrate_tool_ids.contains("core_get_memory"));
+        assert!(substrate_tool_ids.contains("core_facts_citing_object"));
+        assert!(substrate_tool_ids.contains("core_citation_of_fact"));
 
         let remembered = call_test_model_tool(
             &tools,
             authz.clone(),
             owner.clone(),
-            "core/remember",
+            "core_remember",
             serde_json::json!({
                 "title": "Retrieval surface",
                 "body": "hybrid substrate keyword needle",
@@ -323,7 +323,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
             &tools,
             authz.clone(),
             owner.clone(),
-            "core/search_memories",
+            "core_search_memories",
             serde_json::json!({
                 "query": "keyword needle",
                 "mode": "lexical",
@@ -338,7 +338,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
             &tools,
             authz.clone(),
             owner.clone(),
-            "core/search_memories",
+            "core_search_memories",
             serde_json::json!({
                 "query": "unrelated semantic query",
                 "mode": "semantic",
@@ -353,7 +353,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
             &tools,
             authz,
             owner.clone(),
-            "core/get_memory",
+            "core_get_memory",
             serde_json::json!({ "memory": memory }),
         )
         .await?;
@@ -391,7 +391,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             &tools,
             authz.clone(),
             owner.clone(),
-            "core/remember",
+            "core_remember",
             serde_json::json!({
                 "title": "Cited retrieval",
                 "body": "Fact cites external object.",
@@ -426,7 +426,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             &tools,
             authz.clone(),
             owner.clone(),
-            "core/facts_citing_object",
+            "core_facts_citing_object",
             serde_json::json!({ "cited_object_id": cited_object_id.to_string() }),
         )
         .await?;
@@ -436,7 +436,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             &tools,
             authz.clone(),
             owner.clone(),
-            "core/citation_of_fact",
+            "core_citation_of_fact",
             serde_json::json!({ "fact": memory }),
         )
         .await?;
@@ -453,7 +453,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             &tools,
             host_authz(&other_owner, ToolScope::All),
             other_owner,
-            "core/facts_citing_object",
+            "core_facts_citing_object",
             serde_json::json!({ "cited_object_id": cited_object_id.to_string() }),
         )
         .await?;

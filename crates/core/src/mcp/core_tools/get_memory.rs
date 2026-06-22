@@ -43,7 +43,7 @@ pub struct GetMemoryOutput {
 }
 
 impl McpTool for GetMemoryTool {
-    const NAME: &'static str = "core/get_memory";
+    const NAME: &'static str = "core_get_memory";
     const DESCRIPTION: &'static str = "Fetch one owner-scoped memory by id/handle. Returns kind, schema, text, payload, title/body/tags, author, and optional neighbor edges.";
     type Args = GetMemoryArgs;
     type Output = GetMemoryOutput;

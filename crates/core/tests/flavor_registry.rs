@@ -15,7 +15,7 @@ fn update_wake_entry_patch_schema_is_object() {
     let schema = &frozen
         .list_mcp_tools()
         .iter()
-        .find(|tool| tool.name == "core/update_wake_entry")
+        .find(|tool| tool.name == "core_update_wake_entry")
         .expect("core/update_wake_entry registered")
         .args_schema;
     assert!(

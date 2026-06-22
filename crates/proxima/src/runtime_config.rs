@@ -8,8 +8,8 @@ use proxima_core::{
 };
 use proxima_mcp_server::ResourceServerMetadata;
 
-use crate::config::{parse_bool_value, s3_from_lookup};
 use crate::EmbedError;
+use crate::config::{parse_bool_value, s3_from_lookup};
 
 const DEFAULT_MCP_BIND: &str = "127.0.0.1:31415";
 

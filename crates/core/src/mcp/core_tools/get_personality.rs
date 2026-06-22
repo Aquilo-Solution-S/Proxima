@@ -46,7 +46,7 @@ pub struct GetPersonalityOutput {
 }
 
 impl McpTool for GetPersonalityTool {
-    const NAME: &'static str = "core/get_personality";
+    const NAME: &'static str = "core_get_personality";
     const DESCRIPTION: &'static str = "Read one personality with all wake entries. Args: \
          `{\"personality\": \"I1\"}` where the value is an I-handle from list_personalities. Each wake \
          entry in the response carries a `wake_entry` field (W-handle) — pass that to update_wake_entry, \
@@ -111,10 +111,7 @@ mod tests {
     use crate::authz::{AuthPath, AuthzContext};
     use crate::mcp::HandleTable;
     use crate::mcp::OutputMode;
-    use crate::{
-        Engine, FlavorRegistry, McpAuthorContext, McpToolExtensions, Principal,
-        UserId,
-    };
+    use crate::{Engine, FlavorRegistry, McpAuthorContext, McpToolExtensions, Principal, UserId};
     use std::sync::Arc;
 
     fn make_ctx() -> McpToolCtx {

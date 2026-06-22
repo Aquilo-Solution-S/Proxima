@@ -38,7 +38,7 @@ pub struct LinkOutput {
 pub struct LinkTool;
 
 impl McpTool for LinkTool {
-    const NAME: &'static str = "core/link";
+    const NAME: &'static str = "core_link";
     const DESCRIPTION: &'static str =
         "Author a typed agent-link-refers-to edge between two memory handles.";
     type Args = LinkArgs;

@@ -57,7 +57,7 @@ fn kind_str(k: PayloadKind) -> &'static str {
 }
 
 impl McpTool for ListSchemasTool {
-    const NAME: &'static str = "core/list_schemas";
+    const NAME: &'static str = "core_list_schemas";
     const DESCRIPTION: &'static str = "List registered schemas. Filter by kind for trigger discovery: \
          OnMemory triggers point at Fact schema_ids.";
     type Args = ListSchemasArgs;

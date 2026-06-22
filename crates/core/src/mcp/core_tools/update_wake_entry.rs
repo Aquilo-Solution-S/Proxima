@@ -49,7 +49,7 @@ pub struct UpdateWakeEntryOutput {
 }
 
 impl McpTool for UpdateWakeEntryTool {
-    const NAME: &'static str = "core/update_wake_entry";
+    const NAME: &'static str = "core_update_wake_entry";
     const DESCRIPTION: &'static str = "Update one wake entry. Args: \
          `{\"wake_entry\": \"W1\", \"patch\": {…}}` where the W-handle comes from list_wake_entries or \
          get_personality. Only fields present in `patch` change. To change trigger_kind/trigger_id, use \

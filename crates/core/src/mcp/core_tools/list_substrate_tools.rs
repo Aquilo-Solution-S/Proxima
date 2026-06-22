@@ -26,7 +26,7 @@ pub struct ListSubstrateToolsOutput {
 }
 
 impl McpTool for ListSubstrateToolsTool {
-    const NAME: &'static str = "core/list_substrate_tools";
+    const NAME: &'static str = "core_list_substrate_tools";
     const DESCRIPTION: &'static str = "List substrate and flavor-registered tool ids.";
     type Args = ListSubstrateToolsArgs;
     type Output = ListSubstrateToolsOutput;

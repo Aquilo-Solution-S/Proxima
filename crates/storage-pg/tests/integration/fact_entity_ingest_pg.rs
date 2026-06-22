@@ -409,7 +409,6 @@ fn engine_for(pg: &PgStorage) -> Engine {
     Engine::new(registry_for_test()).with_storage(storage)
 }
 
-
 fn draft_for<P: FactPayload>(owner: &Owner, payload_value: &Value) -> EventDraft {
     let now = time::OffsetDateTime::now_utc();
     EventDraft {

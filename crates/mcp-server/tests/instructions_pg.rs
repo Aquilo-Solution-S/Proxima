@@ -160,11 +160,11 @@ async fn memory_profile_instructions_omit_excluded_tools() -> Result<(), Box<dyn
     // scope, so even the master token sees only this palette.
     let palette = ToolScope::Palette(
         [
-            "core/remember",
-            "core/derive",
-            "core/link",
-            "core/search_memories",
-            "core/get_memory",
+            "core_remember",
+            "core_derive",
+            "core_link",
+            "core_search_memories",
+            "core_get_memory",
         ]
         .into_iter()
         .map(String::from)

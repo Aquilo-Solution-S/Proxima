@@ -497,7 +497,7 @@ mod tests {
         assert!(!ctx.capabilities.roles.has(Role::SourceIngest));
         assert!(!ctx.capabilities.roles.has(Role::Admin));
         // Empty palette — no tool is allowed.
-        assert!(!ctx.capabilities.tool_scope.allows("core/get_memory"));
+        assert!(!ctx.capabilities.tool_scope.allows("core_get_memory"));
     }
 
     #[test]
@@ -516,17 +516,17 @@ mod tests {
 
     #[test]
     fn palette_scope_allows_and_denies() {
-        let scope = ToolScope::Palette(vec!["core/get_memory".to_string()]);
+        let scope = ToolScope::Palette(vec!["core_get_memory".to_string()]);
 
-        assert!(scope.allows("core/get_memory"));
-        assert!(!scope.allows("core/set_wake_entries"));
+        assert!(scope.allows("core_get_memory"));
+        assert!(!scope.allows("core_set_wake_entries"));
     }
 
     #[test]
     fn tool_scope_intersect_only_narrows_never_widens() {
         let palette =
             |ids: &[&str]| ToolScope::Palette(ids.iter().map(|id| (*id).to_string()).collect());
-        let mem = palette(&["core/get_memory", "core/search_memories"]);
+        let mem = palette(&["core_get_memory", "core_search_memories"]);
 
         // `All` is the identity element in both positions.
         assert_eq!(ToolScope::All.intersect(&mem), mem);
@@ -535,11 +535,11 @@ mod tests {
 
         // Two palettes intersect to only the ids both allow — a deployment
         // scope can never re-add an id the caller's scope omitted.
-        let caller = palette(&["core/get_memory", "core/set_wake_entries"]);
+        let caller = palette(&["core_get_memory", "core_set_wake_entries"]);
         let result = mem.intersect(&caller);
-        assert!(result.allows("core/get_memory"));
-        assert!(!result.allows("core/search_memories")); // caller lacked it
-        assert!(!result.allows("core/set_wake_entries")); // deployment lacked it
+        assert!(result.allows("core_get_memory"));
+        assert!(!result.allows("core_search_memories")); // caller lacked it
+        assert!(!result.allows("core_set_wake_entries")); // deployment lacked it
 
         // Disjoint palettes intersect to empty (deny-all), never widening.
         assert_eq!(

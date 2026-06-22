@@ -30,7 +30,7 @@ pub struct InstantiatePersonalityOutput {
 }
 
 impl McpTool for InstantiatePersonalityTool {
-    const NAME: &'static str = "core/instantiate_personality";
+    const NAME: &'static str = "core_instantiate_personality";
     const DESCRIPTION: &'static str = "Instantiate one inert personality with a Root Perspective and \
          empty WakeConfig. Returns the new I-handle in the `personality` field — pass that value as \
          the `personality` argument to add_wake_entry, get_personality, tombstone_personality, etc.";

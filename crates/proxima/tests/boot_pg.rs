@@ -48,7 +48,7 @@ async fn boots_engine_with_core_goal_tools_on_fresh_db() {
                 .engine
                 .registry()
                 .mcp_tool_ids()
-                .contains("core/goal_set"),
+                .contains("core_goal_set"),
             "core goal tool registered"
         );
         booted.engine.stop(booted.handle);

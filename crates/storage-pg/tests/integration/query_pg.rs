@@ -14,9 +14,7 @@ use proxima_core::verbs::query::{
     EntityKind, PersonalityRootFilter, QueryRequest, SupersessionStatus,
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
-use proxima_core::{
-    Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
-};
+use proxima_core::{Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 

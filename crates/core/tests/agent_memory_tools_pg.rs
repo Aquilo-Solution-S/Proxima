@@ -7,8 +7,8 @@ use proxima_core::engine::Engine;
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
     AgentNoteV1, AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FactPayload,
-    FlavorRegistry, FlavorRegistryFrozen, McpToolError, MemoryId, Owner,
-    PersonalityInstanceId, Principal, SchemaId, UserId,
+    FlavorRegistry, FlavorRegistryFrozen, McpToolError, MemoryId, Owner, PersonalityInstanceId,
+    Principal, SchemaId, UserId,
 };
 use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgSidecarFuture,
@@ -125,7 +125,7 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
         &handles,
         &frozen,
         author.clone(),
-        "core/remember",
+        "core_remember",
         json!({
             "title": "Atlas edges",
             "body": "Edges must be loaded from the visible node set.",
@@ -148,7 +148,7 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
         &handles,
         &frozen,
         author.clone(),
-        "core/derive",
+        "core_derive",
         json!({
             "kind": "Abstraction",
             "title": "Atlas edge summary",
@@ -167,7 +167,7 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
         &handles,
         &frozen,
         author.clone(),
-        "core/search_memories",
+        "core_search_memories",
         json!({
             "query": "atlas edges",
             "mode": "lexical",
@@ -225,7 +225,7 @@ async fn remember_enqueues_one_embedding_job_and_replay_does_not_duplicate()
         &handles,
         &frozen,
         author.clone(),
-        "core/remember",
+        "core_remember",
         args.clone(),
     )
     .await?;
@@ -235,7 +235,7 @@ async fn remember_enqueues_one_embedding_job_and_replay_does_not_duplicate()
         &handles,
         &frozen,
         author,
-        "core/remember",
+        "core_remember",
         args,
     )
     .await?;
@@ -283,7 +283,7 @@ async fn remember_reused_idempotency_key_changed_body_creates_new_stateful_fact(
         &handles,
         &frozen,
         author.clone(),
-        "core/remember",
+        "core_remember",
         base_args,
     )
     .await?;
@@ -293,7 +293,7 @@ async fn remember_reused_idempotency_key_changed_body_creates_new_stateful_fact(
         &handles,
         &frozen,
         author,
-        "core/remember",
+        "core_remember",
         changed_args,
     )
     .await?;
@@ -349,7 +349,7 @@ async fn remember_reused_idempotency_key_identical_content_is_idempotent_replay(
         &handles,
         &frozen,
         author.clone(),
-        "core/remember",
+        "core_remember",
         args.clone(),
     )
     .await?;
@@ -359,7 +359,7 @@ async fn remember_reused_idempotency_key_identical_content_is_idempotent_replay(
         &handles,
         &frozen,
         author,
-        "core/remember",
+        "core_remember",
         args,
     )
     .await?;
@@ -403,7 +403,7 @@ async fn remember_cited_and_uncited_persist_personality_and_citation_rows()
         &handles,
         &frozen,
         author.clone(),
-        "core/remember",
+        "core_remember",
         json!({
             "title": "Cited remembered note",
             "body": "This note cites a typed test artifact.",
@@ -433,7 +433,7 @@ async fn remember_cited_and_uncited_persist_personality_and_citation_rows()
         &handles,
         &frozen,
         author,
-        "core/remember",
+        "core_remember",
         json!({
             "title": "Uncited remembered note",
             "body": "This note has no citation.",
@@ -537,7 +537,7 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
         &handles,
         &frozen,
         author.clone(),
-        "core/remember",
+        "core_remember",
         json!({
             "title": "First fact",
             "body": "A remembered observation.",
@@ -551,7 +551,7 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
         &handles,
         &frozen,
         author.clone(),
-        "core/remember",
+        "core_remember",
         json!({
             "title": "Second fact",
             "body": "Another remembered observation.",
@@ -566,7 +566,7 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
         &handles,
         &frozen,
         author,
-        "core/link",
+        "core_link",
         json!({
             "source": first["handle"],
             "target": second["handle"],
@@ -607,7 +607,7 @@ async fn search_memories_hybrid_returns_embedding_only_match()
         &frozen,
         author.clone(),
         Some(engine.clone()),
-        "core/remember",
+        "core_remember",
         json!({
             "title": "Operational note",
             "body": "This body deliberately omits the query token.",
@@ -625,7 +625,7 @@ async fn search_memories_hybrid_returns_embedding_only_match()
         &handles,
         &frozen,
         author.clone(),
-        "core/search_memories",
+        "core_search_memories",
         json!({"query": "galaxy", "mode": "lexical", "limit": 5}),
     )
     .await?;
@@ -638,7 +638,7 @@ async fn search_memories_hybrid_returns_embedding_only_match()
         &frozen,
         author,
         Some(engine),
-        "core/search_memories",
+        "core_search_memories",
         json!({"query": "galaxy", "mode": "hybrid", "limit": 5}),
     )
     .await?;
@@ -667,7 +667,7 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
         &owner,
         &frozen,
         author_ctx().with_personality(personality_a),
-        "core/remember",
+        "core_remember",
         json!({
             "title": "Company shared author",
             "body": "Company shared alpha needle.",
@@ -684,7 +684,7 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
         &owner,
         &frozen,
         author_ctx(),
-        "core/remember",
+        "core_remember",
         json!({
             "title": "Nil author",
             "body": "Company shared beta needle.",
@@ -702,7 +702,7 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
         &owner,
         &frozen,
         author_ctx().with_self_perspective(personality_b_root),
-        "core/search_memories",
+        "core_search_memories",
         json!({"query": "alpha needle", "mode": "lexical", "limit": 5}),
     )
     .await?;
@@ -717,7 +717,7 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
         &owner,
         &frozen,
         author_ctx().with_self_perspective(personality_b_root),
-        "core/get_memory",
+        "core_get_memory",
         json!({"memory": authored_handle.clone()}),
     )
     .await?;
@@ -731,7 +731,7 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
         &owner,
         &frozen,
         author_ctx().with_self_perspective(personality_b_root),
-        "core/get_memory",
+        "core_get_memory",
         json!({"memory": nil_handle}),
     )
     .await?;
@@ -772,7 +772,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
         &Arc::new(HandleTable::new()),
         &frozen,
         author_ctx(),
-        "core/derive",
+        "core_derive",
         shared_args(),
     )
     .await?;
@@ -782,7 +782,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
         &Arc::new(HandleTable::new()),
         &frozen,
         author_ctx(),
-        "core/derive",
+        "core_derive",
         shared_args(),
     )
     .await?;
@@ -806,7 +806,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
         &Arc::new(HandleTable::new()),
         &frozen,
         author_ctx(),
-        "core/derive",
+        "core_derive",
         json!({
             "kind": "Abstraction",
             "title": "Same key, A vs P",
@@ -822,7 +822,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
         &Arc::new(HandleTable::new()),
         &frozen_b,
         author_ctx(),
-        "core/derive",
+        "core_derive",
         json!({
             "kind": "Perspective",
             "title": "Same key, A vs P",
@@ -866,7 +866,7 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
         &handles,
         &frozen,
         author.clone(),
-        "core/derive",
+        "core_derive",
         json!({
             "kind": "Perspective",
             "title": "Top-layer perspective",
@@ -884,7 +884,7 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
         &handles,
         &frozen,
         author,
-        "core/derive",
+        "core_derive",
         json!({
             "kind": "Abstraction",
             "title": "Should fail",
@@ -941,7 +941,7 @@ async fn assert_search_since_rejects_invalid_timestamp(
         handles,
         registry,
         author,
-        "core/search_memories",
+        "core_search_memories",
         json!({
             "query": "atlas edges",
             "since": "not-a-timestamp"

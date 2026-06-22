@@ -35,9 +35,8 @@ pub struct RecordUtteranceOutput {
 pub struct RecordUtteranceTool;
 
 impl McpTool for RecordUtteranceTool {
-    const NAME: &'static str = "core/record_utterance";
-    const DESCRIPTION: &'static str =
-        "Append one raw conversation turn (utterance) as a personality-authored Fact. Use `core_remember` for distilled observations rather than verbatim transcript.";
+    const NAME: &'static str = "core_record_utterance";
+    const DESCRIPTION: &'static str = "Append one raw conversation turn (utterance) as a personality-authored Fact. Use `core_remember` for distilled observations rather than verbatim transcript.";
     type Args = RecordUtteranceArgs;
     type Output = RecordUtteranceOutput;
 

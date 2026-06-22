@@ -67,7 +67,7 @@ pub struct RememberOutput {
 pub struct RememberTool;
 
 impl McpTool for RememberTool {
-    const NAME: &'static str = "core/remember";
+    const NAME: &'static str = "core_remember";
     const DESCRIPTION: &'static str =
         "Append an agent-observed Fact. Optional idempotency_key makes replay stable.";
     type Args = RememberArgs;
