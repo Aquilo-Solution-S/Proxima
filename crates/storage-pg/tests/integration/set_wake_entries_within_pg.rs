@@ -3,8 +3,8 @@
 use crate::common::{drop_db, fresh_pg};
 use proxima_core::storage::Storage;
 use proxima_core::{
-    InstantiatePersonalityRequest, OrgId, Owner, Principal, UserId, WakeEntryAuthoredBy,
-    WakeEntryDraft, WakeEntryTriggerKind,
+    InstantiatePersonalityRequest, Principal, UserId, WakeEntryAuthoredBy, WakeEntryDraft,
+    WakeEntryTriggerKind,
 };
 use uuid::Uuid;
 
@@ -32,14 +32,10 @@ async fn set_wake_entries_within_appends_one() -> Result<(), Box<dyn std::error:
     let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
 
-    let owner = Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    };
+    let owner = Principal::User(UserId::new(Uuid::now_v7()));
     let inst = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            principal: owner.principal.clone(),
-            org_id: Some(owner.org_id),
+            principal: owner.clone(),
             display_name: "test".into(),
         })
         .await?;
@@ -76,14 +72,10 @@ async fn set_wake_entries_within_preserves_carried_entry_id()
     let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
 
-    let owner = Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    };
+    let owner = Principal::User(UserId::new(Uuid::now_v7()));
     let inst = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            principal: owner.principal.clone(),
-            org_id: Some(owner.org_id),
+            principal: owner.clone(),
             display_name: "test".into(),
         })
         .await?;

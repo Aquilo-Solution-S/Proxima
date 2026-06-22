@@ -7,7 +7,7 @@ use axum::http::{Method, Request, StatusCode, header};
 use axum::routing::get;
 use proxima::{Authz, layered_router};
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, OrgId, Owner,
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, Owner,
     Principal, UserId,
 };
 use proxima_mcp_server::{
@@ -18,10 +18,7 @@ use tower::util::ServiceExt;
 use uuid::Uuid;
 
 fn owner() -> Owner {
-    Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    }
+    Principal::User(UserId::new(Uuid::now_v7()))
 }
 
 async fn ping(Authz(_authz): Authz) -> StatusCode {

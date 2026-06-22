@@ -10,7 +10,7 @@ use proxima_core::verbs::goal_write::{
     TransitionGoalAtomicRequest,
 };
 use proxima_core::{
-    FlavorRegistry, FlavorRegistryFrozen, GoalPayload, MemoryId, OrgId, Owner, OwnerPrincipalKind,
+    FlavorRegistry, FlavorRegistryFrozen, GoalPayload, MemoryId, Owner, OwnerPrincipalKind,
     PayloadKeyBuilder, Principal, SchemaId, SchemaVersion, UserId,
 };
 use proxima_storage_pg::PgStorage;
@@ -32,19 +32,13 @@ impl GoalPayload for TestCustomGoalPayload {
     }
 }
 
-fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
-    let kind = OwnerPrincipalKind::of(&owner.principal);
-    let principal_id = match owner.principal {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
-    (kind, principal_id, owner.org_id.into_inner())
+fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
+    owner.columns()
 }
 
 fn fresh_draft(owner: &Owner, request_id: String) -> GoalDraft {
     GoalDraft {
-        principal: owner.principal.clone(),
-        org_id: Some(owner.org_id),
+        principal: owner.clone(),
         schema_id: SchemaId::new("core/simple-text-v1".into()),
         schema_version: SchemaVersion::new(1),
         title: "Test goal".to_string(),
@@ -82,20 +76,19 @@ async fn insert_self(
     pg: &PgStorage,
     owner: &Owner,
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
+    let (owner_kind, owner_principal_id) = owner_parts(owner);
     let memory_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (memory_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id)
-         VALUES ($1, $2, $3, $4, 'test/self', 1, $5,
-                 'self', $6, 'test-model', 'v1', $7)",
+         VALUES ($1, $2, $3, 'test/self', 1, $4,
+                 'self', $5, 'test-model', 'v1', $6)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(proxima_core::EntityKind::Perspective)
     .bind(proxima_core::MemoryOperatorKind::AtoP)
     .bind(Uuid::nil())
@@ -108,20 +101,19 @@ async fn insert_evidence_abstraction(
     pg: &PgStorage,
     owner: &Owner,
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
+    let (owner_kind, owner_principal_id) = owner_parts(owner);
     let memory_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (memory_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id)
-         VALUES ($1, $2, $3, $4, 'test/evidence-abstraction', 1, $5,
-                 'evidence', $6, 'test-model', 'v1', $7)",
+         VALUES ($1, $2, $3, 'test/evidence-abstraction', 1, $4,
+                 'evidence', $5, 'test-model', 'v1', $6)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(proxima_core::EntityKind::Abstraction)
     .bind(proxima_core::MemoryOperatorKind::FtoA)
     .bind(Uuid::nil())
@@ -217,10 +209,7 @@ async fn goal_create_atom_writes_goal_side_effects_and_replays() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = Principal::User(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let registry = FlavorRegistry::new().freeze();
         let draft = fresh_draft(&owner, "req-1".to_string());
@@ -285,10 +274,7 @@ async fn goal_transition_atom_writes_superseding_goal() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = Principal::User(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let registry = FlavorRegistry::new().freeze();
         let prior = create_goal(
@@ -357,10 +343,7 @@ async fn goal_create_atom_with_parent_writes_goal_parent() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = Principal::User(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let registry = FlavorRegistry::new().freeze();
         let parent = create_goal(
@@ -401,10 +384,7 @@ async fn goal_create_atom_rejects_empty_payload_bytes() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = Principal::User(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let registry = FlavorRegistry::new().freeze();
 
@@ -420,20 +400,19 @@ async fn goal_create_atom_rejects_empty_payload_bytes() {
             .await?;
         assert_eq!(goals.0, 0);
 
-        let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(&owner);
+        let (owner_kind, owner_principal_id) = owner_parts(&owner);
         let raw = sqlx::query(
             "INSERT INTO proxima_core.goals
                 (goal_id, schema_id, schema_version,
-                 owner_principal_kind, owner_principal_id, owner_org_id,
+                 owner_principal_kind, owner_principal_id,
                  title, text, payload, state, authorship_kind, request_id)
              VALUES ($1, 'core/simple-text-v1', 1,
-                     $2, $3, $4,
-                     'raw', 'raw', $5, 'Active', 'User', 'req-raw')",
+                     $2, $3,
+                     'raw', 'raw', $4, 'Active', 'User', 'req-raw')",
         )
         .bind(Uuid::now_v7())
         .bind(owner_kind)
         .bind(owner_principal_id)
-        .bind(owner_org_id)
         .bind(Vec::<u8>::new())
         .execute(pg.pool())
         .await;
@@ -460,10 +439,7 @@ async fn goal_achieve_atom_writes_achieved_and_fact() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = Principal::User(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let evidence_id = insert_evidence_abstraction(&pg, &owner).await?;
         let evidence = vec![proxima_core::verbs::goal_write::GoalEvidenceRef {
@@ -539,10 +515,7 @@ async fn goal_achieve_atom_rejects_empty_evidence() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = Principal::User(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let registry = FlavorRegistry::new().freeze();
         let prior = create_goal(
@@ -601,10 +574,7 @@ async fn goal_transition_atom_abandon_and_resume() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = Principal::User(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let registry = FlavorRegistry::new().freeze();
 
@@ -708,10 +678,7 @@ async fn goal_transition_atom_rejects_stale_head() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = Principal::User(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let registry = FlavorRegistry::new().freeze();
         let prior = create_goal(
@@ -763,10 +730,7 @@ async fn goal_decompose_atom_writes_children_and_parents() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = Principal::User(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let evidence_id = insert_evidence_abstraction(&pg, &owner).await?;
         let evidence = vec![proxima_core::verbs::goal_write::GoalEvidenceRef {
@@ -870,14 +834,8 @@ async fn goal_decompose_atom_rejects_cross_owner_parent() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let owner_a = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
-        let owner_b = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner_a = Principal::User(UserId::new(Uuid::now_v7()));
+        let owner_b = Principal::User(UserId::new(Uuid::now_v7()));
         let self_a = insert_self(&pg, &owner_a).await?;
         let self_b = insert_self(&pg, &owner_b).await?;
         let registry = FlavorRegistry::new().freeze();
@@ -972,10 +930,7 @@ async fn goal_modify_atom_writes_replacement() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = Principal::User(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let evidence_id = insert_evidence_abstraction(&pg, &owner).await?;
         let evidence = vec![proxima_core::verbs::goal_write::GoalEvidenceRef {
@@ -1059,10 +1014,7 @@ async fn goal_create_atom_with_registry_generic_payload() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = Principal::User(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let mut registry = FlavorRegistry::new();
         registry.add_goal_schema::<TestCustomGoalPayload>();

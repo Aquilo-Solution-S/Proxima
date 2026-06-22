@@ -55,15 +55,13 @@ fn fact_draft(owner: &Owner, label: &str) -> EventDraft {
     let payload = TestFactV1 {
         label: label.to_string(),
     };
-    let mut draft = EventDraft::from_payload(
+    EventDraft::from_payload(
         owner,
         "proxima-test/fact-embedding",
         SourceBatchId::new(Uuid::now_v7()),
         &payload,
         now,
-    );
-    draft.org_id = None;
-    draft
+    )
 }
 
 async fn count_fact_embeddings(
@@ -585,8 +583,7 @@ async fn count_pending_embedding_jobs_counts_outstanding() -> Result<(), Box<dyn
     let (pg, db_name) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner_fixture();
-        let other_owner =
-            Owner::with_uuid(OwnerPrincipalKind::User, Uuid::now_v7(), Uuid::now_v7());
+        let other_owner = OwnerPrincipalKind::User.with_uuid(Uuid::now_v7());
         let engine = engine_for(
             pg.clone(),
             Some(Arc::new(ConstantEmbedding::prefixed(

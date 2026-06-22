@@ -495,7 +495,7 @@ impl Storage for PgStorage {
             .copied()
             .map(MemoryId::into_inner)
             .collect::<Vec<_>>();
-        let (owner_kind, owner_principal_id, _) = owner.columns();
+        let (owner_kind, owner_principal_id) = owner.columns();
         let rows: Vec<(uuid::Uuid, Option<proxima_core::EntityKind>)> = sqlx::query_as(
             "SELECT memory_id, kind
              FROM proxima_core.memories
@@ -531,7 +531,7 @@ impl Storage for PgStorage {
             .copied()
             .map(MemoryId::into_inner)
             .collect::<Vec<_>>();
-        let (owner_kind, owner_principal_id, _) = owner.columns();
+        let (owner_kind, owner_principal_id) = owner.columns();
         let rows: Vec<(uuid::Uuid, Option<Vec<String>>)> = sqlx::query_as(
             "SELECT m.memory_id,
                     COALESCE(n.tags, d.tags) AS tags
@@ -572,7 +572,7 @@ impl Storage for PgStorage {
             .map(MemoryId::into_inner)
             .collect::<Vec<_>>();
         let limit = i64::try_from(limit).map_err(|err| StorageError::Internal(err.to_string()))?;
-        let (owner_kind, owner_principal_id, _) = owner.columns();
+        let (owner_kind, owner_principal_id) = owner.columns();
         let rows: Vec<(
             uuid::Uuid,
             String,
@@ -635,7 +635,7 @@ impl Storage for PgStorage {
             .copied()
             .map(MemoryId::into_inner)
             .collect::<Vec<_>>();
-        let (owner_kind, owner_principal_id, _) = owner.columns();
+        let (owner_kind, owner_principal_id) = owner.columns();
         let rows: Vec<uuid::Uuid> = sqlx::query_scalar(
             "SELECT edge_id
              FROM proxima_core.edges
@@ -697,7 +697,7 @@ impl Storage for PgStorage {
         owner: &Owner,
         instance_id: PersonalityInstanceId,
     ) -> Result<Option<MemoryId>, StorageError> {
-        let (owner_kind, owner_id) = owner.principal.columns();
+        let (owner_kind, owner_id) = owner.columns();
         let row: Option<(uuid::Uuid,)> = sqlx::query_as(
             "SELECT current_root_perspective_memory_id
              FROM proxima_core.personality

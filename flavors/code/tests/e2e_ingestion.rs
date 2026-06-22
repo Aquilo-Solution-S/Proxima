@@ -9,18 +9,13 @@ use proxima_code::{
     LocalGitSource, RunStage, RunStatus, StageCounters, advance_stage, begin_run, get_active_run,
     mark_failed, mark_succeeded, register_repo, start_run, sweep_orphaned_runs,
 };
-use proxima_core::{Cursor, Owner, Principal};
+use proxima_core::{Cursor, Owner};
 use proxima_pg_testkit::drop_db;
 use tempfile::TempDir;
 use uuid::Uuid;
 
-fn owner_cols(owner: &Owner) -> (proxima_core::OwnerPrincipalKind, Uuid, Uuid) {
-    let kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
-    let principal_id = match &owner.principal {
-        Principal::User(u) => u.into_inner(),
-        Principal::Group(g) => g.into_inner(),
-    };
-    (kind, principal_id, owner.org_id.into_inner())
+fn owner_cols(owner: &Owner) -> (proxima_core::OwnerPrincipalKind, Uuid) {
+    owner.columns()
 }
 
 async fn register_test_repo(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) {
@@ -152,17 +147,15 @@ async fn sweep_retires_orphans_and_unblocks_start_run() {
             );
         }
 
-        let (kind, principal_id, org_id) = owner_cols(&owner);
+        let (kind, principal_id) = owner_cols(&owner);
         let messages: Vec<(RunStatus, Option<String>)> = sqlx::query_as(
             "SELECT status, error_message \
              FROM proxima_code.repo_ingestion_runs \
              WHERE owner_principal_kind = $1 AND owner_principal_id = $2 \
-               AND owner_org_id = $3 \
              ORDER BY started_at ASC",
         )
         .bind(kind)
         .bind(principal_id)
-        .bind(org_id)
         .fetch_all(pg.pool())
         .await?;
         assert_eq!(messages.len(), 2);
@@ -201,7 +194,7 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
             .await?;
         assert_eq!(report.commits_emitted, 2);
 
-        let (kind, principal_id, org_id) = owner_cols(&owner);
+        let (kind, principal_id) = owner_cols(&owner);
         let facts: (i64, i64, i64) = sqlx::query_as(
             "SELECT \
                 (SELECT COUNT(*)::bigint FROM proxima_code.commit_v1 WHERE repo_id = $1), \
@@ -219,12 +212,10 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
             "SELECT COUNT(*)::bigint \
              FROM proxima_core.citation_mappings cm \
              JOIN proxima_core.memories m ON m.memory_id = cm.memory_id \
-             WHERE m.owner_principal_kind = $1 AND m.owner_principal_id = $2 \
-               AND m.owner_org_id = $3",
+             WHERE m.owner_principal_kind = $1 AND m.owner_principal_id = $2",
         )
         .bind(kind)
         .bind(principal_id)
-        .bind(org_id)
         .fetch_one(pg.pool())
         .await?;
         assert!(
@@ -236,12 +227,10 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
             "SELECT COUNT(DISTINCT cm.cited_object_id)::bigint \
              FROM proxima_core.citation_mappings cm \
              JOIN proxima_core.memories m ON m.memory_id = cm.memory_id \
-             WHERE m.owner_principal_kind = $1 AND m.owner_principal_id = $2 \
-               AND m.owner_org_id = $3",
+             WHERE m.owner_principal_kind = $1 AND m.owner_principal_id = $2",
         )
         .bind(kind)
         .bind(principal_id)
-        .bind(org_id)
         .fetch_one(pg.pool())
         .await?;
         assert!(cited_objects < citation_mappings);

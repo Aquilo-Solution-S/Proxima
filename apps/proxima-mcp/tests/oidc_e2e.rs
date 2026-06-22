@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, encode};
 use proxima::{Proxima, ResourceServerMetadata};
 use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, StaticJwksResolver};
-use proxima_core::{OrgId, Owner, Principal, UserId};
+use proxima_core::{Owner, Principal, UserId};
 use proxima_mcp::ProximaMcpApp;
 use rsa::pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey};
 use rsa::{RsaPrivateKey, RsaPublicKey};
@@ -67,10 +67,7 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         return Ok(());
     };
 
-    let owner = Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    };
+    let owner: Owner = Principal::User(UserId::new(Uuid::now_v7()));
     let (enc, resolver) = keypair();
     let authn = OidcAuthenticator::new(
         OidcAuthConfig {

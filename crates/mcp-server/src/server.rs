@@ -212,13 +212,10 @@ mod tests {
     use super::*;
     use crate::auth::McpAuthContext;
     use proxima_core::mcp::McpAuthorContext;
-    use proxima_core::{FlavorRegistry, OrgId, Owner, Principal, UserId};
+    use proxima_core::{FlavorRegistry, Owner, Principal, UserId};
 
     fn fake_owner() -> Owner {
-        Owner {
-            principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
-            org_id: OrgId::new(uuid::Uuid::now_v7()),
-        }
+        Principal::User(UserId::new(uuid::Uuid::now_v7()))
     }
 
     fn make_server() -> McpToolHost {

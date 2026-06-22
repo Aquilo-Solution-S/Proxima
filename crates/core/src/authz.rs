@@ -17,13 +17,12 @@ use futures_util::Stream;
 use tokio::time::{Instant, Interval, Sleep};
 
 use crate::auth::{AuthError, Credentials};
-use crate::{OrgId, Owner, Principal};
+use crate::{Owner, Principal};
 
 /// WHO: the authorization currency for owner scoping.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Identity {
     pub principal: Principal,
-    pub org_id: OrgId,
     pub accessible_principals: HashSet<Principal>,
     /// Streams terminate past this; `None` = no expiry.
     pub expires_at: Option<SystemTime>,
@@ -181,10 +180,7 @@ pub struct AuthzContext {
 impl AuthzContext {
     #[must_use]
     pub fn scoped_owner(&self, principal: Principal) -> Owner {
-        Owner {
-            principal,
-            org_id: self.identity.org_id,
-        }
+        principal
     }
 
     /// Self-scoped, full-capability context for trusted in-process
@@ -196,11 +192,10 @@ impl AuthzContext {
     #[must_use]
     pub fn single_owner(owner: &Owner, auth_path: AuthPath) -> Self {
         let mut principals = HashSet::with_capacity(1);
-        principals.insert(owner.principal.clone());
+        principals.insert(owner.clone());
         Self {
             identity: Identity {
-                principal: owner.principal.clone(),
-                org_id: owner.org_id,
+                principal: owner.clone(),
                 accessible_principals: principals,
                 expires_at: None,
                 auth_epoch: 0,
@@ -221,8 +216,7 @@ impl AuthzContext {
     pub fn denied(owner: &Owner) -> Self {
         Self {
             identity: Identity {
-                principal: owner.principal.clone(),
-                org_id: owner.org_id,
+                principal: owner.clone(),
                 accessible_principals: HashSet::new(),
                 expires_at: None,
                 auth_epoch: 0,
@@ -421,17 +415,14 @@ const fn non_zero_duration(duration: Duration) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{OrgId, UserId};
+    use crate::UserId;
     use futures_util::StreamExt;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::sync::mpsc;
     use tokio::time;
 
     fn owner() -> Owner {
-        Owner {
-            principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
-            org_id: OrgId::new(uuid::Uuid::now_v7()),
-        }
+        Principal::User(UserId::new(uuid::Uuid::now_v7()))
     }
 
     fn identity(expires_at: Option<SystemTime>, auth_epoch: u64) -> Identity {
@@ -440,7 +431,6 @@ mod tests {
         accessible_principals.insert(principal.clone());
         Identity {
             principal,
-            org_id: OrgId::new(uuid::Uuid::nil()),
             accessible_principals,
             expires_at,
             auth_epoch,
@@ -487,7 +477,7 @@ mod tests {
         let ctx = AuthzContext::single_owner(&o, AuthPath::System);
 
         assert_eq!(ctx.auth_path, AuthPath::System);
-        assert!(ctx.identity.can_access_principal(&o.principal));
+        assert!(ctx.identity.can_access_principal(&o));
         assert!(ctx.capabilities.roles.has(Role::Admin));
         assert!(ctx.identity.expires_at.is_none());
     }
@@ -500,7 +490,7 @@ mod tests {
         assert_eq!(ctx.auth_path, AuthPath::Denied);
         // No accessible principals — owner-scope checks deny, including
         // the owner's own principal.
-        assert!(!ctx.identity.can_access_principal(&o.principal));
+        assert!(!ctx.identity.can_access_principal(&o));
         // No roles.
         assert!(!ctx.capabilities.roles.has(Role::GraphRead));
         assert!(!ctx.capabilities.roles.has(Role::GraphWrite));

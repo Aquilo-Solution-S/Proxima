@@ -27,7 +27,7 @@ with before/after counts.
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| ES-1 | Group org → billing annotation on group-owned rows | excluded: org demoted to engine — decision `2026-06-11-org-out-of-kernel.md`; `owner_org_id` is engine billing metadata with no kernel face (was THEOREM `owner_org_denormalized` when Owner carried org) |
+| ES-1 | Group org → no kernel face | excluded: org has no kernel face and (Track B / S0) is absent from Core storage and identity — `Owner := Principal`; tenancy is a flavor/app concern. Decisions `2026-06-11-org-out-of-kernel.md`, S0 collapse (was THEOREM `owner_org_denormalized` when Owner carried org) |
 | ES-2 | Visibility rule (principal-only) | def `visible` |
 | ES-3 | org never enters access or identity | structural: org absent from the kernel entirely (`Owner := Principal`) — decision `2026-06-11-org-out-of-kernel.md` |
 | ES-4 | event_id deterministic content hash of (source, owner, payload) | axiom `event_id_payload_determined` (kernel-visible projection) |
@@ -159,7 +159,7 @@ CF-A/B/C/D above.
 | ST-5 | Edges insert-only | `Immutable Edge`, `AppendOnly Edge` |
 | ST-6 | EventId deterministic; duplicate = replay | axiom `event_id_payload_determined` |
 | ST-7/8 | CitedObject/CitationMapping ids, insert-only, one mapping per Fact | `cited_object_id_injective`, `citation_mapping_id_injective`, `Immutable` instances + theorem `citation_unique_per_fact` |
-| ST-9 | Owner identity columns (principal kind + id); `owner_org_id` billing annotation | `Owner := Principal` + `owner_principal`; org column is engine-only — decision `2026-06-11-org-out-of-kernel.md` |
+| ST-9 | Owner identity columns (principal kind + id) | `Owner := Principal` + `owner_principal`; org has no kernel face and (Track B / S0) is absent from Core storage and identity — decision `2026-06-11-org-out-of-kernel.md`, S0 collapse |
 | ST-10 | Cross-owner edges/evidence rejected | axiom `edge_scope_single_owner` |
 | ST-11 | INSERT-only cognitive lifecycle | class `AppendOnly` + instances |
 | ST-13 | Only compliance erasure deletes | Compliance.lean (`erased`, `erasure_removes_cognitive`) |

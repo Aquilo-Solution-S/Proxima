@@ -11,8 +11,8 @@ use proxima_core::mcp::core_tools::wake_entry_input::WakeEntryDraftInput;
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::storage::Storage;
 use proxima_core::{
-    AuthPath, AuthzContext, Engine, FlavorRegistry, InstantiatePersonalityRequest, McpTool, OrgId,
-    Owner, Principal, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind,
+    AuthPath, AuthzContext, Engine, FlavorRegistry, InstantiatePersonalityRequest, McpTool,
+    Principal, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind,
 };
 use proxima_storage_pg::PgStorage;
 
@@ -24,14 +24,10 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
 
-    let owner = Owner {
-        principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
-        org_id: OrgId::new(uuid::Uuid::now_v7()),
-    };
+    let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
     let inst = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            principal: owner.principal.clone(),
-            org_id: Some(owner.org_id),
+            principal: owner.clone(),
             display_name: "caller".into(),
         })
         .await?;

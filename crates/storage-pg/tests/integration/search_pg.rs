@@ -8,8 +8,8 @@ use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
 };
 use proxima_core::{
-    MemoryId, OrgId, Owner, OwnerPrincipalKind, PersonalityInstanceId, Principal, SchemaId,
-    SchemaVersion, SearchProjectionColumnKind, SourceBatchId, SourceId, Storage, UserId,
+    MemoryId, Owner, PersonalityInstanceId, Principal, SchemaId, SchemaVersion,
+    SearchProjectionColumnKind, SourceBatchId, SourceId, Storage, UserId,
 };
 use uuid::Uuid;
 
@@ -20,10 +20,7 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
     pg.run_migrations().await?;
 
     let owner = owner_fixture();
-    let other_owner = Owner {
-        principal: Principal::User(UserId::new(Uuid::from_u128(7))),
-        org_id: OrgId::new(Uuid::nil()),
-    };
+    let other_owner = Principal::User(UserId::new(Uuid::from_u128(7)));
 
     let near = insert_embedded_memory(&pg, &owner, "nearest", [0.99, 0.01, 0.0]).await?;
     let far = insert_embedded_memory(&pg, &owner, "orthogonal", [0.0, 1.0, 0.0]).await?;
@@ -32,7 +29,7 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
     let rows = pg
         .search_memories(
             &MemorySearchRequest {
-                principal: owner.principal.clone(),
+                principal: owner.clone(),
                 query: "semantic query".into(),
                 mode: SearchMode::Semantic,
                 limit: 10,
@@ -203,7 +200,7 @@ async fn search_projects_authoring_personality_and_nil_as_none()
     let authored_rows = pg
         .search_memories(
             &MemorySearchRequest {
-                principal: owner.principal.clone(),
+                principal: owner.clone(),
                 query: "authored attribution".into(),
                 mode: SearchMode::Lexical,
                 limit: 10,
@@ -230,7 +227,7 @@ async fn search_projects_authoring_personality_and_nil_as_none()
     let nil_rows = pg
         .search_memories(
             &MemorySearchRequest {
-                principal: owner.principal.clone(),
+                principal: owner.clone(),
                 query: "nil attribution".into(),
                 mode: SearchMode::Lexical,
                 limit: 10,
@@ -558,24 +555,19 @@ async fn insert_tagged_abstraction(
     owner: &Owner,
     input: TaggedAbstractionInsert<'_>,
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
-    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
-    let owner_principal_id = match &owner.principal {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
+    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (memory_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, created_at, kind, text, operator_kind,
              model_id, prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 'proxima-test/tagged-abstraction-v1', 1,
-                 $5, 'Abstraction', $6, 'Wake', 'test-model', 'test-v1',
+         VALUES ($1, $2, $3, 'proxima-test/tagged-abstraction-v1', 1,
+                 $4, 'Abstraction', $5, 'Wake', 'test-model', 'test-v1',
                  '00000000-0000-0000-0000-000000000000'::uuid, 2)",
     )
     .bind(input.memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner.org_id.into_inner())
     .bind(input.created_at)
     .bind(input.body)
     .execute(pg.pool())
@@ -595,14 +587,13 @@ async fn insert_tagged_abstraction(
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
                 (entity_kind, entity_id, embedding_version, model_id, vec,
-                 owner_principal_kind, owner_principal_id, owner_org_id)
-             VALUES ('Abstraction', $1, 1, 'test-embed', $2::vector, $3, $4, $5)",
+                 owner_principal_kind, owner_principal_id)
+             VALUES ('Abstraction', $1, 1, 'test-embed', $2::vector, $3, $4)",
         )
         .bind(input.memory_id)
         .bind(vector_literal(&padded_embedding(embedding)))
         .bind(owner_kind)
         .bind(owner_principal_id)
-        .bind(owner.org_id.into_inner())
         .execute(pg.pool())
         .await?;
     }
@@ -626,38 +617,32 @@ async fn insert_embedded_memory_with_vec(
     embedding: &[f32],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
-    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
-    let owner_principal_id = match &owner.principal {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
+    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (memory_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 'test/search-abstraction-v1', 1,
-                 'Abstraction', $5, 'Wake', 'test-model', 'test-v1',
+         VALUES ($1, $2, $3, 'test/search-abstraction-v1', 1,
+                 'Abstraction', $4, 'Wake', 'test-model', 'test-v1',
                  '00000000-0000-0000-0000-000000000000'::uuid, 2)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner.org_id.into_inner())
     .bind(text)
     .execute(pg.pool())
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
             (entity_kind, entity_id, embedding_version, model_id, vec,
-             owner_principal_kind, owner_principal_id, owner_org_id)
-         VALUES ('Abstraction', $1, 1, 'test-embed', $2::vector, $3, $4, $5)",
+             owner_principal_kind, owner_principal_id)
+         VALUES ('Abstraction', $1, 1, 'test-embed', $2::vector, $3, $4)",
     )
     .bind(memory_id)
     .bind(vector_literal(embedding))
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner.org_id.into_inner())
     .execute(pg.pool())
     .await?;
     Ok(memory_id)
@@ -670,24 +655,19 @@ async fn insert_text_memory(
     personality_instance_id: Option<Uuid>,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
-    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
-    let owner_principal_id = match &owner.principal {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
+    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (memory_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 'test/search-attribution-v1', 1,
-                 'Abstraction', $5, 'Wake', 'test-model', 'test-v1',
-                 COALESCE($6, '00000000-0000-0000-0000-000000000000'::uuid), 2)",
+         VALUES ($1, $2, $3, 'test/search-attribution-v1', 1,
+                 'Abstraction', $4, 'Wake', 'test-model', 'test-v1',
+                 COALESCE($5, '00000000-0000-0000-0000-000000000000'::uuid), 2)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner.org_id.into_inner())
     .bind(text)
     .bind(personality_instance_id)
     .execute(pg.pool())
@@ -711,8 +691,7 @@ async fn ingest_fact_memory(
             &EventDraft {
                 source_id: SourceId::new("test/search"),
                 source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-                principal: owner.principal.clone(),
-                org_id: Some(owner.org_id),
+                principal: owner.clone(),
                 author_personality_instance_id: None,
                 schema_id: SchemaId::new(schema_id.to_string()),
                 schema_version: SchemaVersion::new(1),
@@ -740,7 +719,7 @@ async fn ingest_fact_memory(
 
 fn lexical_request(owner: &Owner, query: &str) -> MemorySearchRequest {
     MemorySearchRequest {
-        principal: owner.principal.clone(),
+        principal: owner.clone(),
         query: query.into(),
         mode: SearchMode::Lexical,
         limit: 10,
@@ -759,7 +738,7 @@ fn lexical_request(owner: &Owner, query: &str) -> MemorySearchRequest {
 
 fn semantic_request(owner: &Owner, query_embedding: Vec<f32>) -> MemorySearchRequest {
     MemorySearchRequest {
-        principal: owner.principal.clone(),
+        principal: owner.clone(),
         query: "semantic query".into(),
         mode: SearchMode::Semantic,
         limit: 10,
@@ -778,7 +757,7 @@ fn semantic_request(owner: &Owner, query_embedding: Vec<f32>) -> MemorySearchReq
 
 fn tagged_search_request(owner: &Owner, query: &str, mode: SearchMode) -> MemorySearchRequest {
     MemorySearchRequest {
-        principal: owner.principal.clone(),
+        principal: owner.clone(),
         query: query.into(),
         mode,
         limit: 10,

@@ -59,7 +59,7 @@ pub(crate) async fn query_memories(
 
     let mut sql = String::from(
         "SELECT m.memory_id, m.owner_principal_kind, m.owner_principal_id, \
-                m.owner_org_id, m.schema_id, m.schema_version, m.kind \
+                m.schema_id, m.schema_version, m.kind \
          FROM proxima_core.memories m",
     );
 
@@ -447,7 +447,6 @@ fn push_active_root_filter(sql: &mut String, root_schema_ids_param: Option<usize
             WHERE p.current_root_perspective_memory_id = m.memory_id \
               AND p.owner_principal_kind = m.owner_principal_kind \
               AND p.owner_principal_id = m.owner_principal_id \
-              AND p.owner_org_id = m.owner_org_id \
               AND p.status = 'active' \
           ))",
     )
@@ -536,7 +535,6 @@ fn push_stateful_head_branch(
               AND m2.schema_version = m.schema_version \
               AND m2.owner_principal_kind = m.owner_principal_kind \
               AND m2.owner_principal_id = m.owner_principal_id \
-              AND m2.owner_org_id = m.owner_org_id \
               AND m2.tombstoned_at IS NULL \
               AND {nk_pairs} \
               AND m2.created_at > m.created_at \

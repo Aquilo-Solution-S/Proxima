@@ -18,7 +18,6 @@ host injects for vector retrieval.
 | Surface | Scope | Current contract |
 |---|---|---|
 | Postgres connection | binary-wide | `DATABASE_URL` |
-| Owner org id | binary-wide default | `PROXIMA_ORG_ID` (when no explicit Owner) |
 | MCP endpoint | binary-wide | bind addr, network exposure, origin allowlist |
 | MCP authentication | per request | host `Authenticator`, master token, or insecure single-owner |
 | Embedding client | binary-wide | optional `Arc<dyn EmbeddingClient>` injected at boot |
@@ -45,7 +44,6 @@ Proxima::<App>::app().from_env().authenticator(auth).run().await?;
 | Env var | Meaning |
 |---|---|
 | `DATABASE_URL` | Postgres connection for core tables (`proxima_core` schema). |
-| `PROXIMA_ORG_ID` | Host-app Owner org id when no explicit Owner is supplied. |
 | `PROXIMA_MCP_BIND` | MCP socket address; enables the listener when set. |
 | `PROXIMA_MCP_MASTER_TOKEN` | Master bearer token for MCP when no host authenticator is wired. |
 | `PROXIMA_EXPOSE_NETWORK` | Network exposure gate for non-loopback binds. |
@@ -194,10 +192,11 @@ return presigned URLs only, never `bucket` or `object_key`.
 ## Owner Scoping
 
 Owner access control is per-row on graph data (see
-[01 §Owner](01-event-source.md#owner--scoping-primitive)). Runtime config
-selects the binary's default Owner org (`PROXIMA_ORG_ID`) and, under a
-host `Authenticator`, resolves a per-request actor from the bearer. There
-is no per-Owner inference/credential table — that surface was removed.
+[01 §Owner](01-event-source.md#owner--scoping-primitive)). `Owner =
+Principal` (Track B / S0 removed the tenant field from Core). Runtime
+config selects the binary's default Owner principal and, under a host
+`Authenticator`, resolves a per-request actor from the bearer. There is
+no per-Owner inference/credential table — that surface was removed.
 
 <a id="bootstrap"></a>
 ## Bootstrap

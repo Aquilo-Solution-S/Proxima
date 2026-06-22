@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use proxima_core::{OrgId, Owner, Principal, UserId};
+use proxima_core::{Owner, Principal, UserId};
 use uuid::Uuid;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:31415";
@@ -15,7 +15,6 @@ Proxima Streamable HTTP MCP server.
 
 Required:
   --owner-user <UUID>      Fixed owner principal
-  --owner-org  <UUID>      Fixed org id
   --master-token <UUID>    Local bearer token (or PROXIMA_MCP_MASTER_TOKEN);
                            clients send Authorization: Bearer pxm_<token>
 
@@ -120,7 +119,6 @@ impl ArgsError {
 /// required owner fields, UUID parse errors, or unreadable current dir.
 pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, ArgsError> {
     let mut owner_user: Option<Uuid> = None;
-    let mut owner_org: Option<Uuid> = None;
     let mut database_url: Option<String> = None;
     let mut bind: Option<SocketAddr> = None;
     let mut master_token: Option<Uuid> = None;
@@ -135,7 +133,6 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
                     .ok_or_else(|| ArgsError::Invalid(format!("flag {f} expects a value")))?;
                 match f {
                     "--owner-user" => owner_user = Some(Uuid::parse_str(&value)?),
-                    "--owner-org" => owner_org = Some(Uuid::parse_str(&value)?),
                     "--database-url" => database_url = Some(value),
                     "--master-token" => master_token = Some(parse_master_token(&value)?),
                     "--bind" => {
@@ -158,7 +155,6 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
 
     let owner_user =
         owner_user.ok_or_else(|| ArgsError::Invalid("--owner-user required".into()))?;
-    let owner_org = owner_org.ok_or_else(|| ArgsError::Invalid("--owner-org required".into()))?;
     let database_url = database_url.unwrap_or_else(|| {
         std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
     });
@@ -172,10 +168,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
 
     Ok(McpConfig {
         database_url,
-        owner: Owner {
-            principal: Principal::User(UserId::new(owner_user)),
-            org_id: OrgId::new(owner_org),
-        },
+        owner: Principal::User(UserId::new(owner_user)),
         bind,
         master_token,
     })
@@ -264,7 +257,7 @@ mod tests {
 
     #[test]
     fn missing_owner_is_rejected() {
-        let err = parse_args(["--owner-org".into(), uuid::Uuid::nil().to_string()])
+        let err = parse_args(["--database-url".into(), "postgres://x/y".into()])
             .expect_err("missing owner-user");
         assert!(err.to_string().contains("--owner-user required"));
     }
@@ -273,8 +266,6 @@ mod tests {
     fn full_args_parse() {
         let cfg = parse_args([
             "--owner-user".into(),
-            uuid::Uuid::nil().to_string(),
-            "--owner-org".into(),
             uuid::Uuid::nil().to_string(),
             "--database-url".into(),
             "postgres://x/y".into(),
@@ -292,8 +283,6 @@ mod tests {
         let cfg = parse_args([
             "--owner-user".into(),
             uuid::Uuid::nil().to_string(),
-            "--owner-org".into(),
-            uuid::Uuid::nil().to_string(),
             "--bind".into(),
             "127.0.0.1:9999".into(),
         ])
@@ -309,8 +298,6 @@ mod tests {
         let cfg = parse_args([
             "--owner-user".into(),
             uuid::Uuid::nil().to_string(),
-            "--owner-org".into(),
-            uuid::Uuid::nil().to_string(),
             "--master-token".into(),
             "pxm_00000000-0000-0000-0000-000000000000".into(),
         ])
@@ -322,8 +309,6 @@ mod tests {
     fn non_loopback_bind_rejected() {
         let err = parse_args([
             "--owner-user".into(),
-            uuid::Uuid::nil().to_string(),
-            "--owner-org".into(),
             uuid::Uuid::nil().to_string(),
             "--bind".into(),
             "0.0.0.0:31415".into(),

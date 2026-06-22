@@ -10,7 +10,7 @@ use std::sync::Arc;
 use common::{create_db, db_url, drop_db};
 use proxima_core::mcp::McpAuthorContext;
 use proxima_core::storage::Storage;
-use proxima_core::{Engine, FlavorRegistry, OrgId, Owner, Principal, UserId};
+use proxima_core::{Engine, FlavorRegistry, Principal, UserId};
 use proxima_mcp_server::McpToolHost;
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -23,10 +23,7 @@ async fn master_token_call_mints_per_token_self_perspective()
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
 
-    let owner = Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    };
+    let owner = Principal::User(UserId::new(Uuid::now_v7()));
 
     // Build an Engine wired with the live PG storage so the call_tool
     // ensure step can reach the master-token verb.
@@ -130,10 +127,7 @@ async fn distinct_master_tokens_resolve_to_distinct_identities()
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
 
-    let owner = Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    };
+    let owner = Principal::User(UserId::new(Uuid::now_v7()));
 
     let t_a = Uuid::now_v7();
     let t_b = Uuid::now_v7();

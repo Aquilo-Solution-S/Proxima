@@ -5,7 +5,7 @@ use std::sync::Arc;
 use common::{create_db, db_url, drop_db};
 use proxima_core::mcp::McpAuthorContext;
 use proxima_core::{
-    Engine, FlavorRegistry, OrgId, Owner, OwnerPrincipalKind, Principal, RelationClass, UserId,
+    Engine, FlavorRegistry, Owner, OwnerPrincipalKind, Principal, RelationClass, UserId,
 };
 use proxima_mcp_server::McpToolHost;
 use proxima_storage_pg::PgStorage;
@@ -19,10 +19,7 @@ async fn core_read_tools_return_prefixed_ids_and_author() -> Result<(), Box<dyn 
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
 
-    let owner = Owner {
-        principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
-        org_id: OrgId::new(uuid::Uuid::now_v7()),
-    };
+    let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
     let author = uuid::Uuid::now_v7();
     let source = insert_memory(&pg, &owner, "source lineage memory", Some(author)).await?;
     let derived = insert_memory(&pg, &owner, "derived lineage memory", Some(author)).await?;
@@ -106,24 +103,23 @@ async fn insert_memory(
     personality_instance_id: Option<uuid::Uuid>,
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     let memory_id = uuid::Uuid::now_v7();
-    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
-    let owner_principal_id = match &owner.principal {
+    let owner_kind = OwnerPrincipalKind::of(owner);
+    let owner_principal_id = match owner {
         Principal::User(user) => user.into_inner(),
         Principal::Group(group) => group.into_inner(),
     };
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (memory_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 'test/core-read-v1', 1, 'Abstraction',
-                 $5, 'Wake', 'test-model', 'test-v1',
-                 COALESCE($6, '00000000-0000-0000-0000-000000000000'::uuid), 0)",
+         VALUES ($1, $2, $3, 'test/core-read-v1', 1, 'Abstraction',
+                 $4, 'Wake', 'test-model', 'test-v1',
+                 COALESCE($5, '00000000-0000-0000-0000-000000000000'::uuid), 0)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner.org_id.into_inner())
     .bind(text)
     .bind(personality_instance_id)
     .execute(pg.pool())
@@ -138,8 +134,8 @@ async fn insert_edge(
     target: uuid::Uuid,
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     let edge_id = uuid::Uuid::now_v7();
-    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
-    let owner_principal_id = match &owner.principal {
+    let owner_kind = OwnerPrincipalKind::of(owner);
+    let owner_principal_id = match owner {
         Principal::User(user) => user.into_inner(),
         Principal::Group(group) => group.into_inner(),
     };
@@ -149,12 +145,12 @@ async fn insert_edge(
              source_kind, source_memory_id, source_goal_id,
              target_kind, target_memory_id, target_goal_id,
              authorship_kind, authorship_owner_memory_id,
-             owner_principal_kind, owner_principal_id, owner_org_id)
+             owner_principal_kind, owner_principal_id)
          VALUES ($1, 'core/derived-from', $2,
                  'Abstraction', $3, NULL,
                  'Abstraction', $4, NULL,
                  'Engine', NULL,
-                 $5, $6, $7)",
+                 $5, $6)",
     )
     .bind(edge_id)
     .bind(RelationClass::Provenance)
@@ -162,7 +158,6 @@ async fn insert_edge(
     .bind(target)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner.org_id.into_inner())
     .execute(pg.pool())
     .await?;
     Ok(edge_id)

@@ -31,8 +31,7 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
             .instantiate_personality(
                 &authz,
                 InstantiatePersonalityRequest {
-                    principal: owner.principal.clone(),
-                    org_id: None,
+                    principal: owner.clone(),
                     display_name: "Commit Summarizer".into(),
                 },
             )

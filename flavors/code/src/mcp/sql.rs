@@ -42,7 +42,7 @@ file_revision_heads AS (
 ";
 
 pub fn owner_principal(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid) {
-    owner.principal.columns()
+    owner.columns()
 }
 
 pub async fn resolve_repo_identifier(
@@ -61,25 +61,22 @@ pub async fn resolve_repo_identifier(
     }
 
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
-    let owner_org_id = ctx.owner.org_id.into_inner();
     let pool = pg_pool(ctx)?;
     let rows: Vec<RepoLookupRow> = sqlx::query_as(
         "SELECT repo_id
          FROM proxima_code.repos
          WHERE owner_principal_kind = $1
            AND owner_principal_id = $2
-           AND owner_org_id = $3
            AND (
-               lower(display_name) = lower($4)
-               OR lower(canonical_path) = lower($4)
-               OR lower(regexp_replace(canonical_path, '^.*/', '')) = lower($4)
+               lower(display_name) = lower($3)
+               OR lower(canonical_path) = lower($3)
+               OR lower(regexp_replace(canonical_path, '^.*/', '')) = lower($3)
            )
          ORDER BY created_at DESC
          LIMIT 2",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(trimmed)
     .fetch_all(pool.as_ref())
     .await

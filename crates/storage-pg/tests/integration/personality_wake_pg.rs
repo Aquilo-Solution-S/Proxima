@@ -171,8 +171,7 @@ async fn seed_test_personality(
 ) -> Result<proxima_core::InstantiatePersonalityResponse, Box<dyn std::error::Error>> {
     let response = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            principal: owner.principal.clone(),
-            org_id: Some(owner.org_id),
+            principal: owner.clone(),
             display_name: "Engineer A".into(),
         })
         .await?;
@@ -180,7 +179,7 @@ async fn seed_test_personality(
 }
 
 fn principal_id(owner: &Owner) -> Uuid {
-    match &owner.principal {
+    match owner {
         Principal::User(id) => id.into_inner(),
         Principal::Group(id) => id.into_inner(),
     }
@@ -258,7 +257,6 @@ async fn personality_wake_schema_replaces_legacy_tables() {
             vec![
                 "owner_principal_kind",
                 "owner_principal_id",
-                "owner_org_id",
                 "personality_instance_id",
                 "wake_entry_id",
                 "trigger_kind",
@@ -314,14 +312,13 @@ async fn personality_wake_schema_enforces_promille() {
         entry.instructions = "Use the committed fact to decide whether to write a summary.".into();
         let err = sqlx::query(
             "INSERT INTO proxima_core.personality_wake_entries
-                (owner_principal_kind, owner_principal_id, owner_org_id,
+                (owner_principal_kind, owner_principal_id,
                  personality_instance_id, wake_entry_id, trigger_kind, trigger_id,
                  label, authored_by, probability_promille)
-             VALUES ('User', $1, $2, $3, $4, 'on_memory', 'proxima-test/fact-v1',
+             VALUES ('User', $1, $2, $3, 'on_memory', 'proxima-test/fact-v1',
                      'bad', 'any', 1001)",
         )
         .bind(principal_id(&owner))
-        .bind(owner.org_id.into_inner())
         .bind(response.instance_id.into_inner())
         .bind(entry.wake_entry_id)
         .execute(pg.pool())
@@ -371,8 +368,7 @@ async fn personality_wake_storage_round_trip() {
 
         let first = sample_entry(instance, "proxima-test/fact-v1");
         pg.set_wake_entries(&SetWakeEntriesRequest {
-            principal: owner.principal.clone(),
-            org_id: Some(owner.org_id),
+            principal: owner.clone(),
             personality_instance_id: instance,
             entries: vec![first],
         })
@@ -380,8 +376,7 @@ async fn personality_wake_storage_round_trip() {
         let mut replacement = sample_entry(instance, "core/goal-activated-v1");
         replacement.goal_scope = WakeEntryGoalScope::TriggerGoalAssigned;
         pg.set_wake_entries(&SetWakeEntriesRequest {
-            principal: owner.principal.clone(),
-            org_id: Some(owner.org_id),
+            principal: owner.clone(),
             personality_instance_id: instance,
             entries: vec![replacement.clone()],
         })
@@ -410,8 +405,7 @@ async fn personality_wake_storage_round_trip() {
 
         let res = pg
             .tombstone_personality(&TombstonePersonalityRequest {
-                principal: owner.principal,
-                org_id: Some(owner.org_id),
+                principal: owner,
                 personality_instance_id: instance,
             })
             .await?;
@@ -436,8 +430,7 @@ async fn list_personality_instances_populates_wake_entries() {
         let entry = sample_entry(response.instance_id, "proxima-test/fact-v1");
 
         pg.set_wake_entries(&SetWakeEntriesRequest {
-            principal: owner.principal.clone(),
-            org_id: Some(owner.org_id),
+            principal: owner.clone(),
             personality_instance_id: response.instance_id,
             entries: vec![entry],
         })
@@ -466,8 +459,7 @@ fn fact_draft(owner: Owner) -> EventDraft {
     EventDraft {
         source_id: SourceId::new("proxima-test/source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.principal,
-        org_id: Some(owner.org_id),
+        principal: owner,
         author_personality_instance_id: None,
         schema_id: SchemaId::new("proxima-test/fact-v1".into()),
         schema_version: SchemaVersion::new(1),

@@ -70,20 +70,18 @@ async fn fact_entity_id_for_executor<'e, E>(
 where
     E: Executor<'e, Database = Postgres>,
 {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let id = sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT fact_entity_id
            FROM proxima_core.fact_entities
           WHERE owner_principal_kind = $1
             AND owner_principal_id = $2
-            AND owner_org_id = $3
-            AND schema_id = $4
-            AND schema_version = $5
-            AND natural_key = $6::text[]",
+            AND schema_id = $3
+            AND schema_version = $4
+            AND natural_key = $5::text[]",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(schema_id.as_str())
     .bind(schema_version.into_inner().cast_signed())
     .bind(natural_key)
@@ -97,7 +95,6 @@ pub(crate) async fn resolve_head(
     pool: &PgPool,
     owner_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
-    owner_org_id: uuid::Uuid,
     fact_entity_ids: &[uuid::Uuid],
 ) -> Result<HashMap<uuid::Uuid, uuid::Uuid>, StorageError> {
     if fact_entity_ids.is_empty() {
@@ -108,12 +105,10 @@ pub(crate) async fn resolve_head(
            FROM proxima_core.fact_entities
           WHERE owner_principal_kind = $1
             AND owner_principal_id = $2
-            AND owner_org_id = $3
-            AND fact_entity_id = ANY($4::uuid[])",
+            AND fact_entity_id = ANY($3::uuid[])",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(fact_entity_ids)
     .fetch_all(pool)
     .await

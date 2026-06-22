@@ -35,21 +35,6 @@ impl GroupId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct OrgId(Uuid);
-
-impl OrgId {
-    #[must_use]
-    pub const fn new(inner: Uuid) -> Self {
-        Self(inner)
-    }
-
-    #[must_use]
-    pub const fn into_inner(self) -> Uuid {
-        self.0
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct MemoryId(Uuid);
 
 impl MemoryId {

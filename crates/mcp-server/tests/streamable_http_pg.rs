@@ -307,10 +307,9 @@ impl TestHostAuth {
 
     fn identity(&self) -> Identity {
         let mut accessible_principals = std::collections::HashSet::with_capacity(1);
-        accessible_principals.insert(self.owner.principal.clone());
+        accessible_principals.insert(self.owner.clone());
         Identity {
-            principal: self.owner.principal.clone(),
-            org_id: self.owner.org_id,
+            principal: self.owner.clone(),
             accessible_principals,
             expires_at: self.ttl.map(|ttl| std::time::SystemTime::now() + ttl),
             auth_epoch: self.epoch.load(Ordering::SeqCst),

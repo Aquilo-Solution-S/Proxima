@@ -44,7 +44,7 @@ impl McpTool for SetReadScopeTool {
         args: SetReadScopeArgs,
     ) -> BoxFuture<'static, Result<SetReadScopeOutput, McpToolError>> {
         Box::pin(async move {
-            crate::engine::authorize(&ctx.authz, &ctx.owner.principal, Role::Admin)
+            crate::engine::authorize(&ctx.authz, &ctx.owner, Role::Admin)
                 .map_err(|e| McpToolError::Other(e.to_string()))?;
             let pid = ctx.resolve_personality(&args.personality)?;
             let readable_ids = args
@@ -58,8 +58,7 @@ impl McpTool for SetReadScopeTool {
 
             let before = storage
                 .list_read_scope(&crate::ListReadScopeRequest {
-                    principal: ctx.owner.principal.clone(),
-                    org_id: Some(ctx.owner.org_id),
+                    principal: ctx.owner.clone(),
                     reader_personality_instance_id: pid,
                 })
                 .await
@@ -74,8 +73,7 @@ impl McpTool for SetReadScopeTool {
 
             let response = storage
                 .set_read_scope(&SetReadScopeRequest {
-                    principal: ctx.owner.principal.clone(),
-                    org_id: Some(ctx.owner.org_id),
+                    principal: ctx.owner.clone(),
                     reader_personality_instance_id: pid,
                     readable_personality_instance_ids: readable_ids.clone(),
                 })

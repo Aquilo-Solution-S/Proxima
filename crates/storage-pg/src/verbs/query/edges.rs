@@ -68,7 +68,7 @@ async fn query_edges_by_id(
                 source_memory_id, source_goal_id, source_fact_entity_id, \
                 target_memory_id, target_goal_id, target_fact_entity_id, \
                 owner_principal_kind, \
-                owner_principal_id, owner_org_id \
+                owner_principal_id \
          FROM proxima_core.edges \
          WHERE owner_principal_kind = $1 \
            AND owner_principal_id = $2 \
@@ -149,18 +149,16 @@ async fn query_edges_between_visible_nodes(
                 COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id, \
                 e.target_goal_id, e.target_fact_entity_id, \
                 e.owner_principal_kind, \
-                e.owner_principal_id, e.owner_org_id \
+                e.owner_principal_id \
          FROM proxima_core.edges e \
          LEFT JOIN proxima_core.fact_entities sfe \
            ON sfe.fact_entity_id = e.source_fact_entity_id \
           AND sfe.owner_principal_kind = e.owner_principal_kind \
           AND sfe.owner_principal_id = e.owner_principal_id \
-          AND sfe.owner_org_id = e.owner_org_id \
          LEFT JOIN proxima_core.fact_entities tfe \
            ON tfe.fact_entity_id = e.target_fact_entity_id \
           AND tfe.owner_principal_kind = e.owner_principal_kind \
           AND tfe.owner_principal_id = e.owner_principal_id \
-          AND tfe.owner_org_id = e.owner_org_id \
          WHERE e.owner_principal_kind = $1 \
            AND e.owner_principal_id = $2 \
            AND ( \
@@ -191,15 +189,11 @@ async fn hydrate_fact_entity_heads(
     rows: &mut [EdgeRowDb],
 ) -> Result<(), StorageError> {
     let mut groups = std::collections::HashMap::<
-        (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid),
+        (OwnerPrincipalKind, uuid::Uuid),
         Vec<uuid::Uuid>,
     >::new();
     for row in rows.iter() {
-        let key = (
-            row.owner_principal_kind,
-            row.owner_principal_id,
-            row.owner_org_id,
-        );
+        let key = (row.owner_principal_kind, row.owner_principal_id);
         if let Some(id) = row.source_fact_entity_id {
             groups.entry(key).or_default().push(id);
         }
@@ -212,11 +206,10 @@ async fn hydrate_fact_entity_heads(
     }
 
     let mut resolved = std::collections::HashMap::new();
-    for ((owner_kind, owner_principal_id, owner_org_id), mut ids) in groups {
+    for ((owner_kind, owner_principal_id), mut ids) in groups {
         ids.sort_unstable();
         ids.dedup();
-        resolved
-            .extend(resolve_head(pool, owner_kind, owner_principal_id, owner_org_id, &ids).await?);
+        resolved.extend(resolve_head(pool, owner_kind, owner_principal_id, &ids).await?);
     }
 
     for row in rows {

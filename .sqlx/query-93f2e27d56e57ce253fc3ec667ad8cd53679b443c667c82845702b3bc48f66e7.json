@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT mtp.personality_instance_id,\n                  p.current_root_perspective_memory_id\n             FROM proxima_core.master_token_personality mtp\n             JOIN proxima_core.personality p\n               ON p.personality_instance_id = mtp.personality_instance_id\n             WHERE mtp.master_token_id = $1\n               AND mtp.owner_principal_kind = $2\n               AND mtp.owner_principal_id = $3\n               AND mtp.owner_org_id = $4\n             LIMIT 1",
+  "query": "SELECT mtp.personality_instance_id,\n                  p.current_root_perspective_memory_id\n             FROM proxima_core.master_token_personality mtp\n             JOIN proxima_core.personality p\n               ON p.personality_instance_id = mtp.personality_instance_id\n             WHERE mtp.master_token_id = $1\n               AND mtp.owner_principal_kind = $2\n               AND mtp.owner_principal_id = $3\n             LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -28,7 +28,6 @@
             }
           }
         },
-        "Uuid",
         "Uuid"
       ]
     },
@@ -37,5 +36,5 @@
       false
     ]
   },
-  "hash": "dae8483620f6a62bf99d1ff21bc907156b69c31c3347b5af22c91ef24a95a304"
+  "hash": "93f2e27d56e57ce253fc3ec667ad8cd53679b443c667c82845702b3bc48f66e7"
 }

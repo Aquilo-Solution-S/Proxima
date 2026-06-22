@@ -13,7 +13,7 @@ pub async fn list_personality_instances(
     owner: &Owner,
     include_tombstoned: bool,
 ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let rows: Vec<(uuid::Uuid, uuid::Uuid, String, PersonalityStatus)> = sqlx::query_as(
         "SELECT p.personality_instance_id,
                 p.current_root_perspective_memory_id,
@@ -24,14 +24,12 @@ pub async fn list_personality_instances(
 	           ON m.memory_id = p.current_root_perspective_memory_id
 	         WHERE p.owner_principal_kind = $1
 	           AND p.owner_principal_id = $2
-	           AND p.owner_org_id = $3
 	           AND m.tombstoned_at IS NULL
-	           AND ($4::bool OR p.status <> 'tombstoned'::proxima_core.personality_status)
+	           AND ($3::bool OR p.status <> 'tombstoned'::proxima_core.personality_status)
          ORDER BY p.created_at, p.personality_instance_id",
     )
     .bind(owner_kind as OwnerPrincipalKind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(include_tombstoned)
     .fetch_all(pool)
     .await
@@ -51,14 +49,12 @@ pub async fn list_personality_instances(
            FROM proxima_core.personality_wake_entries
            WHERE owner_principal_kind = $1
              AND owner_principal_id = $2
-             AND owner_org_id = $3
-             AND personality_instance_id = ANY($4::uuid[])
+             AND personality_instance_id = ANY($3::uuid[])
              AND tombstoned_at IS NULL
            ORDER BY label, wake_entry_id",
     )
     .bind(owner_kind as OwnerPrincipalKind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(&instance_ids[..])
     .fetch_all(pool)
     .await
@@ -115,22 +111,21 @@ pub async fn instantiate_personality(
     req: &InstantiatePersonalityRequest,
 ) -> Result<InstantiatePersonalityResponse, StorageError> {
     let owner = req.owner();
-    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (owner_kind, owner_principal_id) = owner.columns();
     let instance_id = uuid::Uuid::now_v7();
     let memory_id = uuid::Uuid::now_v7();
     let mut tx = pool.begin().await.map_err(map_err)?;
 
     sqlx::query!(
         r#"INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+            (memory_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, $5, 1, 'Perspective', $6, 'Wake', 'substrate',
-                 'self-v1', $7, 0)"#,
+         VALUES ($1, $2, $3, $4, 1, 'Perspective', $5, 'Wake', 'substrate',
+                 'self-v1', $6, 0)"#,
         memory_id,
         owner_kind as OwnerPrincipalKind,
         owner_principal_id,
-        owner_org_id,
         ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
         &req.display_name,
         instance_id,
@@ -142,14 +137,13 @@ pub async fn instantiate_personality(
     let change_seq = uuid::Uuid::now_v7();
     sqlx::query!(
         r#"INSERT INTO proxima_core.change_event
-            (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind,
+            (seq, owner_principal_kind, owner_principal_id, kind,
              entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,
              entity_personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Perspective', $5, $6, 1, $7, 0)"#,
+         VALUES ($1, $2, $3, 'EntityAppend', 'Perspective', $4, $5, 1, $6, 0)"#,
         change_seq,
         owner_kind as OwnerPrincipalKind,
         owner_principal_id,
-        owner_org_id,
         memory_id,
         ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
         instance_id,
@@ -160,14 +154,13 @@ pub async fn instantiate_personality(
 
     sqlx::query(
         "INSERT INTO proxima_core.personality
-            (owner_principal_kind, owner_principal_id, owner_org_id,
+            (owner_principal_kind, owner_principal_id,
              personality_instance_id, current_root_perspective_memory_id,
              max_wake_chain_depth, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(instance_id)
     .bind(memory_id)
     .bind(i32::from(proxima_core::personality::MAX_WAKE_CHAIN_DEPTH))
