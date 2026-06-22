@@ -1,16 +1,21 @@
 ---
 name: proxima-memory
 description: >-
-  Use when reading from or writing to a Proxima shared-brain memory MCP (tools
-  like core_remember / core_derive / core_link / core_search_memories /
-  core_goal_set) — BEFORE architectural or domain work (recall first), when
-  recording a learning or a recurring pattern, when relating memories to each
-  other, when updating your stance or self-model, when setting a goal, or at any
-  session break (consolidate). Also use whenever you are unsure whether to
-  remember vs derive vs link, or you hit a "rejects source kind Fact" error.
-  Trigger this even when the user does not say "memory": any time you are about to
-  act in an unfamiliar area backed by a Proxima brain, or you have just learned
-  something worth keeping.
+  Use when an agent should recall or store a project's durable, cross-session
+  knowledge through Proxima — a persistent shared-brain memory MCP (tools like
+  core_remember / core_derive / core_link / core_search_memories / core_goal_set).
+  Treat the intent as the trigger even when the user names no tool and never says
+  "memory": recall what was already decided and which gotchas were hit BEFORE a
+  refactor, architecture change, domain shift, or debugging in an unfamiliar area;
+  save a decision, gotcha, or lesson so nobody relearns it; capture a recurring
+  pattern across facts; relate or connect existing memories; update your stance or
+  self-model about a project; set or decompose a goal; or consolidate what is
+  worth keeping when wrapping up a session. Also trigger when unsure how to store
+  something (remember vs derive vs link; fact vs abstraction vs perspective) or
+  when relating two facts is rejected with "rejects source kind Fact". Do NOT
+  trigger for one-off "don't-forget" reminders, casual or personal recall,
+  CLAUDE.md or other local notes, or merely inspecting the memory system's own
+  source code, schema, or database.
 ---
 
 # Proxima Memory
