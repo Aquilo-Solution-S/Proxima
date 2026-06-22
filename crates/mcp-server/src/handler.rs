@@ -6,16 +6,21 @@
 //! into MCP tool metadata at request time.
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use proxima_core::mcp::provider_safe_tool_name;
 use proxima_core::{McpAuthorContext, MemoryId};
 use rmcp::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, ErrorData, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
+    AnnotateAble, CallToolRequestParams, CallToolResult, Content, ErrorData, Implementation,
+    InitializeRequestParams, InitializeResult, ListResourcesResult, ListToolsResult,
+    PaginatedRequestParams, RawResource, ReadResourceRequestParams, ReadResourceResult,
+    ResourceContents, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
+
+use crate::selfdoc;
 
 use crate::auth::McpAuthContext;
 use crate::server::McpToolHost;
@@ -26,12 +31,95 @@ pub struct DynamicHandler {
     pub server: McpToolHost,
 }
 
+impl DynamicHandler {
+    /// Canonical ids of the tools advertised to a caller with `scope`. Same
+    /// filter `list_tools` applies, so self-documentation never references a
+    /// tool the caller cannot see.
+    fn advertised_tool_ids(&self, scope: Option<&ToolScope>) -> BTreeSet<&'static str> {
+        self.server
+            .registry()
+            .list_mcp_tools()
+            .iter()
+            .filter(|descriptor| scope_allows(scope, descriptor.name))
+            .map(|descriptor| descriptor.name)
+            .collect()
+    }
+}
+
 impl ServerHandler for DynamicHandler {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
-        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info.capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources()
+            .build();
         info.server_info = Implementation::from_build_env();
         info
+    }
+
+    /// Override `initialize` so the `instructions` returned at the handshake
+    /// are generated from the caller's *resolved* tool scope (deployment
+    /// profile ∩ token capabilities) — the same scope `list_tools` advertises.
+    /// A `memory`-profile deployment thus omits guidance for tools it does not
+    /// expose. Mirrors the SDK default's `set_peer_info` bookkeeping.
+    fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<InitializeResult, ErrorData>> + MaybeSendFuture + '_ {
+        if context.peer.peer_info().is_none() {
+            context.peer.set_peer_info(request);
+        }
+        let auth = auth_context(&context);
+        let scope = auth.as_ref().map(|ctx| &ctx.authz.capabilities.tool_scope);
+        let advertised = self.advertised_tool_ids(scope);
+        let mut info = self.get_info();
+        let instructions = selfdoc::build_instructions(&advertised);
+        if !instructions.is_empty() {
+            info.instructions = Some(instructions);
+        }
+        std::future::ready(Ok(info))
+    }
+
+    fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListResourcesResult, ErrorData>> + MaybeSendFuture + '_ {
+        let resource = RawResource {
+            title: Some(selfdoc::HOW_TO_TITLE.to_string()),
+            description: Some(selfdoc::HOW_TO_DESCRIPTION.to_string()),
+            mime_type: Some(selfdoc::HOW_TO_MIME.to_string()),
+            ..RawResource::new(selfdoc::HOW_TO_URI, selfdoc::HOW_TO_NAME)
+        }
+        .no_annotation();
+        std::future::ready(Ok(ListResourcesResult {
+            resources: vec![resource],
+            ..Default::default()
+        }))
+    }
+
+    fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ReadResourceResult, ErrorData>> + MaybeSendFuture + '_ {
+        let result = if request.uri == selfdoc::HOW_TO_URI {
+            let auth = auth_context(&context);
+            let scope = auth.as_ref().map(|ctx| &ctx.authz.capabilities.tool_scope);
+            let advertised = self.advertised_tool_ids(scope);
+            let body = selfdoc::how_to_markdown(&advertised);
+            Ok(ReadResourceResult::new(vec![
+                ResourceContents::text(body, selfdoc::HOW_TO_URI)
+                    .with_mime_type(selfdoc::HOW_TO_MIME),
+            ]))
+        } else {
+            Err(ErrorData::resource_not_found(
+                format!("unknown resource {}", request.uri),
+                None,
+            ))
+        };
+        std::future::ready(result)
     }
 
     fn list_tools(
