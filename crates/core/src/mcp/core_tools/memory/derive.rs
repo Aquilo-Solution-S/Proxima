@@ -34,7 +34,7 @@ pub struct DeriveArgs {
     )]
     pub source_handles: Vec<String>,
     #[schemars(
-        description = "Model identifier or external agent label used as operator provenance, 1 to 120 chars."
+        description = "Your model/agent label, recorded as operator provenance (e.g. `claude-opus-4-8`), 1 to 120 chars."
     )]
     pub model_id: String,
     #[schemars(

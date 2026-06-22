@@ -13,9 +13,15 @@ const UTTERANCE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RecordUtteranceArgs {
+    #[schemars(description = "Who produced the utterance: `user` or `agent`.")]
     pub speaker: Speaker,
+    #[schemars(description = "Stable id grouping the utterances of one conversation.")]
     pub conversation_id: String,
+    #[schemars(description = "The utterance text, 1 to 20000 chars.")]
     pub text: String,
+    #[schemars(
+        description = "Optional stable idempotency key; replaying the same key is a no-op, not a duplicate."
+    )]
     pub idempotency_key: Option<String>,
 }
 
@@ -31,7 +37,7 @@ pub struct RecordUtteranceTool;
 impl McpTool for RecordUtteranceTool {
     const NAME: &'static str = "core/record_utterance";
     const DESCRIPTION: &'static str =
-        "Append one conversation utterance as a personality-authored Fact.";
+        "Append one raw conversation turn (utterance) as a personality-authored Fact. Use `core_remember` for distilled observations rather than verbatim transcript.";
     type Args = RecordUtteranceArgs;
     type Output = RecordUtteranceOutput;
 
