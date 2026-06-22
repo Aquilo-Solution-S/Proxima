@@ -396,9 +396,9 @@ impl Engine {
 
     /// Owner-scoped write of a host-observed MCP activity log.
     ///
-    /// Authorizes the caller against the log's Owner and derives the
-    /// stamped org from the authenticated identity — never trusting a
-    /// caller-supplied org — mirroring [`Self::event_ingest`]. The
+    /// Authorizes the caller against the log's Owner and derives that
+    /// Owner from the authenticated identity — never trusting a
+    /// caller-supplied Owner — mirroring [`Self::event_ingest`]. The
     /// per-user actor (`actor_oid` / `actor_upn`) is recorded as Fact
     /// data; the graph Owner is what gets authorized here.
     ///
