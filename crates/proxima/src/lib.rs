@@ -148,6 +148,7 @@ pub struct EmbeddedProxima {
     pub handle: EngineHandle,
     pub pool: PgPool,
     pub registry: Arc<proxima_core::FlavorRegistryFrozen>,
+    pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Owner,
 }
@@ -277,7 +278,8 @@ impl ProximaBuilder {
         let pg_sidecars = pg_sidecars
             .freeze_against(registry.schemas())
             .map_err(|e| EmbedError::Storage(e.to_string()))?;
-        let pg = pg.with_sidecars(pg_sidecars);
+        let pg_sidecars = Arc::new(pg_sidecars);
+        let pg = pg.with_sidecars(pg_sidecars.as_ref().clone());
 
         let mut engine = Engine::new(registry).with_storage(Arc::new(pg.clone()));
         if let Some(client) = embed_client {
@@ -301,6 +303,7 @@ impl ProximaBuilder {
             handle,
             pool,
             registry,
+            pg_sidecars,
             blobs,
             owner,
         })
