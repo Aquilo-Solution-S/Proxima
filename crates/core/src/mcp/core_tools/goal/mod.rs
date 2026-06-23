@@ -1,4 +1,4 @@
-use crate::mcp::{CoreActionMeta, McpTool, McpToolAnnotations, McpToolCtx, McpToolError};
+use crate::mcp::{CoreActionMeta, McpTool, McpToolCtx, McpToolError};
 use crate::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     GoalAtomicContext, GoalAuthorship, GoalDraft, GoalEvidenceRef, GoalPayloadWrite, GoalState,
@@ -12,6 +12,8 @@ use crate::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use super::{WRITE_IDEMPOTENT, WRITE_NON_IDEMPOTENT};
 
 const MAX_CHILD_GOALS: usize = 50;
 const CORE_GOAL_SET_SCOPE_KEY: &str = "core_goal:set";
@@ -27,17 +29,6 @@ const CORE_GOAL_PRODUCES_SCHEMA_IDS: &[&str] = &[
     <crate::GoalActivatedV1 as crate::FactPayload>::SCHEMA_ID,
     <crate::GoalAchievedV1 as crate::FactPayload>::SCHEMA_ID,
 ];
-const WRITE_NON_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
-    .read_only(false)
-    .destructive(false)
-    .idempotent(false)
-    .open_world(false);
-const WRITE_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
-    .read_only(false)
-    .destructive(false)
-    .idempotent(true)
-    .open_world(false);
-
 pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
     CoreActionMeta {
         tool: CoreGoalTool::NAME,

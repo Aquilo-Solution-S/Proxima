@@ -95,22 +95,18 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         .map(|t| t["tool_id"].as_str().unwrap().to_string())
         .collect();
     assert!(
-        names.contains("core_list_personalities"),
-        "MCP CRUD tool present in discovery output"
-    );
-    assert!(
-        names.contains("core_instantiate_personality"),
-        "MCP CRUD tool present in discovery output"
+        names.contains("core_personality"),
+        "grouped personality tool present in discovery output"
     );
 
-    // 3. Mutation: instantiate_personality.
+    // 3. Mutation: personality instantiate.
     let inst = call_tool(
         &client,
         &url,
         &session,
         &bearer,
-        "core_instantiate_personality",
-        json!({ "display_name": "TestSubject", "purpose": "smoke test" }),
+        "core_personality",
+        json!({ "action": "instantiate", "display_name": "TestSubject", "purpose": "smoke test" }),
     )
     .await?;
     // Master-token wire calls use typed prefixed ids; handles are minted
@@ -124,8 +120,8 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         &url,
         &session,
         &bearer,
-        "core_list_personalities",
-        json!({}),
+        "core_personality",
+        json!({ "action": "list" }),
     )
     .await?;
     let items = list["personalities"].as_array().expect("array");
@@ -142,8 +138,8 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         &url,
         &session,
         &bearer,
-        "core_tombstone_personality",
-        json!({ "personality": p_handle }),
+        "core_personality",
+        json!({ "action": "tombstone", "personality": p_handle }),
     )
     .await?;
     assert_eq!(
@@ -156,8 +152,8 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         &url,
         &session,
         &bearer,
-        "core_tombstone_personality",
-        json!({ "personality": p_handle }),
+        "core_personality",
+        json!({ "action": "tombstone", "personality": p_handle }),
     )
     .await?;
     assert_eq!(

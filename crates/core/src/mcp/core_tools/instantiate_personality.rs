@@ -41,47 +41,52 @@ impl McpTool for InstantiatePersonalityTool {
         ctx: McpToolCtx,
         args: InstantiatePersonalityArgs,
     ) -> BoxFuture<'static, Result<InstantiatePersonalityOutput, McpToolError>> {
-        Box::pin(async move {
-            let display_name = args.display_name.trim().to_string();
-            if display_name.is_empty() {
-                return Err(McpToolError::InvalidInput("display_name is empty".into()));
-            }
-            let engine = ctx
-                .engine()
-                .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
-            let req = InstantiatePersonalityRequest {
-                principal: ctx.owner.clone(),
-                display_name: display_name.clone(),
-            };
-            let resp = engine
-                .instantiate_personality(&ctx.authz, req)
-                .await
-                .map_err(|e| McpToolError::Other(e.to_string()))?;
-            let after = PersonalityConfigChangeSnapshot::Personality {
-                personality_instance_id: Some(resp.instance_id.into_inner()),
-                display_name: Some(display_name),
-                status: None,
-                wake_entry_count: None,
-            };
-            let audit = emit_personality_config_changed(
-                &ctx,
-                PersonalityConfigChangedVerb::Instantiate,
-                PersonalityConfigChangedSubject::Personality(resp.instance_id.into_inner()),
-                None,
-                Some(after),
-            )
-            .await;
-            let audit_emit_failed = match audit {
-                AuditEmit::Ok => None,
-                AuditEmit::Failed { reason } => {
-                    tracing::warn!(reason, "personality_config_changed audit emit failed");
-                    Some(reason)
-                }
-            };
-            Ok(InstantiatePersonalityOutput {
-                personality: ctx.format_personality(resp.instance_id),
-                audit_emit_failed,
-            })
-        })
+        Box::pin(instantiate_personality(ctx, args))
     }
+}
+
+pub(super) async fn instantiate_personality(
+    ctx: McpToolCtx,
+    args: InstantiatePersonalityArgs,
+) -> Result<InstantiatePersonalityOutput, McpToolError> {
+    let display_name = args.display_name.trim().to_string();
+    if display_name.is_empty() {
+        return Err(McpToolError::InvalidInput("display_name is empty".into()));
+    }
+    let engine = ctx
+        .engine()
+        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let req = InstantiatePersonalityRequest {
+        principal: ctx.owner.clone(),
+        display_name: display_name.clone(),
+    };
+    let resp = engine
+        .instantiate_personality(&ctx.authz, req)
+        .await
+        .map_err(|e| McpToolError::Other(e.to_string()))?;
+    let after = PersonalityConfigChangeSnapshot::Personality {
+        personality_instance_id: Some(resp.instance_id.into_inner()),
+        display_name: Some(display_name),
+        status: None,
+        wake_entry_count: None,
+    };
+    let audit = emit_personality_config_changed(
+        &ctx,
+        PersonalityConfigChangedVerb::Instantiate,
+        PersonalityConfigChangedSubject::Personality(resp.instance_id.into_inner()),
+        None,
+        Some(after),
+    )
+    .await;
+    let audit_emit_failed = match audit {
+        AuditEmit::Ok => None,
+        AuditEmit::Failed { reason } => {
+            tracing::warn!(reason, "personality_config_changed audit emit failed");
+            Some(reason)
+        }
+    };
+    Ok(InstantiatePersonalityOutput {
+        personality: ctx.format_personality(resp.instance_id),
+        audit_emit_failed,
+    })
 }

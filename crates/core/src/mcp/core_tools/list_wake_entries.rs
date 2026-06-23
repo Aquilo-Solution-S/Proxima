@@ -49,38 +49,43 @@ impl McpTool for ListWakeEntriesTool {
         ctx: McpToolCtx,
         args: ListWakeEntriesArgs,
     ) -> BoxFuture<'static, Result<ListWakeEntriesOutput, McpToolError>> {
-        Box::pin(async move {
-            let pid = ctx.resolve_personality(&args.personality)?;
-            let storage = ctx
-                .storage()
-                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-            let rows = storage
-                .list_personality_instances(&ctx.owner, true)
-                .await
-                .map_err(McpToolError::Storage)?;
-            let row = rows
-                .into_iter()
-                .find(|r| r.personality_instance_id == pid)
-                .ok_or_else(|| {
-                    McpToolError::Other(format!("personality {} not found", args.personality))
-                })?;
-            let wake_entries = row
-                .wake_entries
-                .into_iter()
-                .map(|e| ListWakeEntriesItem {
-                    wake_entry: ctx.format_wake_entry(e.wake_entry_id),
-                    trigger_kind: e.trigger_kind.as_str().to_string(),
-                    trigger_id: e.trigger_id,
-                    label: e.label,
-                    enabled: e.enabled,
-                    instructions: e.instructions,
-                    probability_promille: e.probability_promille,
-                    goal_scope: e.goal_scope.as_str().to_string(),
-                })
-                .collect();
-            Ok(ListWakeEntriesOutput { wake_entries })
-        })
+        Box::pin(list_wake_entries(ctx, args))
     }
+}
+
+pub(super) async fn list_wake_entries(
+    ctx: McpToolCtx,
+    args: ListWakeEntriesArgs,
+) -> Result<ListWakeEntriesOutput, McpToolError> {
+    let pid = ctx.resolve_personality(&args.personality)?;
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let rows = storage
+        .list_personality_instances(&ctx.owner, true)
+        .await
+        .map_err(McpToolError::Storage)?;
+    let row = rows
+        .into_iter()
+        .find(|r| r.personality_instance_id == pid)
+        .ok_or_else(|| {
+            McpToolError::Other(format!("personality {} not found", args.personality))
+        })?;
+    let wake_entries = row
+        .wake_entries
+        .into_iter()
+        .map(|e| ListWakeEntriesItem {
+            wake_entry: ctx.format_wake_entry(e.wake_entry_id),
+            trigger_kind: e.trigger_kind.as_str().to_string(),
+            trigger_id: e.trigger_id,
+            label: e.label,
+            enabled: e.enabled,
+            instructions: e.instructions,
+            probability_promille: e.probability_promille,
+            goal_scope: e.goal_scope.as_str().to_string(),
+        })
+        .collect();
+    Ok(ListWakeEntriesOutput { wake_entries })
 }
 
 #[cfg(test)]

@@ -666,7 +666,11 @@ pub struct CoreActionMeta {
 }
 
 pub fn all_core_actions() -> impl Iterator<Item = &'static CoreActionMeta> {
-    core_tools::goal::CORE_GOAL_ACTIONS.iter()
+    core_tools::goal::CORE_GOAL_ACTIONS
+        .iter()
+        .chain(core_tools::wake::CORE_WAKE_ACTIONS.iter())
+        .chain(core_tools::personality::CORE_PERSONALITY_ACTIONS.iter())
+        .chain(core_tools::fact::CORE_FACT_ACTIONS.iter())
 }
 
 #[must_use]
@@ -684,43 +688,26 @@ pub fn core_tool_has_actions(tool: &str) -> bool {
 pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations> {
     let base = McpToolAnnotations::new().open_world(false);
     let annotations = match canonical_name {
-        "core_citation_of_fact"
-        | "core_citation_of_entity_head"
-        | "core_facts_citing_object"
-        | "core_get_graph"
+        "core_get_graph"
         | "core_get_memory"
-        | "core_get_personality"
         | "core_list_edge_types"
         | "core_list_events"
-        | "core_list_personalities"
-        | "core_list_read_scope"
         | "core_list_schemas"
         | "core_list_substrate_tools"
-        | "core_list_wake_entries"
         | "core_search_memories"
         | "core_walk_memory_lineage" => base.read_only(true),
 
-        "core_derive" | "core_set_fact_retention" | "core_update_wake_entry" => {
-            base.read_only(false).destructive(false).idempotent(true)
-        }
+        "core_derive" => base.read_only(false).destructive(false).idempotent(true),
 
-        "core_remember"
-        | "core_record_utterance"
-        | "core_goal"
-        | "core_set_read_scope"
-        | "core_link"
-        | "core_add_wake_entry"
-        | "core_instantiate_personality" => {
+        "core_remember" | "core_record_utterance" | "core_goal" | "core_link" => {
             base.read_only(false).destructive(false).idempotent(false)
         }
 
-        "core_cleanup_facts" | "core_remove_wake_entry" => {
-            base.read_only(false).destructive(true).idempotent(true)
-        }
-
-        "core_set_wake_entries" | "core_tombstone_personality" => {
+        "core_wake" | "core_personality" => {
             base.read_only(false).destructive(true).idempotent(false)
         }
+
+        "core_fact" => base.read_only(false).destructive(true).idempotent(true),
 
         _ => return None,
     };

@@ -537,7 +537,7 @@ mod tests {
         let scope = ToolScope::Palette(vec!["core_get_memory".to_string()]);
 
         assert!(scope.allows("core_get_memory"));
-        assert!(!scope.allows("core_set_wake_entries"));
+        assert!(!scope.allows("core_wake:set"));
     }
 
     #[test]
@@ -574,11 +574,11 @@ mod tests {
 
         // Two palettes intersect to only the ids both allow — a deployment
         // scope can never re-add an id the caller's scope omitted.
-        let caller = palette(&["core_get_memory", "core_set_wake_entries"]);
+        let caller = palette(&["core_get_memory", "core_wake:set"]);
         let result = mem.intersect(&caller);
         assert!(result.allows("core_get_memory"));
         assert!(!result.allows("core_search_memories")); // caller lacked it
-        assert!(!result.allows("core_set_wake_entries")); // deployment lacked it
+        assert!(!result.allows("core_wake:set")); // deployment lacked it
 
         // Disjoint palettes intersect to empty (deny-all), never widening.
         assert_eq!(

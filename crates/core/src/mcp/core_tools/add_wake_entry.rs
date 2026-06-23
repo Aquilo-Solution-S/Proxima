@@ -53,61 +53,66 @@ impl McpTool for AddWakeEntryTool {
         ctx: McpToolCtx,
         args: AddWakeEntryArgs,
     ) -> BoxFuture<'static, Result<AddWakeEntryOutput, McpToolError>> {
-        Box::pin(async move {
-            crate::engine::authorize(&ctx.authz, &ctx.owner, Role::Admin)
-                .map_err(|e| McpToolError::Other(e.to_string()))?;
-            let pid = ctx.resolve_personality(&args.personality)?;
-            let storage = ctx
-                .storage()
-                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-
-            // Resolve input now so handle errors fail fast (before tx).
-            let new_draft = args.entry.into_draft(&ctx, pid)?;
-            let new_id = new_draft.wake_entry_id;
-            let new_trigger_kind = new_draft.trigger_kind;
-            let new_trigger_id = new_draft.trigger_id.clone();
-            let mutator: crate::WakeEntriesMutator = Box::new(move |current| {
-                if current
-                    .iter()
-                    .any(|e| e.trigger_kind == new_trigger_kind && e.trigger_id == new_trigger_id)
-                {
-                    return Err(format!(
-                        "wake entry with trigger ({new_trigger_kind:?}, {new_trigger_id}) already exists"
-                    ));
-                }
-                let mut next: Vec<_> = current.to_vec();
-                next.push(new_draft);
-                crate::personality::validate_wake_entries_detect_config(&next)
-                    .map_err(|err| err.to_string())?;
-                Ok(next)
-            });
-            storage
-                .set_wake_entries_within(&ctx.owner, pid, mutator)
-                .await
-                .map_err(|e| McpToolError::Other(e.to_string()))?;
-
-            let after = PersonalityConfigChangeSnapshot::WakeEntry {
-                wake_entry_id: new_id,
-                patch_applied: None,
-            };
-            let audit = emit_personality_config_changed(
-                &ctx,
-                PersonalityConfigChangedVerb::AddWakeEntry,
-                PersonalityConfigChangedSubject::WakeEntry(new_id),
-                None,
-                Some(after),
-            )
-            .await;
-            let audit_emit_failed = match audit {
-                AuditEmit::Ok => None,
-                AuditEmit::Failed { reason } => Some(reason),
-            };
-            Ok(AddWakeEntryOutput {
-                wake_entry: ctx.format_wake_entry(new_id),
-                audit_emit_failed,
-            })
-        })
+        Box::pin(add_wake_entry(ctx, args))
     }
+}
+
+pub(super) async fn add_wake_entry(
+    ctx: McpToolCtx,
+    args: AddWakeEntryArgs,
+) -> Result<AddWakeEntryOutput, McpToolError> {
+    crate::engine::authorize(&ctx.authz, &ctx.owner, Role::Admin)
+        .map_err(|e| McpToolError::Other(e.to_string()))?;
+    let pid = ctx.resolve_personality(&args.personality)?;
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+
+    // Resolve input now so handle errors fail fast (before tx).
+    let new_draft = args.entry.into_draft(&ctx, pid)?;
+    let new_id = new_draft.wake_entry_id;
+    let new_trigger_kind = new_draft.trigger_kind;
+    let new_trigger_id = new_draft.trigger_id.clone();
+    let mutator: crate::WakeEntriesMutator = Box::new(move |current| {
+        if current
+            .iter()
+            .any(|e| e.trigger_kind == new_trigger_kind && e.trigger_id == new_trigger_id)
+        {
+            return Err(format!(
+                "wake entry with trigger ({new_trigger_kind:?}, {new_trigger_id}) already exists"
+            ));
+        }
+        let mut next: Vec<_> = current.to_vec();
+        next.push(new_draft);
+        crate::personality::validate_wake_entries_detect_config(&next)
+            .map_err(|err| err.to_string())?;
+        Ok(next)
+    });
+    storage
+        .set_wake_entries_within(&ctx.owner, pid, mutator)
+        .await
+        .map_err(|e| McpToolError::Other(e.to_string()))?;
+
+    let after = PersonalityConfigChangeSnapshot::WakeEntry {
+        wake_entry_id: new_id,
+        patch_applied: None,
+    };
+    let audit = emit_personality_config_changed(
+        &ctx,
+        PersonalityConfigChangedVerb::AddWakeEntry,
+        PersonalityConfigChangedSubject::WakeEntry(new_id),
+        None,
+        Some(after),
+    )
+    .await;
+    let audit_emit_failed = match audit {
+        AuditEmit::Ok => None,
+        AuditEmit::Failed { reason } => Some(reason),
+    };
+    Ok(AddWakeEntryOutput {
+        wake_entry: ctx.format_wake_entry(new_id),
+        audit_emit_failed,
+    })
 }
 
 #[cfg(test)]

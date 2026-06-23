@@ -48,31 +48,36 @@ impl McpTool for ListPersonalitiesTool {
         ctx: McpToolCtx,
         args: ListPersonalitiesArgs,
     ) -> BoxFuture<'static, Result<ListPersonalitiesOutput, McpToolError>> {
-        Box::pin(async move {
-            let storage = ctx
-                .storage()
-                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-            let rows = storage
-                .list_personality_instances(&ctx.owner, args.include_tombstoned)
-                .await
-                .map_err(McpToolError::Storage)?;
-            let personalities = rows
-                .into_iter()
-                .map(|row| {
-                    let count = u32::try_from(row.wake_entries.len()).unwrap_or(u32::MAX);
-                    ListPersonalitiesItem {
-                        personality: ctx.format_personality(row.personality_instance_id),
-                        display_name: row.display_name,
-                        status: row.status,
-                        root_perspective: ctx
-                            .format_perspective_memory(row.current_root_perspective_memory_id),
-                        wake_entry_count: count,
-                    }
-                })
-                .collect();
-            Ok(ListPersonalitiesOutput { personalities })
-        })
+        Box::pin(list_personalities(ctx, args))
     }
+}
+
+pub(super) async fn list_personalities(
+    ctx: McpToolCtx,
+    args: ListPersonalitiesArgs,
+) -> Result<ListPersonalitiesOutput, McpToolError> {
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let rows = storage
+        .list_personality_instances(&ctx.owner, args.include_tombstoned)
+        .await
+        .map_err(McpToolError::Storage)?;
+    let personalities = rows
+        .into_iter()
+        .map(|row| {
+            let count = u32::try_from(row.wake_entries.len()).unwrap_or(u32::MAX);
+            ListPersonalitiesItem {
+                personality: ctx.format_personality(row.personality_instance_id),
+                display_name: row.display_name,
+                status: row.status,
+                root_perspective: ctx
+                    .format_perspective_memory(row.current_root_perspective_memory_id),
+                wake_entry_count: count,
+            }
+        })
+        .collect();
+    Ok(ListPersonalitiesOutput { personalities })
 }
 
 #[cfg(test)]
