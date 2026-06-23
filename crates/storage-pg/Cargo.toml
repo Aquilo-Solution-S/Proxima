@@ -13,7 +13,8 @@ name = "proxima_storage_pg"
 [dependencies]
 proxima-core = { path = "../core" }
 proxima-pg-testkit = { path = "../pg-testkit", optional = true }
-sqlx = { workspace = true, features = ["json"] }
+sqlx = { workspace = true, features = ["json", "rust_decimal"] }
+rust_decimal = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
