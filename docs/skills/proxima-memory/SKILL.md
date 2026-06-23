@@ -3,7 +3,7 @@ name: proxima-memory
 description: >-
   Use when an agent should recall or store a project's durable, cross-session
   knowledge through Proxima — a persistent shared-brain memory MCP (tools like
-  core_remember / core_derive / core_link / core_search_memories / core_goal_set).
+  core_remember / core_derive / core_link / core_search_memories / core_goal).
   Treat the intent as the trigger even when the user names no tool and never says
   "memory": recall what was already decided and which gotchas were hit BEFORE a
   refactor, architecture change, domain shift, or debugging in an unfamiliar area;
@@ -66,8 +66,8 @@ is for the rarer case of one Abstraction/Perspective pointing at other memories.
 | Capture a recurring pattern, generalization, or lesson across ≥2 Facts | `core_derive` kind=**Abstraction**, `source_handles`=those Facts |
 | Record or update a stance or self-model ("how I see X", "who I am") | `core_derive` kind=**Perspective** |
 | **Relate / connect memories** | derive an Abstraction/Perspective over them — **NOT** `core_link` between Facts |
-| Set an intent / objective to pursue | `core_goal_set` (+ `core_goal_decompose`) |
-| Find prior knowledge | `core_search_memories` (hybrid default) → `core_get_memory` (`expand_neighbors: true`) |
+| Set an intent / objective to pursue | `core_goal` actions `set` / `decompose` |
+| Find prior knowledge | `core_search_memories` (hybrid default) -> read `proxima://memory/{id}?expand_neighbors=true` |
 
 A generalization stored as a Fact flattens the hierarchy and loses its
 grounding — derive it instead.
