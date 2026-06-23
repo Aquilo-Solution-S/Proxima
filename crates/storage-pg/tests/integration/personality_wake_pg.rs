@@ -746,6 +746,133 @@ async fn same_batch_same_schema_perspectives_form_a_linear_chain_not_a_fork() {
     result.expect("same-batch same-schema perspectives must form a linear chain");
 }
 
+/// Two CONCURRENT cross-request Perspective appends for the SAME
+/// (owner, instance, schema) must both land as a linear supersedes chain.
+/// Before the per-instance transaction advisory lock in
+/// `append_personality_memories`, both transactions read the same head H0 and
+/// raced the supersede insert; `idx_memories_supersedes_uq` (migration 0003)
+/// failed the loser with a unique violation and that append was lost. The lock
+/// now serializes them (root <- H0 <- A <- B) so both succeed.
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_cross_request_perspectives_serialize_into_linear_chain() {
+    let (pg, db) = fresh_pg_with_personality_sidecars().await;
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        pg.run_migrations().await?;
+        apply_personality_output_sidecar(pg.pool()).await?;
+
+        let owner = owner_fixture();
+        let seed = seed_test_personality(&pg, &owner).await?;
+        let root_id = current_root_perspective_memory_id(&pg, seed.instance_id).await?;
+        let registry = FlavorRegistry::new().freeze();
+        let provenance_relation =
+            resolve_registered_relation(&registry, CORE_DERIVED_FROM_RELATION);
+        let supersedes_relation = resolve_registered_relation(&registry, CORE_SUPERSEDES_RELATION);
+        let authored_relation = resolve_registered_relation(&registry, CORE_AUTHORED_RELATION);
+        let instance = PersonalityRef::new(seed.instance_id);
+
+        // Establish a non-null head H0 so the concurrent appends contend on a
+        // populated `supersedes` — two first-ever appends would both be
+        // supersedes=NULL and would NOT collide on the partial unique index.
+        let head_drafts = [memory_draft(
+            PersonalityMemoryKind::Perspective,
+            "head H0",
+            Vec::new(),
+        )];
+        pg.append_personality_memories(&PersonalityWriteRequest {
+            owner: owner.clone(),
+            instance: instance.clone(),
+            model_id: "test-model",
+            prompt_version: "test-v1",
+            provenance_relation,
+            supersedes_relation,
+            authored_relation,
+            current_root_perspective_memory_id: root_id,
+            wake_chain_depth: WakeChainDepth::new(1),
+            memories: &head_drafts,
+        })
+        .await?;
+
+        // Two independent concurrent appends, each its own transaction, both
+        // targeting H0's successor slot.
+        let drafts_a = [memory_draft(
+            PersonalityMemoryKind::Perspective,
+            "concurrent A",
+            Vec::new(),
+        )];
+        let drafts_b = [memory_draft(
+            PersonalityMemoryKind::Perspective,
+            "concurrent B",
+            Vec::new(),
+        )];
+        let req_a = PersonalityWriteRequest {
+            owner: owner.clone(),
+            instance: instance.clone(),
+            model_id: "test-model",
+            prompt_version: "test-v1",
+            provenance_relation,
+            supersedes_relation,
+            authored_relation,
+            current_root_perspective_memory_id: root_id,
+            wake_chain_depth: WakeChainDepth::new(2),
+            memories: &drafts_a,
+        };
+        let req_b = PersonalityWriteRequest {
+            owner: owner.clone(),
+            instance: instance.clone(),
+            model_id: "test-model",
+            prompt_version: "test-v1",
+            provenance_relation,
+            supersedes_relation,
+            authored_relation,
+            current_root_perspective_memory_id: root_id,
+            wake_chain_depth: WakeChainDepth::new(2),
+            memories: &drafts_b,
+        };
+        let (landed_a, landed_b) = tokio::join!(
+            pg.append_personality_memories(&req_a),
+            pg.append_personality_memories(&req_b),
+        );
+        // Pre-fix, exactly one of these fails with a 23505 unique violation.
+        landed_a?;
+        landed_b?;
+
+        // The chain is linear: exactly one head, three rows total for the schema.
+        let sidecars = vec![SidecarSpec {
+            schema_id: SchemaId::new("proxima-test/output-v1".into()),
+            schema_version: SchemaVersion::new(1),
+            sidecar_table: "proxima_test.personality_output_v1".into(),
+        }];
+        let heads = pg
+            .load_perspective_heads(&owner, seed.instance_id, root_id, &sidecars, 8)
+            .await?;
+        assert_eq!(
+            heads.len(),
+            1,
+            "concurrent cross-request appends must serialize to one linear head, not fork"
+        );
+
+        let row_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM proxima_core.memories
+              WHERE personality_instance_id = $1
+                AND schema_id = 'proxima-test/output-v1'
+                AND kind = 'Perspective'
+                AND tombstoned_at IS NULL",
+        )
+        .bind(seed.instance_id.into_inner())
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(row_count, 3, "H0 + two concurrent appends must all persist");
+
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+    result.expect("concurrent cross-request perspectives must serialize into a linear chain");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn personality_provenance_edges_use_operator_authorship() {
     let (pg, db) = fresh_pg_with_personality_sidecars().await;
