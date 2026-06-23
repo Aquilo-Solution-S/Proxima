@@ -108,7 +108,7 @@ pub struct CodeWorkItemBundleOutput {
 pub struct CodeWorkItemBundleTool;
 
 impl McpTool for CodeWorkItemBundleTool {
-    const NAME: &'static str = "proxima-code/work_item_bundle";
+    const NAME: &'static str = "proxima-code_work_item_bundle";
     const DESCRIPTION: &'static str = "Read a Goal-native Code work/test item bundle: request, repo, criteria, dependencies, evidence, target personality, active-goal provenance, and results.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
 

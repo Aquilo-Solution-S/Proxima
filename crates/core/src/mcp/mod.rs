@@ -519,6 +519,33 @@ pub enum McpToolError {
     Other(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpToolErrorKind {
+    InvalidInput,
+    InvalidRequest,
+    Internal,
+}
+
+impl McpToolError {
+    #[must_use]
+    pub fn kind(&self) -> McpToolErrorKind {
+        match self {
+            Self::InvalidInput(_) | Self::Resolve(_) => McpToolErrorKind::InvalidInput,
+            Self::LayeringViolation(_) => McpToolErrorKind::InvalidRequest,
+            Self::Storage(storage) => match storage {
+                crate::StorageError::ConstraintViolation(_) | crate::StorageError::NotFound => {
+                    McpToolErrorKind::InvalidInput
+                }
+                crate::StorageError::Conflict(_) => McpToolErrorKind::InvalidRequest,
+                crate::StorageError::Unavailable(_) | crate::StorageError::Internal(_) => {
+                    McpToolErrorKind::Internal
+                }
+            },
+            Self::Other(_) => McpToolErrorKind::Internal,
+        }
+    }
+}
+
 impl From<ResolveError> for McpToolError {
     fn from(e: ResolveError) -> Self {
         McpToolError::Resolve(e)
@@ -577,6 +604,107 @@ pub fn provider_safe_tool_name(canonical: &str) -> String {
         }
     }
     out
+}
+
+#[must_use]
+pub fn tool_name_matches(canonical: &str, request_name: &str) -> bool {
+    canonical == request_name || provider_safe_tool_name(canonical) == request_name
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct McpToolAnnotations {
+    pub read_only: Option<bool>,
+    pub destructive: Option<bool>,
+    pub idempotent: Option<bool>,
+    pub open_world: Option<bool>,
+}
+
+impl McpToolAnnotations {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            read_only: None,
+            destructive: None,
+            idempotent: None,
+            open_world: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn read_only(mut self, value: bool) -> Self {
+        self.read_only = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub const fn destructive(mut self, value: bool) -> Self {
+        self.destructive = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub const fn idempotent(mut self, value: bool) -> Self {
+        self.idempotent = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub const fn open_world(mut self, value: bool) -> Self {
+        self.open_world = Some(value);
+        self
+    }
+}
+
+/// MCP behavior hints for substrate tools, keyed by registered tool name.
+#[must_use]
+pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations> {
+    let base = McpToolAnnotations::new().open_world(false);
+    let annotations = match canonical_name {
+        "core_citation_of_fact"
+        | "core_citation_of_entity_head"
+        | "core_facts_citing_object"
+        | "core_get_graph"
+        | "core_get_memory"
+        | "core_get_personality"
+        | "core_list_edge_types"
+        | "core_list_events"
+        | "core_list_personalities"
+        | "core_list_read_scope"
+        | "core_list_schemas"
+        | "core_list_substrate_tools"
+        | "core_list_wake_entries"
+        | "core_search_memories"
+        | "core_walk_memory_lineage" => base.read_only(true),
+
+        "core_derive"
+        | "core_goal_decompose"
+        | "core_set_fact_retention"
+        | "core_update_wake_entry" => base.read_only(false).destructive(false).idempotent(true),
+
+        "core_remember"
+        | "core_record_utterance"
+        | "core_goal_set"
+        | "core_goal_transition"
+        | "core_goal_mark_achieved"
+        | "core_goal_modify"
+        | "core_set_read_scope"
+        | "core_link"
+        | "core_add_wake_entry"
+        | "core_instantiate_personality" => {
+            base.read_only(false).destructive(false).idempotent(false)
+        }
+
+        "core_cleanup_facts" | "core_remove_wake_entry" => {
+            base.read_only(false).destructive(true).idempotent(true)
+        }
+
+        "core_set_wake_entries" | "core_tombstone_personality" => {
+            base.read_only(false).destructive(true).idempotent(false)
+        }
+
+        _ => return None,
+    };
+    Some(annotations)
 }
 
 #[cfg(test)]

@@ -19,7 +19,7 @@ mod runtime_config;
 pub use app::{AppContext, AppInfo, Authz, FlavorApp};
 pub use bundle::FlavorBundle;
 pub use config::EmbedConfig;
-pub use core_mcp::{CoreMcpError, CoreMcpTools, CoreToolInfo};
+pub use core_mcp::{CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo};
 pub use migrations::{
     MigrationError, MigrationRunReport, NamedMigrator, run_core_and_flavor_migrations,
 };
@@ -40,8 +40,9 @@ pub use proxima_core::{
     Identity, McpCallLogInput, McpCallLogOutcome, MemoryId, Owner, PerspectivePayload, Principal,
     Role, RoleSet, SchemaId, SchemaVersion, SearchProjection, SearchProjectionColumnKind,
     SearchProjectionField, SidecarPayload, SourceBatchId, SourceId, StorageError, ToolScope,
-    UserId, canonical_json_bytes, proxima_flavor,
+    UserId, canonical_json_bytes, provider_safe_tool_name, proxima_flavor,
 };
+pub use proxima_core::{McpToolError, McpToolErrorKind};
 pub use proxima_mcp_server::{McpAuthContext, ResourceServerMetadata};
 #[cfg(feature = "testkit")]
 pub use proxima_pg_testkit as testkit;
