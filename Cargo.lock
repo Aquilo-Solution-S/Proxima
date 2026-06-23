@@ -2227,6 +2227,7 @@ dependencies = [
  "http 1.4.0",
  "proxima-blob-s3",
  "proxima-core",
+ "proxima-llm-openai-compat",
  "proxima-mcp-server",
  "proxima-pg-testkit",
  "proxima-storage-pg",

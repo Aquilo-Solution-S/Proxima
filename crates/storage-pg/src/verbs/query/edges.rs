@@ -1,6 +1,9 @@
-use proxima_core::verbs::query::{EdgeRow, QueryRequest};
+use proxima_core::change_event::EntityRef;
+use proxima_core::verbs::query::{
+    EdgeExistsRequest, EdgeExistsResponse, EdgeReadRequest, EdgeReadResponse, EdgeRow, QueryRequest,
+};
 use proxima_core::verbs::schema::SchemaInfo;
-use proxima_core::{OwnerPrincipalKind, StorageError};
+use proxima_core::{EdgeId, OwnerPrincipalKind, StorageError};
 use sqlx::PgPool;
 
 use crate::error::internal;
@@ -12,6 +15,113 @@ use super::rows::{EdgeRowDb, edge_row_from_db};
 /// Hard upper bound on edges returned by snapshot-edge mode.
 /// Decoupled from `QueryRequest::limit`, which sizes the node window.
 pub const MAX_SNAPSHOT_EDGES: usize = 50_000;
+
+#[derive(Debug, Clone, Copy, Default)]
+struct EndpointSql {
+    memory: Option<uuid::Uuid>,
+    goal: Option<uuid::Uuid>,
+    fact_entity: Option<uuid::Uuid>,
+}
+
+impl From<Option<EntityRef>> for EndpointSql {
+    fn from(value: Option<EntityRef>) -> Self {
+        match value {
+            Some(EntityRef::Memory(id)) => Self {
+                memory: Some(id.into_inner()),
+                goal: None,
+                fact_entity: None,
+            },
+            Some(EntityRef::Goal(id)) => Self {
+                memory: None,
+                goal: Some(id.into_inner()),
+                fact_entity: None,
+            },
+            Some(EntityRef::FactEntity(id)) => Self {
+                memory: None,
+                goal: None,
+                fact_entity: Some(id.into_inner()),
+            },
+            None => Self::default(),
+        }
+    }
+}
+
+pub(crate) async fn read_edges(
+    pool: &PgPool,
+    req: &EdgeReadRequest,
+) -> Result<EdgeReadResponse, StorageError> {
+    let (owner_kind, owner_principal_id) = req.principal.columns();
+    let edge_ids = req
+        .edge_ids
+        .iter()
+        .copied()
+        .map(EdgeId::into_inner)
+        .collect::<Vec<_>>();
+    let edge_ids_filter = !edge_ids.is_empty();
+    let source = EndpointSql::from(req.filter.source);
+    let target = EndpointSql::from(req.filter.target);
+    let limit = i64::from(
+        req.limit
+            .min(u32::try_from(MAX_SNAPSHOT_EDGES).expect("MAX_SNAPSHOT_EDGES fits in u32")),
+    );
+    let mut rows = sqlx::query_as::<_, EdgeRowDb>(
+        "SELECT edge_id, relation, relation_class, \
+                source_memory_id, source_goal_id, source_fact_entity_id, \
+                target_memory_id, target_goal_id, target_fact_entity_id, \
+                owner_principal_kind, \
+                owner_principal_id \
+         FROM proxima_core.edges \
+         WHERE owner_principal_kind = $1 \
+           AND owner_principal_id = $2 \
+           AND ($3::boolean = false OR edge_id = ANY($4::uuid[])) \
+           AND ($5::text IS NULL OR relation = $5) \
+           AND ($6::uuid IS NULL OR source_memory_id = $6) \
+           AND ($7::uuid IS NULL OR source_goal_id = $7) \
+           AND ($8::uuid IS NULL OR source_fact_entity_id = $8) \
+           AND ($9::uuid IS NULL OR target_memory_id = $9) \
+           AND ($10::uuid IS NULL OR target_goal_id = $10) \
+           AND ($11::uuid IS NULL OR target_fact_entity_id = $11) \
+         ORDER BY created_at DESC \
+         LIMIT $12",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(edge_ids_filter)
+    .bind(&edge_ids)
+    .bind(req.filter.relation.as_deref())
+    .bind(source.memory)
+    .bind(source.goal)
+    .bind(source.fact_entity)
+    .bind(target.memory)
+    .bind(target.goal)
+    .bind(target.fact_entity)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(internal)?;
+    hydrate_fact_entity_heads(pool, &mut rows).await?;
+    let edges = rows
+        .into_iter()
+        .map(edge_row_from_db)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(EdgeReadResponse { edges })
+}
+
+pub(crate) async fn edge_exists(
+    pool: &PgPool,
+    req: &EdgeExistsRequest,
+) -> Result<EdgeExistsResponse, StorageError> {
+    let read = EdgeReadRequest {
+        principal: req.principal.clone(),
+        edge_ids: req.edge_ids.clone(),
+        filter: req.filter.clone(),
+        limit: 1,
+    };
+    let response = read_edges(pool, &read).await?;
+    Ok(EdgeExistsResponse {
+        exists: !response.edges.is_empty(),
+    })
+}
 
 pub(super) async fn query_edges(
     pool: &PgPool,

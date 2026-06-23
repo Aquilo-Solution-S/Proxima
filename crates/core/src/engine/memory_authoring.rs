@@ -37,35 +37,35 @@ pub struct AuthorDerivedRequestInput<'a> {
 }
 
 impl Engine {
-    /// Author one derived Memory and its already-resolved edges. The
-    /// Engine owns the embedding step so storage receives concrete data.
+    /// Author one derived Memory and its already-resolved edges. When an
+    /// embedding client is configured, the Engine embeds before storage;
+    /// otherwise storage receives `None` and persists no embedding row.
     ///
     /// # Errors
     ///
-    /// Returns `Internal` when no embedding client is configured or the
-    /// client fails, `ConstraintViolation` on embedding dimension
-    /// mismatch, and storage errors from the atomic write.
+    /// Returns `Internal` when the embedding client fails,
+    /// `ConstraintViolation` on embedding dimension mismatch, and storage
+    /// errors from the atomic write.
     pub async fn author_derived(
         &self,
         req: AuthorDerivedRequestInput<'_>,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
-        let client = self.embed_client().ok_or_else(|| {
-            StorageError::Internal(
-                "derived memory authoring unavailable: no embedding client is configured (set MISTRAL_API_KEY)"
-                    .into(),
-            )
-        })?;
-        let embedding = client
-            .embed(&req.text)
-            .await
-            .map_err(|e| StorageError::Internal(format!("embed derived memory text: {e}")))?;
-        if embedding.len() != client.dim() {
-            return Err(StorageError::ConstraintViolation(format!(
-                "embedding dim mismatch: client dim {} but vector len {}",
-                client.dim(),
-                embedding.len(),
-            )));
-        }
+        let (embedding, embedding_model_id) = if let Some(client) = self.embed_client() {
+            let embedding = client
+                .embed(&req.text)
+                .await
+                .map_err(|e| StorageError::Internal(format!("embed derived memory text: {e}")))?;
+            if embedding.len() != client.dim() {
+                return Err(StorageError::ConstraintViolation(format!(
+                    "embedding dim mismatch: client dim {} but vector len {}",
+                    client.dim(),
+                    embedding.len(),
+                )));
+            }
+            (Some(embedding), Some(client.model_id().to_string()))
+        } else {
+            (None, None)
+        };
 
         let supersedes_relation = if req.supersedes.is_some() {
             Some(
@@ -123,8 +123,8 @@ impl Engine {
             author_personality_instance_id: req.author_personality_instance_id,
             sidecar_payload: req.sidecar_payload,
             supersedes: req.supersedes,
-            embedding: Some(embedding),
-            embedding_model_id: Some(client.model_id()),
+            embedding,
+            embedding_model_id: embedding_model_id.as_deref(),
             edges: &edges,
         };
         self.storage().author_derived(&storage_req).await

@@ -586,6 +586,18 @@ pub trait Storage: Send + Sync {
         schemas: &[crate::verbs::schema::SchemaInfo],
     ) -> Result<crate::verbs::query::QueryResponse, StorageError>;
 
+    /// Owner-scoped edge read by edge id and/or endpoint filter.
+    async fn read_edges(
+        &self,
+        req: &crate::verbs::query::EdgeReadRequest,
+    ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError>;
+
+    /// Owner-scoped existence probe for an edge id and/or endpoint filter.
+    async fn edge_exists(
+        &self,
+        req: &crate::verbs::query::EdgeExistsRequest,
+    ) -> Result<crate::verbs::query::EdgeExistsResponse, StorageError>;
+
     /// Owner-scoped lexical/semantic memory search. Similarity is
     /// query-time only; this method never writes edges.
     async fn search_memories(
@@ -1053,6 +1065,20 @@ impl Storage for NoopStorage {
             edges: Vec::new(),
             seq_high_water: None,
         })
+    }
+
+    async fn read_edges(
+        &self,
+        _req: &crate::verbs::query::EdgeReadRequest,
+    ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError> {
+        Ok(crate::verbs::query::EdgeReadResponse { edges: Vec::new() })
+    }
+
+    async fn edge_exists(
+        &self,
+        _req: &crate::verbs::query::EdgeExistsRequest,
+    ) -> Result<crate::verbs::query::EdgeExistsResponse, StorageError> {
+        Ok(crate::verbs::query::EdgeExistsResponse { exists: false })
     }
 
     async fn search_memories(
