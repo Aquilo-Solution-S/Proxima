@@ -71,8 +71,16 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      # pg-testkit clones a per-test DB from this template URL.
+      # Force offline sqlx codegen (committed .sqlx cache) so DATABASE_URL below
+      # doesn't make sqlx::query! introspect the un-migrated service at BUILD time.
+      SQLX_OFFLINE: "true"
+      # pg-testkit clones per-test DBs from this template (admin) URL.
       PROXIMA_TEST_PG_URL: postgres://proxima:proxima@localhost:5432/proxima
+      # The HTTP e2e tests boot the facade against a DEDICATED database (created
+      # below) so they never contend with pg-testkit's clone source. end_to_end.rs
+      # reads DATABASE_URL; oidc_e2e.rs reads PROXIMA_TEST_DATABASE_URL.
+      DATABASE_URL: postgres://proxima:proxima@localhost:5432/proxima_e2e
+      PROXIMA_TEST_DATABASE_URL: postgres://proxima:proxima@localhost:5432/proxima_e2e
     steps:
       - uses: actions/checkout@v4
         with:
@@ -81,9 +89,17 @@ jobs:
           # it, so fetch full history here (the test itself bounds depth).
           fetch-depth: 0
       - uses: Swatinem/rust-cache@v2
+      - name: create e2e database
+        # Dedicated DB for the HTTP e2e tests, isolated from pg-testkit's
+        # per-test clones (psql ships on the ubuntu-latest runner).
+        run: psql "postgres://proxima:proxima@localhost:5432/proxima" -c 'CREATE DATABASE proxima_e2e;'
       - name: install nextest
         uses: taiki-e/install-action@nextest
       - name: build
         run: cargo build --workspace --all-targets --locked
       - name: test
         run: cargo nextest run --workspace --locked
+      - name: test (code flavor — MCP/OIDC e2e)
+        # oidc_e2e.rs is #![cfg(feature = "code")]; this step compiles + runs the
+        # code-flavor surface (Code tools served over HTTP behind OIDC bearer auth).
+        run: cargo nextest run -p proxima-mcp --features code --locked
