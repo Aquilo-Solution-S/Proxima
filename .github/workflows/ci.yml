@@ -6,6 +6,17 @@ on:
   pull_request:
     branches: [main, road-to-v1]
 
+# Least-privilege default: every job's GITHUB_TOKEN is read-only (no job
+# writes contents, packages, or PRs).
+permissions:
+  contents: read
+
+# Cancel superseded in-progress runs on PR pushes; never cancel a push to a
+# protected branch, so a tip commit's required status is never orphaned.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
@@ -13,7 +24,7 @@ env:
 
 jobs:
   lint:
-    name: fmt + clippy
+    name: fmt + clippy + doc
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +34,24 @@ jobs:
         run: cargo fmt --all --check
       - name: clippy
         # Workspace lints set warnings = deny, clippy::pedantic = deny.
-        run: cargo clippy --workspace --all-targets --all-features
+        run: cargo clippy --workspace --all-targets --all-features --locked
+      - name: doc
+        # Fail on broken intra-doc links / rustdoc warnings before a public tag.
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --no-deps --all-features --locked
+
+  deny:
+    name: cargo-deny (advisories + licenses + bans + sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # cargo-deny-action v2.0.20 pinned by commit SHA (bundles cargo-deny 0.19.8,
+      # the schema deny.toml targets). Dependabot's github-actions ecosystem keeps
+      # this current via reviewable PRs.
+      - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe
+        with:
+          command: check advisories licenses bans sources
 
   test:
     name: test (postgres + pgvector)
@@ -56,6 +84,6 @@ jobs:
       - name: install nextest
         uses: taiki-e/install-action@nextest
       - name: build
-        run: cargo build --workspace --all-targets
+        run: cargo build --workspace --all-targets --locked
       - name: test
-        run: cargo nextest run --workspace
+        run: cargo nextest run --workspace --locked

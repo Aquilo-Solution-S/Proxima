@@ -159,7 +159,7 @@ impl Engine {
     }
 
     /// Upsert the shell-author personality for `master_token_id` under
-    /// `owner`. Delegates to [`Storage::ensure_master_token_personality`].
+    /// `owner`. Delegates to `Storage::ensure_master_token_personality`.
     /// Called by `McpToolHost::call_tool` (in the `mcp-server` crate)
     /// before dispatching master-token requests so the per-token identity
     /// is always minted before `caller_self_perspective` is defaulted.
@@ -178,7 +178,7 @@ impl Engine {
     }
 
     /// Upsert the personality for `subject` under `owner`. Delegates to
-    /// [`Storage::ensure_subject_personality`].
+    /// `Storage::ensure_subject_personality`.
     ///
     /// # Errors
     ///
