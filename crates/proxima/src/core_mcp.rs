@@ -290,6 +290,7 @@ mod tests {
         let descriptors = vec![McpToolDescriptor {
             name: "provider/slashed_name",
             description: "test",
+            origin: proxima_core::McpToolOrigin::Flavor("provider".into()),
             produces_schema_ids: &[],
             args_schema: serde_json::json!({ "type": "object" }),
             call,

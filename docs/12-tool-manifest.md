@@ -25,7 +25,7 @@ Stored ids:
 
 | Surface | Id form |
 |---|---|
-| Core MCP tool | `core/<name>` |
+| Core MCP tool | provider-safe registered names, currently `core_*` (for example `core_remember`, `core_goal`) |
 | Flavor MCP tool | `<flavor>/<name>` |
 
 Provider-facing names are derived per invocation with
@@ -79,7 +79,7 @@ Prefix rules live in 08:
 
 | Tool owner | Prefix |
 |---|---|
-| substrate MCP tool | `core/` |
+| substrate MCP tool | `core_` |
 | flavor MCP tool | `<flavor>/` |
 
 `FlavorRegistry::freeze()` rejects duplicate MCP tool names. Schema and
