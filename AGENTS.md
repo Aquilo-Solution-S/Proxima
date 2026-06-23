@@ -114,7 +114,7 @@ Tools available to attached agents:
 
 | Tier | Tools |
 |---|---|
-| Substrate (always) | 33 build-time-registered tools across memory, goals, personality, wake-config, read-scope, fact-retention, citations, and introspection. `core_list_substrate_tools` returns the authoritative live list. Key writes: `core_remember`, `core_record_utterance`, `core_derive`, `core_link`, `core_goal_set`. |
+| Substrate (always) | 9 tools + 7 resources across memory, goals, personality, wake-config, read-scope, citations, fact tombstones, and introspection. `proxima://tools` returns the authoritative live list. Key writes: `core_remember`, `core_record_utterance`, `core_derive`, `core_link`, `core_goal` (`{"action":"set", ...}`). |
 | Code flavor | Repo registration, chunk/commit search, file-revision open, execution-request emit — registered only when the `proxima-code` flavor is composed in. `proxima-mcp` is substrate-only by default; `--features code` adds the code flavor. |
 
 Proxima self-ingests its own commits and chunks, so the graph holds

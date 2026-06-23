@@ -1,23 +1,24 @@
 //! Server self-documentation: the profile-aware `instructions` string
 //! returned at `initialize` and the `proxima://how-to` resource body.
 //!
-//! Both are generated from the *resolved* tool set — the same
-//! `authz.capabilities.tool_scope`-filtered descriptor list that
-//! `list_tools` / `core/list_substrate_tools` advertise — so the How-To
-//! never references a tool a given deployment profile (`PROXIMA_TOOL_PROFILE`
-//! plus allow/deny) does not expose. A `memory` deployment that drops the
-//! execution/personality tools drops their guidance too, automatically.
+//! Both are generated from the *resolved* tool/resource set — the same
+//! `authz.capabilities.tool_scope`-filtered descriptor lists that
+//! `list_tools`, `resources/list`, and `resources/templates/list` advertise —
+//! so the How-To never references a surface a given deployment profile
+//! (`PROXIMA_TOOL_PROFILE` plus allow/deny) does not expose. A `memory`
+//! deployment that drops the execution/personality tools drops their guidance
+//! too, automatically.
 //!
-//! The generators are pure functions of the advertised canonical tool-id
-//! set, which makes them unit-testable without a database or transport.
+//! The generators are pure functions of the advertised canonical tool-id and
+//! resource scope-key sets, which makes them unit-testable without a database
+//! or transport.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use proxima_core::mcp::McpTool;
 use proxima_core::mcp::core_tools::{
-    DeriveTool, GetMemoryTool, GoalDecomposeTool, GoalSetTool, LinkTool, ListEdgeTypesTool,
-    RememberTool, SearchMemoriesTool, WalkMemoryLineageTool,
+    CoreGoalTool, DeriveTool, LinkTool, RememberTool, SearchMemoriesTool,
 };
 
 /// Canonical URI of the on-demand How-To resource.
@@ -29,7 +30,7 @@ pub const HOW_TO_TITLE: &str = "Proxima shared-brain: how to use it";
 /// One-line description of the How-To resource.
 pub const HOW_TO_DESCRIPTION: &str = "The Proxima memory contract in depth: the Fact/Abstraction/Perspective \
      layering law, remember-vs-derive-vs-link, worked examples, the edge-class \
-     table, and the read-tool decision guide.";
+     table, and the read-resource decision guide.";
 /// MIME type of the How-To resource body.
 pub const HOW_TO_MIME: &str = "text/markdown";
 
@@ -39,11 +40,15 @@ pub const HOW_TO_MIME: &str = "text/markdown";
 // registered tool names (the `memory` keep set in `apps/proxima-mcp` pins them too).
 const CODE_SEARCH_CHUNKS: &str = "proxima-code_search_chunks";
 const CODE_REGISTER_REPO: &str = "proxima-code_register_repo";
+const RESOURCE_MEMORY: &str = "resource:memory";
+const RESOURCE_MEMORY_LINEAGE: &str = "resource:memory-lineage";
+const RESOURCE_EDGE_TYPES: &str = "resource:edge-types";
 
 /// The advertised surface, distilled to the booleans the generators key off.
-/// Computed once from the resolved tool-id set so `build_instructions` and
-/// `how_to_markdown` agree on what is exposed. The fields are independent
-/// tool-presence flags, not a state machine — an enum would not model them.
+/// Computed once from the resolved tool-id and resource scope-key sets so
+/// `build_instructions` and `how_to_markdown` agree on what is exposed. The
+/// fields are independent surface-presence flags, not a state machine — an
+/// enum would not model them.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy)]
 struct Surface {
@@ -59,29 +64,36 @@ struct Surface {
 }
 
 impl Surface {
-    fn from_advertised(advertised: &BTreeSet<&str>) -> Self {
-        let has = |id: &str| advertised.contains(id);
+    fn from_advertised(
+        advertised_tools: &BTreeSet<&str>,
+        advertised_resources: &BTreeSet<&str>,
+    ) -> Self {
+        let has_tool = |id: &str| advertised_tools.contains(id);
+        let has_resource = |id: &str| advertised_resources.contains(id);
         Self {
-            remember: has(RememberTool::NAME),
-            derive: has(DeriveTool::NAME),
-            link: has(LinkTool::NAME),
-            search: has(SearchMemoriesTool::NAME),
-            get_memory: has(GetMemoryTool::NAME),
-            lineage: has(WalkMemoryLineageTool::NAME),
-            list_edge_types: has(ListEdgeTypesTool::NAME),
-            goals: has(GoalSetTool::NAME) || has(GoalDecomposeTool::NAME),
-            code: has(CODE_SEARCH_CHUNKS) || has(CODE_REGISTER_REPO),
+            remember: has_tool(RememberTool::NAME),
+            derive: has_tool(DeriveTool::NAME),
+            link: has_tool(LinkTool::NAME),
+            search: has_tool(SearchMemoriesTool::NAME),
+            get_memory: has_resource(RESOURCE_MEMORY),
+            lineage: has_resource(RESOURCE_MEMORY_LINEAGE),
+            list_edge_types: has_resource(RESOURCE_EDGE_TYPES),
+            goals: has_tool(CoreGoalTool::NAME),
+            code: has_tool(CODE_SEARCH_CHUNKS) || has_tool(CODE_REGISTER_REPO),
         }
     }
 }
 
 /// Build the tight `initialize` instructions string for the given advertised
-/// tool set. One–two dense paragraphs; sections appear only when their tools
-/// are exposed. Returns an empty string when no memory-authoring or -reading
-/// tools are advertised (nothing useful to say).
+/// tool/resource set. One–two dense paragraphs; sections appear only when
+/// their surfaces are exposed. Returns an empty string when no memory-authoring
+/// or search tools are advertised (nothing useful to say).
 #[must_use]
-pub fn build_instructions(advertised: &BTreeSet<&str>) -> String {
-    let s = Surface::from_advertised(advertised);
+pub fn build_instructions(
+    advertised_tools: &BTreeSet<&str>,
+    advertised_resources: &BTreeSet<&str>,
+) -> String {
+    let s = Surface::from_advertised(advertised_tools, advertised_resources);
     if !s.remember && !s.derive && !s.search {
         return String::new();
     }
@@ -123,8 +135,8 @@ pub fn build_instructions(advertised: &BTreeSet<&str>) -> String {
         }
         if s.goals {
             out.push_str(
-                "Set intent that drives memory with `core_goal_set` (decompose with \
-                 `core_goal_decompose`). ",
+                "Set intent that drives memory with `core_goal` action=set (decompose with \
+                 action=decompose). ",
             );
         }
         out.push_str(
@@ -135,17 +147,24 @@ pub fn build_instructions(advertised: &BTreeSet<&str>) -> String {
     }
 
     if s.search {
-        out.push_str("`core_search_memories` (hybrid) is the primary read");
+        out.push_str("`core_search_memories` (hybrid) is the primary recall path");
         if s.get_memory {
-            out.push_str(", then `core_get_memory` (`expand_neighbors: true`) for one entity");
+            out.push_str(
+                ", then fetch one entity from `proxima://memory/{id}` (add \
+                 `?expand_neighbors=true` for edges)",
+            );
         }
         out.push_str(". ");
         if s.lineage {
             out.push_str(
-                "Lineage / citation tools (`core_walk_memory_lineage`, …) are power tools, not \
-                 first reach. ",
+                "Walk lineage via `proxima://memory/{id}/lineage?direction=ancestors`; use it \
+                 only when provenance is the question. ",
             );
         }
+        if s.list_edge_types {
+            out.push_str("Read the edge-type catalog at `proxima://edge-types`. ");
+        }
+        out.push_str("Discover reads with `resources/list` and `resources/templates/list`. ");
         out.push_str(
             "Semantic search needs embeddings, which drain in-process when an embedding client \
              is configured. ",
@@ -161,7 +180,7 @@ pub fn build_instructions(advertised: &BTreeSet<&str>) -> String {
 
     out.push_str(
         "Recall before you act, and consolidate at natural breaks. Full playbook with worked \
-         examples, the edge-class table, and the read-tool decision guide: read the \
+         examples, the edge-class table, and the read-resource decision guide: read the \
          `proxima://how-to` resource.",
     );
 
@@ -169,10 +188,13 @@ pub fn build_instructions(advertised: &BTreeSet<&str>) -> String {
 }
 
 /// Build the fuller How-To playbook (the `proxima://how-to` resource body),
-/// profile-trimmed to the advertised tool set.
+/// profile-trimmed to the advertised tool/resource set.
 #[must_use]
-pub fn how_to_markdown(advertised: &BTreeSet<&str>) -> String {
-    let s = Surface::from_advertised(advertised);
+pub fn how_to_markdown(
+    advertised_tools: &BTreeSet<&str>,
+    advertised_resources: &BTreeSet<&str>,
+) -> String {
+    let s = Surface::from_advertised(advertised_tools, advertised_resources);
     let mut out = String::new();
 
     out.push_str("# Proxima shared-brain — how to use it\n\n");
@@ -265,13 +287,13 @@ fn push_capture_table(out: &mut String, s: Surface) {
     }
     if s.goals {
         out.push_str(
-            "| Set an intent / objective to pursue | `core_goal_set` (+ `core_goal_decompose`) |\n",
+            "| Set an intent / objective to pursue | `core_goal` action=set (+ action=decompose) |\n",
         );
     }
     if s.search {
         out.push_str("| Find prior knowledge | `core_search_memories` (hybrid default)");
         if s.get_memory {
-            out.push_str(" → `core_get_memory` (`expand_neighbors: true`)");
+            out.push_str(" → `proxima://memory/{id}` (`?expand_neighbors=true`)");
         }
         out.push_str(" |\n");
     }
@@ -306,8 +328,8 @@ fn push_edges(out: &mut String, s: Surface) {
     }
     if s.list_edge_types {
         out.push_str(
-            "\nFor the authoritative, live list of edge classes in this deployment, call \
-             `core_list_edge_types`.\n",
+            "\nFor the authoritative, live list of edge classes in this deployment, read \
+             `proxima://edge-types`.\n",
         );
     }
     out.push('\n');
@@ -337,8 +359,8 @@ fn push_worked_example(out: &mut String, s: Surface) {
     if s.goals {
         let _ = writeln!(
             out,
-            "4. **Wire intent.** `core_goal_set(…)` to record what to pursue; \
-             `core_goal_decompose` to break it down."
+            "4. **Wire intent.** `core_goal` action=set to record what to pursue; \
+             action=decompose to break it down."
         );
     }
     out.push('\n');
@@ -348,24 +370,28 @@ fn push_reading(out: &mut String, s: Surface) {
     if !s.search {
         return;
     }
-    out.push_str("## Reading: which tool first\n\n");
+    out.push_str("## Reading: which surface first\n\n");
     out.push_str(
         "1. `core_search_memories` (hybrid) — the default first reach for prior knowledge.\n",
     );
     if s.get_memory {
         out.push_str(
-            "2. `core_get_memory` with `expand_neighbors: true` — pull one entity and its \
-             immediate graph once search has located it.\n",
+            "2. `proxima://memory/{id}` — fetch one entity after search locates it; add \
+             `?expand_neighbors=true` for immediate edges.\n",
         );
     }
     if s.lineage {
         out.push_str(
-            "3. `core_walk_memory_lineage` / citation tools — power tools for provenance and \
-             deep lineage; reach for these only when you specifically need them.\n",
+            "3. `proxima://memory/{id}/lineage?direction=ancestors` — walk provenance/deep \
+             lineage only when you specifically need it.\n",
         );
     }
+    if s.list_edge_types {
+        out.push_str("4. `proxima://edge-types` — inspect the live relation catalog.\n");
+    }
     out.push_str(
-        "\nSemantic ranking needs embeddings; if no embedding client is configured the server \
+        "\nDiscover available reads with `resources/list` and `resources/templates/list`. \
+         Semantic ranking needs embeddings; if no embedding client is configured the server \
          degrades to lexical search.\n\n",
     );
 }
@@ -374,19 +400,25 @@ fn push_reading(out: &mut String, s: Surface) {
 mod tests {
     use super::*;
 
-    fn full_set() -> BTreeSet<&'static str> {
+    fn full_tool_set() -> BTreeSet<&'static str> {
         [
             RememberTool::NAME,
             DeriveTool::NAME,
             LinkTool::NAME,
             SearchMemoriesTool::NAME,
-            GetMemoryTool::NAME,
-            WalkMemoryLineageTool::NAME,
-            ListEdgeTypesTool::NAME,
-            GoalSetTool::NAME,
-            GoalDecomposeTool::NAME,
+            CoreGoalTool::NAME,
             CODE_SEARCH_CHUNKS,
             CODE_REGISTER_REPO,
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    fn full_resource_set() -> BTreeSet<&'static str> {
+        [
+            RESOURCE_MEMORY,
+            RESOURCE_MEMORY_LINEAGE,
+            RESOURCE_EDGE_TYPES,
         ]
         .into_iter()
         .collect()
@@ -395,40 +427,46 @@ mod tests {
     /// A `memory`-style profile that keeps authoring + retrieval but, for the
     /// sake of the test, has had goal and code tools denied — standing in for
     /// any execution/personality tools a `full` deployment would carry.
-    fn memory_minus_goals_set() -> BTreeSet<&'static str> {
+    fn memory_minus_goals_tool_set() -> BTreeSet<&'static str> {
         [
             RememberTool::NAME,
             DeriveTool::NAME,
             LinkTool::NAME,
             SearchMemoriesTool::NAME,
-            GetMemoryTool::NAME,
-            WalkMemoryLineageTool::NAME,
-            ListEdgeTypesTool::NAME,
         ]
         .into_iter()
         .collect()
     }
 
+    fn memory_minus_goals_resource_set() -> BTreeSet<&'static str> {
+        full_resource_set()
+    }
+
     #[test]
     fn instructions_teach_the_hard_law_and_remember_vs_derive() {
-        let s = build_instructions(&full_set());
+        let s = build_instructions(&full_tool_set(), &full_resource_set());
         assert!(s.contains("Facts cannot link Facts"));
         assert!(s.contains("rejects source kind Fact"));
         assert!(s.contains("source_handles"));
         assert!(s.contains("`core_remember`"));
         assert!(s.contains("`core_derive`"));
+        assert!(s.contains("proxima://memory/{id}"));
+        assert!(s.contains("resources/templates/list"));
         assert!(s.contains("proxima://how-to"));
     }
 
     #[test]
     fn instructions_are_profile_aware() {
-        let full = build_instructions(&full_set());
-        assert!(full.contains("core_goal_set"));
+        let full = build_instructions(&full_tool_set(), &full_resource_set());
+        assert!(full.contains("core_goal"));
         assert!(full.contains("proxima-code_"));
 
-        let trimmed = build_instructions(&memory_minus_goals_set());
+        let trimmed = build_instructions(
+            &memory_minus_goals_tool_set(),
+            &memory_minus_goals_resource_set(),
+        );
         // Dropped tools drop their guidance.
-        assert!(!trimmed.contains("core_goal_set"));
+        assert!(!trimmed.contains("core_goal"));
         assert!(!trimmed.contains("goal"));
         assert!(!trimmed.contains("proxima-code_"));
         // Core memory contract still present.
@@ -440,8 +478,14 @@ mod tests {
     fn instructions_never_name_execution_or_personality_tools() {
         // Regression guard for acceptance #2: no profile's instructions may
         // reference tools outside the memory contract.
-        for set in [full_set(), memory_minus_goals_set()] {
-            let s = build_instructions(&set);
+        for (tools, resources) in [
+            (full_tool_set(), full_resource_set()),
+            (
+                memory_minus_goals_tool_set(),
+                memory_minus_goals_resource_set(),
+            ),
+        ] {
+            let s = build_instructions(&tools, &resources);
             for forbidden in [
                 "instantiate_personality",
                 "add_wake_entry",
@@ -455,9 +499,9 @@ mod tests {
 
     #[test]
     fn instructions_without_link_tool_omit_link_specifics() {
-        let mut set = full_set();
-        set.remove(LinkTool::NAME);
-        let s = build_instructions(&set);
+        let mut tools = full_tool_set();
+        tools.remove(LinkTool::NAME);
+        let s = build_instructions(&tools, &full_resource_set());
         // The law (derive over Facts) survives; the core_link specifics don't.
         assert!(s.contains("Facts cannot link Facts"));
         assert!(!s.contains("`core_link`"));
@@ -465,26 +509,31 @@ mod tests {
 
     #[test]
     fn instructions_empty_when_no_memory_tools() {
-        let set: BTreeSet<&str> = [ListEdgeTypesTool::NAME].into_iter().collect();
-        assert!(build_instructions(&set).is_empty());
+        let tools = BTreeSet::new();
+        let resources: BTreeSet<&str> = [RESOURCE_EDGE_TYPES].into_iter().collect();
+        assert!(build_instructions(&tools, &resources).is_empty());
     }
 
     #[test]
     fn how_to_documents_law_examples_and_decision_guide() {
-        let s = how_to_markdown(&full_set());
+        let s = how_to_markdown(&full_tool_set(), &full_resource_set());
         assert!(s.contains("Facts cannot link Facts"));
         assert!(s.contains("derived-from"));
         assert!(s.contains("core_derive(kind=\"Abstraction\""));
         assert!(s.contains("## What to capture → which tool"));
         assert!(s.contains("## Edge classes"));
         assert!(s.contains("## Worked example"));
-        assert!(s.contains("## Reading: which tool first"));
+        assert!(s.contains("## Reading: which surface first"));
+        assert!(s.contains("proxima://edge-types"));
     }
 
     #[test]
     fn how_to_is_profile_aware() {
-        let trimmed = how_to_markdown(&memory_minus_goals_set());
-        assert!(!trimmed.contains("core_goal_set"));
+        let trimmed = how_to_markdown(
+            &memory_minus_goals_tool_set(),
+            &memory_minus_goals_resource_set(),
+        );
+        assert!(!trimmed.contains("core_goal"));
         assert!(!trimmed.contains("proxima-code_"));
         // Layering law + relate-memories row still taught.
         assert!(trimmed.contains("Facts cannot link Facts"));

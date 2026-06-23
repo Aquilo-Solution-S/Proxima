@@ -11,7 +11,9 @@ use std::sync::Arc;
 use proxima::{
     AppInfo, FlavorApp, FlavorBundle, Proxima, ProximaError, RunningProxima, RuntimeBuilder,
 };
-use proxima_core::{FlavorRegistry, ToolScope, llm::EmbeddingClient};
+use proxima_core::{
+    FlavorRegistry, ToolScope, all_core_actions, all_core_resources, llm::EmbeddingClient,
+};
 use proxima_llm_openai_compat::{
     MISTRAL_EMBED_BASE_URL, MISTRAL_EMBED_MODEL, OpenAiCompatEmbeddingClient,
 };
@@ -24,20 +26,14 @@ const PROXIMA_TOOL_PROFILE: &str = "PROXIMA_TOOL_PROFILE";
 const PROXIMA_TOOL_ALLOW: &str = "PROXIMA_TOOL_ALLOW";
 const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
 
-/// Tool ids advertised by the `memory` profile. Each entry references the
-/// owning tool's own `McpTool::NAME` constant rather than re-typing the
-/// string, so the tool is the single source of truth: renaming a tool's id
-/// updates the keep set automatically, and deleting a tool turns into a
-/// compile error here rather than a silently-stale palette entry.
+/// Tool/action scope keys advertised by the `memory` profile. Flat entries
+/// reference the owning tool's `McpTool::NAME`; grouped tools contribute
+/// action leaf keys from their manifest.
 fn memory_keep_set() -> Vec<&'static str> {
     use proxima_core::mcp::McpTool;
     use proxima_core::mcp::core_tools::{
-        CitationOfEntityHeadTool, CitationOfFactTool, CleanupFactsTool, DeriveTool,
-        FactsCitingObjectTool, GetGraphTool, GetMemoryTool, GoalDecomposeTool,
-        GoalMarkAchievedTool, GoalModifyTool, GoalSetTool, GoalTransitionTool, LinkTool,
-        ListEdgeTypesTool, ListEventsTool, ListSchemasTool, ListSubstrateToolsTool,
-        RecordUtteranceTool, RememberTool, SearchMemoriesTool, SetFactRetentionTool,
-        WalkMemoryLineageTool,
+        CoreFactTool, CoreGoalTool, DeriveTool, LinkTool, RecordUtteranceTool, RememberTool,
+        SearchMemoriesTool,
     };
 
     #[allow(unused_mut)]
@@ -49,26 +45,16 @@ fn memory_keep_set() -> Vec<&'static str> {
         RecordUtteranceTool::NAME,
         // retrieval
         SearchMemoriesTool::NAME,
-        GetMemoryTool::NAME,
-        FactsCitingObjectTool::NAME,
-        CitationOfFactTool::NAME,
-        CitationOfEntityHeadTool::NAME,
-        WalkMemoryLineageTool::NAME,
-        ListEventsTool::NAME,
-        GetGraphTool::NAME,
-        // architecture / governance
-        ListSchemasTool::NAME,
-        ListEdgeTypesTool::NAME,
-        SetFactRetentionTool::NAME,
-        CleanupFactsTool::NAME,
-        ListSubstrateToolsTool::NAME,
-        // goals (intent that drives memory)
-        GoalSetTool::NAME,
-        GoalTransitionTool::NAME,
-        GoalMarkAchievedTool::NAME,
-        GoalModifyTool::NAME,
-        GoalDecomposeTool::NAME,
     ];
+    // The memory profile carries the full goal lifecycle plus full
+    // fact/citation reads and per-Fact tombstone. Retention/cleanup are
+    // host/config-only. Wake/personality admin stays out.
+    ids.extend(
+        all_core_actions()
+            .filter(|action| action.tool == CoreGoalTool::NAME || action.tool == CoreFactTool::NAME)
+            .map(|action| action.scope_key),
+    );
+    ids.extend(all_core_resources().map(|resource| resource.scope_key));
 
     #[cfg(feature = "code")]
     {
@@ -298,11 +284,19 @@ fn registered_tool_ids() -> Vec<&'static str> {
     let mut registry = FlavorRegistry::new();
     <ProximaMcpApp as FlavorBundle>::register(&mut registry);
     let frozen = registry.freeze();
-    frozen
-        .list_mcp_tools()
-        .iter()
-        .map(|tool| tool.name)
-        .collect()
+    let mut ids = Vec::new();
+    for tool in frozen.list_mcp_tools() {
+        let mut added_actions = false;
+        for action in all_core_actions().filter(|action| action.tool == tool.name) {
+            ids.push(action.scope_key);
+            added_actions = true;
+        }
+        if !added_actions {
+            ids.push(tool.name);
+        }
+    }
+    ids.extend(all_core_resources().map(|resource| resource.scope_key));
+    ids
 }
 
 fn tool_scope_from_env(
@@ -510,10 +504,10 @@ mod tests {
     #[test]
     fn tool_profile_resolver_builds_deployment_scope() {
         let registered_ids = [
-            "core_get_memory",
+            "resource:memory",
             "core_search_memories",
-            "core_instantiate_personality",
-            "core_add_wake_entry",
+            "core_personality:instantiate",
+            "core_wake:add",
             "proxima-code_register_repo",
             "proxima-code_emit_execution_request",
         ];
@@ -523,26 +517,27 @@ mod tests {
 
         let memory = resolve_tool_scope(Some("memory"), None, None, &registered_ids)
             .expect("memory profile");
-        assert!(memory.allows("core_get_memory"));
         assert!(memory.allows("core_search_memories"));
+        assert!(memory.allows("resource:memory"));
+        assert!(memory.allows("resource:schemas"));
         // Code-flavor tools join the memory keep set only when the `code`
         // flavor is compiled in (the keep set references their `NAME`
         // consts under the same cfg).
         #[cfg(feature = "code")]
         assert!(memory.allows("proxima-code_register_repo"));
-        assert!(!memory.allows("core_instantiate_personality"));
-        assert!(!memory.allows("core_add_wake_entry"));
+        assert!(!memory.allows("core_personality:instantiate"));
+        assert!(!memory.allows("core_wake:add"));
         assert!(!memory.allows("proxima-code_emit_execution_request"));
 
         let overridden = resolve_tool_scope(
             Some("memory"),
-            Some("core_add_wake_entry"),
-            Some("core_get_memory"),
+            Some("core_wake:add"),
+            Some("resource:memory"),
             &registered_ids,
         )
         .expect("overridden memory profile");
-        assert!(!overridden.allows("core_get_memory"));
-        assert!(overridden.allows("core_add_wake_entry"));
+        assert!(!overridden.allows("resource:memory"));
+        assert!(overridden.allows("core_wake:add"));
     }
 
     #[test]

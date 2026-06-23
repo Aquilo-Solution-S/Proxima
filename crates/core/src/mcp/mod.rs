@@ -655,52 +655,125 @@ impl McpToolAnnotations {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreActionMeta {
+    pub tool: &'static str,
+    pub action: &'static str,
+    pub scope_key: &'static str,
+    pub description: &'static str,
+    pub produces_schema_ids: &'static [&'static str],
+    pub annotations: McpToolAnnotations,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreResourceMeta {
+    pub uri_template: &'static str,
+    pub name: &'static str,
+    pub title: &'static str,
+    pub scope_key: &'static str,
+    pub description: &'static str,
+    pub is_template: bool,
+}
+
+pub const CORE_RESOURCES: &[CoreResourceMeta] = &[
+    CoreResourceMeta {
+        uri_template: "proxima://schemas{?kind}",
+        name: "proxima-schemas",
+        title: "Proxima Schemas",
+        scope_key: "resource:schemas",
+        description: "Registered core and flavor schema catalog, optionally filtered by payload kind.",
+        is_template: false,
+    },
+    CoreResourceMeta {
+        uri_template: "proxima://edge-types",
+        name: "proxima-edge-types",
+        title: "Proxima Edge Types",
+        scope_key: "resource:edge-types",
+        description: "Registered relation descriptors and relation classes.",
+        is_template: false,
+    },
+    CoreResourceMeta {
+        uri_template: "proxima://tools",
+        name: "proxima-tools",
+        title: "Proxima Tools",
+        scope_key: "resource:tools",
+        description: "Registered substrate and flavor MCP tool catalog visible to the caller.",
+        is_template: false,
+    },
+    CoreResourceMeta {
+        uri_template: "proxima://graph{?include_tombstoned}",
+        name: "proxima-graph",
+        title: "Proxima Graph",
+        scope_key: "resource:graph",
+        description: "Owner-scoped personality graph plus schema, edge-type, and tool catalogs.",
+        is_template: false,
+    },
+    CoreResourceMeta {
+        uri_template: "proxima://memory/{id}{?expand_neighbors}",
+        name: "proxima-memory",
+        title: "Proxima Memory",
+        scope_key: "resource:memory",
+        description: "Owner-scoped memory by prefixed id, raw id, or handle.",
+        is_template: true,
+    },
+    CoreResourceMeta {
+        uri_template: "proxima://memory/{id}/lineage{?direction,depth,limit}",
+        name: "proxima-memory-lineage",
+        title: "Proxima Memory Lineage",
+        scope_key: "resource:memory-lineage",
+        description: "Owner-scoped Provenance/Supersession lineage from a memory id or handle.",
+        is_template: true,
+    },
+    CoreResourceMeta {
+        uri_template: "proxima://events{?since,limit}",
+        name: "proxima-events",
+        title: "Proxima Events",
+        scope_key: "resource:events",
+        description: "Owner-scoped change-event pull log.",
+        is_template: true,
+    },
+];
+
+pub fn all_core_resources() -> impl Iterator<Item = &'static CoreResourceMeta> {
+    CORE_RESOURCES.iter()
+}
+
+pub fn all_core_actions() -> impl Iterator<Item = &'static CoreActionMeta> {
+    core_tools::goal::CORE_GOAL_ACTIONS
+        .iter()
+        .chain(core_tools::wake::CORE_WAKE_ACTIONS.iter())
+        .chain(core_tools::personality::CORE_PERSONALITY_ACTIONS.iter())
+        .chain(core_tools::fact::CORE_FACT_ACTIONS.iter())
+}
+
+#[must_use]
+pub fn core_action_meta(tool: &str, action: &str) -> Option<&'static CoreActionMeta> {
+    all_core_actions().find(|meta| meta.tool == tool && meta.action == action)
+}
+
+#[must_use]
+pub fn core_tool_has_actions(tool: &str) -> bool {
+    all_core_actions().any(|meta| meta.tool == tool)
+}
+
 /// MCP behavior hints for substrate tools, keyed by registered tool name.
 #[must_use]
 pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations> {
     let base = McpToolAnnotations::new().open_world(false);
     let annotations = match canonical_name {
-        "core_citation_of_fact"
-        | "core_citation_of_entity_head"
-        | "core_facts_citing_object"
-        | "core_get_graph"
-        | "core_get_memory"
-        | "core_get_personality"
-        | "core_list_edge_types"
-        | "core_list_events"
-        | "core_list_personalities"
-        | "core_list_read_scope"
-        | "core_list_schemas"
-        | "core_list_substrate_tools"
-        | "core_list_wake_entries"
-        | "core_search_memories"
-        | "core_walk_memory_lineage" => base.read_only(true),
+        "core_search_memories" => base.read_only(true),
 
-        "core_derive"
-        | "core_goal_decompose"
-        | "core_set_fact_retention"
-        | "core_update_wake_entry" => base.read_only(false).destructive(false).idempotent(true),
+        "core_derive" => base.read_only(false).destructive(false).idempotent(true),
 
-        "core_remember"
-        | "core_record_utterance"
-        | "core_goal_set"
-        | "core_goal_transition"
-        | "core_goal_mark_achieved"
-        | "core_goal_modify"
-        | "core_set_read_scope"
-        | "core_link"
-        | "core_add_wake_entry"
-        | "core_instantiate_personality" => {
+        "core_remember" | "core_record_utterance" | "core_goal" | "core_link" => {
             base.read_only(false).destructive(false).idempotent(false)
         }
 
-        "core_cleanup_facts" | "core_remove_wake_entry" => {
-            base.read_only(false).destructive(true).idempotent(true)
-        }
-
-        "core_set_wake_entries" | "core_tombstone_personality" => {
+        "core_wake" | "core_personality" => {
             base.read_only(false).destructive(true).idempotent(false)
         }
+
+        "core_fact" => base.read_only(false).destructive(true).idempotent(true),
 
         _ => return None,
     };
@@ -722,6 +795,32 @@ mod tests {
         );
         assert_eq!(provider_safe_tool_name("core_remember"), "core_remember");
         assert_eq!(provider_safe_tool_name("a..b"), "a._b");
+    }
+
+    #[test]
+    fn core_resources_manifest_has_expected_shape() {
+        let resources = all_core_resources().collect::<Vec<_>>();
+
+        assert_eq!(resources.len(), 7);
+        assert_eq!(
+            resources
+                .iter()
+                .filter(|resource| !resource.is_template)
+                .count(),
+            4
+        );
+        assert_eq!(
+            resources
+                .iter()
+                .filter(|resource| resource.is_template)
+                .count(),
+            3
+        );
+        assert!(
+            resources
+                .iter()
+                .all(|resource| resource.scope_key.starts_with("resource:"))
+        );
     }
 
     #[tokio::test]

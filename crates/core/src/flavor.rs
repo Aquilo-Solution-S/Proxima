@@ -930,44 +930,20 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_includes_all_33_substrate_mcp_tools() {
+    fn default_registry_includes_all_9_substrate_mcp_tools() {
         let frozen = FlavorRegistry::new().freeze();
         let names: std::collections::HashSet<_> =
             frozen.list_mcp_tools().iter().map(|d| d.name).collect();
         let expected = [
-            "core_list_personalities",
-            "core_get_personality",
-            "core_get_graph",
-            "core_instantiate_personality",
-            "core_tombstone_personality",
-            "core_list_wake_entries",
-            "core_set_wake_entries",
-            "core_list_read_scope",
-            "core_set_read_scope",
-            "core_set_fact_retention",
-            "core_cleanup_facts",
-            "core_add_wake_entry",
-            "core_update_wake_entry",
-            "core_remove_wake_entry",
-            "core_list_substrate_tools",
-            "core_list_schemas",
-            "core_list_edge_types",
-            "core_list_events",
-            "core_get_memory",
             "core_search_memories",
-            "core_facts_citing_object",
-            "core_citation_of_fact",
-            "core_citation_of_entity_head",
-            "core_walk_memory_lineage",
             "core_remember",
             "core_record_utterance",
             "core_derive",
             "core_link",
-            "core_goal_set",
-            "core_goal_transition",
-            "core_goal_mark_achieved",
-            "core_goal_modify",
-            "core_goal_decompose",
+            "core_goal",
+            "core_wake",
+            "core_personality",
+            "core_fact",
         ];
         for name in expected {
             assert!(names.contains(name), "missing tool {name}");
@@ -976,6 +952,6 @@ mod tests {
             !names.contains("core/emit_budget_decision"),
             "retired tool name must not remain registered"
         );
-        assert_eq!(names.len(), 33, "exactly 33 substrate tools registered");
+        assert_eq!(names.len(), 9, "exactly 9 substrate tools registered");
     }
 }
