@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn tool_profile_resolver_builds_deployment_scope() {
         let registered_ids = [
-            "core_get_memory",
+            "resource:memory",
             "core_search_memories",
             "core_personality:instantiate",
             "core_wake:add",
@@ -517,7 +517,6 @@ mod tests {
 
         let memory = resolve_tool_scope(Some("memory"), None, None, &registered_ids)
             .expect("memory profile");
-        assert!(memory.allows("core_get_memory"));
         assert!(memory.allows("core_search_memories"));
         assert!(memory.allows("resource:memory"));
         assert!(memory.allows("resource:schemas"));
@@ -533,11 +532,11 @@ mod tests {
         let overridden = resolve_tool_scope(
             Some("memory"),
             Some("core_wake:add"),
-            Some("core_get_memory"),
+            Some("resource:memory"),
             &registered_ids,
         )
         .expect("overridden memory profile");
-        assert!(!overridden.allows("core_get_memory"));
+        assert!(!overridden.allows("resource:memory"));
         assert!(overridden.allows("core_wake:add"));
     }
 

@@ -3,8 +3,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::mcp::{McpToolCtx, McpToolError};
 use crate::FactEntityId;
+use crate::mcp::{McpToolCtx, McpToolError};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CitationOfFactArgs {
