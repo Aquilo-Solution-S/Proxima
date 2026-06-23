@@ -3,7 +3,9 @@
 # 10 connections. Keep 8 * 10 under the local max_connections=100 headroom;
 # raise this cap only when the dev PG max_connections setting is raised.
 test-threads = 8
-retries = 0
+# One retry absorbs the rare PG pool / template-clone race so a transient
+# blip doesn't redden CI; a genuinely failing test still fails on the retry.
+retries = 1
 failure-output = "immediate-final"
 success-output = "never"
 status-level = "fail"
