@@ -247,9 +247,10 @@ fn facade_flavor_authoring_symbols_are_reachable() {
     let endpoint = Endpoint::fact(MemoryId::new(Uuid::nil()));
     assert!(matches!(endpoint, Endpoint::Memory { .. }));
 
-    let advertised = BTreeSet::new();
-    assert!(proxima::build_instructions(&advertised).is_empty());
-    assert!(proxima::how_to_markdown(&advertised).contains("Proxima"));
+    let advertised_tools = BTreeSet::new();
+    let advertised_resources = BTreeSet::new();
+    assert!(proxima::build_instructions(&advertised_tools, &advertised_resources).is_empty());
+    assert!(proxima::how_to_markdown(&advertised_tools, &advertised_resources).contains("Proxima"));
     let _ctx_size = std::mem::size_of::<Option<proxima::McpToolCtx>>();
     let _ = proxima::McpToolError::InvalidInput("bad input".to_string());
 

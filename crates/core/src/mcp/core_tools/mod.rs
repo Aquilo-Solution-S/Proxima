@@ -96,14 +96,7 @@ const DESTRUCTIVE_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
 /// Register every substrate-shipped MCP tool into the `FlavorRegistry`.
 /// Called from `FlavorRegistry::default()`.
 pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
-    registry.add_substrate_mcp_tool::<GetGraphTool>();
-    registry.add_substrate_mcp_tool::<GetMemoryTool>();
     registry.add_substrate_mcp_tool::<SearchMemoriesTool>();
-    registry.add_substrate_mcp_tool::<WalkMemoryLineageTool>();
-    registry.add_substrate_mcp_tool::<ListSubstrateToolsTool>();
-    registry.add_substrate_mcp_tool::<ListSchemasTool>();
-    registry.add_substrate_mcp_tool::<ListEdgeTypesTool>();
-    registry.add_substrate_mcp_tool::<ListEventsTool>();
     registry.add_substrate_mcp_tool::<RememberTool>();
     registry.add_substrate_mcp_tool::<RecordUtteranceTool>();
     registry.add_substrate_mcp_tool::<DeriveTool>();
