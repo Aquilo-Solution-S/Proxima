@@ -31,7 +31,7 @@ helps if you query it before acting and feed it as you learn.
 This skill is the **session ritual** — *when* to recall and consolidate. The
 server documents its own *contract*: it returns an `instructions` block at
 connect and exposes a `proxima://how-to` resource (worked examples, the
-edge-class table, the read-tool decision guide). Read `proxima://how-to` when you
+edge-class table, the read-resource decision guide). Read `proxima://how-to` when you
 want depth; this skill is what makes you actually turn the wheel.
 
 > Tools below use the canonical names; your deployment may expose a subset (a

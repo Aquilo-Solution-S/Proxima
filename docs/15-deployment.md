@@ -56,6 +56,16 @@ endpoints require an `aud`-bound Zitadel JWT, validated in-process.
 (RFC 9728). Defense in depth: the same JWT MUST be validated at the
 cluster edge (see [§Edge defense-in-depth](#edge-defense-in-depth)).
 
+> **Single-tenant OIDC trust model.** v0.0.1 intentionally has no
+> per-user RBAC. Every token valid for the configured issuer and
+> `PROXIMA_OIDC_AUDIENCE` maps to the one configured owner with full
+> capabilities: all roles, including `SourceIngest`, and all tools,
+> including destructive forgetting via `core_fact:tombstone`. The issuer
+> and audience are the trust boundary. Before network exposure, constrain
+> the IdP audience to trusted principals and/or set
+> `PROXIMA_OIDC_ALLOWED_SUBJECTS` as a `sub` allowlist; absent means any
+> valid token for the issuer and audience is accepted.
+
 The inbound `Host` header is gated by rmcp's DNS-rebinding guard
 *before* auth runs: only loopback plus the resolved public host(s) are
 accepted; any other `Host` is rejected with 403. The public host is
