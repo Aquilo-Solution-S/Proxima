@@ -252,38 +252,21 @@ impl McpTool for SearchMemoriesTool {
             let memories = rows
                 .into_iter()
                 .map(|row| {
+                    let mid = row.memory_id.into_inner();
                     let tags = payloads
-                        .get(&row.memory_id.into_inner())
+                        .get(&mid)
                         .and_then(|payload| payload.tags.clone())
                         .unwrap_or_default();
                     let body = args
                         .include_body
                         .then(|| {
                             payloads
-                                .get(&row.memory_id.into_inner())
+                                .get(&mid)
                                 .and_then(|payload| payload.body.clone())
                                 .map(|body| truncate_body(body, args.body_max_chars))
                         })
                         .flatten();
-                    let class = super::get_memory::memory_class(row.kind.as_str())?;
-                    Ok(SearchMemoryOutput {
-                        memory: ctx.format_memory_with_class(row.memory_id, class),
-                        kind: row.kind.as_str().to_string(),
-                        schema_id: row.schema_id.as_str().to_string(),
-                        authoring_personality_instance_id:
-                            super::get_memory::format_authoring_personality(
-                                &ctx,
-                                row.authoring_personality_instance_id,
-                            ),
-                        created_at: format_rfc3339(row.created_at)?,
-                        snippet: row.snippet,
-                        score: row.score,
-                        lexical_score: row.lexical_score,
-                        similarity_score: row.similarity_score,
-                        wake_chain_depth: row.wake_chain_depth.into_inner(),
-                        tags,
-                        body,
-                    })
+                    search_memory_output(&ctx, row, tags, body)
                 })
                 .collect::<Result<Vec<_>, McpToolError>>()?;
 
@@ -302,6 +285,32 @@ fn truncate_body(body: String, max_chars: Option<usize>) -> String {
         Some(max) => body.chars().take(max).collect(),
         None => body,
     }
+}
+
+fn search_memory_output(
+    ctx: &McpToolCtx,
+    row: crate::verbs::query::MemorySearchResult,
+    tags: Vec<String>,
+    body: Option<String>,
+) -> Result<SearchMemoryOutput, McpToolError> {
+    let class = super::get_memory::memory_class(row.kind.as_str())?;
+    Ok(SearchMemoryOutput {
+        memory: ctx.format_memory_with_class(row.memory_id, class),
+        kind: row.kind.as_str().to_string(),
+        schema_id: row.schema_id.as_str().to_string(),
+        authoring_personality_instance_id: super::get_memory::format_authoring_personality(
+            ctx,
+            row.authoring_personality_instance_id,
+        ),
+        created_at: format_rfc3339(row.created_at)?,
+        snippet: row.snippet,
+        score: row.score,
+        lexical_score: row.lexical_score,
+        similarity_score: row.similarity_score,
+        wake_chain_depth: row.wake_chain_depth.into_inner(),
+        tags,
+        body,
+    })
 }
 
 fn semantic_search_degraded_to_lexical(

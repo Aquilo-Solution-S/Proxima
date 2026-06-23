@@ -255,6 +255,7 @@ async fn remember_enqueues_one_embedding_job_and_replay_does_not_duplicate()
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // linear PG flow: ingest + supersede + heads/all assertions read best together
 async fn remember_reused_idempotency_key_changed_body_creates_new_stateful_fact()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
