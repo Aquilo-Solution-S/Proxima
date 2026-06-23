@@ -3,7 +3,8 @@ use std::fmt::Write as _;
 
 use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::query::{
-    EntityKind, MemorySearchRequest, MemorySearchResult, SearchMode, SearchOrder, TagMatch,
+    EntityKind, MemorySearchRequest, MemorySearchResult, SearchMode, SearchOrder,
+    SupersessionStatus, TagMatch,
 };
 use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
@@ -437,6 +438,7 @@ fn push_base_memory_filters(
     }
     push_time_filters(sql, filters);
     push_tag_filter(sql, req, filters.tags, "NULL::text[]");
+    push_search_head_filter(sql, req);
     push_reader_visibility_filter(sql, filters.reader);
 }
 
@@ -461,6 +463,7 @@ fn push_sidecar_memory_filters(
     push_payload_kind_filter(sql, kind);
     push_time_filters(sql, filters);
     push_tag_filter(sql, req, filters.tags, tag_expr);
+    push_search_head_filter(sql, req);
     push_reader_visibility_filter(sql, filters.reader);
 }
 
@@ -483,6 +486,29 @@ fn push_time_filters(sql: &mut String, filters: CandidateFilterParams) {
     if let Some(param) = filters.until {
         write!(sql, " AND m.created_at <= ${param}").expect("write to String is infallible");
     }
+}
+
+fn push_search_head_filter(sql: &mut String, req: &MemorySearchRequest) {
+    if matches!(req.supersession, SupersessionStatus::IncludeSuperseded) {
+        return;
+    }
+    sql.push_str(
+        " AND ( \
+            (m.kind IS NULL AND ( \
+                m.fact_entity_id IS NULL \
+                OR EXISTS ( \
+                    SELECT 1 FROM proxima_core.fact_entities fe \
+                     WHERE fe.fact_entity_id = m.fact_entity_id \
+                       AND fe.current_memory_id = m.memory_id \
+                ) \
+            )) \
+            OR (m.kind IS NOT NULL AND NOT EXISTS ( \
+                SELECT 1 FROM proxima_core.memories m2 \
+                 WHERE m2.supersedes = m.memory_id \
+                   AND m2.tombstoned_at IS NULL \
+            )) \
+        )",
+    );
 }
 
 fn push_tag_filter(

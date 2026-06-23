@@ -78,6 +78,7 @@ pub struct MemoryKindRow {
 pub struct MemoryGraphPayloadRow {
     pub memory_id: MemoryId,
     pub tags: Option<Vec<String>>,
+    pub body: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -482,6 +483,7 @@ pub trait Storage: Send + Sync {
         &self,
         _owner: &Owner,
         _memory_ids: &[MemoryId],
+        _include_body: bool,
     ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
         Ok(Vec::new())
     }
