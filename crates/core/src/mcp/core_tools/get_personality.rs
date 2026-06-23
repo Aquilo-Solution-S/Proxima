@@ -1,16 +1,11 @@
 //! `core/get_personality` — full read of one personality instance,
 //! including all wake entries projected with W-handles.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::McpTool;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::personality::PersonalityStatus;
-
-#[derive(Debug, Default)]
-pub struct GetPersonalityTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetPersonalityArgs {
@@ -43,23 +38,6 @@ pub struct GetPersonalityOutput {
     pub status: PersonalityStatus,
     pub root_perspective: String,
     pub wake_entries: Vec<GetPersonalityWakeEntry>,
-}
-
-impl McpTool for GetPersonalityTool {
-    const NAME: &'static str = "core_get_personality";
-    const DESCRIPTION: &'static str = "Read one personality with all wake entries. Args: \
-         `{\"personality\": \"I1\"}` where the value is an I-handle from list_personalities. Each wake \
-         entry in the response carries a `wake_entry` field (W-handle) — pass that to update_wake_entry, \
-         remove_wake_entry.";
-    type Args = GetPersonalityArgs;
-    type Output = GetPersonalityOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: GetPersonalityArgs,
-    ) -> BoxFuture<'static, Result<GetPersonalityOutput, McpToolError>> {
-        Box::pin(get_personality(ctx, args))
-    }
 }
 
 pub(super) async fn get_personality(
@@ -144,7 +122,7 @@ mod tests {
     #[tokio::test]
     async fn get_personality_unknown_handle_returns_unknown_handle_err() {
         let ctx = make_ctx();
-        let err = GetPersonalityTool::call(
+        let err = get_personality(
             ctx,
             GetPersonalityArgs {
                 personality: "I99".into(),
@@ -161,7 +139,7 @@ mod tests {
     #[tokio::test]
     async fn get_personality_malformed_handle_returns_unknown_handle_err() {
         let ctx = make_ctx();
-        let err = GetPersonalityTool::call(
+        let err = get_personality(
             ctx,
             GetPersonalityArgs {
                 personality: "not-a-handle".into(),

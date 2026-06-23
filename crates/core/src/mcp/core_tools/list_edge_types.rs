@@ -1,14 +1,9 @@
 //! `core/list_edge_types` — project `FlavorRegistryFrozen` relations.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::McpTool;
 use crate::mcp::{McpToolCtx, McpToolError};
-
-#[derive(Debug, Default)]
-pub struct ListEdgeTypesTool;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListEdgeTypesArgs {}
@@ -22,21 +17,6 @@ pub struct EdgeTypeItem {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListEdgeTypesOutput {
     pub edge_types: Vec<EdgeTypeItem>,
-}
-
-impl McpTool for ListEdgeTypesTool {
-    const NAME: &'static str = "core_list_edge_types";
-    const DESCRIPTION: &'static str =
-        "List registered edge types. OnEdge triggers reference these.";
-    type Args = ListEdgeTypesArgs;
-    type Output = ListEdgeTypesOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: ListEdgeTypesArgs,
-    ) -> BoxFuture<'static, Result<ListEdgeTypesOutput, McpToolError>> {
-        Box::pin(list_edge_types(ctx, args))
-    }
 }
 
 #[allow(clippy::unused_async)]

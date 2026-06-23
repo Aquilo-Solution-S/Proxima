@@ -1,6 +1,5 @@
 //! `core/set_read_scope` — replace explicit personality read-scope grants.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -10,10 +9,7 @@ use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
     PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
-use crate::mcp::{McpTool, McpToolCtx, McpToolError};
-
-#[derive(Debug, Default)]
-pub struct SetReadScopeTool;
+use crate::mcp::{McpToolCtx, McpToolError};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetReadScopeArgs {
@@ -30,21 +26,6 @@ pub struct SetReadScopeOutput {
     pub readable_count: u32,
     pub readable_personalities: Vec<String>,
     pub audit_emit_failed: Option<String>,
-}
-
-impl McpTool for SetReadScopeTool {
-    const NAME: &'static str = "core_set_read_scope";
-    const DESCRIPTION: &'static str = "Replace explicit cross-personality read grants for one \
-         personality. Identity reads are implicit; list only additional readable I-handles.";
-    type Args = SetReadScopeArgs;
-    type Output = SetReadScopeOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: SetReadScopeArgs,
-    ) -> BoxFuture<'static, Result<SetReadScopeOutput, McpToolError>> {
-        Box::pin(set_read_scope(ctx, args))
-    }
 }
 
 pub(super) async fn set_read_scope(

@@ -1,20 +1,15 @@
 //! `core/tombstone_personality` — wraps `Engine::tombstone_personality`
 //! and emits an audit Fact.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::McpTool;
 use crate::TombstonePersonalityRequest;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
     PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::{McpToolCtx, McpToolError};
-
-#[derive(Debug, Default)]
-pub struct TombstonePersonalityTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TombstonePersonalityArgs {
@@ -27,21 +22,6 @@ pub struct TombstonePersonalityOutput {
     pub status: String,
     pub idempotent_replay: bool,
     pub audit_emit_failed: Option<String>,
-}
-
-impl McpTool for TombstonePersonalityTool {
-    const NAME: &'static str = "core_tombstone_personality";
-    const DESCRIPTION: &'static str =
-        "Tombstone a personality. Idempotent: replay returns idempotent_replay=true.";
-    type Args = TombstonePersonalityArgs;
-    type Output = TombstonePersonalityOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: TombstonePersonalityArgs,
-    ) -> BoxFuture<'static, Result<TombstonePersonalityOutput, McpToolError>> {
-        Box::pin(tombstone_personality(ctx, args))
-    }
 }
 
 pub(super) async fn tombstone_personality(

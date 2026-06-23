@@ -1,6 +1,5 @@
 //! `core/add_wake_entry` — granular append via `Storage::set_wake_entries_within`.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -10,10 +9,7 @@ use crate::mcp::core_tools::payload::{
     PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::core_tools::wake_entry_input::WakeEntryDraftInput;
-use crate::mcp::{McpTool, McpToolCtx, McpToolError};
-
-#[derive(Debug, Default)]
-pub struct AddWakeEntryTool;
+use crate::mcp::{McpToolCtx, McpToolError};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AddWakeEntryArgs {
@@ -39,22 +35,6 @@ where
         return serde_json::from_str(raw).map_err(serde::de::Error::custom);
     }
     serde_json::from_value(value).map_err(serde::de::Error::custom)
-}
-
-impl McpTool for AddWakeEntryTool {
-    const NAME: &'static str = "core_add_wake_entry";
-    const DESCRIPTION: &'static str = "Append one wake entry to a personality. Args: \
-         `{\"personality\": \"I1\", \"entry\": …}`. Returns the new W-handle in the `wake_entry` field. \
-         Conflicts with an existing (trigger_kind, trigger_id) on the personality return an error.";
-    type Args = AddWakeEntryArgs;
-    type Output = AddWakeEntryOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: AddWakeEntryArgs,
-    ) -> BoxFuture<'static, Result<AddWakeEntryOutput, McpToolError>> {
-        Box::pin(add_wake_entry(ctx, args))
-    }
 }
 
 pub(super) async fn add_wake_entry(

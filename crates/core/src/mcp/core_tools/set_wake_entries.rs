@@ -1,7 +1,6 @@
 //! `core/set_wake_entries` — replace-all bulk write of a personality's
 //! wake entries. Mirrors `Engine::set_wake_entries`.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -11,10 +10,7 @@ use crate::mcp::core_tools::payload::{
     PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::core_tools::wake_entry_input::WakeEntryDraftInput;
-use crate::mcp::{McpTool, McpToolCtx, McpToolError};
-
-#[derive(Debug, Default)]
-pub struct SetWakeEntriesTool;
+use crate::mcp::{McpToolCtx, McpToolError};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetWakeEntriesArgs {
@@ -27,22 +23,6 @@ pub struct SetWakeEntriesOutput {
     pub active_entries: u32,
     pub entry_handles: Vec<String>,
     pub audit_emit_failed: Option<String>,
-}
-
-impl McpTool for SetWakeEntriesTool {
-    const NAME: &'static str = "core_set_wake_entries";
-    const DESCRIPTION: &'static str = "Replace all wake entries for a personality. Carry-over entries \
-         keep their identity by passing the W-handle from list_wake_entries \
-         in wake_entry_id; omit wake_entry_id for new entries.";
-    type Args = SetWakeEntriesArgs;
-    type Output = SetWakeEntriesOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: SetWakeEntriesArgs,
-    ) -> BoxFuture<'static, Result<SetWakeEntriesOutput, McpToolError>> {
-        Box::pin(set_wake_entries(ctx, args))
-    }
 }
 
 pub(super) async fn set_wake_entries(
