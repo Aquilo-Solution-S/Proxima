@@ -966,6 +966,24 @@ macro_rules! pg_sidecar_row_ty {
     (text_array) => {
         ::std::vec::Vec<::std::string::String>
     };
+    (decimal) => {
+        ::rust_decimal::Decimal
+    };
+    (opt_decimal) => {
+        ::std::option::Option<::rust_decimal::Decimal>
+    };
+    (naive_date) => {
+        ::time::Date
+    };
+    (opt_naive_date) => {
+        ::std::option::Option<::time::Date>
+    };
+    (jsonb) => {
+        ::serde_json::Value
+    };
+    (opt_jsonb) => {
+        ::std::option::Option<::serde_json::Value>
+    };
     (bool) => {
         bool
     };
@@ -1003,6 +1021,24 @@ macro_rules! pg_sidecar_row_ty {
 
 #[macro_export]
 macro_rules! pg_sidecar_cast {
+    (decimal) => {
+        ::std::option::Option::Some("numeric")
+    };
+    (opt_decimal) => {
+        ::std::option::Option::Some("numeric")
+    };
+    (naive_date) => {
+        ::std::option::Option::Some("date")
+    };
+    (opt_naive_date) => {
+        ::std::option::Option::Some("date")
+    };
+    (jsonb) => {
+        ::std::option::Option::Some("jsonb")
+    };
+    (opt_jsonb) => {
+        ::std::option::Option::Some("jsonb")
+    };
     (enum { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }) => {
         ::std::option::Option::Some($pg_type)
     };
@@ -1040,6 +1076,24 @@ macro_rules! pg_sidecar_select_col {
             ::std::stringify!($column)
         )
     };
+    ((decimal), $column:ident) => {
+        ::std::stringify!($column)
+    };
+    ((opt_decimal), $column:ident) => {
+        ::std::stringify!($column)
+    };
+    ((naive_date), $column:ident) => {
+        ::std::stringify!($column)
+    };
+    ((opt_naive_date), $column:ident) => {
+        ::std::stringify!($column)
+    };
+    ((jsonb), $column:ident) => {
+        ::std::stringify!($column)
+    };
+    ((opt_jsonb), $column:ident) => {
+        ::std::stringify!($column)
+    };
     (($other:tt), $column:ident) => {
         ::std::stringify!($column)
     };
@@ -1064,6 +1118,24 @@ macro_rules! pg_sidecar_bind {
     };
     ((text_array), $self:ident, $field:ident) => {
         &$self.$field
+    };
+    ((decimal), $self:ident, $field:ident) => {
+        $self.$field
+    };
+    ((opt_decimal), $self:ident, $field:ident) => {
+        $self.$field
+    };
+    ((naive_date), $self:ident, $field:ident) => {
+        $self.$field
+    };
+    ((opt_naive_date), $self:ident, $field:ident) => {
+        $self.$field
+    };
+    ((jsonb), $self:ident, $field:ident) => {
+        &$self.$field
+    };
+    ((opt_jsonb), $self:ident, $field:ident) => {
+        $self.$field.as_ref()
     };
     ((bool), $self:ident, $field:ident) => {
         $self.$field
@@ -1146,6 +1218,24 @@ macro_rules! pg_sidecar_decode {
         $row.$field
     };
     ((text_array), $row:ident, $field:ident) => {
+        $row.$field
+    };
+    ((decimal), $row:ident, $field:ident) => {
+        $row.$field
+    };
+    ((opt_decimal), $row:ident, $field:ident) => {
+        $row.$field
+    };
+    ((naive_date), $row:ident, $field:ident) => {
+        $row.$field
+    };
+    ((opt_naive_date), $row:ident, $field:ident) => {
+        $row.$field
+    };
+    ((jsonb), $row:ident, $field:ident) => {
+        $row.$field
+    };
+    ((opt_jsonb), $row:ident, $field:ident) => {
         $row.$field
     };
     ((bool), $row:ident, $field:ident) => {
