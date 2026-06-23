@@ -432,7 +432,7 @@ mod tests {
         assert_eq!(remember.destructive, Some(false));
         assert_eq!(remember.idempotent, Some(false));
 
-        // Grouped fact dispatcher is conservative: cleanup is destructive,
+        // Grouped fact dispatcher is conservative: tombstone is destructive,
         // but its writes converge.
         let fact = core_tool_annotations("core_fact").expect("fact dispatcher");
         assert_eq!(fact.read_only, Some(false));

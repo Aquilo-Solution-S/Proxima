@@ -53,9 +53,9 @@ fn memory_keep_set() -> Vec<&'static str> {
         ListEdgeTypesTool::NAME,
         ListSubstrateToolsTool::NAME,
     ];
-    // The memory profile carries the full goal lifecycle and the full
-    // fact/citation surface (incl. owner-scoped retention config + cleanup),
-    // matching the pre-grouping keep-set. Wake/personality admin stays out.
+    // The memory profile carries the full goal lifecycle plus full
+    // fact/citation reads and per-Fact tombstone. Retention/cleanup are
+    // host/config-only. Wake/personality admin stays out.
     ids.extend(
         all_core_actions()
             .filter(|action| action.tool == CoreGoalTool::NAME || action.tool == CoreFactTool::NAME)
