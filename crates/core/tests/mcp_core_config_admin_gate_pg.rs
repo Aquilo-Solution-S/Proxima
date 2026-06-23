@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::authz::{AuthPath, AuthzContext, CapabilitySet, RoleSet, ToolScope};
-use proxima_core::mcp::core_tools::add_wake_entry::{AddWakeEntryArgs, AddWakeEntryTool};
-use proxima_core::mcp::core_tools::remove_wake_entry::{RemoveWakeEntryArgs, RemoveWakeEntryTool};
-use proxima_core::mcp::core_tools::set_read_scope::{SetReadScopeArgs, SetReadScopeTool};
-use proxima_core::mcp::core_tools::update_wake_entry::{
-    UpdateWakeEntryArgs, UpdateWakeEntryTool, WakeEntryPatch,
-};
+use proxima_core::mcp::core_tools::add_wake_entry::AddWakeEntryArgs;
+use proxima_core::mcp::core_tools::personality::{CorePersonalityArgs, CorePersonalityTool};
+use proxima_core::mcp::core_tools::remove_wake_entry::RemoveWakeEntryArgs;
+use proxima_core::mcp::core_tools::set_read_scope::SetReadScopeArgs;
+use proxima_core::mcp::core_tools::update_wake_entry::{UpdateWakeEntryArgs, WakeEntryPatch};
+use proxima_core::mcp::core_tools::wake::{CoreWakeArgs, CoreWakeOutput, CoreWakeTool};
 use proxima_core::mcp::core_tools::wake_entry_input::WakeEntryDraftInput;
 use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::personality::{
@@ -134,9 +134,12 @@ async fn add_wake_entry_requires_admin_and_preserves_storage_on_denial()
         },
     };
 
-    let err = AddWakeEntryTool::call(ctx(&owner, &pg, non_admin_authz(&owner)), args)
-        .await
-        .expect_err("non-admin add must be denied");
+    let err = CoreWakeTool::call(
+        ctx(&owner, &pg, non_admin_authz(&owner)),
+        CoreWakeArgs::Add(args),
+    )
+    .await
+    .expect_err("non-admin add must be denied");
     assert_admin_denied(&err);
     assert!(wake_labels(&pg, &owner, pid).await?.is_empty());
 
@@ -154,13 +157,13 @@ async fn add_wake_entry_requires_admin_and_preserves_storage_on_denial()
             instructions: String::new(),
         },
     };
-    AddWakeEntryTool::call(
+    CoreWakeTool::call(
         ctx(
             &owner,
             &pg,
             AuthzContext::single_owner(&owner, AuthPath::System),
         ),
-        admin_args,
+        CoreWakeArgs::Add(admin_args),
     )
     .await?;
     assert_eq!(wake_labels(&pg, &owner, pid).await?, vec!["admin-add"]);
@@ -192,9 +195,12 @@ async fn update_wake_entry_requires_admin_and_preserves_storage_on_denial()
             ..WakeEntryPatch::default()
         },
     };
-    let err = UpdateWakeEntryTool::call(ctx(&owner, &pg, non_admin_authz(&owner)), args)
-        .await
-        .expect_err("non-admin update must be denied");
+    let err = CoreWakeTool::call(
+        ctx(&owner, &pg, non_admin_authz(&owner)),
+        CoreWakeArgs::Update(args),
+    )
+    .await
+    .expect_err("non-admin update must be denied");
     assert_admin_denied(&err);
     assert_eq!(wake_labels(&pg, &owner, pid).await?, vec!["original"]);
 
@@ -205,13 +211,13 @@ async fn update_wake_entry_requires_admin_and_preserves_storage_on_denial()
             ..WakeEntryPatch::default()
         },
     };
-    UpdateWakeEntryTool::call(
+    CoreWakeTool::call(
         ctx(
             &owner,
             &pg,
             AuthzContext::single_owner(&owner, AuthPath::System),
         ),
-        admin_args,
+        CoreWakeArgs::Update(admin_args),
     )
     .await?;
     assert_eq!(wake_labels(&pg, &owner, pid).await?, vec!["admin-update"]);
@@ -239,23 +245,29 @@ async fn remove_wake_entry_requires_admin_and_preserves_storage_on_denial()
     let args = RemoveWakeEntryArgs {
         wake_entry: wid.to_string(),
     };
-    let err = RemoveWakeEntryTool::call(ctx(&owner, &pg, non_admin_authz(&owner)), args)
-        .await
-        .expect_err("non-admin remove must be denied");
+    let err = CoreWakeTool::call(
+        ctx(&owner, &pg, non_admin_authz(&owner)),
+        CoreWakeArgs::Remove(args),
+    )
+    .await
+    .expect_err("non-admin remove must be denied");
     assert_admin_denied(&err);
     assert_eq!(wake_labels(&pg, &owner, pid).await?, vec!["remove-me"]);
 
-    let output = RemoveWakeEntryTool::call(
+    let output = CoreWakeTool::call(
         ctx(
             &owner,
             &pg,
             AuthzContext::single_owner(&owner, AuthPath::System),
         ),
-        RemoveWakeEntryArgs {
+        CoreWakeArgs::Remove(RemoveWakeEntryArgs {
             wake_entry: wid.to_string(),
-        },
+        }),
     )
     .await?;
+    let CoreWakeOutput::Remove(output) = output else {
+        panic!("expected remove output");
+    };
     assert!(output.removed);
     assert!(wake_labels(&pg, &owner, pid).await?.is_empty());
 
@@ -277,9 +289,12 @@ async fn set_read_scope_requires_admin_and_preserves_storage_on_denial()
         personality: reader.into_inner().to_string(),
         readable_personalities: vec![readable.into_inner().to_string()],
     };
-    let err = SetReadScopeTool::call(ctx(&owner, &pg, non_admin_authz(&owner)), args)
-        .await
-        .expect_err("non-admin set_read_scope must be denied");
+    let err = CorePersonalityTool::call(
+        ctx(&owner, &pg, non_admin_authz(&owner)),
+        CorePersonalityArgs::SetReadScope(args),
+    )
+    .await
+    .expect_err("non-admin set_read_scope must be denied");
     assert_admin_denied(&err);
     assert!(
         pg.list_read_scope(&ListReadScopeRequest {
@@ -291,16 +306,16 @@ async fn set_read_scope_requires_admin_and_preserves_storage_on_denial()
         .is_empty()
     );
 
-    SetReadScopeTool::call(
+    CorePersonalityTool::call(
         ctx(
             &owner,
             &pg,
             AuthzContext::single_owner(&owner, AuthPath::System),
         ),
-        SetReadScopeArgs {
+        CorePersonalityArgs::SetReadScope(SetReadScopeArgs {
             personality: reader.into_inner().to_string(),
             readable_personalities: vec![readable.into_inner().to_string()],
-        },
+        }),
     )
     .await?;
     assert_eq!(

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
-use proxima_core::mcp::core_tools::list_events::{ListEventsArgs, ListEventsTool};
+use proxima_core::mcp::core_tools::list_events::{ListEventsArgs, list_events};
 use proxima_core::mcp::{McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_history::EventHistoryRequest;
@@ -16,9 +16,9 @@ use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthPath, AuthorshipKindMask, AuthzContext, ChangeEventKind, EdgeAuthorshipKind,
     EndpointBinding, EntityKind, EntityKindMask, EntityRef, FactPayload, FactTombstone,
-    FlavorRegistry, FlavorRegistryFrozen, McpTool, MemoryId, Owner, OwnerPrincipalKind,
-    PayloadKeyBuilder, Principal, RelationClass, RelationDescriptor, Role, SchemaVersion,
-    SidecarPayload, SourceBatchId, SourceId, StorageError, UserId, canonical_json_bytes,
+    FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner, OwnerPrincipalKind, PayloadKeyBuilder,
+    Principal, RelationClass, RelationDescriptor, Role, SchemaVersion, SidecarPayload,
+    SourceBatchId, SourceId, StorageError, UserId, canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemoryPayloadFuture};
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
@@ -1261,7 +1261,7 @@ async fn event_history_and_list_events_preserve_fact_entity_endpoints()
             extensions: McpToolExtensions::with(pg.pool().clone()),
             engine: Some(engine),
         };
-        let listed = ListEventsTool::call(
+        let listed = list_events(
             ctx,
             ListEventsArgs {
                 since: None,

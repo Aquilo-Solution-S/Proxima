@@ -63,13 +63,13 @@ async fn master_token_call_mints_per_token_self_perspective()
         caller_self_perspective: None,
     };
 
-    // Trigger the ensure via call_tool. core/list_personalities is read-only
-    // and routes through the same call_tool surface that performs the M0
-    // ensure step.
+    // Trigger the ensure via call_tool. core_personality(action=list) is
+    // read-only and routes through the same call_tool surface that performs
+    // the M0 ensure step.
     server
         .call_tool(
-            "core_list_personalities",
-            serde_json::json!({}),
+            "core_personality",
+            serde_json::json!({ "action": "list" }),
             author,
             Some(auth),
         )

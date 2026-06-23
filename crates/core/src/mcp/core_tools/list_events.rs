@@ -9,17 +9,13 @@
 
 use std::collections::HashMap;
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::change_event::{ChangeEventKind, EntityRef};
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::personality::ChangeEventForWake;
-use crate::{EdgeId, EntityKind, McpTool};
-
-#[derive(Debug, Default)]
-pub struct ListEventsTool;
+use crate::{EdgeId, EntityKind};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListEventsArgs {
@@ -63,46 +59,40 @@ pub struct EventItem {
     pub target: Option<String>,
 }
 
-impl McpTool for ListEventsTool {
-    const NAME: &'static str = "core_list_events";
-    const DESCRIPTION: &'static str = "Forward, owner-scoped poll of the change-event pull log. Returns events with seq > `since`, ascending, so a harness wake loop can advance a durable cursor. Pass the prior `next_since` back as `since`; omit `since` to read from the start. `has_more` is true when more events may be waiting.";
-    type Args = ListEventsArgs;
-    type Output = ListEventsOutput;
+/// # Errors
+///
+/// Returns invalid cursor, storage, or projection failures.
+pub async fn list_events(
+    ctx: McpToolCtx,
+    args: ListEventsArgs,
+) -> Result<ListEventsOutput, McpToolError> {
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let after = match &args.since {
+        None => uuid::Uuid::nil(),
+        Some(since) => since.parse::<uuid::Uuid>().map_err(|err| {
+            McpToolError::InvalidInput(format!("since is not a valid seq cursor: {err}"))
+        })?,
+    };
+    let limit = args.limit.unwrap_or(100).clamp(1, 1000) as usize;
+    let rows = storage
+        .list_change_events_after(&ctx.owner, after, limit)
+        .await?;
+    let edge_kinds = load_edge_endpoint_kinds(&ctx, &rows).await?;
 
-    fn call(
-        ctx: McpToolCtx,
-        args: ListEventsArgs,
-    ) -> BoxFuture<'static, Result<ListEventsOutput, McpToolError>> {
-        Box::pin(async move {
-            let storage = ctx
-                .storage()
-                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-            let after = match &args.since {
-                None => uuid::Uuid::nil(),
-                Some(since) => since.parse::<uuid::Uuid>().map_err(|err| {
-                    McpToolError::InvalidInput(format!("since is not a valid seq cursor: {err}"))
-                })?,
-            };
-            let limit = args.limit.unwrap_or(100).clamp(1, 1000) as usize;
-            let rows = storage
-                .list_change_events_after(&ctx.owner, after, limit)
-                .await?;
-            let edge_kinds = load_edge_endpoint_kinds(&ctx, &rows).await?;
+    let events = rows
+        .into_iter()
+        .map(|row| event_item(&ctx, row, &edge_kinds))
+        .collect::<Vec<_>>();
+    let has_more = events.len() == limit;
+    let next_since = events.last().map(|event| event.seq.clone()).or(args.since);
 
-            let events = rows
-                .into_iter()
-                .map(|row| event_item(&ctx, row, &edge_kinds))
-                .collect::<Vec<_>>();
-            let has_more = events.len() == limit;
-            let next_since = events.last().map(|event| event.seq.clone()).or(args.since);
-
-            Ok(ListEventsOutput {
-                events,
-                next_since,
-                has_more,
-            })
-        })
-    }
+    Ok(ListEventsOutput {
+        events,
+        next_since,
+        has_more,
+    })
 }
 
 async fn load_edge_endpoint_kinds(

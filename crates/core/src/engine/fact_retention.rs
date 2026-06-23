@@ -1,9 +1,10 @@
 use super::Engine;
+use crate::MemoryId;
 use crate::authz::{AuthzContext, Role};
 use crate::error::ProtocolError;
 use crate::owner::Owner;
 use crate::sidecar_tables;
-use crate::verbs::fact_cleanup::CleanupDueFactsOutcome;
+use crate::verbs::fact_cleanup::{CleanupDueFactsOutcome, TombstoneFactOutcome};
 use crate::verbs::schema::PayloadKind;
 
 fn retention_seconds_to_i64(seconds: u64) -> Result<i64, ProtocolError> {
@@ -109,5 +110,41 @@ impl Engine {
             )
             .await
             .map_err(|e| ProtocolError::internal(format!("cleanup_due_facts: {e}")))
+    }
+
+    /// Hard-erase one Fact, cascade soft-tombstones through all transitive
+    /// Provenance derivatives, and erase orphaned citation backing rows.
+    /// Gated by `SourceIngest` because targeted forgetting is symmetric with
+    /// Fact creation by `EventIngest`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context cannot access `owner` or
+    /// lacks `SourceIngest`, and `Internal` for storage failures.
+    pub async fn tombstone_fact(
+        &self,
+        authz: &AuthzContext,
+        owner: &Owner,
+        fact_id: MemoryId,
+    ) -> Result<TombstoneFactOutcome, ProtocolError> {
+        super::authorize(authz, owner, Role::SourceIngest)?;
+        let owner = authz.scoped_owner(owner.clone());
+        let fact_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Fact);
+        let edge_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Edge);
+        let citation_mapping_sidecar_tables =
+            sidecar_tables(self.registry.schemas(), PayloadKind::CitationMapping);
+        let cited_object_sidecar_tables =
+            sidecar_tables(self.registry.schemas(), PayloadKind::CitedObject);
+        self.storage
+            .tombstone_fact(
+                &owner,
+                fact_id.into_inner(),
+                &fact_sidecar_tables,
+                &edge_sidecar_tables,
+                &citation_mapping_sidecar_tables,
+                &cited_object_sidecar_tables,
+            )
+            .await
+            .map_err(|e| ProtocolError::internal(format!("tombstone_fact: {e}")))
     }
 }

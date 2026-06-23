@@ -53,6 +53,24 @@ impl ToolScope {
         }
     }
 
+    #[must_use]
+    pub fn allows_action(&self, tool: &str, action: &str) -> bool {
+        self.allows(&format!("{tool}:{action}"))
+    }
+
+    #[must_use]
+    pub fn allows_group_advertisement(&self, tool: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Palette(allowed) => {
+                let action_prefix = format!("{tool}:");
+                allowed
+                    .iter()
+                    .any(|entry| entry == tool || entry.starts_with(&action_prefix))
+            }
+        }
+    }
+
     /// Narrow `self` by `other`, never widening it. Used to layer a
     /// deployment-wide surface over a caller's own scope: `All` is the
     /// identity element, and two palettes intersect to the ids both allow.
@@ -497,7 +515,7 @@ mod tests {
         assert!(!ctx.capabilities.roles.has(Role::SourceIngest));
         assert!(!ctx.capabilities.roles.has(Role::Admin));
         // Empty palette — no tool is allowed.
-        assert!(!ctx.capabilities.tool_scope.allows("core_get_memory"));
+        assert!(!ctx.capabilities.tool_scope.allows("resource:memory"));
     }
 
     #[test]
@@ -516,17 +534,38 @@ mod tests {
 
     #[test]
     fn palette_scope_allows_and_denies() {
-        let scope = ToolScope::Palette(vec!["core_get_memory".to_string()]);
+        let scope = ToolScope::Palette(vec!["resource:memory".to_string()]);
 
-        assert!(scope.allows("core_get_memory"));
-        assert!(!scope.allows("core_set_wake_entries"));
+        assert!(scope.allows("resource:memory"));
+        assert!(!scope.allows("core_wake:set"));
+    }
+
+    #[test]
+    fn allows_action_requires_leaf_scope_key() {
+        let scope = ToolScope::Palette(vec!["core_goal:set".to_string()]);
+
+        assert!(scope.allows_action("core_goal", "set"));
+        assert!(!scope.allows_action("core_goal", "transition"));
+        assert!(!scope.allows("core_goal"));
+    }
+
+    #[test]
+    fn allows_group_advertisement_accepts_flat_or_leaf_key() {
+        let leaf = ToolScope::Palette(vec!["core_goal:set".to_string()]);
+        let flat = ToolScope::Palette(vec!["core_goal".to_string()]);
+        let unrelated = ToolScope::Palette(vec!["resource:memory".to_string()]);
+
+        assert!(ToolScope::All.allows_group_advertisement("core_goal"));
+        assert!(leaf.allows_group_advertisement("core_goal"));
+        assert!(flat.allows_group_advertisement("core_goal"));
+        assert!(!unrelated.allows_group_advertisement("core_goal"));
     }
 
     #[test]
     fn tool_scope_intersect_only_narrows_never_widens() {
         let palette =
             |ids: &[&str]| ToolScope::Palette(ids.iter().map(|id| (*id).to_string()).collect());
-        let mem = palette(&["core_get_memory", "core_search_memories"]);
+        let mem = palette(&["resource:memory", "core_search_memories"]);
 
         // `All` is the identity element in both positions.
         assert_eq!(ToolScope::All.intersect(&mem), mem);
@@ -535,11 +574,11 @@ mod tests {
 
         // Two palettes intersect to only the ids both allow — a deployment
         // scope can never re-add an id the caller's scope omitted.
-        let caller = palette(&["core_get_memory", "core_set_wake_entries"]);
+        let caller = palette(&["resource:memory", "core_wake:set"]);
         let result = mem.intersect(&caller);
-        assert!(result.allows("core_get_memory"));
+        assert!(result.allows("resource:memory"));
         assert!(!result.allows("core_search_memories")); // caller lacked it
-        assert!(!result.allows("core_set_wake_entries")); // deployment lacked it
+        assert!(!result.allows("core_wake:set")); // deployment lacked it
 
         // Disjoint palettes intersect to empty (deny-all), never widening.
         assert_eq!(

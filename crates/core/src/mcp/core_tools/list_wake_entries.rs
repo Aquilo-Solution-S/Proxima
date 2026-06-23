@@ -1,15 +1,10 @@
 //! `core/list_wake_entries` — read-only wake-entries projection for one
 //! personality, with W-handles assigned.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::McpTool;
 use crate::mcp::{McpToolCtx, McpToolError};
-
-#[derive(Debug, Default)]
-pub struct ListWakeEntriesTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListWakeEntriesArgs {
@@ -36,51 +31,39 @@ pub struct ListWakeEntriesOutput {
     pub wake_entries: Vec<ListWakeEntriesItem>,
 }
 
-impl McpTool for ListWakeEntriesTool {
-    const NAME: &'static str = "core_list_wake_entries";
-    const DESCRIPTION: &'static str = "List wake entries on one personality. Args: \
-         `{\"personality\": \"I1\"}`. Each item carries a `wake_entry` field (W-handle) — pass that \
-         value as the `wake_entry` argument to update_wake_entry, remove_wake_entry, or \
-         remove_wake_entry. Use core/get_personality for the full per-entry payload.";
-    type Args = ListWakeEntriesArgs;
-    type Output = ListWakeEntriesOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: ListWakeEntriesArgs,
-    ) -> BoxFuture<'static, Result<ListWakeEntriesOutput, McpToolError>> {
-        Box::pin(async move {
-            let pid = ctx.resolve_personality(&args.personality)?;
-            let storage = ctx
-                .storage()
-                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-            let rows = storage
-                .list_personality_instances(&ctx.owner, true)
-                .await
-                .map_err(McpToolError::Storage)?;
-            let row = rows
-                .into_iter()
-                .find(|r| r.personality_instance_id == pid)
-                .ok_or_else(|| {
-                    McpToolError::Other(format!("personality {} not found", args.personality))
-                })?;
-            let wake_entries = row
-                .wake_entries
-                .into_iter()
-                .map(|e| ListWakeEntriesItem {
-                    wake_entry: ctx.format_wake_entry(e.wake_entry_id),
-                    trigger_kind: e.trigger_kind.as_str().to_string(),
-                    trigger_id: e.trigger_id,
-                    label: e.label,
-                    enabled: e.enabled,
-                    instructions: e.instructions,
-                    probability_promille: e.probability_promille,
-                    goal_scope: e.goal_scope.as_str().to_string(),
-                })
-                .collect();
-            Ok(ListWakeEntriesOutput { wake_entries })
+pub(super) async fn list_wake_entries(
+    ctx: McpToolCtx,
+    args: ListWakeEntriesArgs,
+) -> Result<ListWakeEntriesOutput, McpToolError> {
+    let pid = ctx.resolve_personality(&args.personality)?;
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let rows = storage
+        .list_personality_instances(&ctx.owner, true)
+        .await
+        .map_err(McpToolError::Storage)?;
+    let row = rows
+        .into_iter()
+        .find(|r| r.personality_instance_id == pid)
+        .ok_or_else(|| {
+            McpToolError::Other(format!("personality {} not found", args.personality))
+        })?;
+    let wake_entries = row
+        .wake_entries
+        .into_iter()
+        .map(|e| ListWakeEntriesItem {
+            wake_entry: ctx.format_wake_entry(e.wake_entry_id),
+            trigger_kind: e.trigger_kind.as_str().to_string(),
+            trigger_id: e.trigger_id,
+            label: e.label,
+            enabled: e.enabled,
+            instructions: e.instructions,
+            probability_promille: e.probability_promille,
+            goal_scope: e.goal_scope.as_str().to_string(),
         })
-    }
+        .collect();
+    Ok(ListWakeEntriesOutput { wake_entries })
 }
 
 #[cfg(test)]
@@ -114,7 +97,7 @@ mod tests {
             extensions: McpToolExtensions::default(),
             engine: Some(engine),
         };
-        let err = ListWakeEntriesTool::call(
+        let err = list_wake_entries(
             ctx,
             ListWakeEntriesArgs {
                 personality: "I99".into(),

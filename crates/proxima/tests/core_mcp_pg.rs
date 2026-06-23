@@ -9,6 +9,7 @@ use proxima::{
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
     CitationMappingPayload, CitedObjectPayload, FlavorRegistry, MemoryId, Owner, SchemaId,
+    all_core_resources,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::sidecars::{
@@ -184,6 +185,17 @@ async fn call_test_model_tool(
         .await
 }
 
+async fn read_test_model_resource(
+    tools: &CoreMcpTools,
+    authz: AuthzContext,
+    owner: Owner,
+    uri: &str,
+) -> Result<serde_json::Value, CoreMcpError> {
+    tools
+        .read_core_resource(authz, owner, Some("test-model".to_string()), uri)
+        .await
+}
+
 #[tokio::test]
 async fn facade_lists_and_dispatches_core_mcp_tools() {
     let db_name = unique_db_name("proxima_core_mcp");
@@ -202,8 +214,8 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         let listed = tools.list_core_tools();
         let list_personalities = listed
             .iter()
-            .find(|tool| tool.name == "core_list_personalities")
-            .expect("core/list_personalities registered");
+            .find(|tool| tool.name == "core_personality")
+            .expect("core_personality registered");
         assert!(!listed.is_empty(), "core tool registry is non-empty");
         assert!(
             list_personalities
@@ -230,14 +242,14 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         ]));
         let palette_names: HashSet<_> = palette.into_iter().map(|tool| tool.name).collect();
         assert!(palette_names.contains("core_search_memories"));
-        assert!(!palette_names.contains("core_list_personalities"));
+        assert!(!palette_names.contains("core_personality"));
 
         let output = call_test_model_tool(
             &tools,
             host_authz(&owner, ToolScope::All),
             owner.clone(),
-            "core_list_personalities",
-            serde_json::json!({}),
+            "core_personality",
+            serde_json::json!({ "action": "list" }),
         )
         .await?;
         assert!(
@@ -250,19 +262,20 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
                 host_authz(&owner, ToolScope::Palette(Vec::new())),
                 owner.clone(),
                 None,
-                "core_list_personalities",
-                serde_json::json!({}),
+                "core_personality",
+                serde_json::json!({ "action": "list" }),
             )
             .await;
-        assert!(matches!(denied, Err(CoreMcpError::NotAuthorized(tool)) if tool == "core_list_personalities"));
+        assert!(
+            matches!(denied, Err(CoreMcpError::NotAuthorized(tool)) if tool == "core_personality")
+        );
 
         let invalid = tools
-            .call_core_tool(
+            .read_core_resource(
                 host_authz(&owner, ToolScope::All),
                 owner.clone(),
                 None,
-                "core_get_memory",
-                serde_json::json!({ "memory": "not-a-memory-id" }),
+                "proxima://memory/not-a-memory-id",
             )
             .await
             .expect_err("invalid memory handle rejected");
@@ -289,6 +302,79 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
 }
 
 #[tokio::test]
+async fn facade_reads_core_resources_with_resource_scope() {
+    let db_name = unique_db_name("proxima_core_resource_mcp");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<EmptyApp>::app()
+            .database_url(db_url)
+            .owner(owner.clone())
+            .build()
+            .await?;
+        let tools = built.core_mcp_tools();
+        let authz = host_authz(&owner, ToolScope::All);
+
+        let remembered = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner.clone(),
+            "core_remember",
+            serde_json::json!({
+                "title": "Resource facade",
+                "body": "Read through MCP resource surface.",
+                "tags": ["resource"],
+                "idempotency_key": "facade-core-resource-read"
+            }),
+        )
+        .await?;
+        let memory = remembered["handle"].as_str().expect("remembered handle");
+
+        let resource_memory = read_test_model_resource(
+            &tools,
+            authz.clone(),
+            owner.clone(),
+            &format!("proxima://memory/{memory}"),
+        )
+        .await?;
+        assert_eq!(resource_memory["memory"], memory);
+
+        let resource_schemas =
+            read_test_model_resource(&tools, authz.clone(), owner.clone(), "proxima://schemas")
+                .await?;
+        assert!(
+            !resource_schemas["schemas"]
+                .as_array()
+                .expect("schemas")
+                .is_empty()
+        );
+
+        let denied = read_test_model_resource(
+            &tools,
+            host_authz(
+                &owner,
+                ToolScope::Palette(vec!["resource:schemas".to_string()]),
+            ),
+            owner.clone(),
+            &format!("proxima://memory/{memory}"),
+        )
+        .await;
+        assert!(
+            matches!(denied, Err(CoreMcpError::NotAuthorized(scope)) if scope == "resource:memory")
+        );
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("core MCP resource facade integration test failed");
+}
+
+#[tokio::test]
 async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic() {
     let db_name = unique_db_name("proxima_core_search_mcp");
     create_db(&db_name).await.expect("PG required for tests");
@@ -311,28 +397,26 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
             .map(|tool| tool.name)
             .collect();
         assert!(tool_names.contains("core_search_memories"));
-        assert!(tool_names.contains("core_get_memory"));
-        assert!(tool_names.contains("core_facts_citing_object"));
-        assert!(tool_names.contains("core_citation_of_fact"));
-        let substrate_listing = tools
-            .call_core_tool(
-                authz.clone(),
-                owner.clone(),
-                Some("test-model".to_string()),
-                "core_list_substrate_tools",
-                serde_json::json!({}),
-            )
-            .await?;
-        let substrate_tool_ids: HashSet<_> = substrate_listing["tools"]
+        assert!(!tool_names.contains("core_get_memory"));
+        assert!(!tool_names.contains("core_list_substrate_tools"));
+        assert!(tool_names.contains("core_fact"));
+        assert!(
+            all_core_resources().any(|resource| resource.scope_key == "resource:memory"),
+            "resource:memory must stay in the core resource catalog"
+        );
+        let resource_listing =
+            read_test_model_resource(&tools, authz.clone(), owner.clone(), "proxima://tools")
+                .await?;
+        let substrate_tool_ids: HashSet<_> = resource_listing["tools"]
             .as_array()
             .expect("tools")
             .iter()
             .filter_map(|tool| tool["tool_id"].as_str())
             .collect();
         assert!(substrate_tool_ids.contains("core_search_memories"));
-        assert!(substrate_tool_ids.contains("core_get_memory"));
-        assert!(substrate_tool_ids.contains("core_facts_citing_object"));
-        assert!(substrate_tool_ids.contains("core_citation_of_fact"));
+        assert!(!substrate_tool_ids.contains("core_get_memory"));
+        assert!(!substrate_tool_ids.contains("core_list_substrate_tools"));
+        assert!(substrate_tool_ids.contains("core_fact"));
 
         let remembered = call_test_model_tool(
             &tools,
@@ -380,12 +464,11 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
         .await?;
         assert_eq!(semantic["memories"][0]["memory"], memory);
 
-        let fetched = call_test_model_tool(
+        let fetched = read_test_model_resource(
             &tools,
             authz,
             owner.clone(),
-            "core_get_memory",
-            serde_json::json!({ "memory": memory }),
+            &format!("proxima://memory/{memory}"),
         )
         .await?;
         assert_eq!(fetched["memory"], memory);
@@ -489,6 +572,68 @@ async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() 
 }
 
 #[tokio::test]
+async fn facade_core_fact_tombstone_is_idempotent() {
+    let db_name = unique_db_name("proxima_core_fact_tombstone_mcp");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<EmptyApp>::app()
+            .database_url(db_url)
+            .owner(owner.clone())
+            .build()
+            .await?;
+        let tools = built.core_mcp_tools();
+        let authz = host_authz(&owner, ToolScope::All);
+
+        let remembered = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner.clone(),
+            "core_remember",
+            serde_json::json!({
+                "title": "Tombstone surface",
+                "body": "Fact erased through core_fact tombstone.",
+                "tags": ["tombstone"],
+                "idempotency_key": "facade-core-fact-tombstone"
+            }),
+        )
+        .await?;
+        let memory = remembered["handle"].as_str().expect("remembered handle");
+
+        let first = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner.clone(),
+            "core_fact",
+            serde_json::json!({ "action": "tombstone", "fact": memory }),
+        )
+        .await?;
+        assert_eq!(first["fact_erased"], true);
+        assert_eq!(first["idempotent_replay"], false);
+
+        let second = call_test_model_tool(
+            &tools,
+            authz,
+            owner.clone(),
+            "core_fact",
+            serde_json::json!({ "action": "tombstone", "fact": memory }),
+        )
+        .await?;
+        assert_eq!(second["fact_erased"], false);
+        assert_eq!(second["idempotent_replay"], true);
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("core_fact tombstone MCP facade integration test failed");
+}
+
+#[tokio::test]
 async fn facade_core_citation_readback_is_owner_scoped() {
     let db_name = unique_db_name("proxima_core_citation_mcp");
     create_db(&db_name).await.expect("PG required for tests");
@@ -546,8 +691,8 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             &tools,
             authz.clone(),
             owner.clone(),
-            "core_facts_citing_object",
-            serde_json::json!({ "cited_object_id": cited_object_id.to_string() }),
+            "core_fact",
+            serde_json::json!({ "action": "facts_citing_object", "cited_object_id": cited_object_id.to_string() }),
         )
         .await?;
         assert_eq!(citing["facts"][0]["memory"], memory);
@@ -556,8 +701,8 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             &tools,
             authz.clone(),
             owner.clone(),
-            "core_citation_of_fact",
-            serde_json::json!({ "fact": memory }),
+            "core_fact",
+            serde_json::json!({ "action": "citation_of_fact", "fact": memory }),
         )
         .await?;
         assert_eq!(
@@ -573,8 +718,8 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             &tools,
             host_authz(&other_owner, ToolScope::All),
             other_owner,
-            "core_facts_citing_object",
-            serde_json::json!({ "cited_object_id": cited_object_id.to_string() }),
+            "core_fact",
+            serde_json::json!({ "action": "facts_citing_object", "cited_object_id": cited_object_id.to_string() }),
         )
         .await?;
         assert!(cross_owner["facts"].as_array().expect("facts").is_empty());

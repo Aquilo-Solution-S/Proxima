@@ -8,12 +8,6 @@ use proxima_core::{
 use proxima_mcp_server::{McpAuthContext, McpToolHost, ToolInvocationError};
 use sqlx::PgPool;
 
-const FACT_RETENTION_SURFACE_TOOL_NAMES: [&str; 3] = [
-    "core_get_graph",
-    "core_set_fact_retention",
-    "core_cleanup_facts",
-];
-
 /// Facade handle for listing and dispatching the composed engine MCP tools
 /// from an embedding host's own authenticated endpoint.
 #[derive(Clone, Debug)]
@@ -76,6 +70,7 @@ impl CoreMcpError {
 
     fn from_invocation_error(err: ToolInvocationError) -> Self {
         match err {
+            ToolInvocationError::NotAuthorized(tool) => Self::NotAuthorized(tool),
             ToolInvocationError::ToolNotFound(tool) => Self::NotFound(tool),
             ToolInvocationError::Tool(err) => Self::Tool {
                 kind: err.kind(),
@@ -106,20 +101,12 @@ impl CoreMcpTools {
     /// dispatch.
     #[must_use]
     pub fn list_core_tools(&self) -> Vec<CoreToolInfo> {
-        let tools = self
-            .host
+        self.host
             .registry()
             .list_mcp_tools()
             .iter()
             .map(tool_info_from_descriptor)
-            .collect::<Vec<_>>();
-        debug_assert!(
-            FACT_RETENTION_SURFACE_TOOL_NAMES
-                .iter()
-                .all(|name| tools.iter().any(|tool| tool.name == *name)),
-            "fact-retention surface tools must be present in CoreMcpTools"
-        );
-        tools
+            .collect::<Vec<_>>()
     }
 
     /// List registered MCP tools visible under `scope`.
@@ -129,7 +116,7 @@ impl CoreMcpTools {
             .registry()
             .list_mcp_tools()
             .iter()
-            .filter(|descriptor| scope.allows(descriptor.name))
+            .filter(|descriptor| scope.allows_group_advertisement(descriptor.name))
             .map(tool_info_from_descriptor)
             .collect()
     }
@@ -164,7 +151,11 @@ impl CoreMcpTools {
             return Err(CoreMcpError::NotFound(name.to_string()));
         };
         let canonical_name = descriptor.name;
-        if !authz.capabilities.tool_scope.allows(canonical_name) {
+        if !authz
+            .capabilities
+            .tool_scope
+            .allows_group_advertisement(canonical_name)
+        {
             return Err(CoreMcpError::NotAuthorized(name.to_string()));
         }
 
@@ -184,6 +175,40 @@ impl CoreMcpTools {
 
         self.host
             .call_tool(canonical_name, args, author, Some(auth))
+            .await
+            .map_err(CoreMcpError::from_invocation_error)
+    }
+
+    /// Read one core MCP resource through the same host authz boundary as
+    /// direct tool dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotAuthorized` when the caller's resource scope rejects the
+    /// URI, or `Tool` for resource validation/storage errors.
+    pub async fn read_core_resource(
+        &self,
+        authz: AuthzContext,
+        owner: Owner,
+        model_id: Option<String>,
+        uri: &str,
+    ) -> Result<serde_json::Value, CoreMcpError> {
+        let author = McpAuthorContext {
+            model_id: model_id.clone().unwrap_or_else(|| "unknown".to_string()),
+            client_name: "host".into(),
+            client_version: "0".into(),
+            personality_instance_id: None,
+            caller_self_perspective: None,
+        };
+        let auth = McpAuthContext {
+            owner: owner.clone(),
+            authz,
+            model_id,
+            master_token_id: None,
+        };
+
+        self.host
+            .read_resource(uri, author, Some(auth))
             .await
             .map_err(CoreMcpError::from_invocation_error)
     }

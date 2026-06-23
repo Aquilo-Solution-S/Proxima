@@ -2,7 +2,9 @@
 
 use std::collections::HashSet;
 
-use proxima_core::verbs::fact_cleanup::{CleanupDueFactsOutcome, OrphanedS3Blob};
+use proxima_core::verbs::fact_cleanup::{
+    CleanupDueFactsOutcome, OrphanedS3Blob, TombstoneFactOutcome,
+};
 use proxima_core::{EntityKind, Owner, OwnerPrincipalKind, StorageError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
@@ -16,6 +18,14 @@ use crate::verbs::hard_delete::{HardDeleteSet, HardDeleteSidecars, execute_hard_
 struct DueFactRow {
     memory_id: Uuid,
     event_id: Vec<u8>,
+    schema_id: String,
+    schema_version: i32,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct TombstoneFactRow {
+    memory_id: Uuid,
+    event_id: Option<Vec<u8>>,
     schema_id: String,
     schema_version: i32,
 }
@@ -65,6 +75,35 @@ pub async fn cleanup_due_facts(
     let outcome = cleanup_due_facts_in_tx(
         &mut tx,
         owner,
+        fact_sidecar_tables,
+        edge_sidecar_tables,
+        citation_mapping_sidecar_tables,
+        cited_object_sidecar_tables,
+    )
+    .await?;
+    tx.commit().await.map_err(map_err)?;
+    Ok(outcome)
+}
+
+/// Hard-erase one Fact and tombstone its transitive Provenance dependents.
+///
+/// # Errors
+///
+/// Returns storage constraint/internal errors from Postgres.
+pub async fn tombstone_fact(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    fact_id: Uuid,
+    fact_sidecar_tables: &[String],
+    edge_sidecar_tables: &[String],
+    citation_mapping_sidecar_tables: &[String],
+    cited_object_sidecar_tables: &[String],
+) -> Result<TombstoneFactOutcome, StorageError> {
+    let mut tx = pool.begin().await.map_err(map_err)?;
+    let outcome = tombstone_fact_in_tx(
+        &mut tx,
+        owner,
+        fact_id,
         fact_sidecar_tables,
         edge_sidecar_tables,
         citation_mapping_sidecar_tables,
@@ -191,6 +230,120 @@ async fn cleanup_due_facts_in_tx(
         cited_objects_erased,
         orphaned_s3_blobs,
     })
+}
+
+#[allow(clippy::too_many_lines)]
+async fn tombstone_fact_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    fact_id: Uuid,
+    fact_sidecar_tables: &[String],
+    edge_sidecar_tables: &[String],
+    citation_mapping_sidecar_tables: &[String],
+    cited_object_sidecar_tables: &[String],
+) -> Result<TombstoneFactOutcome, StorageError> {
+    let (owner_kind, owner_principal_id) = owner.columns();
+    let owner_columns = OwnerColumns {
+        kind: owner_kind,
+        principal_id: owner_principal_id,
+    };
+    let Some(row) = sqlx::query_as::<_, TombstoneFactRow>(
+        "SELECT memory_id, event_id, schema_id, schema_version
+           FROM proxima_core.memories
+          WHERE owner_principal_kind = $1
+            AND owner_principal_id = $2
+            AND memory_id = $3
+            AND kind IS NULL
+            AND tombstoned_at IS NULL",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(fact_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)?
+    else {
+        return Ok(empty_tombstone_fact_outcome());
+    };
+
+    let due_memory_ids = [row.memory_id];
+    let fact_entity_ids_to_delete =
+        fact_entity_ids_reaching_zero(tx, owner_kind, owner_principal_id, &due_memory_ids).await?;
+    let follow_head_edge_ids =
+        repoint_or_delete_fact_entities(tx, owner_kind, owner_principal_id, &due_memory_ids)
+            .await?;
+    let candidate_cited_object_ids = candidate_cited_object_ids(tx, &due_memory_ids).await?;
+    let tombstoned =
+        tombstone_transitive_derivatives(tx, owner_kind, owner_principal_id, &due_memory_ids)
+            .await?;
+    let tombstoned_memory_ids = tombstoned
+        .iter()
+        .map(|row| row.memory_id)
+        .collect::<Vec<_>>();
+    delete_embedding_artifacts(tx, &tombstoned_memory_ids).await?;
+
+    for row in &tombstoned {
+        insert_entity_delete_event(
+            tx,
+            owner_columns,
+            DeleteEntityEvent {
+                kind: row.kind,
+                memory_id: row.memory_id,
+                schema_id: &row.schema_id,
+                schema_version: row.schema_version,
+            },
+        )
+        .await?;
+    }
+    insert_entity_delete_event(
+        tx,
+        owner_columns,
+        DeleteEntityEvent {
+            kind: EntityKind::Fact,
+            memory_id: row.memory_id,
+            schema_id: &row.schema_id,
+            schema_version: row.schema_version,
+        },
+    )
+    .await?;
+
+    let edge_ids =
+        edge_ids_referencing_facts(tx, owner_kind, owner_principal_id, &due_memory_ids).await?;
+    let edge_ids = merged_edge_ids(edge_ids, follow_head_edge_ids);
+    execute_hard_delete(
+        tx,
+        &HardDeleteSet {
+            memories: vec![(EntityKind::Fact, row.memory_id)],
+            edge_ids,
+            fact_entity_ids: fact_entity_ids_to_delete,
+            event_ids: row.event_id.into_iter().collect(),
+        },
+        &HardDeleteSidecars {
+            memory_keyed: fact_sidecar_tables,
+            edge_keyed: edge_sidecar_tables,
+            citation_mapping_keyed: citation_mapping_sidecar_tables,
+        },
+    )
+    .await?;
+    let (cited_objects_erased, orphaned_s3_blobs) =
+        garbage_collect_cited_objects(tx, cited_object_sidecar_tables, &candidate_cited_object_ids)
+            .await?;
+
+    Ok(TombstoneFactOutcome {
+        fact_erased: true,
+        derivatives_tombstoned: u64::try_from(tombstoned.len()).unwrap_or(u64::MAX),
+        cited_objects_erased,
+        orphaned_s3_blobs,
+    })
+}
+
+fn empty_tombstone_fact_outcome() -> TombstoneFactOutcome {
+    TombstoneFactOutcome {
+        fact_erased: false,
+        derivatives_tombstoned: 0,
+        cited_objects_erased: 0,
+        orphaned_s3_blobs: Vec::new(),
+    }
 }
 
 fn empty_outcome() -> CleanupDueFactsOutcome {

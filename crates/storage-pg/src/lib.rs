@@ -26,7 +26,7 @@ use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryRespon
 use proxima_core::verbs::event_ingest::{
     AuthorizedEventIngest, AuthorizedFactWithCitation, EventDraft, EventIngestOutcome,
 };
-use proxima_core::verbs::fact_cleanup::CleanupDueFactsOutcome;
+use proxima_core::verbs::fact_cleanup::{CleanupDueFactsOutcome, TombstoneFactOutcome};
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
@@ -980,6 +980,27 @@ impl Storage for PgStorage {
         verbs::fact_cleanup::cleanup_due_facts(
             &self.pool,
             owner,
+            fact_sidecar_tables,
+            edge_sidecar_tables,
+            citation_mapping_sidecar_tables,
+            cited_object_sidecar_tables,
+        )
+        .await
+    }
+
+    async fn tombstone_fact(
+        &self,
+        owner: &Owner,
+        fact_id: uuid::Uuid,
+        fact_sidecar_tables: &[String],
+        edge_sidecar_tables: &[String],
+        citation_mapping_sidecar_tables: &[String],
+        cited_object_sidecar_tables: &[String],
+    ) -> Result<TombstoneFactOutcome, StorageError> {
+        verbs::fact_cleanup::tombstone_fact(
+            &self.pool,
+            owner,
+            fact_id,
             fact_sidecar_tables,
             edge_sidecar_tables,
             citation_mapping_sidecar_tables,

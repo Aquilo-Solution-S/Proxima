@@ -8,11 +8,9 @@ use common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
 use proxima_core::goal::relations::CORE_MOTIVATED_BY_RELATION;
 use proxima_core::mcp::core_tools::goal::{
-    ChildGoalInput, GoalDecomposeArgs, GoalMarkAchievedArgs, GoalModifyArgs, GoalPayloadArgs,
-    GoalSetArgs, GoalTransition, GoalTransitionArgs, GoalWriteOutput,
-};
-use proxima_core::mcp::core_tools::{
-    GoalDecomposeTool, GoalMarkAchievedTool, GoalModifyTool, GoalSetTool, GoalTransitionTool,
+    ChildGoalInput, CoreGoalArgs, CoreGoalOutput, CoreGoalTool, GoalDecomposeArgs,
+    GoalDecomposeOutput, GoalMarkAchievedArgs, GoalModifyArgs, GoalPayloadArgs, GoalSetArgs,
+    GoalTransition, GoalTransitionArgs, GoalWriteOutput,
 };
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
@@ -31,11 +29,11 @@ async fn goal_set_tool_creates_active_goal() -> TestResult {
     with_harness(|harness| {
         Box::pin(async move {
             let first = harness
-                .call::<GoalSetTool>(goal_set_args(
+                .call_goal_write(CoreGoalArgs::Set(goal_set_args(
                     "Tool-created goal",
                     "Create this goal through the MCP tool.",
                     "goal-set-tool-active",
-                ))
+                )))
                 .await?;
             assert_goal_write(&first.handle, first.lifecycle_memory.as_deref());
             assert!(!first.idempotent_replay);
@@ -54,11 +52,11 @@ async fn goal_set_tool_creates_active_goal() -> TestResult {
             assert_eq!(count_goal_activated(harness.pg.pool()).await?, 1);
 
             let replay = harness
-                .call::<GoalSetTool>(goal_set_args(
+                .call_goal_write(CoreGoalArgs::Set(goal_set_args(
                     "Tool-created goal",
                     "Create this goal through the MCP tool.",
                     "goal-set-tool-active",
-                ))
+                )))
                 .await?;
             assert!(replay.idempotent_replay);
             assert_eq!(replay.handle, first.handle);
@@ -78,32 +76,32 @@ async fn goal_lifecycle_tool_chain() -> TestResult {
                 .seed_evidence_memory("evidence for achievement")
                 .await?;
             let active = harness
-                .call::<GoalSetTool>(goal_set_args(
+                .call_goal_write(CoreGoalArgs::Set(goal_set_args(
                     "Lifecycle chain goal",
                     "Pause, resume, then achieve this goal.",
                     "goal-lifecycle-set",
-                ))
+                )))
                 .await?;
             let paused = harness
-                .call::<GoalTransitionTool>(GoalTransitionArgs {
+                .call_goal_write(CoreGoalArgs::Transition(GoalTransitionArgs {
                     goal: active.handle.clone(),
                     transition: GoalTransition::Pause,
                     idempotency_key: Some("goal-lifecycle-pause".into()),
-                })
+                }))
                 .await?;
             let resumed = harness
-                .call::<GoalTransitionTool>(GoalTransitionArgs {
+                .call_goal_write(CoreGoalArgs::Transition(GoalTransitionArgs {
                     goal: paused.handle.clone(),
                     transition: GoalTransition::Resume,
                     idempotency_key: Some("goal-lifecycle-resume".into()),
-                })
+                }))
                 .await?;
             let achieved = harness
-                .call::<GoalMarkAchievedTool>(GoalMarkAchievedArgs {
+                .call_goal_write(CoreGoalArgs::MarkAchieved(GoalMarkAchievedArgs {
                     goal: resumed.handle.clone(),
                     evidence: vec![evidence.handle.clone()],
                     idempotency_key: Some("goal-lifecycle-achieved".into()),
-                })
+                }))
                 .await?;
 
             let active_id = harness.goal_id(&active.handle)?;
@@ -146,18 +144,18 @@ async fn goal_full_lifecycle_accepts_structured_body_payload() -> TestResult {
                 .seed_evidence_memory("structured body lifecycle evidence")
                 .await?;
             let active = harness
-                .call::<GoalSetTool>(task_goal_set_args(
+                .call_goal_write(CoreGoalArgs::Set(task_goal_set_args(
                     "Structured lifecycle goal",
                     "Exercise every goal tool with a structured body object.",
                     "High",
                     "structured-lifecycle-set",
-                ))
+                )))
                 .await?;
             assert_fresh_goal_write(&active);
 
             let active_id = harness.goal_id(&active.handle)?;
             let decomposed = harness
-                .call::<GoalDecomposeTool>(GoalDecomposeArgs {
+                .call_goal_decompose(GoalDecomposeArgs {
                     parent_goal: active.handle.clone(),
                     children: vec![task_child_goal(
                         "Structured lifecycle child",
@@ -180,25 +178,25 @@ async fn goal_full_lifecycle_accepts_structured_body_payload() -> TestResult {
             );
 
             let paused = harness
-                .call::<GoalTransitionTool>(GoalTransitionArgs {
+                .call_goal_write(CoreGoalArgs::Transition(GoalTransitionArgs {
                     goal: active.handle.clone(),
                     transition: GoalTransition::Pause,
                     idempotency_key: Some("structured-lifecycle-pause".into()),
-                })
+                }))
                 .await?;
             assert_fresh_goal_write(&paused);
 
             let resumed = harness
-                .call::<GoalTransitionTool>(GoalTransitionArgs {
+                .call_goal_write(CoreGoalArgs::Transition(GoalTransitionArgs {
                     goal: paused.handle.clone(),
                     transition: GoalTransition::Resume,
                     idempotency_key: Some("structured-lifecycle-resume".into()),
-                })
+                }))
                 .await?;
             assert_fresh_goal_write(&resumed);
 
             let modified = harness
-                .call::<GoalModifyTool>(GoalModifyArgs {
+                .call_goal_write(CoreGoalArgs::Modify(GoalModifyArgs {
                     goal: resumed.handle.clone(),
                     payload: task_payload(
                         "Structured lifecycle goal modified",
@@ -207,16 +205,16 @@ async fn goal_full_lifecycle_accepts_structured_body_payload() -> TestResult {
                     ),
                     evidence: Some(vec![evidence.handle.clone()]),
                     idempotency_key: Some("structured-lifecycle-modify".into()),
-                })
+                }))
                 .await?;
             assert_fresh_goal_write(&modified);
 
             let achieved = harness
-                .call::<GoalMarkAchievedTool>(GoalMarkAchievedArgs {
+                .call_goal_write(CoreGoalArgs::MarkAchieved(GoalMarkAchievedArgs {
                     goal: modified.handle.clone(),
                     evidence: vec![evidence.handle.clone()],
                     idempotency_key: Some("structured-lifecycle-achieved".into()),
-                })
+                }))
                 .await?;
             assert_fresh_goal_write(&achieved);
 
@@ -248,11 +246,11 @@ async fn goal_transition_tool_rejects_raw_uuid() -> TestResult {
     with_harness(|harness| {
         Box::pin(async move {
             let err = harness
-                .call::<GoalTransitionTool>(GoalTransitionArgs {
+                .call_goal_write(CoreGoalArgs::Transition(GoalTransitionArgs {
                     goal: Uuid::now_v7().to_string(),
                     transition: GoalTransition::Pause,
                     idempotency_key: Some("goal-transition-raw-uuid".into()),
-                })
+                }))
                 .await
                 .expect_err("raw UUID must not resolve in handle mode");
             match err {
@@ -270,15 +268,15 @@ async fn goal_decompose_tool_writes_children() -> TestResult {
     with_harness(|harness| {
         Box::pin(async move {
             let parent = harness
-                .call::<GoalSetTool>(goal_set_args(
+                .call_goal_write(CoreGoalArgs::Set(goal_set_args(
                     "Parent goal",
                     "Split this parent into children.",
                     "goal-decompose-parent",
-                ))
+                )))
                 .await?;
             let parent_id = harness.goal_id(&parent.handle)?;
             let decomposed = harness
-                .call::<GoalDecomposeTool>(GoalDecomposeArgs {
+                .call_goal_decompose(GoalDecomposeArgs {
                     parent_goal: parent.handle.clone(),
                     children: vec![
                         child_goal("Child one", "First child goal."),
@@ -316,19 +314,19 @@ async fn goal_modify_tool_supersedes_head() -> TestResult {
     with_harness(|harness| {
         Box::pin(async move {
             let prior = harness
-                .call::<GoalSetTool>(goal_set_args(
+                .call_goal_write(CoreGoalArgs::Set(goal_set_args(
                     "Original title",
                     "Original goal text.",
                     "goal-modify-prior",
-                ))
+                )))
                 .await?;
             let modified = harness
-                .call::<GoalModifyTool>(GoalModifyArgs {
+                .call_goal_write(CoreGoalArgs::Modify(GoalModifyArgs {
                     goal: prior.handle.clone(),
                     payload: simple_payload("Modified title", "Modified goal text."),
                     evidence: Some(Vec::new()),
                     idempotency_key: Some("goal-modify-replacement".into()),
-                })
+                }))
                 .await?;
 
             let prior_id = harness.goal_id(&prior.handle)?;
@@ -393,6 +391,30 @@ impl ToolHarness {
 
     async fn call<T: McpTool>(&self, args: T::Args) -> Result<T::Output, McpToolError> {
         T::call(self.ctx(), args).await
+    }
+
+    async fn call_goal_write(&self, args: CoreGoalArgs) -> Result<GoalWriteOutput, McpToolError> {
+        match self.call::<CoreGoalTool>(args).await? {
+            CoreGoalOutput::Write(output) => Ok(output),
+            CoreGoalOutput::Decompose(_) => {
+                Err(McpToolError::Other("expected goal write output".into()))
+            }
+        }
+    }
+
+    async fn call_goal_decompose(
+        &self,
+        args: GoalDecomposeArgs,
+    ) -> Result<GoalDecomposeOutput, McpToolError> {
+        match self
+            .call::<CoreGoalTool>(CoreGoalArgs::Decompose(args))
+            .await?
+        {
+            CoreGoalOutput::Decompose(output) => Ok(output),
+            CoreGoalOutput::Write(_) => {
+                Err(McpToolError::Other("expected goal decompose output".into()))
+            }
+        }
     }
 
     async fn seed_evidence_memory(

@@ -1,16 +1,11 @@
 //! `core/get_personality` — full read of one personality instance,
 //! including all wake entries projected with W-handles.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::McpTool;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::personality::PersonalityStatus;
-
-#[derive(Debug, Default)]
-pub struct GetPersonalityTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetPersonalityArgs {
@@ -45,64 +40,51 @@ pub struct GetPersonalityOutput {
     pub wake_entries: Vec<GetPersonalityWakeEntry>,
 }
 
-impl McpTool for GetPersonalityTool {
-    const NAME: &'static str = "core_get_personality";
-    const DESCRIPTION: &'static str = "Read one personality with all wake entries. Args: \
-         `{\"personality\": \"I1\"}` where the value is an I-handle from list_personalities. Each wake \
-         entry in the response carries a `wake_entry` field (W-handle) — pass that to update_wake_entry, \
-         remove_wake_entry.";
-    type Args = GetPersonalityArgs;
-    type Output = GetPersonalityOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: GetPersonalityArgs,
-    ) -> BoxFuture<'static, Result<GetPersonalityOutput, McpToolError>> {
-        Box::pin(async move {
-            let target_id = ctx.resolve_personality(&args.personality)?;
-            let storage = ctx
-                .storage()
-                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-            let rows = storage
-                .list_personality_instances(&ctx.owner, true)
-                .await
-                .map_err(McpToolError::Storage)?;
-            let row = rows
-                .into_iter()
-                .find(|r| r.personality_instance_id == target_id)
-                .ok_or_else(|| {
-                    McpToolError::Other(format!(
-                        "personality {} not found for owner",
-                        args.personality
-                    ))
-                })?;
-            let personality = ctx.format_personality(row.personality_instance_id);
-            let root_perspective =
-                ctx.format_perspective_memory(row.current_root_perspective_memory_id);
-            let wake_entries = row
-                .wake_entries
-                .into_iter()
-                .map(|e| GetPersonalityWakeEntry {
-                    wake_entry: ctx.format_wake_entry(e.wake_entry_id),
-                    trigger_kind: e.trigger_kind.as_str().to_string(),
-                    trigger_id: e.trigger_id,
-                    label: e.label,
-                    enabled: e.enabled,
-                    instructions: e.instructions,
-                    authored_by: e.authored_by.as_str().to_string(),
-                    probability_promille: e.probability_promille,
-                    goal_scope: e.goal_scope.as_str().to_string(),
-                })
-                .collect();
-            Ok(GetPersonalityOutput {
-                personality,
-                display_name: row.display_name,
-                status: row.status,
-                root_perspective,
-                wake_entries,
-            })
+pub(super) async fn get_personality(
+    ctx: McpToolCtx,
+    args: GetPersonalityArgs,
+) -> Result<GetPersonalityOutput, McpToolError> {
+    let target_id = ctx.resolve_personality(&args.personality)?;
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let rows = storage
+        .list_personality_instances(&ctx.owner, true)
+        .await
+        .map_err(McpToolError::Storage)?;
+    let row = rows
+        .into_iter()
+        .find(|r| r.personality_instance_id == target_id)
+        .ok_or_else(|| {
+            McpToolError::Other(format!(
+                "personality {} not found for owner",
+                args.personality
+            ))
+        })?;
+    let personality = ctx.format_personality(row.personality_instance_id);
+    let root_perspective = ctx.format_perspective_memory(row.current_root_perspective_memory_id);
+    let wake_entries = row
+        .wake_entries
+        .into_iter()
+        .map(|e| GetPersonalityWakeEntry {
+            wake_entry: ctx.format_wake_entry(e.wake_entry_id),
+            trigger_kind: e.trigger_kind.as_str().to_string(),
+            trigger_id: e.trigger_id,
+            label: e.label,
+            enabled: e.enabled,
+            instructions: e.instructions,
+            authored_by: e.authored_by.as_str().to_string(),
+            probability_promille: e.probability_promille,
+            goal_scope: e.goal_scope.as_str().to_string(),
         })
-    }
+        .collect();
+    Ok(GetPersonalityOutput {
+        personality,
+        display_name: row.display_name,
+        status: row.status,
+        root_perspective,
+        wake_entries,
+    })
 }
 
 #[cfg(test)]
@@ -140,7 +122,7 @@ mod tests {
     #[tokio::test]
     async fn get_personality_unknown_handle_returns_unknown_handle_err() {
         let ctx = make_ctx();
-        let err = GetPersonalityTool::call(
+        let err = get_personality(
             ctx,
             GetPersonalityArgs {
                 personality: "I99".into(),
@@ -157,7 +139,7 @@ mod tests {
     #[tokio::test]
     async fn get_personality_malformed_handle_returns_unknown_handle_err() {
         let ctx = make_ctx();
-        let err = GetPersonalityTool::call(
+        let err = get_personality(
             ctx,
             GetPersonalityArgs {
                 personality: "not-a-handle".into(),
