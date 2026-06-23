@@ -58,7 +58,7 @@ pub struct SummaryMatch {
 pub struct CodeSearchCommitsTool;
 
 impl McpTool for CodeSearchCommitsTool {
-    const NAME: &'static str = "proxima-code/search_commits";
+    const NAME: &'static str = "proxima-code_search_commits";
     const DESCRIPTION: &'static str =
         "Search Git commit facts and operator-authored commit summaries.";
 

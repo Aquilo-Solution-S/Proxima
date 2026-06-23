@@ -3,7 +3,8 @@ use std::sync::Arc;
 #[cfg(test)]
 use proxima_core::AuthPath;
 use proxima_core::mcp::{
-    McpAuthorContext, McpToolCtx, McpToolError, McpToolExtensions, OutputMode,
+    McpAuthorContext, McpToolCtx, McpToolError, McpToolErrorKind, McpToolExtensions, OutputMode,
+    tool_name_matches,
 };
 use proxima_core::{AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner};
 
@@ -185,7 +186,7 @@ impl McpToolHost {
             .registry
             .list_mcp_tools()
             .iter()
-            .find(|d| d.name == name)
+            .find(|d| tool_name_matches(d.name, name))
         {
             let owner = auth.as_ref().map(|ctx| ctx.owner.clone());
             return (descriptor.call)(self.ctx_for(author, owner, auth.as_ref()), args)
@@ -203,6 +204,16 @@ pub enum ToolInvocationError {
     ToolNotFound(String),
     #[error("tool error: {0}")]
     Tool(#[from] McpToolError),
+}
+
+impl ToolInvocationError {
+    #[must_use]
+    pub fn kind(&self) -> McpToolErrorKind {
+        match self {
+            Self::ToolNotFound(_) => McpToolErrorKind::InvalidInput,
+            Self::Tool(inner) => inner.kind(),
+        }
+    }
 }
 
 #[cfg(test)]

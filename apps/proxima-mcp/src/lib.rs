@@ -543,8 +543,8 @@ mod tests {
             "core_search_memories",
             "core_instantiate_personality",
             "core_add_wake_entry",
-            "proxima-code/register_repo",
-            "proxima-code/emit_execution_request",
+            "proxima-code_register_repo",
+            "proxima-code_emit_execution_request",
         ];
 
         let full = resolve_tool_scope(None, None, None, &registered_ids).expect("full profile");
@@ -558,10 +558,10 @@ mod tests {
         // flavor is compiled in (the keep set references their `NAME`
         // consts under the same cfg).
         #[cfg(feature = "code")]
-        assert!(memory.allows("proxima-code/register_repo"));
+        assert!(memory.allows("proxima-code_register_repo"));
         assert!(!memory.allows("core_instantiate_personality"));
         assert!(!memory.allows("core_add_wake_entry"));
-        assert!(!memory.allows("proxima-code/emit_execution_request"));
+        assert!(!memory.allows("proxima-code_emit_execution_request"));
 
         let overridden = resolve_tool_scope(
             Some("memory"),

@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use proxima_core::{AuthzContext, Engine, FlavorRegistryFrozen, McpAuthorContext, Owner};
+use proxima_core::{
+    AuthzContext, Engine, FlavorRegistryFrozen, McpAuthorContext, McpToolDescriptor,
+    McpToolErrorKind, Owner, ToolScope, core_tool_annotations, provider_safe_tool_name,
+    tool_name_matches,
+};
 use proxima_mcp_server::{McpAuthContext, McpToolHost, ToolInvocationError};
 use sqlx::PgPool;
 
@@ -23,6 +27,24 @@ pub struct CoreToolInfo {
     pub name: String,
     pub description: String,
     pub args_schema: serde_json::Value,
+    pub read_only: Option<bool>,
+    pub destructive: Option<bool>,
+    pub idempotent: Option<bool>,
+    pub open_world: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CoreMcpErrorKind {
+    #[error("not authorized")]
+    NotAuthorized,
+    #[error("not found")]
+    NotFound,
+    #[error("invalid input")]
+    InvalidInput,
+    #[error("invalid request")]
+    InvalidRequest,
+    #[error("internal")]
+    Internal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -31,8 +53,36 @@ pub enum CoreMcpError {
     NotAuthorized(String),
     #[error("tool not found: {0}")]
     NotFound(String),
-    #[error("tool error: {0}")]
-    Tool(String),
+    #[error("tool error ({kind:?}): {message}")]
+    Tool {
+        kind: McpToolErrorKind,
+        message: String,
+    },
+}
+
+impl CoreMcpError {
+    #[must_use]
+    pub const fn kind(&self) -> CoreMcpErrorKind {
+        match self {
+            Self::NotAuthorized(_) => CoreMcpErrorKind::NotAuthorized,
+            Self::NotFound(_) => CoreMcpErrorKind::NotFound,
+            Self::Tool { kind, .. } => match kind {
+                McpToolErrorKind::InvalidInput => CoreMcpErrorKind::InvalidInput,
+                McpToolErrorKind::InvalidRequest => CoreMcpErrorKind::InvalidRequest,
+                McpToolErrorKind::Internal => CoreMcpErrorKind::Internal,
+            },
+        }
+    }
+
+    fn from_invocation_error(err: ToolInvocationError) -> Self {
+        match err {
+            ToolInvocationError::ToolNotFound(tool) => Self::NotFound(tool),
+            ToolInvocationError::Tool(err) => Self::Tool {
+                kind: err.kind(),
+                message: err.to_string(),
+            },
+        }
+    }
 }
 
 impl CoreMcpTools {
@@ -61,11 +111,7 @@ impl CoreMcpTools {
             .registry()
             .list_mcp_tools()
             .iter()
-            .map(|descriptor| CoreToolInfo {
-                name: descriptor.name.to_string(),
-                description: descriptor.description.to_string(),
-                args_schema: descriptor.args_schema.clone(),
-            })
+            .map(tool_info_from_descriptor)
             .collect::<Vec<_>>();
         debug_assert!(
             FACT_RETENTION_SURFACE_TOOL_NAMES
@@ -74,6 +120,18 @@ impl CoreMcpTools {
             "fact-retention surface tools must be present in CoreMcpTools"
         );
         tools
+    }
+
+    /// List registered MCP tools visible under `scope`.
+    #[must_use]
+    pub fn list_core_tools_for_scope(&self, scope: &ToolScope) -> Vec<CoreToolInfo> {
+        self.host
+            .registry()
+            .list_mcp_tools()
+            .iter()
+            .filter(|descriptor| scope.allows(descriptor.name))
+            .map(tool_info_from_descriptor)
+            .collect()
     }
 
     /// Dispatch one registered core/flavor MCP tool under caller-supplied
@@ -97,7 +155,11 @@ impl CoreMcpTools {
         name: &str,
         args: serde_json::Value,
     ) -> Result<serde_json::Value, CoreMcpError> {
-        if !authz.capabilities.tool_scope.allows(name) {
+        let Some(descriptor) = self.find_tool(name) else {
+            return Err(CoreMcpError::NotFound(name.to_string()));
+        };
+        let canonical_name = descriptor.name;
+        if !authz.capabilities.tool_scope.allows(canonical_name) {
             return Err(CoreMcpError::NotAuthorized(name.to_string()));
         }
 
@@ -116,11 +178,100 @@ impl CoreMcpTools {
         };
 
         self.host
-            .call_tool(name, args, author, Some(auth))
+            .call_tool(canonical_name, args, author, Some(auth))
             .await
-            .map_err(|err| match err {
-                ToolInvocationError::ToolNotFound(tool) => CoreMcpError::NotFound(tool),
-                ToolInvocationError::Tool(err) => CoreMcpError::Tool(err.to_string()),
-            })
+            .map_err(CoreMcpError::from_invocation_error)
+    }
+
+    fn find_tool(&self, name: &str) -> Option<&McpToolDescriptor> {
+        find_tool_descriptor(self.host.registry().list_mcp_tools(), name)
+    }
+}
+
+fn find_tool_descriptor<'a>(
+    descriptors: &'a [McpToolDescriptor],
+    name: &str,
+) -> Option<&'a McpToolDescriptor> {
+    descriptors
+        .iter()
+        .find(|descriptor| tool_name_matches(descriptor.name, name))
+}
+
+fn tool_info_from_descriptor(descriptor: &McpToolDescriptor) -> CoreToolInfo {
+    let annotations = core_tool_annotations(descriptor.name).unwrap_or_default();
+    CoreToolInfo {
+        name: provider_safe_tool_name(descriptor.name),
+        description: descriptor.description.to_string(),
+        args_schema: descriptor.args_schema.clone(),
+        read_only: annotations.read_only,
+        destructive: annotations.destructive,
+        idempotent: annotations.idempotent,
+        open_world: annotations.open_world,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::FutureExt as _;
+    use proxima_core::{McpToolCtx, McpToolError, StorageError};
+
+    #[test]
+    fn facade_error_mapping_preserves_invalid_input_kind() {
+        let err = CoreMcpError::from_invocation_error(ToolInvocationError::Tool(
+            McpToolError::InvalidInput("bad params".into()),
+        ));
+
+        assert_eq!(err.kind(), CoreMcpErrorKind::InvalidInput);
+        assert!(matches!(
+            err,
+            CoreMcpError::Tool {
+                kind: McpToolErrorKind::InvalidInput,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn facade_error_mapping_preserves_internal_storage_kind() {
+        let err = CoreMcpError::from_invocation_error(ToolInvocationError::Tool(
+            McpToolError::Storage(StorageError::Internal("boom".into())),
+        ));
+
+        assert_eq!(err.kind(), CoreMcpErrorKind::Internal);
+        assert!(matches!(
+            err,
+            CoreMcpError::Tool {
+                kind: McpToolErrorKind::Internal,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn facade_tool_lookup_accepts_canonical_and_provider_safe_names() {
+        fn call(
+            _ctx: McpToolCtx,
+            _args: serde_json::Value,
+        ) -> futures::future::BoxFuture<'static, Result<serde_json::Value, McpToolError>> {
+            async { Ok(serde_json::json!({})) }.boxed()
+        }
+
+        let descriptors = vec![McpToolDescriptor {
+            name: "provider/slashed_name",
+            description: "test",
+            produces_schema_ids: &[],
+            args_schema: serde_json::json!({ "type": "object" }),
+            call,
+        }];
+
+        assert_eq!(
+            find_tool_descriptor(&descriptors, "provider/slashed_name").map(|tool| tool.name),
+            Some("provider/slashed_name")
+        );
+        assert_eq!(
+            find_tool_descriptor(&descriptors, "provider_slashed_name").map(|tool| tool.name),
+            Some("provider/slashed_name")
+        );
     }
 }
