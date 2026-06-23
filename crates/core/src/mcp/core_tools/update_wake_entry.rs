@@ -1,11 +1,9 @@
 //! `core/update_wake_entry` — granular partial-fields update.
 //! `trigger_kind/trigger_id` are immutable; change them via remove + add.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::McpTool;
 use crate::authz::Role;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
@@ -13,9 +11,6 @@ use crate::mcp::core_tools::payload::{
 };
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::{WakeEntryAuthoredBy, WakeEntryGoalScope};
-
-#[derive(Debug, Default)]
-pub struct UpdateWakeEntryTool;
 
 #[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
 pub struct WakeEntryPatch {
@@ -46,23 +41,6 @@ pub struct UpdateWakeEntryOutput {
     /// passed in.
     pub wake_entry: String,
     pub audit_emit_failed: Option<String>,
-}
-
-impl McpTool for UpdateWakeEntryTool {
-    const NAME: &'static str = "core_update_wake_entry";
-    const DESCRIPTION: &'static str = "Update one wake entry. Args: \
-         `{\"wake_entry\": \"W1\", \"patch\": {…}}` where the W-handle comes from list_wake_entries or \
-         get_personality. Only fields present in `patch` change. To change trigger_kind/trigger_id, use \
-         remove_wake_entry + add_wake_entry.";
-    type Args = UpdateWakeEntryArgs;
-    type Output = UpdateWakeEntryOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: UpdateWakeEntryArgs,
-    ) -> BoxFuture<'static, Result<UpdateWakeEntryOutput, McpToolError>> {
-        Box::pin(update_wake_entry(ctx, args))
-    }
 }
 
 pub(super) async fn update_wake_entry(

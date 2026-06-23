@@ -1,19 +1,14 @@
 //! `core/facts_citing_object` — owner-scoped citation-to-Fact read-back.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::McpTool;
 use crate::mcp::{McpToolCtx, McpToolError};
 
 use super::get_memory::{
     GetMemoryOutput, format_authoring_personality, memory_class, payload_string, payload_tags,
     sidecar_specs, snapshot_payload_value,
 };
-
-#[derive(Debug, Default)]
-pub struct FactsCitingObjectTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FactsCitingObjectArgs {
@@ -25,21 +20,6 @@ pub struct FactsCitingObjectArgs {
 pub struct FactsCitingObjectOutput {
     pub cited_object_id: String,
     pub facts: Vec<GetMemoryOutput>,
-}
-
-impl McpTool for FactsCitingObjectTool {
-    const NAME: &'static str = "core_facts_citing_object";
-    const DESCRIPTION: &'static str =
-        "Return owner-scoped Facts whose citation mapping points at cited_object_id.";
-    type Args = FactsCitingObjectArgs;
-    type Output = FactsCitingObjectOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: FactsCitingObjectArgs,
-    ) -> BoxFuture<'static, Result<FactsCitingObjectOutput, McpToolError>> {
-        Box::pin(facts_citing_object(ctx, args))
-    }
 }
 
 pub(super) async fn facts_citing_object(

@@ -6,11 +6,11 @@ mod common;
 
 use common::{ConstantEmbedding, drop_db, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
-use proxima_core::mcp::core_tools::list_events::ListEventsArgs;
+use proxima_core::mcp::core_tools::list_events::{ListEventsArgs, ListEventsOutput, list_events};
 use proxima_core::mcp::core_tools::memory::derive::{DeriveArgs, DerivedKind};
 use proxima_core::mcp::core_tools::memory::link::LinkArgs;
 use proxima_core::mcp::core_tools::memory::remember::RememberArgs;
-use proxima_core::mcp::core_tools::{DeriveTool, LinkTool, ListEventsTool, RememberTool};
+use proxima_core::mcp::core_tools::{DeriveTool, LinkTool, RememberTool};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
     AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryFrozen, McpTool, McpToolError, Owner,
@@ -25,7 +25,7 @@ async fn list_events_returns_entity_and_edge_events_in_seq_order() -> TestResult
         Box::pin(async move {
             let produced = harness.seed_abstraction_fact_edge().await?;
             let page = harness
-                .call::<ListEventsTool>(ListEventsArgs {
+                .list_events(ListEventsArgs {
                     since: None,
                     limit: Some(1000),
                 })
@@ -95,7 +95,7 @@ async fn list_events_pages_with_strict_cursor_and_empty_tail() -> TestResult {
             harness.seed_abstraction_fact_edge().await?;
 
             let first = harness
-                .call::<ListEventsTool>(ListEventsArgs {
+                .list_events(ListEventsArgs {
                     since: None,
                     limit: Some(1),
                 })
@@ -108,7 +108,7 @@ async fn list_events_pages_with_strict_cursor_and_empty_tail() -> TestResult {
 
             loop {
                 let page = harness
-                    .call::<ListEventsTool>(ListEventsArgs {
+                    .list_events(ListEventsArgs {
                         since: Some(cursor.clone()),
                         limit: Some(1),
                     })
@@ -196,6 +196,10 @@ impl ToolHarness {
 
     async fn call<T: McpTool>(&self, args: T::Args) -> Result<T::Output, McpToolError> {
         T::call(self.ctx(), args).await
+    }
+
+    async fn list_events(&self, args: ListEventsArgs) -> Result<ListEventsOutput, McpToolError> {
+        list_events(self.ctx(), args).await
     }
 
     async fn seed_abstraction_fact_edge(&self) -> Result<ProducedGraph, McpToolError> {

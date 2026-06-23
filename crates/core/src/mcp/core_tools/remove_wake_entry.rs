@@ -1,19 +1,14 @@
 //! `core/remove_wake_entry` — granular delete via `Storage::set_wake_entries_within`.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::McpTool;
 use crate::authz::Role;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
     PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::{McpToolCtx, McpToolError};
-
-#[derive(Debug, Default)]
-pub struct RemoveWakeEntryTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RemoveWakeEntryArgs {
@@ -24,21 +19,6 @@ pub struct RemoveWakeEntryArgs {
 pub struct RemoveWakeEntryOutput {
     pub removed: bool,
     pub audit_emit_failed: Option<String>,
-}
-
-impl McpTool for RemoveWakeEntryTool {
-    const NAME: &'static str = "core_remove_wake_entry";
-    const DESCRIPTION: &'static str = "Remove one wake entry. Idempotent: returns removed=false if the \
-         entry was already absent.";
-    type Args = RemoveWakeEntryArgs;
-    type Output = RemoveWakeEntryOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: RemoveWakeEntryArgs,
-    ) -> BoxFuture<'static, Result<RemoveWakeEntryOutput, McpToolError>> {
-        Box::pin(remove_wake_entry(ctx, args))
-    }
 }
 
 pub(super) async fn remove_wake_entry(

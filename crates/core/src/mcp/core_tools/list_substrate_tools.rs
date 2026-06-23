@@ -1,14 +1,9 @@
 //! `core/list_substrate_tools` — dispatchable substrate and flavor MCP tools.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::McpTool;
 use crate::mcp::{McpToolCtx, McpToolError};
-
-#[derive(Debug, Default)]
-pub struct ListSubstrateToolsTool;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListSubstrateToolsArgs {}
@@ -23,20 +18,6 @@ pub struct SubstrateToolItem {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListSubstrateToolsOutput {
     pub tools: Vec<SubstrateToolItem>,
-}
-
-impl McpTool for ListSubstrateToolsTool {
-    const NAME: &'static str = "core_list_substrate_tools";
-    const DESCRIPTION: &'static str = "List substrate and flavor-registered tool ids.";
-    type Args = ListSubstrateToolsArgs;
-    type Output = ListSubstrateToolsOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: ListSubstrateToolsArgs,
-    ) -> BoxFuture<'static, Result<ListSubstrateToolsOutput, McpToolError>> {
-        Box::pin(list_substrate_tools(ctx, args))
-    }
 }
 
 #[allow(clippy::unused_async)]

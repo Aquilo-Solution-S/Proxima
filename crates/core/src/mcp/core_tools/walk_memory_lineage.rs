@@ -2,18 +2,14 @@
 
 use std::collections::HashMap;
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::verbs::query::{MemoryLineageDirection, MemoryLineageRequest};
-use crate::{EdgeId, McpTool, MemoryHandleClass, MemoryId};
+use crate::{EdgeId, MemoryHandleClass, MemoryId};
 
 use super::get_memory::memory_class;
-
-#[derive(Debug, Default)]
-pub struct WalkMemoryLineageTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WalkMemoryLineageArgs {
@@ -82,21 +78,6 @@ fn default_depth() -> u8 {
 
 fn default_limit() -> u32 {
     50
-}
-
-impl McpTool for WalkMemoryLineageTool {
-    const NAME: &'static str = "core_walk_memory_lineage";
-    const DESCRIPTION: &'static str =
-        "Walk owner-scoped Provenance/Supersession memory lineage from a prefixed memory id.";
-    type Args = WalkMemoryLineageArgs;
-    type Output = WalkMemoryLineageOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: WalkMemoryLineageArgs,
-    ) -> BoxFuture<'static, Result<WalkMemoryLineageOutput, McpToolError>> {
-        Box::pin(walk_memory_lineage(ctx, args))
-    }
 }
 
 /// # Errors
