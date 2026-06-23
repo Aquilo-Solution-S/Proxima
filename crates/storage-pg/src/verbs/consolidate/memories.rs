@@ -17,6 +17,8 @@ use crate::error::map_err;
 use crate::sidecars::{PgSidecarKey, PgSidecarRegistryFrozen};
 use crate::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 
+const PERSONALITY_APPEND_LOCK_KEY_DOMAIN: &[u8] = b"personality_append_lock_v1";
+
 pub async fn load_memory_batch_facts(
     pool: &PgPool,
     pg_sidecars: &PgSidecarRegistryFrozen,
@@ -488,12 +490,24 @@ pub async fn append_personality_memories(
     let (owner_kind, owner_principal_id) = req.owner.columns();
     let mut tx = pool.begin().await.map_err(map_err)?;
     let mut memory_ids = Vec::with_capacity(req.memories.len());
+    let has_perspective = req
+        .memories
+        .iter()
+        .any(|memory| memory.kind == proxima_core::PersonalityMemoryKind::Perspective);
+    if has_perspective {
+        let key = lock_key(req.instance.personality_instance_id.into_inner());
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(key)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(map_err)?;
+    }
 
     for memory in req.memories {
         let memory_id = uuid::Uuid::now_v7();
         // Read the head WITHIN the transaction so earlier inserts in this same
-        // batch are visible (a linear chain, not a fork). Cross-request forks are
-        // caught by the UNIQUE index on `supersedes` (migration 0003).
+        // batch are visible. The transaction advisory lock serializes
+        // cross-request Perspective appends for this personality instance.
         let prior_head = if memory.kind == proxima_core::PersonalityMemoryKind::Perspective {
             lookup_prior_personality_head(&mut *tx, &req.owner, &req.instance, &memory.schema_id)
                 .await?
@@ -670,4 +684,15 @@ async fn memory_kind_for_provenance(
     .await
     .map_err(map_err)?;
     Ok(row.and_then(|(kind,)| kind).unwrap_or(EntityKind::Fact))
+}
+
+fn lock_key(instance_id: uuid::Uuid) -> i64 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(PERSONALITY_APPEND_LOCK_KEY_DOMAIN);
+    hasher.update(instance_id.as_bytes());
+    let hash = hasher.finalize();
+    let bytes: [u8; 8] = hash.as_bytes()[..8]
+        .try_into()
+        .expect("blake3 hash is 32 bytes");
+    i64::from_le_bytes(bytes)
 }
