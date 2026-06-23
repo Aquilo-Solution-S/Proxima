@@ -15,6 +15,7 @@ pub struct NeighborEdge {
 pub(crate) async fn load_graph_payloads(
     ctx: &McpToolCtx,
     memory_ids: &[uuid::Uuid],
+    include_body: bool,
 ) -> Result<BTreeMap<uuid::Uuid, GraphPayloadRow>, McpToolError> {
     if memory_ids.is_empty() {
         return Ok(BTreeMap::new());
@@ -27,12 +28,20 @@ pub(crate) async fn load_graph_payloads(
         .copied()
         .map(MemoryId::new)
         .collect::<Vec<_>>();
-    let rows = storage.load_memory_graph_payloads(&ctx.owner, &ids).await?;
+    let rows = storage
+        .load_memory_graph_payloads(&ctx.owner, &ids, include_body)
+        .await?;
     Ok(rows
         .into_iter()
         .map(|row| {
             let memory_id = row.memory_id.into_inner();
-            (memory_id, GraphPayloadRow { tags: row.tags })
+            (
+                memory_id,
+                GraphPayloadRow {
+                    tags: row.tags,
+                    body: row.body,
+                },
+            )
         })
         .collect())
 }
@@ -40,6 +49,7 @@ pub(crate) async fn load_graph_payloads(
 #[derive(Debug)]
 pub(crate) struct GraphPayloadRow {
     pub(crate) tags: Option<Vec<String>>,
+    pub(crate) body: Option<String>,
 }
 
 /// # Errors

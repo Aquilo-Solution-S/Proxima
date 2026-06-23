@@ -31,6 +31,10 @@ fn default_search_mode() -> SearchMode {
     SearchMode::Hybrid
 }
 
+fn default_supersession_status() -> SupersessionStatus {
+    SupersessionStatus::HeadsOnly
+}
+
 #[derive(
     Debug,
     Clone,
@@ -76,6 +80,8 @@ pub struct MemorySearchRequest {
     pub query: String,
     #[serde(default = "default_search_mode")]
     pub mode: SearchMode,
+    #[serde(default = "default_supersession_status")]
+    pub supersession: SupersessionStatus,
     pub limit: u32,
     pub kind: Option<EntityKind>,
     pub schema_id: Option<SchemaId>,
