@@ -137,9 +137,14 @@ impl CoreMcpTools {
     /// Dispatch one registered core/flavor MCP tool under caller-supplied
     /// host authz and storage owner.
     ///
-    /// Tools that require a `caller_self_perspective` for audit-emitting
-    /// config mutations may log a non-fatal audit emission failure under
-    /// host dispatch because no personality author is supplied; the tool
+    /// This facade entry point threads NO personality author
+    /// (`personality_instance_id: None`), so tools that emit an audit Fact
+    /// for config mutations may log a non-fatal audit-emission failure here.
+    /// This caveat is specific to direct facade dispatch and to the
+    /// `System` / no-auth path: callers reaching tools through the MCP wire
+    /// server get a subject personality auto-resolved per authenticated
+    /// identity for `HostBearer`/`MasterDev` (see `mcp-server` `server.rs`
+    /// `ensure_subject_personality`), and thus full attribution. The tool
     /// call itself still succeeds or fails on its own verb checks.
     ///
     /// # Errors
