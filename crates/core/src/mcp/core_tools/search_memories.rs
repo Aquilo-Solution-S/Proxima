@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::verbs::query::{EntityKind, MemorySearchRequest, SearchMode, SearchOrder, TagMatch};
+use crate::verbs::query::{
+    EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
+};
 use crate::{McpTool, SchemaId};
 
 use super::memory::search::{NeighborEdge, load_graph_payloads, neighbor_edges};
@@ -44,6 +46,10 @@ fn default_include_neighbor_edges() -> bool {
     true
 }
 
+fn default_supersession() -> SearchMemoriesSupersession {
+    SearchMemoriesSupersession::HeadsOnly
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 pub enum SearchMemoriesKind {
     #[serde(rename = "Fact", alias = "fact")]
@@ -64,6 +70,22 @@ impl From<SearchMemoriesKind> for EntityKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchMemoriesSupersession {
+    HeadsOnly,
+    All,
+}
+
+impl From<SearchMemoriesSupersession> for SupersessionStatus {
+    fn from(value: SearchMemoriesSupersession) -> Self {
+        match value {
+            SearchMemoriesSupersession::HeadsOnly => Self::HeadsOnly,
+            SearchMemoriesSupersession::All => Self::IncludeSuperseded,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchMemoriesArgs {
     #[schemars(description = "Search query over owner-visible memories. 1 to 512 chars.")]
@@ -76,6 +98,11 @@ pub struct SearchMemoriesArgs {
         description = "Maximum number of memories to return. Defaults to 8; values are clamped to 1..=50."
     )]
     pub limit: u32,
+    #[serde(default = "default_supersession")]
+    #[schemars(
+        description = "Supersession filter: heads_only returns only current heads by default; all includes superseded history."
+    )]
+    pub supersession: SearchMemoriesSupersession,
     #[serde(default)]
     #[schemars(
         description = "Optional memory kind filter: Fact, Abstraction, or Perspective. Omit or null for all kinds."
@@ -109,6 +136,14 @@ pub struct SearchMemoriesArgs {
         description = "Include neighbor edges touching matched memories. Defaults to true; set false for lean results."
     )]
     pub include_neighbor_edges: bool,
+    #[serde(default)]
+    #[schemars(description = "Include hydrated body text in each result. Defaults to false.")]
+    pub include_body: bool,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional max character count for hydrated body text. Applies only when include_body=true."
+    )]
+    pub body_max_chars: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -133,11 +168,13 @@ pub struct SearchMemoryOutput {
     pub similarity_score: f32,
     pub wake_chain_depth: u16,
     pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
 }
 
 impl McpTool for SearchMemoriesTool {
     const NAME: &'static str = "core_search_memories";
-    const DESCRIPTION: &'static str = "Search owner-scoped memories by lexical, semantic, or hybrid ranking. Optional reader_personality applies read-scope filtering for Abstractions/Perspectives; omitted reader uses no-reader owner-visible semantics.";
+    const DESCRIPTION: &'static str = "Search owner-scoped memories by lexical, semantic, or hybrid ranking. Defaults to current heads only; pass supersession=all for full history. Set include_body=true to hydrate body text in the same batched read. Optional reader_personality applies read-scope filtering for Abstractions/Perspectives; omitted reader uses no-reader owner-visible semantics.";
     type Args = SearchMemoriesArgs;
     type Output = SearchMemoriesOutput;
 
@@ -165,6 +202,7 @@ impl McpTool for SearchMemoriesTool {
                 principal: ctx.owner.clone(),
                 query: query.to_string(),
                 mode,
+                supersession: args.supersession.into(),
                 limit: args.limit.clamp(1, 50),
                 kind: args.kind.map(EntityKind::from),
                 schema_id: args.schema_id.map(SchemaId::new),
@@ -205,7 +243,7 @@ impl McpTool for SearchMemoriesTool {
                 .await?;
             let degraded_to_lexical = semantic_search_degraded_to_lexical(mode, &rows);
             let memory_ids: Vec<_> = rows.iter().map(|row| row.memory_id.into_inner()).collect();
-            let payloads = load_graph_payloads(&ctx, &memory_ids).await?;
+            let payloads = load_graph_payloads(&ctx, &memory_ids, args.include_body).await?;
             let neighbor_edges = if args.include_neighbor_edges {
                 neighbor_edges(&ctx, &memory_ids).await?
             } else {
@@ -214,28 +252,21 @@ impl McpTool for SearchMemoriesTool {
             let memories = rows
                 .into_iter()
                 .map(|row| {
+                    let mid = row.memory_id.into_inner();
                     let tags = payloads
-                        .get(&row.memory_id.into_inner())
+                        .get(&mid)
                         .and_then(|payload| payload.tags.clone())
                         .unwrap_or_default();
-                    let class = super::get_memory::memory_class(row.kind.as_str())?;
-                    Ok(SearchMemoryOutput {
-                        memory: ctx.format_memory_with_class(row.memory_id, class),
-                        kind: row.kind.as_str().to_string(),
-                        schema_id: row.schema_id.as_str().to_string(),
-                        authoring_personality_instance_id:
-                            super::get_memory::format_authoring_personality(
-                                &ctx,
-                                row.authoring_personality_instance_id,
-                            ),
-                        created_at: format_rfc3339(row.created_at)?,
-                        snippet: row.snippet,
-                        score: row.score,
-                        lexical_score: row.lexical_score,
-                        similarity_score: row.similarity_score,
-                        wake_chain_depth: row.wake_chain_depth.into_inner(),
-                        tags,
-                    })
+                    let body = args
+                        .include_body
+                        .then(|| {
+                            payloads
+                                .get(&mid)
+                                .and_then(|payload| payload.body.clone())
+                                .map(|body| truncate_body(body, args.body_max_chars))
+                        })
+                        .flatten();
+                    search_memory_output(&ctx, row, tags, body)
                 })
                 .collect::<Result<Vec<_>, McpToolError>>()?;
 
@@ -247,6 +278,39 @@ impl McpTool for SearchMemoriesTool {
             })
         })
     }
+}
+
+fn truncate_body(body: String, max_chars: Option<usize>) -> String {
+    match max_chars {
+        Some(max) => body.chars().take(max).collect(),
+        None => body,
+    }
+}
+
+fn search_memory_output(
+    ctx: &McpToolCtx,
+    row: crate::verbs::query::MemorySearchResult,
+    tags: Vec<String>,
+    body: Option<String>,
+) -> Result<SearchMemoryOutput, McpToolError> {
+    let class = super::get_memory::memory_class(row.kind.as_str())?;
+    Ok(SearchMemoryOutput {
+        memory: ctx.format_memory_with_class(row.memory_id, class),
+        kind: row.kind.as_str().to_string(),
+        schema_id: row.schema_id.as_str().to_string(),
+        authoring_personality_instance_id: super::get_memory::format_authoring_personality(
+            ctx,
+            row.authoring_personality_instance_id,
+        ),
+        created_at: format_rfc3339(row.created_at)?,
+        snippet: row.snippet,
+        score: row.score,
+        lexical_score: row.lexical_score,
+        similarity_score: row.similarity_score,
+        wake_chain_depth: row.wake_chain_depth.into_inner(),
+        tags,
+        body,
+    })
 }
 
 fn semantic_search_degraded_to_lexical(

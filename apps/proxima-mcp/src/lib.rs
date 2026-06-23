@@ -11,7 +11,7 @@ use std::sync::Arc;
 use proxima::{
     AppInfo, FlavorApp, FlavorBundle, Proxima, ProximaError, RunningProxima, RuntimeBuilder,
 };
-use proxima_core::{Engine, FlavorRegistry, ToolScope, llm::EmbeddingClient};
+use proxima_core::{FlavorRegistry, ToolScope, llm::EmbeddingClient};
 use proxima_llm_openai_compat::{
     MISTRAL_EMBED_BASE_URL, MISTRAL_EMBED_MODEL, OpenAiCompatEmbeddingClient,
 };
@@ -182,49 +182,20 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
         .mcp_addr
         .ok_or_else(|| CliError::Runtime(ProximaError::Mcp("MCP listener disabled".into())))?;
     tracing::info!(addr = %addr, "proxima-mcp listening; POST http://{addr}/mcp");
-    spawn_embedding_worker(&running.engine);
-    if let Some(server) = running.server {
+    let embedding_worker = running.spawn_embedding_worker(running.cancel.clone());
+    let server_result = if let Some(server) = running.server {
         server
             .await
-            .map_err(|err| CliError::Transport(err.to_string()))?;
+            .map_err(|err| CliError::Transport(err.to_string()))
+    } else {
+        Ok(())
+    };
+    running.cancel.cancel();
+    if let Err(err) = embedding_worker.await {
+        tracing::warn!(error = %err, "embedding worker join failed");
     }
+    server_result?;
     Ok(())
-}
-
-fn spawn_embedding_worker(engine: &Arc<Engine>) {
-    const INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-
-    if engine.embed_client().is_none() {
-        return;
-    }
-    let engine = Arc::clone(engine);
-    tokio::spawn(async move {
-        loop {
-            // Drain one job per claim so each row is `processing` for at most a
-            // single embed call; this keeps the storage-side stale-reclaim window
-            // able to distinguish a dead worker from a slow one. Loop until the
-            // queue is empty, then sleep.
-            let mut processed = 0usize;
-            let mut failed = 0usize;
-            loop {
-                match engine.drain_embedding_jobs(1).await {
-                    Ok(outcome) if outcome.processed > 0 => {
-                        processed += outcome.processed;
-                        failed += outcome.failed;
-                    }
-                    Ok(_) => break,
-                    Err(err) => {
-                        tracing::warn!(error = %err, "embedding drain failed");
-                        break;
-                    }
-                }
-            }
-            if processed > 0 {
-                tracing::info!(processed, failed, "drained embedding jobs");
-            }
-            tokio::time::sleep(INTERVAL).await;
-        }
-    });
 }
 
 async fn run_reconcile(config: ReconcileConfig) -> Result<(), CliError> {
@@ -543,8 +514,8 @@ mod tests {
             "core_search_memories",
             "core_instantiate_personality",
             "core_add_wake_entry",
-            "proxima-code/register_repo",
-            "proxima-code/emit_execution_request",
+            "proxima-code_register_repo",
+            "proxima-code_emit_execution_request",
         ];
 
         let full = resolve_tool_scope(None, None, None, &registered_ids).expect("full profile");
@@ -558,10 +529,10 @@ mod tests {
         // flavor is compiled in (the keep set references their `NAME`
         // consts under the same cfg).
         #[cfg(feature = "code")]
-        assert!(memory.allows("proxima-code/register_repo"));
+        assert!(memory.allows("proxima-code_register_repo"));
         assert!(!memory.allows("core_instantiate_personality"));
         assert!(!memory.allows("core_add_wake_entry"));
-        assert!(!memory.allows("proxima-code/emit_execution_request"));
+        assert!(!memory.allows("proxima-code_emit_execution_request"));
 
         let overridden = resolve_tool_scope(
             Some("memory"),

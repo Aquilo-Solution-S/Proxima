@@ -255,6 +255,7 @@ async fn remember_enqueues_one_embedding_job_and_replay_does_not_duplicate()
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // linear PG flow: ingest + supersede + heads/all assertions read best together
 async fn remember_reused_idempotency_key_changed_body_creates_new_stateful_fact()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
@@ -320,6 +321,152 @@ async fn remember_reused_idempotency_key_changed_body_creates_new_stateful_fact(
         supersedes_edge_count_between(pg.pool(), first_memory_id, second_memory_id).await?,
         0
     );
+
+    let default_search = call_tool(
+        &pg,
+        &owner,
+        &handles,
+        &frozen,
+        author_ctx(),
+        "core_search_memories",
+        json!({
+            "query": "Stateful remember",
+            "mode": "lexical",
+            "limit": 5,
+            "include_neighbor_edges": false
+        }),
+    )
+    .await?;
+    let default_memories = default_search["memories"]
+        .as_array()
+        .expect("default memories");
+    assert_eq!(default_memories.len(), 1, "{default_search:#}");
+    assert_eq!(default_memories[0]["memory"], second["handle"]);
+    assert!(
+        default_memories[0].get("body").is_none(),
+        "body omitted by default: {default_search:#}"
+    );
+
+    let hydrated_search = call_tool(
+        &pg,
+        &owner,
+        &handles,
+        &frozen,
+        author_ctx(),
+        "core_search_memories",
+        json!({
+            "query": "Stateful remember",
+            "mode": "lexical",
+            "limit": 5,
+            "include_neighbor_edges": false,
+            "include_body": true
+        }),
+    )
+    .await?;
+    assert_eq!(
+        hydrated_search["memories"][0]["body"],
+        json!("Second body.")
+    );
+
+    let full_history_search = call_tool(
+        &pg,
+        &owner,
+        &handles,
+        &frozen,
+        author_ctx(),
+        "core_search_memories",
+        json!({
+            "query": "Stateful remember",
+            "mode": "lexical",
+            "limit": 5,
+            "supersession": "all",
+            "include_neighbor_edges": false
+        }),
+    )
+    .await?;
+    let history_handles: Vec<_> = full_history_search["memories"]
+        .as_array()
+        .expect("history memories")
+        .iter()
+        .map(|row| row["memory"].clone())
+        .collect();
+    assert_eq!(history_handles.len(), 2, "{full_history_search:#}");
+    assert!(history_handles.contains(&first["handle"]));
+    assert!(history_handles.contains(&second["handle"]));
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn search_memories_heads_filter_runs_before_limit() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg().await;
+
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze());
+    let owner = nil_owner();
+    let handles = Arc::new(HandleTable::new());
+
+    let independent = call_tool(
+        &pg,
+        &owner,
+        &handles,
+        &frozen,
+        author_ctx(),
+        "core_remember",
+        json!({
+            "title": "Prefilter independent",
+            "body": "prefilter needle independent head",
+            "tags": ["prefilter"],
+            "idempotency_key": "search-prefilter-independent"
+        }),
+    )
+    .await?;
+    let mut chain_head = serde_json::Value::Null;
+    for idx in 0..10 {
+        chain_head = call_tool(
+            &pg,
+            &owner,
+            &handles,
+            &frozen,
+            author_ctx(),
+            "core_remember",
+            json!({
+                "title": "Prefilter chain",
+                "body": format!("prefilter needle chain version {idx}"),
+                "tags": ["prefilter"],
+                "idempotency_key": "search-prefilter-chain"
+            }),
+        )
+        .await?;
+    }
+
+    let search = call_tool(
+        &pg,
+        &owner,
+        &handles,
+        &frozen,
+        author_ctx(),
+        "core_search_memories",
+        json!({
+            "query": "prefilter needle",
+            "mode": "lexical",
+            "limit": 2,
+            "include_neighbor_edges": false
+        }),
+    )
+    .await?;
+    let handles: Vec<_> = search["memories"]
+        .as_array()
+        .expect("memories")
+        .iter()
+        .map(|row| row["memory"].clone())
+        .collect();
+    assert_eq!(handles.len(), 2, "{search:#}");
+    assert!(handles.contains(&independent["handle"]), "{search:#}");
+    assert!(handles.contains(&chain_head["handle"]), "{search:#}");
 
     drop(pg);
     drop_db(&db_name).await?;

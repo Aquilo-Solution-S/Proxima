@@ -380,6 +380,12 @@ impl FlavorRegistry {
             slash,
             under,
         );
+        debug_assert_eq!(
+            T::NAME,
+            crate::mcp::provider_safe_tool_name(T::NAME),
+            "McpTool::NAME {:?} must already be provider-safe",
+            T::NAME,
+        );
         let args_schema = mcp_tool_schema::<T::Args>();
         let call: McpCallFn = |ctx, args| {
             Box::pin(async move {
@@ -794,7 +800,7 @@ mod tests {
     struct Demo;
 
     impl McpTool for Demo {
-        const NAME: &'static str = "proxima-test/demo";
+        const NAME: &'static str = "proxima-test_demo";
         const DESCRIPTION: &'static str = "test";
         type Args = ();
         type Output = ();
@@ -813,7 +819,7 @@ mod tests {
         registry.add_mcp_tool::<Demo>("proxima-test");
         let frozen = registry.freeze();
         let names: Vec<_> = frozen.list_mcp_tools().iter().map(|d| d.name).collect();
-        assert!(names.contains(&"proxima-test/demo"));
+        assert!(names.contains(&"proxima-test_demo"));
     }
 
     #[test]

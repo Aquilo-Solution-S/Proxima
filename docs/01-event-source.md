@@ -55,6 +55,33 @@ v1 constraints:
 Per-memory ACL (`AccessGrant` table) is a v2+ extension layered above
 `Owner`; not in v1.
 
+### Owner resolution — the host's trust boundary
+
+`Owner` is a **host-resolved capability, never client-supplied.** Core
+trusts the `Owner` it is handed and filters every read and write by it
+(`owner_principal_kind`, `owner_principal_id`); it runs no membership
+check of its own. The `requester ∈ members(g)` clause in the access rule
+above is the **host's** obligation, not Core's — Core has no org column
+to cross-check against and cannot catch a mis-resolved owner.
+
+Cross-tenant isolation therefore reduces **entirely** to host owner
+resolution. A host MUST:
+
+- derive `Owner` server-side from the authenticated identity (a verified
+  token claim or server config) and **reject any owner named in client
+  input** — a request must never choose whose Reality slice it reads;
+- resolve a `Group(g)` owner only for a requester in `members(g)`;
+- never share one engine process across tenants without per-identity
+  owner resolution that enforces both rules above.
+
+A single-tenant deployment satisfies this by pinning one `Owner` per
+process — the request carries no owner field at all. A multi-tenant host
+that derives the owner from a token claim makes the token→owner mapping
+its **entire** security boundary: a wrong or spoofable mapping is a
+cross-tenant read leak, and because there is no org column, Core cannot
+detect it. This is a binding obligation on every embedding host, not an
+optional hardening.
+
 ## The contract
 
 An Event Source produces **typed, cited, deduplicable events** that the engine
