@@ -8,11 +8,9 @@
 //! projections mirror their respective `list_*` tools so the shapes
 //! already familiar to the frontend stay intact.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::McpTool;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::verbs::schema::PayloadKind;
 
@@ -20,9 +18,6 @@ use super::get_personality::{GetPersonalityOutput, GetPersonalityWakeEntry};
 use super::list_edge_types::EdgeTypeItem;
 use super::list_schemas::SchemaItem;
 use super::list_substrate_tools::SubstrateToolItem;
-
-#[derive(Debug, Default)]
-pub struct GetGraphTool;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct GetGraphArgs {
@@ -64,22 +59,6 @@ fn kind_str(k: PayloadKind) -> &'static str {
         PayloadKind::Edge => "Edge",
         PayloadKind::CitedObject => "CitedObject",
         PayloadKind::CitationMapping => "CitationMapping",
-    }
-}
-
-impl McpTool for GetGraphTool {
-    const NAME: &'static str = "core_get_graph";
-    const DESCRIPTION: &'static str = "Single-shot read of the owner's full personality graph plus the catalogs that wake-entry \
-         config references (schemas, edge types, substrate tools). Use this in place of five separate list_/get_ round trips when \
-         rendering a graph view. Args: `{\"include_tombstoned\": false}` (default).";
-    type Args = GetGraphArgs;
-    type Output = GetGraphOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: GetGraphArgs,
-    ) -> BoxFuture<'static, Result<GetGraphOutput, McpToolError>> {
-        Box::pin(get_graph(ctx, args))
     }
 }
 

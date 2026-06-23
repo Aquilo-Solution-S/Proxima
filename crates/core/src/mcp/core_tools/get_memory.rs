@@ -1,18 +1,14 @@
 //! `core/get_memory` — wire-facing single-memory read by id or handle.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::personality::{PersonalityInstanceId, SidecarSpec};
 use crate::verbs::schema::PayloadKind;
-use crate::{McpTool, MemoryHandleClass, MemoryId, SchemaId};
+use crate::{MemoryHandleClass, MemoryId, SchemaId};
 
 use super::memory::search::{NeighborEdge, neighbor_edges};
-
-#[derive(Debug, Default)]
-pub struct GetMemoryTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetMemoryArgs {
@@ -40,20 +36,6 @@ pub struct GetMemoryOutput {
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub neighbor_edges: Option<Vec<NeighborEdge>>,
-}
-
-impl McpTool for GetMemoryTool {
-    const NAME: &'static str = "core_get_memory";
-    const DESCRIPTION: &'static str = "Fetch one owner-scoped memory by id/handle. Returns kind, schema, text, payload, title/body/tags, author, and optional neighbor edges.";
-    type Args = GetMemoryArgs;
-    type Output = GetMemoryOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: GetMemoryArgs,
-    ) -> BoxFuture<'static, Result<GetMemoryOutput, McpToolError>> {
-        Box::pin(get_memory(ctx, args))
-    }
 }
 
 /// # Errors
