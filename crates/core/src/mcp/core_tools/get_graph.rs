@@ -17,7 +17,7 @@ use crate::verbs::schema::PayloadKind;
 use super::get_personality::{GetPersonalityOutput, GetPersonalityWakeEntry};
 use super::list_edge_types::EdgeTypeItem;
 use super::list_schemas::SchemaItem;
-use super::list_substrate_tools::SubstrateToolItem;
+use super::list_substrate_tools::{SubstrateToolItem, substrate_tool_source};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct GetGraphArgs {
@@ -170,18 +170,10 @@ fn scoped_substrate_tools(ctx: &McpToolCtx) -> Vec<SubstrateToolItem> {
                 .tool_scope
                 .allows_group_advertisement(desc.name)
         })
-        .map(|desc| {
-            let source = if desc.name.starts_with("core/") {
-                "substrate".into()
-            } else {
-                let flavor = desc.name.split('/').next().unwrap_or("flavor");
-                format!("flavor:{flavor}")
-            };
-            SubstrateToolItem {
-                tool_id: desc.name.to_string(),
-                source,
-                description: desc.description.to_string(),
-            }
+        .map(|desc| SubstrateToolItem {
+            tool_id: desc.name.to_string(),
+            source: substrate_tool_source(desc),
+            description: desc.description.to_string(),
         })
         .collect()
 }

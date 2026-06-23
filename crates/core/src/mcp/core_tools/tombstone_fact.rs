@@ -31,8 +31,7 @@ pub(super) async fn tombstone_fact(
         .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
     let outcome = engine
         .tombstone_fact(&ctx.authz, &ctx.owner, fact_id)
-        .await
-        .map_err(|e| McpToolError::Other(e.to_string()))?;
+        .await?;
     Ok(TombstoneFactMcpOutput {
         fact_erased: outcome.fact_erased,
         idempotent_replay: !outcome.fact_erased,

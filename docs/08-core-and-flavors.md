@@ -98,7 +98,7 @@ Flavor-owned ids use `flavor_id/local_name`.
 |---|---|
 | Schema ids | Flavor schemas start with `flavor_id + "/"`; core schemas start with `core/`. |
 | Relation ids | Flavor relations start with `flavor_id + "/"`; core relations start with `core/`. |
-| MCP tool names | Flavor MCP tools start with `flavor_id + "/"`; substrate MCP tools start with `core/`. |
+| MCP tool names | Flavor MCP tools start with `flavor_id + "/"` or provider-safe `flavor_id + "_"`; substrate MCP tools use provider-safe `core_...` names. |
 
 `proxima_schema_id!("x")` expands to `CARGO_PKG_NAME + "/x"`.
 

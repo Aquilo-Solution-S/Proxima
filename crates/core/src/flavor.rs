@@ -13,8 +13,8 @@ use crate::verbs::schema::{
 use crate::{
     AbstractionPayload, CapabilityTag, CitationMappingPayload, CitedObjectPayload,
     DependencySatisfactionRule, EdgePayload, FactPayload, GoalPayload, McpCallFn, McpTool,
-    McpToolDescriptor, McpToolError, PerspectivePayload, RelationDescriptor, SchemaId,
-    SchemaVersion, SidecarPayload, core_relation_descriptors,
+    McpToolDescriptor, McpToolError, McpToolOrigin, PerspectivePayload, RelationDescriptor,
+    SchemaId, SchemaVersion, SidecarPayload, core_relation_descriptors,
 };
 
 use std::collections::BTreeSet;
@@ -398,6 +398,11 @@ impl FlavorRegistry {
         self.mcp_tools.push(McpToolDescriptor {
             name: T::NAME,
             description: T::DESCRIPTION,
+            origin: if expected_prefix == "core" {
+                McpToolOrigin::Substrate
+            } else {
+                McpToolOrigin::Flavor(expected_prefix.to_string())
+            },
             produces_schema_ids: T::PRODUCES_SCHEMA_IDS,
             args_schema,
             call,
@@ -818,8 +823,17 @@ mod tests {
         let mut registry = FlavorRegistry::new();
         registry.add_mcp_tool::<Demo>("proxima-test");
         let frozen = registry.freeze();
-        let names: Vec<_> = frozen.list_mcp_tools().iter().map(|d| d.name).collect();
+        let descriptors = frozen.list_mcp_tools();
+        let names: Vec<_> = descriptors.iter().map(|d| d.name).collect();
         assert!(names.contains(&"proxima-test_demo"));
+        let demo = descriptors
+            .iter()
+            .find(|d| d.name == "proxima-test_demo")
+            .expect("demo descriptor");
+        assert_eq!(
+            demo.origin,
+            McpToolOrigin::Flavor("proxima-test".to_string())
+        );
     }
 
     #[test]
@@ -953,5 +967,12 @@ mod tests {
             "retired tool name must not remain registered"
         );
         assert_eq!(names.len(), 9, "exactly 9 substrate tools registered");
+        for desc in frozen.list_mcp_tools() {
+            assert!(
+                matches!(desc.origin, McpToolOrigin::Substrate),
+                "default tool {} must be substrate-origin",
+                desc.name
+            );
+        }
     }
 }

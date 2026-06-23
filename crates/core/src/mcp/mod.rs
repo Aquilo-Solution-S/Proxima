@@ -511,6 +511,8 @@ pub enum McpToolError {
     InvalidInput(String),
     #[error("{0}")]
     Resolve(ResolveError),
+    #[error("{0}")]
+    Protocol(#[from] crate::error::ProtocolError),
     #[error("layering violation: {0}")]
     LayeringViolation(String),
     #[error("storage: {0}")]
@@ -531,6 +533,21 @@ impl McpToolError {
     pub fn kind(&self) -> McpToolErrorKind {
         match self {
             Self::InvalidInput(_) | Self::Resolve(_) => McpToolErrorKind::InvalidInput,
+            Self::Protocol(e) => match e.code {
+                crate::error::ErrorCode::InvalidArgument => McpToolErrorKind::InvalidInput,
+                crate::error::ErrorCode::Internal => McpToolErrorKind::Internal,
+                crate::error::ErrorCode::AuthRequired
+                | crate::error::ErrorCode::Forbidden
+                | crate::error::ErrorCode::UnknownSchema
+                | crate::error::ErrorCode::AlreadyIngested
+                | crate::error::ErrorCode::IdempotencyConflict
+                | crate::error::ErrorCode::NotFound
+                | crate::error::ErrorCode::ToolNotRegistered
+                | crate::error::ErrorCode::TriggerConflict
+                | crate::error::ErrorCode::DuplicateTriggerInRequest => {
+                    McpToolErrorKind::InvalidRequest
+                }
+            },
             Self::LayeringViolation(_) => McpToolErrorKind::InvalidRequest,
             Self::Storage(storage) => match storage {
                 crate::StorageError::ConstraintViolation(_) | crate::StorageError::NotFound => {
@@ -552,10 +569,17 @@ impl From<ResolveError> for McpToolError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpToolOrigin {
+    Substrate,
+    Flavor(String),
+}
+
 #[derive(Debug, Clone)]
 pub struct McpToolDescriptor {
     pub name: &'static str,
     pub description: &'static str,
+    pub origin: McpToolOrigin,
     pub produces_schema_ids: &'static [&'static str],
     pub args_schema: serde_json::Value,
     pub call: McpCallFn,
@@ -734,10 +758,12 @@ pub const CORE_RESOURCES: &[CoreResourceMeta] = &[
     },
 ];
 
+#[must_use = "iterators are lazy and must be consumed"]
 pub fn all_core_resources() -> impl Iterator<Item = &'static CoreResourceMeta> {
     CORE_RESOURCES.iter()
 }
 
+#[must_use = "iterators are lazy and must be consumed"]
 pub fn all_core_actions() -> impl Iterator<Item = &'static CoreActionMeta> {
     core_tools::goal::CORE_GOAL_ACTIONS
         .iter()
@@ -782,7 +808,10 @@ pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations>
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        sync::Arc,
+    };
 
     use super::*;
     use crate::{AuthPath, FlavorRegistry, Principal, UserId};
@@ -821,6 +850,63 @@ mod tests {
                 .iter()
                 .all(|resource| resource.scope_key.starts_with("resource:"))
         );
+    }
+
+    #[test]
+    fn protocol_errors_map_to_json_rpc_error_classes() {
+        let forbidden = McpToolError::from(crate::error::ProtocolError::forbidden(
+            "source ingest denied",
+        ));
+        assert_eq!(forbidden.kind(), McpToolErrorKind::InvalidRequest);
+        assert!(
+            forbidden.to_string().contains("source ingest denied"),
+            "message: {forbidden}"
+        );
+
+        let invalid = McpToolError::from(crate::error::ProtocolError::invalid_argument(
+            "fact",
+            "expected Fact id",
+        ));
+        assert_eq!(invalid.kind(), McpToolErrorKind::InvalidInput);
+        assert!(
+            invalid.to_string().contains("expected Fact id"),
+            "message: {invalid}"
+        );
+    }
+
+    #[test]
+    fn core_actions_manifest_is_internally_consistent() {
+        let allowed_tools =
+            BTreeSet::from(["core_goal", "core_wake", "core_personality", "core_fact"]);
+        let expected_counts = BTreeMap::from([
+            ("core_goal", 5_usize),
+            ("core_wake", 5),
+            ("core_personality", 6),
+            ("core_fact", 4),
+        ]);
+        let mut seen_scope_keys = BTreeSet::new();
+        let mut counts = BTreeMap::<&'static str, usize>::new();
+
+        for meta in all_core_actions() {
+            assert!(
+                seen_scope_keys.insert(meta.scope_key),
+                "duplicate scope_key {}",
+                meta.scope_key
+            );
+            assert_eq!(
+                meta.scope_key,
+                format!("{}:{}", meta.tool, meta.action),
+                "scope_key must equal <tool>:<action>"
+            );
+            assert!(
+                allowed_tools.contains(meta.tool),
+                "unexpected tool {}",
+                meta.tool
+            );
+            *counts.entry(meta.tool).or_default() += 1;
+        }
+
+        assert_eq!(counts, expected_counts);
     }
 
     #[tokio::test]
