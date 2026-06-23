@@ -48,7 +48,12 @@ async fn distinct_tokens_resolve_to_distinct_personalities()
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_callers_resolve_to_single_personality() -> Result<(), Box<dyn std::error::Error>>
 {
-    const N: usize = 16;
+    // N must exceed the storage pool (max_connections = 10) so the cold-start
+    // contention is deterministic: if a mint acquires a SECOND pooled connection
+    // while holding the advisory lock, the losers' held connections exhaust the
+    // pool and the winner deadlocks (5s acquire timeout). The fix keeps the whole
+    // critical section on a single pinned connection.
+    const N: usize = 32;
 
     let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;

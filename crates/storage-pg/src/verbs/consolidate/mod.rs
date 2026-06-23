@@ -11,6 +11,7 @@ mod wake_entries;
 
 pub use dependencies::list_memory_dependencies;
 pub use events::{list_change_events_after, list_change_events_for_replay};
+pub(crate) use instances::instantiate_personality_on_conn;
 pub use instances::{instantiate_personality, list_personality_instances};
 pub use memories::{
     append_personality_memories, load_abstraction_heads, load_memory_batch_facts,
