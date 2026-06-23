@@ -51,9 +51,9 @@ pub use proxima_core::{
 pub use proxima_core::{
     AuthorDerivedEdgeInput, AuthorDerivedOutcome, AuthorDerivedRequestInput, AuthorshipKindMask,
     EdgeAuthorshipKind, EdgeId, EndpointBinding, EntityKind, EntityKindMask, EntityRef,
-    FactEntityId, FlavorRegistryFrozen, GoalId, McpTool, McpToolCtx, McpToolError, McpToolErrorKind,
-    MemoryOperatorKind, PayloadKeyBuilder, RegisteredRelation, RelationClass, RelationDescriptor,
-    SchemaRef,
+    FactEntityId, FlavorRegistryFrozen, GoalId, McpTool, McpToolCtx, McpToolError,
+    McpToolErrorKind, MemoryOperatorKind, PayloadKeyBuilder, RegisteredRelation, RelationClass,
+    RelationDescriptor, SchemaRef,
 };
 #[cfg(feature = "openai-compat-embed")]
 pub use proxima_llm_openai_compat::{
