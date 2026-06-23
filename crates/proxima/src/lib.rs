@@ -51,9 +51,9 @@ pub use proxima_core::{
 pub use proxima_core::{
     AuthorDerivedEdgeInput, AuthorDerivedOutcome, AuthorDerivedRequestInput, AuthorshipKindMask,
     EdgeAuthorshipKind, EdgeId, EndpointBinding, EntityKind, EntityKindMask, EntityRef,
-    FactEntityId, FlavorRegistryFrozen, GoalId, McpTool, McpToolCtx, McpToolError, McpToolErrorKind,
-    MemoryOperatorKind, PayloadKeyBuilder, RegisteredRelation, RelationClass, RelationDescriptor,
-    SchemaRef,
+    FactEntityId, FlavorRegistryFrozen, GoalId, McpTool, McpToolCtx, McpToolError,
+    McpToolErrorKind, MemoryOperatorKind, PayloadKeyBuilder, RegisteredRelation, RelationClass,
+    RelationDescriptor, SchemaRef,
 };
 #[cfg(feature = "openai-compat-embed")]
 pub use proxima_llm_openai_compat::{
@@ -63,6 +63,8 @@ pub use proxima_mcp_server::selfdoc::{build_instructions, how_to_markdown};
 pub use proxima_mcp_server::{McpAuthContext, ResourceServerMetadata};
 #[cfg(feature = "testkit")]
 pub use proxima_pg_testkit as testkit;
+/// Declarative PG sidecar generator for flavor-owned typed sidecar tables.
+pub use proxima_storage_pg::pg_sidecar;
 pub use proxima_storage_pg::query::fact_entity_id_for;
 pub use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgEdgeSidecar, PgGoalSidecar, PgMemoryPayload,
