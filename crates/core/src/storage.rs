@@ -21,7 +21,7 @@ use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use crate::verbs::event_ingest::{
     AuthorizedEventIngest, AuthorizedFactWithCitation, EventDraft, EventIngestOutcome,
 };
-use crate::verbs::fact_cleanup::CleanupDueFactsOutcome;
+use crate::verbs::fact_cleanup::{CleanupDueFactsOutcome, TombstoneFactOutcome};
 use crate::verbs::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
@@ -779,6 +779,18 @@ pub trait Storage: Send + Sync {
         cited_object_sidecar_tables: &[String],
     ) -> Result<CleanupDueFactsOutcome, StorageError>;
 
+    /// Hard-erase one owner-scoped Fact by id, tombstone transitive
+    /// derived memory dependents, and erase orphaned citation backing rows.
+    async fn tombstone_fact(
+        &self,
+        owner: &Owner,
+        fact_id: uuid::Uuid,
+        fact_sidecar_tables: &[String],
+        edge_sidecar_tables: &[String],
+        citation_mapping_sidecar_tables: &[String],
+        cited_object_sidecar_tables: &[String],
+    ) -> Result<TombstoneFactOutcome, StorageError>;
+
     async fn list_change_events_after(
         &self,
         owner: &Owner,
@@ -1242,6 +1254,18 @@ impl Storage for NoopStorage {
         _citation_mapping_sidecar_tables: &[String],
         _cited_object_sidecar_tables: &[String],
     ) -> Result<CleanupDueFactsOutcome, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn tombstone_fact(
+        &self,
+        _owner: &Owner,
+        _fact_id: uuid::Uuid,
+        _fact_sidecar_tables: &[String],
+        _edge_sidecar_tables: &[String],
+        _citation_mapping_sidecar_tables: &[String],
+        _cited_object_sidecar_tables: &[String],
+    ) -> Result<TombstoneFactOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 

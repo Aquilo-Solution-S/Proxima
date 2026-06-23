@@ -10,10 +10,86 @@ use proxima_core::verbs::event_ingest::{
 use proxima_core::verbs::query::{MemoryLineageDirection, MemoryLineageRequest, QueryRequest};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
-    AuthPath, AuthzContext, EntityKind, MemoryId, Owner, SchemaId, SchemaVersion, SourceBatchId,
-    SourceId, Storage,
+    AuthPath, AuthzContext, EntityKind, FactPayload, FlavorRegistry, MemoryId, Owner,
+    PayloadKeyBuilder, Role, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, SourceId,
+    Storage, StorageError, canonical_json_bytes,
 };
+use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemoryPayloadFuture};
+use proxima_storage_pg::verbs::event_ingest::{EventIngestSidecarFuture, PgFactSidecar};
+use proxima_storage_pg::{
+    PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct CleanupStatefulFactV1 {
+    entity_key: String,
+    body: String,
+    state: String,
+}
+
+impl FactPayload for CleanupStatefulFactV1 {
+    const SCHEMA_ID: &'static str = "test/cleanup-stateful-fact-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn event_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("entity_key", &self.entity_key);
+        key.field_str("body", &self.body);
+        key.field_str("state", &self.state);
+        key.finish()
+    }
+
+    fn render(&self) -> String {
+        format!("{}: {}", self.entity_key, self.body)
+    }
+
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_test.cleanup_stateful_fact_v1")
+    }
+
+    fn natural_key_columns() -> &'static [&'static str] {
+        &["entity_key"]
+    }
+}
+
+impl PgFactSidecar for CleanupStatefulFactV1 {
+    fn insert_sidecar<'t>(
+        self,
+        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
+        memory_id: MemoryId,
+    ) -> EventIngestSidecarFuture<'t>
+    where
+        Self: 't,
+    {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO proxima_test.cleanup_stateful_fact_v1
+                    (memory_id, entity_key, body, state)
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(memory_id.into_inner())
+            .bind(&self.entity_key)
+            .bind(&self.body)
+            .bind(&self.state)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+impl PgMemoryPayload for CleanupStatefulFactV1 {
+    fn load_memory_payload(
+        _pool: &sqlx::PgPool,
+        _memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+}
 
 fn schemas_for_test() -> Vec<SchemaInfo> {
     let mut edge_schema = SchemaInfo::opaque(
@@ -56,6 +132,90 @@ fn schemas_for_uploaded_blob_gc_test() -> Vec<SchemaInfo> {
         .expect("test registry has a CitedObject schema");
     cited_object.sidecar_table = Some("proxima_core.cited_uploaded_blob_v1".into());
     schemas
+}
+
+fn stateful_registry_for_test() -> FlavorRegistryFrozen {
+    let mut registry = FlavorRegistry::new();
+    registry.add_fact_schema::<CleanupStatefulFactV1>();
+    registry.freeze()
+}
+
+fn stateful_pg_sidecars_for_test() -> PgSidecarRegistryFrozen {
+    let registry = stateful_registry_for_test();
+    let mut sidecars = PgSidecarRegistry::new();
+    register_core_pg_sidecars(&mut sidecars);
+    sidecars.add_fact::<CleanupStatefulFactV1>();
+    sidecars
+        .freeze_against(registry.schemas())
+        .expect("test PG sidecars match test schemas")
+}
+
+async fn fresh_pg_with_stateful_sidecars() -> (PgStorage, String) {
+    let (pg, db_name) = fresh_pg().await;
+    (pg.with_sidecars(stateful_pg_sidecars_for_test()), db_name)
+}
+
+async fn create_stateful_sidecar(pg: &PgStorage) -> Result<(), sqlx::Error> {
+    sqlx::query("CREATE SCHEMA proxima_test")
+        .execute(pg.pool())
+        .await?;
+    sqlx::query(
+        "CREATE TABLE proxima_test.cleanup_stateful_fact_v1 (
+            memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id),
+            entity_key text NOT NULL,
+            body text NOT NULL,
+            state text NOT NULL
+        )",
+    )
+    .execute(pg.pool())
+    .await?;
+    Ok(())
+}
+
+fn stateful_engine_for(pg: &PgStorage) -> Engine {
+    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+    Engine::new(stateful_registry_for_test()).with_storage(storage)
+}
+
+fn stateful_fact(entity_key: &str, body: &str) -> CleanupStatefulFactV1 {
+    CleanupStatefulFactV1 {
+        entity_key: entity_key.to_string(),
+        body: body.to_string(),
+        state: "Present".to_string(),
+    }
+}
+
+fn stateful_draft_for(owner: &Owner, payload_value: &Value) -> EventDraft {
+    let now = time::OffsetDateTime::now_utc();
+    EventDraft {
+        source_id: SourceId::new(format!("test/cleanup-stateful/{}", Uuid::now_v7())),
+        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+        principal: owner.clone(),
+        author_personality_instance_id: None,
+        schema_id: CleanupStatefulFactV1::schema_id(),
+        schema_version: SchemaVersion::new(CleanupStatefulFactV1::SCHEMA_VERSION),
+        payload: canonical_json_bytes(payload_value),
+        rendered_text: None,
+        observed_at: now,
+        occurred_at: now,
+        citation: None,
+    }
+}
+
+async fn ingest_stateful_fact(
+    pg: &PgStorage,
+    engine: &Engine,
+    owner: &Owner,
+    payload: &CleanupStatefulFactV1,
+) -> Result<proxima_core::EventIngestOutcome, Box<dyn std::error::Error>> {
+    let payload_value = serde_json::to_value(payload)?;
+    let draft = stateful_draft_for(owner, &payload_value);
+    let authz = AuthzContext::single_owner(owner, AuthPath::System);
+    let authorized = engine.authorize_event_ingest(&authz, Role::SourceIngest, draft)?;
+    let sidecar_payload = SidecarPayload::fact(payload.clone());
+    Ok(pg
+        .ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
+        .await?)
 }
 
 fn fresh_draft(owner: Owner) -> EventDraft {
@@ -331,6 +491,196 @@ async fn cleanup_due_facts_deletes_cited_object_sidecars_and_surfaces_s3_refs()
     Ok(())
 }
 
+#[tokio::test]
+async fn tombstone_fact_forgets_uncited_fact() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+    let engine = Engine::new(registry).with_storage(storage);
+
+    let mut draft = fresh_draft(owner.clone());
+    draft.citation = None;
+    let ingest = engine.event_ingest(&authz, draft).await?;
+    let fact_id = ingest.memory_id.into_inner();
+
+    let outcome = engine
+        .tombstone_fact(&authz, &owner, ingest.memory_id)
+        .await?;
+    assert!(outcome.fact_erased);
+    assert_eq!(outcome.derivatives_tombstoned, 0);
+    assert_eq!(outcome.cited_objects_erased, 0);
+    assert!(outcome.orphaned_s3_blobs.is_empty());
+    assert_memory_erased(&pg, fact_id).await?;
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn tombstone_fact_non_head_version_leaves_head_intact()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg_with_stateful_sidecars().await;
+    pg.run_migrations().await?;
+    create_stateful_sidecar(&pg).await?;
+
+    let owner = owner_fixture();
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let engine = stateful_engine_for(&pg);
+
+    let first = ingest_stateful_fact(&pg, &engine, &owner, &stateful_fact("file", "v1")).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let second = ingest_stateful_fact(&pg, &engine, &owner, &stateful_fact("file", "v2")).await?;
+    let fact_entity_id = fact_entity_id_for_memory(&pg, first.memory_id.into_inner()).await?;
+    assert_eq!(
+        fact_entity_id_for_memory(&pg, second.memory_id.into_inner()).await?,
+        fact_entity_id
+    );
+    assert_eq!(
+        current_memory_id(&pg, fact_entity_id).await?,
+        second.memory_id.into_inner()
+    );
+
+    let outcome = engine
+        .tombstone_fact(&authz, &owner, first.memory_id)
+        .await?;
+    assert!(outcome.fact_erased);
+    assert_eq!(outcome.derivatives_tombstoned, 0);
+    assert_memory_erased(&pg, first.memory_id.into_inner()).await?;
+    assert_stateful_sidecar_erased(&pg, first.memory_id.into_inner()).await?;
+    assert_memory_exists(&pg, second.memory_id.into_inner()).await?;
+    assert_fact_entity_exists(&pg, fact_entity_id).await?;
+    assert_eq!(
+        current_memory_id(&pg, fact_entity_id).await?,
+        second.memory_id.into_inner()
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn tombstone_fact_keeps_shared_cited_object() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let registry = FlavorRegistryFrozen::with_schemas(schemas_for_uploaded_blob_gc_test());
+    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+    let engine = Engine::new(registry).with_storage(storage);
+
+    let first = engine
+        .event_ingest(&authz, fresh_draft(owner.clone()))
+        .await?;
+    let second = engine
+        .event_ingest(&authz, fresh_draft(owner.clone()))
+        .await?;
+    let first_fact_id = first.memory_id.into_inner();
+    let second_fact_id = second.memory_id.into_inner();
+    let cited_object_id = cited_object_id_for_memory(&pg, first_fact_id).await?;
+    assert_eq!(
+        cited_object_id_for_memory(&pg, second_fact_id).await?,
+        cited_object_id
+    );
+    insert_uploaded_blob_sidecar(&pg, cited_object_id).await?;
+
+    let first_outcome = engine
+        .tombstone_fact(&authz, &owner, first.memory_id)
+        .await?;
+    assert!(first_outcome.fact_erased);
+    assert_eq!(first_outcome.cited_objects_erased, 0);
+    assert!(first_outcome.orphaned_s3_blobs.is_empty());
+    assert_cited_object_exists(&pg, cited_object_id).await?;
+
+    let second_outcome = engine
+        .tombstone_fact(&authz, &owner, second.memory_id)
+        .await?;
+    assert!(second_outcome.fact_erased);
+    assert_eq!(second_outcome.cited_objects_erased, 1);
+    assert_eq!(
+        second_outcome.orphaned_s3_blobs,
+        vec![proxima_core::verbs::fact_cleanup::OrphanedS3Blob {
+            bucket: "b".into(),
+            object_key: "k".into(),
+        }]
+    );
+    assert_uploaded_blob_sidecar_erased(&pg, cited_object_id).await?;
+    assert_cited_object_erased(&pg, cited_object_id).await?;
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn tombstone_fact_cascades_to_lineage_children() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+    let engine = Engine::new(registry).with_storage(storage);
+
+    let ingest = engine
+        .event_ingest(&authz, fresh_draft(owner.clone()))
+        .await?;
+    let fact_id = ingest.memory_id.into_inner();
+    let derivative_id = insert_direct_derivative(&pg, &owner, fact_id).await?;
+
+    let outcome = engine
+        .tombstone_fact(&authz, &owner, ingest.memory_id)
+        .await?;
+    assert!(outcome.fact_erased);
+    assert_eq!(outcome.derivatives_tombstoned, 1);
+    assert_derivative_tombstoned(&pg, derivative_id).await?;
+    assert_entity_delete_emitted(&pg, derivative_id).await?;
+    assert_entity_delete_emitted(&pg, fact_id).await?;
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn tombstone_fact_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+    let engine = Engine::new(registry).with_storage(storage);
+
+    let ingest = engine
+        .event_ingest(&authz, fresh_draft(owner.clone()))
+        .await?;
+
+    let first = engine
+        .tombstone_fact(&authz, &owner, ingest.memory_id)
+        .await?;
+    assert!(first.fact_erased);
+    let second = engine
+        .tombstone_fact(&authz, &owner, ingest.memory_id)
+        .await?;
+    assert!(!second.fact_erased);
+    assert_eq!(second.derivatives_tombstoned, 0);
+    assert_eq!(second.cited_objects_erased, 0);
+    assert!(second.orphaned_s3_blobs.is_empty());
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
 async fn assert_fact_erased(
     pg: &proxima_storage_pg::PgStorage,
     fact_id: Uuid,
@@ -422,6 +772,54 @@ async fn assert_memory_exists(
     Ok(())
 }
 
+async fn assert_memory_erased(
+    pg: &proxima_storage_pg::PgStorage,
+    memory_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxima_core.memories
+          WHERE memory_id = $1",
+    )
+    .bind(memory_id)
+    .fetch_one(pg.pool())
+    .await?;
+    assert_eq!(count, 0);
+    Ok(())
+}
+
+async fn assert_fact_entity_exists(
+    pg: &proxima_storage_pg::PgStorage,
+    fact_entity_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxima_core.fact_entities
+          WHERE fact_entity_id = $1",
+    )
+    .bind(fact_entity_id)
+    .fetch_one(pg.pool())
+    .await?;
+    assert_eq!(count, 1);
+    Ok(())
+}
+
+async fn assert_stateful_sidecar_erased(
+    pg: &proxima_storage_pg::PgStorage,
+    memory_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxima_test.cleanup_stateful_fact_v1
+          WHERE memory_id = $1",
+    )
+    .bind(memory_id)
+    .fetch_one(pg.pool())
+    .await?;
+    assert_eq!(count, 0);
+    Ok(())
+}
+
 async fn assert_cited_object_exists(
     pg: &proxima_storage_pg::PgStorage,
     cited_object_id: Uuid,
@@ -436,6 +834,35 @@ async fn assert_cited_object_exists(
     .await?;
     assert_eq!(count, 1);
     Ok(())
+}
+
+async fn fact_entity_id_for_memory(
+    pg: &proxima_storage_pg::PgStorage,
+    memory_id: Uuid,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let fact_entity_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT fact_entity_id
+           FROM proxima_core.memories
+          WHERE memory_id = $1",
+    )
+    .bind(memory_id)
+    .fetch_one(pg.pool())
+    .await?;
+    Ok(fact_entity_id.expect("stateful Fact has fact_entity_id"))
+}
+
+async fn current_memory_id(
+    pg: &proxima_storage_pg::PgStorage,
+    fact_entity_id: Uuid,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    Ok(sqlx::query_scalar(
+        "SELECT current_memory_id
+           FROM proxima_core.fact_entities
+          WHERE fact_entity_id = $1",
+    )
+    .bind(fact_entity_id)
+    .fetch_one(pg.pool())
+    .await?)
 }
 
 async fn assert_cited_object_erased(
