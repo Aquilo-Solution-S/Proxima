@@ -14,6 +14,7 @@ workspace = true
 proxima-core = { path = "../core" }
 proxima-storage-pg = { path = "../storage-pg" }
 proxima-blob-s3 = { path = "../blob-s3" }
+proxima-llm-openai-compat = { path = "../llm-openai-compat", optional = true }
 proxima-mcp-server = { path = "../mcp-server" }
 proxima-pg-testkit = { path = "../pg-testkit", optional = true }
 axum = { workspace = true }
@@ -28,6 +29,8 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 
 [features]
+default = ["openai-compat-embed"]
+openai-compat-embed = ["dep:proxima-llm-openai-compat"]
 testkit = ["dep:proxima-pg-testkit"]
 
 [dev-dependencies]

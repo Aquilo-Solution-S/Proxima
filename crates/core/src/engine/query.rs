@@ -7,7 +7,10 @@ use crate::verbs::event_history::{
 use crate::verbs::mcp_call_history::{
     MAX_MCP_CALL_HISTORY_LIMIT, McpCallHistoryRequest, McpCallHistoryResponse,
 };
-use crate::verbs::query::{QueryRequest, QueryResponse};
+use crate::verbs::query::{
+    EdgeExistsRequest, EdgeExistsResponse, EdgeReadRequest, EdgeReadResponse, MemoryLineageRequest,
+    MemoryLineageResponse, QueryRequest, QueryResponse,
+};
 use crate::verbs::schema::{SchemaRequest, SchemaResponse};
 
 impl Engine {
@@ -48,6 +51,66 @@ impl Engine {
         }
         self.storage
             .query_memories(&effective, self.registry.list().as_slice())
+            .await
+            .map_err(|e| ProtocolError::internal(e.to_string()))
+    }
+
+    /// Owner-scoped edge read. Same auth shape as `Query`; callers can
+    /// hydrate by edge id or by relation/source/target filter.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context cannot access `req.principal` or
+    /// lacks graph-read, `InvalidArgument` when `req.limit == 0`, or
+    /// `Internal` when storage fails.
+    pub async fn read_edges(
+        &self,
+        authz: &AuthzContext,
+        req: &EdgeReadRequest,
+    ) -> Result<EdgeReadResponse, ProtocolError> {
+        super::authorize(authz, &req.principal, Role::GraphRead)?;
+        if req.limit == 0 {
+            return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
+        }
+        self.storage
+            .read_edges(req)
+            .await
+            .map_err(|e| ProtocolError::internal(e.to_string()))
+    }
+
+    /// Owner-scoped edge existence probe. Same auth shape as `Query`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context cannot access `req.principal` or
+    /// lacks graph-read, or `Internal` when storage fails.
+    pub async fn edge_exists(
+        &self,
+        authz: &AuthzContext,
+        req: &EdgeExistsRequest,
+    ) -> Result<EdgeExistsResponse, ProtocolError> {
+        super::authorize(authz, &req.principal, Role::GraphRead)?;
+        self.storage
+            .edge_exists(req)
+            .await
+            .map_err(|e| ProtocolError::internal(e.to_string()))
+    }
+
+    /// Owner-scoped Provenance/Supersession lineage walk from one memory.
+    /// Same auth shape as `Query`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context cannot access `req.principal` or
+    /// lacks graph-read, or `Internal` when storage fails.
+    pub async fn walk_memory_lineage(
+        &self,
+        authz: &AuthzContext,
+        req: &MemoryLineageRequest,
+    ) -> Result<MemoryLineageResponse, ProtocolError> {
+        super::authorize(authz, &req.principal, Role::GraphRead)?;
+        self.storage
+            .walk_memory_lineage(req)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }

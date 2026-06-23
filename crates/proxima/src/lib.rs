@@ -33,6 +33,12 @@ pub use proxima_core::verbs::event_ingest::{
 pub use proxima_core::verbs::mcp_call_history::{
     MAX_MCP_CALL_HISTORY_LIMIT, McpCallHistoryRequest, McpCallHistoryResponse, McpCallRecord,
 };
+pub use proxima_core::verbs::query::{
+    EdgeExistsRequest, EdgeExistsResponse, EdgeFilter, EdgeReadRequest, EdgeReadResponse, EdgeRow,
+    FactCitationReadback, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode,
+    MemoryLineageRequest, MemoryLineageResponse, MemoryRow, PersonalityRootFilter, QueryRequest,
+    QueryResponse, SupersessionStatus, TombstoneFilter,
+};
 pub use proxima_core::verbs::schema::PayloadKind;
 pub use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, CapabilitySet, CitationMappingPayload,
@@ -42,12 +48,31 @@ pub use proxima_core::{
     SearchProjectionField, SidecarPayload, SourceBatchId, SourceId, StorageError, ToolScope,
     UserId, canonical_json_bytes, proxima_flavor,
 };
+pub use proxima_core::{
+    AuthorDerivedEdgeInput, AuthorDerivedOutcome, AuthorDerivedRequestInput, AuthorshipKindMask,
+    EdgeAuthorshipKind, EdgeId, EndpointBinding, EntityKind, EntityKindMask, EntityRef,
+    FactEntityId, FlavorRegistryFrozen, GoalId, McpTool, McpToolCtx, McpToolError,
+    MemoryOperatorKind, PayloadKeyBuilder, RegisteredRelation, RelationClass, RelationDescriptor,
+    SchemaRef,
+};
+#[cfg(feature = "openai-compat-embed")]
+pub use proxima_llm_openai_compat::{
+    MISTRAL_EMBED_BASE_URL, MISTRAL_EMBED_MODEL, OpenAiCompatConfig, OpenAiCompatEmbeddingClient,
+};
+pub use proxima_mcp_server::selfdoc::{build_instructions, how_to_markdown};
 pub use proxima_mcp_server::{McpAuthContext, ResourceServerMetadata};
 #[cfg(feature = "testkit")]
 pub use proxima_pg_testkit as testkit;
+pub use proxima_storage_pg::query::fact_entity_id_for;
 pub use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgEdgeSidecar, PgGoalSidecar, PgMemoryPayload,
     PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture,
+};
+pub use proxima_storage_pg::verbs::derive_append::{
+    DerivedDraft, DerivedOutcome, append_derived_in_tx,
+};
+pub use proxima_storage_pg::verbs::edge_append::{
+    EdgeDraft, Endpoint, append_edge, append_edge_in_tx,
 };
 pub use proxima_storage_pg::verbs::event_ingest::{
     AttachCitationOutcome, attach_citation_in_tx, ingest_fact, ingest_fact_in_tx,
