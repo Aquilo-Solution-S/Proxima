@@ -25,7 +25,9 @@ No runtime schema/source/tool/flavor registration surface exists.
 Agent long-term memory is core substrate. MCP tools are thin callers of
 Engine verbs; MCP resources expose read-only graph and registry views.
 Storage stays behind the Engine. The substrate surface is 9 tools + 7
-resources (authoritative live list: `proxima://tools`).
+resources; `proxima://tools` returns the live tool catalog only, and
+resources are discovered through MCP `resources/list` and
+`resources/templates/list`.
 
 Canonical substrate tools:
 
@@ -50,7 +52,7 @@ Canonical substrate resources:
 |---|---|
 | `proxima://schemas{?kind}` | registered payload schemas |
 | `proxima://edge-types` | registered relation descriptors |
-| `proxima://tools` | live tool/resource catalog |
+| `proxima://tools` | live tool catalog |
 | `proxima://graph{?include_tombstoned}` | graph snapshot and status fields, including `fact_retention_seconds` |
 | `proxima://memory/{id}{?expand_neighbors}` | hydrate memory by id; optional neighbor edges |
 | `proxima://memory/{id}/lineage{?direction,depth,limit}` | traverse provenance / supersession lineage |
@@ -243,12 +245,12 @@ Current RPCs outside the five graph verbs:
 
 | Family | RPCs | Contract |
 |---|---|---|
-| personality lifecycle | `InstantiatePersonality`, `SetWakeEntries`, `ListPersonalityInstances`, `TombstonePersonality` | mutate runtime personality config and wake entries; not graph verbs |
+| personality lifecycle | `core_personality` actions: `instantiate`, `tombstone`, `set_read_scope`, `list`, `get`, `list_read_scope`; `core_wake` actions: `add`, `update`, `remove`, `set`, `list` | mutate runtime personality config and wake entries; not graph verbs |
 
-`InstantiatePersonality` writes the root self-Perspective and commits
+`core_personality` action `instantiate` writes the root self-Perspective and commits
 one Perspective `change_event` row. Other personality config mutations
 do not emit cognitive `change_event`s; personality list UIs refresh
-with the list RPC, not by polling the event log.
+with `core_personality` action `list`, not by polling the event log.
 
 ### Personality Lifecycle
 
@@ -259,7 +261,7 @@ with the list RPC, not by polling the event log.
 | list | returns active instances by default; tombstoned rows opt-in |
 | tombstone | removes instance from default listings and dispatcher selection |
 
-`TombstonePersonality` is idempotent for an existing instance.
+`core_personality` action `tombstone` is idempotent for an existing instance.
 Operations against missing or tombstoned rows return `NotFound` where
 the UI must distinguish stale state from backend failure.
 
