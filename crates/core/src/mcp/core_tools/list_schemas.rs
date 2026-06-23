@@ -68,7 +68,17 @@ impl McpTool for ListSchemasTool {
         args: ListSchemasArgs,
     ) -> BoxFuture<'static, Result<ListSchemasOutput, McpToolError>> {
         Box::pin(async move {
-            let filter = args.kind.as_deref().and_then(parse_kind);
+            // Reject an unknown `kind` rather than silently returning all
+            // schemas (a typo like "Facts" must not look successful).
+            let filter = match args.kind.as_deref() {
+                Some(raw) => Some(parse_kind(raw).ok_or_else(|| {
+                    McpToolError::InvalidInput(format!(
+                        "unknown kind '{raw}'; expected one of: Fact, Abstraction, \
+                         Perspective, Goal, Edge, CitedObject, CitationMapping"
+                    ))
+                })?),
+                None => None,
+            };
             let schemas = ctx
                 .registry
                 .list()

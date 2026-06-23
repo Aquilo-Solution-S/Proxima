@@ -22,7 +22,7 @@ types.
 | `SourceBatchId` | UUIDv7 | source-declared batch id; unique within `(source_id, Owner)` |
 | `CitedObjectId` | UUIDv7 | cited object identity (11) |
 | `CitationMappingId` | UUIDv7 | Fact citation mapping identity (11) |
-| `ChangeEvent.seq` | UUIDv7 | server-generated outbox order key |
+| `ChangeEvent.seq` | UUIDv7 | server-generated pull-log order key |
 | `EmbeddingVersion` | integer | embedding lifecycle, independent of entity identity |
 
 UUIDv7 is the default for generated mutable identities: sortable by time,
@@ -122,9 +122,8 @@ paths, and payload text.
 | `cited_objects` | bibliographic cited-object identity | Owner-scoped idempotency by payload key |
 | `citation_mappings` | Fact-only citation mapping | at most one mapping per Fact |
 | `source_batches` | core source-batch lifecycle | fixed shape; domain metadata belongs on cited objects |
-| `source_batch_f2a` | per batch/operator/personality F→A run tracking | prevents duplicate batch consolidation for same invocation key |
 | `read_scope_matrix` | cross-personality A/P/Goal read scope | per-Owner adjacency; identity diagonal is always allowed |
-| `change_event` | protocol outbox | same transaction as announced entity or edge append |
+| `change_event` | change-event pull log | same transaction as announced entity or edge append |
 | `schema_migrations` | applied SQL migrations | tracks physical sidecar/core migration files |
 
 Memory-specific rules:
@@ -164,7 +163,7 @@ natural keys. Schema migration inserts into new sidecars and retires old
 sidecars; parent identity rows stay fixed.
 
 The only legitimate cognitive-history delete is explicit compliance
-erasure: whole Owner or Owner-scoped source-object deletion (15
+erasure: whole Owner or Owner-scoped source-object deletion (13
 §Operations).
 
 <a id="content-hash-dedup"></a>
@@ -237,7 +236,7 @@ Postgres implementation:
 
 | Consequence | Effect |
 |---|---|
-| CDC is explicit | `change_event` is the protocol outbox (14 §Consistency) |
+| CDC is explicit | `change_event` is the change-event pull log (14 §Consistency) |
 | writes are replayable | idempotency and content hashes handle re-receipt |
 | caches are simple | invalidation is "row not yet inserted" |
 | replicas are simple | historical rows do not mutate |
@@ -283,7 +282,7 @@ Per-flavor Postgres schemas keep catalog inspection and archival bounded.
 | exact Rust type definitions | `crates/core/src/` |
 | query API | 14 and storage/query modules |
 | flavor schema registry | 03 and 08 |
-| compliance API | 15 |
+| compliance API | 13 |
 
 This doc is authoritative for storage principles and invariants only.
 

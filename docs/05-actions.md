@@ -45,9 +45,10 @@ Automated action selection is wake execution.
 | UI / chat / trusted source | user or source policy | action-attempt Fact |
 | external callback | EventSource | effect Fact |
 
-There is no standalone action-selection registry in core. A personality wake receives
-the tool palette declared on its wake entry, visible read scope, active Goals,
-and prompt/instructions from its flavor/runtime config (see 04).
+There is no standalone action-selection registry in core. Wake entries are
+detect-only. An external harness receives tool scope from token capabilities
+intersected with the deployment tool-surface profile, plus visible read scope,
+active Goals, and prompt/instructions from flavor/runtime config (see 04).
 
 Manual action is the same shape: a user-facing surface emits or approves a
 Fact through a trusted source. The distinction is authoring, not entity kind.
@@ -58,13 +59,13 @@ Tools are effect adapters.
 
 | Boundary | Rule |
 |---|---|
-| Tool vocabulary | 12 owns build-time tool classes, wake palettes, and compliance declarations |
-| Runtime palette | wake entry selects which tools are available for one run |
+| Tool vocabulary | 12 owns build-time tool classes, MCP dispatch, and compliance declarations |
+| Runtime tool scope | auth token scope ∩ deployment profile (`ToolScope::Palette` when narrowed) |
 | Persistence | tool result enters storage only as registered Fact / Edge writes |
 | A/P writes | operator/wake output protocol only; tools do not bypass 04 |
 | Failure | failed attempts are Facts when the source/tool schema models them |
 
-Current v1 tool execution is internal MCP / personality dispatch.
+Current v1 tool execution is MCP dispatch.
 External HTTP/WASM body transports are deferred. That execution detail
 is not an action ontology.
 
@@ -81,27 +82,25 @@ Rules:
 - No action-effect shortcut relation is required.
 - No rollback is implied by deleting or superseding Proxima rows (see 13).
 
-## Dispatcher-emitted call Facts
+## MCP-call Facts
 
-All engine-mediated LLM and embedding calls produce dispatcher call Facts.
+MCP tool calls can be logged as ordinary content-addressed Facts by
+`persist_mcp_call`.
 
-Required payload content:
+Registered schemas:
 
-| Family | Required |
+| Schema | Kind | Contents |
 |---|---|
-| LLM call | consumer, owner, tier, vendor, model id, token counts, latency, status, optional cost |
-| Embedding call | consumer, owner, vendor, model id, dimensions/input counts, tokens, latency, status, optional cost |
+| `core/mcp-call-logged-v1` | Fact | tool, actor, status, latency, I/O hash |
+| `core/mcp-call-io-v1` | CitedObject | inline I/O bytes, byte length, truncation flag |
+| `core/mcp-call-io-citation-v1` | CitationMapping | pure link; no sidecar table |
 
 Invariant:
 
-- Operators, personality wakes, and EventSources call vendors only through the
-  dispatcher.
-- Dispatcher emission is unconditional for success and failure.
-- Cost and quota consumers read the same Fact stream as every other client.
-- Missing price-book data yields unknown cost, not missing usage.
-
-Cost anomaly detection is ordinary F->A over call Facts. No counter table and
-no separate metrics pipeline are required for the cognitive graph.
+- Call audit is Fact-only; I/O bytes are cited as bibliographic payload.
+- Idempotency is `McpCallLogInput::event_id`.
+- Vendor LLM-call / embedding-call families, price books, tier accounting,
+  token-count accounting, and cost tables are deferred.
 
 ## Human approval
 
@@ -137,7 +136,7 @@ Every action-attempt or effect Fact follows the ordinary ingest contract:
 | owner | source/tool may write only within the authorized Owner |
 | schema | `schema_id` / version must resolve to a registered `FactPayload` |
 | relation | structural edges must use registered relation descriptors |
-| capability | tool output must stay within registered schemas/relations and wake-palette masks |
+| capability | tool output must stay within registered schemas/relations and resolved tool scope |
 | atomicity | Fact, sidecar, structural edges, and change event commit together |
 
 Publication is synchronous with Fact materialization for engine-mediated tool
@@ -158,7 +157,7 @@ provenance stay fixed.
 - EventSource membrane and Owner scoping: 01.
 - Fact payload typing and migration: 03.
 - Wake execution and output protocol: 04.
-- Tool vocabulary and wake-palette validation: 12.
-- External side effects and approval posture: 15.
+- Tool vocabulary and MCP dispatch: 12.
+- External side effects and approval posture: 13.
 - Motivation is interpretation over Facts or Goal evidence, not a core action
   field.

@@ -164,7 +164,7 @@ S3 preserves original bytes only. It does not replace
 CitedObject carries Owner. A document ingested for `User(A)` is not
 visible to `User(B)`; the same PDF re-ingested for B produces a
 separate CitedObject row under B's Owner. Cross-owner sharing is a
-v2+ AccessGrant concern ([01](docs/01-event-source.md)); the citation layer never spans owners.
+v2+ AccessGrant concern ([01](01-event-source.md)); the citation layer never spans owners.
 
 CitationMapping inherits `owner` from its Fact (and equivalently from
 its CitedObject — the engine checks they match).

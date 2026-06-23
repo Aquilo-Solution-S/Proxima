@@ -69,7 +69,7 @@ impl McpTool for ListWakeEntriesTool {
                 .into_iter()
                 .map(|e| ListWakeEntriesItem {
                     wake_entry: ctx.format_wake_entry(e.wake_entry_id),
-                    trigger_kind: format!("{:?}", e.trigger_kind),
+                    trigger_kind: e.trigger_kind.as_str().to_string(),
                     trigger_id: e.trigger_id,
                     label: e.label,
                     enabled: e.enabled,

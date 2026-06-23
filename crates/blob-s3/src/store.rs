@@ -272,14 +272,11 @@ impl CitedBlobStore {
             .and_then(|r| r.e_tag())
             .map(ToString::to_string);
 
-        client
-            .delete_object()
-            .bucket(&row.bucket)
-            .key(&row.object_key)
-            .send()
-            .await
-            .map_err(|e| BlobError::S3(format!("delete pending upload failed: {e}")))?;
-
+        // Persist the canonical blob BEFORE deleting the pending object. If
+        // persistence fails, the pending object must survive so the client can
+        // retry (the copy + persist are idempotent on the content hash). Deleting
+        // first would orphan the canonical blob in S3 and leave the upload
+        // unrecoverable on failure.
         let completed = persist_completed_blob(
             &self.pool,
             &owner,
@@ -290,6 +287,17 @@ impl CitedBlobStore {
             etag.as_deref(),
         )
         .await?;
+
+        // Canonical blob is recorded; the pending object is now redundant. A
+        // delete failure here is idempotently retryable and, failing that, the
+        // pending-expiry sweep reclaims the leftover.
+        client
+            .delete_object()
+            .bucket(&row.bucket)
+            .key(&row.object_key)
+            .send()
+            .await
+            .map_err(|e| BlobError::S3(format!("delete pending upload failed: {e}")))?;
         load_completed_blob(
             &self.pool,
             &owner,

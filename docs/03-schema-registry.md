@@ -148,7 +148,7 @@ Substrate edge row:
 | `relation_class` | closed substrate class |
 | source endpoint | Memory or Goal |
 | target endpoint | Memory or Goal |
-| owner triple | same owner as both endpoints |
+| owner pair (`owner_principal_kind`, `owner_principal_id`) | same owner as both endpoints |
 | authorship | edge author class |
 
 Payload rule:
@@ -166,6 +166,8 @@ Core substrate relations carry no payload:
 | `core/supersedes` | `Supersession` |
 | `core/inspires` | `Causal` |
 | `core/authored` | `Causal` |
+| `core/depends-on` | `Structural` |
+| `core/motivated-by` | `Structural` |
 
 Flavor relations may carry payloads, e.g. `proxima-code/calls` with
 `proxima_code.code_calls_v1`.

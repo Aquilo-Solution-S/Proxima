@@ -102,7 +102,7 @@ already control observation grouping, so they own this id (Q6). F→A
 consolidation operates on a source batch (component 02): the chunks of one
 PDF, the files of one repo crawl, the messages of one chat session.
 
-Batch lifecycle (open / closed / consolidated) is persisted in the core
+Batch lifecycle (open / closed) is persisted in the core
 `source_batches` table — see [04 §Source-batch lifecycle](04-consolidation.md#source-batch-lifecycle). The source
 signals batch-complete via `engine.close_batch(source_batch_id)`; the
 engine gates F→A on `closed_at IS NOT NULL`.
@@ -115,8 +115,10 @@ batches over time) they don't. Coincidence isn't identity.
 
 ## Compliance metadata
 
-Every source declares four compliance-vocabulary fields at
-registration. Substrate startup fails if any is absent. The
+Design contract, not implemented-code in v0.0.1.
+
+Planned: every source declares four compliance-vocabulary fields at
+registration. The
 vocabulary, default-trivial values, and the why-each-field
 rationale live in
 [13 §Compliance vocabulary](13-compliance.md#compliance-vocabulary);
@@ -132,13 +134,16 @@ struct SourceComplianceMetadata {
 }
 ```
 
-Inheritance: every Fact a source emits inherits these four values
+Planned inheritance: every Fact a source emits inherits these four values
 into its row at insert time. `delete_owner` and the suppression-list
 mechanic ([13 §Operations](13-compliance.md#operations),
 [13 §Suppression list](13-compliance.md#suppression-list--re-ingest-rejection))
 operate on the inherited values;
 operators and deciders never see them (compliance metadata is not
 part of the cognitive surface).
+
+Current runtime config is env/programmatic only (see 10). Flavor-source
+patterns own source defaults until this metadata is enforced.
 
 Per-Owner overrides — a source emitting under multiple Owners may
 have different retention obligations per Owner — are expressed via

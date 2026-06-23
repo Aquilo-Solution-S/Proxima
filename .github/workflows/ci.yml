@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main, road-to-v1]
+  pull_request:
+    branches: [main, road-to-v1]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml pins the channel (1.96.0) + components (rustfmt, clippy).
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all --check
+      - name: clippy
+        # Workspace lints set warnings = deny, clippy::pedantic = deny.
+        run: cargo clippy --workspace --all-targets --all-features
+
+  test:
+    name: test (postgres + pgvector)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: proxima
+          POSTGRES_PASSWORD: proxima
+          POSTGRES_DB: proxima
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U proxima"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # pg-testkit clones a per-test DB from this template URL.
+      PROXIMA_TEST_PG_URL: postgres://proxima:proxima@localhost:5432/proxima
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: install nextest
+        uses: taiki-e/install-action@nextest
+      - name: build
+        run: cargo build --workspace --all-targets
+      - name: test
+        run: cargo nextest run --workspace

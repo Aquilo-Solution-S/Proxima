@@ -90,6 +90,13 @@ impl McpTool for RememberTool {
                     "body must be 1..=20000 chars".into(),
                 ));
             }
+            if let Some(key) = args.idempotency_key.as_deref()
+                && (key.is_empty() || key.chars().count() > 200)
+            {
+                return Err(McpToolError::InvalidInput(
+                    "idempotency_key must be 1..=200 chars when provided".into(),
+                ));
+            }
             let tags = normalize_tags(args.tags)?;
             let note_id = args
                 .idempotency_key

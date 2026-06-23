@@ -11,13 +11,13 @@ policy, and retrieval policy.
 ```
 EventSource
   -> Event + Fact + structural Edge
-  -> source-batch F->A gate
+  -> closed source batch
   -> Abstraction + provenance Edge
 
 change_event(F/A/P/Goal/Edge)
-  -> wake entry match
-  -> invocation
-  -> decide(reads, prompt, tools)
+  -> external harness pull
+  -> wake entry detect match
+  -> harness decision
   -> typed A/P/Goal/Edge writes
   -> change_event(...)
 ```
@@ -27,7 +27,7 @@ Phase split:
 | Phase | Input | Output | Runtime |
 |---|---|---|---|
 | EventSource ingest | external event | Fact + structural Edge | 01 / 03 / 05 |
-| F->A | Fact set, source batch | Abstraction + provenance Edge | source-batch gate |
+| F->A | Fact set, source batch | Abstraction + provenance Edge | flavor-operator discipline |
 | A->P | Abstraction set, active personality instance | Perspective + provenance Edge | wake entry |
 | A->Goal | Abstraction set, active personality instance | Goal + evidence Edge | wake entry |
 
@@ -37,28 +37,13 @@ Phase split:
 
 | Column family | Rule |
 |---|---|
-| `source_batch_id` | UUIDv7 declared by the source; unique within `(source_id, owner)` |
-| owner + source | access scope and source identity |
-| lifecycle | ingest started / completed / failed / suppressed |
-| counts + timestamps | operational accounting only |
+| `id` | UUIDv7 declared by the source; unique within `(source_id, owner)` |
+| `source_id` | source identity |
+| owner | `owner_principal_kind`, `owner_principal_id` |
+| `opened_at`, `closed_at` | open vs closed lifecycle |
 
 Domain metadata belongs on `CitedObject` / `CitationMapping` sidecars, not on
 `source_batches`.
-
-`source_batch_f2a` tracks F->A invocation gating:
-
-| Dimension | Rule |
-|---|---|
-| owner, source batch | gate scope |
-| Fact schema set | input contract |
-| output Abstraction schema | collision target |
-| operator id | flavor-declared F->A operator |
-| prompt version, model id | reproducibility |
-| personality instance | runtime authoring context, if the operator is personality-bound |
-| status, invocation key | idempotence and retry boundary |
-
-One completed row means the same operator cannot emit the same output
-Abstraction schema for the same source-batch input contract again.
 
 ## Phase 2 — Personality embedding
 
@@ -79,6 +64,8 @@ F->A exclusivity:
   Abstraction schemas.
 - The same operator may emit a new row only when the input contract or output
   Abstraction schema differs.
+- v0.0.1 ships no core F->A tracking table; this is flavor-operator discipline
+  until a core mechanism lands.
 
 Cross-domain synthesis:
 
@@ -116,7 +103,7 @@ Runtime tables:
 
 | Table | Key | Function |
 |---|---|---|
-| `personality_wake_entries` | `(Owner, personality_instance_id, wake_entry_id)` | trigger, recipe, tier, palette, status |
+| `personality_wake_entries` | `(Owner, personality_instance_id, wake_entry_id)` | trigger (kind+id), label, enabled, authored_by, probability_promille, goal_scope, instructions |
 
 Harness wake loop (driven externally, served by core pull verbs):
 
@@ -127,7 +114,8 @@ Harness wake loop (driven externally, served by core pull verbs):
 4. Reject events at or above the wake-chain depth bound
    (`change_event.wake_chain_depth`).
 5. Match wake entry trigger against event kind / schema / relation.
-6. Execute with the entry palette and visible read scope.
+6. Execute externally with tool scope from token capabilities intersected with
+   the deployment tool-surface profile (`ToolScope::Palette` when narrowed).
 7. Validate every write through schema and relation registries.
 8. Commit output rows and emitted `change_event` rows atomically.
 9. Advance the harness cursor after consideration, independent of output
@@ -170,8 +158,6 @@ Idempotence keys:
 | Path | Key |
 |---|---|
 | Event ingest | `event_id` |
-| F->A source-batch gate | source batch + input contract + operator + output schema |
-| wake invocation | Owner + personality instance + wake entry + change-event seq |
 | GoalWrite | client `request_id` |
 
 Reproducibility metadata:

@@ -40,9 +40,12 @@ pub(crate) mod content_hash_serde {
             }
             fn visit_str<E: de::Error>(self, s: &str) -> Result<[u8; 32], E> {
                 let trimmed = s.strip_prefix("\\x").unwrap_or(s);
-                if trimmed.len() != 64 {
+                // Require ASCII so the byte-index slicing below always lands on
+                // a char boundary (a 64-byte string with multi-byte chars would
+                // otherwise panic on a mid-codepoint slice).
+                if trimmed.len() != 64 || !trimmed.is_ascii() {
                     return Err(E::custom(format!(
-                        "expected 64 hex chars, got {}",
+                        "expected 64 ASCII hex chars, got {} bytes",
                         trimmed.len()
                     )));
                 }

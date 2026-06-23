@@ -575,11 +575,17 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
     )
     .await;
 
+    // A Fact cannot be a link source: rejected up front at source-class
+    // validation (strict layering) with a clear caller-facing InvalidInput,
+    // before reaching the central relation-mask check.
     match link {
-        Err(McpToolError::Storage(proxima_core::StorageError::ConstraintViolation(msg))) => {
-            assert!(msg.contains("source kind Fact"));
+        Err(McpToolError::InvalidInput(msg)) => {
+            assert!(
+                msg.contains("Fact cannot be a link source"),
+                "unexpected message: {msg}"
+            );
         }
-        other => panic!("expected central relation-mask rejection, got {other:?}"),
+        other => panic!("expected Fact-source rejection (InvalidInput), got {other:?}"),
     }
 
     drop(pg);
