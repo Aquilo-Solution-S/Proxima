@@ -67,30 +67,36 @@ impl McpTool for ListSchemasTool {
         ctx: McpToolCtx,
         args: ListSchemasArgs,
     ) -> BoxFuture<'static, Result<ListSchemasOutput, McpToolError>> {
-        Box::pin(async move {
-            // Reject an unknown `kind` rather than silently returning all
-            // schemas (a typo like "Facts" must not look successful).
-            let filter = match args.kind.as_deref() {
-                Some(raw) => Some(parse_kind(raw).ok_or_else(|| {
-                    McpToolError::InvalidInput(format!(
-                        "unknown kind '{raw}'; expected one of: Fact, Abstraction, \
-                         Perspective, Goal, Edge, CitedObject, CitationMapping"
-                    ))
-                })?),
-                None => None,
-            };
-            let schemas = ctx
-                .registry
-                .list()
-                .into_iter()
-                .filter(|info| filter.is_none_or(|k| info.kind == k))
-                .map(|info| SchemaItem {
-                    schema_id: info.schema_id.as_str().to_string(),
-                    schema_version: info.schema_version.into_inner(),
-                    kind: kind_str(info.kind).to_string(),
-                })
-                .collect();
-            Ok(ListSchemasOutput { schemas })
-        })
+        Box::pin(list_schemas(ctx, args))
     }
+}
+
+#[allow(clippy::unused_async)]
+pub(crate) async fn list_schemas(
+    ctx: McpToolCtx,
+    args: ListSchemasArgs,
+) -> Result<ListSchemasOutput, McpToolError> {
+    // Reject an unknown `kind` rather than silently returning all
+    // schemas (a typo like "Facts" must not look successful).
+    let filter = match args.kind.as_deref() {
+        Some(raw) => Some(parse_kind(raw).ok_or_else(|| {
+            McpToolError::InvalidInput(format!(
+                "unknown kind '{raw}'; expected one of: Fact, Abstraction, \
+                         Perspective, Goal, Edge, CitedObject, CitationMapping"
+            ))
+        })?),
+        None => None,
+    };
+    let schemas = ctx
+        .registry
+        .list()
+        .into_iter()
+        .filter(|info| filter.is_none_or(|k| info.kind == k))
+        .map(|info| SchemaItem {
+            schema_id: info.schema_id.as_str().to_string(),
+            schema_version: info.schema_version.into_inner(),
+            kind: kind_str(info.kind).to_string(),
+        })
+        .collect();
+    Ok(ListSchemasOutput { schemas })
 }

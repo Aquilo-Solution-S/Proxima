@@ -33,32 +33,38 @@ impl McpTool for ListSubstrateToolsTool {
 
     fn call(
         ctx: McpToolCtx,
-        _args: ListSubstrateToolsArgs,
+        args: ListSubstrateToolsArgs,
     ) -> BoxFuture<'static, Result<ListSubstrateToolsOutput, McpToolError>> {
-        Box::pin(async move {
-            let mut tools = Vec::new();
-            for desc in ctx.registry.list_mcp_tools() {
-                if !ctx
-                    .authz
-                    .capabilities
-                    .tool_scope
-                    .allows_group_advertisement(desc.name)
-                {
-                    continue;
-                }
-                let source = if desc.name.starts_with("core/") {
-                    "substrate".into()
-                } else {
-                    let flavor = desc.name.split('/').next().unwrap_or("flavor");
-                    format!("flavor:{flavor}")
-                };
-                tools.push(SubstrateToolItem {
-                    tool_id: desc.name.to_string(),
-                    source,
-                    description: desc.description.to_string(),
-                });
-            }
-            Ok(ListSubstrateToolsOutput { tools })
-        })
+        Box::pin(list_substrate_tools(ctx, args))
     }
+}
+
+#[allow(clippy::unused_async)]
+pub(crate) async fn list_substrate_tools(
+    ctx: McpToolCtx,
+    _args: ListSubstrateToolsArgs,
+) -> Result<ListSubstrateToolsOutput, McpToolError> {
+    let mut tools = Vec::new();
+    for desc in ctx.registry.list_mcp_tools() {
+        if !ctx
+            .authz
+            .capabilities
+            .tool_scope
+            .allows_group_advertisement(desc.name)
+        {
+            continue;
+        }
+        let source = if desc.name.starts_with("core/") {
+            "substrate".into()
+        } else {
+            let flavor = desc.name.split('/').next().unwrap_or("flavor");
+            format!("flavor:{flavor}")
+        };
+        tools.push(SubstrateToolItem {
+            tool_id: desc.name.to_string(),
+            source,
+            description: desc.description.to_string(),
+        });
+    }
+    Ok(ListSubstrateToolsOutput { tools })
 }
