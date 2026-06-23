@@ -47,6 +47,11 @@ jobs:
       PROXIMA_TEST_PG_URL: postgres://proxima:proxima@localhost:5432/proxima
     steps:
       - uses: actions/checkout@v4
+        with:
+          # self_ingestion_pg shallow-clones the workspace and ingests its
+          # most-recent commits; a single-commit CI checkout would starve
+          # it, so fetch full history here (the test itself bounds depth).
+          fetch-depth: 0
       - uses: Swatinem/rust-cache@v2
       - name: install nextest
         uses: taiki-e/install-action@nextest

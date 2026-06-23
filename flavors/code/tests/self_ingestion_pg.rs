@@ -2,8 +2,10 @@
 //! M4.B.5 done-when — self-ingestion against a tmp clone of the
 //! Proxima repo.
 //!
-//! Asserts the ROADMAP.md M4 criterion:
-//! * every commit on `main` appears as a Code Fact (commit-v1)
+//! Asserts the ROADMAP.md M4 criterion against whichever ref the
+//! workspace checkout exposes (locally `main`; in CI the checked-out
+//! branch, since a single-branch CI checkout has no local `main`):
+//! * every commit on the ingested ref appears as a Code Fact (commit-v1)
 //! * a new commit on the clone surfaces as a new commit-v1 Fact on re-poll
 //! * a follow-up no-op poll emits zero events (idempotency)
 
@@ -20,6 +22,13 @@ use proxima_core::{Cursor, Owner, Principal};
 use proxima_pg_testkit::drop_db;
 use tempfile::TempDir;
 use uuid::Uuid;
+
+/// How many most-recent commits the self-ingestion probe clones and
+/// ingests. Bounds CI cost (full history is 600+ commits ≈ minutes); 30
+/// real commits still exercise historical ingest, multi-schema payload
+/// dispatch, live append, and idempotency. The clone is shallow, so its
+/// oldest commit is grafted parentless and ingests its full tree.
+const INGEST_DEPTH: &str = "30";
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -48,11 +57,28 @@ fn run_get(cmd: &mut Command) -> String {
     String::from_utf8(out.stdout).expect("utf-8")
 }
 
-fn clone_workspace_to_tmp(target: &Path) {
+/// Clone the workspace into `target` and land on a committable branch at
+/// the workspace's current HEAD, returning that branch's name.
+///
+/// The workspace HEAD commit is always present in the clone regardless of
+/// branch / shallow / detached state, so resolving it by SHA and pinning a
+/// fresh `m4-ingest` branch there is robust to CI's single-branch checkout
+/// (which has no local `main`) and to a detached PR merge ref. Locally,
+/// HEAD is normally `main`, so this stays faithful to the M4 criterion.
+fn clone_workspace_to_tmp(target: &Path) -> String {
     let src = workspace_root();
+    let head_sha = run_get(
+        Command::new("git")
+            .arg("-C")
+            .arg(&src)
+            .args(["rev-parse", "HEAD"]),
+    );
+    let head_sha = head_sha.trim();
     run(Command::new("git")
         .arg("clone")
         .arg("--quiet")
+        .arg("--depth")
+        .arg(INGEST_DEPTH)
         .arg(format!("file://{}", src.display()))
         .arg(target));
     run(Command::new("git")
@@ -70,15 +96,16 @@ fn clone_workspace_to_tmp(target: &Path) {
     run(Command::new("git")
         .arg("-C")
         .arg(target)
-        .args(["checkout", "main"]));
+        .args(["checkout", "-B", "m4-ingest", head_sha]));
+    "m4-ingest".to_string()
 }
 
-fn count_main_commits(repo: &Path) -> usize {
+fn count_branch_commits(repo: &Path, branch: &str) -> usize {
     let s = run_get(Command::new("git").arg("-C").arg(repo).args([
         "rev-list",
         "--count",
         "--first-parent",
-        "main",
+        branch,
     ]));
     s.trim().parse().expect("count parse")
 }
@@ -119,9 +146,9 @@ async fn self_ingestion_streams_proxima_main() {
         // Clone Proxima itself into a tmpdir.
         let tmp = TempDir::new()?;
         let clone_path = tmp.path().join("clone");
-        clone_workspace_to_tmp(&clone_path);
+        let ingest_ref = clone_workspace_to_tmp(&clone_path);
 
-        let main_count_before = count_main_commits(&clone_path);
+        let main_count_before = count_branch_commits(&clone_path, &ingest_ref);
 
         // Phase 1 — historical ingestion.
         let repo_id = Uuid::now_v7();
@@ -139,8 +166,8 @@ async fn self_ingestion_streams_proxima_main() {
             i64::try_from(main_count_before).expect("main commit count fits in i64");
         assert!(
             facts_after_initial >= main_count_i64,
-            "every commit on main should have a commit-v1 Fact: \
-             main_count={main_count_before}, facts={facts_after_initial}"
+            "every commit on the ingested ref should have a commit-v1 Fact: \
+             ref_count={main_count_before}, facts={facts_after_initial}"
         );
 
         // Phase 1.5 — payload projection check. Query for commit-v1 facts
@@ -257,7 +284,7 @@ async fn self_ingestion_streams_proxima_main() {
             "-m",
             "M4 self-ingestion probe",
         ]));
-        let main_count_after = count_main_commits(&clone_path);
+        let main_count_after = count_branch_commits(&clone_path, &ingest_ref);
         assert_eq!(main_count_after, main_count_before + 1);
 
         let (r2, cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
