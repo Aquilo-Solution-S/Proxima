@@ -23,8 +23,11 @@ use tokio_util::sync::CancellationToken;
 use tower::Service;
 
 use crate::{
-    AppContext, CoreMcpTools, EmbedConfig, FlavorApp, ProximaBuilder, ProximaError, RuntimeBuilder,
+    AppContext, CoreMcpTools, EmbedConfig, FlavorApp, PgSidecarRegistryFrozen, ProximaBuilder,
+    ProximaError, RuntimeBuilder,
 };
+
+const EMBEDDING_WORKER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Application runtime facade.
 pub struct Proxima<A: FlavorApp> {
@@ -201,6 +204,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             handle: booted.handle,
             pool: booted.pool,
             registry: booted.registry,
+            pg_sidecars: booted.pg_sidecars,
             blobs: booted.blobs,
             owner: booted.owner,
             cancel,
@@ -269,6 +273,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             handle: booted.handle,
             pool: booted.pool,
             registry: booted.registry,
+            pg_sidecars: booted.pg_sidecars,
             blobs: booted.blobs,
             owner: booted.owner,
             mcp_addr,
@@ -297,6 +302,7 @@ pub struct BuiltProxima {
     pub handle: EngineHandle,
     pub pool: PgPool,
     pub registry: Arc<FlavorRegistryFrozen>,
+    pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Owner,
     pub cancel: CancellationToken,
@@ -307,6 +313,11 @@ impl BuiltProxima {
     pub fn shutdown(self) {
         self.cancel.cancel();
         self.engine.stop(self.handle);
+    }
+
+    #[must_use]
+    pub fn spawn_embedding_worker(&self, cancel: CancellationToken) -> JoinHandle<()> {
+        spawn_embedding_worker(self.engine.clone(), cancel)
     }
 
     #[must_use]
@@ -344,6 +355,7 @@ pub struct RunningProxima {
     pub handle: EngineHandle,
     pub pool: PgPool,
     pub registry: Arc<FlavorRegistryFrozen>,
+    pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Owner,
     pub mcp_addr: Option<SocketAddr>,
@@ -364,6 +376,11 @@ impl RunningProxima {
     }
 
     #[must_use]
+    pub fn spawn_embedding_worker(&self, cancel: CancellationToken) -> JoinHandle<()> {
+        spawn_embedding_worker(self.engine.clone(), cancel)
+    }
+
+    #[must_use]
     pub fn single_owner_authz(&self) -> Option<AuthzContext> {
         self.insecure_single_owner
             .then(|| AuthzContext::single_owner(&self.owner, AuthPath::System))
@@ -381,6 +398,44 @@ impl std::fmt::Debug for RunningProxima {
             .field("insecure_single_owner", &self.insecure_single_owner)
             .finish_non_exhaustive()
     }
+}
+
+fn spawn_embedding_worker(engine: Arc<Engine>, cancel: CancellationToken) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        if engine.embed_client().is_none() {
+            return;
+        }
+        loop {
+            if cancel.is_cancelled() {
+                break;
+            }
+            let mut processed = 0usize;
+            let mut failed = 0usize;
+            loop {
+                if cancel.is_cancelled() {
+                    return;
+                }
+                match engine.drain_embedding_jobs(1).await {
+                    Ok(outcome) if outcome.processed > 0 => {
+                        processed += outcome.processed;
+                        failed += outcome.failed;
+                    }
+                    Ok(_) => break,
+                    Err(err) => {
+                        tracing::warn!(error = %err, "embedding drain failed");
+                        break;
+                    }
+                }
+            }
+            if processed > 0 {
+                tracing::info!(processed, failed, "drained embedding jobs");
+            }
+            tokio::select! {
+                () = cancel.cancelled() => break,
+                () = tokio::time::sleep(EMBEDDING_WORKER_INTERVAL) => {}
+            }
+        }
+    })
 }
 
 /// Run the configured app from process environment.

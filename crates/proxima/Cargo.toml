@@ -36,4 +36,5 @@ futures = { workspace = true }
 proxima-core = { path = "../core", features = ["test-fixtures"] }
 proxima-pg-testkit = { path = "../pg-testkit" }
 serde = { workspace = true, features = ["derive"] }
+time = { workspace = true }
 tower = { workspace = true, features = ["util"] }
