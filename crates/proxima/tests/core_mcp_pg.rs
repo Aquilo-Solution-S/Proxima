@@ -202,8 +202,8 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         let listed = tools.list_core_tools();
         let list_personalities = listed
             .iter()
-            .find(|tool| tool.name == "core_list_personalities")
-            .expect("core/list_personalities registered");
+            .find(|tool| tool.name == "core_personality")
+            .expect("core_personality registered");
         assert!(!listed.is_empty(), "core tool registry is non-empty");
         assert!(
             list_personalities
@@ -230,14 +230,14 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         ]));
         let palette_names: HashSet<_> = palette.into_iter().map(|tool| tool.name).collect();
         assert!(palette_names.contains("core_search_memories"));
-        assert!(!palette_names.contains("core_list_personalities"));
+        assert!(!palette_names.contains("core_personality"));
 
         let output = call_test_model_tool(
             &tools,
             host_authz(&owner, ToolScope::All),
             owner.clone(),
-            "core_list_personalities",
-            serde_json::json!({}),
+            "core_personality",
+            serde_json::json!({ "action": "list" }),
         )
         .await?;
         assert!(
@@ -250,11 +250,13 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
                 host_authz(&owner, ToolScope::Palette(Vec::new())),
                 owner.clone(),
                 None,
-                "core_list_personalities",
-                serde_json::json!({}),
+                "core_personality",
+                serde_json::json!({ "action": "list" }),
             )
             .await;
-        assert!(matches!(denied, Err(CoreMcpError::NotAuthorized(tool)) if tool == "core_list_personalities"));
+        assert!(
+            matches!(denied, Err(CoreMcpError::NotAuthorized(tool)) if tool == "core_personality")
+        );
 
         let invalid = tools
             .call_core_tool(
@@ -312,8 +314,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
             .collect();
         assert!(tool_names.contains("core_search_memories"));
         assert!(tool_names.contains("core_get_memory"));
-        assert!(tool_names.contains("core_facts_citing_object"));
-        assert!(tool_names.contains("core_citation_of_fact"));
+        assert!(tool_names.contains("core_fact"));
         let substrate_listing = tools
             .call_core_tool(
                 authz.clone(),
@@ -331,8 +332,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
             .collect();
         assert!(substrate_tool_ids.contains("core_search_memories"));
         assert!(substrate_tool_ids.contains("core_get_memory"));
-        assert!(substrate_tool_ids.contains("core_facts_citing_object"));
-        assert!(substrate_tool_ids.contains("core_citation_of_fact"));
+        assert!(substrate_tool_ids.contains("core_fact"));
 
         let remembered = call_test_model_tool(
             &tools,
@@ -546,8 +546,8 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             &tools,
             authz.clone(),
             owner.clone(),
-            "core_facts_citing_object",
-            serde_json::json!({ "cited_object_id": cited_object_id.to_string() }),
+            "core_fact",
+            serde_json::json!({ "action": "facts_citing_object", "cited_object_id": cited_object_id.to_string() }),
         )
         .await?;
         assert_eq!(citing["facts"][0]["memory"], memory);
@@ -556,8 +556,8 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             &tools,
             authz.clone(),
             owner.clone(),
-            "core_citation_of_fact",
-            serde_json::json!({ "fact": memory }),
+            "core_fact",
+            serde_json::json!({ "action": "citation_of_fact", "fact": memory }),
         )
         .await?;
         assert_eq!(
@@ -573,8 +573,8 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             &tools,
             host_authz(&other_owner, ToolScope::All),
             other_owner,
-            "core_facts_citing_object",
-            serde_json::json!({ "cited_object_id": cited_object_id.to_string() }),
+            "core_fact",
+            serde_json::json!({ "action": "facts_citing_object", "cited_object_id": cited_object_id.to_string() }),
         )
         .await?;
         assert!(cross_owner["facts"].as_array().expect("facts").is_empty());

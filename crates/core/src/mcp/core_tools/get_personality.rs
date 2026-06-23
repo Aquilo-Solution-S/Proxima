@@ -58,51 +58,55 @@ impl McpTool for GetPersonalityTool {
         ctx: McpToolCtx,
         args: GetPersonalityArgs,
     ) -> BoxFuture<'static, Result<GetPersonalityOutput, McpToolError>> {
-        Box::pin(async move {
-            let target_id = ctx.resolve_personality(&args.personality)?;
-            let storage = ctx
-                .storage()
-                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-            let rows = storage
-                .list_personality_instances(&ctx.owner, true)
-                .await
-                .map_err(McpToolError::Storage)?;
-            let row = rows
-                .into_iter()
-                .find(|r| r.personality_instance_id == target_id)
-                .ok_or_else(|| {
-                    McpToolError::Other(format!(
-                        "personality {} not found for owner",
-                        args.personality
-                    ))
-                })?;
-            let personality = ctx.format_personality(row.personality_instance_id);
-            let root_perspective =
-                ctx.format_perspective_memory(row.current_root_perspective_memory_id);
-            let wake_entries = row
-                .wake_entries
-                .into_iter()
-                .map(|e| GetPersonalityWakeEntry {
-                    wake_entry: ctx.format_wake_entry(e.wake_entry_id),
-                    trigger_kind: e.trigger_kind.as_str().to_string(),
-                    trigger_id: e.trigger_id,
-                    label: e.label,
-                    enabled: e.enabled,
-                    instructions: e.instructions,
-                    authored_by: e.authored_by.as_str().to_string(),
-                    probability_promille: e.probability_promille,
-                    goal_scope: e.goal_scope.as_str().to_string(),
-                })
-                .collect();
-            Ok(GetPersonalityOutput {
-                personality,
-                display_name: row.display_name,
-                status: row.status,
-                root_perspective,
-                wake_entries,
-            })
-        })
+        Box::pin(get_personality(ctx, args))
     }
+}
+
+pub(super) async fn get_personality(
+    ctx: McpToolCtx,
+    args: GetPersonalityArgs,
+) -> Result<GetPersonalityOutput, McpToolError> {
+    let target_id = ctx.resolve_personality(&args.personality)?;
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let rows = storage
+        .list_personality_instances(&ctx.owner, true)
+        .await
+        .map_err(McpToolError::Storage)?;
+    let row = rows
+        .into_iter()
+        .find(|r| r.personality_instance_id == target_id)
+        .ok_or_else(|| {
+            McpToolError::Other(format!(
+                "personality {} not found for owner",
+                args.personality
+            ))
+        })?;
+    let personality = ctx.format_personality(row.personality_instance_id);
+    let root_perspective = ctx.format_perspective_memory(row.current_root_perspective_memory_id);
+    let wake_entries = row
+        .wake_entries
+        .into_iter()
+        .map(|e| GetPersonalityWakeEntry {
+            wake_entry: ctx.format_wake_entry(e.wake_entry_id),
+            trigger_kind: e.trigger_kind.as_str().to_string(),
+            trigger_id: e.trigger_id,
+            label: e.label,
+            enabled: e.enabled,
+            instructions: e.instructions,
+            authored_by: e.authored_by.as_str().to_string(),
+            probability_promille: e.probability_promille,
+            goal_scope: e.goal_scope.as_str().to_string(),
+        })
+        .collect();
+    Ok(GetPersonalityOutput {
+        personality,
+        display_name: row.display_name,
+        status: row.status,
+        root_perspective,
+        wake_entries,
+    })
 }
 
 #[cfg(test)]

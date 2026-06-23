@@ -58,25 +58,7 @@ impl McpTool for CitationOfFactTool {
         ctx: McpToolCtx,
         args: CitationOfFactArgs,
     ) -> BoxFuture<'static, Result<CitationOfFactOutput, McpToolError>> {
-        Box::pin(async move {
-            let fact_memory_id = ctx.resolve_fact_memory(&args.fact)?;
-            let storage = ctx
-                .storage()
-                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-            let citation = storage
-                .citation_of_fact(&ctx.owner, fact_memory_id)
-                .await?
-                .map(|row| FactCitationOutput {
-                    citation_mapping_id: row.citation_mapping_id.to_string(),
-                    mapping_schema_id: row.mapping_schema_id.as_str().to_string(),
-                    cited_object_id: row.cited_object_id.to_string(),
-                    cited_object_schema_id: row.cited_object_schema_id.as_str().to_string(),
-                });
-            Ok(CitationOfFactOutput {
-                fact: ctx.format_fact_memory(fact_memory_id),
-                citation,
-            })
-        })
+        Box::pin(citation_of_fact(ctx, args))
     }
 }
 
@@ -90,28 +72,56 @@ impl McpTool for CitationOfEntityHeadTool {
         ctx: McpToolCtx,
         args: CitationOfEntityHeadArgs,
     ) -> BoxFuture<'static, Result<CitationOfEntityHeadOutput, McpToolError>> {
-        Box::pin(async move {
-            let fact_entity_uuid = args
-                .fact_entity_id
-                .parse::<uuid::Uuid>()
-                .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}")))?;
-            let fact_entity_id = FactEntityId::new(fact_entity_uuid);
-            let storage = ctx
-                .storage()
-                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-            let citation = storage
-                .citation_of_entity_head(&ctx.owner, fact_entity_id)
-                .await?
-                .map(|row| FactCitationOutput {
-                    citation_mapping_id: row.citation_mapping_id.to_string(),
-                    mapping_schema_id: row.mapping_schema_id.as_str().to_string(),
-                    cited_object_id: row.cited_object_id.to_string(),
-                    cited_object_schema_id: row.cited_object_schema_id.as_str().to_string(),
-                });
-            Ok(CitationOfEntityHeadOutput {
-                fact_entity_id: fact_entity_uuid.to_string(),
-                citation,
-            })
-        })
+        Box::pin(citation_of_entity_head(ctx, args))
     }
+}
+
+pub(super) async fn citation_of_fact(
+    ctx: McpToolCtx,
+    args: CitationOfFactArgs,
+) -> Result<CitationOfFactOutput, McpToolError> {
+    let fact_memory_id = ctx.resolve_fact_memory(&args.fact)?;
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let citation = storage
+        .citation_of_fact(&ctx.owner, fact_memory_id)
+        .await?
+        .map(|row| FactCitationOutput {
+            citation_mapping_id: row.citation_mapping_id.to_string(),
+            mapping_schema_id: row.mapping_schema_id.as_str().to_string(),
+            cited_object_id: row.cited_object_id.to_string(),
+            cited_object_schema_id: row.cited_object_schema_id.as_str().to_string(),
+        });
+    Ok(CitationOfFactOutput {
+        fact: ctx.format_fact_memory(fact_memory_id),
+        citation,
+    })
+}
+
+pub(super) async fn citation_of_entity_head(
+    ctx: McpToolCtx,
+    args: CitationOfEntityHeadArgs,
+) -> Result<CitationOfEntityHeadOutput, McpToolError> {
+    let fact_entity_uuid = args
+        .fact_entity_id
+        .parse::<uuid::Uuid>()
+        .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}")))?;
+    let fact_entity_id = FactEntityId::new(fact_entity_uuid);
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let citation = storage
+        .citation_of_entity_head(&ctx.owner, fact_entity_id)
+        .await?
+        .map(|row| FactCitationOutput {
+            citation_mapping_id: row.citation_mapping_id.to_string(),
+            mapping_schema_id: row.mapping_schema_id.as_str().to_string(),
+            cited_object_id: row.cited_object_id.to_string(),
+            cited_object_schema_id: row.cited_object_schema_id.as_str().to_string(),
+        });
+    Ok(CitationOfEntityHeadOutput {
+        fact_entity_id: fact_entity_uuid.to_string(),
+        citation,
+    })
 }

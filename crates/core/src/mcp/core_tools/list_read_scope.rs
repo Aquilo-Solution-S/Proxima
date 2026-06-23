@@ -36,28 +36,33 @@ impl McpTool for ListReadScopeTool {
         ctx: McpToolCtx,
         args: ListReadScopeArgs,
     ) -> BoxFuture<'static, Result<ListReadScopeOutput, McpToolError>> {
-        Box::pin(async move {
-            let pid = ctx.resolve_personality(&args.personality)?;
-            let storage = ctx
-                .storage()
-                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-            let response = storage
-                .list_read_scope(&ListReadScopeRequest {
-                    principal: ctx.owner.clone(),
-                    reader_personality_instance_id: pid,
-                })
-                .await
-                .map_err(McpToolError::Storage)?;
-            let readable_personalities = response
-                .readable_personality_instance_ids
-                .into_iter()
-                .map(|id| ctx.format_personality(id))
-                .collect();
-            Ok(ListReadScopeOutput {
-                personality: ctx.format_personality(pid),
-                identity_read_allowed: true,
-                readable_personalities,
-            })
-        })
+        Box::pin(list_read_scope(ctx, args))
     }
+}
+
+pub(super) async fn list_read_scope(
+    ctx: McpToolCtx,
+    args: ListReadScopeArgs,
+) -> Result<ListReadScopeOutput, McpToolError> {
+    let pid = ctx.resolve_personality(&args.personality)?;
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let response = storage
+        .list_read_scope(&ListReadScopeRequest {
+            principal: ctx.owner.clone(),
+            reader_personality_instance_id: pid,
+        })
+        .await
+        .map_err(McpToolError::Storage)?;
+    let readable_personalities = response
+        .readable_personality_instance_ids
+        .into_iter()
+        .map(|id| ctx.format_personality(id))
+        .collect();
+    Ok(ListReadScopeOutput {
+        personality: ctx.format_personality(pid),
+        identity_read_allowed: true,
+        readable_personalities,
+    })
 }

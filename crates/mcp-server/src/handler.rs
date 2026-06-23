@@ -432,17 +432,22 @@ mod tests {
         assert_eq!(remember.destructive, Some(false));
         assert_eq!(remember.idempotent, Some(false));
 
-        // Destructive write that converges (a second call is a no-op).
-        let cleanup = core_tool_annotations("core_cleanup_facts").expect("destructive tool");
-        assert_eq!(cleanup.read_only, Some(false));
-        assert_eq!(cleanup.destructive, Some(true));
-        assert_eq!(cleanup.idempotent, Some(true));
+        // Grouped fact dispatcher is conservative: cleanup is destructive,
+        // but its writes converge.
+        let fact = core_tool_annotations("core_fact").expect("fact dispatcher");
+        assert_eq!(fact.read_only, Some(false));
+        assert_eq!(fact.destructive, Some(true));
+        assert_eq!(fact.idempotent, Some(true));
 
-        // Destructive write that is NOT replay-safe (audit-Fact divergence).
-        let tombstone =
-            core_tool_annotations("core_tombstone_personality").expect("destructive tool");
-        assert_eq!(tombstone.destructive, Some(true));
-        assert_eq!(tombstone.idempotent, Some(false));
+        // Personality and wake dispatchers aggregate destructive and
+        // non-replay-safe actions.
+        let personality =
+            core_tool_annotations("core_personality").expect("personality dispatcher");
+        assert_eq!(personality.destructive, Some(true));
+        assert_eq!(personality.idempotent, Some(false));
+        let wake = core_tool_annotations("core_wake").expect("wake dispatcher");
+        assert_eq!(wake.destructive, Some(true));
+        assert_eq!(wake.idempotent, Some(false));
 
         // Create-new-each-call write is not replay-safe.
         let link = core_tool_annotations("core_link").expect("create tool");

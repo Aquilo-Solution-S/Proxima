@@ -30,26 +30,31 @@ impl McpTool for SetFactRetentionTool {
         ctx: McpToolCtx,
         args: SetFactRetentionArgs,
     ) -> BoxFuture<'static, Result<SetFactRetentionOutput, McpToolError>> {
-        Box::pin(async move {
-            let engine = ctx
-                .engine()
-                .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
-            if let Some(retention_seconds) = args.retention_seconds {
-                engine
-                    .set_fact_retention(&ctx.authz, &ctx.owner, retention_seconds)
-                    .await
-                    .map_err(|e| McpToolError::Other(e.to_string()))?;
-            } else {
-                engine
-                    .clear_fact_retention(&ctx.authz, &ctx.owner)
-                    .await
-                    .map_err(|e| McpToolError::Other(e.to_string()))?;
-            }
-            let retention_seconds = engine
-                .get_fact_retention(&ctx.authz, &ctx.owner)
-                .await
-                .map_err(|e| McpToolError::Other(e.to_string()))?;
-            Ok(SetFactRetentionOutput { retention_seconds })
-        })
+        Box::pin(set_fact_retention(ctx, args))
     }
+}
+
+pub(super) async fn set_fact_retention(
+    ctx: McpToolCtx,
+    args: SetFactRetentionArgs,
+) -> Result<SetFactRetentionOutput, McpToolError> {
+    let engine = ctx
+        .engine()
+        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    if let Some(retention_seconds) = args.retention_seconds {
+        engine
+            .set_fact_retention(&ctx.authz, &ctx.owner, retention_seconds)
+            .await
+            .map_err(|e| McpToolError::Other(e.to_string()))?;
+    } else {
+        engine
+            .clear_fact_retention(&ctx.authz, &ctx.owner)
+            .await
+            .map_err(|e| McpToolError::Other(e.to_string()))?;
+    }
+    let retention_seconds = engine
+        .get_fact_retention(&ctx.authz, &ctx.owner)
+        .await
+        .map_err(|e| McpToolError::Other(e.to_string()))?;
+    Ok(SetFactRetentionOutput { retention_seconds })
 }

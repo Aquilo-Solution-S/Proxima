@@ -30,10 +30,9 @@ const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
 fn memory_keep_set() -> Vec<&'static str> {
     use proxima_core::mcp::McpTool;
     use proxima_core::mcp::core_tools::{
-        CitationOfEntityHeadTool, CitationOfFactTool, CleanupFactsTool, CoreGoalTool, DeriveTool,
-        FactsCitingObjectTool, GetGraphTool, GetMemoryTool, LinkTool, ListEdgeTypesTool,
-        ListEventsTool, ListSchemasTool, ListSubstrateToolsTool, RecordUtteranceTool, RememberTool,
-        SearchMemoriesTool, SetFactRetentionTool, WalkMemoryLineageTool,
+        CoreFactTool, CoreGoalTool, DeriveTool, GetGraphTool, GetMemoryTool, LinkTool,
+        ListEdgeTypesTool, ListEventsTool, ListSchemasTool, ListSubstrateToolsTool,
+        RecordUtteranceTool, RememberTool, SearchMemoriesTool, WalkMemoryLineageTool,
     };
 
     #[allow(unused_mut)]
@@ -46,22 +45,20 @@ fn memory_keep_set() -> Vec<&'static str> {
         // retrieval
         SearchMemoriesTool::NAME,
         GetMemoryTool::NAME,
-        FactsCitingObjectTool::NAME,
-        CitationOfFactTool::NAME,
-        CitationOfEntityHeadTool::NAME,
         WalkMemoryLineageTool::NAME,
         ListEventsTool::NAME,
         GetGraphTool::NAME,
         // architecture / governance
         ListSchemasTool::NAME,
         ListEdgeTypesTool::NAME,
-        SetFactRetentionTool::NAME,
-        CleanupFactsTool::NAME,
         ListSubstrateToolsTool::NAME,
     ];
+    // The memory profile carries the full goal lifecycle and the full
+    // fact/citation surface (incl. owner-scoped retention config + cleanup),
+    // matching the pre-grouping keep-set. Wake/personality admin stays out.
     ids.extend(
         all_core_actions()
-            .filter(|action| action.tool == CoreGoalTool::NAME)
+            .filter(|action| action.tool == CoreGoalTool::NAME || action.tool == CoreFactTool::NAME)
             .map(|action| action.scope_key),
     );
 
@@ -514,8 +511,8 @@ mod tests {
         let registered_ids = [
             "core_get_memory",
             "core_search_memories",
-            "core_instantiate_personality",
-            "core_add_wake_entry",
+            "core_personality:instantiate",
+            "core_wake:add",
             "proxima-code_register_repo",
             "proxima-code_emit_execution_request",
         ];
@@ -532,19 +529,19 @@ mod tests {
         // consts under the same cfg).
         #[cfg(feature = "code")]
         assert!(memory.allows("proxima-code_register_repo"));
-        assert!(!memory.allows("core_instantiate_personality"));
-        assert!(!memory.allows("core_add_wake_entry"));
+        assert!(!memory.allows("core_personality:instantiate"));
+        assert!(!memory.allows("core_wake:add"));
         assert!(!memory.allows("proxima-code_emit_execution_request"));
 
         let overridden = resolve_tool_scope(
             Some("memory"),
-            Some("core_add_wake_entry"),
+            Some("core_wake:add"),
             Some("core_get_memory"),
             &registered_ids,
         )
         .expect("overridden memory profile");
         assert!(!overridden.allows("core_get_memory"));
-        assert!(overridden.allows("core_add_wake_entry"));
+        assert!(overridden.allows("core_wake:add"));
     }
 
     #[test]
