@@ -24,21 +24,21 @@ No runtime schema/source/tool/flavor registration surface exists.
 
 Agent long-term memory is core substrate. The MCP tools are thin callers
 of Engine verbs; storage stays behind the Engine. The substrate tool
-count is 33 (authoritative live list: `core/list_substrate_tools`).
+count is 33 (authoritative live list: `core_list_substrate_tools`).
 
 Canonical substrate memory tools:
 
 | Tool | Contract |
 |---|---|
-| `core/remember` | write agent-authored Fact |
-| `core/record_utterance` | write utterance Fact |
-| `core/derive` | write agent-authored Abstraction |
-| `core/link` | write registered relation edge |
-| `core/search_memories` | search memories; may include neighbor edges, per-result tags, and lexical-degradation status |
-| `core/get_memory` | hydrate memory by id/handle; optional neighbor edges |
-| `core/walk_memory_lineage` | traverse provenance / supersession lineage |
+| `core_remember` | write agent-authored Fact |
+| `core_record_utterance` | write utterance Fact |
+| `core_derive` | write agent-authored Abstraction |
+| `core_link` | write registered relation edge |
+| `core_search_memories` | search memories; may include neighbor edges, per-result tags, and lexical-degradation status |
+| `core_get_memory` | hydrate memory by id/handle; optional neighbor edges |
+| `core_walk_memory_lineage` | traverse provenance / supersession lineage |
 
-Graph search is unified into `core/search_memories`; there is no
+Graph search is unified into `core_search_memories`; there is no
 separate graph-search tool.
 
 ## The verbs
@@ -51,12 +51,12 @@ is now a durable, owner-scoped, seq-ordered **pull log** (see
 
 > **Forward poll.** `change_event` is read in both directions. Backward,
 > bounded reads use the `EventHistory` engine verb. The forward seq-cursor
-> poll a harness wake loop needs ships as the **`core/list_events`** MCP
+> poll a harness wake loop needs ships as the **`core_list_events`** MCP
 > tool — events with `seq > since`, ascending, plus a `next_since` cursor
 > and a `has_more` hint — a thin owner-scoped wrapper over
 > `Storage::list_change_events_after`. There is intentionally no gRPC/engine
 > forward verb: the MCP tool reads storage directly, the same posture as the
-> other read tools (`core/search_memories`, `core/walk_memory_lineage`).
+> other read tools (`core_search_memories`, `core_walk_memory_lineage`).
 
 | Verb | Direction | Idempotency | Scope | Current status |
 |---|---|---|---|---|
@@ -120,7 +120,7 @@ Owner-scoped bounded read of `change_event`, newest-first.
 | `seq_high_water` | latest owner event seq at read time |
 
 No `after` cursor — this verb is backward-only. Forward replay (events
-with `seq > cursor`) is served by the `core/list_events` MCP tool over
+with `seq > cursor`) is served by the `core_list_events` MCP tool over
 `Storage::list_change_events_after`; it is intentionally neither added as
 an `after` cursor here nor wrapped by a gRPC/engine verb.
 
@@ -179,7 +179,7 @@ on wake / reconnect:
     process in order; persist the new high-water seq
 ```
 
-This is the harness wake path. It is exposed as the `core/list_events`
+This is the harness wake path. It is exposed as the `core_list_events`
 MCP tool — a thin owner-scoped wrapper over the
 `Storage::list_change_events_after` trait method that returns events
 ascending plus a `next_since` cursor and a `has_more` hint.

@@ -30,8 +30,8 @@ operates in degraded lexical-only mode.
 | `PROXIMA_OIDC_JWKS_URI` | no | `https://zitadel.example.com/oauth/v2/keys` | Overrides OIDC discovery. |
 | `PROXIMA_OIDC_ALLOWED_SUBJECTS` | no | `user1,user2` | Comma-separated `sub` allowlist. |
 | `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile: `full` default, or curated `memory`. |
-| `PROXIMA_TOOL_ALLOW` | no | `core/add_wake_entry` | Comma-separated canonical tool ids added after profile resolution. |
-| `PROXIMA_TOOL_DENY` | no | `core/cleanup_facts` | Comma-separated canonical tool ids removed after allow. |
+| `PROXIMA_TOOL_ALLOW` | no | `core_add_wake_entry` | Comma-separated canonical tool ids added after profile resolution. |
+| `PROXIMA_TOOL_DENY` | no | `core_cleanup_facts` | Comma-separated canonical tool ids removed after allow. |
 | `MISTRAL_API_KEY` | no | `sk-...` | Enables Mistral embeddings. |
 | `PROXIMA_EMBED_MODEL` | no | `mistral-embed` | Embedding model id. |
 | `MISTRAL_API_BASE` | no | `https://api.mistral.ai/v1` | Mistral-compatible API base. |

@@ -147,10 +147,10 @@ Default substrate memory tools:
 
 | Read | Write |
 |---|---|
-| `core/get_memory` | `core/derive` |
-| `core/search_memories` | `core/remember` |
-| `core/walk_memory_lineage` | `core/record_utterance` |
-|  | `core/link` |
+| `core_get_memory` | `core_derive` |
+| `core_search_memories` | `core_remember` |
+| `core_walk_memory_lineage` | `core_record_utterance` |
+|  | `core_link` |
 
 Substrate MCP config tools are separate `core/*` MCP tools registered by
 core, including personality CRUD, wake-entry CRUD, schema/edge/tool
@@ -174,9 +174,9 @@ Core owns:
 | Query | active-goal heads and assignment traversal |
 | Relations | `core/inspires`, `core/motivated-by` |
 | Payloads | core `GoalPayload` schemas |
-| Tools | `core/goal_set`, `core/goal_transition`, `core/goal_mark_achieved`, `core/goal_modify`, `core/goal_decompose` |
+| Tools | `core_goal_set`, `core_goal_transition`, `core_goal_mark_achieved`, `core_goal_modify`, `core_goal_decompose` |
 
-Goal creation uses the core `core/goal_set` tool. Lifecycle writes use
+Goal creation uses the core `core_goal_set` tool. Lifecycle writes use
 the rest of the `core/goal_*` family.
 
 <a id="freeze-guards"></a>
