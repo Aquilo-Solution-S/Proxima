@@ -40,7 +40,11 @@ impl McpTool for ListEdgeTypesTool {
 }
 
 #[allow(clippy::unused_async)]
-pub(crate) async fn list_edge_types(
+/// # Errors
+///
+/// This projection is infallible today; the `Result` shape matches the tool
+/// dispatch contract.
+pub async fn list_edge_types(
     ctx: McpToolCtx,
     _args: ListEdgeTypesArgs,
 ) -> Result<ListEdgeTypesOutput, McpToolError> {

@@ -56,7 +56,10 @@ impl McpTool for GetMemoryTool {
     }
 }
 
-pub(crate) async fn get_memory(
+/// # Errors
+///
+/// Returns invalid-reference, storage, or projection failures.
+pub async fn get_memory(
     ctx: McpToolCtx,
     args: GetMemoryArgs,
 ) -> Result<GetMemoryOutput, McpToolError> {

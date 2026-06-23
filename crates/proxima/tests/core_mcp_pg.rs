@@ -184,6 +184,17 @@ async fn call_test_model_tool(
         .await
 }
 
+async fn read_test_model_resource(
+    tools: &CoreMcpTools,
+    authz: AuthzContext,
+    owner: Owner,
+    uri: &str,
+) -> Result<serde_json::Value, CoreMcpError> {
+    tools
+        .read_core_resource(authz, owner, Some("test-model".to_string()), uri)
+        .await
+}
+
 #[tokio::test]
 async fn facade_lists_and_dispatches_core_mcp_tools() {
     let db_name = unique_db_name("proxima_core_mcp");
@@ -288,6 +299,90 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
 
     let _ = drop_db(&db_name).await;
     result.expect("core MCP facade integration test failed");
+}
+
+#[tokio::test]
+async fn facade_reads_core_resources_with_resource_scope() {
+    let db_name = unique_db_name("proxima_core_resource_mcp");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<EmptyApp>::app()
+            .database_url(db_url)
+            .owner(owner.clone())
+            .build()
+            .await?;
+        let tools = built.core_mcp_tools();
+        let authz = host_authz(&owner, ToolScope::All);
+
+        let remembered = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner.clone(),
+            "core_remember",
+            serde_json::json!({
+                "title": "Resource facade",
+                "body": "Read through MCP resource surface.",
+                "tags": ["resource"],
+                "idempotency_key": "facade-core-resource-read"
+            }),
+        )
+        .await?;
+        let memory = remembered["handle"].as_str().expect("remembered handle");
+
+        let tool_memory = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner.clone(),
+            "core_get_memory",
+            serde_json::json!({ "memory": memory }),
+        )
+        .await?;
+        let resource_memory = read_test_model_resource(
+            &tools,
+            authz.clone(),
+            owner.clone(),
+            &format!("proxima://memory/{memory}"),
+        )
+        .await?;
+        assert_eq!(resource_memory, tool_memory);
+
+        let tool_schemas = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner.clone(),
+            "core_list_schemas",
+            serde_json::json!({}),
+        )
+        .await?;
+        let resource_schemas =
+            read_test_model_resource(&tools, authz.clone(), owner.clone(), "proxima://schemas")
+                .await?;
+        assert_eq!(resource_schemas, tool_schemas);
+
+        let denied = read_test_model_resource(
+            &tools,
+            host_authz(
+                &owner,
+                ToolScope::Palette(vec!["core_get_memory".to_string()]),
+            ),
+            owner.clone(),
+            &format!("proxima://memory/{memory}"),
+        )
+        .await;
+        assert!(
+            matches!(denied, Err(CoreMcpError::NotAuthorized(scope)) if scope == "resource:memory")
+        );
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("core MCP resource facade integration test failed");
 }
 
 #[tokio::test]
