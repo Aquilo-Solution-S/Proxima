@@ -9,8 +9,11 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use proxima_core::mcp::{McpToolError, provider_safe_tool_name};
-use proxima_core::{McpAuthorContext, MemoryId, StorageError};
+use proxima_core::mcp::{
+    McpToolAnnotations, McpToolError, McpToolErrorKind, core_tool_annotations,
+    provider_safe_tool_name, tool_name_matches,
+};
+use proxima_core::{McpAuthorContext, MemoryId};
 use rmcp::ServerHandler;
 use rmcp::model::{
     AnnotateAble, CallToolRequestParams, CallToolResult, Content, ErrorData, Implementation,
@@ -25,84 +28,6 @@ use crate::selfdoc;
 use crate::auth::McpAuthContext;
 use crate::server::{McpToolHost, ToolInvocationError};
 use proxima_core::ToolScope;
-
-/// MCP behavior hints (`ToolAnnotations`) for a core tool, keyed by its
-/// canonical id (`core/...`, pre-`provider_safe` form). Every core tool acts
-/// on the closed memory substrate, so `open_world_hint = false` for all of
-/// them; the per-tool split below sets read-only vs. write semantics.
-///
-/// Single source of truth for substrate annotations. Embedding hosts that
-/// re-list these tools from their own endpoint (e.g. the Nexus gateway, which
-/// pins this crate at a fixed rev and cannot see a trait-level const) keep a
-/// mirrored table — keep the two in sync.
-fn core_tool_annotations(canonical_name: &str) -> Option<ToolAnnotations> {
-    // Closed-world base; reads/writes refine it below.
-    let base = ToolAnnotations::new().open_world(false);
-    let annotations = match canonical_name {
-        // Reads — never modify the substrate.
-        "core_citation_of_fact"
-        | "core_citation_of_entity_head"
-        | "core_facts_citing_object"
-        | "core_get_graph"
-        | "core_get_memory"
-        | "core_get_personality"
-        | "core_list_edge_types"
-        | "core_list_events"
-        | "core_list_personalities"
-        | "core_list_read_scope"
-        | "core_list_schemas"
-        | "core_list_substrate_tools"
-        | "core_list_wake_entries"
-        | "core_search_memories"
-        | "core_walk_memory_lineage" => base.read_only(true),
-
-        // Additive writes that converge on replay: a required idempotency key
-        // (goal_decompose), a set-to-value retention, or an id-keyed wake-entry
-        // update — re-running with the same args lands the same state.
-        "core_derive"
-        | "core_goal_decompose"
-        | "core_set_fact_retention"
-        | "core_update_wake_entry" => base.read_only(false).destructive(false).idempotent(true),
-
-        // Additive writes that are NOT replay-safe. remember / record_utterance
-        // and the optional-key goal writes allocate a fresh id when the
-        // (optional) idempotency_key is omitted, so identical args create a new
-        // Fact/version rather than a no-op; link / add_wake_entry /
-        // instantiate_personality mint a fresh entity each call; set_read_scope
-        // converges its grant rows but emits a before/after audit Fact whose key
-        // differs on the post-change replay.
-        "core_remember"
-        | "core_record_utterance"
-        | "core_goal_set"
-        | "core_goal_transition"
-        | "core_goal_mark_achieved"
-        | "core_goal_modify"
-        | "core_set_read_scope"
-        | "core_link"
-        | "core_add_wake_entry"
-        | "core_instantiate_personality" => {
-            base.read_only(false).destructive(false).idempotent(false)
-        }
-
-        // Destructive writes that converge on replay: erase due facts /
-        // remove one entry — a second same-args call is a no-op.
-        "core_cleanup_facts" | "core_remove_wake_entry" => {
-            base.read_only(false).destructive(true).idempotent(true)
-        }
-
-        // Destructive writes that are NOT replay-safe: set_wake_entries
-        // allocates fresh ids for keyless entries (replace churns ids);
-        // tombstone_personality emits a before-snapshot audit Fact that differs
-        // once the personality is already tombstoned.
-        "core_set_wake_entries" | "core_tombstone_personality" => {
-            base.read_only(false).destructive(true).idempotent(false)
-        }
-
-        // Unknown / flavor-shipped tools: leave hints unset (client defaults).
-        _ => return None,
-    };
-    Some(annotations)
-}
 
 #[derive(Clone, Debug)]
 pub struct DynamicHandler {
@@ -220,7 +145,7 @@ impl ServerHandler for DynamicHandler {
                     Arc::new(rmcp::model::object(descriptor.args_schema.clone())),
                 );
                 match core_tool_annotations(descriptor.name) {
-                    Some(annotations) => tool.annotate(annotations),
+                    Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
                     None => tool,
                 }
             })
@@ -244,7 +169,7 @@ impl ServerHandler for DynamicHandler {
                     Arc::new(rmcp::model::object(descriptor.args_schema.clone())),
                 );
                 match core_tool_annotations(descriptor.name) {
-                    Some(annotations) => tool.annotate(annotations),
+                    Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
                     None => tool,
                 }
             })
@@ -306,26 +231,28 @@ fn tool_invocation_error_to_error_data(err: ToolInvocationError) -> ErrorData {
 /// (-32603).
 fn mcp_tool_error_to_error_data(err: &McpToolError) -> ErrorData {
     let msg = err.to_string();
-    match err {
-        McpToolError::InvalidInput(_) | McpToolError::Resolve(_) => {
-            ErrorData::invalid_params(msg, None)
-        }
-        McpToolError::LayeringViolation(_) => ErrorData::invalid_request(msg, None),
-        McpToolError::Storage(storage) => match storage {
-            StorageError::ConstraintViolation(_) | StorageError::NotFound => {
-                ErrorData::invalid_params(msg, None)
-            }
-            StorageError::Conflict(_) => ErrorData::invalid_request(msg, None),
-            StorageError::Unavailable(_) | StorageError::Internal(_) => {
-                ErrorData::internal_error(msg, None)
-            }
-        },
-        McpToolError::Other(_) => ErrorData::internal_error(msg, None),
+    match err.kind() {
+        McpToolErrorKind::InvalidInput => ErrorData::invalid_params(msg, None),
+        McpToolErrorKind::InvalidRequest => ErrorData::invalid_request(msg, None),
+        McpToolErrorKind::Internal => ErrorData::internal_error(msg, None),
     }
 }
 
-fn tool_name_matches(canonical: &str, request_name: &str) -> bool {
-    canonical == request_name || provider_safe_tool_name(canonical) == request_name
+fn to_rmcp_annotations(annotations: McpToolAnnotations) -> ToolAnnotations {
+    let mut hints = ToolAnnotations::new();
+    if let Some(read_only) = annotations.read_only {
+        hints = hints.read_only(read_only);
+    }
+    if let Some(destructive) = annotations.destructive {
+        hints = hints.destructive(destructive);
+    }
+    if let Some(idempotent) = annotations.idempotent {
+        hints = hints.idempotent(idempotent);
+    }
+    if let Some(open_world) = annotations.open_world {
+        hints = hints.open_world(open_world);
+    }
+    hints
 }
 
 fn canonical_tool_name(server: &McpToolHost, request_name: &str) -> Option<String> {
@@ -463,7 +390,7 @@ mod tests {
         assert!(args.get("current_root_perspective_memory_id").is_none());
     }
 
-    // Completeness gate: every `core/*` tool the substrate registers must
+    // Completeness gate: every `core_` tool the substrate registers must
     // carry MCP annotations, so a newly-added core tool cannot silently ship
     // with unset hints (client defaults: not-read-only, destructive,
     // open-world — wrong for this closed substrate).
@@ -471,7 +398,7 @@ mod tests {
     fn every_core_tool_is_annotated() {
         let registry = proxima_core::FlavorRegistry::new().freeze();
         for descriptor in registry.list_mcp_tools() {
-            if descriptor.name.starts_with("core/") {
+            if descriptor.name.starts_with("core_") {
                 assert!(
                     core_tool_annotations(descriptor.name).is_some(),
                     "core tool {} has no MCP annotations — add it to core_tool_annotations",
@@ -485,37 +412,37 @@ mod tests {
     fn core_tool_annotations_encode_expected_semantics() {
         // Closed substrate: open_world is always false.
         let read = core_tool_annotations("core_search_memories").expect("read tool");
-        assert_eq!(read.read_only_hint, Some(true));
-        assert_eq!(read.open_world_hint, Some(false));
+        assert_eq!(read.read_only, Some(true));
+        assert_eq!(read.open_world, Some(false));
 
         // Convergent additive write (required idempotency key).
         let derive = core_tool_annotations("core_derive").expect("write tool");
-        assert_eq!(derive.read_only_hint, Some(false));
-        assert_eq!(derive.destructive_hint, Some(false));
-        assert_eq!(derive.idempotent_hint, Some(true));
+        assert_eq!(derive.read_only, Some(false));
+        assert_eq!(derive.destructive, Some(false));
+        assert_eq!(derive.idempotent, Some(true));
 
         // Additive write with an OPTIONAL idempotency key: identical args
         // without a key create a new Fact, so it is not replay-safe.
         let remember = core_tool_annotations("core_remember").expect("non-idempotent write");
-        assert_eq!(remember.read_only_hint, Some(false));
-        assert_eq!(remember.destructive_hint, Some(false));
-        assert_eq!(remember.idempotent_hint, Some(false));
+        assert_eq!(remember.read_only, Some(false));
+        assert_eq!(remember.destructive, Some(false));
+        assert_eq!(remember.idempotent, Some(false));
 
         // Destructive write that converges (a second call is a no-op).
         let cleanup = core_tool_annotations("core_cleanup_facts").expect("destructive tool");
-        assert_eq!(cleanup.read_only_hint, Some(false));
-        assert_eq!(cleanup.destructive_hint, Some(true));
-        assert_eq!(cleanup.idempotent_hint, Some(true));
+        assert_eq!(cleanup.read_only, Some(false));
+        assert_eq!(cleanup.destructive, Some(true));
+        assert_eq!(cleanup.idempotent, Some(true));
 
         // Destructive write that is NOT replay-safe (audit-Fact divergence).
         let tombstone =
             core_tool_annotations("core_tombstone_personality").expect("destructive tool");
-        assert_eq!(tombstone.destructive_hint, Some(true));
-        assert_eq!(tombstone.idempotent_hint, Some(false));
+        assert_eq!(tombstone.destructive, Some(true));
+        assert_eq!(tombstone.idempotent, Some(false));
 
         // Create-new-each-call write is not replay-safe.
         let link = core_tool_annotations("core_link").expect("create tool");
-        assert_eq!(link.idempotent_hint, Some(false));
+        assert_eq!(link.idempotent, Some(false));
 
         // Flavor-shipped / unknown tools get no substrate hints here.
         assert!(core_tool_annotations("company/upsert").is_none());
