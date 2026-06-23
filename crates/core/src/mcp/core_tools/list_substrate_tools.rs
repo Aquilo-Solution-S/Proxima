@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::mcp::{McpToolCtx, McpToolError};
+use crate::mcp::{McpToolCtx, McpToolDescriptor, McpToolError, McpToolOrigin};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListSubstrateToolsArgs {}
@@ -18,6 +18,13 @@ pub struct SubstrateToolItem {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListSubstrateToolsOutput {
     pub tools: Vec<SubstrateToolItem>,
+}
+
+pub(super) fn substrate_tool_source(desc: &McpToolDescriptor) -> String {
+    match &desc.origin {
+        McpToolOrigin::Substrate => "substrate".into(),
+        McpToolOrigin::Flavor(id) => format!("flavor:{id}"),
+    }
 }
 
 #[allow(clippy::unused_async)]
@@ -39,17 +46,31 @@ pub async fn list_substrate_tools(
         {
             continue;
         }
-        let source = if desc.name.starts_with("core/") {
-            "substrate".into()
-        } else {
-            let flavor = desc.name.split('/').next().unwrap_or("flavor");
-            format!("flavor:{flavor}")
-        };
         tools.push(SubstrateToolItem {
             tool_id: desc.name.to_string(),
-            source,
+            source: substrate_tool_source(desc),
             description: desc.description.to_string(),
         });
     }
     Ok(ListSubstrateToolsOutput { tools })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::FlavorRegistry;
+
+    #[test]
+    fn default_substrate_tools_classify_as_substrate() {
+        let registry = FlavorRegistry::new().freeze();
+
+        for desc in registry.list_mcp_tools() {
+            assert!(
+                matches!(desc.origin, McpToolOrigin::Substrate),
+                "default tool {} must be substrate-origin",
+                desc.name
+            );
+            assert_eq!(substrate_tool_source(desc), "substrate");
+        }
+    }
 }
