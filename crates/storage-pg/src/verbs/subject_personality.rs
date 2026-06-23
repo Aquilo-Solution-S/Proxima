@@ -2,8 +2,8 @@
 //!
 //! # Concurrency
 //!
-//! The slow path serializes concurrent callers using a session-level PG
-//! advisory lock in a namespace distinct from
+//! The slow path serializes concurrent callers using a transaction-scoped
+//! PG advisory lock in a namespace distinct from
 //! `master_token_personality`. Without it, two callers could both
 //! observe an empty mapping, mint personalities, and race the mapping
 //! insert; the loser would return an orphan personality id.
@@ -48,32 +48,27 @@ pub async fn ensure_subject_personality(
         return Ok(found);
     }
 
-    // Slow path: take a session-level advisory lock on a pinned
-    // connection so concurrent first-connects can't both mint.
-    let mut conn = pool.acquire().await.map_err(map_err)?;
+    // Slow path: take a transaction-scoped advisory lock so concurrent
+    // first-connects can't both mint.
+    let mut tx = pool.begin().await.map_err(map_err)?;
     let key = lock_key(subject_kind, subject_principal_id);
-    sqlx::query("SELECT pg_advisory_lock($1)")
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
         .bind(key)
-        .fetch_one(&mut *conn)
+        .fetch_one(&mut *tx)
         .await
         .map_err(map_err)?;
 
     let result = mint_under_lock(
-        &mut conn,
+        &mut tx,
         owner,
         owner_kind,
         owner_principal_id,
         subject_kind,
         subject_principal_id,
     )
-    .await;
-
-    let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
-        .bind(key)
-        .fetch_one(&mut *conn)
-        .await;
-
-    result
+    .await?;
+    tx.commit().await.map_err(map_err)?;
+    Ok(result)
 }
 
 #[allow(clippy::too_many_arguments)]
