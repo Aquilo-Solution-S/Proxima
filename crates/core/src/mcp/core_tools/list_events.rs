@@ -9,17 +9,13 @@
 
 use std::collections::HashMap;
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::change_event::{ChangeEventKind, EntityRef};
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::personality::ChangeEventForWake;
-use crate::{EdgeId, EntityKind, McpTool};
-
-#[derive(Debug, Default)]
-pub struct ListEventsTool;
+use crate::{EdgeId, EntityKind};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListEventsArgs {
@@ -61,20 +57,6 @@ pub struct EventItem {
     pub source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
-}
-
-impl McpTool for ListEventsTool {
-    const NAME: &'static str = "core_list_events";
-    const DESCRIPTION: &'static str = "Forward, owner-scoped poll of the change-event pull log. Returns events with seq > `since`, ascending, so a harness wake loop can advance a durable cursor. Pass the prior `next_since` back as `since`; omit `since` to read from the start. `has_more` is true when more events may be waiting.";
-    type Args = ListEventsArgs;
-    type Output = ListEventsOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: ListEventsArgs,
-    ) -> BoxFuture<'static, Result<ListEventsOutput, McpToolError>> {
-        Box::pin(list_events(ctx, args))
-    }
 }
 
 /// # Errors

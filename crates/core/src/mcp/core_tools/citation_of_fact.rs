@@ -1,17 +1,10 @@
 //! `core/citation_of_fact` — owner-scoped Fact-to-citation read-back.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::{FactEntityId, McpTool};
-
-#[derive(Debug, Default)]
-pub struct CitationOfFactTool;
-
-#[derive(Debug, Default)]
-pub struct CitationOfEntityHeadTool;
+use crate::FactEntityId;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CitationOfFactArgs {
@@ -45,35 +38,6 @@ pub struct FactCitationOutput {
     pub mapping_schema_id: String,
     pub cited_object_id: String,
     pub cited_object_schema_id: String,
-}
-
-impl McpTool for CitationOfFactTool {
-    const NAME: &'static str = "core_citation_of_fact";
-    const DESCRIPTION: &'static str =
-        "Return the owner-scoped citation mapping and cited object for one Fact, or none.";
-    type Args = CitationOfFactArgs;
-    type Output = CitationOfFactOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: CitationOfFactArgs,
-    ) -> BoxFuture<'static, Result<CitationOfFactOutput, McpToolError>> {
-        Box::pin(citation_of_fact(ctx, args))
-    }
-}
-
-impl McpTool for CitationOfEntityHeadTool {
-    const NAME: &'static str = "core_citation_of_entity_head";
-    const DESCRIPTION: &'static str = "Return the owner-scoped citation mapping and cited object for a stateful Fact entity's current head, or none.";
-    type Args = CitationOfEntityHeadArgs;
-    type Output = CitationOfEntityHeadOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: CitationOfEntityHeadArgs,
-    ) -> BoxFuture<'static, Result<CitationOfEntityHeadOutput, McpToolError>> {
-        Box::pin(citation_of_entity_head(ctx, args))
-    }
 }
 
 pub(super) async fn citation_of_fact(

@@ -32,9 +32,8 @@ const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
 fn memory_keep_set() -> Vec<&'static str> {
     use proxima_core::mcp::McpTool;
     use proxima_core::mcp::core_tools::{
-        CoreFactTool, CoreGoalTool, DeriveTool, GetGraphTool, GetMemoryTool, LinkTool,
-        ListEdgeTypesTool, ListEventsTool, ListSchemasTool, ListSubstrateToolsTool,
-        RecordUtteranceTool, RememberTool, SearchMemoriesTool, WalkMemoryLineageTool,
+        CoreFactTool, CoreGoalTool, DeriveTool, LinkTool, RecordUtteranceTool, RememberTool,
+        SearchMemoriesTool,
     };
 
     #[allow(unused_mut)]
@@ -46,14 +45,6 @@ fn memory_keep_set() -> Vec<&'static str> {
         RecordUtteranceTool::NAME,
         // retrieval
         SearchMemoriesTool::NAME,
-        GetMemoryTool::NAME,
-        WalkMemoryLineageTool::NAME,
-        ListEventsTool::NAME,
-        GetGraphTool::NAME,
-        // architecture / governance
-        ListSchemasTool::NAME,
-        ListEdgeTypesTool::NAME,
-        ListSubstrateToolsTool::NAME,
     ];
     // The memory profile carries the full goal lifecycle plus full
     // fact/citation reads and per-Fact tombstone. Retention/cleanup are

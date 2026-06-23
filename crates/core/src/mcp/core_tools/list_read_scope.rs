@@ -1,16 +1,11 @@
 //! `core/list_read_scope` — read-only projection of explicit personality
 //! read-scope grants.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::ListReadScopeRequest;
-use crate::McpTool;
 use crate::mcp::{McpToolCtx, McpToolError};
-
-#[derive(Debug, Default)]
-pub struct ListReadScopeTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListReadScopeArgs {
@@ -23,21 +18,6 @@ pub struct ListReadScopeOutput {
     pub personality: String,
     pub identity_read_allowed: bool,
     pub readable_personalities: Vec<String>,
-}
-
-impl McpTool for ListReadScopeTool {
-    const NAME: &'static str = "core_list_read_scope";
-    const DESCRIPTION: &'static str = "List explicit cross-personality read grants for one reader \
-         personality. The identity diagonal is always allowed and is reported separately.";
-    type Args = ListReadScopeArgs;
-    type Output = ListReadScopeOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: ListReadScopeArgs,
-    ) -> BoxFuture<'static, Result<ListReadScopeOutput, McpToolError>> {
-        Box::pin(list_read_scope(ctx, args))
-    }
 }
 
 pub(super) async fn list_read_scope(

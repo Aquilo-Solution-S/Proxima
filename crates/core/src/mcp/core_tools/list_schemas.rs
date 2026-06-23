@@ -1,15 +1,10 @@
 //! `core/list_schemas` — project `FlavorRegistryFrozen` schemas.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::McpTool;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::verbs::schema::PayloadKind;
-
-#[derive(Debug, Default)]
-pub struct ListSchemasTool;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListSchemasArgs {
@@ -53,21 +48,6 @@ fn kind_str(k: PayloadKind) -> &'static str {
         PayloadKind::Edge => "Edge",
         PayloadKind::CitedObject => "CitedObject",
         PayloadKind::CitationMapping => "CitationMapping",
-    }
-}
-
-impl McpTool for ListSchemasTool {
-    const NAME: &'static str = "core_list_schemas";
-    const DESCRIPTION: &'static str = "List registered schemas. Filter by kind for trigger discovery: \
-         OnMemory triggers point at Fact schema_ids.";
-    type Args = ListSchemasArgs;
-    type Output = ListSchemasOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: ListSchemasArgs,
-    ) -> BoxFuture<'static, Result<ListSchemasOutput, McpToolError>> {
-        Box::pin(list_schemas(ctx, args))
     }
 }
 

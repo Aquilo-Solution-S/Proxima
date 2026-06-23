@@ -6,7 +6,7 @@ mod common;
 use std::sync::Arc;
 
 use common::{create_db, db_url, drop_db};
-use proxima_core::mcp::core_tools::add_wake_entry::AddWakeEntryTool;
+use proxima_core::mcp::core_tools::wake::{CoreWakeArgs, CoreWakeTool};
 use proxima_core::mcp::core_tools::wake_entry_input::WakeEntryDraftInput;
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::storage::Storage;
@@ -82,7 +82,7 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
             instructions: String::new(),
         },
     };
-    let _out = AddWakeEntryTool::call(ctx, args).await?;
+    let _out = CoreWakeTool::call(ctx, CoreWakeArgs::Add(args)).await?;
 
     // Verify the wake entry was actually added to the personality.
     let instances = pg.list_personality_instances(&owner, false).await?;

@@ -1,15 +1,10 @@
 //! `core/list_wake_entries` — read-only wake-entries projection for one
 //! personality, with W-handles assigned.
 
-use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::McpTool;
 use crate::mcp::{McpToolCtx, McpToolError};
-
-#[derive(Debug, Default)]
-pub struct ListWakeEntriesTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListWakeEntriesArgs {
@@ -34,23 +29,6 @@ pub struct ListWakeEntriesItem {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListWakeEntriesOutput {
     pub wake_entries: Vec<ListWakeEntriesItem>,
-}
-
-impl McpTool for ListWakeEntriesTool {
-    const NAME: &'static str = "core_list_wake_entries";
-    const DESCRIPTION: &'static str = "List wake entries on one personality. Args: \
-         `{\"personality\": \"I1\"}`. Each item carries a `wake_entry` field (W-handle) — pass that \
-         value as the `wake_entry` argument to update_wake_entry, remove_wake_entry, or \
-         remove_wake_entry. Use core/get_personality for the full per-entry payload.";
-    type Args = ListWakeEntriesArgs;
-    type Output = ListWakeEntriesOutput;
-
-    fn call(
-        ctx: McpToolCtx,
-        args: ListWakeEntriesArgs,
-    ) -> BoxFuture<'static, Result<ListWakeEntriesOutput, McpToolError>> {
-        Box::pin(list_wake_entries(ctx, args))
-    }
 }
 
 pub(super) async fn list_wake_entries(
@@ -119,7 +97,7 @@ mod tests {
             extensions: McpToolExtensions::default(),
             engine: Some(engine),
         };
-        let err = ListWakeEntriesTool::call(
+        let err = list_wake_entries(
             ctx,
             ListWakeEntriesArgs {
                 personality: "I99".into(),
