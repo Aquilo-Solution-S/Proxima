@@ -9,6 +9,7 @@ use proxima::{
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
     CitationMappingPayload, CitedObjectPayload, FlavorRegistry, MemoryId, Owner, SchemaId,
+    all_core_resources,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::sidecars::{
@@ -270,12 +271,11 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         );
 
         let invalid = tools
-            .call_core_tool(
+            .read_core_resource(
                 host_authz(&owner, ToolScope::All),
                 owner.clone(),
                 None,
-                "core_get_memory",
-                serde_json::json!({ "memory": "not-a-memory-id" }),
+                "proxima://memory/not-a-memory-id",
             )
             .await
             .expect_err("invalid memory handle rejected");
@@ -332,14 +332,6 @@ async fn facade_reads_core_resources_with_resource_scope() {
         .await?;
         let memory = remembered["handle"].as_str().expect("remembered handle");
 
-        let tool_memory = call_test_model_tool(
-            &tools,
-            authz.clone(),
-            owner.clone(),
-            "core_get_memory",
-            serde_json::json!({ "memory": memory }),
-        )
-        .await?;
         let resource_memory = read_test_model_resource(
             &tools,
             authz.clone(),
@@ -347,26 +339,23 @@ async fn facade_reads_core_resources_with_resource_scope() {
             &format!("proxima://memory/{memory}"),
         )
         .await?;
-        assert_eq!(resource_memory, tool_memory);
+        assert_eq!(resource_memory["memory"], memory);
 
-        let tool_schemas = call_test_model_tool(
-            &tools,
-            authz.clone(),
-            owner.clone(),
-            "core_list_schemas",
-            serde_json::json!({}),
-        )
-        .await?;
         let resource_schemas =
             read_test_model_resource(&tools, authz.clone(), owner.clone(), "proxima://schemas")
                 .await?;
-        assert_eq!(resource_schemas, tool_schemas);
+        assert!(
+            !resource_schemas["schemas"]
+                .as_array()
+                .expect("schemas")
+                .is_empty()
+        );
 
         let denied = read_test_model_resource(
             &tools,
             host_authz(
                 &owner,
-                ToolScope::Palette(vec!["core_get_memory".to_string()]),
+                ToolScope::Palette(vec!["resource:schemas".to_string()]),
             ),
             owner.clone(),
             &format!("proxima://memory/{memory}"),
@@ -408,25 +397,25 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
             .map(|tool| tool.name)
             .collect();
         assert!(tool_names.contains("core_search_memories"));
-        assert!(tool_names.contains("core_get_memory"));
+        assert!(!tool_names.contains("core_get_memory"));
+        assert!(!tool_names.contains("core_list_substrate_tools"));
         assert!(tool_names.contains("core_fact"));
-        let substrate_listing = tools
-            .call_core_tool(
-                authz.clone(),
-                owner.clone(),
-                Some("test-model".to_string()),
-                "core_list_substrate_tools",
-                serde_json::json!({}),
-            )
-            .await?;
-        let substrate_tool_ids: HashSet<_> = substrate_listing["tools"]
+        assert!(
+            all_core_resources().any(|resource| resource.scope_key == "resource:memory"),
+            "resource:memory must stay in the core resource catalog"
+        );
+        let resource_listing =
+            read_test_model_resource(&tools, authz.clone(), owner.clone(), "proxima://tools")
+                .await?;
+        let substrate_tool_ids: HashSet<_> = resource_listing["tools"]
             .as_array()
             .expect("tools")
             .iter()
             .filter_map(|tool| tool["tool_id"].as_str())
             .collect();
         assert!(substrate_tool_ids.contains("core_search_memories"));
-        assert!(substrate_tool_ids.contains("core_get_memory"));
+        assert!(!substrate_tool_ids.contains("core_get_memory"));
+        assert!(!substrate_tool_ids.contains("core_list_substrate_tools"));
         assert!(substrate_tool_ids.contains("core_fact"));
 
         let remembered = call_test_model_tool(
@@ -475,12 +464,11 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
         .await?;
         assert_eq!(semantic["memories"][0]["memory"], memory);
 
-        let fetched = call_test_model_tool(
+        let fetched = read_test_model_resource(
             &tools,
             authz,
             owner.clone(),
-            "core_get_memory",
-            serde_json::json!({ "memory": memory }),
+            &format!("proxima://memory/{memory}"),
         )
         .await?;
         assert_eq!(fetched["memory"], memory);

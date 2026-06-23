@@ -4,6 +4,7 @@ mod common;
 
 use common::{ConstantEmbedding, drop_db, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
+use proxima_core::mcp::core_tools::get_memory::{GetMemoryArgs, get_memory};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
     AgentNoteV1, AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FactPayload,
@@ -865,13 +866,13 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
         format!("I:{}", personality_a.into_inner())
     );
 
-    let opened = call_tool_prefixed(
+    let opened = read_memory_prefixed(
         &pg,
         &owner,
         &frozen,
         author_ctx().with_self_perspective(personality_b_root),
-        "core_get_memory",
-        json!({"memory": authored_handle.clone()}),
+        &authored_handle,
+        false,
     )
     .await?;
     assert_eq!(
@@ -879,13 +880,13 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
         format!("I:{}", personality_a.into_inner())
     );
 
-    let nil_opened = call_tool_prefixed(
+    let nil_opened = read_memory_prefixed(
         &pg,
         &owner,
         &frozen,
         author_ctx().with_self_perspective(personality_b_root),
-        "core_get_memory",
-        json!({"memory": nil_handle}),
+        &nil_handle,
+        false,
     )
     .await?;
     assert!(
@@ -1137,6 +1138,38 @@ async fn call_tool_prefixed(
         args,
     )
     .await
+}
+
+async fn read_memory_prefixed(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    registry: &Arc<proxima_core::FlavorRegistryFrozen>,
+    author: McpAuthorContext,
+    memory: &str,
+    expand_neighbors: bool,
+) -> Result<serde_json::Value, proxima_core::McpToolError> {
+    let caller_self_perspective = author.caller_self_perspective;
+    let output = get_memory(
+        McpToolCtx {
+            owner: owner.clone(),
+            authz: AuthzContext::single_owner(owner, AuthPath::System),
+            handles: None,
+            mode: OutputMode::PrefixedIds,
+            registry: registry.clone(),
+            author,
+            caller_self_perspective,
+            master_token_id: None,
+            extensions: McpToolExtensions::with(pg.pool().clone()),
+            engine: Some(engine_for_registry(registry, pg)),
+        },
+        GetMemoryArgs {
+            memory: memory.to_string(),
+            expand_neighbors,
+        },
+    )
+    .await?;
+    serde_json::to_value(output)
+        .map_err(|err| proxima_core::McpToolError::Other(format!("serialize memory read: {err}")))
 }
 
 #[allow(clippy::too_many_arguments)]

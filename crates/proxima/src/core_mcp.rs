@@ -8,8 +8,6 @@ use proxima_core::{
 use proxima_mcp_server::{McpAuthContext, McpToolHost, ToolInvocationError};
 use sqlx::PgPool;
 
-const FACT_RETENTION_SURFACE_TOOL_NAMES: [&str; 1] = ["core_get_graph"];
-
 /// Facade handle for listing and dispatching the composed engine MCP tools
 /// from an embedding host's own authenticated endpoint.
 #[derive(Clone, Debug)]
@@ -103,20 +101,12 @@ impl CoreMcpTools {
     /// dispatch.
     #[must_use]
     pub fn list_core_tools(&self) -> Vec<CoreToolInfo> {
-        let tools = self
-            .host
+        self.host
             .registry()
             .list_mcp_tools()
             .iter()
             .map(tool_info_from_descriptor)
-            .collect::<Vec<_>>();
-        debug_assert!(
-            FACT_RETENTION_SURFACE_TOOL_NAMES
-                .iter()
-                .all(|name| tools.iter().any(|tool| tool.name == *name)),
-            "fact-retention status read surface tools must be present in CoreMcpTools"
-        );
-        tools
+            .collect::<Vec<_>>()
     }
 
     /// List registered MCP tools visible under `scope`.

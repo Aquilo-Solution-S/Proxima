@@ -164,7 +164,7 @@ async fn memory_profile_instructions_omit_excluded_tools() -> Result<(), Box<dyn
             "core_derive",
             "core_link",
             "core_search_memories",
-            "core_get_memory",
+            "resource:memory",
         ]
         .into_iter()
         .map(String::from)
@@ -188,6 +188,7 @@ async fn memory_profile_instructions_omit_excluded_tools() -> Result<(), Box<dyn
     // Core contract still taught.
     assert!(instructions.contains("Facts cannot link Facts"));
     assert!(instructions.contains("`core_remember`"));
+    assert!(instructions.contains("proxima://memory/{id}"));
     // Excluded tools get no guidance.
     assert!(
         !instructions.contains("core_goal"),

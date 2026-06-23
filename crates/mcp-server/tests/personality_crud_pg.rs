@@ -45,6 +45,32 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         Ok(serde_json::from_str(text)?)
     }
 
+    async fn read_resource(
+        client: &reqwest::Client,
+        url: &str,
+        session: &str,
+        bearer: &str,
+        uri: &str,
+    ) -> Result<Value, Box<dyn std::error::Error>> {
+        let resp = post_rpc(
+            client,
+            url,
+            Some(session),
+            bearer,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "resources/read",
+                "params": { "uri": uri }
+            }),
+        )
+        .await?;
+        let text = resp["result"]["contents"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("contents[0].text exists; full response: {resp}"));
+        Ok(serde_json::from_str(text)?)
+    }
+
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
@@ -79,16 +105,8 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
     let session = initialize(&client, &url, &bearer).await?;
     initialized(&client, &url, &session, &bearer).await?;
 
-    // 1. Discovery: list_substrate_tools includes dispatchable MCP CRUD.
-    let tools = call_tool(
-        &client,
-        &url,
-        &session,
-        &bearer,
-        "core_list_substrate_tools",
-        json!({}),
-    )
-    .await?;
+    // 1. Discovery: proxima://tools includes dispatchable MCP CRUD.
+    let tools = read_resource(&client, &url, &session, &bearer, "proxima://tools").await?;
     let arr = tools["tools"].as_array().expect("tools array");
     let names: std::collections::HashSet<_> = arr
         .iter()

@@ -204,10 +204,51 @@ async fn local_master_token_lists_all_tools_without_origin()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
     assert!(names.contains(&"core_remember"));
-    assert!(names.contains(&"core_get_memory"));
-    assert!(names.contains(&"core_walk_memory_lineage"));
+    assert!(!names.contains(&"core_get_memory"));
+    assert!(!names.contains(&"core_walk_memory_lineage"));
     assert!(names.contains(&"core_search_memories"));
     assert!(names.contains(&"core_fact"));
+
+    let resources = post_rpc_without_origin(
+        &client,
+        &url,
+        Some(&session_id),
+        &bearer,
+        json!({"jsonrpc": "2.0", "id": 3, "method": "resources/list", "params": {}}),
+    )
+    .await?;
+    let resource_uris: Vec<_> = resources["result"]["resources"]
+        .as_array()
+        .expect("resources")
+        .iter()
+        .filter_map(|resource| resource["uri"].as_str())
+        .collect();
+    assert!(resource_uris.contains(&"proxima://edge-types"));
+
+    let templates = post_rpc_without_origin(
+        &client,
+        &url,
+        Some(&session_id),
+        &bearer,
+        json!({"jsonrpc": "2.0", "id": 4, "method": "resources/templates/list", "params": {}}),
+    )
+    .await?;
+    let template_items = templates["result"]
+        .get("resourceTemplates")
+        .or_else(|| templates["result"].get("resource_templates"))
+        .and_then(serde_json::Value::as_array)
+        .expect("resource templates");
+    let template_uris: Vec<_> = template_items
+        .iter()
+        .filter_map(|template| {
+            template
+                .get("uriTemplate")
+                .or_else(|| template.get("uri_template"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .collect();
+    assert!(template_uris.contains(&"proxima://memory/{id}{?expand_neighbors}"));
+    assert!(template_uris.contains(&"proxima://memory/{id}/lineage{?direction,depth,limit}"));
 
     handle.abort();
     let _ = handle.await;

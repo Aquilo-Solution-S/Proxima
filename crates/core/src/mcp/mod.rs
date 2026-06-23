@@ -761,14 +761,7 @@ pub fn core_tool_has_actions(tool: &str) -> bool {
 pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations> {
     let base = McpToolAnnotations::new().open_world(false);
     let annotations = match canonical_name {
-        "core_get_graph"
-        | "core_get_memory"
-        | "core_list_edge_types"
-        | "core_list_events"
-        | "core_list_schemas"
-        | "core_list_substrate_tools"
-        | "core_search_memories"
-        | "core_walk_memory_lineage" => base.read_only(true),
+        "core_search_memories" => base.read_only(true),
 
         "core_derive" => base.read_only(false).destructive(false).idempotent(true),
 

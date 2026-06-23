@@ -76,9 +76,10 @@ impl ServerHandler for DynamicHandler {
         }
         let auth = auth_context(&context);
         let scope = auth.as_ref().map(|ctx| &ctx.authz.capabilities.tool_scope);
-        let advertised = self.advertised_tool_ids(scope);
+        let advertised_tools = self.advertised_tool_ids(scope);
+        let advertised_resources = advertised_resource_scope_keys(scope);
         let mut info = self.get_info();
-        let instructions = selfdoc::build_instructions(&advertised);
+        let instructions = selfdoc::build_instructions(&advertised_tools, &advertised_resources);
         if !instructions.is_empty() {
             info.instructions = Some(instructions);
         }
@@ -151,7 +152,8 @@ impl ServerHandler for DynamicHandler {
                     .filter(|descriptor| scope_allows(scope, descriptor.name))
                     .map(|descriptor| descriptor.name)
                     .collect();
-                let body = selfdoc::how_to_markdown(&advertised);
+                let advertised_resources = advertised_resource_scope_keys(scope);
+                let body = selfdoc::how_to_markdown(&advertised, &advertised_resources);
                 return Ok(ReadResourceResult::new(vec![
                     ResourceContents::text(body, selfdoc::HOW_TO_URI)
                         .with_mime_type(selfdoc::HOW_TO_MIME),
@@ -353,6 +355,13 @@ fn resource_scope_allows(scope: Option<&ToolScope>, scope_key: &str) -> bool {
         Some(scope) => scope.allows(scope_key),
         None => UNAUTHENTICATED_SCOPE_ALLOWS,
     }
+}
+
+fn advertised_resource_scope_keys(scope: Option<&ToolScope>) -> BTreeSet<&'static str> {
+    all_core_resources()
+        .filter(|resource| resource_scope_allows(scope, resource.scope_key))
+        .map(|resource| resource.scope_key)
+        .collect()
 }
 
 fn author_from_ctx(auth: Option<&McpAuthContext>) -> McpAuthorContext {
