@@ -8,7 +8,7 @@ use proxima_core::{
 use proxima_mcp_server::{McpAuthContext, McpToolHost, ToolInvocationError};
 use sqlx::PgPool;
 
-const FACT_RETENTION_SURFACE_TOOL_NAMES: [&str; 2] = ["core_get_graph", "core_fact"];
+const FACT_RETENTION_SURFACE_TOOL_NAMES: [&str; 1] = ["core_get_graph"];
 
 /// Facade handle for listing and dispatching the composed engine MCP tools
 /// from an embedding host's own authenticated endpoint.
@@ -114,7 +114,7 @@ impl CoreMcpTools {
             FACT_RETENTION_SURFACE_TOOL_NAMES
                 .iter()
                 .all(|name| tools.iter().any(|tool| tool.name == *name)),
-            "fact-retention surface tools must be present in CoreMcpTools"
+            "fact-retention status read surface tools must be present in CoreMcpTools"
         );
         tools
     }
