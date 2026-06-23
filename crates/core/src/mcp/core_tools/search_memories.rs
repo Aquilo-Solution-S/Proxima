@@ -13,6 +13,9 @@ use crate::{McpTool, SchemaId};
 
 use super::memory::search::{NeighborEdge, load_graph_payloads, neighbor_edges};
 
+const SEMANTIC_SEARCH_UNAVAILABLE: &str =
+    "semantic search unavailable: no embedding client is configured (set MISTRAL_API_KEY)";
+
 #[derive(Debug, Default)]
 pub struct SearchMemoriesTool;
 
@@ -191,6 +194,11 @@ impl McpTool for SearchMemoriesTool {
             }
 
             let mode = SearchMode::from(args.mode);
+            let embeddings_available = ctx
+                .engine()
+                .is_some_and(|engine| engine.embed_client().is_some());
+            let (effective_mode, resolver_degraded) =
+                resolve_effective_search_mode(mode, embeddings_available)?;
             let since = parse_rfc3339(args.since.as_deref(), "since")?;
             let until = parse_rfc3339(args.until.as_deref(), "until")?;
             let reader = args
@@ -201,7 +209,7 @@ impl McpTool for SearchMemoriesTool {
             let mut req = MemorySearchRequest {
                 principal: ctx.owner.clone(),
                 query: query.to_string(),
-                mode,
+                mode: effective_mode,
                 supersession: args.supersession.into(),
                 limit: args.limit.clamp(1, 50),
                 kind: args.kind.map(EntityKind::from),
@@ -216,16 +224,13 @@ impl McpTool for SearchMemoriesTool {
                 reader_personality_instance_id: reader,
             };
 
-            if matches!(mode, SearchMode::Semantic | SearchMode::Hybrid) {
+            if matches!(effective_mode, SearchMode::Semantic | SearchMode::Hybrid) {
                 let engine = ctx.engine().ok_or_else(|| {
                     McpToolError::Other("engine required for semantic search".into())
                 })?;
-                let embed = engine.embed_client().ok_or_else(|| {
-                    McpToolError::Other(
-                        "semantic search unavailable: no embedding client is configured (set MISTRAL_API_KEY)"
-                            .into(),
-                    )
-                })?;
+                let embed = engine
+                    .embed_client()
+                    .ok_or_else(|| McpToolError::Other(SEMANTIC_SEARCH_UNAVAILABLE.into()))?;
                 req.query_embedding = Some(
                     embed
                         .embed(query)
@@ -241,7 +246,8 @@ impl McpTool for SearchMemoriesTool {
             let rows = storage
                 .search_memories(&req, ctx.registry.search_projections())
                 .await?;
-            let degraded_to_lexical = semantic_search_degraded_to_lexical(mode, &rows);
+            let degraded_to_lexical =
+                resolver_degraded || semantic_search_degraded_to_lexical(effective_mode, &rows);
             let memory_ids: Vec<_> = rows.iter().map(|row| row.memory_id.into_inner()).collect();
             let payloads = load_graph_payloads(&ctx, &memory_ids, args.include_body).await?;
             let neighbor_edges = if args.include_neighbor_edges {
@@ -324,6 +330,20 @@ fn semantic_search_degraded_to_lexical(
     )
 }
 
+fn resolve_effective_search_mode(
+    requested: SearchMode,
+    embeddings_available: bool,
+) -> Result<(SearchMode, bool), McpToolError> {
+    match (requested, embeddings_available) {
+        (SearchMode::Semantic, false) => {
+            Err(McpToolError::Other(SEMANTIC_SEARCH_UNAVAILABLE.to_string()))
+        }
+        (SearchMode::Hybrid, false) => Ok((SearchMode::Lexical, true)),
+        (SearchMode::Semantic | SearchMode::Hybrid, true) => Ok((requested, false)),
+        (SearchMode::Lexical, _) => Ok((SearchMode::Lexical, false)),
+    }
+}
+
 /// A `Hybrid` search has silently fallen back to lexical-only ranking when it
 /// returned results but none carry a positive semantic similarity — the symptom
 /// of an empty or unavailable embedding store (Aquilo FJ#3674). Restricted to
@@ -354,7 +374,8 @@ fn format_rfc3339(value: time::OffsetDateTime) -> Result<String, McpToolError> {
 
 #[cfg(test)]
 mod tests {
-    use super::degraded_to_lexical;
+    use super::{SEMANTIC_SEARCH_UNAVAILABLE, degraded_to_lexical, resolve_effective_search_mode};
+    use crate::mcp::McpToolError;
     use crate::verbs::query::SearchMode;
 
     #[test]
@@ -369,5 +390,36 @@ mod tests {
         assert!(!degraded_to_lexical(SearchMode::Semantic, false, false));
         // Lexical is never degraded.
         assert!(!degraded_to_lexical(SearchMode::Lexical, false, false));
+    }
+
+    #[test]
+    fn resolve_effective_search_mode_degrades_only_implicit_semantic_search() {
+        assert_eq!(
+            resolve_effective_search_mode(SearchMode::Lexical, false).unwrap(),
+            (SearchMode::Lexical, false)
+        );
+        assert_eq!(
+            resolve_effective_search_mode(SearchMode::Lexical, true).unwrap(),
+            (SearchMode::Lexical, false)
+        );
+        assert_eq!(
+            resolve_effective_search_mode(SearchMode::Hybrid, false).unwrap(),
+            (SearchMode::Lexical, true)
+        );
+        assert_eq!(
+            resolve_effective_search_mode(SearchMode::Hybrid, true).unwrap(),
+            (SearchMode::Hybrid, false)
+        );
+        assert_eq!(
+            resolve_effective_search_mode(SearchMode::Semantic, true).unwrap(),
+            (SearchMode::Semantic, false)
+        );
+
+        match resolve_effective_search_mode(SearchMode::Semantic, false) {
+            Err(McpToolError::Other(message)) => {
+                assert_eq!(message, SEMANTIC_SEARCH_UNAVAILABLE);
+            }
+            other => panic!("expected semantic unavailable error, got {other:?}"),
+        }
     }
 }
