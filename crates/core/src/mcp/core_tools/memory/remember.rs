@@ -25,7 +25,7 @@ pub struct RememberArgs {
     )]
     pub tags: Vec<String>,
     #[schemars(
-        description = "Optional stable idempotency key for replay-safe Fact creation. Omit or null for a fresh Fact."
+        description = "Optional stable note key. An exact replay (same title/body/tags) returns the existing Fact. Reusing the key with changed content appends a new Fact version and advances the note head; it does not overwrite."
     )]
     pub idempotency_key: Option<String>,
     #[serde(default)]
@@ -68,8 +68,7 @@ pub struct RememberTool;
 
 impl McpTool for RememberTool {
     const NAME: &'static str = "core_remember";
-    const DESCRIPTION: &'static str =
-        "Append an agent-observed Fact. Optional idempotency_key makes replay stable.";
+    const DESCRIPTION: &'static str = "Append an agent-observed Fact. Optional idempotency_key collapses only exact replays with the same content; changed content with the same key writes a new version and advances the note head pointer. core_search_memories returns heads by default; pass supersession=all for full history.";
     type Args = RememberArgs;
     type Output = RememberOutput;
 
