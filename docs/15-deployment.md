@@ -100,6 +100,14 @@ better LLM tool selection and lower operational blast radius. It is not a
 security boundary: every tool call remains gated by per-actor authz and
 role checks.
 
+`--owner-user` is the **single-tenant** form of the host owner-resolution
+invariant ([01 §Owner resolution](01-event-source.md#owner-resolution--the-hosts-trust-boundary)):
+the owner is pinned per process and the request carries no owner field,
+so no client input can select another tenant's Reality slice. A
+multi-tenant host that instead derives `Owner` from a token claim owns
+the *entire* cross-tenant boundary in that mapping — Core has no org
+column to cross-check it.
+
 ## Zitadel setup
 
 - Create a Zitadel project.

@@ -73,7 +73,7 @@ pub struct CallEdge {
 pub struct CodeSearchChunksTool;
 
 impl McpTool for CodeSearchChunksTool {
-    const NAME: &'static str = "proxima-code/search_chunks";
+    const NAME: &'static str = "proxima-code_search_chunks";
     const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content. Supports language/chunk_type filters and optional proxima-code/calls neighbor edges.";
 
     type Args = CodeSearchChunksArgs;

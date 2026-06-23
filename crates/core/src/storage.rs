@@ -78,6 +78,7 @@ pub struct MemoryKindRow {
 pub struct MemoryGraphPayloadRow {
     pub memory_id: MemoryId,
     pub tags: Option<Vec<String>>,
+    pub body: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -482,6 +483,7 @@ pub trait Storage: Send + Sync {
         &self,
         _owner: &Owner,
         _memory_ids: &[MemoryId],
+        _include_body: bool,
     ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
         Ok(Vec::new())
     }
@@ -585,6 +587,18 @@ pub trait Storage: Send + Sync {
         req: &crate::verbs::query::QueryRequest,
         schemas: &[crate::verbs::schema::SchemaInfo],
     ) -> Result<crate::verbs::query::QueryResponse, StorageError>;
+
+    /// Owner-scoped edge read by edge id and/or endpoint filter.
+    async fn read_edges(
+        &self,
+        req: &crate::verbs::query::EdgeReadRequest,
+    ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError>;
+
+    /// Owner-scoped existence probe for an edge id and/or endpoint filter.
+    async fn edge_exists(
+        &self,
+        req: &crate::verbs::query::EdgeExistsRequest,
+    ) -> Result<crate::verbs::query::EdgeExistsResponse, StorageError>;
 
     /// Owner-scoped lexical/semantic memory search. Similarity is
     /// query-time only; this method never writes edges.
@@ -1053,6 +1067,20 @@ impl Storage for NoopStorage {
             edges: Vec::new(),
             seq_high_water: None,
         })
+    }
+
+    async fn read_edges(
+        &self,
+        _req: &crate::verbs::query::EdgeReadRequest,
+    ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError> {
+        Ok(crate::verbs::query::EdgeReadResponse { edges: Vec::new() })
+    }
+
+    async fn edge_exists(
+        &self,
+        _req: &crate::verbs::query::EdgeExistsRequest,
+    ) -> Result<crate::verbs::query::EdgeExistsResponse, StorageError> {
+        Ok(crate::verbs::query::EdgeExistsResponse { exists: false })
     }
 
     async fn search_memories(

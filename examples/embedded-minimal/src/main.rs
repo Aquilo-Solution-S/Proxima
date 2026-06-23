@@ -17,6 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .allow_insecure_single_owner()
         .run()
         .await?;
+    let embedding_worker = booted.spawn_embedding_worker(booted.cancel.clone());
     let authz = booted
         .single_owner_authz()
         .expect("insecure single-owner mode is enabled");
@@ -46,6 +47,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("query returned {} rows", row_count(&response));
 
+    booted.cancel.cancel();
+    embedding_worker.await?;
     booted.shutdown().await;
     Ok(())
 }

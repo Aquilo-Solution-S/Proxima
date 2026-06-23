@@ -9,7 +9,7 @@ use crate::change_event::EntityRef;
 use crate::personality::PersonalityInstanceId;
 use crate::verbs::goal_write::GoalState;
 use crate::verbs::schema::SchemaTombstone;
-use crate::{GoalId, MemoryId, Owner, Principal, SchemaId, SchemaVersion, SidecarPayload};
+use crate::{EdgeId, GoalId, MemoryId, Owner, Principal, SchemaId, SchemaVersion, SidecarPayload};
 
 /// Re-export the canonical `EntityKind` from `change_event` so query
 /// callers don't need a second import path. The duplicate
@@ -29,6 +29,10 @@ pub enum SearchMode {
 
 fn default_search_mode() -> SearchMode {
     SearchMode::Hybrid
+}
+
+fn default_supersession_status() -> SupersessionStatus {
+    SupersessionStatus::HeadsOnly
 }
 
 #[derive(
@@ -76,6 +80,8 @@ pub struct MemorySearchRequest {
     pub query: String,
     #[serde(default = "default_search_mode")]
     pub mode: SearchMode,
+    #[serde(default = "default_supersession_status")]
+    pub supersession: SupersessionStatus,
     pub limit: u32,
     pub kind: Option<EntityKind>,
     pub schema_id: Option<SchemaId>,
@@ -304,6 +310,42 @@ pub struct EdgeRow {
     pub target: EntityRef,
     pub owner: Owner,
     pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EdgeFilter {
+    pub relation: Option<String>,
+    pub source: Option<EntityRef>,
+    pub target: Option<EntityRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EdgeReadRequest {
+    pub principal: Principal,
+    #[serde(default)]
+    pub edge_ids: Vec<EdgeId>,
+    #[serde(default)]
+    pub filter: EdgeFilter,
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EdgeReadResponse {
+    pub edges: Vec<EdgeRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EdgeExistsRequest {
+    pub principal: Principal,
+    #[serde(default)]
+    pub edge_ids: Vec<EdgeId>,
+    #[serde(default)]
+    pub filter: EdgeFilter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EdgeExistsResponse {
+    pub exists: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

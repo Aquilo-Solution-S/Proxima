@@ -36,9 +36,9 @@ pub const HOW_TO_MIME: &str = "text/markdown";
 // Code-flavor tools live in `proxima-code`, which `mcp-server` does not
 // depend on, so these ids are matched as literals rather than via a
 // `McpTool::NAME` const. They stay correct as long as the flavor keeps these
-// canonical ids (the `memory` keep set in `apps/proxima-mcp` pins them too).
-const CODE_SEARCH_CHUNKS: &str = "proxima-code/search_chunks";
-const CODE_REGISTER_REPO: &str = "proxima-code/register_repo";
+// registered tool names (the `memory` keep set in `apps/proxima-mcp` pins them too).
+const CODE_SEARCH_CHUNKS: &str = "proxima-code_search_chunks";
+const CODE_REGISTER_REPO: &str = "proxima-code_register_repo";
 
 /// The advertised surface, distilled to the booleans the generators key off.
 /// Computed once from the resolved tool-id set so `build_instructions` and

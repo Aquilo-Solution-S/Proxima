@@ -2,9 +2,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use proxima::{
-    AppInfo, AuthPath, AuthzContext, CapabilitySet, CoreMcpError, CoreMcpTools, FlavorApp,
-    FlavorBundle, Identity, NamedMigrator, PgSidecarRegistry, Proxima, RoleSet, StorageError,
-    ToolScope, company_owner,
+    AppInfo, AuthPath, AuthzContext, CapabilitySet, CoreMcpError, CoreMcpErrorKind, CoreMcpTools,
+    FlavorApp, FlavorBundle, Identity, NamedMigrator, PgSidecarRegistry, Proxima, RoleSet,
+    StorageError, ToolScope, company_owner,
 };
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
@@ -212,6 +212,25 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
                 .is_some_and(|object| !object.is_empty()),
             "known core tool has a non-empty args schema"
         );
+        let search = listed
+            .iter()
+            .find(|tool| tool.name == "core_search_memories")
+            .expect("core/search_memories registered");
+        assert_eq!(search.read_only, Some(true));
+        assert_eq!(search.open_world, Some(false));
+        let remember = listed
+            .iter()
+            .find(|tool| tool.name == "core_remember")
+            .expect("core/remember registered");
+        assert_eq!(remember.read_only, Some(false));
+        assert_eq!(remember.destructive, Some(false));
+
+        let palette = tools.list_core_tools_for_scope(&ToolScope::Palette(vec![
+            "core_search_memories".to_string(),
+        ]));
+        let palette_names: HashSet<_> = palette.into_iter().map(|tool| tool.name).collect();
+        assert!(palette_names.contains("core_search_memories"));
+        assert!(!palette_names.contains("core_list_personalities"));
 
         let output = call_test_model_tool(
             &tools,
@@ -236,6 +255,18 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
             )
             .await;
         assert!(matches!(denied, Err(CoreMcpError::NotAuthorized(tool)) if tool == "core_list_personalities"));
+
+        let invalid = tools
+            .call_core_tool(
+                host_authz(&owner, ToolScope::All),
+                owner.clone(),
+                None,
+                "core_get_memory",
+                serde_json::json!({ "memory": "not-a-memory-id" }),
+            )
+            .await
+            .expect_err("invalid memory handle rejected");
+        assert_eq!(invalid.kind(), CoreMcpErrorKind::InvalidInput);
 
         let unknown = tools
             .call_core_tool(

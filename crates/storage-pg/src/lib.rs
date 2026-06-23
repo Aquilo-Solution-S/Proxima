@@ -34,8 +34,9 @@ use proxima_core::verbs::goal_write::{
 use proxima_core::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use proxima_core::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use proxima_core::verbs::query::{
-    FactCitationReadback, MemoryLineageRequest, MemoryLineageResponse, MemorySearchRequest,
-    MemorySearchResult, QueryRequest, QueryResponse,
+    EdgeExistsRequest, EdgeExistsResponse, EdgeReadRequest, EdgeReadResponse, FactCitationReadback,
+    MemoryLineageRequest, MemoryLineageResponse, MemorySearchRequest, MemorySearchResult,
+    QueryRequest, QueryResponse,
 };
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EdgeEndpointKindRow, EdgeId,
@@ -522,6 +523,7 @@ impl Storage for PgStorage {
         &self,
         owner: &Owner,
         memory_ids: &[MemoryId],
+        include_body: bool,
     ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
         if memory_ids.is_empty() {
             return Ok(Vec::new());
@@ -532,9 +534,13 @@ impl Storage for PgStorage {
             .map(MemoryId::into_inner)
             .collect::<Vec<_>>();
         let (owner_kind, owner_principal_id) = owner.columns();
-        let rows: Vec<(uuid::Uuid, Option<Vec<String>>)> = sqlx::query_as(
+        let rows: Vec<(uuid::Uuid, Option<Vec<String>>, Option<String>)> = sqlx::query_as(
             "SELECT m.memory_id,
-                    COALESCE(n.tags, d.tags) AS tags
+                    COALESCE(n.tags, d.tags) AS tags,
+                    CASE WHEN $4
+                         THEN COALESCE(n.body, d.body, m.text)
+                         ELSE NULL
+                    END AS body
              FROM proxima_core.memories m
              LEFT JOIN proxima_core.agent_note_v1 n USING (memory_id)
              LEFT JOIN proxima_core.agent_derivation_v1 d USING (memory_id)
@@ -545,14 +551,16 @@ impl Storage for PgStorage {
         .bind(owner_kind)
         .bind(owner_principal_id)
         .bind(&ids)
+        .bind(include_body)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
         Ok(rows
             .into_iter()
-            .map(|(memory_id, tags)| MemoryGraphPayloadRow {
+            .map(|(memory_id, tags, body)| MemoryGraphPayloadRow {
                 memory_id: MemoryId::new(memory_id),
                 tags,
+                body,
             })
             .collect())
     }
@@ -770,6 +778,17 @@ impl Storage for PgStorage {
         schemas: &[proxima_core::verbs::schema::SchemaInfo],
     ) -> Result<QueryResponse, StorageError> {
         verbs::query::query_memories(&self.pool, &self.sidecars, req, schemas).await
+    }
+
+    async fn read_edges(&self, req: &EdgeReadRequest) -> Result<EdgeReadResponse, StorageError> {
+        verbs::query::read_edges(&self.pool, req).await
+    }
+
+    async fn edge_exists(
+        &self,
+        req: &EdgeExistsRequest,
+    ) -> Result<EdgeExistsResponse, StorageError> {
+        verbs::query::edge_exists(&self.pool, req).await
     }
 
     async fn search_memories(
