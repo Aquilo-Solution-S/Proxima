@@ -5,12 +5,13 @@ schemas, relations, prompts, tools, source types, wake filters, and
 personality types (see [08](08-core-and-flavors.md)). Runtime config
 selects the Postgres connection, the MCP endpoint and its authentication,
 deployment-level artefact storage, and an optional host-injected
-embedding client for retrieval.
+embedding client for retrieval plus an optional host-injected model-seat
+client.
 
 Proxima hosts no model loop. It does not register inference targets,
-model tiers, or LLM credentials — external harnesses own model
+tier registries, or LLM credentials — external harnesses own model
 selection. The only LLM-adjacent runtime knob is the embedding client a
-host injects for vector retrieval.
+host injects for vector retrieval and an optional model-seat client.
 
 <a id="scope"></a>
 ## Scope
@@ -21,6 +22,7 @@ host injects for vector retrieval.
 | MCP endpoint | binary-wide | bind addr, network exposure, origin allowlist |
 | MCP authentication | per request | host `Authenticator`, master token, or insecure single-owner |
 | Embedding client | binary-wide | optional `Arc<dyn EmbeddingClient>` injected at boot |
+| Anthropic model client | binary-wide | optional `Arc<dyn AnthropicClient>` host-injected; programmatic only |
 | Large artefact S3 storage | binary-wide | process env + AWS SDK credential chain |
 | EventSource credentials | per source instance | source-owned, not engine-owned |
 
@@ -116,8 +118,7 @@ allow/deny log `warn` and do not fail boot.
 <a id="embedding-client"></a>
 ## Embedding Client
 
-Embedding-for-retrieval is the only LLM call Proxima makes, and the
-client is **host-injected**, not configured by Proxima:
+Embedding-for-retrieval is host-injected, not configured by Proxima:
 
 ```rust
 builder.embed_client(client: Arc<dyn EmbeddingClient>)

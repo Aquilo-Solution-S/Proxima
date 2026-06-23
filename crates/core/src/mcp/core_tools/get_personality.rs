@@ -84,12 +84,12 @@ impl McpTool for GetPersonalityTool {
                 .into_iter()
                 .map(|e| GetPersonalityWakeEntry {
                     wake_entry: ctx.format_wake_entry(e.wake_entry_id),
-                    trigger_kind: format!("{:?}", e.trigger_kind),
+                    trigger_kind: e.trigger_kind.as_str().to_string(),
                     trigger_id: e.trigger_id,
                     label: e.label,
                     enabled: e.enabled,
                     instructions: e.instructions,
-                    authored_by: format!("{:?}", e.authored_by),
+                    authored_by: e.authored_by.as_str().to_string(),
                     probability_promille: e.probability_promille,
                     goal_scope: e.goal_scope.as_str().to_string(),
                 })

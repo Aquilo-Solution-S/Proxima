@@ -2,10 +2,16 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use jsonwebtoken::DecodingKey;
 use tokio::sync::RwLock;
+
+/// Minimum spacing between JWKS refetches. Bounds the outbound-fetch rate so a
+/// flood of tokens carrying random unknown `kid`s cannot amplify into one
+/// upstream JWKS request per inbound request.
+const JWKS_REFRESH_COOLDOWN: Duration = Duration::from_mins(1);
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum KeyError {
@@ -78,6 +84,8 @@ pub struct HttpJwksResolver {
     jwks_uri: Option<String>,
     http: reqwest::Client,
     cache: RwLock<HashMap<String, Arc<DecodingKey>>>,
+    /// Last time a refetch was attempted; gates the unknown-kid refresh.
+    last_refresh: RwLock<Option<Instant>>,
 }
 
 impl std::fmt::Debug for HttpJwksResolver {
@@ -96,6 +104,7 @@ impl HttpJwksResolver {
             jwks_uri,
             http: reqwest::Client::new(),
             cache: RwLock::new(HashMap::new()),
+            last_refresh: RwLock::new(None),
         }
     }
 
@@ -151,6 +160,14 @@ impl KeyResolver for HttpJwksResolver {
         if let Some(k) = self.cache.read().await.get(kid).cloned() {
             return Ok(k);
         }
+        // Cache miss: refetch at most once per cooldown so a stream of
+        // unknown-kid tokens can't drive one upstream JWKS fetch per request.
+        if let Some(last) = *self.last_refresh.read().await
+            && last.elapsed() < JWKS_REFRESH_COOLDOWN
+        {
+            return Err(KeyError::UnknownKid);
+        }
+        *self.last_refresh.write().await = Some(Instant::now());
         self.refresh().await?;
         self.cache
             .read()

@@ -13,12 +13,45 @@ Users write their own app. The app owns the product, UX, domain workflow, auth b
 ## Start
 
 ```sh
-cargo run -p proxima-mcp -- --owner-user <uuid>
+docker compose -f docker-compose.dev.yml up -d postgres
+export DATABASE_URL=postgres://proxima:proxima@localhost:5434/proxima
+cargo run -p proxima-mcp -- --owner-user <uuid> --master-token <uuid>
 ```
+
+The dev compose file exposes Postgres on `localhost:5434` with pgvector.
+The binary default is `postgres://postgres@localhost/proxima_dev`; set
+`DATABASE_URL` or pass `--database-url` when using compose.
 
 Headless MCP server at `http://127.0.0.1:31415/mcp`. Agent-harness users use
 [`apps/proxima-mcp`](apps/proxima-mcp) or embed
 [`crates/mcp-server`](crates/mcp-server).
+
+## Connecting Your Coding Agent To Proxima
+
+Start the MCP server:
+
+```sh
+cargo run -p proxima-mcp -- --owner-user <uuid> --master-token <uuid>
+```
+
+Client config:
+
+```json
+{
+  "mcpServers": {
+    "proxima": {
+      "url": "http://127.0.0.1:31415/mcp",
+      "headers": {
+        "Authorization": "Bearer pxm_<token>"
+      }
+    }
+  }
+}
+```
+
+`PROXIMA_MCP_BIND` overrides the listener address. Non-loopback binds
+require `PROXIMA_EXPOSE_NETWORK=true` plus the auth/origin/host gates in
+10.
 
 ```sh
 cargo check --workspace
@@ -87,9 +120,9 @@ Design source of truth:
   runtime framework core / flavor layering. Schemas, tools, sources, prompts,
   and operators register at implementation time from flavor
   crates; only *instance* config is runtime. Flavors live under
-  `flavors/<name>/`; multi-domain deployments compose via a
-  composite crate. No feature flags — the flavor crate is the unit
-  of inclusion.
+  `flavors/<name>/`; multi-domain deployments compose via linked
+  flavor crates. The `proxima-mcp` host has a default-off `code`
+  packaging feature.
 - [`docs/09-developing-flavors.md`](docs/09-developing-flavors.md) —
   implementation checklist for flavor crates: typed payload keys,
   sidecar SQL, PG sidecar insert/load, macro registration, bundle
@@ -102,8 +135,8 @@ Design source of truth:
   `CitationMapping` traits; bibliographic provenance; Fact-only
   citation rule.
 - [`docs/12-tool-manifest.md`](docs/12-tool-manifest.md) — build-time
-  tool vocabulary, wake-entry palettes, MCP/personality dispatch, and
-  deferred tool-compliance enforcement.
+  tool vocabulary, core/flavor MCP dispatch, wake-entry detect config,
+  and deferred tool-compliance enforcement.
 - [`docs/13-compliance.md`](docs/13-compliance.md) — compliance
   primitives: owner deletion, source-scope deletion, pause/resume,
   export, suppression, audit.

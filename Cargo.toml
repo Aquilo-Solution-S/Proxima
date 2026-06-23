@@ -58,3 +58,7 @@ tree-sitter-typescript = "0.23"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Optimize build scripts (e.g. tree-sitter cc builds) even in release.
+[profile.release.build-override]
+opt-level = 3

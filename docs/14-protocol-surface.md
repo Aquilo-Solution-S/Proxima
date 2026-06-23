@@ -1,8 +1,8 @@
 # 14 — Protocol Surface
 
 Transport-agnostic engine contract. 14 owns verb semantics,
-change-log semantics, consistency, auth, and error shape. 09 owns
-client transport, Shell bindings, and UI state.
+change-log semantics, consistency, auth, and error shape. Transport
+framing and UI are consumer concerns (see [§Out of scope](#out-of-scope)).
 
 ## Scope
 
@@ -24,7 +24,7 @@ No runtime schema/source/tool/flavor registration surface exists.
 
 Agent long-term memory is core substrate. The MCP tools are thin callers
 of Engine verbs; storage stays behind the Engine. The substrate tool
-count is 36 (authoritative live list: `core/list_substrate_tools`).
+count is 33 (authoritative live list: `core/list_substrate_tools`).
 
 Canonical substrate memory tools:
 

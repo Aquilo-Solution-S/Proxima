@@ -6,9 +6,8 @@
 # This is the single biggest win for iterative development
 incremental = true
 
-# Number of parallel jobs for compilation
-# Use number of CPU cores (empty = auto-detect)
-jobs = 8
+# Parallel job count is left to cargo auto-detection (CPU cores); do not pin
+# it here — a committed value penalizes machines with other core counts.
 
 # Use pipelined compilation where possible (Rust 1.70+)
 pipelining = true
@@ -47,18 +46,8 @@ debug = 0
 [profile.dev.package."*"]
 debug = 0
 
-[profile.release]
-# Enable link-time optimization for release builds
-lto = "thin"
-
-# Parallel code generation for release builds
-codegen-units = 16
-
-[profile.release.build-override]
-# Optimize build scripts in release mode
-opt-level = 3
-
-[profile.bench]
-# Benchmark profile inherits from release
-inherits = "release"
-debug = true
+# NOTE: `release` and `bench` profiles are defined in the workspace Cargo.toml
+# (the canonical source of truth). They are intentionally NOT redefined here —
+# a `.cargo/config.toml` profile silently overrides Cargo.toml, which had
+# downgraded the release `codegen-units` from 1 to 16. Build-script release
+# optimization lives in Cargo.toml `[profile.release.build-override]`.

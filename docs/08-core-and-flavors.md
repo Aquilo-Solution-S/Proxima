@@ -6,7 +6,7 @@
 Core is the Rust runtime framework core. It owns graph contracts,
 build-time flavor registry, protocol verbs, wake/personality runtime,
 agent long-term memory substrate, substrate MCP tools, inference config
-types, and storage traits. Flavor crates contribute build-time
+vocabulary, and storage traits. Flavor crates contribute build-time
 vocabulary. Composite binaries choose flavor crates at build time and
 freeze the registry at startup.
 
@@ -30,9 +30,7 @@ runtime framework core (`proxima-core`)
   storage traits
   agent long-term memory sidecars + tools
   GoalWrite, active-goal queries, core Goal tools
-  wake dispatcher
   personality runtime rows + wake-entry contracts
-  substrate personality tools
   substrate MCP config tools
 
 flavor crate
@@ -40,7 +38,6 @@ flavor crate
   typed EdgePayload schemas
   relation descriptors
   MCP tools
-  optional frontend package
 
 composite binary
   links selected flavor crates
@@ -79,6 +76,11 @@ Supported keys:
 | `perspective_schemas` | `PerspectivePayload` sidecar schemas. |
 | `goal_schemas` | `GoalPayload` sidecar schemas. |
 | `edge_schemas` | `EdgePayload` sidecar schemas for typed relations. |
+| `cited_object_schemas` | `CitedObjectPayload` sidecar schemas (see 11). |
+| `citation_mapping_schemas` | `CitationMappingPayload` sidecar schemas (see 11). |
+| `opaque_cited_object_schemas` | Untyped cited-object schema ids. |
+| `opaque_citation_mapping_schemas` | Untyped citation-mapping schema ids. |
+| `schema_capability_tags` | Build-time capability tags on registered payload schemas. |
 | `relations` | `RelationDescriptor` values. |
 | `mcp_tools` | Flavor MCP tools; tool names must use the flavor prefix. |
 | `dependency_satisfaction_rules` | Build-time dependency rules for flavor schemas. |
@@ -124,37 +126,38 @@ Personality is runtime substrate state:
 ```
 PersonalityInstance
   root Perspective
-  inference tier / target binding
-  wake entries
-  substrate tool palette
+  wake entries:
+    trigger kind + id
+    goal scope
+    probability
+    label
+    instructions
 ```
 
 There is no flavor-owned runtime personality trait. A flavor may provide
-payload schemas, MCP tools, dependency rules, and frontend rendering, but
+payload schemas, MCP tools, and dependency rules, but
 personality instances remain substrate rows.
 
-Wake entries, not flavors, choose trigger schema, goal scope, model tier,
-tool palette, instructions, and execution mode.
+Wake entries are detect config. External harnesses drive model, tool,
+and execution decisions.
 
 ## Substrate Tool Pack
 
-Default personality tools:
+Default substrate memory tools:
 
 | Read | Write |
 |---|---|
-| `core/get_memory` | `core/emit_abstraction` |
-| `core/list_self_perspectives` | `core/emit_perspective` |
-| `core/walk_lineage` |  |
-| `core/search_memories` |  |
-| `core/list_active_goals` |  |
+| `core/get_memory` | `core/derive` |
+| `core/search_memories` | `core/remember` |
+| `core/walk_memory_lineage` | `core/record_utterance` |
+|  | `core/link` |
 
 Substrate MCP config tools are separate `core/*` MCP tools registered by
-core, including personality CRUD, wake-entry CRUD, inference binding, and
-schema/edge/tool listing.
+core, including personality CRUD, wake-entry CRUD, schema/edge/tool
+listing, read-scope, fact-retention, citations, events, and goals.
 
 Flavor MCP tools extend the MCP catalog. Wake-entry validation checks
-palettes against the substrate personality tool pack and registered MCP
-tools.
+trigger uniqueness and detect-config shape only.
 
 Core exposes no generic `create_edge` personality tool. Relation creation
 is relation-specific because typed relations require descriptor masks and
@@ -196,8 +199,8 @@ dependency rules panic during registration before freeze.
 Flavor crate = inclusion unit. Composite binary = build artifact.
 
 ```
-proxima-mcp       = substrate
-proxima-code      = substrate + code
+proxima-mcp                  = substrate
+proxima-mcp --features code  = substrate + code
 ```
 
 Composite binaries are framework apps, not plugin hosts.
@@ -206,7 +209,9 @@ Composite binaries are framework apps, not plugin hosts.
 ## No Feature Flags
 
 Flavor inclusion is by crate linkage and explicit `register()` call.
-There is no feature-flag matrix for partial flavor inclusion.
+`proxima-mcp` exposes one packaging feature, `code`, to include the
+`proxima-code` flavor in that host binary. There is no per-schema or
+runtime feature-flag matrix.
 
 <a id="composite-discipline"></a>
 ## Composite Discipline

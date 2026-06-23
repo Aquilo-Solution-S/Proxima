@@ -27,11 +27,11 @@ explicit request.
 | `docs/05-actions.md` | Actions as ordinary Facts; wake/tool boundary |
 | `docs/06-goals-and-self.md` | Goal entity (DAG, supersession); Self as pure query |
 | `docs/07-storage.md` | IDs, identity rules, append-only, vector store independence |
-| `docs/08-core-and-flavors.md` | Bare core / flavor layering, no-feature-flags |
+| `docs/08-core-and-flavors.md` | Bare core / flavor layering; `proxima-mcp` default-off `code` packaging feature |
 | `docs/09-developing-flavors.md` | Agent implementation checklist for flavor crates: typed keys, sidecars, registration, migrations, tools |
 | `docs/10-configuration.md` | Env config surface (Postgres/MCP/S3), MCP auth modes, host-injected embedding client; no inference targets/tiers |
 | `docs/11-citations.md` | `CitedObject` / `CitationMapping` traits; bibliographic provenance, Fact-only citation rule |
-| `docs/12-tool-manifest.md` | T1 (runtime, schema-consuming) vs T2 (build-time flavors) tool tiers |
+| `docs/12-tool-manifest.md` | Tool = build-time registered call surface; tool classes (core MCP / flavor MCP); no runtime tier |
 | `docs/13-compliance.md` | Compliance primitives: owner deletion, source-scope deletion, pause/resume, export, suppression, audit |
 | `docs/14-protocol-surface.md` | Engine's contract to clients: five verbs (Query / EventHistory / GoalWrite / EventIngest / Schema), owner-scoped, transport-agnostic |
 | `docs/dev-perf.md` | Perf reducer fixture format |
@@ -43,6 +43,7 @@ proxima/
 ├── apps/
 │   └── proxima-mcp/         Rust headless MCP host binary (goal)
 ├── crates/
+│   ├── auth-oidc/           Rust OIDC JWT authenticator crate
 │   ├── blob-s3/             Rust S3 cited-blob service crate
 │   ├── core/                Rust lib crate `proxima-core`
 │   ├── llm-openai-compat/   Rust OpenAI-compatible model client crate
@@ -113,8 +114,8 @@ Tools available to attached agents:
 
 | Tier | Tools |
 |---|---|
-| Substrate (always) | ~35 build-time-registered tools across memory, goals, personality, wake-config, read-scope, fact-retention, citations, and introspection. `core/list_substrate_tools` returns the authoritative live list. Key writes: `core/remember`, `core/record_utterance`, `core/derive`, `core/link`, `core/goal_set`. |
-| Code flavor | Repo registration, chunk/commit search, file-revision open, execution-request emit — registered only when the `proxima-code` flavor is composed in. (The `proxima-mcp` reference host registers no flavors: its surface is Substrate-only.) |
+| Substrate (always) | 33 build-time-registered tools across memory, goals, personality, wake-config, read-scope, fact-retention, citations, and introspection. `core/list_substrate_tools` returns the authoritative live list. Key writes: `core/remember`, `core/record_utterance`, `core/derive`, `core/link`, `core/goal_set`. |
+| Code flavor | Repo registration, chunk/commit search, file-revision open, execution-request emit — registered only when the `proxima-code` flavor is composed in. `proxima-mcp` is substrate-only by default; `--features code` adds the code flavor. |
 
 Proxima self-ingests its own commits and chunks, so the graph holds
 this repo's causal chain. Prefer MCP queries over re-greppping when
@@ -160,8 +161,8 @@ breaks if these slip.
 7. **Schemas, tools, sources, prompts, relations are build-time
    only.** No runtime registration tier; no `Registrant` enum.
    See [08 §Registration mechanism](docs/08-core-and-flavors.md#registration-mechanism).
-8. **No feature flags for flavor inclusion.** The flavor crate is
-   the unit of inclusion.
+8. **Flavor inclusion is build-time.** The flavor crate is the unit of
+   inclusion; `proxima-mcp` has a default-off `code` packaging feature.
    See [08 §No feature flags](docs/08-core-and-flavors.md#no-feature-flags).
 9. **Prompts live in flavor, alongside their operators.** Core ships
    the dispatcher and template interface only.
@@ -203,9 +204,10 @@ breaks if these slip.
     See [11 §Three-layer model](docs/11-citations.md#three-layer-model),
     [11 §Operator-invocation provenance lives on the Memory row](docs/11-citations.md#operator-invocation-provenance-lives-on-the-memory-row).
 19. **Source-batch lifecycle is core, not flavor-typed.** Fixed
-    `source_batches` shape; per-(batch, operator, personality) F→A
-    tracking lives in `source_batch_f2a`. Domain metadata belongs on
-    a `CitedObject`, not the batch row.
+    `source_batches` shape: id, source, owner, opened_at, closed_at.
+    F→A exclusivity is flavor-operator discipline in v0.0.1; no core
+    F→A tracking table ships. Domain metadata belongs on a
+    `CitedObject`, not the batch row.
     See [04 §Source-batch lifecycle](docs/04-consolidation.md#source-batch-lifecycle),
     [07 §Core tables — abstract](docs/07-storage.md#core-tables--abstract).
 20. **F→A is exclusive per output Abstraction schema/operator.**
@@ -246,8 +248,8 @@ breaks if these slip.
 - Code subject: `feat(<component>): <summary>` /
   `fix(<component>): <summary>` / `chore(<component>): <summary>`.
   Components include `core`, `proxima-mcp`, `storage-pg`, `mcp-server`,
-  `llm-openai-compat`, `blob-s3`, `proxima`, `pg-testkit`, `flavors-code`,
-  `examples`, `tools`.
+  `llm-openai-compat`, `blob-s3`, `auth-oidc`, `proxima`,
+  `pg-testkit`, `flavors-code`, `examples`, `tools`.
 - Body: bulleted list of concrete changes; preserve the *why* when
   the change is a decision, not a fix.
 - Co-authorship trailer for AI commits matches the parent CLAUDE.md

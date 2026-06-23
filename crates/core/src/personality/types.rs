@@ -124,6 +124,19 @@ pub enum WakeEntryAuthoredBy {
     Other,
 }
 
+impl WakeEntryAuthoredBy {
+    /// Canonical wire string (matches the serde `snake_case` contract used
+    /// on the write side), so reads round-trip to writes.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Any => "any",
+            Self::SelfAuthor => "self_author",
+            Self::Other => "other",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PersonalityMemoryKind {
     Abstraction,

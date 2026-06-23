@@ -59,8 +59,8 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks the graph-read role, or `Internal` when `req.limit == 0` or
-    /// the storage read fails.
+    /// lacks the graph-read role, `InvalidArgument` when `req.limit == 0`, or
+    /// `Internal` when the storage read fails.
     pub async fn event_history(
         &self,
         authz: &AuthzContext,
@@ -68,7 +68,7 @@ impl Engine {
     ) -> Result<EventHistoryResponse, ProtocolError> {
         super::authorize(authz, &req.principal, Role::GraphRead)?;
         if req.limit == 0 {
-            return Err(ProtocolError::internal("EventHistory.limit must be > 0"));
+            return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
         }
         let mut effective = req.clone();
         if effective.limit > MAX_EVENT_HISTORY_LIMIT {

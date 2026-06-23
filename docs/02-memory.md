@@ -154,6 +154,7 @@ Core relations:
 | `core/supersedes` | `Supersession` | A→A, P→P, Goal→Goal |
 | `core/inspires` | `Causal` | Goal → Root Perspective |
 | `core/authored` | `Causal` | Root Perspective → emitted memory |
+| `core/depends-on` | `Structural` | Memory → Memory |
 | `core/motivated-by` | `Structural` | Goal → Fact / Abstraction evidence |
 
 Relation classes are substrate vocabulary. Flavors add relation ids, not new
@@ -326,9 +327,9 @@ Personality is a flavor-declared decider type plus runtime instances.
 Substrate responsibilities:
 
 - store personality instances and Root Perspective pointers;
-- store wake entries;
-- dispatch eligible wake entries from `change_event`;
-- pass read/write authorization and tool palettes;
+- store detect-only wake entries;
+- expose pull reads over `change_event`;
+- enforce Owner, read-scope, schema, relation, and tool-scope gates;
 - record produced A/P rows with personality instance and wake depth;
 - enforce registry and edge invariants.
 
@@ -337,10 +338,8 @@ Flavor responsibilities:
 - prompt / instructions;
 - self schema and default self payload;
 - writeable schemas and relations;
-- tool palette;
-- model tier / capability requirements;
 - wake entry defaults;
-- decision logic.
+- external harness decision policy.
 
 Multiple personality instances may be active for one Owner. Same Facts or
 Abstractions under different instances produce parallel lineages.

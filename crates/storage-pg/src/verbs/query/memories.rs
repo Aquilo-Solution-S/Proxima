@@ -468,7 +468,13 @@ fn push_heads_predicate(
         }
         Some(EntityKind::Abstraction) => sql.push_str(" AND m.kind = 'Abstraction'"),
         Some(EntityKind::Perspective) => sql.push_str(" AND m.kind = 'Perspective'"),
-        Some(EntityKind::Goal) => unreachable!(),
+        // Goals are an entity, not a Memory kind (inv 11); they are queried
+        // via the goal path and never reach the memories head predicate.
+        Some(EntityKind::Goal) => {
+            unreachable!(
+                "Goal is not a Memory kind; query_memories never receives EntityKind::Goal"
+            )
+        }
     }
     if let Some(param) = schema {
         write!(sql, " AND m.schema_id = ${param}").expect("write to String is infallible");

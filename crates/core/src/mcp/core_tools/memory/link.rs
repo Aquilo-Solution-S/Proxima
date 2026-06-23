@@ -11,7 +11,8 @@ use super::util::memory_kind_for_edge;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LinkArgs {
     #[schemars(
-        description = "`F...`, `A...`, or `P...` source memory handle for the agent-authored link edge."
+        description = "`A...` or `P...` source memory handle for the agent-authored link edge. \
+                       Facts cannot be a link source (strict layering: source layer ≥ target layer)."
     )]
     pub source: String,
     #[schemars(
@@ -67,6 +68,18 @@ impl McpTool for LinkTool {
             }
 
             let source_kind = load_kind(&ctx, source_id).await?;
+            // Only Abstractions/Perspectives may source an agent link; a Fact
+            // (or any non-A/P) source violates strict layering (inv 1).
+            if !matches!(
+                source_kind,
+                Some(crate::EntityKind::Abstraction | crate::EntityKind::Perspective)
+            ) {
+                return Err(McpToolError::InvalidInput(
+                    "a Fact cannot be a link source (strict layering: source layer ≥ target \
+                     layer); derive an Abstraction over the Fact and link from that"
+                        .into(),
+                ));
+            }
             let target_kind = load_kind(&ctx, target_id).await?;
 
             let relation = ctx

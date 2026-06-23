@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use jsonwebtoken::{Validation, decode, decode_header};
+use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
 use proxima_core::{AuthError, AuthPath, Authenticator, AuthzContext, Credentials};
 use serde::Deserialize;
 
@@ -50,7 +50,13 @@ impl Authenticator for OidcAuthenticator {
             .await
             .map_err(|_| AuthError::InvalidCredentials)?;
 
-        let mut validation = Validation::new(header.alg);
+        // Pin the verification algorithm to the RSA family (the only key type
+        // the JWKS resolver materializes). Never derive it from the
+        // attacker-controlled token header — that enables alg-confusion
+        // (e.g. forging an HS256 token signed with the public RSA key, or
+        // `alg: none`).
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.algorithms = vec![Algorithm::RS256, Algorithm::RS384, Algorithm::RS512];
         validation.set_issuer(&[&self.config.issuer]);
         validation.set_audience(&[&self.config.audience]);
         validation.set_required_spec_claims(&["exp", "aud", "iss", "sub"]);

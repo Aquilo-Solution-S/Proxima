@@ -190,7 +190,7 @@ pub fn how_to_markdown(advertised: &BTreeSet<&str>) -> String {
          - **Abstraction** — a pattern, generalization, or lesson over ≥2 Facts. Wire handle \
          `A:<uuid>`.\n\
          - **Perspective** — a stance or self-model (\"how I see X\", \"who I am\"). Wire handle \
-         `I:<uuid>` (identity-bearing).\n\n",
+         `P:<uuid>`.\n\n",
     );
 
     push_law(&mut out, s);

@@ -9,8 +9,8 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use proxima_core::mcp::provider_safe_tool_name;
-use proxima_core::{McpAuthorContext, MemoryId};
+use proxima_core::mcp::{McpToolError, provider_safe_tool_name};
+use proxima_core::{McpAuthorContext, MemoryId, StorageError};
 use rmcp::ServerHandler;
 use rmcp::model::{
     AnnotateAble, CallToolRequestParams, CallToolResult, Content, ErrorData, Implementation,
@@ -23,7 +23,7 @@ use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 use crate::selfdoc;
 
 use crate::auth::McpAuthContext;
-use crate::server::McpToolHost;
+use crate::server::{McpToolHost, ToolInvocationError};
 use proxima_core::ToolScope;
 
 /// MCP behavior hints (`ToolAnnotations`) for a core tool, keyed by its
@@ -278,13 +278,49 @@ impl ServerHandler for DynamicHandler {
             let output = server
                 .call_tool(&canonical_name, args, author, auth)
                 .await
-                .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
+                .map_err(tool_invocation_error_to_error_data)?;
             let text = serde_json::to_string(&output)
                 .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
             let mut result = CallToolResult::success(vec![Content::text(text)]);
             result.structured_content = Some(output);
             Ok(result)
         }
+    }
+}
+
+/// Map a tool-invocation failure to a typed JSON-RPC error so external
+/// agents can tell bad input from a server fault, instead of every failure
+/// collapsing to `internal_error` (-32603).
+fn tool_invocation_error_to_error_data(err: ToolInvocationError) -> ErrorData {
+    match err {
+        ToolInvocationError::ToolNotFound(name) => {
+            ErrorData::invalid_params(format!("unknown tool: {name}"), None)
+        }
+        ToolInvocationError::Tool(inner) => mcp_tool_error_to_error_data(&inner),
+    }
+}
+
+/// Classify an [`McpToolError`] by JSON-RPC code: caller-input faults →
+/// `invalid_params` (-32602); well-formed-but-illegal requests →
+/// `invalid_request` (-32600); infrastructure faults → `internal_error`
+/// (-32603).
+fn mcp_tool_error_to_error_data(err: &McpToolError) -> ErrorData {
+    let msg = err.to_string();
+    match err {
+        McpToolError::InvalidInput(_) | McpToolError::Resolve(_) => {
+            ErrorData::invalid_params(msg, None)
+        }
+        McpToolError::LayeringViolation(_) => ErrorData::invalid_request(msg, None),
+        McpToolError::Storage(storage) => match storage {
+            StorageError::ConstraintViolation(_) | StorageError::NotFound => {
+                ErrorData::invalid_params(msg, None)
+            }
+            StorageError::Conflict(_) => ErrorData::invalid_request(msg, None),
+            StorageError::Unavailable(_) | StorageError::Internal(_) => {
+                ErrorData::internal_error(msg, None)
+            }
+        },
+        McpToolError::Other(_) => ErrorData::internal_error(msg, None),
     }
 }
 

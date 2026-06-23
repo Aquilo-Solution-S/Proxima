@@ -2,13 +2,13 @@
 
 ## Claim
 
-Tool = build-time registered call surface + wake-entry palette entry.
+Tool = build-time registered call surface.
 
 | Rule | Contract |
 |---|---|
 | Registration | core/flavor crates only; frozen in `FlavorRegistry` at startup |
-| Selection | wake entries choose allowed ids with `substrate_tool_palette` |
-| Execution | internal to the composite binary and wake harness |
+| Selection | auth token tool scope ∩ deployment tool-surface profile |
+| Execution | MCP dispatch; external harnesses drive decisions |
 | Persistence | normal Fact / Edge / Goal paths only |
 | Observation | clients observe change events and stored entities, not a Tool entity |
 
@@ -16,18 +16,16 @@ No runtime registration tier. No install/revoke API. No `tools` table.
 
 ## Tool Classes
 
-| Class | Owner | Vocabulary | Wake field | Dispatch |
-|---|---|---|---|---|
-| Substrate personality tools | core | `substrate_pack()` | `substrate_tool_palette` | `PersonalityToolContext` |
-| Core MCP config tools | core | `add_substrate_mcp_tool<T>()` | `substrate_tool_palette` | `McpToolCtx` |
-| Flavor MCP tools | flavor crate | `add_mcp_tool<T>(flavor_id)` | `substrate_tool_palette` | `McpToolCtx` |
+| Class | Owner | Vocabulary | Dispatch |
+|---|---|---|---|
+| Core MCP tools | core | `add_substrate_mcp_tool<T>()` | `McpToolCtx` |
+| Flavor MCP tools | flavor crate | `add_mcp_tool<T>(prefix)` | `McpToolCtx` |
 
 Stored ids:
 
 | Surface | Id form |
 |---|---|
-| Substrate personality tool | `core/<name>` or scoped emit id |
-| Core MCP config tool | `core/<name>` |
+| Core MCP tool | `core/<name>` |
 | Flavor MCP tool | `<flavor>/<name>` |
 
 Provider-facing names are derived per invocation with
@@ -105,80 +103,59 @@ required/optional, and enum variants all derive from the Rust type via
   (`McpToolDescriptor.produces_schema_ids`) and resolved against the
   `FlavorRegistry`.
 
-## Wake-Entry Selection
+## Wake-Entry Detect Config
 
 Wake entry fields:
 
 ```rust
 pub struct WakeEntryDraft {
-    pub substrate_tool_palette: Vec<String>,
-    pub required_produced_schema_ids: Vec<String>,
-    pub execution_mode: WakeExecutionMode, // v1: SubstrateOnly
+    pub wake_entry_id: Uuid,
+    pub personality_instance_id: PersonalityInstanceId,
+    pub trigger_kind: WakeEntryTriggerKind,
     pub trigger_id: String,
+    pub label: String,
+    pub enabled: bool,
+    pub authored_by: WakeEntryAuthoredBy,
+    pub probability_promille: u16,
+    pub goal_scope: WakeEntryGoalScope,
+    pub instructions: String,
 }
 ```
 
 Write-time validation:
 
-| Field | Accepted ids |
+| Field | Contract |
 |---|---|
-| `substrate_tool_palette` | `registry.mcp_tool_ids() ∪ substrate_pack().tool_id()` |
-| `required_produced_schema_ids` | schema ids produced by the selected palette |
+| `(trigger_kind, trigger_id)` | unique per active personality instance |
+| `trigger_id`, `label` | non-empty |
+| `probability_promille` | `0..=1000` |
 
-Scoped emit ids are accepted when their base tool is registered and their
-target payload schema exists:
-
-```
-core/emit_abstraction::<schema_id>::v<schema_version>
-core/emit_perspective::<schema_id>::v<schema_version>
-```
-
-`WakeExecutionMode` currently has one value: `substrate_only`.
+Wake entries carry trigger config only. Model/tool/run policy stays external.
 
 ## Invocation Flow
 
+Live MCP dispatch:
+
 ```
-WakeEntry
-  substrate_tool_palette
-        |
-        v
-fire_wake_entry
-  mint wake_token(owner, palette, root Self, trigger)
-  build HarnessProgram
-        |
-        v
-HarnessLoop
-  resolve substrate palette through HarnessSubstrateBridge
-  map canonical ids -> provider-safe names
-  expose tool specs to provider
-        |
-        v
-tool call
-  provider-safe name -> canonical id
-  dispatch by binding
-        |
-        +--> McpToolDescriptor.call(McpToolCtx, args)
-        +--> PersonalityTool.invoke(PersonalityToolContext, args)
+MCP request
+  provider-safe name
+    -> canonical id
+    -> McpToolDescriptor.call(McpToolCtx, args)
 ```
 
-Substrate MCP dispatch:
+Proxima is a passive brain hub. External harnesses own model choice,
+tool planning, execution policy, and cursors.
+
+MCP dispatch contract:
 
 | Step | Contract |
 |---|---|
-| Auth | wake-token or master-token context |
-| Owner | from auth context; Owner = principal, org is a billing annotation only (doc 01) |
+| Auth | host `Authenticator` or master token |
+| Owner | from auth context; Owner = principal (doc 01) |
+| Tool scope | token capabilities intersected with deployment profile |
 | Args | JSON decoded into `McpTool::Args` |
 | Output | serialized `McpTool::Output` |
-| Handles | wake-token calls use `OutputMode::Handles`; master-token calls use raw ids |
-
-Substrate personality dispatch:
-
-| Step | Contract |
-|---|---|
-| Auth | wake-token required |
-| Palette | canonical id must be present in wake palette |
-| Context | root Self Perspective, trigger memory, wake depth, read log |
-| Writes | only schemas/relations permitted by palette-derived masks |
+| Ids | prefixed ids (`F:/A:/P:/G:/E:` form, `OutputMode::PrefixedIds`) |
 
 ## Persistence
 
@@ -186,10 +163,6 @@ Current storage:
 
 | Data | Storage |
 |---|---|
-| wake tool selection | `personality_wake_entries.substrate_tool_palette` |
-| durable-result requirement | `personality_wake_entries.required_produced_schema_ids` |
-| wake invocation status | `personality_wake_invocations` |
-| wake tool-call log tails | `personality_wake_invocation_logs` |
 | tool effects | `memories`, sidecar tables, `edges`, `goals`, change events |
 
 Not present in v1:
@@ -198,6 +171,8 @@ Not present in v1:
 |---|---|
 | `tools` | absent |
 | per-tool invocation table | absent |
+| per-wake invocation table | absent |
+| per-wake tool allowlist storage | absent |
 | runtime install API | absent |
 | runtime manifest upload | absent |
 | signed external tool body registry | deferred |
