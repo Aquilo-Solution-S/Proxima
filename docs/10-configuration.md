@@ -110,7 +110,7 @@ Profiles:
 | `full` | Default. No filtering (`ToolScope::All`) when allow/deny are unset; otherwise all registered ids resolved to a palette. |
 | `memory` | Curated memory-brain palette: memory authoring/retrieval, citations, graph/schema introspection, fact retention cleanup, goals, and code-as-memory repository/chunk/commit reads. |
 
-Allow/deny ids use canonical registry form (`core/get_memory`,
+Allow/deny ids use canonical registry form (`core_get_memory`,
 `proxima-code/search_chunks`), not provider-safe wire names
 (`core_get_memory`). Unknown profile names fail boot. Unknown ids in
 allow/deny log `warn` and do not fail boot.
@@ -143,7 +143,7 @@ is present:
 
 When `MISTRAL_API_KEY` is absent, `proxima-mcp` starts in degraded mode:
 no embedding client is installed,
-`core/get_graph.embeddings_client_configured` is `false`,
+`core_get_graph.embeddings_client_configured` is `false`,
 semantic/hybrid search reports the missing capability, and lexical-only
 paths remain available. When a client is configured, `proxima-mcp`
 drains queued embedding jobs automatically in-process every few seconds;

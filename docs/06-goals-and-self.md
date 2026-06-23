@@ -174,7 +174,7 @@ Core owns:
 | Payloads | `GoalPayload` schemas |
 | Verb | `GoalWrite` |
 | Lifecycle Facts | activated / paused / achieved / abandoned schemas |
-| Tools | `core/goal_set`, `core/goal_transition` (pause / resume / abandon), `core/goal_mark_achieved`, `core/goal_modify`, `core/goal_decompose` |
+| Tools | `core_goal_set`, `core_goal_transition` (pause / resume / abandon), `core_goal_mark_achieved`, `core_goal_modify`, `core_goal_decompose` |
 | Relations | `core/inspires`, `core/motivated-by` |
 | Query | active-goal traversal |
 | Renderers | Goal and lifecycle payload views |
