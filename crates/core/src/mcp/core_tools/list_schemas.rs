@@ -72,7 +72,10 @@ impl McpTool for ListSchemasTool {
 }
 
 #[allow(clippy::unused_async)]
-pub(crate) async fn list_schemas(
+/// # Errors
+///
+/// Returns invalid kind filters.
+pub async fn list_schemas(
     ctx: McpToolCtx,
     args: ListSchemasArgs,
 ) -> Result<ListSchemasOutput, McpToolError> {

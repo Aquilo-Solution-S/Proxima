@@ -189,6 +189,40 @@ impl CoreMcpTools {
             .map_err(CoreMcpError::from_invocation_error)
     }
 
+    /// Read one core MCP resource through the same host authz boundary as
+    /// direct tool dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotAuthorized` when the caller's resource scope rejects the
+    /// URI, or `Tool` for resource validation/storage errors.
+    pub async fn read_core_resource(
+        &self,
+        authz: AuthzContext,
+        owner: Owner,
+        model_id: Option<String>,
+        uri: &str,
+    ) -> Result<serde_json::Value, CoreMcpError> {
+        let author = McpAuthorContext {
+            model_id: model_id.clone().unwrap_or_else(|| "unknown".to_string()),
+            client_name: "host".into(),
+            client_version: "0".into(),
+            personality_instance_id: None,
+            caller_self_perspective: None,
+        };
+        let auth = McpAuthContext {
+            owner: owner.clone(),
+            authz,
+            model_id,
+            master_token_id: None,
+        };
+
+        self.host
+            .read_resource(uri, author, Some(auth))
+            .await
+            .map_err(CoreMcpError::from_invocation_error)
+    }
+
     fn find_tool(&self, name: &str) -> Option<&McpToolDescriptor> {
         find_tool_descriptor(self.host.registry().list_mcp_tools(), name)
     }

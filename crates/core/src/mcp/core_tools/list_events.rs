@@ -77,7 +77,10 @@ impl McpTool for ListEventsTool {
     }
 }
 
-pub(crate) async fn list_events(
+/// # Errors
+///
+/// Returns invalid cursor, storage, or projection failures.
+pub async fn list_events(
     ctx: McpToolCtx,
     args: ListEventsArgs,
 ) -> Result<ListEventsOutput, McpToolError> {

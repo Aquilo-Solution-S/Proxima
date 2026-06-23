@@ -99,7 +99,10 @@ impl McpTool for WalkMemoryLineageTool {
     }
 }
 
-pub(crate) async fn walk_memory_lineage(
+/// # Errors
+///
+/// Returns invalid memory references, storage, or projection failures.
+pub async fn walk_memory_lineage(
     ctx: McpToolCtx,
     args: WalkMemoryLineageArgs,
 ) -> Result<WalkMemoryLineageOutput, McpToolError> {

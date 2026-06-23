@@ -11,7 +11,9 @@ use std::sync::Arc;
 use proxima::{
     AppInfo, FlavorApp, FlavorBundle, Proxima, ProximaError, RunningProxima, RuntimeBuilder,
 };
-use proxima_core::{FlavorRegistry, ToolScope, all_core_actions, llm::EmbeddingClient};
+use proxima_core::{
+    FlavorRegistry, ToolScope, all_core_actions, all_core_resources, llm::EmbeddingClient,
+};
 use proxima_llm_openai_compat::{
     MISTRAL_EMBED_BASE_URL, MISTRAL_EMBED_MODEL, OpenAiCompatEmbeddingClient,
 };
@@ -61,6 +63,7 @@ fn memory_keep_set() -> Vec<&'static str> {
             .filter(|action| action.tool == CoreGoalTool::NAME || action.tool == CoreFactTool::NAME)
             .map(|action| action.scope_key),
     );
+    ids.extend(all_core_resources().map(|resource| resource.scope_key));
 
     #[cfg(feature = "code")]
     {
@@ -301,6 +304,7 @@ fn registered_tool_ids() -> Vec<&'static str> {
             ids.push(tool.name);
         }
     }
+    ids.extend(all_core_resources().map(|resource| resource.scope_key));
     ids
 }
 
@@ -524,6 +528,8 @@ mod tests {
             .expect("memory profile");
         assert!(memory.allows("core_get_memory"));
         assert!(memory.allows("core_search_memories"));
+        assert!(memory.allows("resource:memory"));
+        assert!(memory.allows("resource:schemas"));
         // Code-flavor tools join the memory keep set only when the `code`
         // flavor is compiled in (the keep set references their `NAME`
         // consts under the same cfg).

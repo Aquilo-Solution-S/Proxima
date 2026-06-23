@@ -40,7 +40,11 @@ impl McpTool for ListSubstrateToolsTool {
 }
 
 #[allow(clippy::unused_async)]
-pub(crate) async fn list_substrate_tools(
+/// # Errors
+///
+/// This projection is infallible today; the `Result` shape matches the tool
+/// dispatch contract.
+pub async fn list_substrate_tools(
     ctx: McpToolCtx,
     _args: ListSubstrateToolsArgs,
 ) -> Result<ListSubstrateToolsOutput, McpToolError> {

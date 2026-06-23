@@ -83,7 +83,10 @@ impl McpTool for GetGraphTool {
     }
 }
 
-pub(crate) async fn get_graph(
+/// # Errors
+///
+/// Returns storage, engine, or projection failures.
+pub async fn get_graph(
     ctx: McpToolCtx,
     args: GetGraphArgs,
 ) -> Result<GetGraphOutput, McpToolError> {

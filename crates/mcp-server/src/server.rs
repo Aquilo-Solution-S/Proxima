@@ -2,11 +2,23 @@ use std::sync::Arc;
 
 #[cfg(test)]
 use proxima_core::AuthPath;
+use proxima_core::mcp::core_tools::{
+    get_graph::{GetGraphArgs, get_graph},
+    get_memory::{GetMemoryArgs, get_memory},
+    list_edge_types::{ListEdgeTypesArgs, list_edge_types},
+    list_events::{ListEventsArgs, list_events},
+    list_schemas::{ListSchemasArgs, list_schemas},
+    list_substrate_tools::{ListSubstrateToolsArgs, list_substrate_tools},
+    walk_memory_lineage::{
+        WalkMemoryLineageArgs, WalkMemoryLineageDirectionArg, walk_memory_lineage,
+    },
+};
 use proxima_core::mcp::{
     McpAuthorContext, McpToolCtx, McpToolError, McpToolErrorKind, McpToolExtensions, OutputMode,
     core_action_meta, core_tool_has_actions, tool_name_matches,
 };
 use proxima_core::{AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner, ToolScope};
+use serde::Serialize;
 
 use crate::auth::McpAuthContext;
 
@@ -196,6 +208,44 @@ impl McpToolHost {
 
         Err(ToolInvocationError::ToolNotFound(name.to_string()))
     }
+
+    /// # Errors
+    ///
+    /// Returns `NotAuthorized` or the resource body error.
+    pub async fn read_resource(
+        &self,
+        uri: &str,
+        author: McpAuthorContext,
+        auth: Option<McpAuthContext>,
+    ) -> Result<serde_json::Value, ToolInvocationError> {
+        let parsed = parse_resource_uri(uri).ok_or_else(|| {
+            ToolInvocationError::Tool(McpToolError::InvalidInput(format!(
+                "unknown resource {uri}"
+            )))
+        })?;
+        let owner = auth.as_ref().map(|ctx| ctx.owner.clone());
+        let ctx = self.ctx_for(author, owner, auth.as_ref());
+        let scope_key = parsed.scope_key();
+        if !ctx.authz.capabilities.tool_scope.allows(scope_key) {
+            return Err(ToolInvocationError::NotAuthorized(scope_key.to_string()));
+        }
+
+        match parsed {
+            ParsedResource::Schemas(args) => resource_output_value(list_schemas(ctx, args).await?),
+            ParsedResource::EdgeTypes(args) => {
+                resource_output_value(list_edge_types(ctx, args).await?)
+            }
+            ParsedResource::Tools(args) => {
+                resource_output_value(list_substrate_tools(ctx, args).await?)
+            }
+            ParsedResource::Graph(args) => resource_output_value(get_graph(ctx, args).await?),
+            ParsedResource::Memory(args) => resource_output_value(get_memory(ctx, args).await?),
+            ParsedResource::MemoryLineage(args) => {
+                resource_output_value(walk_memory_lineage(ctx, args).await?)
+            }
+            ParsedResource::Events(args) => resource_output_value(list_events(ctx, args).await?),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -246,6 +296,129 @@ fn enforce_tool_scope(
     Ok(())
 }
 
+enum ParsedResource {
+    Schemas(ListSchemasArgs),
+    EdgeTypes(ListEdgeTypesArgs),
+    Tools(ListSubstrateToolsArgs),
+    Graph(GetGraphArgs),
+    Memory(GetMemoryArgs),
+    MemoryLineage(WalkMemoryLineageArgs),
+    Events(ListEventsArgs),
+}
+
+impl ParsedResource {
+    const fn scope_key(&self) -> &'static str {
+        match self {
+            Self::Schemas(_) => "resource:schemas",
+            Self::EdgeTypes(_) => "resource:edge-types",
+            Self::Tools(_) => "resource:tools",
+            Self::Graph(_) => "resource:graph",
+            Self::Memory(_) => "resource:memory",
+            Self::MemoryLineage(_) => "resource:memory-lineage",
+            Self::Events(_) => "resource:events",
+        }
+    }
+}
+
+fn parse_resource_uri(uri: &str) -> Option<ParsedResource> {
+    let rest = uri.strip_prefix("proxima://")?;
+    let (path, query) = rest
+        .split_once('?')
+        .map_or((rest, None), |(path, query)| (path, Some(query)));
+    let query = parse_query(query)?;
+
+    match path {
+        "schemas" => Some(ParsedResource::Schemas(ListSchemasArgs {
+            kind: query_value(&query, "kind").map(ToOwned::to_owned),
+        })),
+        "edge-types" => Some(ParsedResource::EdgeTypes(ListEdgeTypesArgs {})),
+        "tools" => Some(ParsedResource::Tools(ListSubstrateToolsArgs {})),
+        "graph" => Some(ParsedResource::Graph(GetGraphArgs {
+            include_tombstoned: query_bool(&query, "include_tombstoned"),
+        })),
+        "events" => Some(ParsedResource::Events(ListEventsArgs {
+            since: query_value(&query, "since").map(ToOwned::to_owned),
+            limit: query_parse(&query, "limit").ok()?,
+        })),
+        path if path.starts_with("memory/") => parse_memory_resource_path(path, &query),
+        _ => None,
+    }
+}
+
+fn parse_memory_resource_path(path: &str, query: &[(&str, &str)]) -> Option<ParsedResource> {
+    let rest = path.strip_prefix("memory/")?;
+    if let Some(id) = rest.strip_suffix("/lineage") {
+        if id.is_empty() || id.contains('/') {
+            return None;
+        }
+        return Some(ParsedResource::MemoryLineage(WalkMemoryLineageArgs {
+            memory: id.to_string(),
+            direction: query_lineage_direction(query)?,
+            depth: query_parse(query, "depth").ok()?.unwrap_or(3),
+            limit: query_parse(query, "limit").ok()?.unwrap_or(50),
+        }));
+    }
+    if rest.is_empty() || rest.contains('/') {
+        return None;
+    }
+    Some(ParsedResource::Memory(GetMemoryArgs {
+        memory: rest.to_string(),
+        expand_neighbors: query_bool(query, "expand_neighbors"),
+    }))
+}
+
+fn parse_query(query: Option<&str>) -> Option<Vec<(&str, &str)>> {
+    let Some(query) = query else {
+        return Some(Vec::new());
+    };
+    if query.is_empty() {
+        return Some(Vec::new());
+    }
+    query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| pair.split_once('='))
+        .collect()
+}
+
+fn query_value<'a>(query: &'a [(&str, &str)], key: &str) -> Option<&'a str> {
+    query
+        .iter()
+        .find_map(|(candidate, value)| (*candidate == key).then_some(*value))
+}
+
+fn query_bool(query: &[(&str, &str)], key: &str) -> bool {
+    query_value(query, key) == Some("true")
+}
+
+fn query_parse<T>(query: &[(&str, &str)], key: &str) -> Result<Option<T>, ()>
+where
+    T: std::str::FromStr,
+{
+    query_value(query, key).map_or(Ok(None), |value| {
+        value.parse::<T>().map(Some).map_err(|_| ())
+    })
+}
+
+fn query_lineage_direction(query: &[(&str, &str)]) -> Option<WalkMemoryLineageDirectionArg> {
+    match query_value(query, "direction") {
+        None | Some("ancestors") => Some(WalkMemoryLineageDirectionArg::Ancestors),
+        Some("descendants") => Some(WalkMemoryLineageDirectionArg::Descendants),
+        Some(_) => None,
+    }
+}
+
+fn resource_output_value<T>(output: T) -> Result<serde_json::Value, ToolInvocationError>
+where
+    T: Serialize,
+{
+    serde_json::to_value(output).map_err(|err| {
+        ToolInvocationError::Tool(McpToolError::Other(format!(
+            "serialize resource output: {err}"
+        )))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -271,6 +444,38 @@ mod tests {
 
     fn master_token_auth(owner: Owner, token: uuid::Uuid) -> McpAuthContext {
         McpAuthContext::for_master(token, owner)
+    }
+
+    #[test]
+    fn parse_resource_uri_projects_known_resources() {
+        let memory = parse_resource_uri(
+            "proxima://memory/F:018f0000-0000-7000-8000-000000000001?expand_neighbors=true",
+        )
+        .expect("memory resource");
+        assert!(matches!(
+            memory,
+            ParsedResource::Memory(GetMemoryArgs {
+                expand_neighbors: true,
+                ..
+            })
+        ));
+
+        let lineage =
+            parse_resource_uri("proxima://memory/A:018f0000-0000-7000-8000-000000000001/lineage?direction=descendants&depth=2&limit=7")
+                .expect("lineage resource");
+        assert!(matches!(
+            lineage,
+            ParsedResource::MemoryLineage(WalkMemoryLineageArgs {
+                direction: WalkMemoryLineageDirectionArg::Descendants,
+                depth: 2,
+                limit: 7,
+                ..
+            })
+        ));
+
+        assert!(parse_resource_uri("proxima://memory//lineage").is_none());
+        assert!(parse_resource_uri("proxima://memory/F:one/two/lineage").is_none());
+        assert!(parse_resource_uri("proxima://events?limit=not-a-number").is_none());
     }
 
     #[tokio::test]

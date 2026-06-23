@@ -665,6 +665,79 @@ pub struct CoreActionMeta {
     pub annotations: McpToolAnnotations,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreResourceMeta {
+    pub uri_template: &'static str,
+    pub name: &'static str,
+    pub title: &'static str,
+    pub scope_key: &'static str,
+    pub description: &'static str,
+    pub is_template: bool,
+}
+
+pub const CORE_RESOURCES: &[CoreResourceMeta] = &[
+    CoreResourceMeta {
+        uri_template: "proxima://schemas{?kind}",
+        name: "proxima-schemas",
+        title: "Proxima Schemas",
+        scope_key: "resource:schemas",
+        description: "Registered core and flavor schema catalog, optionally filtered by payload kind.",
+        is_template: false,
+    },
+    CoreResourceMeta {
+        uri_template: "proxima://edge-types",
+        name: "proxima-edge-types",
+        title: "Proxima Edge Types",
+        scope_key: "resource:edge-types",
+        description: "Registered relation descriptors and relation classes.",
+        is_template: false,
+    },
+    CoreResourceMeta {
+        uri_template: "proxima://tools",
+        name: "proxima-tools",
+        title: "Proxima Tools",
+        scope_key: "resource:tools",
+        description: "Registered substrate and flavor MCP tool catalog visible to the caller.",
+        is_template: false,
+    },
+    CoreResourceMeta {
+        uri_template: "proxima://graph{?include_tombstoned}",
+        name: "proxima-graph",
+        title: "Proxima Graph",
+        scope_key: "resource:graph",
+        description: "Owner-scoped personality graph plus schema, edge-type, and tool catalogs.",
+        is_template: false,
+    },
+    CoreResourceMeta {
+        uri_template: "proxima://memory/{id}{?expand_neighbors}",
+        name: "proxima-memory",
+        title: "Proxima Memory",
+        scope_key: "resource:memory",
+        description: "Owner-scoped memory by prefixed id, raw id, or handle.",
+        is_template: true,
+    },
+    CoreResourceMeta {
+        uri_template: "proxima://memory/{id}/lineage{?direction,depth,limit}",
+        name: "proxima-memory-lineage",
+        title: "Proxima Memory Lineage",
+        scope_key: "resource:memory-lineage",
+        description: "Owner-scoped Provenance/Supersession lineage from a memory id or handle.",
+        is_template: true,
+    },
+    CoreResourceMeta {
+        uri_template: "proxima://events{?since,limit}",
+        name: "proxima-events",
+        title: "Proxima Events",
+        scope_key: "resource:events",
+        description: "Owner-scoped change-event pull log.",
+        is_template: true,
+    },
+];
+
+pub fn all_core_resources() -> impl Iterator<Item = &'static CoreResourceMeta> {
+    CORE_RESOURCES.iter()
+}
+
 pub fn all_core_actions() -> impl Iterator<Item = &'static CoreActionMeta> {
     core_tools::goal::CORE_GOAL_ACTIONS
         .iter()
@@ -729,6 +802,32 @@ mod tests {
         );
         assert_eq!(provider_safe_tool_name("core_remember"), "core_remember");
         assert_eq!(provider_safe_tool_name("a..b"), "a._b");
+    }
+
+    #[test]
+    fn core_resources_manifest_has_expected_shape() {
+        let resources = all_core_resources().collect::<Vec<_>>();
+
+        assert_eq!(resources.len(), 7);
+        assert_eq!(
+            resources
+                .iter()
+                .filter(|resource| !resource.is_template)
+                .count(),
+            4
+        );
+        assert_eq!(
+            resources
+                .iter()
+                .filter(|resource| resource.is_template)
+                .count(),
+            3
+        );
+        assert!(
+            resources
+                .iter()
+                .all(|resource| resource.scope_key.starts_with("resource:"))
+        );
     }
 
     #[tokio::test]

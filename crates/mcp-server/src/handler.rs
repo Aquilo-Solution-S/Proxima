@@ -10,16 +10,17 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use proxima_core::mcp::{
-    McpToolAnnotations, McpToolError, McpToolErrorKind, core_tool_annotations,
+    McpToolAnnotations, McpToolError, McpToolErrorKind, all_core_resources, core_tool_annotations,
     provider_safe_tool_name, tool_name_matches,
 };
 use proxima_core::{McpAuthorContext, MemoryId};
 use rmcp::ServerHandler;
 use rmcp::model::{
     AnnotateAble, CallToolRequestParams, CallToolResult, Content, ErrorData, Implementation,
-    InitializeRequestParams, InitializeResult, ListResourcesResult, ListToolsResult,
-    PaginatedRequestParams, RawResource, ReadResourceRequestParams, ReadResourceResult,
-    ResourceContents, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+    InitializeRequestParams, InitializeResult, ListResourceTemplatesResult, ListResourcesResult,
+    ListToolsResult, PaginatedRequestParams, RawResource, RawResourceTemplate,
+    ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
+    ServerInfo, Tool, ToolAnnotations,
 };
 use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 
@@ -87,8 +88,10 @@ impl ServerHandler for DynamicHandler {
     fn list_resources(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListResourcesResult, ErrorData>> + MaybeSendFuture + '_ {
+        let auth = auth_context(&context);
+        let scope = auth.as_ref().map(|ctx| &ctx.authz.capabilities.tool_scope);
         let resource = RawResource {
             title: Some(selfdoc::HOW_TO_TITLE.to_string()),
             description: Some(selfdoc::HOW_TO_DESCRIPTION.to_string()),
@@ -96,8 +99,36 @@ impl ServerHandler for DynamicHandler {
             ..RawResource::new(selfdoc::HOW_TO_URI, selfdoc::HOW_TO_NAME)
         }
         .no_annotation();
+        let mut resources = vec![resource];
+        resources.extend(
+            all_core_resources()
+                .filter(|resource| {
+                    !resource.is_template && resource_scope_allows(scope, resource.scope_key)
+                })
+                .map(raw_resource_from_meta),
+        );
         std::future::ready(Ok(ListResourcesResult {
-            resources: vec![resource],
+            resources,
+            ..Default::default()
+        }))
+    }
+
+    fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListResourceTemplatesResult, ErrorData>> + MaybeSendFuture + '_
+    {
+        let auth = auth_context(&context);
+        let scope = auth.as_ref().map(|ctx| &ctx.authz.capabilities.tool_scope);
+        let resource_templates = all_core_resources()
+            .filter(|resource| {
+                resource.is_template && resource_scope_allows(scope, resource.scope_key)
+            })
+            .map(raw_resource_template_from_meta)
+            .collect();
+        std::future::ready(Ok(ListResourceTemplatesResult {
+            resource_templates,
             ..Default::default()
         }))
     }
@@ -107,22 +138,42 @@ impl ServerHandler for DynamicHandler {
         request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ReadResourceResult, ErrorData>> + MaybeSendFuture + '_ {
-        let result = if request.uri == selfdoc::HOW_TO_URI {
-            let auth = auth_context(&context);
-            let scope = auth.as_ref().map(|ctx| &ctx.authz.capabilities.tool_scope);
-            let advertised = self.advertised_tool_ids(scope);
-            let body = selfdoc::how_to_markdown(&advertised);
+        let uri = request.uri;
+        let auth = auth_context(&context);
+        let server = self.server.clone();
+        async move {
+            if uri == selfdoc::HOW_TO_URI {
+                let scope = auth.as_ref().map(|ctx| &ctx.authz.capabilities.tool_scope);
+                let advertised = server
+                    .registry()
+                    .list_mcp_tools()
+                    .iter()
+                    .filter(|descriptor| scope_allows(scope, descriptor.name))
+                    .map(|descriptor| descriptor.name)
+                    .collect();
+                let body = selfdoc::how_to_markdown(&advertised);
+                return Ok(ReadResourceResult::new(vec![
+                    ResourceContents::text(body, selfdoc::HOW_TO_URI)
+                        .with_mime_type(selfdoc::HOW_TO_MIME),
+                ]));
+            }
+            if !uri.starts_with("proxima://") {
+                return Err(ErrorData::resource_not_found(
+                    format!("unknown resource {uri}"),
+                    None,
+                ));
+            }
+            let author = author_from_ctx(auth.as_ref());
+            let value = server
+                .read_resource(&uri, author, auth)
+                .await
+                .map_err(resource_invocation_error_to_error_data)?;
+            let text = serde_json::to_string(&value)
+                .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
             Ok(ReadResourceResult::new(vec![
-                ResourceContents::text(body, selfdoc::HOW_TO_URI)
-                    .with_mime_type(selfdoc::HOW_TO_MIME),
+                ResourceContents::text(text, uri).with_mime_type("application/json"),
             ]))
-        } else {
-            Err(ErrorData::resource_not_found(
-                format!("unknown resource {}", request.uri),
-                None,
-            ))
-        };
-        std::future::ready(result)
+        }
     }
 
     fn list_tools(
@@ -229,6 +280,19 @@ fn tool_invocation_error_to_error_data(err: ToolInvocationError) -> ErrorData {
     }
 }
 
+fn resource_invocation_error_to_error_data(err: ToolInvocationError) -> ErrorData {
+    match err {
+        ToolInvocationError::NotAuthorized(name) => ErrorData::invalid_request(
+            format!("resource {name} not authorized for this MCP token"),
+            None,
+        ),
+        ToolInvocationError::ToolNotFound(name) => {
+            ErrorData::resource_not_found(format!("unknown resource: {name}"), None)
+        }
+        ToolInvocationError::Tool(inner) => mcp_tool_error_to_error_data(&inner),
+    }
+}
+
 /// Classify an [`McpToolError`] by JSON-RPC code: caller-input faults →
 /// `invalid_params` (-32602); well-formed-but-illegal requests →
 /// `invalid_request` (-32600); infrastructure faults → `internal_error`
@@ -257,6 +321,51 @@ fn to_rmcp_annotations(annotations: McpToolAnnotations) -> ToolAnnotations {
         hints = hints.open_world(open_world);
     }
     hints
+}
+
+fn raw_resource_from_meta(meta: &proxima_core::CoreResourceMeta) -> rmcp::model::Resource {
+    RawResource::new(static_resource_uri(meta.uri_template), meta.name)
+        .with_title(meta.title)
+        .with_description(meta.description)
+        .with_mime_type("application/json")
+        .no_annotation()
+}
+
+fn raw_resource_template_from_meta(
+    meta: &proxima_core::CoreResourceMeta,
+) -> rmcp::model::ResourceTemplate {
+    RawResourceTemplate::new(meta.uri_template, meta.name)
+        .with_title(meta.title)
+        .with_description(meta.description)
+        .with_mime_type("application/json")
+        .no_annotation()
+}
+
+fn static_resource_uri(uri_template: &str) -> String {
+    uri_template
+        .split_once('{')
+        .map_or(uri_template, |(uri, _)| uri)
+        .to_string()
+}
+
+fn resource_scope_allows(scope: Option<&ToolScope>, scope_key: &str) -> bool {
+    match scope {
+        Some(scope) => scope.allows(scope_key),
+        None => UNAUTHENTICATED_SCOPE_ALLOWS,
+    }
+}
+
+fn author_from_ctx(auth: Option<&McpAuthContext>) -> McpAuthorContext {
+    McpAuthorContext {
+        model_id: auth
+            .and_then(|ctx| ctx.model_id.as_deref())
+            .unwrap_or("unknown")
+            .to_string(),
+        client_name: "unknown".into(),
+        client_version: "0".into(),
+        personality_instance_id: None,
+        caller_self_perspective: None,
+    }
 }
 
 fn canonical_tool_name(server: &McpToolHost, request_name: &str) -> Option<String> {
