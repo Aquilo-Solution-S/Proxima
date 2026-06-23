@@ -60,7 +60,6 @@ pub async fn ensure_subject_personality(
 
     let result = mint_under_lock(
         &mut conn,
-        pool,
         owner,
         owner_kind,
         owner_principal_id,
@@ -80,7 +79,6 @@ pub async fn ensure_subject_personality(
 #[allow(clippy::too_many_arguments)]
 async fn mint_under_lock(
     conn: &mut PgConnection,
-    pool: &PgPool,
     owner: &Owner,
     owner_kind: OwnerPrincipalKind,
     owner_principal_id: Uuid,
@@ -104,7 +102,7 @@ async fn mint_under_lock(
         principal: owner.clone(),
         display_name: SUBJECT_DISPLAY_NAME.into(),
     };
-    let resp = consolidate::instantiate_personality(pool, &req).await?;
+    let resp = consolidate::instantiate_personality_on_conn(&mut *conn, &req).await?;
     let instance_id = resp.instance_id;
 
     sqlx::query(

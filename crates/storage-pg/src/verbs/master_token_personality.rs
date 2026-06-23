@@ -58,7 +58,7 @@ pub async fn ensure_master_token_personality(
         .await
         .map_err(map_err)?;
 
-    let result = mint_under_lock(&mut conn, pool, owner, master_token_id, kind, principal_id).await;
+    let result = mint_under_lock(&mut conn, owner, master_token_id, kind, principal_id).await;
 
     // Always release on the success path. On error or cancellation the
     // connection drop returns it to the pool with the lock still held;
@@ -73,7 +73,6 @@ pub async fn ensure_master_token_personality(
 
 async fn mint_under_lock(
     conn: &mut PgConnection,
-    pool: &PgPool,
     owner: &Owner,
     master_token_id: Uuid,
     kind: OwnerPrincipalKind,
@@ -88,7 +87,7 @@ async fn mint_under_lock(
         principal: owner.clone(),
         display_name: SHELL_AUTHOR_DISPLAY_NAME.into(),
     };
-    let resp = consolidate::instantiate_personality(pool, &req).await?;
+    let resp = consolidate::instantiate_personality_on_conn(&mut *conn, &req).await?;
     let instance_id = resp.instance_id;
 
     sqlx::query!(

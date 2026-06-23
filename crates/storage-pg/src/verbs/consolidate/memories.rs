@@ -437,12 +437,15 @@ async fn memory_visible_to_reader(
     Ok(allowed.is_some())
 }
 
-pub async fn lookup_prior_personality_head(
-    pool: &PgPool,
+pub async fn lookup_prior_personality_head<'e, E>(
+    executor: E,
     owner: &Owner,
     instance: &PersonalityRef,
     schema_id: &SchemaId,
-) -> Result<Option<MemoryId>, StorageError> {
+) -> Result<Option<MemoryId>, StorageError>
+where
+    E: sqlx::PgExecutor<'e>,
+{
     let (owner_kind, owner_principal_id) = owner.columns();
     let row: Option<(uuid::Uuid,)> = sqlx::query_as(
         "SELECT memory_id
@@ -465,7 +468,7 @@ pub async fn lookup_prior_personality_head(
     .bind(owner_principal_id)
     .bind(schema_id.as_str())
     .bind(instance.personality_instance_id.into_inner())
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .map_err(map_err)?;
     Ok(row.map(|(id,)| MemoryId::new(id)))
@@ -488,8 +491,11 @@ pub async fn append_personality_memories(
 
     for memory in req.memories {
         let memory_id = uuid::Uuid::now_v7();
+        // Read the head WITHIN the transaction so earlier inserts in this same
+        // batch are visible (a linear chain, not a fork). Cross-request forks are
+        // caught by the UNIQUE index on `supersedes` (migration 0003).
         let prior_head = if memory.kind == proxima_core::PersonalityMemoryKind::Perspective {
-            lookup_prior_personality_head(pool, &req.owner, &req.instance, &memory.schema_id)
+            lookup_prior_personality_head(&mut *tx, &req.owner, &req.instance, &memory.schema_id)
                 .await?
                 .map(MemoryId::into_inner)
         } else {

@@ -668,6 +668,84 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
     result.expect("perspective heads should filter superseded, self, and sibling rows");
 }
 
+/// Two Perspectives of the SAME (owner, instance, schema) in ONE write must
+/// form a linear chain (second supersedes first), not fork into parallel heads.
+/// This only holds if the in-batch prior-head lookup runs inside the write
+/// transaction (so it sees the first, uncommitted insert); a pool-bound lookup
+/// would have both supersede the root head, which `idx_memories_supersedes_uq`
+/// (migration 0003) now rejects outright.
+#[tokio::test(flavor = "multi_thread")]
+async fn same_batch_same_schema_perspectives_form_a_linear_chain_not_a_fork() {
+    let (pg, db) = fresh_pg_with_personality_sidecars().await;
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        pg.run_migrations().await?;
+        apply_personality_output_sidecar(pg.pool()).await?;
+
+        let owner = owner_fixture();
+        let seed = seed_test_personality(&pg, &owner).await?;
+        let root_id = current_root_perspective_memory_id(&pg, seed.instance_id).await?;
+        let registry = FlavorRegistry::new().freeze();
+        let provenance_relation =
+            resolve_registered_relation(&registry, CORE_DERIVED_FROM_RELATION);
+        let supersedes_relation = resolve_registered_relation(&registry, CORE_SUPERSEDES_RELATION);
+        let authored_relation = resolve_registered_relation(&registry, CORE_AUTHORED_RELATION);
+        let instance = PersonalityRef::new(seed.instance_id);
+
+        let out = pg
+            .append_personality_memories(&PersonalityWriteRequest {
+                owner: owner.clone(),
+                instance: instance.clone(),
+                model_id: "test-model",
+                prompt_version: "test-v1",
+                provenance_relation,
+                supersedes_relation,
+                authored_relation,
+                current_root_perspective_memory_id: root_id,
+                wake_chain_depth: WakeChainDepth::new(1),
+                memories: &[
+                    memory_draft(
+                        PersonalityMemoryKind::Perspective,
+                        "first in batch",
+                        Vec::new(),
+                    ),
+                    memory_draft(
+                        PersonalityMemoryKind::Perspective,
+                        "second in batch",
+                        Vec::new(),
+                    ),
+                ],
+            })
+            .await?;
+        assert_eq!(out.memory_ids.len(), 2);
+
+        let sidecars = vec![SidecarSpec {
+            schema_id: SchemaId::new("proxima-test/output-v1".into()),
+            schema_version: SchemaVersion::new(1),
+            sidecar_table: "proxima_test.personality_output_v1".into(),
+        }];
+        let heads = pg
+            .load_perspective_heads(&owner, seed.instance_id, root_id, &sidecars, 8)
+            .await?;
+
+        // Exactly one head, and it is the SECOND draft — proving a linear chain
+        // (root <- first <- second), not a fork.
+        assert_eq!(
+            heads.len(),
+            1,
+            "same-schema batch must not fork into parallel heads"
+        );
+        assert_eq!(heads[0].memory_id, out.memory_ids[1]);
+        assert_eq!(heads[0].text.as_deref(), Some("second in batch"));
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+    result.expect("same-batch same-schema perspectives must form a linear chain");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn personality_provenance_edges_use_operator_authorship() {
     let (pg, db) = fresh_pg_with_personality_sidecars().await;

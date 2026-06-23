@@ -4,7 +4,7 @@ use proxima_core::personality::{
     WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryRow, WakeEntryTriggerKind,
 };
 use proxima_core::{MemoryId, Owner, OwnerPrincipalKind, StorageError};
-use sqlx::PgPool;
+use sqlx::{Connection, PgConnection, PgPool};
 
 use crate::error::map_err;
 
@@ -110,11 +110,24 @@ pub async fn instantiate_personality(
     pool: &PgPool,
     req: &InstantiatePersonalityRequest,
 ) -> Result<InstantiatePersonalityResponse, StorageError> {
+    let mut conn = pool.acquire().await.map_err(map_err)?;
+    instantiate_personality_on_conn(&mut conn, req).await
+}
+
+/// Mint a personality on an existing connection. Used inside the
+/// advisory-locked cold-start critical section of `ensure_*_personality` so the
+/// mint never acquires a SECOND pooled connection while holding the lock — that
+/// nesting deadlocks the pool when concurrent cold-start callers exceed the pool
+/// size (the losers' held connections starve the winner's second acquire).
+pub(crate) async fn instantiate_personality_on_conn(
+    conn: &mut PgConnection,
+    req: &InstantiatePersonalityRequest,
+) -> Result<InstantiatePersonalityResponse, StorageError> {
     let owner = req.owner();
     let (owner_kind, owner_principal_id) = owner.columns();
     let instance_id = uuid::Uuid::now_v7();
     let memory_id = uuid::Uuid::now_v7();
-    let mut tx = pool.begin().await.map_err(map_err)?;
+    let mut tx = conn.begin().await.map_err(map_err)?;
 
     sqlx::query!(
         r#"INSERT INTO proxima_core.memories
