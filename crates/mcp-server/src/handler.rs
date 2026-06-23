@@ -218,6 +218,10 @@ impl ServerHandler for DynamicHandler {
 /// collapsing to `internal_error` (-32603).
 fn tool_invocation_error_to_error_data(err: ToolInvocationError) -> ErrorData {
     match err {
+        ToolInvocationError::NotAuthorized(name) => ErrorData::invalid_request(
+            format!("tool {name} not authorized for this MCP token"),
+            None,
+        ),
         ToolInvocationError::ToolNotFound(name) => {
             ErrorData::invalid_params(format!("unknown tool: {name}"), None)
         }
@@ -282,7 +286,7 @@ fn auth_context(context: &RequestContext<RoleServer>) -> Option<McpAuthContext> 
 
 fn scope_allows(scope: Option<&ToolScope>, name: &str) -> bool {
     match scope {
-        Some(scope) => scope.allows(name),
+        Some(scope) => scope.allows_group_advertisement(name),
         // No auth context bound to the request. In release builds this
         // means the request bypassed `mcp_auth_layer` (which 401s before
         // dispatch) — fail closed rather than expose the full tool
@@ -443,6 +447,13 @@ mod tests {
         // Create-new-each-call write is not replay-safe.
         let link = core_tool_annotations("core_link").expect("create tool");
         assert_eq!(link.idempotent, Some(false));
+
+        // Grouped goal dispatcher aggregates mixed write actions, so it is
+        // advertised as non-idempotent at tool level.
+        let goal = core_tool_annotations("core_goal").expect("goal dispatcher");
+        assert_eq!(goal.read_only, Some(false));
+        assert_eq!(goal.destructive, Some(false));
+        assert_eq!(goal.idempotent, Some(false));
 
         // Flavor-shipped / unknown tools get no substrate hints here.
         assert!(core_tool_annotations("company/upsert").is_none());

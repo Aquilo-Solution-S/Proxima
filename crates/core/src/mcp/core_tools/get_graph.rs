@@ -177,7 +177,12 @@ fn scoped_substrate_tools(ctx: &McpToolCtx) -> Vec<SubstrateToolItem> {
     ctx.registry
         .list_mcp_tools()
         .iter()
-        .filter(|desc| ctx.authz.capabilities.tool_scope.allows(desc.name))
+        .filter(|desc| {
+            ctx.authz
+                .capabilities
+                .tool_scope
+                .allows_group_advertisement(desc.name)
+        })
         .map(|desc| {
             let source = if desc.name.starts_with("core/") {
                 "substrate".into()

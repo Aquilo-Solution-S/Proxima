@@ -4,9 +4,9 @@ use std::sync::Arc;
 use proxima_core::AuthPath;
 use proxima_core::mcp::{
     McpAuthorContext, McpToolCtx, McpToolError, McpToolErrorKind, McpToolExtensions, OutputMode,
-    tool_name_matches,
+    core_action_meta, core_tool_has_actions, tool_name_matches,
 };
-use proxima_core::{AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner};
+use proxima_core::{AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner, ToolScope};
 
 use crate::auth::McpAuthContext;
 
@@ -189,9 +189,9 @@ impl McpToolHost {
             .find(|d| tool_name_matches(d.name, name))
         {
             let owner = auth.as_ref().map(|ctx| ctx.owner.clone());
-            return (descriptor.call)(self.ctx_for(author, owner, auth.as_ref()), args)
-                .await
-                .map_err(Into::into);
+            let ctx = self.ctx_for(author, owner, auth.as_ref());
+            enforce_tool_scope(&ctx.authz.capabilities.tool_scope, descriptor.name, &args)?;
+            return (descriptor.call)(ctx, args).await.map_err(Into::into);
         }
 
         Err(ToolInvocationError::ToolNotFound(name.to_string()))
@@ -200,6 +200,8 @@ impl McpToolHost {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ToolInvocationError {
+    #[error("tool not authorized: {0}")]
+    NotAuthorized(String),
     #[error("tool not found: {0}")]
     ToolNotFound(String),
     #[error("tool error: {0}")]
@@ -210,10 +212,38 @@ impl ToolInvocationError {
     #[must_use]
     pub fn kind(&self) -> McpToolErrorKind {
         match self {
+            Self::NotAuthorized(_) => McpToolErrorKind::InvalidRequest,
             Self::ToolNotFound(_) => McpToolErrorKind::InvalidInput,
             Self::Tool(inner) => inner.kind(),
         }
     }
+}
+
+fn enforce_tool_scope(
+    scope: &ToolScope,
+    tool: &str,
+    args: &serde_json::Value,
+) -> Result<(), ToolInvocationError> {
+    if core_tool_has_actions(tool) {
+        let Some(action) = args.get("action").and_then(serde_json::Value::as_str) else {
+            return Err(ToolInvocationError::Tool(McpToolError::InvalidInput(
+                format!("tool {tool} requires string action"),
+            )));
+        };
+        if core_action_meta(tool, action).is_none() {
+            return Err(ToolInvocationError::Tool(McpToolError::InvalidInput(
+                format!("unknown action {action:?} for tool {tool}"),
+            )));
+        }
+        if !scope.allows_action(tool, action) {
+            return Err(ToolInvocationError::NotAuthorized(format!(
+                "{tool}:{action}"
+            )));
+        }
+    } else if !scope.allows(tool) {
+        return Err(ToolInvocationError::NotAuthorized(tool.to_string()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

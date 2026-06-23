@@ -76,6 +76,7 @@ impl CoreMcpError {
 
     fn from_invocation_error(err: ToolInvocationError) -> Self {
         match err {
+            ToolInvocationError::NotAuthorized(tool) => Self::NotAuthorized(tool),
             ToolInvocationError::ToolNotFound(tool) => Self::NotFound(tool),
             ToolInvocationError::Tool(err) => Self::Tool {
                 kind: err.kind(),
@@ -129,7 +130,7 @@ impl CoreMcpTools {
             .registry()
             .list_mcp_tools()
             .iter()
-            .filter(|descriptor| scope.allows(descriptor.name))
+            .filter(|descriptor| scope.allows_group_advertisement(descriptor.name))
             .map(tool_info_from_descriptor)
             .collect()
     }
@@ -164,7 +165,11 @@ impl CoreMcpTools {
             return Err(CoreMcpError::NotFound(name.to_string()));
         };
         let canonical_name = descriptor.name;
-        if !authz.capabilities.tool_scope.allows(canonical_name) {
+        if !authz
+            .capabilities
+            .tool_scope
+            .allows_group_advertisement(canonical_name)
+        {
             return Err(CoreMcpError::NotAuthorized(name.to_string()));
         }
 

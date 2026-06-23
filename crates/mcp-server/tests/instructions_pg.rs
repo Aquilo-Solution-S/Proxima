@@ -103,7 +103,7 @@ async fn initialize_returns_instructions_and_how_to_resource()
     assert!(instructions.contains("`core_derive`"));
     assert!(instructions.contains("proxima://how-to"));
     // Full surface advertises goals.
-    assert!(instructions.contains("core_goal_set"));
+    assert!(instructions.contains("core_goal"));
     // Server advertises the resources capability.
     assert!(init["result"]["capabilities"]["resources"].is_object());
 
@@ -190,7 +190,7 @@ async fn memory_profile_instructions_omit_excluded_tools() -> Result<(), Box<dyn
     assert!(instructions.contains("`core_remember`"));
     // Excluded tools get no guidance.
     assert!(
-        !instructions.contains("core_goal_set"),
+        !instructions.contains("core_goal"),
         "memory profile leaked goal guidance: {instructions}"
     );
     assert!(!instructions.contains("goal"));
