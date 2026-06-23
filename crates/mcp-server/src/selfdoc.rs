@@ -16,8 +16,8 @@ use std::fmt::Write as _;
 
 use proxima_core::mcp::McpTool;
 use proxima_core::mcp::core_tools::{
-    DeriveTool, GetMemoryTool, GoalDecomposeTool, GoalSetTool, LinkTool, ListEdgeTypesTool,
-    RememberTool, SearchMemoriesTool, WalkMemoryLineageTool,
+    CoreGoalTool, DeriveTool, GetMemoryTool, LinkTool, ListEdgeTypesTool, RememberTool,
+    SearchMemoriesTool, WalkMemoryLineageTool,
 };
 
 /// Canonical URI of the on-demand How-To resource.
@@ -69,7 +69,7 @@ impl Surface {
             get_memory: has(GetMemoryTool::NAME),
             lineage: has(WalkMemoryLineageTool::NAME),
             list_edge_types: has(ListEdgeTypesTool::NAME),
-            goals: has(GoalSetTool::NAME) || has(GoalDecomposeTool::NAME),
+            goals: has(CoreGoalTool::NAME),
             code: has(CODE_SEARCH_CHUNKS) || has(CODE_REGISTER_REPO),
         }
     }
@@ -123,8 +123,8 @@ pub fn build_instructions(advertised: &BTreeSet<&str>) -> String {
         }
         if s.goals {
             out.push_str(
-                "Set intent that drives memory with `core_goal_set` (decompose with \
-                 `core_goal_decompose`). ",
+                "Set intent that drives memory with `core_goal` action=set (decompose with \
+                 action=decompose). ",
             );
         }
         out.push_str(
@@ -265,7 +265,7 @@ fn push_capture_table(out: &mut String, s: Surface) {
     }
     if s.goals {
         out.push_str(
-            "| Set an intent / objective to pursue | `core_goal_set` (+ `core_goal_decompose`) |\n",
+            "| Set an intent / objective to pursue | `core_goal` action=set (+ action=decompose) |\n",
         );
     }
     if s.search {
@@ -337,8 +337,8 @@ fn push_worked_example(out: &mut String, s: Surface) {
     if s.goals {
         let _ = writeln!(
             out,
-            "4. **Wire intent.** `core_goal_set(…)` to record what to pursue; \
-             `core_goal_decompose` to break it down."
+            "4. **Wire intent.** `core_goal` action=set to record what to pursue; \
+             action=decompose to break it down."
         );
     }
     out.push('\n');
@@ -383,8 +383,7 @@ mod tests {
             GetMemoryTool::NAME,
             WalkMemoryLineageTool::NAME,
             ListEdgeTypesTool::NAME,
-            GoalSetTool::NAME,
-            GoalDecomposeTool::NAME,
+            CoreGoalTool::NAME,
             CODE_SEARCH_CHUNKS,
             CODE_REGISTER_REPO,
         ]
@@ -423,12 +422,12 @@ mod tests {
     #[test]
     fn instructions_are_profile_aware() {
         let full = build_instructions(&full_set());
-        assert!(full.contains("core_goal_set"));
+        assert!(full.contains("core_goal"));
         assert!(full.contains("proxima-code_"));
 
         let trimmed = build_instructions(&memory_minus_goals_set());
         // Dropped tools drop their guidance.
-        assert!(!trimmed.contains("core_goal_set"));
+        assert!(!trimmed.contains("core_goal"));
         assert!(!trimmed.contains("goal"));
         assert!(!trimmed.contains("proxima-code_"));
         // Core memory contract still present.
@@ -484,7 +483,7 @@ mod tests {
     #[test]
     fn how_to_is_profile_aware() {
         let trimmed = how_to_markdown(&memory_minus_goals_set());
-        assert!(!trimmed.contains("core_goal_set"));
+        assert!(!trimmed.contains("core_goal"));
         assert!(!trimmed.contains("proxima-code_"));
         // Layering law + relate-memories row still taught.
         assert!(trimmed.contains("Facts cannot link Facts"));

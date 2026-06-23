@@ -7,7 +7,7 @@ use proxima_core::mcp::McpAuthorContext;
 use proxima_core::{
     Engine, FlavorRegistry, Owner, OwnerPrincipalKind, Principal, RelationClass, UserId,
 };
-use proxima_mcp_server::McpToolHost;
+use proxima_mcp_server::{McpAuthContext, McpToolHost};
 use proxima_storage_pg::PgStorage;
 use serde_json::json;
 
@@ -29,13 +29,17 @@ async fn core_read_tools_return_prefixed_ids_and_author() -> Result<(), Box<dyn 
     let engine = Arc::new(Engine::new(registry.clone()).with_storage(pg.clone().into_handle()));
     let server = McpToolHost::from_pool(pg.pool().clone(), owner.clone(), Arc::new(registry))
         .with_engine(engine);
+    // The host is now the authoritative scope chokepoint, so reads need an
+    // authenticated full-scope context (production always passes Some(auth);
+    // a None context is unauthenticated and correctly denied).
+    let auth = McpAuthContext::for_master(uuid::Uuid::now_v7(), owner.clone());
 
     let fetched = server
         .call_tool(
             "core_get_memory",
             json!({"memory": format!("A:{derived}")}),
             author_ctx(),
-            None,
+            Some(auth.clone()),
         )
         .await?;
     assert_eq!(fetched["memory"], format!("A:{derived}"));
@@ -56,7 +60,7 @@ async fn core_read_tools_return_prefixed_ids_and_author() -> Result<(), Box<dyn 
             "core_get_memory",
             json!({"memory": derived.to_string(), "expand_neighbors": true}),
             author_ctx(),
-            None,
+            Some(auth.clone()),
         )
         .await?;
     assert_eq!(expanded["memory"], format!("A:{derived}"));
@@ -75,7 +79,7 @@ async fn core_read_tools_return_prefixed_ids_and_author() -> Result<(), Box<dyn 
             "core_walk_memory_lineage",
             json!({"memory": format!("A:{derived}"), "direction": "ancestors", "depth": 1}),
             author_ctx(),
-            None,
+            Some(auth.clone()),
         )
         .await?;
     assert_eq!(lineage["start"], format!("A:{derived}"));

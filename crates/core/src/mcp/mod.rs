@@ -655,6 +655,30 @@ impl McpToolAnnotations {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreActionMeta {
+    pub tool: &'static str,
+    pub action: &'static str,
+    pub scope_key: &'static str,
+    pub description: &'static str,
+    pub produces_schema_ids: &'static [&'static str],
+    pub annotations: McpToolAnnotations,
+}
+
+pub fn all_core_actions() -> impl Iterator<Item = &'static CoreActionMeta> {
+    core_tools::goal::CORE_GOAL_ACTIONS.iter()
+}
+
+#[must_use]
+pub fn core_action_meta(tool: &str, action: &str) -> Option<&'static CoreActionMeta> {
+    all_core_actions().find(|meta| meta.tool == tool && meta.action == action)
+}
+
+#[must_use]
+pub fn core_tool_has_actions(tool: &str) -> bool {
+    all_core_actions().any(|meta| meta.tool == tool)
+}
+
 /// MCP behavior hints for substrate tools, keyed by registered tool name.
 #[must_use]
 pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations> {
@@ -676,17 +700,13 @@ pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations>
         | "core_search_memories"
         | "core_walk_memory_lineage" => base.read_only(true),
 
-        "core_derive"
-        | "core_goal_decompose"
-        | "core_set_fact_retention"
-        | "core_update_wake_entry" => base.read_only(false).destructive(false).idempotent(true),
+        "core_derive" | "core_set_fact_retention" | "core_update_wake_entry" => {
+            base.read_only(false).destructive(false).idempotent(true)
+        }
 
         "core_remember"
         | "core_record_utterance"
-        | "core_goal_set"
-        | "core_goal_transition"
-        | "core_goal_mark_achieved"
-        | "core_goal_modify"
+        | "core_goal"
         | "core_set_read_scope"
         | "core_link"
         | "core_add_wake_entry"

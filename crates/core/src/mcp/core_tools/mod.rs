@@ -42,9 +42,7 @@ pub use facts_citing_object::FactsCitingObjectTool;
 pub use get_graph::GetGraphTool;
 pub use get_memory::GetMemoryTool;
 pub use get_personality::GetPersonalityTool;
-pub use goal::{
-    GoalDecomposeTool, GoalMarkAchievedTool, GoalModifyTool, GoalSetTool, GoalTransitionTool,
-};
+pub use goal::CoreGoalTool;
 pub use instantiate_personality::InstantiatePersonalityTool;
 pub use list_edge_types::ListEdgeTypesTool;
 pub use list_events::ListEventsTool;
@@ -99,9 +97,5 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<RecordUtteranceTool>();
     registry.add_substrate_mcp_tool::<DeriveTool>();
     registry.add_substrate_mcp_tool::<LinkTool>();
-    registry.add_substrate_mcp_tool::<GoalSetTool>();
-    registry.add_substrate_mcp_tool::<GoalTransitionTool>();
-    registry.add_substrate_mcp_tool::<GoalMarkAchievedTool>();
-    registry.add_substrate_mcp_tool::<GoalModifyTool>();
-    registry.add_substrate_mcp_tool::<GoalDecomposeTool>();
+    registry.add_substrate_mcp_tool::<CoreGoalTool>();
 }
