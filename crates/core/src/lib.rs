@@ -48,9 +48,10 @@ pub use goal::{
 pub use ids::*;
 pub use llm::*;
 pub use mcp::{
-    Handle, HandleTable, McpAuthorContext, McpCallFn, McpTool, McpToolCtx, McpToolDescriptor,
-    McpToolError, McpToolExtensions, MemoryHandleClass, OutputMode, PrefixedUuidClass,
-    PrefixedUuidError, format_prefixed_uuid, parse_prefixed_uuid,
+    Handle, HandleTable, McpAuthorContext, McpCallFn, McpTool, McpToolAnnotations, McpToolCtx,
+    McpToolDescriptor, McpToolError, McpToolErrorKind, McpToolExtensions, MemoryHandleClass,
+    OutputMode, PrefixedUuidClass, PrefixedUuidError, core_tool_annotations, format_prefixed_uuid,
+    parse_prefixed_uuid, provider_safe_tool_name, tool_name_matches,
 };
 pub use memory::*;
 pub use models::*;
