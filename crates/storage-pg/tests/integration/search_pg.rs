@@ -2,7 +2,7 @@ use crate::common::{drop_db, fresh_pg, owner_fixture};
 
 use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::query::{
-    EntityKind, MemorySearchRequest, SearchMode, SearchOrder, TagMatch,
+    EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
 use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
@@ -32,6 +32,7 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
                 principal: owner.clone(),
                 query: "semantic query".into(),
                 mode: SearchMode::Semantic,
+                supersession: SupersessionStatus::HeadsOnly,
                 limit: 10,
                 kind: Some(EntityKind::Abstraction),
                 schema_id: Some(SchemaId::new("test/search-abstraction-v1".into())),
@@ -203,6 +204,7 @@ async fn search_projects_authoring_personality_and_nil_as_none()
                 principal: owner.clone(),
                 query: "authored attribution".into(),
                 mode: SearchMode::Lexical,
+                supersession: SupersessionStatus::HeadsOnly,
                 limit: 10,
                 kind: Some(EntityKind::Abstraction),
                 schema_id: Some(SchemaId::new("test/search-attribution-v1".into())),
@@ -230,6 +232,7 @@ async fn search_projects_authoring_personality_and_nil_as_none()
                 principal: owner.clone(),
                 query: "nil attribution".into(),
                 mode: SearchMode::Lexical,
+                supersession: SupersessionStatus::HeadsOnly,
                 limit: 10,
                 kind: Some(EntityKind::Abstraction),
                 schema_id: Some(SchemaId::new("test/search-attribution-v1".into())),
@@ -722,6 +725,7 @@ fn lexical_request(owner: &Owner, query: &str) -> MemorySearchRequest {
         principal: owner.clone(),
         query: query.into(),
         mode: SearchMode::Lexical,
+        supersession: SupersessionStatus::HeadsOnly,
         limit: 10,
         kind: Some(EntityKind::Fact),
         schema_id: None,
@@ -741,6 +745,7 @@ fn semantic_request(owner: &Owner, query_embedding: Vec<f32>) -> MemorySearchReq
         principal: owner.clone(),
         query: "semantic query".into(),
         mode: SearchMode::Semantic,
+        supersession: SupersessionStatus::HeadsOnly,
         limit: 10,
         kind: Some(EntityKind::Abstraction),
         schema_id: Some(SchemaId::new("test/search-abstraction-v1".into())),
@@ -760,6 +765,7 @@ fn tagged_search_request(owner: &Owner, query: &str, mode: SearchMode) -> Memory
         principal: owner.clone(),
         query: query.into(),
         mode,
+        supersession: SupersessionStatus::HeadsOnly,
         limit: 10,
         kind: Some(EntityKind::Abstraction),
         schema_id: Some(SchemaId::new("proxima-test/tagged-abstraction-v1".into())),
