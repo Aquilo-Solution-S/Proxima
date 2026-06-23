@@ -138,8 +138,8 @@ async fn add_wake_entry_requires_admin_and_preserves_storage_on_denial()
         ctx(&owner, &pg, non_admin_authz(&owner)),
         CoreWakeArgs::Add(args),
     )
-        .await
-        .expect_err("non-admin add must be denied");
+    .await
+    .expect_err("non-admin add must be denied");
     assert_admin_denied(&err);
     assert!(wake_labels(&pg, &owner, pid).await?.is_empty());
 
@@ -199,8 +199,8 @@ async fn update_wake_entry_requires_admin_and_preserves_storage_on_denial()
         ctx(&owner, &pg, non_admin_authz(&owner)),
         CoreWakeArgs::Update(args),
     )
-        .await
-        .expect_err("non-admin update must be denied");
+    .await
+    .expect_err("non-admin update must be denied");
     assert_admin_denied(&err);
     assert_eq!(wake_labels(&pg, &owner, pid).await?, vec!["original"]);
 
@@ -249,8 +249,8 @@ async fn remove_wake_entry_requires_admin_and_preserves_storage_on_denial()
         ctx(&owner, &pg, non_admin_authz(&owner)),
         CoreWakeArgs::Remove(args),
     )
-        .await
-        .expect_err("non-admin remove must be denied");
+    .await
+    .expect_err("non-admin remove must be denied");
     assert_admin_denied(&err);
     assert_eq!(wake_labels(&pg, &owner, pid).await?, vec!["remove-me"]);
 
@@ -293,8 +293,8 @@ async fn set_read_scope_requires_admin_and_preserves_storage_on_denial()
         ctx(&owner, &pg, non_admin_authz(&owner)),
         CorePersonalityArgs::SetReadScope(args),
     )
-        .await
-        .expect_err("non-admin set_read_scope must be denied");
+    .await
+    .expect_err("non-admin set_read_scope must be denied");
     assert_admin_denied(&err);
     assert!(
         pg.list_read_scope(&ListReadScopeRequest {

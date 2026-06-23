@@ -17,8 +17,8 @@ use proxima_core::{
     AuthPath, AuthorshipKindMask, AuthzContext, ChangeEventKind, EdgeAuthorshipKind,
     EndpointBinding, EntityKind, EntityKindMask, EntityRef, FactPayload, FactTombstone,
     FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner, OwnerPrincipalKind, PayloadKeyBuilder,
-    Principal, RelationClass, RelationDescriptor, Role, SchemaVersion,
-    SidecarPayload, SourceBatchId, SourceId, StorageError, UserId, canonical_json_bytes,
+    Principal, RelationClass, RelationDescriptor, Role, SchemaVersion, SidecarPayload,
+    SourceBatchId, SourceId, StorageError, UserId, canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemoryPayloadFuture};
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
