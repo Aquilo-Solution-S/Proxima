@@ -141,20 +141,21 @@ personality instances remain substrate rows.
 Wake entries are detect config. External harnesses drive model, tool,
 and execution decisions.
 
-## Substrate Tool Pack
+## Substrate MCP Surface
 
-Default substrate memory tools:
+Default substrate memory surface:
 
 | Read | Write |
 |---|---|
-| `core_get_memory` | `core_derive` |
+| `proxima://memory/{id}` resource | `core_derive` |
 | `core_search_memories` | `core_remember` |
-| `core_walk_memory_lineage` | `core_record_utterance` |
+| `proxima://memory/{id}/lineage` resource | `core_record_utterance` |
 |  | `core_link` |
 
-Substrate MCP config tools are separate `core/*` MCP tools registered by
-core, including personality CRUD, wake-entry CRUD, schema/edge/tool
-listing, read-scope, fact-retention, citations, events, and goals.
+Substrate MCP config tools are core-registered flat tools plus action
+dispatchers for goals, wake entries, personalities, and Facts. Schema,
+edge, tool, graph, memory-hydration, lineage, and event reads are MCP
+resources.
 
 Flavor MCP tools extend the MCP catalog. Wake-entry validation checks
 trigger uniqueness and detect-config shape only.
@@ -174,10 +175,10 @@ Core owns:
 | Query | active-goal heads and assignment traversal |
 | Relations | `core/inspires`, `core/motivated-by` |
 | Payloads | core `GoalPayload` schemas |
-| Tools | `core_goal_set`, `core_goal_transition`, `core_goal_mark_achieved`, `core_goal_modify`, `core_goal_decompose` |
+| Tools | `core_goal` action dispatcher: `set`, `transition`, `mark_achieved`, `modify`, `decompose` |
 
-Goal creation uses the core `core_goal_set` tool. Lifecycle writes use
-the rest of the `core/goal_*` family.
+Goal creation uses `core_goal` with `{"action":"set", ...}`. Lifecycle
+writes use the same tool with the matching action key.
 
 <a id="freeze-guards"></a>
 ## Freeze Guards

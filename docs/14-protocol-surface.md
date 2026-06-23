@@ -20,13 +20,14 @@ operational RPCs.
 
 No runtime schema/source/tool/flavor registration surface exists.
 
-## Core Memory MCP Tools
+## Core Memory MCP Surface
 
-Agent long-term memory is core substrate. The MCP tools are thin callers
-of Engine verbs; storage stays behind the Engine. The substrate tool
-count is 33 (authoritative live list: `core_list_substrate_tools`).
+Agent long-term memory is core substrate. MCP tools are thin callers of
+Engine verbs; MCP resources expose read-only graph and registry views.
+Storage stays behind the Engine. The substrate surface is 9 tools + 7
+resources (authoritative live list: `proxima://tools`).
 
-Canonical substrate memory tools:
+Canonical substrate tools:
 
 | Tool | Contract |
 |---|---|
@@ -35,11 +36,28 @@ Canonical substrate memory tools:
 | `core_derive` | write agent-authored Abstraction |
 | `core_link` | write registered relation edge |
 | `core_search_memories` | search memories; may include neighbor edges, per-result tags, and lexical-degradation status |
-| `core_get_memory` | hydrate memory by id/handle; optional neighbor edges |
-| `core_walk_memory_lineage` | traverse provenance / supersession lineage |
+| `core_goal` | goal action dispatcher: `set`, `transition`, `modify`, `mark_achieved`, `decompose` |
+| `core_wake` | wake-config action dispatcher: `add`, `update`, `remove`, `set`, `list` |
+| `core_personality` | personality action dispatcher: `instantiate`, `tombstone`, `set_read_scope`, `list`, `get`, `list_read_scope` |
+| `core_fact` | Fact action dispatcher: `citation_of_fact`, `citation_of_entity_head`, `facts_citing_object`, `tombstone` |
 
 Graph search is unified into `core_search_memories`; there is no
 separate graph-search tool.
+
+Canonical substrate resources:
+
+| Resource | Contract |
+|---|---|
+| `proxima://schemas{?kind}` | registered payload schemas |
+| `proxima://edge-types` | registered relation descriptors |
+| `proxima://tools` | live tool/resource catalog |
+| `proxima://graph{?include_tombstoned}` | graph snapshot and status fields, including `fact_retention_seconds` |
+| `proxima://memory/{id}{?expand_neighbors}` | hydrate memory by id; optional neighbor edges |
+| `proxima://memory/{id}/lineage{?direction,depth,limit}` | traverse provenance / supersession lineage |
+| `proxima://events{?since,limit}` | forward `change_event` poll, ascending, with `next_since` and `has_more` |
+
+`proxima://how-to` is an instructional MCP resource outside the 7-resource
+protocol count.
 
 ## The verbs
 
@@ -51,12 +69,14 @@ is now a durable, owner-scoped, seq-ordered **pull log** (see
 
 > **Forward poll.** `change_event` is read in both directions. Backward,
 > bounded reads use the `EventHistory` engine verb. The forward seq-cursor
-> poll a harness wake loop needs ships as the **`core_list_events`** MCP
-> tool — events with `seq > since`, ascending, plus a `next_since` cursor
-> and a `has_more` hint — a thin owner-scoped wrapper over
+> poll a harness wake loop needs ships as the
+> **`proxima://events{?since,limit}`** MCP resource — events with
+> `seq > since`, ascending, plus a `next_since` cursor and a `has_more`
+> hint — a thin owner-scoped wrapper over
 > `Storage::list_change_events_after`. There is intentionally no gRPC/engine
-> forward verb: the MCP tool reads storage directly, the same posture as the
-> other read tools (`core_search_memories`, `core_walk_memory_lineage`).
+> forward verb: the resource reads storage directly, the same posture as
+> `core_search_memories` and the
+> `proxima://memory/{id}/lineage{?direction,depth,limit}` resource.
 
 | Verb | Direction | Idempotency | Scope | Current status |
 |---|---|---|---|---|
@@ -120,9 +140,9 @@ Owner-scoped bounded read of `change_event`, newest-first.
 | `seq_high_water` | latest owner event seq at read time |
 
 No `after` cursor — this verb is backward-only. Forward replay (events
-with `seq > cursor`) is served by the `core_list_events` MCP tool over
-`Storage::list_change_events_after`; it is intentionally neither added as
-an `after` cursor here nor wrapped by a gRPC/engine verb.
+with `seq > cursor`) is served by the `proxima://events{?since,limit}`
+MCP resource over `Storage::list_change_events_after`; it is intentionally
+neither added as an `after` cursor here nor wrapped by a gRPC/engine verb.
 
 ### GoalWrite
 
@@ -179,10 +199,11 @@ on wake / reconnect:
     process in order; persist the new high-water seq
 ```
 
-This is the harness wake path. It is exposed as the `core_list_events`
-MCP tool — a thin owner-scoped wrapper over the
-`Storage::list_change_events_after` trait method that returns events
-ascending plus a `next_since` cursor and a `has_more` hint.
+This is the harness wake path. It is exposed as the
+`proxima://events{?since,limit}` MCP resource — a thin owner-scoped
+wrapper over the `Storage::list_change_events_after` trait method that
+returns events ascending plus a `next_since` cursor and a `has_more`
+hint.
 `EventHistory` is the backward-only, engine-exposed counterpart.
 
 Cold-start stitching — seed from a snapshot, then poll forward:
