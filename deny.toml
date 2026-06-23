@@ -64,12 +64,14 @@ confidence-threshold = 0.93
 
 # ---------------------------------------------------------------------------
 # Bans: start permissive. The workspace has duplicate-version crate names
-# driven by unavoidable transitive skew (getrandom/rand/rand_core, the
-# RustCrypto 0.10-vs-0.11 generation split, and a parallel rustls 0.21/0.23
-# TLS stack). These are build-bloat, not correctness bugs, so multiple-versions
-# is a WARN — it surfaces the skew in CI logs without blocking the v0.0.1 tag.
-# Flip to "deny" with targeted skips once the TLS stack is deduped (see the
-# commented skip[] below for the exact 0.21-stack pins to skip first).
+# driven by unavoidable transitive skew: getrandom/rand/rand_core (0.2/0.3/0.4
+# and 0.8/0.9/0.10 generations), the RustCrypto 0.10-vs-0.11 split (digest,
+# block-buffer, sha2, crypto-common, hmac, const-oid), http/http-body 0.2-vs-1.0,
+# and aws-smithy-http 0.62-vs-0.63. These are build-bloat, not correctness bugs,
+# so multiple-versions is a WARN — it surfaces the skew in CI logs without
+# blocking the v0.0.1 tag. (The legacy rustls 0.21 TLS stack was eliminated in
+# 3378d84; only rustls 0.23 remains.) Flip to "deny" with targeted skips once
+# these generations converge.
 # ---------------------------------------------------------------------------
 [bans]
 multiple-versions = "warn"
@@ -80,14 +82,14 @@ wildcards = "deny"
 allow-wildcard-paths = true
 allow = []
 deny = []
-# When you dedup the TLS/crypto stack, flip multiple-versions to "deny" and
-# uncomment + pin the surviving skews:
+# When you dedup the crypto/runtime stack, flip multiple-versions to "deny" and
+# uncomment + pin the surviving skews (refresh the list with `cargo tree -d`):
 # skip = [
-#     { name = "rustls", version = "=0.21.12" },
-#     { name = "rustls-webpki", version = "=0.101.7" },
-#     { name = "hyper-rustls", version = "=0.24.2" },
-#     { name = "tokio-rustls", version = "=0.24.1" },
-#     { name = "webpki-roots", version = "=0.26.11" },
+#     { name = "getrandom" },
+#     { name = "rand_core" },
+#     { name = "digest" },
+#     { name = "http" },
+#     { name = "aws-smithy-http" },
 # ]
 
 # ---------------------------------------------------------------------------
