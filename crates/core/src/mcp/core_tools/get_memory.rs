@@ -52,53 +52,56 @@ impl McpTool for GetMemoryTool {
         ctx: McpToolCtx,
         args: GetMemoryArgs,
     ) -> BoxFuture<'static, Result<GetMemoryOutput, McpToolError>> {
-        Box::pin(async move {
-            let memory_id = resolve_memory_reference(&ctx, &args.memory)?;
-            let memory_uuid = memory_id.into_inner();
-            let storage = ctx
-                .storage()
-                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-            let sidecars = sidecar_specs(&ctx);
-            let snapshot = storage
-                .load_memory_by_id(&ctx.owner, memory_id, None, &sidecars)
-                .await?
-                .ok_or_else(|| {
-                    McpToolError::InvalidInput(format!("memory {memory_id:?} not found"))
-                })?;
-            let class = memory_class(&snapshot.kind)?;
-            let handle = ctx.format_memory_with_class(snapshot.memory_id, class);
-            let payload = snapshot_payload_value(snapshot.payload.as_ref())?;
-            let title = payload_string(&payload, "title")
-                .or_else(|| payload_string(&payload, "conversation_id"));
-            let body = payload_string(&payload, "body")
-                .or_else(|| payload_string(&payload, "text"))
-                .or_else(|| snapshot.text.clone());
-            let tags = payload_tags(&payload);
-            let neighbor_edges = if args.expand_neighbors {
-                Some(neighbor_edges(&ctx, &[memory_uuid]).await?)
-            } else {
-                None
-            };
-            Ok(GetMemoryOutput {
-                handle: handle.clone(),
-                memory: handle,
-                kind: snapshot.kind,
-                schema_id: snapshot.schema_id.as_str().to_string(),
-                schema_version: snapshot.schema_version.into_inner(),
-                authoring_personality_instance_id: format_authoring_personality(
-                    &ctx,
-                    snapshot.authoring_personality_instance_id,
-                ),
-                text: snapshot.text,
-                wake_chain_depth: snapshot.wake_chain_depth.into_inner(),
-                payload,
-                title,
-                body,
-                tags,
-                neighbor_edges,
-            })
-        })
+        Box::pin(get_memory(ctx, args))
     }
+}
+
+pub(crate) async fn get_memory(
+    ctx: McpToolCtx,
+    args: GetMemoryArgs,
+) -> Result<GetMemoryOutput, McpToolError> {
+    let memory_id = resolve_memory_reference(&ctx, &args.memory)?;
+    let memory_uuid = memory_id.into_inner();
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let sidecars = sidecar_specs(&ctx);
+    let snapshot = storage
+        .load_memory_by_id(&ctx.owner, memory_id, None, &sidecars)
+        .await?
+        .ok_or_else(|| McpToolError::InvalidInput(format!("memory {memory_id:?} not found")))?;
+    let class = memory_class(&snapshot.kind)?;
+    let handle = ctx.format_memory_with_class(snapshot.memory_id, class);
+    let payload = snapshot_payload_value(snapshot.payload.as_ref())?;
+    let title =
+        payload_string(&payload, "title").or_else(|| payload_string(&payload, "conversation_id"));
+    let body = payload_string(&payload, "body")
+        .or_else(|| payload_string(&payload, "text"))
+        .or_else(|| snapshot.text.clone());
+    let tags = payload_tags(&payload);
+    let neighbor_edges = if args.expand_neighbors {
+        Some(neighbor_edges(&ctx, &[memory_uuid]).await?)
+    } else {
+        None
+    };
+    Ok(GetMemoryOutput {
+        handle: handle.clone(),
+        memory: handle,
+        kind: snapshot.kind,
+        schema_id: snapshot.schema_id.as_str().to_string(),
+        schema_version: snapshot.schema_version.into_inner(),
+        authoring_personality_instance_id: format_authoring_personality(
+            &ctx,
+            snapshot.authoring_personality_instance_id,
+        ),
+        text: snapshot.text,
+        wake_chain_depth: snapshot.wake_chain_depth.into_inner(),
+        payload,
+        title,
+        body,
+        tags,
+        neighbor_edges,
+    })
 }
 
 /// Resolve a memory reference accepting a prefixed id (`F:…`), a handle, or a

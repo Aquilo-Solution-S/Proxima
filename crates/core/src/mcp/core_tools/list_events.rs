@@ -73,36 +73,41 @@ impl McpTool for ListEventsTool {
         ctx: McpToolCtx,
         args: ListEventsArgs,
     ) -> BoxFuture<'static, Result<ListEventsOutput, McpToolError>> {
-        Box::pin(async move {
-            let storage = ctx
-                .storage()
-                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-            let after = match &args.since {
-                None => uuid::Uuid::nil(),
-                Some(since) => since.parse::<uuid::Uuid>().map_err(|err| {
-                    McpToolError::InvalidInput(format!("since is not a valid seq cursor: {err}"))
-                })?,
-            };
-            let limit = args.limit.unwrap_or(100).clamp(1, 1000) as usize;
-            let rows = storage
-                .list_change_events_after(&ctx.owner, after, limit)
-                .await?;
-            let edge_kinds = load_edge_endpoint_kinds(&ctx, &rows).await?;
-
-            let events = rows
-                .into_iter()
-                .map(|row| event_item(&ctx, row, &edge_kinds))
-                .collect::<Vec<_>>();
-            let has_more = events.len() == limit;
-            let next_since = events.last().map(|event| event.seq.clone()).or(args.since);
-
-            Ok(ListEventsOutput {
-                events,
-                next_since,
-                has_more,
-            })
-        })
+        Box::pin(list_events(ctx, args))
     }
+}
+
+pub(crate) async fn list_events(
+    ctx: McpToolCtx,
+    args: ListEventsArgs,
+) -> Result<ListEventsOutput, McpToolError> {
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let after = match &args.since {
+        None => uuid::Uuid::nil(),
+        Some(since) => since.parse::<uuid::Uuid>().map_err(|err| {
+            McpToolError::InvalidInput(format!("since is not a valid seq cursor: {err}"))
+        })?,
+    };
+    let limit = args.limit.unwrap_or(100).clamp(1, 1000) as usize;
+    let rows = storage
+        .list_change_events_after(&ctx.owner, after, limit)
+        .await?;
+    let edge_kinds = load_edge_endpoint_kinds(&ctx, &rows).await?;
+
+    let events = rows
+        .into_iter()
+        .map(|row| event_item(&ctx, row, &edge_kinds))
+        .collect::<Vec<_>>();
+    let has_more = events.len() == limit;
+    let next_since = events.last().map(|event| event.seq.clone()).or(args.since);
+
+    Ok(ListEventsOutput {
+        events,
+        next_since,
+        has_more,
+    })
 }
 
 async fn load_edge_endpoint_kinds(

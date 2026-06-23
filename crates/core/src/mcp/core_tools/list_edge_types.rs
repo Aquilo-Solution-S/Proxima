@@ -33,19 +33,25 @@ impl McpTool for ListEdgeTypesTool {
 
     fn call(
         ctx: McpToolCtx,
-        _args: ListEdgeTypesArgs,
+        args: ListEdgeTypesArgs,
     ) -> BoxFuture<'static, Result<ListEdgeTypesOutput, McpToolError>> {
-        Box::pin(async move {
-            let edge_types = ctx
-                .registry
-                .list_relations()
-                .iter()
-                .map(|rel| EdgeTypeItem {
-                    edge_type: rel.relation.clone(),
-                    class: rel.class.as_str().to_string(),
-                })
-                .collect();
-            Ok(ListEdgeTypesOutput { edge_types })
-        })
+        Box::pin(list_edge_types(ctx, args))
     }
+}
+
+#[allow(clippy::unused_async)]
+pub(crate) async fn list_edge_types(
+    ctx: McpToolCtx,
+    _args: ListEdgeTypesArgs,
+) -> Result<ListEdgeTypesOutput, McpToolError> {
+    let edge_types = ctx
+        .registry
+        .list_relations()
+        .iter()
+        .map(|rel| EdgeTypeItem {
+            edge_type: rel.relation.clone(),
+            class: rel.class.as_str().to_string(),
+        })
+        .collect();
+    Ok(ListEdgeTypesOutput { edge_types })
 }

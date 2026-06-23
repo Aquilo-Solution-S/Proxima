@@ -95,64 +95,69 @@ impl McpTool for WalkMemoryLineageTool {
         ctx: McpToolCtx,
         args: WalkMemoryLineageArgs,
     ) -> BoxFuture<'static, Result<WalkMemoryLineageOutput, McpToolError>> {
-        Box::pin(async move {
-            let start = ctx.resolve_memory(&args.memory)?;
-            let direction = MemoryLineageDirection::from(args.direction);
-            let storage = ctx
-                .storage()
-                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-            let response = storage
-                .walk_memory_lineage(&MemoryLineageRequest {
-                    principal: ctx.owner.clone(),
-                    start_memory_id: start,
-                    direction,
-                    depth: args.depth.clamp(1, 8),
-                    limit: args.limit.clamp(1, 200),
-                    reader_personality_instance_id: None,
-                })
-                .await?;
+        Box::pin(walk_memory_lineage(ctx, args))
+    }
+}
 
-            let mut classes = HashMap::new();
-            let nodes = response
-                .nodes
-                .into_iter()
-                .map(|node| {
-                    let kind = format!("{:?}", node.kind);
-                    let class = memory_class(&kind)?;
-                    classes.insert(node.memory_id, class);
-                    Ok(LineageNodeOutput {
-                        memory: ctx.format_memory_with_class(node.memory_id, class),
-                        kind,
-                        schema_id: node.schema_id.as_str().to_string(),
-                        snippet: node.snippet,
-                        wake_chain_depth: node.wake_chain_depth.into_inner(),
-                        distance: node.distance,
-                    })
-                })
-                .collect::<Result<Vec<_>, McpToolError>>()?;
+pub(crate) async fn walk_memory_lineage(
+    ctx: McpToolCtx,
+    args: WalkMemoryLineageArgs,
+) -> Result<WalkMemoryLineageOutput, McpToolError> {
+    let start = ctx.resolve_memory(&args.memory)?;
+    let direction = MemoryLineageDirection::from(args.direction);
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let response = storage
+        .walk_memory_lineage(&MemoryLineageRequest {
+            principal: ctx.owner.clone(),
+            start_memory_id: start,
+            direction,
+            depth: args.depth.clamp(1, 8),
+            limit: args.limit.clamp(1, 200),
+            reader_personality_instance_id: None,
+        })
+        .await?;
 
-            let edges = response
-                .edges
-                .into_iter()
-                .map(|edge| LineageEdgeOutput {
-                    edge: ctx.format_edge(EdgeId::new(edge.edge_id)),
-                    relation: edge.relation,
-                    relation_class: edge.relation_class,
-                    source: format_lineage_memory(&ctx, &classes, edge.source_memory_id),
-                    target: format_lineage_memory(&ctx, &classes, edge.target_memory_id),
-                    distance: edge.distance,
-                })
-                .collect();
-
-            Ok(WalkMemoryLineageOutput {
-                start: args.memory,
-                direction: format!("{direction:?}").to_lowercase(),
-                nodes,
-                edges,
-                truncated: response.truncated,
+    let mut classes = HashMap::new();
+    let nodes = response
+        .nodes
+        .into_iter()
+        .map(|node| {
+            let kind = format!("{:?}", node.kind);
+            let class = memory_class(&kind)?;
+            classes.insert(node.memory_id, class);
+            Ok(LineageNodeOutput {
+                memory: ctx.format_memory_with_class(node.memory_id, class),
+                kind,
+                schema_id: node.schema_id.as_str().to_string(),
+                snippet: node.snippet,
+                wake_chain_depth: node.wake_chain_depth.into_inner(),
+                distance: node.distance,
             })
         })
-    }
+        .collect::<Result<Vec<_>, McpToolError>>()?;
+
+    let edges = response
+        .edges
+        .into_iter()
+        .map(|edge| LineageEdgeOutput {
+            edge: ctx.format_edge(EdgeId::new(edge.edge_id)),
+            relation: edge.relation,
+            relation_class: edge.relation_class,
+            source: format_lineage_memory(&ctx, &classes, edge.source_memory_id),
+            target: format_lineage_memory(&ctx, &classes, edge.target_memory_id),
+            distance: edge.distance,
+        })
+        .collect();
+
+    Ok(WalkMemoryLineageOutput {
+        start: args.memory,
+        direction: format!("{direction:?}").to_lowercase(),
+        nodes,
+        edges,
+        truncated: response.truncated,
+    })
 }
 
 fn format_lineage_memory(
