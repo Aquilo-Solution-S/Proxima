@@ -4,18 +4,13 @@
 //! # Concurrency
 //!
 //! The slow path (cold start for a `(token, owner)` pair) serializes
-//! concurrent callers using a session-level PG advisory lock keyed on
-//! `master_token_id`. Without it, two callers could both
+//! concurrent callers using a transaction-scoped PG advisory lock keyed
+//! on `master_token_id`. Without it, two callers could both
 //! observe an empty mapping, both mint a personality, and only one of
 //! the two `INSERT ... ON CONFLICT DO NOTHING` rows would land — the
 //! losing caller's personality (plus its memories) becomes an orphan,
 //! and that caller returns a different `instance_id` than the canonical
 //! mapping points to.
-//!
-//! Lock leak window: if the calling future is cancelled mid-section,
-//! the lock is released only when the underlying connection is recycled
-//! by the pool. A leaked lock blocks future calls for the same
-//! `token` only — it does not block the rest of the system.
 
 use proxima_core::{
     InstantiatePersonalityRequest, MasterTokenPersonality, MemoryId, Owner, OwnerPrincipalKind,
@@ -49,26 +44,19 @@ pub async fn ensure_master_token_personality(
         return Ok(found);
     }
 
-    // Slow path: take a session-level advisory lock on a pinned
-    // connection so concurrent first-connects can't both mint.
-    let mut conn = pool.acquire().await.map_err(map_err)?;
+    // Slow path: take a transaction-scoped advisory lock so concurrent
+    // first-connects can't both mint.
+    let mut tx = pool.begin().await.map_err(map_err)?;
     let key = lock_key(master_token_id);
-    sqlx::query!("SELECT pg_advisory_lock($1)", key)
-        .fetch_one(&mut *conn)
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(key)
+        .fetch_one(&mut *tx)
         .await
         .map_err(map_err)?;
 
-    let result = mint_under_lock(&mut conn, owner, master_token_id, kind, principal_id).await;
-
-    // Always release on the success path. On error or cancellation the
-    // connection drop returns it to the pool with the lock still held;
-    // it releases when the connection is closed (sqlx max_lifetime) or
-    // when a future caller on that same connection invokes unlock.
-    let _ = sqlx::query!("SELECT pg_advisory_unlock($1)", key)
-        .fetch_one(&mut *conn)
-        .await;
-
-    result
+    let result = mint_under_lock(&mut tx, owner, master_token_id, kind, principal_id).await?;
+    tx.commit().await.map_err(map_err)?;
+    Ok(result)
 }
 
 async fn mint_under_lock(
