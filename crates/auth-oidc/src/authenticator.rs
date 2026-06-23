@@ -84,11 +84,6 @@ mod tests {
 
     use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, encode};
     use proxima_core::{Owner, Principal, UserId};
-    use rand::rngs::OsRng;
-    use rsa::{
-        RsaPrivateKey,
-        pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey, LineEnding},
-    };
     use serde::Serialize;
     use uuid::Uuid;
 
@@ -116,19 +111,47 @@ mod tests {
         Principal::User(UserId::new(Uuid::new_v4()))
     }
 
+    // Static 2048-bit RSA test keypair (same key as the `keys.rs` /
+    // `oidc_e2e` fixtures). Baked so this test signs RS256 via jsonwebtoken
+    // without the `rsa`/`rand` crates (RUSTSEC-2023-0071: the `rsa` crate
+    // ships an unfixed Marvin timing sidechannel). Test-only material.
+    const TEST_RSA_PRIVATE_KEY_PEM: &str = "-----BEGIN RSA PRIVATE KEY-----
+MIIEpAIBAAKCAQEAvcvNMtDvpJExXOyytyqUOWhX2sxa+Xtxd4KmfJ05+iPgT/Ri
+yZzx3UoTuJYtvDCCRcXKU13Rn8cIc0ushWlKpLDW08U4r9bBVctcajpnOumCcuIv
+nM1/HEiM+WuYPRFk0I5h++ueLA0KhIfPs0ORLpqsvF0XIuL6/uZtObrH9wxPMmG4
+r5Hh7h3Gm5PchY0R8H7VrEOm79fnra7OGg5nh7XkmStnZnwozODW0FFnpW+kMeCK
+2+2fzmSWg1A/clFdicji1+xIvk7Wog9CVsZZK9iRHgAIxmsU+Iawb/Wwlwuu+/gI
+ZWFkund24iA2qLktFx/39CORZqfFRNiIsHSvIQIDAQABAoIBAA//Yahq3AgvBM4k
+VVwDBsNf/CfBGdn1gbblGEtgpUZkR7/1hW4hAHH6kHb6kZhPLmvbJBaqzcR97kRp
+mH0WRuhiz3jCIukPXPRyU7PQgGsCy7ALSKAa4h/sLZXIb+iV0r2RgsjNL2PfJYfO
+Or+NbmtTNkQaRJz4LNfXbFV1XO2Bwqw+swuIKFokhTJk/rF+PGn4yk5n38uQTwtO
+sZiq+C2aI8Hw8LZKCoGmioGrstT29ts4yfX2rQKPqowl2kJ2hLCKoBwl+h5WJwkA
+ECiOnNgflonp046T1bZQ9hIxnuw1y6Iq6SYJ5W74rsVLEzvvHPQAAWH1BQIG51gG
+MFW+CcECgYEA+N4a37q8G4c+QOWexsqnleYErsM1RRhnpRO8reVJMJa8mEGMr0eN
+1SAjEDL4/jQ2Pb2GlrsDi8x9MnyWo3VQDSyLLINrWyE+AiQuJjludPBL1B3RSw9t
+yTAaSQjcCgP6IIvz8W7gbKPadzICqpzr+iKsbZUYkEKMW6Sk47kmEIUCgYEAwzxM
+z/SAUs7TsGWW3XJfXxz1aX8bcRF0lpfTf1T/wNUPet37p0mf4JKOILIwuAJ5LUIh
+uxduS+7HdIh3sLxGIGVt4QXPDO1R1RZMM6DUZa51/9nLIK9q1ocMXOApufQrs4OM
+L2NcqRRKbVZPM9rBG9MKL0MgL1fUiV/OagVJFO0CgYA/A23mjE+o4LugjwN+7j00
+tUMmRQMt9Zn4sGCr30yC4wfpvV8z2nhNKI/4QA/PvcSmKWD0tXGWajahG+7AgKm+
+TDMJGFWMg4RB4otU3mHbdiSdFtexm7x+npFpQLcGSi+BIi6oSRzGJU7hs2X9cTJG
+6ZSjQocvr8n+QlgF2RGMSQKBgQCe2xiw+IPVXR7X38FCjEZXsMtqvJbKiGZyBjV7
+3OCAuZvv4GFcO8bPxs/IgNStVK3einnBro37UN2Pz158OqVgxMcEGmLfZNZ56Lu2
+In3QAoVW2ZKzFKh8x8Piai7pdGh+l2HgSRvjI3RvxJOLYMpR5oTZ8edlPjTcVk0w
+7P4K/QKBgQCPUzg3NonDO1t6R/MFsIJDIPR24VPorF8471hL1lANlrx1RrNn9/WY
+2i6DbqVf3ZP43iXLWEIMcn6FzrhjJPfkcNVXvU+TWm594cbPGYrzBP1ONaA6okmf
+hWfFqOK7kd53G/fwyOu4usJWEGojv1ey6Sn9X1myw/jG5XNE9yLrbA==
+-----END RSA PRIVATE KEY-----
+";
+    const TEST_JWK_N: &str = "vcvNMtDvpJExXOyytyqUOWhX2sxa-Xtxd4KmfJ05-iPgT_RiyZzx3UoTuJYtvDCCRcXKU13Rn8cIc0ushWlKpLDW08U4r9bBVctcajpnOumCcuIvnM1_HEiM-WuYPRFk0I5h--ueLA0KhIfPs0ORLpqsvF0XIuL6_uZtObrH9wxPMmG4r5Hh7h3Gm5PchY0R8H7VrEOm79fnra7OGg5nh7XkmStnZnwozODW0FFnpW-kMeCK2-2fzmSWg1A_clFdicji1-xIvk7Wog9CVsZZK9iRHgAIxmsU-Iawb_Wwlwuu-_gIZWFkund24iA2qLktFx_39CORZqfFRNiIsHSvIQ";
+    const TEST_JWK_E: &str = "AQAB";
+
     fn test_keys() -> TestKeys {
-        let private_key = RsaPrivateKey::new(&mut OsRng, 2048).expect("generate rsa key");
-        let private_pem = private_key
-            .to_pkcs1_pem(LineEnding::LF)
-            .expect("encode private key pem");
-        let public_der = private_key
-            .to_public_key()
-            .to_pkcs1_der()
-            .expect("encode public key der");
         TestKeys {
-            encoding: EncodingKey::from_rsa_pem(private_pem.as_bytes())
+            encoding: EncodingKey::from_rsa_pem(TEST_RSA_PRIVATE_KEY_PEM.as_bytes())
                 .expect("build encoding key"),
-            decoding: DecodingKey::from_rsa_der(public_der.as_bytes()),
+            decoding: DecodingKey::from_rsa_components(TEST_JWK_N, TEST_JWK_E)
+                .expect("build decoding key"),
         }
     }
 

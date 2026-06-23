@@ -181,19 +181,18 @@ impl KeyResolver for HttpJwksResolver {
 #[cfg(test)]
 mod http_tests {
     use axum::{Router, routing::get};
-    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-    use rand::rngs::OsRng;
-    use rsa::{RsaPrivateKey, traits::PublicKeyParts};
 
     use super::{HttpJwksResolver, KeyError, KeyResolver};
 
+    // Static 2048-bit RSA public key as JWK n/e (base64url). Baked so this
+    // test needs neither `rsa` nor `rand` (RUSTSEC-2023-0071: the `rsa` crate
+    // ships an unfixed Marvin timing sidechannel). The test only serves the
+    // public JWK from a mock IdP and resolves it; nothing signs here.
+    const TEST_JWK_N: &str = "vcvNMtDvpJExXOyytyqUOWhX2sxa-Xtxd4KmfJ05-iPgT_RiyZzx3UoTuJYtvDCCRcXKU13Rn8cIc0ushWlKpLDW08U4r9bBVctcajpnOumCcuIvnM1_HEiM-WuYPRFk0I5h--ueLA0KhIfPs0ORLpqsvF0XIuL6_uZtObrH9wxPMmG4r5Hh7h3Gm5PchY0R8H7VrEOm79fnra7OGg5nh7XkmStnZnwozODW0FFnpW-kMeCK2-2fzmSWg1A_clFdicji1-xIvk7Wog9CVsZZK9iRHgAIxmsU-Iawb_Wwlwuu-_gIZWFkund24iA2qLktFx_39CORZqfFRNiIsHSvIQ";
+    const TEST_JWK_E: &str = "AQAB";
+
     #[tokio::test]
     async fn discovers_and_loads_jwks() {
-        let private_key = RsaPrivateKey::new(&mut OsRng, 2048).expect("generate rsa key");
-        let public_key = private_key.to_public_key();
-        let n = URL_SAFE_NO_PAD.encode(public_key.n().to_bytes_be());
-        let e = URL_SAFE_NO_PAD.encode(public_key.e().to_bytes_be());
-
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind test listener");
@@ -202,7 +201,7 @@ mod http_tests {
         let jwks_uri = format!("{issuer}/keys");
         let openid = serde_json::json!({ "jwks_uri": jwks_uri }).to_string();
         let jwks = serde_json::json!({
-            "keys": [{ "kid": "k1", "n": n, "e": e }]
+            "keys": [{ "kid": "k1", "n": TEST_JWK_N, "e": TEST_JWK_E }]
         })
         .to_string();
 

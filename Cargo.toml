@@ -46,7 +46,15 @@ tower = "0.5"
 hex = "0.4"
 sha2 = "0.10"
 aws-config = "1"
-aws-sdk-s3 = "1"
+# Drop aws-sdk-s3's default `rustls` feature: it pulls the LEGACY rustls 0.21
+# stack (aws-smithy-http-client/legacy-rustls-ring -> rustls-webpki 0.101.7,
+# RUSTSEC-2026-0098/0099/0104). `default-https-client` (kept) uses the modern
+# rustls 0.23 + aws-lc-rs client instead; aws-lc-sys is already in the tree.
+aws-sdk-s3 = { version = "1", default-features = false, features = [
+    "sigv4a",
+    "default-https-client",
+    "rt-tokio",
+] }
 
 # tree-sitter deps for code flavor (Rust + TypeScript).
 # Version trio verified to build together on rust 1.96 + edition 2024:
