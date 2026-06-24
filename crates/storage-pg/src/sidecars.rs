@@ -929,6 +929,10 @@ pub fn memory_insert_sql(
     for (index, (_, cast)) in columns.iter().enumerate() {
         write!(&mut sql, ", ${}", index + 2).expect("writing SQL into String cannot fail");
         if let Some(pg_type) = cast {
+            // The cast target is a (possibly schema-qualified) Postgres type
+            // name supplied via `pg_sidecar_cast!`; validate it as an identifier
+            // so a flavor author cannot splice arbitrary SQL through `$pg_type`.
+            let pg_type = PgIdent::table(pg_type)?.as_str();
             write!(&mut sql, "::{pg_type}").expect("writing SQL into String cannot fail");
         }
     }
