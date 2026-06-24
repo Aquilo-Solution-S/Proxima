@@ -235,6 +235,77 @@ async fn drain_embedding_jobs_writes_embedding_and_deletes_job()
 }
 
 #[tokio::test]
+async fn upsert_memory_embedding_noops_after_source_memory_deleted()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner_fixture();
+        let engine = engine_for(
+            pg.clone(),
+            Some(Arc::new(ConstantEmbedding::prefixed(
+                "stub-fact-embed",
+                &[0.25, 0.5, 0.75],
+            ))),
+        );
+        let outcome = engine
+            .event_ingest(
+                &AuthzContext::single_owner(&owner, AuthPath::System),
+                fact_draft(&owner, "deleted before embedding write"),
+            )
+            .await?;
+        let claims = pg
+            .claim_pending_embedding_jobs("stub-fact-embed", 1)
+            .await?;
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].entity_id, outcome.memory_id);
+        assert_eq!(
+            pg.load_embedding_text(&owner, EntityKind::Fact, outcome.memory_id)
+                .await?,
+            Some("deleted before embedding write".to_string()),
+        );
+
+        sqlx::query(
+            "DELETE FROM proxima_core.embedding_jobs
+              WHERE entity_kind = 'Fact'
+                AND entity_id = $1",
+        )
+        .bind(outcome.memory_id.into_inner())
+        .execute(pg.pool())
+        .await?;
+        sqlx::query("DELETE FROM proxima_core.memories WHERE memory_id = $1")
+            .bind(outcome.memory_id.into_inner())
+            .execute(pg.pool())
+            .await?;
+
+        let embedding = vec![0.125; EMBEDDING_DIM];
+        pg.upsert_memory_embedding(
+            &owner,
+            EntityKind::Fact,
+            outcome.memory_id,
+            "stub-fact-embed",
+            EMBEDDING_DIM,
+            &embedding,
+        )
+        .await?;
+
+        assert_eq!(
+            pg.load_embedding_text(&owner, EntityKind::Fact, outcome.memory_id)
+                .await?,
+            None,
+        );
+        assert_eq!(
+            count_fact_embeddings(pg.pool(), outcome.memory_id).await?,
+            0
+        );
+        Ok(())
+    }
+    .await;
+    drop(pg);
+    drop_db(&db_name).await?;
+    result
+}
+
+#[tokio::test]
 async fn failed_embedding_jobs_retry_until_attempt_cap() -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {

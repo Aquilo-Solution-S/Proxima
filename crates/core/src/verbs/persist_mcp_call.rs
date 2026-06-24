@@ -9,13 +9,13 @@ use uuid::Uuid;
 
 use crate::{
     CitationMappingPayload, CitedObjectPayload, EventId, FactPayload, MemoryId, Owner,
-    PayloadKeyBuilder, SchemaId, SchemaVersion, SourceId, proxima_schema_id,
+    PayloadKeyBuilder, SchemaId, SchemaVersion, SourceId,
 };
 
-pub const MCP_CALL_FACT_SCHEMA: &str = proxima_schema_id!("mcp-call-logged-v1");
-pub const MCP_CALL_IO_SCHEMA: &str = proxima_schema_id!("mcp-call-io-v1");
-pub const MCP_CALL_CITATION_SCHEMA: &str = proxima_schema_id!("mcp-call-io-citation-v1");
-pub const MCP_CALL_SOURCE_ID: &str = "proxima-core/mcp-call";
+pub const MCP_CALL_FACT_SCHEMA: &str = "core/mcp-call-logged-v1";
+pub const MCP_CALL_IO_SCHEMA: &str = "core/mcp-call-io-v1";
+pub const MCP_CALL_CITATION_SCHEMA: &str = "core/mcp-call-io-citation-v1";
+pub const MCP_CALL_SOURCE_ID: &str = "core/mcp-call";
 
 #[derive(Debug, Clone)]
 pub struct McpCallLogInput {
@@ -204,7 +204,7 @@ mod tests {
         };
         assert_eq!(
             hex::encode(input.event_id().into_inner()),
-            "f3da70e0028a32b08d2861663f86c2810a91107590fdbc4b49a03f9e63556811"
+            "0f51e221b23cd144968950c67e3b7143375b06e6c27f104ab6adf7f205108d03"
         );
     }
 }

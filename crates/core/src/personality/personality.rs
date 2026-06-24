@@ -13,8 +13,7 @@ use uuid::Uuid;
 /// sidecar table: identity is the emergent result of the perspectives the
 /// agent authors, not a hardwired charter, so the root row carries only its
 /// `display_name` (in `memories.text`).
-pub const ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID: &str =
-    "proxima-core/root-personality-perspective-v1";
+pub const ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID: &str = "core/root-personality-perspective-v1";
 
 /// Maximum wake chain depth constant.
 pub const MAX_WAKE_CHAIN_DEPTH: u16 = 10;

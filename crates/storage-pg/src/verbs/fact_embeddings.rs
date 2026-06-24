@@ -280,7 +280,22 @@ pub async fn upsert_memory_embedding(
         "INSERT INTO proxima_core.embeddings
             (entity_kind, entity_id, embedding_version, model_id, vec,
              owner_principal_kind, owner_principal_id)
-         VALUES ($1, $2, 1, $3, $4::vector, $5, $6)
+         SELECT $1, $2, 1, $3, $4::vector, $5, $6
+          WHERE EXISTS (
+                SELECT 1
+                  FROM proxima_core.memories m
+                 WHERE m.memory_id = $2
+                   AND m.owner_principal_kind = $5
+                   AND m.owner_principal_id = $6
+                   AND m.text IS NOT NULL
+                   AND m.tombstoned_at IS NULL
+                   AND (
+                       ($1 = 'Fact'::proxima_core.entity_kind
+                        AND m.event_id IS NOT NULL
+                        AND m.kind IS NULL)
+                       OR m.kind = $1
+                   )
+            )
          ON CONFLICT (entity_kind, entity_id, embedding_version, model_id)
          DO UPDATE SET
              vec = EXCLUDED.vec,
