@@ -38,7 +38,7 @@ pub struct RuntimeBuilder {
 impl std::fmt::Debug for RuntimeBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeBuilder")
-            .field("database_url", &self.database_url)
+            .field("has_database_url", &self.database_url.is_some())
             .field("s3", &self.s3)
             .field("owner", &self.owner)
             .field("has_master_token", &self.master_token.is_some())
@@ -340,7 +340,7 @@ impl RuntimeBuilder {
 }
 
 /// Pure, validated runtime config.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RuntimeConfig {
     pub database_url: String,
     pub s3: Option<S3RuntimeConfig>,
@@ -358,6 +358,26 @@ pub struct RuntimeConfig {
     pub insecure_single_owner: bool,
     pub has_host_authenticator: bool,
     pub resource_metadata: Option<ResourceServerMetadata>,
+}
+
+impl std::fmt::Debug for RuntimeConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeConfig")
+            .field("database_url", &"<redacted>")
+            .field("s3", &self.s3)
+            .field("owner", &self.owner)
+            .field("has_master_token", &self.master_token.is_some())
+            .field("mcp", &self.mcp)
+            .field("expose_network", &self.expose_network)
+            .field("allowed_origins", &self.allowed_origins)
+            .field("allowed_hosts", &self.allowed_hosts)
+            .field("tool_scope", &self.tool_scope)
+            .field("stream_revalidation", &self.stream_revalidation)
+            .field("insecure_single_owner", &self.insecure_single_owner)
+            .field("has_host_authenticator", &self.has_host_authenticator)
+            .field("resource_metadata", &self.resource_metadata)
+            .finish()
+    }
 }
 
 impl RuntimeConfig {
@@ -671,6 +691,25 @@ mod tests {
             builder.allowed_origins.as_deref(),
             Some(["https://a.test".to_string(), "https://b.test".to_string()].as_slice())
         );
+    }
+
+    #[test]
+    fn runtime_builder_debug_redacts_database_url() {
+        let builder = RuntimeBuilder::default().database_url("postgres://user:secret@host/db");
+        let debug = format!("{builder:?}");
+
+        assert!(debug.contains("has_database_url"));
+        assert!(!debug.contains("secret"));
+        assert!(!debug.contains("postgres://user"));
+    }
+
+    #[test]
+    fn runtime_config_debug_redacts_database_url() {
+        let config = base_config(None);
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("postgres://localhost"));
     }
 
     #[test]
