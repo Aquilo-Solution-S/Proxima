@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use super::Engine;
 use crate::SchemaVersion;
 use crate::authz::{AuthzContext, Role};
 use crate::error::ProtocolError;
+use crate::llm::EmbeddingClient;
 use crate::storage::StorageError;
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_ingest::{
@@ -17,6 +20,12 @@ use crate::{EntityKind, MemoryId, Owner, Principal, SourceBatchId};
 pub struct EmbeddingDrainOutcome {
     pub processed: usize,
     pub failed: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmbedStep {
+    Embedded,
+    NothingToEmbed,
 }
 
 impl Engine {
@@ -270,15 +279,28 @@ impl Engine {
         entity_kind: EntityKind,
         memory_id: MemoryId,
     ) -> Result<bool, StorageError> {
+        let Some(client) = self.embed_client() else {
+            return Ok(false);
+        };
+        let step = self
+            .embed_claimed_memory(&client, owner, entity_kind, memory_id)
+            .await?;
+        Ok(matches!(step, EmbedStep::Embedded))
+    }
+
+    async fn embed_claimed_memory(
+        &self,
+        client: &Arc<dyn EmbeddingClient>,
+        owner: &Owner,
+        entity_kind: EntityKind,
+        memory_id: MemoryId,
+    ) -> Result<EmbedStep, StorageError> {
         let Some(text) = self
             .storage
             .load_embedding_text(owner, entity_kind, memory_id)
             .await?
         else {
-            return Ok(false);
-        };
-        let Some(client) = self.embed_client() else {
-            return Ok(false);
+            return Ok(EmbedStep::NothingToEmbed);
         };
         let embedding = client
             .embed(&text)
@@ -301,7 +323,7 @@ impl Engine {
                 &embedding,
             )
             .await?;
-        Ok(true)
+        Ok(EmbedStep::Embedded)
     }
 
     /// Owner-scoped, idempotent backfill enqueue for missing Fact
@@ -361,10 +383,12 @@ impl Engine {
             };
             outcome.processed += 1;
             match self
-                .ensure_memory_embedding(&claim.owner, claim.entity_kind, claim.entity_id)
+                .embed_claimed_memory(&client, &claim.owner, claim.entity_kind, claim.entity_id)
                 .await
             {
-                Ok(_) => self.storage.complete_embedding_job(&claim).await?,
+                Ok(EmbedStep::Embedded | EmbedStep::NothingToEmbed) => {
+                    self.storage.complete_embedding_job(&claim).await?;
+                }
                 Err(err) => {
                     outcome.failed += 1;
                     self.storage
@@ -469,5 +493,69 @@ impl<'a> SchemaIdDisplay<'a> {
 impl std::fmt::Debug for SchemaIdDisplay<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.0.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ids::UserId;
+    use crate::llm::{EMBEDDING_DIM, LlmError};
+    use crate::verbs::schema::FlavorRegistryFrozen;
+
+    #[derive(Debug)]
+    struct TestEmbedding;
+
+    #[async_trait::async_trait]
+    impl EmbeddingClient for TestEmbedding {
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+            Ok(vec![0.0; EMBEDDING_DIM])
+        }
+
+        fn model_id(&self) -> &'static str {
+            "test-embed"
+        }
+
+        fn dim(&self) -> usize {
+            EMBEDDING_DIM
+        }
+    }
+
+    fn test_owner() -> Owner {
+        Principal::User(UserId::new(uuid::Uuid::now_v7()))
+    }
+
+    #[tokio::test]
+    async fn embed_claimed_memory_without_text_returns_nothing_to_embed() {
+        let engine = Engine::new(FlavorRegistryFrozen::new());
+        let client: Arc<dyn EmbeddingClient> = Arc::new(TestEmbedding);
+
+        let step = engine
+            .embed_claimed_memory(
+                &client,
+                &test_owner(),
+                EntityKind::Fact,
+                MemoryId::new(uuid::Uuid::now_v7()),
+            )
+            .await
+            .expect("NoopStorage returns no text without error");
+
+        assert_eq!(step, EmbedStep::NothingToEmbed);
+    }
+
+    #[tokio::test]
+    async fn ensure_memory_embedding_without_client_preserves_noop_result() {
+        let engine = Engine::new(FlavorRegistryFrozen::new());
+
+        let embedded = engine
+            .ensure_memory_embedding(
+                &test_owner(),
+                EntityKind::Fact,
+                MemoryId::new(uuid::Uuid::now_v7()),
+            )
+            .await
+            .expect("missing embedding client is a no-op");
+
+        assert!(!embedded);
     }
 }

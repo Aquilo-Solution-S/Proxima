@@ -145,6 +145,9 @@ Design source of truth:
   EventHistory / GoalWrite / EventIngest / Schema), owner-scoped,
   transport-agnostic; operators and tool registry stay inside the
   binary.
+- [`docs/15-deployment.md`](docs/15-deployment.md) — deploying the
+  Code-flavor MCP server (Docker, OIDC bearer auth, network exposure,
+  tool-surface profiles).
 - [`docs/dev-perf.md`](docs/dev-perf.md) — perf reducer fixture format.
 
 ## Implementation commitment
