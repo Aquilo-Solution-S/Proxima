@@ -1868,11 +1868,12 @@ mod tests {
         // emitted by `pg_sidecar_select_col!`) are trusted compile-time
         // expressions and must be accepted verbatim, not rejected as
         // non-identifiers.
-        let enum_sql =
-            memory_select_batch_sql("proxima_core.agent_note_v1", "memory_id", &[
-                "state::text AS state",
-            ])
-            .unwrap();
+        let enum_sql = memory_select_batch_sql(
+            "proxima_core.agent_note_v1",
+            "memory_id",
+            &["state::text AS state"],
+        )
+        .unwrap();
         assert!(enum_sql.contains("state::text AS state"));
         // The table and key column are still validated as identifiers.
         assert!(memory_select_batch_sql("bad table;", "memory_id", &["title"]).is_err());
