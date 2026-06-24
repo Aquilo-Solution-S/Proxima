@@ -1,4 +1,4 @@
-use crate::mcp::{CoreActionMeta, McpTool, McpToolCtx, McpToolError};
+use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -77,6 +77,28 @@ pub enum CoreFactOutput {
 impl McpTool for CoreFactTool {
     const NAME: &'static str = "core_fact";
     const DESCRIPTION: &'static str = "Fact/citation dispatcher — citation_of_fact/citation_of_entity_head/facts_citing_object/tombstone.";
+    const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
+        McpActionArgSpec {
+            action: "citation_of_fact",
+            allowed_fields: &["fact"],
+            required_fields: &["fact"],
+        },
+        McpActionArgSpec {
+            action: "citation_of_entity_head",
+            allowed_fields: &["fact_entity_id"],
+            required_fields: &["fact_entity_id"],
+        },
+        McpActionArgSpec {
+            action: "facts_citing_object",
+            allowed_fields: &["cited_object_id"],
+            required_fields: &["cited_object_id"],
+        },
+        McpActionArgSpec {
+            action: "tombstone",
+            allowed_fields: &["fact", "confirm", "expect_handle"],
+            required_fields: &["fact", "confirm", "expect_handle"],
+        },
+    ];
     type Args = CoreFactArgs;
     type Output = CoreFactOutput;
 

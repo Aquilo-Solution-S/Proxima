@@ -278,4 +278,68 @@ mod tests {
         assert!(names.contains("proxima-code_retry_execution_request"));
         assert!(names.contains("proxima-code_work_item_bundle"));
     }
+
+    #[test]
+    fn composed_registry_mcp_tool_schemas_are_client_safe() {
+        fn contains_key(value: &serde_json::Value, key: &str) -> bool {
+            match value {
+                serde_json::Value::Object(map) => {
+                    map.contains_key(key) || map.values().any(|v| contains_key(v, key))
+                }
+                serde_json::Value::Array(items) => items.iter().any(|v| contains_key(v, key)),
+                _ => false,
+            }
+        }
+
+        let mut registry = FlavorRegistry::default();
+        super::register(&mut registry);
+        let frozen = registry.freeze();
+        let names: HashSet<_> = frozen
+            .list_mcp_tools()
+            .iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert!(names.contains("core_goal"));
+        assert!(names.contains("proxima-code_search_chunks"));
+
+        for tool in frozen.list_mcp_tools() {
+            assert_eq!(
+                tool.args_schema
+                    .get("type")
+                    .and_then(serde_json::Value::as_str),
+                Some("object"),
+                "tool {} must expose object-root args schema: {:#}",
+                tool.name,
+                tool.args_schema,
+            );
+            assert!(
+                tool.args_schema
+                    .get("properties")
+                    .is_some_and(serde_json::Value::is_object),
+                "tool {} must expose root properties: {:#}",
+                tool.name,
+                tool.args_schema,
+            );
+            for keyword in ["oneOf", "anyOf", "allOf"] {
+                assert!(
+                    tool.args_schema.get(keyword).is_none(),
+                    "tool {} must not expose root {keyword}: {:#}",
+                    tool.name,
+                    tool.args_schema,
+                );
+            }
+            assert!(
+                !contains_key(&tool.args_schema, "$ref"),
+                "tool {} must be $ref-free: {:#}",
+                tool.name,
+                tool.args_schema,
+            );
+            assert!(
+                !contains_key(&tool.args_schema, "$defs"),
+                "tool {} must be $defs-free: {:#}",
+                tool.name,
+                tool.args_schema,
+            );
+        }
+    }
 }

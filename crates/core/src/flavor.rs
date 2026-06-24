@@ -5,6 +5,7 @@
 //! See docs/08 §Registration mechanism.
 
 use crate::mcp::schema::mcp_tool_schema;
+use crate::mcp::validate_action_args;
 use crate::verbs::schema::{
     FlavorRegistryFrozen, MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
     ProtocolPayload, ProtocolPayloadIngress, ProtocolPayloadIngressEntry, SchemaCapabilityTags,
@@ -389,6 +390,7 @@ impl FlavorRegistry {
         let args_schema = mcp_tool_schema::<T::Args>();
         let call: McpCallFn = |ctx, args| {
             Box::pin(async move {
+                validate_action_args(T::NAME, T::ACTION_ARG_SPECS, &args)?;
                 let typed: T::Args = serde_json::from_value(args)
                     .map_err(|e| McpToolError::InvalidInput(e.to_string()))?;
                 let output = T::call(ctx, typed).await?;
@@ -405,6 +407,7 @@ impl FlavorRegistry {
             },
             produces_schema_ids: T::PRODUCES_SCHEMA_IDS,
             args_schema,
+            action_arg_specs: T::ACTION_ARG_SPECS,
             call,
         });
     }
@@ -802,17 +805,20 @@ mod tests {
         assert!(!schema_id_has_prefix("sch", "schémä/"));
     }
 
+    #[derive(schemars::JsonSchema, serde::Deserialize)]
+    struct EmptyDemoArgs {}
+
     struct Demo;
 
     impl McpTool for Demo {
         const NAME: &'static str = "proxima-test_demo";
         const DESCRIPTION: &'static str = "test";
-        type Args = ();
+        type Args = EmptyDemoArgs;
         type Output = ();
 
         fn call(
             _ctx: McpToolCtx,
-            _args: (),
+            _args: EmptyDemoArgs,
         ) -> futures::future::BoxFuture<'static, Result<(), McpToolError>> {
             Box::pin(async { Ok(()) })
         }
@@ -911,12 +917,12 @@ mod tests {
         impl McpTool for Bad {
             const NAME: &'static str = "wrong/demo";
             const DESCRIPTION: &'static str = "x";
-            type Args = ();
+            type Args = EmptyDemoArgs;
             type Output = ();
 
             fn call(
                 _ctx: McpToolCtx,
-                _args: (),
+                _args: EmptyDemoArgs,
             ) -> futures::future::BoxFuture<'static, Result<(), McpToolError>> {
                 Box::pin(async { Ok(()) })
             }
