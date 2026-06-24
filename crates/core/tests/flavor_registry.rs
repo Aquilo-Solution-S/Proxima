@@ -203,9 +203,9 @@ fn core_goal_action_metadata_preserves_required_fields() {
 
     let required_for = |action: &str| -> Vec<&str> {
         schema
-            .pointer(&format!("/x-proxima-actions/{action}/required"))
+            .pointer(&format!("/x-proxima-actions/{action}/required_fields"))
             .and_then(serde_json::Value::as_array)
-            .unwrap_or_else(|| panic!("core_goal metadata must expose required for {action}"))
+            .unwrap_or_else(|| panic!("core_goal metadata must expose required_fields for {action}"))
             .iter()
             .map(|item| item.as_str().expect("required field names are strings"))
             .collect()
@@ -239,13 +239,85 @@ fn core_goal_action_metadata_preserves_required_fields() {
         "shared root evidence schema must not keep an action-specific default",
     );
     let mark_achieved_evidence_description = schema
-        .pointer("/x-proxima-actions/mark_achieved/fieldDescriptions/evidence")
+        .pointer("/x-proxima-actions/mark_achieved/field_descriptions/evidence")
         .and_then(serde_json::Value::as_str)
         .expect("mark_achieved evidence field description");
     assert!(
         mark_achieved_evidence_description.contains("at least one"),
         "action metadata must preserve action-specific evidence semantics: {mark_achieved_evidence_description}",
     );
+}
+
+/// The hand-written `McpActionArgSpec` lists that gate `validate_action_args`
+/// (and feed the `proxima://tools` catalog) must match the schemars-derived
+/// `x-proxima-actions` metadata exactly. Without this guard the two silently
+/// drift: add a field to a dispatcher variant struct and forget its
+/// `allowed_fields` entry, and `validate_action_args` starts rejecting valid
+/// calls; drop one and it starts accepting fields serde cannot deserialize.
+#[test]
+fn action_arg_specs_match_schema_derived_action_fields() {
+    use std::collections::BTreeSet;
+
+    let frozen = FlavorRegistry::default().freeze();
+    let mut dispatchers_seen = BTreeSet::new();
+    for tool in frozen.list_mcp_tools() {
+        if tool.action_arg_specs.is_empty() {
+            continue;
+        }
+        dispatchers_seen.insert(tool.name);
+        let actions = tool
+            .args_schema
+            .pointer("/x-proxima-actions")
+            .and_then(serde_json::Value::as_object)
+            .unwrap_or_else(|| {
+                panic!(
+                    "dispatcher {} must expose x-proxima-actions: {:#}",
+                    tool.name, tool.args_schema
+                )
+            });
+        for spec in tool.action_arg_specs {
+            let meta = actions.get(spec.action).unwrap_or_else(|| {
+                panic!(
+                    "{} spec action `{}` has no x-proxima-actions entry: {:#}",
+                    tool.name, spec.action, tool.args_schema
+                )
+            });
+            let schema_fields = |key: &str| -> BTreeSet<String> {
+                meta.get(key)
+                    .and_then(serde_json::Value::as_array)
+                    .unwrap_or_else(|| {
+                        panic!("{} action `{}` metadata missing `{key}`", tool.name, spec.action)
+                    })
+                    .iter()
+                    .map(|field| field.as_str().expect("field names are strings").to_string())
+                    .collect()
+            };
+            let spec_fields =
+                |fields: &[&str]| fields.iter().map(|s| (*s).to_string()).collect::<BTreeSet<_>>();
+
+            assert_eq!(
+                schema_fields("allowed_fields"),
+                spec_fields(spec.allowed_fields),
+                "{} action `{}`: ACTION_ARG_SPECS.allowed_fields drifted from the schemars-derived schema",
+                tool.name,
+                spec.action,
+            );
+            assert_eq!(
+                schema_fields("required_fields"),
+                spec_fields(spec.required_fields),
+                "{} action `{}`: ACTION_ARG_SPECS.required_fields drifted from the schemars-derived schema",
+                tool.name,
+                spec.action,
+            );
+        }
+    }
+
+    for expected in ["core_goal", "core_wake", "core_personality", "core_fact"] {
+        assert!(
+            dispatchers_seen.contains(expected),
+            "expected dispatcher {expected} to carry ACTION_ARG_SPECS; saw {dispatchers_seen:?}",
+        );
+    }
 }
 
 /// Every registered MCP tool's argument schema must be fully inlined —

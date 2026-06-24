@@ -97,9 +97,9 @@ fn flatten_root_tagged_enum(value: &mut serde_json::Value) {
         action_metadata.insert(
             action.to_string(),
             serde_json::json!({
-                "allowedFields": allowed_fields,
-                "required": required,
-                "fieldDescriptions": field_descriptions,
+                "allowed_fields": allowed_fields,
+                "required_fields": required,
+                "field_descriptions": field_descriptions,
             }),
         );
     }
