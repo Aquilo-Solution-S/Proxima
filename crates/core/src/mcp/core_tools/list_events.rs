@@ -102,7 +102,8 @@ async fn load_edge_endpoint_kinds(
     let edge_ids = rows
         .iter()
         .filter_map(|row| match &row.event.kind {
-            ChangeEventKind::EdgeAppend { edge_id, .. } => Some(EdgeId::new(*edge_id)),
+            ChangeEventKind::EdgeAppend { edge_id, .. }
+            | ChangeEventKind::EdgeDelete { edge_id, .. } => Some(EdgeId::new(*edge_id)),
             ChangeEventKind::EntityAppend { .. } | ChangeEventKind::EntityDelete { .. } => None,
         })
         .collect::<Vec<_>>();
@@ -198,6 +199,39 @@ fn event_item(
                 target: Some(format_ref(ctx, &target, target_kind)),
             }
         }
+        ChangeEventKind::EdgeDelete {
+            edge_id,
+            relation,
+            source,
+            target,
+        } => {
+            let (source_kind, target_kind) = edge_kinds
+                .get(&edge_id)
+                .copied()
+                .unwrap_or((kind_from_ref(&source), kind_from_ref(&target)));
+            EventItem {
+                seq,
+                kind: "edge_delete".into(),
+                authoring_personality,
+                wake_chain_depth: row.event.wake_chain_depth,
+                entity: None,
+                entity_kind: None,
+                schema_id: None,
+                schema_version: None,
+                supersedes: None,
+                edge: Some(ctx.format_edge(EdgeId::new(edge_id))),
+                relation: Some(relation),
+                source: Some(format_ref(ctx, &source, source_kind)),
+                target: Some(format_ref(ctx, &target, target_kind)),
+            }
+        }
+    }
+}
+
+fn kind_from_ref(r: &EntityRef) -> EntityKind {
+    match r {
+        EntityRef::Goal(_) => EntityKind::Goal,
+        EntityRef::FactEntity(_) | EntityRef::Memory(_) => EntityKind::Fact,
     }
 }
 
