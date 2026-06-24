@@ -170,8 +170,13 @@ Universal edge constraints:
 - F/A/P layer rule: `ℓ(source) ≥ ℓ(target)`.
 - Goal endpoints sit outside F/A/P layer comparison; descriptor masks govern.
 - Descriptor masks may tighten legal shapes, never relax F/A/P layering.
-- Direct `Causal` / `Interpretive` Fact→Fact edges are forbidden.
-- `Supersession` never touches Facts and requires same endpoint kind.
+- Fact-sourced agent/user links are rejected by `core_link`; derive an
+  Abstraction/Perspective and link from that.
+- `Causal` / `Interpretive` Fact→Fact edges are forbidden.
+- `Supersession` Fact→Fact edges are forbidden.
+- `Structural` / `Provenance` Fact→Fact edges are legal.
+- Relation enforcement lives in `crates/core/src/relation.rs`;
+  `core_link` adds the no-Fact-source agent-link rule.
 
 F/A/P matrix:
 
