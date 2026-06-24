@@ -607,7 +607,7 @@ async fn facade_core_fact_tombstone_is_idempotent() {
             authz.clone(),
             owner.clone(),
             "core_fact",
-            serde_json::json!({ "action": "tombstone", "fact": memory }),
+            serde_json::json!({ "action": "tombstone", "fact": memory, "confirm": true, "expect_handle": memory }),
         )
         .await?;
         assert_eq!(first["fact_erased"], true);
@@ -618,7 +618,7 @@ async fn facade_core_fact_tombstone_is_idempotent() {
             authz,
             owner.clone(),
             "core_fact",
-            serde_json::json!({ "action": "tombstone", "fact": memory }),
+            serde_json::json!({ "action": "tombstone", "fact": memory, "confirm": true, "expect_handle": memory }),
         )
         .await?;
         assert_eq!(second["fact_erased"], false);
