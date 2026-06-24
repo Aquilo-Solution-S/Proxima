@@ -20,11 +20,14 @@
 //!   `proxima-core` payload traits + ids and of `proxima-storage-pg` typed
 //!   verbs and sidecar generators (e.g. [`pg_sidecar`], [`PgMemorySidecar`],
 //!   [`ingest_fact`], [`append_edge`], [`append_derived_in_tx`],
-//!   [`proxima_flavor`]). These are deliberately surfaced through the facade so
-//!   a flavor or host can build typed sidecars, citations, and ingest paths
-//!   **without depending on `proxima-core` / `proxima-storage-pg` directly**.
-//!   They are part of the framework's supported surface, not internal leakage;
-//!   treat them as lower-level and longer-to-stabilize than the host entry point.
+//!   [`proxima_flavor`], [`CitationSpec`]). These are deliberately surfaced
+//!   through the facade so a flavor or host can build typed sidecars, citations,
+//!   and ingest paths while **reducing or avoiding direct dependencies on
+//!   `proxima-core` / `proxima-storage-pg`**. They are part of the framework's
+//!   supported surface, not internal leakage; treat them as lower-level and
+//!   longer-to-stabilize than the host entry point. (`examples/embedded-minimal`
+//!   imports a few core types directly for illustration; hosts may instead route
+//!   those through these re-exports.)
 
 mod app;
 mod bundle;
@@ -45,8 +48,8 @@ pub use proxima_core::error::ProtocolError;
 pub use proxima_core::llm;
 pub use proxima_core::storage::NoopStorage;
 pub use proxima_core::verbs::event_ingest::{
-    AuthorizedCitationAttachment, EventDraft, EventIngestOutcome, InlineCitationMappingDraft,
-    InlineCitedObjectDraft,
+    AuthorizedCitationAttachment, CitationSpec, EventDraft, EventIngestOutcome,
+    InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
 pub use proxima_core::verbs::mcp_call_history::{
     MAX_MCP_CALL_HISTORY_LIMIT, McpCallHistoryRequest, McpCallHistoryResponse, McpCallRecord,
