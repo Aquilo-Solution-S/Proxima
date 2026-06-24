@@ -72,7 +72,7 @@ Optional:
   -h, --help               Print this message
 ";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct McpConfig {
     pub database_url: String,
     pub owner: Owner,
@@ -80,13 +80,36 @@ pub struct McpConfig {
     pub master_token: Option<Uuid>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for McpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpConfig")
+            .field("database_url", &"<redacted>")
+            .field("owner", &self.owner)
+            .field("bind", &self.bind)
+            .field("master_token", &self.master_token.map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct ReconcileConfig {
     pub database_url: String,
     pub model: Option<String>,
     pub scope: ReconcileScope,
     pub limit: Option<i64>,
     pub drain: bool,
+}
+
+impl std::fmt::Debug for ReconcileConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReconcileConfig")
+            .field("database_url", &"<redacted>")
+            .field("model", &self.model)
+            .field("scope", &self.scope)
+            .field("limit", &self.limit)
+            .field("drain", &self.drain)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

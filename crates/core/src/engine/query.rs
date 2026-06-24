@@ -35,13 +35,17 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks the graph-read role, or `Internal` when the storage query fails.
+    /// lacks the graph-read role, `InvalidArgument` when `req.limit == 0`, or
+    /// `Internal` when the storage query fails.
     pub async fn query(
         &self,
         authz: &AuthzContext,
         req: &QueryRequest,
     ) -> Result<QueryResponse, ProtocolError> {
         super::authorize(authz, &req.principal, Role::GraphRead)?;
+        if req.limit == 0 {
+            return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
+        }
         let mut effective = req.clone();
         if effective.stateful_heads.is_empty() {
             effective.stateful_heads = match effective.schema_id.as_ref() {
