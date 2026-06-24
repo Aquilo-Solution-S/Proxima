@@ -561,6 +561,14 @@ impl McpToolError {
             Self::Other(_) => McpToolErrorKind::Internal,
         }
     }
+
+    #[must_use]
+    pub fn client_message(&self) -> String {
+        match self.kind() {
+            McpToolErrorKind::InvalidInput | McpToolErrorKind::InvalidRequest => self.to_string(),
+            McpToolErrorKind::Internal => "internal server error".to_string(),
+        }
+    }
 }
 
 impl From<ResolveError> for McpToolError {
@@ -872,6 +880,18 @@ mod tests {
             invalid.to_string().contains("expected Fact id"),
             "message: {invalid}"
         );
+    }
+
+    #[test]
+    fn internal_tool_error_client_message_is_generic() {
+        let storage = McpToolError::from(crate::StorageError::Internal(
+            "postgres password=secret".into(),
+        ));
+        assert_eq!(storage.kind(), McpToolErrorKind::Internal);
+        assert_eq!(storage.client_message(), "internal server error");
+
+        let invalid = McpToolError::InvalidInput("expected Fact id".into());
+        assert_eq!(invalid.client_message(), "invalid input: expected Fact id");
     }
 
     #[test]

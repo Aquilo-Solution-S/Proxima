@@ -170,8 +170,7 @@ impl ServerHandler for DynamicHandler {
                 .read_resource(&uri, author, auth)
                 .await
                 .map_err(resource_invocation_error_to_error_data)?;
-            let text = serde_json::to_string(&value)
-                .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
+            let text = serde_json::to_string(&value).map_err(generic_internal_error)?;
             Ok(ReadResourceResult::new(vec![
                 ResourceContents::text(text, uri).with_mime_type("application/json"),
             ]))
@@ -257,8 +256,7 @@ impl ServerHandler for DynamicHandler {
                 .call_tool(&canonical_name, args, author, auth)
                 .await
                 .map_err(tool_invocation_error_to_error_data)?;
-            let text = serde_json::to_string(&output)
-                .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
+            let text = serde_json::to_string(&output).map_err(generic_internal_error)?;
             let mut result = CallToolResult::success(vec![Content::text(text)]);
             result.structured_content = Some(output);
             Ok(result)
@@ -300,12 +298,16 @@ fn resource_invocation_error_to_error_data(err: ToolInvocationError) -> ErrorDat
 /// `invalid_request` (-32600); infrastructure faults → `internal_error`
 /// (-32603).
 fn mcp_tool_error_to_error_data(err: &McpToolError) -> ErrorData {
-    let msg = err.to_string();
     match err.kind() {
-        McpToolErrorKind::InvalidInput => ErrorData::invalid_params(msg, None),
-        McpToolErrorKind::InvalidRequest => ErrorData::invalid_request(msg, None),
-        McpToolErrorKind::Internal => ErrorData::internal_error(msg, None),
+        McpToolErrorKind::InvalidInput => ErrorData::invalid_params(err.client_message(), None),
+        McpToolErrorKind::InvalidRequest => ErrorData::invalid_request(err.client_message(), None),
+        McpToolErrorKind::Internal => generic_internal_error(err),
     }
+}
+
+fn generic_internal_error(err: impl std::fmt::Display) -> ErrorData {
+    tracing::error!(error = %err, "mcp internal error");
+    ErrorData::internal_error("internal server error", None)
 }
 
 fn to_rmcp_annotations(annotations: McpToolAnnotations) -> ToolAnnotations {
@@ -446,21 +448,23 @@ fn author_from_args(
 fn caller_self_perspective_from_args(
     args: &serde_json::Value,
 ) -> Result<Option<MemoryId>, ErrorData> {
-    let Some(raw) = args
-        .get("_proxima_caller_self_perspective")
-        .or_else(|| args.get("caller_self_perspective"))
-        .or_else(|| args.get("current_root_perspective_memory_id"))
-    else {
+    let Some((field, raw)) = [
+        "_proxima_caller_self_perspective",
+        "caller_self_perspective",
+        "current_root_perspective_memory_id",
+    ]
+    .into_iter()
+    .find_map(|field| args.get(field).map(|raw| (field, raw))) else {
         return Ok(None);
     };
     let Some(raw) = raw.as_str() else {
-        return Err(ErrorData::internal_error(
-            "caller self perspective metadata must be a UUID string",
+        return Err(ErrorData::invalid_params(
+            format!("{field} must be a UUID string"),
             None,
         ));
     };
     let id = uuid::Uuid::parse_str(raw).map_err(|err| {
-        ErrorData::internal_error(format!("invalid caller self perspective UUID: {err}"), None)
+        ErrorData::invalid_params(format!("{field} must be a valid UUID: {err}"), None)
     })?;
     Ok(Some(MemoryId::new(id)))
 }
@@ -510,6 +514,38 @@ mod tests {
         assert!(args.get("_proxima_caller_self_perspective").is_none());
         assert!(args.get("caller_self_perspective").is_none());
         assert!(args.get("current_root_perspective_memory_id").is_none());
+    }
+
+    #[test]
+    fn caller_self_perspective_metadata_errors_are_invalid_params() {
+        let args = serde_json::json!({
+            "caller_self_perspective": 42,
+        });
+        let err = author_from_args(&args, None).expect_err("non-string metadata fails");
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("caller_self_perspective"),
+            "message: {}",
+            err.message
+        );
+
+        let args = serde_json::json!({
+            "current_root_perspective_memory_id": "not-a-uuid",
+        });
+        let err = author_from_args(&args, None).expect_err("invalid uuid metadata fails");
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("current_root_perspective_memory_id"),
+            "message: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn internal_tool_errors_are_redacted_for_clients() {
+        let err = mcp_tool_error_to_error_data(&McpToolError::Other("storage DSN leaked".into()));
+        assert_eq!(err.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+        assert_eq!(err.message, "internal server error");
     }
 
     // Completeness gate: every `core_` tool the substrate registers must
