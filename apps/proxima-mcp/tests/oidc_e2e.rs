@@ -104,7 +104,7 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
             leeway_secs: 60,
         },
         Arc::new(resolver),
-    );
+    )?;
 
     let running = Proxima::<ProximaMcpApp>::app()
         .database_url(database_url)
