@@ -56,9 +56,9 @@ aws-sdk-s3 = { version = "1", default-features = false, features = [
     "rt-tokio",
 ] }
 
-# tree-sitter deps for code flavor (Rust + TypeScript).
-# Version trio verified to build together on rust 1.96 + edition 2024:
-# tree-sitter 0.25, tree-sitter-rust 0.24, tree-sitter-typescript 0.23.
+# tree-sitter deps for the code flavor (Rust + TypeScript). Core and grammar
+# crates version independently and must stay ABI-compatible, so bump them as a
+# set and let CI confirm they parse (workspace nextest + the code-feature e2e).
 tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
 tree-sitter-typescript = "0.23"
