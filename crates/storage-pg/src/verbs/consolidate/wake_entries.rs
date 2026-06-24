@@ -7,6 +7,33 @@ use sqlx::{PgPool, Row};
 
 use crate::error::map_err;
 
+async fn lock_active_personality_for_update(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &Owner,
+    personality_instance_id: PersonalityInstanceId,
+) -> Result<(), StorageError> {
+    let (owner_kind, owner_principal_id) = owner.columns();
+    let locked: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT personality_instance_id
+         FROM proxima_core.personality
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND personality_instance_id = $3
+           AND status <> 'tombstoned'
+         FOR UPDATE",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(personality_instance_id.into_inner())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    if locked.is_none() {
+        return Err(StorageError::NotFound);
+    }
+    Ok(())
+}
+
 async fn replace_wake_entries_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     req: &SetWakeEntriesRequest,
@@ -60,6 +87,7 @@ pub async fn set_wake_entries(
     req: &SetWakeEntriesRequest,
 ) -> Result<SetWakeEntriesResponse, StorageError> {
     let mut tx = pool.begin().await.map_err(map_err)?;
+    lock_active_personality_for_update(&mut tx, &req.owner(), req.personality_instance_id).await?;
     let resp = replace_wake_entries_in_tx(&mut tx, req).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(resp)
@@ -113,28 +141,10 @@ pub async fn set_wake_entries_within(
     personality_instance_id: PersonalityInstanceId,
     mutate: proxima_core::WakeEntriesMutator,
 ) -> Result<SetWakeEntriesResponse, StorageError> {
-    let (owner_kind, owner_principal_id) = owner.columns();
     let mut tx = pool.begin().await.map_err(map_err)?;
 
     // Lock the personality row to serialise concurrent granular ops.
-    let locked: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT personality_instance_id
-         FROM proxima_core.personality
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND personality_instance_id = $3
-           AND status <> 'tombstoned'
-         FOR UPDATE",
-    )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(personality_instance_id.into_inner())
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(map_err)?;
-    if locked.is_none() {
-        return Err(StorageError::NotFound);
-    }
+    lock_active_personality_for_update(&mut tx, owner, personality_instance_id).await?;
 
     let current = read_wake_entries_in_tx(&mut tx, owner, personality_instance_id).await?;
 

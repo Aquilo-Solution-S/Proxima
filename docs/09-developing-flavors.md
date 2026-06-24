@@ -68,7 +68,7 @@ Reference: `examples/embedded-minimal/src/flavor.rs`.
 | Flavor id | `kebab-case`; stable persisted prefix |
 | Schema ids | `<flavor_id>/<local-schema-vN>` |
 | Relation ids | `<flavor_id>/<local-relation>` |
-| MCP tools | `<flavor_id>/<tool>` |
+| MCP tools | provider-safe `<flavor_id>_<tool>` |
 | SQL schema | `<flavor_id>` converted to snake case |
 | Rust crate | `proxima-<local>` for in-repo first-party flavors |
 
@@ -447,7 +447,7 @@ Tool contract:
 
 | Field | Rule |
 |---|---|
-| Name | `<flavor_id>/<verb>` |
+| Name | provider-safe `<flavor_id>_<verb>` |
 | Args | `Deserialize + JsonSchema` |
 | Output | `Serialize` |
 | Storage | use typed engine/storage APIs; avoid raw `PgPool` except flavor-local read helpers |

@@ -326,17 +326,8 @@ impl CitedBlobStore {
             return Ok(CitedBlobUploadAbortOutcomeTs { aborted: true });
         }
 
-        let client = self.config.client().await?;
-        client
-            .delete_object()
-            .bucket(&row.bucket)
-            .key(&row.object_key)
-            .send()
-            .await
-            .map_err(|e| BlobError::S3(format!("delete pending upload failed: {e}")))?;
-
         let (owner_kind, owner_principal_id) = owner_columns(&owner);
-        sqlx::query(
+        let rows_affected = sqlx::query(
             "UPDATE proxima_core.cited_object_uploads \
                 SET status = 'aborted', aborted_at = now() \
               WHERE owner_principal_kind = $1 \
@@ -349,9 +340,33 @@ impl CitedBlobStore {
         .bind(upload_id)
         .execute(&self.pool)
         .await
-        .map_err(BlobError::Db)?;
+        .map_err(BlobError::Db)?
+        .rows_affected();
 
-        Ok(CitedBlobUploadAbortOutcomeTs { aborted: true })
+        let decision_status = if rows_affected == 0 {
+            load_upload(&self.pool, &owner, upload_id).await?.status
+        } else {
+            row.status
+        };
+        match abort_transition_decision(&decision_status, rows_affected)? {
+            AbortTransitionDecision::WonPending => {
+                let client = self.config.client().await?;
+                client
+                    .delete_object()
+                    .bucket(&row.bucket)
+                    .key(&row.object_key)
+                    .send()
+                    .await
+                    .map_err(|e| BlobError::S3(format!("delete pending upload failed: {e}")))?;
+                Ok(CitedBlobUploadAbortOutcomeTs { aborted: true })
+            }
+            AbortTransitionDecision::Completed => {
+                Ok(CitedBlobUploadAbortOutcomeTs { aborted: false })
+            }
+            AbortTransitionDecision::AbortedOrExpired => {
+                Ok(CitedBlobUploadAbortOutcomeTs { aborted: true })
+            }
+        }
     }
 
     /// Produce a presigned read URL for a completed cited blob.
@@ -576,12 +591,13 @@ async fn persist_completed_blob(
     .await
     .map_err(BlobError::Db)?;
 
-    sqlx::query(
+    let rows_affected = sqlx::query(
         "UPDATE proxima_core.cited_object_uploads \
             SET status = 'completed', cited_object_id = $1, completed_at = now() \
           WHERE owner_principal_kind = $2 \
             AND owner_principal_id = $3 \
-            AND upload_id = $4",
+            AND upload_id = $4 \
+            AND status = 'pending'",
     )
     .bind(cited_object_id)
     .bind(owner_kind)
@@ -589,7 +605,13 @@ async fn persist_completed_blob(
     .bind(upload_id)
     .execute(tx.as_mut())
     .await
-    .map_err(BlobError::Db)?;
+    .map_err(BlobError::Db)?
+    .rows_affected();
+    if rows_affected == 0 {
+        return Err(BlobError::State(
+            "upload no longer pending (aborted/expired)".into(),
+        ));
+    }
 
     tx.commit().await.map_err(BlobError::Db)?;
     Ok(CompletedBlob {
@@ -718,6 +740,33 @@ fn format_time(value: OffsetDateTime) -> Result<String, BlobError> {
         .map_err(|e| BlobError::State(e.to_string()))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AbortTransitionDecision {
+    WonPending,
+    Completed,
+    AbortedOrExpired,
+}
+
+fn abort_transition_decision(
+    observed_status: &str,
+    rows_affected: u64,
+) -> Result<AbortTransitionDecision, BlobError> {
+    match rows_affected {
+        1 => Ok(AbortTransitionDecision::WonPending),
+        0 => match observed_status {
+            "completed" => Ok(AbortTransitionDecision::Completed),
+            "aborted" | "expired" => Ok(AbortTransitionDecision::AbortedOrExpired),
+            "pending" => Err(BlobError::State(
+                "upload abort did not transition pending row".into(),
+            )),
+            other => Err(BlobError::State(format!("unknown upload status {other}"))),
+        },
+        other => Err(BlobError::State(format!(
+            "upload abort affected {other} rows"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use proxima_core::UserId;
@@ -760,5 +809,30 @@ mod tests {
             owner_hash_hex(&owner),
             "ff5a53f4084b4ac3d3d62e55ba003304c6a7cb57065c0477ff5b95fbb6a82efd"
         );
+    }
+
+    #[test]
+    fn abort_transition_decision_is_race_idempotent() {
+        assert_eq!(
+            abort_transition_decision("pending", 1).expect("pending transition wins"),
+            AbortTransitionDecision::WonPending
+        );
+        assert_eq!(
+            abort_transition_decision("completed", 0).expect("completed race loss is idempotent"),
+            AbortTransitionDecision::Completed
+        );
+        assert_eq!(
+            abort_transition_decision("aborted", 0).expect("aborted replay is idempotent"),
+            AbortTransitionDecision::AbortedOrExpired
+        );
+        assert_eq!(
+            abort_transition_decision("expired", 0).expect("expired replay is idempotent"),
+            AbortTransitionDecision::AbortedOrExpired
+        );
+        assert!(matches!(
+            abort_transition_decision("pending", 0),
+            Err(BlobError::State(message))
+                if message == "upload abort did not transition pending row"
+        ));
     }
 }
