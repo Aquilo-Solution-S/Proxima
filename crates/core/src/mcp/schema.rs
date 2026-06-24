@@ -83,7 +83,7 @@ fn flatten_root_tagged_enum(value: &mut serde_json::Value) {
         if count > 1
             && let Some(property_schema) = merged_properties.get_mut(&field)
         {
-            neutralize_shared_property_description(property_schema, &field);
+            neutralize_shared_property_description(property_schema, &field, &discriminator);
         }
     }
 
@@ -92,7 +92,7 @@ fn flatten_root_tagged_enum(value: &mut serde_json::Value) {
         serde_json::json!({
             "type": "string",
             "enum": action_values,
-            "description": "Dispatcher action to execute. Additional fields depend on the selected action."
+            "description": format!("Dispatcher {discriminator} to execute. Additional fields depend on the selected {discriminator}.")
         }),
     );
     map.remove("oneOf");
@@ -162,7 +162,13 @@ fn merge_variant(
                     serde_json::Value::String(description.to_string()),
                 );
             }
-            merge_property_schema(merged_properties, name, property_schema, action);
+            merge_property_schema(
+                merged_properties,
+                name,
+                property_schema,
+                action,
+                discriminator,
+            );
         }
     }
     action_metadata.insert(
@@ -226,6 +232,7 @@ fn merge_property_schema(
     name: &str,
     property_schema: &serde_json::Value,
     action: &str,
+    discriminator: &str,
 ) {
     let Some(existing) = merged_properties.get_mut(name) else {
         merged_properties.insert(name.to_string(), property_schema.clone());
@@ -233,7 +240,7 @@ fn merge_property_schema(
     };
     if validation_shape(existing) == validation_shape(property_schema) {
         if existing != property_schema {
-            neutralize_shared_property_description(existing, name);
+            neutralize_shared_property_description(existing, name, discriminator);
         }
         return;
     }
@@ -242,7 +249,11 @@ fn merge_property_schema(
     );
 }
 
-fn neutralize_shared_property_description(value: &mut serde_json::Value, name: &str) {
+fn neutralize_shared_property_description(
+    value: &mut serde_json::Value,
+    name: &str,
+    discriminator: &str,
+) {
     if let serde_json::Value::Object(map) = value {
         for key in ["default", "title"] {
             map.remove(key);
@@ -250,7 +261,7 @@ fn neutralize_shared_property_description(value: &mut serde_json::Value, name: &
         map.insert(
             "description".to_string(),
             serde_json::Value::String(format!(
-                "Shared dispatcher field `{name}`. Semantics and requiredness depend on `action`; see `x-proxima-actions` or `proxima://tools` for action-specific guidance."
+                "Shared dispatcher field `{name}`. Semantics and requiredness depend on `{discriminator}`; see `x-proxima-actions` or `proxima://tools` for {discriminator}-specific guidance."
             )),
         );
     }
@@ -420,6 +431,37 @@ mod tests {
         A { x: Option<String> },
         #[serde(rename = "b")]
         B {},
+    }
+
+    /// A `kind`-tagged dispatcher with a field (`shared`) present in more than
+    /// one variant, so the flattener neutralizes its description. That guidance
+    /// text must name the actual discriminator (`kind`), not a hardcoded
+    /// `action`.
+    #[derive(Deserialize, JsonSchema)]
+    #[allow(dead_code)]
+    #[serde(tag = "kind")]
+    enum DemoShared {
+        #[serde(rename = "left")]
+        Left { shared: Option<String> },
+        #[serde(rename = "right")]
+        Right { shared: Option<String> },
+    }
+
+    #[test]
+    fn shared_field_description_names_the_actual_discriminator() {
+        let schema = mcp_tool_schema::<DemoShared>();
+        let description = schema
+            .pointer("/properties/shared/description")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("shared field description present: {schema:#}"));
+        assert!(
+            description.contains("depend on `kind`"),
+            "shared-field guidance must name the actual discriminator `kind`: {description}",
+        );
+        assert!(
+            !description.contains("`action`"),
+            "shared-field guidance must not leak the hardcoded `action` discriminator: {description}",
+        );
     }
 
     #[test]
