@@ -252,8 +252,8 @@ impl ProximaBuilder {
 
     /// Embedding client passthrough (`Engine::with_embed`).
     ///
-    /// Inference targets and tiers remain runtime config rows, not env
-    /// handled by this facade.
+    /// Proxima registers no inference targets or tiers; hosts inject the
+    /// embedding/model-seat client used by retrieval.
     #[must_use]
     pub fn embed_client(mut self, client: Arc<dyn EmbeddingClient>) -> Self {
         self.embed_client = Some(client);

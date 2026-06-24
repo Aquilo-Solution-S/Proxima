@@ -49,11 +49,15 @@ Endpoint:
   http://127.0.0.1:31415/mcp
 
 Tools:
-  core/search_memories
-  core/get_memory
-  core/remember
-  core/derive
-  core/link
+  core_search_memories
+  core_remember
+  core_record_utterance
+  core_derive
+  core_link
+  core_goal
+  core_wake
+  core_personality
+  core_fact
 ";
 
 pub const RECONCILE_USAGE: &str = "\

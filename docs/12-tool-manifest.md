@@ -26,11 +26,10 @@ Stored ids:
 | Surface | Id form |
 |---|---|
 | Core MCP tool | provider-safe registered names, currently `core_*` (for example `core_remember`, `core_goal`) |
-| Flavor MCP tool | `<flavor>/<name>` |
+| Flavor MCP tool | provider-safe `<flavor>_<name>` |
 
-Provider-facing names are derived per invocation with
-`provider_safe_tool_name(canonical)`. The harness keeps a reverse map
-from provider-safe name to canonical id before dispatch.
+Registered MCP tool names are already provider-safe. Slash-separated
+schema/relation ids remain separate from MCP wire ids.
 
 ## Rust Surface
 
@@ -80,7 +79,7 @@ Prefix rules live in 08:
 | Tool owner | Prefix |
 |---|---|
 | substrate MCP tool | `core_` |
-| flavor MCP tool | `<flavor>/` |
+| flavor MCP tool | `<flavor>_` |
 
 `FlavorRegistry::freeze()` rejects duplicate MCP tool names. Schema and
 relation validation remains the registry's build-time responsibility
