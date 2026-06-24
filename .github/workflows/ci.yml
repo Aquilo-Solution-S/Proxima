@@ -27,7 +27,7 @@ jobs:
     name: fmt + clippy + doc
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # rust-toolchain.toml pins the channel (1.96.0) + components (rustfmt, clippy).
       - uses: Swatinem/rust-cache@v2
       - name: rustfmt
@@ -45,7 +45,7 @@ jobs:
     name: cargo-deny (advisories + licenses + bans + sources)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # cargo-deny-action v2.0.20 pinned by commit SHA (bundles cargo-deny 0.19.8,
       # the schema deny.toml targets). Dependabot's github-actions ecosystem keeps
       # this current via reviewable PRs.
@@ -82,7 +82,7 @@ jobs:
       DATABASE_URL: postgres://proxima:proxima@localhost:5432/proxima_e2e
       PROXIMA_TEST_DATABASE_URL: postgres://proxima:proxima@localhost:5432/proxima_e2e
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # self_ingestion_pg shallow-clones the workspace and ingests its
           # most-recent commits; a single-commit CI checkout would starve
