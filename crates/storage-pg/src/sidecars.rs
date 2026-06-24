@@ -18,6 +18,7 @@ use proxima_core::{
 };
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
+use crate::pg_ident::PgIdent;
 use crate::verbs::event_ingest::PgFactSidecar;
 
 pub type PgSidecarFuture<'t> = Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
@@ -901,16 +902,27 @@ pub fn int_to_u64(value: i64, column: &str) -> Result<u64, StorageError> {
     u64::try_from(value).map_err(|err| StorageError::Internal(format!("invalid {column}: {err}")))
 }
 
-#[must_use]
+/// Build a memory sidecar insert statement.
+///
+/// # Errors
+///
+/// Returns `StorageError::Internal` when the table, key column, or payload
+/// column identifiers are not valid Postgres identifiers.
 pub fn memory_insert_sql(
     table: &str,
     key_column: &str,
     columns: &[(&str, Option<&str>)],
-) -> String {
+) -> Result<String, StorageError> {
+    let table = PgIdent::table(table)?.as_str();
+    let key_column = PgIdent::column(key_column)?.as_str();
+    let columns = columns
+        .iter()
+        .map(|(column, cast)| Ok((PgIdent::column(column)?.as_str(), *cast)))
+        .collect::<Result<Vec<_>, StorageError>>()?;
     let mut sql = String::new();
     write!(&mut sql, "INSERT INTO {table} ({key_column}")
         .expect("writing SQL into String cannot fail");
-    for (column, _) in columns {
+    for (column, _) in &columns {
         write!(&mut sql, ", {column}").expect("writing SQL into String cannot fail");
     }
     sql.push_str(") VALUES ($1");
@@ -921,19 +933,34 @@ pub fn memory_insert_sql(
         }
     }
     sql.push(')');
-    sql
+    Ok(sql)
 }
 
-#[must_use]
-pub fn memory_select_batch_sql(table: &str, key_column: &str, columns: &[&str]) -> String {
+/// Build a batched memory sidecar select statement.
+///
+/// # Errors
+///
+/// Returns `StorageError::Internal` when the table, key column, or selected
+/// column identifiers are not valid Postgres identifiers.
+pub fn memory_select_batch_sql(
+    table: &str,
+    key_column: &str,
+    columns: &[&str],
+) -> Result<String, StorageError> {
+    let table = PgIdent::table(table)?.as_str();
+    let key_column = PgIdent::column(key_column)?.as_str();
+    let columns = columns
+        .iter()
+        .map(|column| PgIdent::column(column).map(PgIdent::as_str))
+        .collect::<Result<Vec<_>, StorageError>>()?;
     let mut sql = String::new();
     write!(&mut sql, "SELECT {key_column}").expect("writing SQL into String cannot fail");
-    for column in columns {
+    for column in &columns {
         write!(&mut sql, ", {column}").expect("writing SQL into String cannot fail");
     }
     write!(&mut sql, " FROM {table} WHERE {key_column} = ANY($1)")
         .expect("writing SQL into String cannot fail");
-    sql
+    Ok(sql)
 }
 
 fn parse_utterance_speaker(value: &str) -> Result<proxima_core::Speaker, StorageError> {
@@ -1345,7 +1372,7 @@ macro_rules! pg_sidecar {
                         &[$(
                             (::std::stringify!($column), $crate::pg_sidecar_cast! $column_kind),
                         )+],
-                    );
+                    )?;
                     ::sqlx::query(&sql)
                         .bind(memory_id.into_inner())
                         $(
@@ -1385,7 +1412,7 @@ macro_rules! pg_sidecar {
                         $table,
                         ::std::stringify!($key_column),
                         &[$($crate::pg_sidecar_select_col!($column_kind, $column)),+],
-                    );
+                    )?;
                     let rows = ::sqlx::query_as::<_, $row_ty>(&sql)
                         .bind(&raw_memory_ids)
                         .fetch_all(pool)
@@ -1783,4 +1810,58 @@ pub fn register_core_pg_sidecars(registry: &mut PgSidecarRegistry) {
     registry.add_edge::<proxima_core::AgentLinkV1>();
     registry.add_cited_object::<proxima_core::UploadedBlobPayload>();
     registry.add_cited_object::<proxima_core::verbs::persist_mcp_call::McpCallIoV1>();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{memory_insert_sql, memory_select_batch_sql};
+
+    #[test]
+    fn memory_insert_sql_validates_identifiers() {
+        let sql = memory_insert_sql(
+            "proxima_core.agent_note_v1",
+            "memory_id",
+            &[("title", Some("text")), ("tags", None)],
+        )
+        .unwrap();
+
+        assert_eq!(
+            sql,
+            "INSERT INTO proxima_core.agent_note_v1 (memory_id, title, tags) \
+             VALUES ($1, $2::text, $3)"
+        );
+        assert!(
+            memory_insert_sql("proxima_core.agent_note_v1; DROP TABLE x", "memory_id", &[])
+                .is_err()
+        );
+        assert!(memory_insert_sql("proxima_core.agent_note_v1", "memory-id", &[]).is_err());
+        assert!(
+            memory_insert_sql(
+                "proxima_core.agent_note_v1",
+                "memory_id",
+                &[("x); DROP TABLE y", None)]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn memory_select_batch_sql_validates_identifiers() {
+        let sql = memory_select_batch_sql(
+            "proxima_core.agent_note_v1",
+            "memory_id",
+            &["title", "tags"],
+        )
+        .unwrap();
+
+        assert_eq!(
+            sql,
+            "SELECT memory_id, title, tags FROM proxima_core.agent_note_v1 \
+             WHERE memory_id = ANY($1)"
+        );
+        assert!(
+            memory_select_batch_sql("proxima_core.agent_note_v1", "memory_id", &["title;"])
+                .is_err()
+        );
+    }
 }
