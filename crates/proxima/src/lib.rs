@@ -7,6 +7,24 @@
 //! default `_sqlx_migrations` table; every migrator in that database
 //! must set `ignore_missing(true)`, and host tables must stay out of
 //! the `proxima_core` / per-flavor schemas.
+//!
+//! # Public surface tiers
+//!
+//! This facade exposes two intentional, supported tiers:
+//!
+//! - **Host entry point (most hosts use only this):** [`Proxima`], [`run`],
+//!   [`RuntimeBuilder`]/[`RuntimeConfig`], and the `from_env` → migrate →
+//!   compose → `run` flow. A host binary that just stands up the MCP server
+//!   needs nothing below this line.
+//! - **Extension API (flavor authors / advanced hosts):** the re-exports of
+//!   `proxima-core` payload traits + ids and of `proxima-storage-pg` typed
+//!   verbs and sidecar generators (e.g. [`pg_sidecar`], [`PgMemorySidecar`],
+//!   [`ingest_fact`], [`append_edge`], [`append_derived_in_tx`],
+//!   [`proxima_flavor`]). These are deliberately surfaced through the facade so
+//!   a flavor or host can build typed sidecars, citations, and ingest paths
+//!   **without depending on `proxima-core` / `proxima-storage-pg` directly**.
+//!   They are part of the framework's supported surface, not internal leakage;
+//!   treat them as lower-level and longer-to-stabilize than the host entry point.
 
 mod app;
 mod bundle;

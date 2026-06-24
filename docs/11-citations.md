@@ -148,7 +148,7 @@ Direct upload:
 2. Client uploads bytes directly to `pending/<owner-hash>/<upload-id>`.
 3. `complete` verifies the pending object, streams bytes to compute
    BLAKE3 + SHA-256, copies to
-   `objects/<owner-hash>/proxima-core/uploaded-blob-v1/<blake3-hex>`,
+   `objects/<owner-hash>/core/uploaded-blob-v1/<blake3-hex>`,
    deletes the pending object, inserts or reuses `cited_objects`,
    inserts `cited_uploaded_blob_v1`, marks upload completed.
 4. Same Owner + same bytes returns the existing CitedObject and marks

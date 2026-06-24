@@ -4,9 +4,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use crate::{CitedObjectPayload, proxima_schema_id};
+use crate::CitedObjectPayload;
 
-pub const UPLOADED_BLOB_SCHEMA_ID: &str = proxima_schema_id!("uploaded-blob-v1");
+pub const UPLOADED_BLOB_SCHEMA_ID: &str = "core/uploaded-blob-v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct UploadedBlobPayload {

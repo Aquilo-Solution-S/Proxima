@@ -87,7 +87,7 @@ Supported keys:
 
 Unknown keys are compile errors. Macro-registered schemas, relations,
 MCP tools, and dependency rules must start with `name + "/"`, except
-dependency rules may target `proxima-core/` schemas.
+dependency rules may target `core/` schemas.
 
 <a id="schema-namespacing"></a>
 ## Schema Namespacing
