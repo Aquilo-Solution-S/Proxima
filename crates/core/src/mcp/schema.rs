@@ -18,7 +18,9 @@ pub(crate) fn mcp_tool_schema<T: JsonSchema>() -> serde_json::Value {
     let mut settings = SchemaSettings::draft2020_12();
     settings.inline_subschemas = true;
     let schema = settings.into_generator().into_root_schema_for::<T>();
-    let value = serde_json::to_value(schema).expect("JsonSchema must serialize");
+    let mut value = serde_json::to_value(schema).expect("JsonSchema must serialize");
+    flatten_root_tagged_enum(&mut value);
+    ensure_client_safe_root::<T>(&mut value);
     assert!(
         !schema_contains_ref(&value),
         "MCP tool type `{}` is recursive: schemars emitted a $ref that \
@@ -26,6 +28,237 @@ pub(crate) fn mcp_tool_schema<T: JsonSchema>() -> serde_json::Value {
         std::any::type_name::<T>(),
     );
     value
+}
+
+/// Flatten a schemars root `oneOf` for an internally tagged enum into a plain
+/// object schema with an `action` enum discriminator.
+///
+/// Anthropic/OpenAI-compatible tool schemas cannot rely on a root-level union.
+/// Runtime serde validation remains authoritative for per-action required
+/// fields; the flattened schema is the MCP/client-facing discovery surface.
+fn flatten_root_tagged_enum(value: &mut serde_json::Value) {
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+    let Some(variants) = map.get("oneOf").and_then(serde_json::Value::as_array) else {
+        return;
+    };
+
+    let mut action_values = Vec::with_capacity(variants.len());
+    let mut merged_properties = serde_json::Map::new();
+    let mut action_metadata = serde_json::Map::new();
+    let mut field_occurrences = std::collections::BTreeMap::<String, usize>::new();
+
+    for variant in variants {
+        let Some(properties) = variant
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+        else {
+            return;
+        };
+        let Some(action) = properties
+            .get("action")
+            .and_then(|schema| schema.get("const"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            return;
+        };
+        action_values.push(serde_json::Value::String(action.to_string()));
+        let required = variant
+            .get("required")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .filter(|field| *field != "action")
+                    .map(|field| serde_json::Value::String(field.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut allowed_fields = Vec::new();
+        let mut field_descriptions = serde_json::Map::new();
+        for (name, property_schema) in properties {
+            if name != "action" {
+                *field_occurrences.entry(name.clone()).or_default() += 1;
+                allowed_fields.push(serde_json::Value::String(name.clone()));
+                if let Some(description) = property_schema
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    field_descriptions.insert(
+                        name.clone(),
+                        serde_json::Value::String(description.to_string()),
+                    );
+                }
+                merge_property_schema(&mut merged_properties, name, property_schema, action);
+            }
+        }
+        action_metadata.insert(
+            action.to_string(),
+            serde_json::json!({
+                "allowed_fields": allowed_fields,
+                "required_fields": required,
+                "field_descriptions": field_descriptions,
+            }),
+        );
+    }
+
+    if action_values.is_empty() {
+        return;
+    }
+
+    for (field, count) in field_occurrences {
+        if count > 1
+            && let Some(property_schema) = merged_properties.get_mut(&field)
+        {
+            neutralize_shared_property_description(property_schema, &field);
+        }
+    }
+
+    merged_properties.insert(
+        "action".to_string(),
+        serde_json::json!({
+            "type": "string",
+            "enum": action_values,
+            "description": "Dispatcher action to execute. Additional fields depend on the selected action."
+        }),
+    );
+    map.remove("oneOf");
+    map.insert(
+        "properties".to_string(),
+        serde_json::Value::Object(merged_properties),
+    );
+    map.insert("required".to_string(), serde_json::json!(["action"]));
+    map.insert(
+        "additionalProperties".to_string(),
+        serde_json::Value::Bool(false),
+    );
+    map.insert(
+        "x-proxima-actions".to_string(),
+        serde_json::Value::Object(action_metadata),
+    );
+}
+
+fn merge_property_schema(
+    merged_properties: &mut serde_json::Map<String, serde_json::Value>,
+    name: &str,
+    property_schema: &serde_json::Value,
+    action: &str,
+) {
+    let Some(existing) = merged_properties.get_mut(name) else {
+        merged_properties.insert(name.to_string(), property_schema.clone());
+        return;
+    };
+    if validation_shape(existing) == validation_shape(property_schema) {
+        if existing != property_schema {
+            neutralize_shared_property_description(existing, name);
+        }
+        return;
+    }
+    panic!(
+        "conflicting property `{name}` while flattening action `{action}`: {existing:#} vs {property_schema:#}"
+    );
+}
+
+fn neutralize_shared_property_description(value: &mut serde_json::Value, name: &str) {
+    if let serde_json::Value::Object(map) = value {
+        for key in ["default", "title"] {
+            map.remove(key);
+        }
+        map.insert(
+            "description".to_string(),
+            serde_json::Value::String(format!(
+                "Shared dispatcher field `{name}`. Semantics and requiredness depend on `action`; see `x-proxima-actions` or `proxima://tools` for action-specific guidance."
+            )),
+        );
+    }
+}
+
+fn validation_shape(value: &serde_json::Value) -> serde_json::Value {
+    let mut value = value.clone();
+    strip_non_validation_fields(&mut value);
+    normalize_nullable_types(&mut value);
+    value
+}
+
+fn strip_non_validation_fields(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for key in ["description", "title", "default"] {
+                map.remove(key);
+            }
+            for child in map.values_mut() {
+                strip_non_validation_fields(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                strip_non_validation_fields(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_nullable_types(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(type_value) = map.get_mut("type")
+                && let serde_json::Value::Array(types) = type_value
+            {
+                types.retain(|item| item != "null");
+                if types.len() == 1 {
+                    *type_value = types[0].clone();
+                }
+            }
+            for child in map.values_mut() {
+                normalize_nullable_types(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                normalize_nullable_types(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Ensure the generated schema is acceptable as an MCP `inputSchema` root.
+///
+/// MCP clients such as Pi require every tool input schema to declare
+/// `type: "object"` and a root `properties` object. Provider-compatible
+/// tool schemas must also avoid root combinators.
+fn ensure_client_safe_root<T: JsonSchema>(value: &mut serde_json::Value) {
+    let serde_json::Value::Object(map) = value else {
+        panic!(
+            "MCP tool type `{}` root schema must be an object schema document",
+            std::any::type_name::<T>(),
+        );
+    };
+    for keyword in ["oneOf", "anyOf", "allOf"] {
+        assert!(
+            !map.contains_key(keyword),
+            "MCP tool type `{}` leaves root schema combinator `{keyword}` after normalization; use an internally tagged dispatcher enum or a struct Args type",
+            std::any::type_name::<T>(),
+        );
+    }
+    if let Some(root_type) = map.get("type") {
+        assert_eq!(
+            root_type,
+            "object",
+            "MCP tool type `{}` root schema type must be `object`, got {root_type:#}",
+            std::any::type_name::<T>(),
+        );
+    } else {
+        map.insert(
+            "type".to_string(),
+            serde_json::Value::String("object".to_string()),
+        );
+    }
+    map.entry("properties".to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
 }
 
 /// True if `value` contains a `$ref` key anywhere in its tree.
@@ -78,6 +311,22 @@ mod tests {
         attributed: String,
     }
 
+    #[derive(JsonSchema)]
+    #[allow(dead_code)]
+    #[serde(untagged)]
+    enum UntaggedRootUnion {
+        Text { text: String },
+        Count { count: u32 },
+    }
+
+    #[derive(JsonSchema)]
+    #[allow(dead_code)]
+    #[serde(tag = "action", rename_all = "snake_case")]
+    enum CollidingDispatcher {
+        Text { value: String },
+        Count { value: u32 },
+    }
+
     #[test]
     fn nested_struct_schema_is_inlined() {
         let schema = mcp_tool_schema::<Nested>();
@@ -101,6 +350,24 @@ mod tests {
     #[should_panic(expected = "is recursive")]
     fn recursive_type_panics() {
         let _ = mcp_tool_schema::<Recursive>();
+    }
+
+    #[test]
+    #[should_panic(expected = "root schema combinator")]
+    fn unflattenable_root_union_panics() {
+        let _ = mcp_tool_schema::<UntaggedRootUnion>();
+    }
+
+    #[test]
+    #[should_panic(expected = "root schema type")]
+    fn non_object_root_panics() {
+        let _ = mcp_tool_schema::<String>();
+    }
+
+    #[test]
+    #[should_panic(expected = "conflicting property")]
+    fn tagged_enum_duplicate_incompatible_properties_panic() {
+        let _ = mcp_tool_schema::<CollidingDispatcher>();
     }
 
     #[test]

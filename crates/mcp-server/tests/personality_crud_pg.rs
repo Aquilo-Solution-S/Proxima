@@ -124,7 +124,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         &session,
         &bearer,
         "core_personality",
-        json!({ "action": "instantiate", "display_name": "TestSubject", "purpose": "smoke test" }),
+        json!({ "action": "instantiate", "display_name": "TestSubject" }),
     )
     .await?;
     // Master-token wire calls use typed prefixed ids; handles are minted

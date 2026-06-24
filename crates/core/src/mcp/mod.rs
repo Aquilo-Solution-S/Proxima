@@ -590,7 +590,81 @@ pub struct McpToolDescriptor {
     pub origin: McpToolOrigin,
     pub produces_schema_ids: &'static [&'static str],
     pub args_schema: serde_json::Value,
+    pub action_arg_specs: &'static [McpActionArgSpec],
     pub call: McpCallFn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpActionArgSpec {
+    pub action: &'static str,
+    pub allowed_fields: &'static [&'static str],
+    pub required_fields: &'static [&'static str],
+}
+
+pub(crate) fn validate_action_args(
+    tool_name: &str,
+    specs: &[McpActionArgSpec],
+    args: &serde_json::Value,
+) -> Result<(), McpToolError> {
+    if specs.is_empty() {
+        return Ok(());
+    }
+    let object = args.as_object().ok_or_else(|| {
+        McpToolError::InvalidInput(format!("{tool_name} arguments must be a JSON object"))
+    })?;
+    let action = object
+        .get("action")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            McpToolError::InvalidInput(format!(
+                "{tool_name} arguments must include string field `action`"
+            ))
+        })?;
+    let spec = specs
+        .iter()
+        .find(|spec| spec.action == action)
+        .ok_or_else(|| {
+            let supported = specs
+                .iter()
+                .map(|spec| spec.action)
+                .collect::<Vec<_>>()
+                .join(", ");
+            McpToolError::InvalidInput(format!(
+                "{tool_name} action `{action}` is not supported; expected one of: {supported}"
+            ))
+        })?;
+
+    let allowed = spec
+        .allowed_fields
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut unexpected = object
+        .keys()
+        .filter(|field| field.as_str() != "action" && !allowed.contains(field.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unexpected.is_empty() {
+        unexpected.sort();
+        return Err(McpToolError::InvalidInput(format!(
+            "{tool_name} action `{action}` does not accept field(s): {}",
+            unexpected.join(", ")
+        )));
+    }
+
+    let missing = spec
+        .required_fields
+        .iter()
+        .copied()
+        .filter(|field| !object.contains_key(*field))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(McpToolError::InvalidInput(format!(
+            "{tool_name} action `{action}` requires field(s): {}",
+            missing.join(", ")
+        )));
+    }
+    Ok(())
 }
 
 pub type McpCallFn = fn(
@@ -602,6 +676,7 @@ pub trait McpTool: Send + Sync + 'static {
     const NAME: &'static str;
     const DESCRIPTION: &'static str;
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
+    const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[];
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;
     type Output: serde::Serialize + Send + 'static;
@@ -643,7 +718,7 @@ pub fn tool_name_matches(canonical: &str, request_name: &str) -> bool {
     canonical == request_name || provider_safe_tool_name(canonical) == request_name
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 pub struct McpToolAnnotations {
     pub read_only: Option<bool>,
     pub destructive: Option<bool>,
@@ -927,6 +1002,63 @@ mod tests {
         }
 
         assert_eq!(counts, expected_counts);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_rejects_cross_action_goal_fields_before_execution() {
+        let ctx = prefixed_ctx();
+        let goal = ctx.format_goal(GoalId::new(uuid::Uuid::now_v7()));
+        let desc = ctx
+            .registry
+            .list_mcp_tools()
+            .iter()
+            .find(|tool| tool.name == "core_goal")
+            .expect("core_goal registered");
+
+        let err = (desc.call)(
+            ctx,
+            serde_json::json!({
+                "action": "transition",
+                "goal": goal,
+                "transition": "pause",
+                "title": "belongs to set/modify",
+            }),
+        )
+        .await
+        .expect_err("foreign action field must be rejected before execution");
+        assert_eq!(err.kind(), McpToolErrorKind::InvalidInput);
+        let message = err.to_string();
+        assert!(message.contains("title"), "message: {message}");
+        assert!(message.contains("transition"), "message: {message}");
+    }
+
+    #[tokio::test]
+    async fn dispatcher_rejects_cross_action_fact_fields_before_execution() {
+        let ctx = prefixed_ctx();
+        let fact = ctx.format_fact_memory(MemoryId::new(uuid::Uuid::now_v7()));
+        let desc = ctx
+            .registry
+            .list_mcp_tools()
+            .iter()
+            .find(|tool| tool.name == "core_fact")
+            .expect("core_fact registered");
+
+        let err = (desc.call)(
+            ctx,
+            serde_json::json!({
+                "action": "citation_of_fact",
+                "fact": fact,
+                "confirm": true,
+                "expect_handle": "F:wrong",
+            }),
+        )
+        .await
+        .expect_err("foreign action fields must be rejected before execution");
+        assert_eq!(err.kind(), McpToolErrorKind::InvalidInput);
+        let message = err.to_string();
+        assert!(message.contains("confirm"), "message: {message}");
+        assert!(message.contains("expect_handle"), "message: {message}");
+        assert!(message.contains("citation_of_fact"), "message: {message}");
     }
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-use crate::mcp::{CoreActionMeta, McpTool, McpToolCtx, McpToolError};
+use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -107,6 +107,38 @@ impl McpTool for CorePersonalityTool {
     const DESCRIPTION: &'static str =
         "Personality dispatcher — instantiate/tombstone/set_read_scope/list/get/list_read_scope.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = PERSONALITY_CONFIG_CHANGED_SCHEMA_IDS;
+    const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
+        McpActionArgSpec {
+            action: "instantiate",
+            allowed_fields: &["display_name"],
+            required_fields: &["display_name"],
+        },
+        McpActionArgSpec {
+            action: "tombstone",
+            allowed_fields: &["personality", "confirm", "expect_handle"],
+            required_fields: &["personality", "confirm", "expect_handle"],
+        },
+        McpActionArgSpec {
+            action: "set_read_scope",
+            allowed_fields: &["personality", "readable_personalities"],
+            required_fields: &["personality", "readable_personalities"],
+        },
+        McpActionArgSpec {
+            action: "list",
+            allowed_fields: &["include_tombstoned"],
+            required_fields: &[],
+        },
+        McpActionArgSpec {
+            action: "get",
+            allowed_fields: &["personality"],
+            required_fields: &["personality"],
+        },
+        McpActionArgSpec {
+            action: "list_read_scope",
+            allowed_fields: &["personality"],
+            required_fields: &["personality"],
+        },
+    ];
     type Args = CorePersonalityArgs;
     type Output = CorePersonalityOutput;
 
