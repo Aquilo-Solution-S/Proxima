@@ -337,7 +337,8 @@ impl Engine {
     ///
     /// Returns storage errors from claiming or final job-state writes.
     /// Per-job embedding failures are recorded on their job rows and
-    /// counted in the returned outcome.
+    /// counted in the returned outcome. A failed embed ends the current
+    /// drain call so retry cadence stays one attempt per invocation.
     pub async fn drain_embedding_jobs(
         &self,
         limit: usize,
@@ -347,12 +348,17 @@ impl Engine {
         };
         let limit = i64::try_from(limit)
             .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
-        let claims = self
-            .storage
-            .claim_pending_embedding_jobs(client.model_id(), limit)
-            .await?;
         let mut outcome = EmbeddingDrainOutcome::default();
-        for claim in claims {
+        for _ in 0..limit {
+            let Some(claim) = self
+                .storage
+                .claim_pending_embedding_jobs(client.model_id(), 1)
+                .await?
+                .into_iter()
+                .next()
+            else {
+                break;
+            };
             outcome.processed += 1;
             match self
                 .ensure_memory_embedding(&claim.owner, claim.entity_kind, claim.entity_id)
@@ -364,6 +370,7 @@ impl Engine {
                     self.storage
                         .fail_embedding_job(&claim, &err.to_string())
                         .await?;
+                    break;
                 }
             }
         }

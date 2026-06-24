@@ -11,10 +11,19 @@ const DEFAULT_READ_TTL_SECONDS: u64 = 300;
 /// resolution (`DATABASE_URL`, the `PROXIMA_S3_*` block) lives in
 /// [`crate::RuntimeBuilder`]; hosts driving the facade through it never
 /// construct this directly.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EmbedConfig {
     pub database_url: String,
     pub s3: Option<S3RuntimeConfig>,
+}
+
+impl std::fmt::Debug for EmbedConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmbedConfig")
+            .field("database_url", &"<redacted>")
+            .field("s3", &self.s3)
+            .finish()
+    }
 }
 
 pub(crate) fn s3_from_lookup(
@@ -105,5 +114,18 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(s3.as_ref().map(|s| s.bucket.as_str()), Some("proxima"));
+    }
+
+    #[test]
+    fn embed_config_debug_redacts_database_url() {
+        let config = EmbedConfig {
+            database_url: "postgres://user:secret@localhost/proxima".to_string(),
+            s3: None,
+        };
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("secret"));
+        assert!(!debug.contains("postgres://user"));
     }
 }

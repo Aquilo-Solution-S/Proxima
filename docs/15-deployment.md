@@ -14,6 +14,20 @@ and a Mistral-compatible embedding client; when configured, the server
 drains embeddings in-process automatically. Without embeddings the server
 operates in degraded lexical-only mode.
 
+## Connecting to encrypted PostgreSQL
+
+Verified TLS:
+
+```sh
+DATABASE_URL=postgres://USER:PASS@HOST:5432/DB?sslmode=verify-full&sslrootcert=/path/ca.pem
+```
+
+`sslmode=require` encrypts transport but does not verify hostname. At-rest
+TDE / volume encryption is transparent to Proxima. Do NOT use pgcrypto column
+encryption for searched columns: `embeddings.vec`, `memories.text`,
+`goals.text`, `tags`. Run migrations with a DDL-capable role; run the app with
+a narrower DML role.
+
 ## Environment contract
 
 | Var | Required | Example | Purpose |

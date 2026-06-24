@@ -589,12 +589,27 @@ impl Storage for PgStorage {
             proxima_core::EntityKind,
             Option<uuid::Uuid>,
         )> = sqlx::query_as(
-            "SELECT edge_id, relation, source_kind, source_memory_id, target_kind, target_memory_id
-             FROM proxima_core.edges
-             WHERE owner_principal_kind = $1
-               AND owner_principal_id = $2
-               AND (source_memory_id = ANY($3::uuid[]) OR target_memory_id = ANY($3::uuid[]))
-             ORDER BY edge_id DESC
+            "SELECT e.edge_id, e.relation,
+                    e.source_kind,
+                    COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
+                    e.target_kind,
+                    COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id
+             FROM proxima_core.edges e
+             LEFT JOIN proxima_core.fact_entities sfe
+               ON sfe.fact_entity_id = e.source_fact_entity_id
+              AND sfe.owner_principal_kind = e.owner_principal_kind
+              AND sfe.owner_principal_id = e.owner_principal_id
+             LEFT JOIN proxima_core.fact_entities tfe
+               ON tfe.fact_entity_id = e.target_fact_entity_id
+              AND tfe.owner_principal_kind = e.owner_principal_kind
+              AND tfe.owner_principal_id = e.owner_principal_id
+             WHERE e.owner_principal_kind = $1
+               AND e.owner_principal_id = $2
+               AND (e.source_memory_id = ANY($3::uuid[])
+                    OR e.target_memory_id = ANY($3::uuid[])
+                    OR sfe.current_memory_id = ANY($3::uuid[])
+                    OR tfe.current_memory_id = ANY($3::uuid[]))
+             ORDER BY e.edge_id DESC
              LIMIT $4",
         )
         .bind(owner_kind)
