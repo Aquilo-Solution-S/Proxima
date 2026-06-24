@@ -8,7 +8,7 @@ use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
 use proxima_core::{AuthError, AuthPath, Authenticator, AuthzContext, Credentials};
 use serde::Deserialize;
 
-use crate::config::OidcAuthConfig;
+use crate::config::{OidcAuthConfig, OidcConfigError};
 use crate::keys::KeyResolver;
 
 #[derive(Debug, Deserialize)]
@@ -32,9 +32,16 @@ impl std::fmt::Debug for OidcAuthenticator {
 }
 
 impl OidcAuthenticator {
-    #[must_use]
-    pub fn new(config: OidcAuthConfig, keys: Arc<dyn KeyResolver>) -> Self {
-        Self { config, keys }
+    /// # Errors
+    ///
+    /// Returns an error when the OIDC issuer or explicit JWKS endpoint is not
+    /// HTTPS. Test builds allow loopback HTTP for mock `IdPs`.
+    pub fn new(
+        config: OidcAuthConfig,
+        keys: Arc<dyn KeyResolver>,
+    ) -> Result<Self, OidcConfigError> {
+        config.validate()?;
+        Ok(Self { config, keys })
     }
 }
 
@@ -201,6 +208,7 @@ hWfFqOK7kd53G/fwyOu4usJWEGojv1ey6Sn9X1myw/jG5XNE9yLrbA==
                 Arc::new(decoding),
             )]))),
         )
+        .expect("valid oidc config")
     }
 
     #[tokio::test]
@@ -299,6 +307,7 @@ hWfFqOK7kd53G/fwyOu4usJWEGojv1ey6Sn9X1myw/jG5XNE9yLrbA==
             config(test_owner()),
             Arc::new(StaticJwksResolver::new(HashMap::new())),
         );
+        let auth = auth.expect("valid oidc config");
         let token = token(&keys, KID, ISSUER, AUDIENCE, "subject-1", future_exp());
 
         assert_eq!(
