@@ -89,7 +89,8 @@ relation validation remains the registry's build-time responsibility
 
 A tool's argument type *is* its schema. Shape, field descriptions,
 required/optional, and enum variants all derive from the Rust type via
-`schemars`. No code mutates the generated schema out of band.
+`schemars`. The only sanctioned post-generation pass is the client-safe
+normalization of action-dispatch tools described below.
 
 - Every MCP tool argument schema is produced by one function,
   `mcp_tool_schema<T: JsonSchema>()` in `crates/core/src/mcp/schema.rs`.
@@ -101,6 +102,27 @@ required/optional, and enum variants all derive from the Rust type via
 - Tool outputs are advertised by registered-schema-id reference
   (`McpToolDescriptor.produces_schema_ids`) and resolved against the
   `FlavorRegistry`.
+
+### Action-Dispatch Tools
+
+Tools whose argument type is an internally-tagged (`action`) enum —
+`core_goal`, `core_wake`, `core_personality`, `core_fact` — are normalized
+into a client-safe shape after `schemars` generation, because MCP clients
+reject an `inputSchema` whose root is not `type: object` or that carries a
+root `oneOf`/`anyOf`/`allOf`:
+
+- The per-variant `oneOf` is flattened into one object: a unioned top-level
+  `properties` map, an `action` string-enum discriminator, and
+  `additionalProperties: false`.
+- Per-action field metadata is published under the `x-proxima-actions`
+  schema extension — `allowed_fields`, `required_fields`, and
+  `field_descriptions` keyed by action — and mirrored in the
+  `proxima://tools` catalog. Fields shared across actions carry a neutral
+  root description that points back to this metadata.
+- **Argument validation is strict and pre-decode.** Before an action's
+  arguments are deserialized, any field outside that action's
+  `allowed_fields`, or a missing `required_field`, is rejected with
+  JSON-RPC `-32602`. Unknown fields are an error, not silently dropped.
 
 ## Wake-Entry Detect Config
 
@@ -152,7 +174,7 @@ MCP dispatch contract:
 | Auth | host `Authenticator` or master token |
 | Owner | from auth context; Owner = principal (doc 01) |
 | Tool scope | token capabilities intersected with deployment profile |
-| Args | JSON decoded into `McpTool::Args` |
+| Args | action-dispatch tools validate fields strictly (see Tool Schema Contract), then JSON decoded into `McpTool::Args` |
 | Output | serialized `McpTool::Output` |
 | Ids | prefixed ids (`F:/A:/P:/G:/E:` form, `OutputMode::PrefixedIds`) |
 
