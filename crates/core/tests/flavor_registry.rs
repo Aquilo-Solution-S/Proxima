@@ -81,7 +81,22 @@ fn all_mcp_tool_arg_schemas_have_object_root() {
 }
 
 #[test]
-fn dispatcher_tool_arg_schemas_keep_variant_constraints() {
+fn all_mcp_tool_arg_schemas_avoid_root_combinators() {
+    let frozen = FlavorRegistry::default().freeze();
+    for tool in frozen.list_mcp_tools() {
+        for keyword in ["oneOf", "anyOf", "allOf"] {
+            assert!(
+                tool.args_schema.get(keyword).is_none(),
+                "tool {} argument schema must not expose top-level {keyword}: {:#}",
+                tool.name,
+                tool.args_schema,
+            );
+        }
+    }
+}
+
+#[test]
+fn dispatcher_tool_arg_schemas_expose_action_enum() {
     let frozen = FlavorRegistry::default().freeze();
     let dispatcher_tools = [
         (
@@ -122,38 +137,33 @@ fn dispatcher_tool_arg_schemas_keep_variant_constraints() {
             .find(|tool| tool.name == tool_name)
             .unwrap_or_else(|| panic!("{tool_name} registered"))
             .args_schema;
-        let one_of = schema
-            .get("oneOf")
-            .and_then(serde_json::Value::as_array)
-            .unwrap_or_else(|| panic!("dispatcher tool {tool_name} must keep oneOf: {schema:#}"));
-        assert_eq!(
-            one_of.len(),
-            expected_actions.len(),
-            "dispatcher tool {tool_name} must keep one action variant per supported action: {schema:#}",
+        assert!(
+            schema
+                .get("properties")
+                .is_some_and(serde_json::Value::is_object),
+            "dispatcher tool {tool_name} must expose root properties: {schema:#}",
         );
-        let mut actions = Vec::new();
-        for variant in one_of {
-            assert_eq!(
-                variant.get("type").and_then(serde_json::Value::as_str),
-                Some("object"),
-                "dispatcher tool {tool_name} variant must remain an object schema: {variant:#}",
-            );
-            assert!(
-                variant
-                    .get("properties")
-                    .is_some_and(serde_json::Value::is_object),
-                "dispatcher tool {tool_name} variant must expose properties: {variant:#}",
-            );
-            let action = variant
-                .pointer("/properties/action/const")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "dispatcher tool {tool_name} variant must preserve action const: {variant:#}"
-                    )
-                });
-            actions.push(action);
-        }
+        assert!(
+            schema
+                .pointer("/required")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|required| required.iter().any(|item| item == "action")),
+            "dispatcher tool {tool_name} must require the action discriminator: {schema:#}",
+        );
+        let action_enum = schema
+            .pointer("/properties/action/enum")
+            .and_then(serde_json::Value::as_array)
+            .unwrap_or_else(|| {
+                panic!("dispatcher tool {tool_name} must expose action enum: {schema:#}")
+            });
+        let mut actions = action_enum
+            .iter()
+            .map(|value| {
+                value.as_str().unwrap_or_else(|| {
+                    panic!("dispatcher tool {tool_name} action enum values must be strings")
+                })
+            })
+            .collect::<Vec<_>>();
         actions.sort_unstable();
         let mut expected = expected_actions.to_vec();
         expected.sort_unstable();

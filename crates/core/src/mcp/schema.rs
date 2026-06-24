@@ -19,6 +19,7 @@ pub(crate) fn mcp_tool_schema<T: JsonSchema>() -> serde_json::Value {
     settings.inline_subschemas = true;
     let schema = settings.into_generator().into_root_schema_for::<T>();
     let mut value = serde_json::to_value(schema).expect("JsonSchema must serialize");
+    flatten_root_tagged_enum(&mut value);
     force_object_root(&mut value);
     assert!(
         !schema_contains_ref(&value),
@@ -27,6 +28,71 @@ pub(crate) fn mcp_tool_schema<T: JsonSchema>() -> serde_json::Value {
         std::any::type_name::<T>(),
     );
     value
+}
+
+/// Flatten a schemars root `oneOf` for an internally tagged enum into a plain
+/// object schema with an `action` enum discriminator.
+///
+/// Anthropic/OpenAI-compatible tool schemas cannot rely on a root-level union.
+/// Runtime serde validation remains authoritative for per-action required
+/// fields; the flattened schema is the MCP/client-facing discovery surface.
+fn flatten_root_tagged_enum(value: &mut serde_json::Value) {
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+    let Some(variants) = map.get("oneOf").and_then(serde_json::Value::as_array) else {
+        return;
+    };
+
+    let mut action_values = Vec::with_capacity(variants.len());
+    let mut merged_properties = serde_json::Map::new();
+
+    for variant in variants {
+        let Some(properties) = variant
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+        else {
+            return;
+        };
+        let Some(action) = properties
+            .get("action")
+            .and_then(|schema| schema.get("const"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            return;
+        };
+        action_values.push(serde_json::Value::String(action.to_string()));
+        for (name, property_schema) in properties {
+            if name != "action" {
+                merged_properties
+                    .entry(name.clone())
+                    .or_insert_with(|| property_schema.clone());
+            }
+        }
+    }
+
+    if action_values.is_empty() {
+        return;
+    }
+
+    merged_properties.insert(
+        "action".to_string(),
+        serde_json::json!({
+            "type": "string",
+            "enum": action_values,
+            "description": "Dispatcher action to execute. Additional fields depend on the selected action."
+        }),
+    );
+    map.remove("oneOf");
+    map.insert(
+        "properties".to_string(),
+        serde_json::Value::Object(merged_properties),
+    );
+    map.insert("required".to_string(), serde_json::json!(["action"]));
+    map.insert(
+        "additionalProperties".to_string(),
+        serde_json::Value::Bool(false),
+    );
 }
 
 /// Ensure the generated schema is acceptable as an MCP `inputSchema` root.
