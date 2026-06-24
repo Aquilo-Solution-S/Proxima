@@ -25,6 +25,7 @@ const MISTRAL_API_BASE: &str = "MISTRAL_API_BASE";
 const PROXIMA_TOOL_PROFILE: &str = "PROXIMA_TOOL_PROFILE";
 const PROXIMA_TOOL_ALLOW: &str = "PROXIMA_TOOL_ALLOW";
 const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
+const CORE_FACT_TOMBSTONE_SCOPE_KEY: &str = "core_fact:tombstone";
 
 /// Tool/action scope keys advertised by the `memory` profile. Flat entries
 /// reference the owning tool's `McpTool::NAME`; grouped tools contribute
@@ -46,12 +47,15 @@ fn memory_keep_set() -> Vec<&'static str> {
         // retrieval
         SearchMemoriesTool::NAME,
     ];
-    // The memory profile carries the full goal lifecycle plus full
-    // fact/citation reads and per-Fact tombstone. Retention/cleanup are
-    // host/config-only. Wake/personality admin stays out.
+    // The memory profile carries the full goal lifecycle plus non-destructive
+    // fact/citation actions. Retention/cleanup are host/config-only.
+    // Wake/personality admin stays out.
     ids.extend(
         all_core_actions()
-            .filter(|action| action.tool == CoreGoalTool::NAME || action.tool == CoreFactTool::NAME)
+            .filter(|action| {
+                (action.tool == CoreGoalTool::NAME || action.tool == CoreFactTool::NAME)
+                    && action.scope_key != CORE_FACT_TOMBSTONE_SCOPE_KEY
+            })
             .map(|action| action.scope_key),
     );
     ids.extend(all_core_resources().map(|resource| resource.scope_key));
@@ -392,18 +396,19 @@ fn oidc_from_env(
             .map(ToOwned::to_owned)
             .collect::<std::collections::HashSet<String>>()
     });
-    let resolver = proxima_auth_oidc::HttpJwksResolver::new(issuer.clone(), jwks_uri.clone());
-    let authn = proxima_auth_oidc::OidcAuthenticator::new(
-        proxima_auth_oidc::OidcAuthConfig {
-            issuer: issuer.clone(),
-            jwks_uri,
-            audience,
-            owner: config.owner.clone(),
-            allowed_subjects,
-            leeway_secs: 60,
-        },
-        Arc::new(resolver),
-    );
+    let oidc_config = proxima_auth_oidc::OidcAuthConfig {
+        issuer: issuer.clone(),
+        jwks_uri,
+        audience,
+        owner: config.owner.clone(),
+        allowed_subjects,
+        leeway_secs: 60,
+    };
+    let resolver =
+        proxima_auth_oidc::HttpJwksResolver::new(issuer.clone(), oidc_config.jwks_uri.clone())
+            .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))?;
+    let authn = proxima_auth_oidc::OidcAuthenticator::new(oidc_config, Arc::new(resolver))
+        .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))?;
     let metadata = proxima::ResourceServerMetadata {
         public_url,
         authorization_servers: vec![issuer],
@@ -502,10 +507,47 @@ mod tests {
     }
 
     #[test]
+    fn oidc_env_rejects_http_issuer_and_jwks_uri() {
+        for insecure_key in ["PROXIMA_OIDC_ISSUER", "PROXIMA_OIDC_JWKS_URI"] {
+            let result = build_app(config(), |key| match key {
+                "PROXIMA_OIDC_ISSUER" => Some(if insecure_key == "PROXIMA_OIDC_ISSUER" {
+                    "http://idp.test".into()
+                } else {
+                    "https://idp.test".into()
+                }),
+                "PROXIMA_OIDC_JWKS_URI" if insecure_key == "PROXIMA_OIDC_JWKS_URI" => {
+                    Some("http://idp.test/keys".into())
+                }
+                "PROXIMA_OIDC_AUDIENCE" => Some("proxima-mcp".into()),
+                "PROXIMA_PUBLIC_URL" => Some("https://proxima.test".into()),
+                _ => None,
+            });
+            let Err(err) = result else {
+                panic!("http oidc URL must be rejected");
+            };
+            assert!(err.to_string().contains("must use https"), "message: {err}");
+        }
+    }
+
+    #[test]
+    fn memory_keep_set_excludes_tombstone_but_keeps_fact_reads() {
+        let keep = memory_keep_set();
+        assert!(!keep.contains(&CORE_FACT_TOMBSTONE_SCOPE_KEY));
+        assert!(keep.contains(&"core_fact:citation_of_fact"));
+        assert!(keep.contains(&"core_fact:citation_of_entity_head"));
+        assert!(keep.contains(&"core_fact:facts_citing_object"));
+    }
+
+    #[test]
     fn tool_profile_resolver_builds_deployment_scope() {
         let registered_ids = [
             "resource:memory",
+            "resource:schemas",
             "core_search_memories",
+            "core_fact:citation_of_fact",
+            "core_fact:citation_of_entity_head",
+            "core_fact:facts_citing_object",
+            "core_fact:tombstone",
             "core_personality:instantiate",
             "core_wake:add",
             "proxima-code_register_repo",
@@ -520,6 +562,10 @@ mod tests {
         assert!(memory.allows("core_search_memories"));
         assert!(memory.allows("resource:memory"));
         assert!(memory.allows("resource:schemas"));
+        assert!(memory.allows("core_fact:citation_of_fact"));
+        assert!(memory.allows("core_fact:citation_of_entity_head"));
+        assert!(memory.allows("core_fact:facts_citing_object"));
+        assert!(!memory.allows(CORE_FACT_TOMBSTONE_SCOPE_KEY));
         // Code-flavor tools join the memory keep set only when the `code`
         // flavor is compiled in (the keep set references their `NAME`
         // consts under the same cfg).

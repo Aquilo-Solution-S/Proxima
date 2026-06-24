@@ -9,5 +9,5 @@ mod config;
 mod keys;
 
 pub use authenticator::OidcAuthenticator;
-pub use config::OidcAuthConfig;
+pub use config::{OidcAuthConfig, OidcConfigError};
 pub use keys::{HttpJwksResolver, KeyError, KeyResolver, StaticJwksResolver};
