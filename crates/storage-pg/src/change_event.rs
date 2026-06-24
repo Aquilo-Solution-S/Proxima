@@ -130,6 +130,7 @@ fn decode_change_event_row(row: &ChangeEventRow) -> Result<ChangeEvent, StorageE
 
     let kind = match row.kind {
         ChangeEventKindTag::EdgeAppend => decode_edge_append(row)?,
+        ChangeEventKindTag::EdgeDelete => decode_edge_delete(row)?,
         ChangeEventKindTag::EntityAppend => decode_entity_append_or_absent_delete(row)?,
         ChangeEventKindTag::EntityDelete => decode_entity_delete(row)?,
     };
@@ -144,6 +145,34 @@ fn decode_change_event_row(row: &ChangeEventRow) -> Result<ChangeEvent, StorageE
 }
 
 fn decode_edge_append(row: &ChangeEventRow) -> Result<ChangeEventKind, StorageError> {
+    let edge = decode_edge_event(row)?;
+    Ok(ChangeEventKind::EdgeAppend {
+        edge_id: edge.edge_id,
+        relation: edge.relation,
+        source: edge.source,
+        target: edge.target,
+    })
+}
+
+fn decode_edge_delete(row: &ChangeEventRow) -> Result<ChangeEventKind, StorageError> {
+    let edge = decode_edge_event(row)?;
+    Ok(ChangeEventKind::EdgeDelete {
+        edge_id: edge.edge_id,
+        relation: edge.relation,
+        source: edge.source,
+        target: edge.target,
+    })
+}
+
+#[derive(Debug)]
+struct EdgeEvent {
+    edge_id: Uuid,
+    relation: String,
+    source: EntityRef,
+    target: EntityRef,
+}
+
+fn decode_edge_event(row: &ChangeEventRow) -> Result<EdgeEvent, StorageError> {
     let edge_id = row
         .edge_id
         .ok_or_else(|| StorageError::Internal("missing edge_id".into()))?;
@@ -161,7 +190,7 @@ fn decode_edge_append(row: &ChangeEventRow) -> Result<ChangeEventKind, StorageEr
         row.edge_target_goal_id,
         row.edge_target_fact_entity_id,
     )?;
-    Ok(ChangeEventKind::EdgeAppend {
+    Ok(EdgeEvent {
         edge_id,
         relation,
         source,

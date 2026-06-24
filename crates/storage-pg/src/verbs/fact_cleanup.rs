@@ -5,7 +5,9 @@ use std::collections::HashSet;
 use proxima_core::verbs::fact_cleanup::{
     CleanupDueFactsOutcome, OrphanedS3Blob, TombstoneFactOutcome,
 };
-use proxima_core::{EntityKind, Owner, OwnerPrincipalKind, StorageError};
+use proxima_core::{
+    CORE_MOTIVATED_BY_RELATION, EntityKind, Owner, OwnerPrincipalKind, StorageError,
+};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -36,6 +38,18 @@ struct TombstonedDerivativeRow {
     kind: EntityKind,
     schema_id: String,
     schema_version: i32,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct MotivatedByEdgeRow {
+    edge_id: Uuid,
+    relation: String,
+    source_memory_id: Option<Uuid>,
+    source_goal_id: Option<Uuid>,
+    source_fact_entity_id: Option<Uuid>,
+    target_memory_id: Option<Uuid>,
+    target_goal_id: Option<Uuid>,
+    target_fact_entity_id: Option<Uuid>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -171,6 +185,13 @@ async fn cleanup_due_facts_in_tx(
         .map(|row| row.memory_id)
         .collect::<Vec<_>>();
     delete_embedding_artifacts(tx, &tombstoned_memory_ids).await?;
+    let affected_memory_ids = merged_memory_ids(due_memory_ids.clone(), tombstoned_memory_ids);
+    let motivated_by_edges =
+        motivated_by_edges_for_evidence(tx, owner_kind, owner_principal_id, &affected_memory_ids)
+            .await?;
+    for edge in &motivated_by_edges {
+        insert_edge_delete_event(tx, owner_columns, edge).await?;
+    }
 
     for row in &tombstoned {
         insert_entity_delete_event(
@@ -201,7 +222,13 @@ async fn cleanup_due_facts_in_tx(
 
     let edge_ids =
         edge_ids_referencing_facts(tx, owner_kind, owner_principal_id, &due_memory_ids).await?;
-    let edge_ids = merged_edge_ids(edge_ids, follow_head_edge_ids);
+    let edge_ids = merged_edge_ids(
+        edge_ids,
+        merged_edge_ids(
+            follow_head_edge_ids,
+            motivated_by_edges.iter().map(|row| row.edge_id).collect(),
+        ),
+    );
     execute_hard_delete(
         tx,
         &HardDeleteSet {
@@ -281,6 +308,13 @@ async fn tombstone_fact_in_tx(
         .map(|row| row.memory_id)
         .collect::<Vec<_>>();
     delete_embedding_artifacts(tx, &tombstoned_memory_ids).await?;
+    let affected_memory_ids = merged_memory_ids(due_memory_ids.to_vec(), tombstoned_memory_ids);
+    let motivated_by_edges =
+        motivated_by_edges_for_evidence(tx, owner_kind, owner_principal_id, &affected_memory_ids)
+            .await?;
+    for edge in &motivated_by_edges {
+        insert_edge_delete_event(tx, owner_columns, edge).await?;
+    }
 
     for row in &tombstoned {
         insert_entity_delete_event(
@@ -309,7 +343,13 @@ async fn tombstone_fact_in_tx(
 
     let edge_ids =
         edge_ids_referencing_facts(tx, owner_kind, owner_principal_id, &due_memory_ids).await?;
-    let edge_ids = merged_edge_ids(edge_ids, follow_head_edge_ids);
+    let edge_ids = merged_edge_ids(
+        edge_ids,
+        merged_edge_ids(
+            follow_head_edge_ids,
+            motivated_by_edges.iter().map(|row| row.edge_id).collect(),
+        ),
+    );
     execute_hard_delete(
         tx,
         &HardDeleteSet {
@@ -360,6 +400,13 @@ fn merged_edge_ids(mut edge_ids: Vec<Uuid>, follow_head_edge_ids: Vec<Uuid>) -> 
     let mut seen = HashSet::with_capacity(edge_ids.len());
     edge_ids.retain(|edge_id| seen.insert(*edge_id));
     edge_ids
+}
+
+fn merged_memory_ids(mut left: Vec<Uuid>, right: Vec<Uuid>) -> Vec<Uuid> {
+    left.extend(right);
+    let mut seen = HashSet::with_capacity(left.len());
+    left.retain(|memory_id| seen.insert(*memory_id));
+    left
 }
 
 pub(crate) async fn repoint_or_delete_fact_entities(
@@ -556,6 +603,71 @@ async fn insert_entity_delete_event(
     .bind(entity.memory_id)
     .bind(entity.schema_id)
     .bind(entity.schema_version)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}
+
+async fn motivated_by_edges_for_evidence(
+    tx: &mut Transaction<'_, Postgres>,
+    owner_kind: OwnerPrincipalKind,
+    owner_principal_id: Uuid,
+    evidence_memory_ids: &[Uuid],
+) -> Result<Vec<MotivatedByEdgeRow>, StorageError> {
+    if evidence_memory_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    sqlx::query_as(
+        "SELECT edge_id,
+                relation,
+                source_memory_id,
+                source_goal_id,
+                source_fact_entity_id,
+                target_memory_id,
+                target_goal_id,
+                target_fact_entity_id
+           FROM proxima_core.edges
+          WHERE owner_principal_kind = $1
+            AND owner_principal_id = $2
+            AND relation = $3
+            AND target_memory_id = ANY($4::uuid[])
+          ORDER BY edge_id",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(CORE_MOTIVATED_BY_RELATION)
+    .bind(evidence_memory_ids)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)
+}
+
+async fn insert_edge_delete_event(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: OwnerColumns,
+    edge: &MotivatedByEdgeRow,
+) -> Result<(), StorageError> {
+    sqlx::query(
+        "INSERT INTO proxima_core.change_event
+            (seq, owner_principal_kind, owner_principal_id, kind,
+             edge_id, edge_relation,
+             edge_source_memory_id, edge_source_goal_id, edge_source_fact_entity_id,
+             edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id)
+         VALUES ($1, $2, $3, 'EdgeDelete', $4, $5, $6, $7, $8, $9, $10, $11)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(owner.kind)
+    .bind(owner.principal_id)
+    .bind(edge.edge_id)
+    .bind(&edge.relation)
+    .bind(edge.source_memory_id)
+    .bind(edge.source_goal_id)
+    .bind(edge.source_fact_entity_id)
+    .bind(edge.target_memory_id)
+    .bind(edge.target_goal_id)
+    .bind(edge.target_fact_entity_id)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
