@@ -53,6 +53,117 @@ fn core_wake_update_patch_schema_is_object() {
     );
 }
 
+/// Every registered MCP tool's argument schema must be a JSON object schema at
+/// the root. MCP clients reject `tools/list` if any `inputSchema` omits the
+/// top-level `type: object`, even when inner `oneOf` variants are object-shaped.
+#[test]
+fn all_mcp_tool_arg_schemas_have_object_root() {
+    let frozen = FlavorRegistry::default().freeze();
+    for tool in frozen.list_mcp_tools() {
+        assert_eq!(
+            tool.args_schema
+                .get("type")
+                .and_then(serde_json::Value::as_str),
+            Some("object"),
+            "tool {} argument schema must declare top-level type object: {:#}",
+            tool.name,
+            tool.args_schema,
+        );
+        assert!(
+            tool.args_schema
+                .get("properties")
+                .is_some_and(serde_json::Value::is_object),
+            "tool {} argument schema must expose top-level properties object: {:#}",
+            tool.name,
+            tool.args_schema,
+        );
+    }
+}
+
+#[test]
+fn dispatcher_tool_arg_schemas_keep_variant_constraints() {
+    let frozen = FlavorRegistry::default().freeze();
+    let dispatcher_tools = [
+        (
+            "core_goal",
+            ["set", "transition", "modify", "mark_achieved", "decompose"].as_slice(),
+        ),
+        (
+            "core_wake",
+            ["add", "update", "remove", "set", "list"].as_slice(),
+        ),
+        (
+            "core_personality",
+            [
+                "instantiate",
+                "tombstone",
+                "set_read_scope",
+                "list",
+                "get",
+                "list_read_scope",
+            ]
+            .as_slice(),
+        ),
+        (
+            "core_fact",
+            [
+                "citation_of_fact",
+                "citation_of_entity_head",
+                "facts_citing_object",
+                "tombstone",
+            ]
+            .as_slice(),
+        ),
+    ];
+    for (tool_name, expected_actions) in dispatcher_tools {
+        let schema = &frozen
+            .list_mcp_tools()
+            .iter()
+            .find(|tool| tool.name == tool_name)
+            .unwrap_or_else(|| panic!("{tool_name} registered"))
+            .args_schema;
+        let one_of = schema
+            .get("oneOf")
+            .and_then(serde_json::Value::as_array)
+            .unwrap_or_else(|| panic!("dispatcher tool {tool_name} must keep oneOf: {schema:#}"));
+        assert_eq!(
+            one_of.len(),
+            expected_actions.len(),
+            "dispatcher tool {tool_name} must keep one action variant per supported action: {schema:#}",
+        );
+        let mut actions = Vec::new();
+        for variant in one_of {
+            assert_eq!(
+                variant.get("type").and_then(serde_json::Value::as_str),
+                Some("object"),
+                "dispatcher tool {tool_name} variant must remain an object schema: {variant:#}",
+            );
+            assert!(
+                variant
+                    .get("properties")
+                    .is_some_and(serde_json::Value::is_object),
+                "dispatcher tool {tool_name} variant must expose properties: {variant:#}",
+            );
+            let action = variant
+                .pointer("/properties/action/const")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "dispatcher tool {tool_name} variant must preserve action const: {variant:#}"
+                    )
+                });
+            actions.push(action);
+        }
+        actions.sort_unstable();
+        let mut expected = expected_actions.to_vec();
+        expected.sort_unstable();
+        assert_eq!(
+            actions, expected,
+            "dispatcher tool {tool_name} must preserve expected action variants",
+        );
+    }
+}
+
 /// Every registered MCP tool's argument schema must be fully inlined —
 /// no `$ref`, no `$defs` anywhere — so MCP clients that do not resolve
 /// references still render every field.

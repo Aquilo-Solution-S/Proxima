@@ -18,7 +18,8 @@ pub(crate) fn mcp_tool_schema<T: JsonSchema>() -> serde_json::Value {
     let mut settings = SchemaSettings::draft2020_12();
     settings.inline_subschemas = true;
     let schema = settings.into_generator().into_root_schema_for::<T>();
-    let value = serde_json::to_value(schema).expect("JsonSchema must serialize");
+    let mut value = serde_json::to_value(schema).expect("JsonSchema must serialize");
+    force_object_root(&mut value);
     assert!(
         !schema_contains_ref(&value),
         "MCP tool type `{}` is recursive: schemars emitted a $ref that \
@@ -26,6 +27,20 @@ pub(crate) fn mcp_tool_schema<T: JsonSchema>() -> serde_json::Value {
         std::any::type_name::<T>(),
     );
     value
+}
+
+/// Ensure the generated schema is acceptable as an MCP `inputSchema` root.
+///
+/// Some enum-shaped schemas are emitted as top-level `oneOf` without an
+/// explicit object root. MCP clients such as Pi require every tool input schema
+/// to declare `type: "object"` and a root `properties` object.
+fn force_object_root(value: &mut serde_json::Value) {
+    if let serde_json::Value::Object(map) = value {
+        map.entry("type".to_string())
+            .or_insert_with(|| serde_json::Value::String("object".to_string()));
+        map.entry("properties".to_string())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    }
 }
 
 /// True if `value` contains a `$ref` key anywhere in its tree.
