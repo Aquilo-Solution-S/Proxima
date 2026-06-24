@@ -16,7 +16,7 @@ jobs:
     steps:
       - name: "CLA Assistant"
         if: (!contains(github.event.pull_request.labels.*.name, 'CLA signed') || github.event.action == 'synchronize') && github.actor != 'cla-assistant' && github.actor != 'dependabot[bot]'
-        uses: contributor-assistant/github-action@v2.3.2
+        uses: contributor-assistant/github-action@v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_ASSISTANT_TOKEN }}
