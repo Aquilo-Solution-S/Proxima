@@ -20,3 +20,7 @@ serde_json = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+proxima-pg-testkit = { path = "../../crates/pg-testkit" }
+proxima-storage-pg = { path = "../../crates/storage-pg" }

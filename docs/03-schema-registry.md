@@ -24,8 +24,8 @@ Registry rules:
 | Rule | Consequence |
 |---|---|
 | `(schema_id, schema_version, kind)` identifies one payload shape | no untyped Memory payload |
-| every registered schema declares a qualified sidecar table | no inferred table naming |
-| every write inserts the entity row and sidecar row atomically | no sidecar-less typed entity |
+| sidecar-backed schemas declare a qualified sidecar table | no inferred table naming |
+| every sidecar-backed write inserts the entity row and sidecar row atomically | no orphan typed storage |
 | registry freezes at startup from core plus linked flavors | no runtime schema registration |
 | schema evolution moves sidecar bytes only | entity identity and provenance stay fixed |
 | `CitedObject` / `CitationMapping` schemas may be *opaque* — content-addressed blobs with no Rust payload type | F/A/P/Goal/Edge are never opaque |
@@ -35,6 +35,19 @@ and carries no validator, no CBOR encoder, and no sidecar table; its
 payload is a blob addressed by content hash. `FlavorRegistry::freeze`
 asserts every other schema is fully typed — a validator dropped from a
 typed schema fails the build rather than silently disabling validation.
+
+Optional typed-sidecar exceptions:
+
+| Family | Sidecar rule |
+|---|---|
+| Fact | optional; required when the Fact payload has schema-owned columns |
+| Abstraction | required |
+| Perspective | required |
+| Goal | optional |
+| Edge | required only when relation descriptor declares payload schema |
+| CitedObject | required for typed cited-object schemas |
+| CitationMapping | optional; pure links need no sidecar |
+| Opaque citation schemas | none |
 
 Typed sidecars are what make A/P queryable beyond embeddings. Vector
 similarity is a query aid, not the schema surface (see
@@ -74,7 +87,7 @@ Required registry metadata:
 | `schema_id` | stable qualified id |
 | `schema_version` | monotonic version for that id |
 | `kind` | closed `PayloadKind` |
-| `sidecar_table` | qualified SQL table, e.g. `proxima_code.commit_v1` |
+| `sidecar_table` | optional/required per family; qualified SQL table when present, e.g. `proxima_code.commit_v1` |
 | `special_category` | declared compliance flag; see §Special-category declaration |
 
 Fact-only metadata:
@@ -101,7 +114,7 @@ Rules:
 | Rule | Consequence |
 |---|---|
 | Fact row has no stored `text` | UI/prompts call `render()` |
-| sidecar row required | no opaque Fact body on `memories` |
+| sidecar row optional | required for schema-owned Fact columns; absent for citation-bodied Facts |
 | identity is not payload hash | `memory_id` remains UUIDv7 (see [07 §ID types](07-storage.md#id-types)) |
 | Fact has no `supersedes` | state is a query over observations |
 
@@ -230,7 +243,7 @@ deletion policy checks, and administrative reporting (see
 
 ## Sidecar tables
 
-Sidecar table contract:
+Sidecar table contract, when a sidecar exists:
 
 | Payload family | Primary key | Required FK |
 |---|---|---|
@@ -251,6 +264,7 @@ Rules:
 | table name must equal registry metadata | query planner joins declared tables |
 | one sidecar table per `(kind, schema_id, schema_version)` | no mixed-version table |
 | columns use SQL types / SQL enums for closed vocabularies | no fake enum strings |
+| `*_saturating` macro casts are for lossy compatibility only | validate value-bearing widths or use exact-width casts |
 
 Example shape:
 
