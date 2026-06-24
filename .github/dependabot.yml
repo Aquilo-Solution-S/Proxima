@@ -1,0 +1,38 @@
+version: 2
+updates:
+  # Rust dependencies (single workspace at the repo root).
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    # Default versioning-strategy (auto): bump the lockfile, widen manifest
+    # ranges only when required. Keeps Cargo.lock churn reviewable.
+    groups:
+      # Collapse the noisy long tail of minor+patch bumps into one PR/week.
+      cargo-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+    # Major bumps stay as individual PRs (they may need manual migration).
+    commit-message:
+      prefix: "chore(deps)"
+
+  # GitHub Actions used by the CI workflows. Grouped so a weekly action bump
+  # is one PR, not five.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "chore(ci)"

@@ -8,27 +8,32 @@ Every Fact in the system traces back to an Event Source. No exceptions.
 
 ## Owner — scoping primitive
 
-Every Event, Memory, and Goal carries an `Owner`. Two distinct
-concerns: **principal** = access scope; **org_id** = billing unit
-(measured for data usage / quota).
+Every Event, Memory, and Goal carries an `Owner`: the access scope.
+Ontologically, Owner IS the principal — there is nothing else in it.
 
 ```rust
-struct Owner {
-    principal: Principal,       // access scope
-    org_id:    OrgId,           // billing unit
-}
-
-enum Principal {
+enum Owner {                    // = Principal
     User(UserId),               // personal — only that user sees it
     Group(GroupId),             // group-shared — group members see it
 }
 ```
 
-Used identically across components 01 / 02 / 05 / 06. Storage: three
-columns (`owner_principal_kind`, `owner_principal_id`, `owner_org_id`)
-plus a check constraint. Schemas ([03](docs/03-schema-registry.md)) are binary-scoped (per [03 §Scoping](docs/03-schema-registry.md#scoping-one-namespace-per-binary)).
+**Organizations are not an ontology concept** (renegotiated
+2026-06-11 — decision `domain/decisions/2026-06-11-org-out-of-kernel.md`;
+previously `Owner` was a `{ principal, org_id }` record). Track B (S0)
+removed the tenant field from Core entirely: `Owner = Principal`. Tenancy
+/ billing attribution is a flavor/app concern, not part of Core access,
+**identity**, or storage. Operator gates, edge scoping, and dedup keys
+compare principals; the same user under two tenants is one identity, not
+two.
 
-Access rule (`org_id` never enters):
+Used identically across components 01 / 02 / 05 / 06. Storage: two
+identity columns (`owner_principal_kind`, `owner_principal_id`); there is
+no org/tenant column in Core. `owner_principal_kind` is a SQL enum.
+Schemas ([03](03-schema-registry.md)) are binary-scoped (per
+[03 §Scoping](03-schema-registry.md#scoping-one-namespace-per-binary)).
+
+Access rule (org does not exist at this layer):
 
 ```
 visible(m, requester) iff
@@ -41,15 +46,41 @@ alongside org membership.
 
 v1 constraints:
 
-- Group lives in one org: `group.org_id` set at creation; a memory's
-  `owner.org_id` is denormalised from `group.org_id` when principal is
-  `Group`. Cross-org groups deferred (v2+).
+- Tenant/org membership of a group is a flavor/app concern (a
+  usermanager fact); Core stores no org column and never consults one.
 - "Org-wide visible" expressed as a default `<org>-everyone` group
   whose membership auto-syncs with org membership. No `Principal::Org`
   variant.
 
 Per-memory ACL (`AccessGrant` table) is a v2+ extension layered above
 `Owner`; not in v1.
+
+### Owner resolution — the host's trust boundary
+
+`Owner` is a **host-resolved capability, never client-supplied.** Core
+trusts the `Owner` it is handed and filters every read and write by it
+(`owner_principal_kind`, `owner_principal_id`); it runs no membership
+check of its own. The `requester ∈ members(g)` clause in the access rule
+above is the **host's** obligation, not Core's — Core has no org column
+to cross-check against and cannot catch a mis-resolved owner.
+
+Cross-tenant isolation therefore reduces **entirely** to host owner
+resolution. A host MUST:
+
+- derive `Owner` server-side from the authenticated identity (a verified
+  token claim or server config) and **reject any owner named in client
+  input** — a request must never choose whose Reality slice it reads;
+- resolve a `Group(g)` owner only for a requester in `members(g)`;
+- never share one engine process across tenants without per-identity
+  owner resolution that enforces both rules above.
+
+A single-tenant deployment satisfies this by pinning one `Owner` per
+process — the request carries no owner field at all. A multi-tenant host
+that derives the owner from a token claim makes the token→owner mapping
+its **entire** security boundary: a wrong or spoofable mapping is a
+cross-tenant read leak, and because there is no org column, Core cannot
+detect it. This is a binding obligation on every embedding host, not an
+optional hardening.
 
 ## The contract
 
@@ -64,16 +95,24 @@ across other sources.
 
 ```
 trait EventSource {
-    type Event;                                  // typed payload, source-specific
-
     fn source_id(&self) -> SourceId;             // stable identifier
-    fn schema_version(&self) -> Version;         // payload schema version
 
     // Pull mode: engine asks for events since cursor.
     // Push mode: source emits to a queue the engine subscribes to.
     // A given source implements one or the other, not both.
 }
 ```
+
+A source emits a **heterogeneous stream**: each event carries its own
+`(schema_id, schema_version)` (see "Properties of an Event" below), and a
+single source typically spans multiple schemas. A git source emits commits,
+file-revisions, and chunks on three independent schemas; a chat source emits
+messages, edits, and reactions; a Forgejo source emits push, PR, issue, and
+comment events. There is no per-source `Event` associated type and no
+per-source `schema_version()` accessor — both would falsely encode "source
+= one schema". Schema declaration for registration happens per-flavor (see
+[03 §Scoping](03-schema-registry.md#scoping-one-namespace-per-binary)),
+not via a runtime accessor on the source.
 
 Each event the source produces becomes one Fact. The 1:1 mapping is mandatory
 *at the engine boundary*: no Event Source filters, deduplicates, or
@@ -90,16 +129,64 @@ already control observation grouping, so they own this id (Q6). F→A
 consolidation operates on a source batch (component 02): the chunks of one
 PDF, the files of one repo crawl, the messages of one chat session.
 
-Batch lifecycle (open / closed / consolidated) is persisted in the core
-`source_batches` table — see [04 §Source-batch lifecycle](docs/04-consolidation.md#source-batch-lifecycle). The source
+Batch lifecycle (open / closed) is persisted in the core
+`source_batches` table — see [04 §Source-batch lifecycle](04-consolidation.md#source-batch-lifecycle). The source
 signals batch-complete via `engine.close_batch(source_batch_id)`; the
 engine gates F→A on `closed_at IS NOT NULL`.
 
 `source_batch_id` is the F→A consolidation episode, distinct from the
 artefact a Fact cites (`citation_mapping_id` → `cited_object_id`,
-see [11](docs/11-citations.md)). They often coincide — one PDF ingestion → one batch → one
+see [11](11-citations.md)). They often coincide — one PDF ingestion → one batch → one
 Document — but for streams (one ChatSession lasting months → many
 batches over time) they don't. Coincidence isn't identity.
+
+## Compliance metadata
+
+Design contract, not implemented-code in v0.0.1.
+
+Planned: every source declares four compliance-vocabulary fields at
+registration. The
+vocabulary, default-trivial values, and the why-each-field
+rationale live in
+[13 §Compliance vocabulary](13-compliance.md#compliance-vocabulary);
+01 specifies what a *source* must declare.
+
+```rust
+struct SourceComplianceMetadata {
+    lawful_basis:        LawfulBasis,        // 13 §Compliance vocabulary
+    collection_purpose:  String,             // free-form, controller-authored
+    retention_policy:    RetentionPolicy,    // source-default; per-Owner overrides
+                                             // live in compliance.owner_policy (13)
+    data_residency:      Region,             // where the source's payloads land
+}
+```
+
+Planned inheritance: every Fact a source emits inherits these four values
+into its row at insert time. `delete_owner` and the suppression-list
+mechanic ([13 §Operations](13-compliance.md#operations),
+[13 §Suppression list](13-compliance.md#suppression-list--re-ingest-rejection))
+operate on the inherited values;
+operators and deciders never see them (compliance metadata is not
+part of the cognitive surface).
+
+Current runtime config is env/programmatic only (see 10). Flavor-source
+patterns own source defaults until this metadata is enforced.
+
+Per-Owner overrides — a source emitting under multiple Owners may
+have different retention obligations per Owner — are expressed via
+`compliance.owner_policy` rows, not by emitting Owner-divergent
+events from the same source. The source declares its *default*;
+the controller refines per Owner.
+
+**Idempotency-key constraint.** Every event's `event_id` (see
+§Properties of an Event) is the deterministic hash of
+`(source_id, owner, payload)`. The hash is content-derived and
+opaque by construction — it must remain so. Sources must not
+substitute a verbatim natural-person identifier (email address,
+national ID, phone number) for the hash, because the suppression
+list ([13 §Suppression list](13-compliance.md#suppression-list--re-ingest-rejection))
+retains `event_id` indefinitely as a re-ingest guard, and a
+non-opaque key would itself become PII surviving deletion.
 
 ## Properties of an Event
 
@@ -135,7 +222,7 @@ fails if any of these leak into a source:
    classification is an Abstraction produced upstream.
 3. **No cross-source joining.** A source does not look at what another source
    produced. Each source is local to its own Reality slice. Cross-source
-   patterns are Perspectives.
+   synthesis is a typed Abstraction; Perspective may frame it.
 4. **No filtering by relevance.** A source may filter by *correctness* (drop
    malformed payloads, validate schema). It may not filter by "is this
    interesting" — that is Goal-driven, not source-driven.
@@ -192,33 +279,58 @@ immutable; their typing is frozen at insert time.
 ## Bootstrap
 
 The engine itself has no founding goal. Per-flavor onboarding is the
-bootstrap mechanism (see [06](docs/06-goals-and-self.md)): the flavor's signup flow asks the user
+bootstrap mechanism (see [06](06-goals-and-self.md)): the flavor's signup flow asks the user
 flavor-specific founding-letter questions and writes Goals + Events
 under that user's `Owner`.
 
 Engine-level config registers source *instances* with their default
 owner. Source-instance shape lives here; the broader runtime config
 surface (LLM endpoint, embedding model, credential resolution)
-extends the same `proxima.config.yaml` and is specified in
-[10](docs/10-configuration.md).
+extends the same `proxima.config.toml` and is specified in
+[10](10-configuration.md).
 
 For example, a shared Forgejo crawler for org-AQS emits with
-`principal = Group(org_AQS_everyone)`, `org_id = org_AQS`; a personal
-Telegram source emits with `principal = User(u)`, `org_id =
-u.personal_org`. Sources may also override owner per-event when the
-observation context demands it.
+`owner = Group(org_AQS_everyone)` (billing annotation `org_AQS`,
+derived from the group's org); a personal Telegram source emits with
+`owner = User(u)` (billed to `u.personal_org`). Sources may also
+override owner per-event when the observation context demands it.
 
-```yaml
-proxima.config.yaml
-  sources:
-    - id: forgejo-aquilo
-      type: forgejo-webhook
-      uri: https://git.aquilo-cloud.com/AQS/aquilo
-      auth_secret: ...
-      default_owner:
-        principal: { group: org_AQS_everyone }
-        org_id: org_AQS
+```toml
+# proxima.config.toml
+[[sources]]
+id          = "forgejo-aquilo"
+type        = "forgejo-webhook"
+uri         = "https://git.aquilo-cloud.com/AQS/aquilo"
+auth_secret = "..."
+
+[sources.default_owner]
+principal = { group = "org_AQS_everyone" }
+# billing annotation derived from the group's org (org_AQS); user
+# principals bill to the user's personal org. No explicit org field —
+# org is not part of Owner.
+
+# see §Compliance metadata
+[sources.compliance]
+lawful_basis       = { legitimate_interest = "internal engineering knowledge graph for AQS staff" }
+collection_purpose = "Index AQS source repositories for code-flavor consolidation"
+retention_policy   = { retain_for = "7y" }      # AO §147 alignment
+data_residency     = "eu"
 ```
+
+A US-only deployment with no GDPR-equivalent state regulation
+declares trivial values across the board:
+
+```toml
+[sources.compliance]
+lawful_basis       = "not_applicable"
+collection_purpose = "internal use"
+retention_policy   = { indefinite = { reason = "no applicable retention regime" } }
+data_residency     = "unrestricted"
+```
+
+Both forms are valid; the substrate enforcement mechanics
+(residency allowlist, retention-driven cleanup, refusal-with-reason
+on `delete_owner`) act only on non-trivial values.
 
 ## What this gives us
 
@@ -231,6 +343,7 @@ boundary, and the cost of supporting a new Reality is exactly one
 
 - `owner-scoping-primitive`
 - `the-contract`
+- `compliance-metadata`
 - `properties-of-an-event`
 - `what-the-event-source-must-not-do`
 - `domain-examples`

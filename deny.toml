@@ -1,0 +1,105 @@
+# cargo-deny configuration for the Proxima workspace.
+# Schema: cargo-deny 0.19.x (the version bundled by cargo-deny-action v2.x).
+# 0.19 dropped the top-level `version` field and the old
+# advisories.vulnerability / .unmaintained / .unsound / .notice keys
+# (those are now hard-errors if present and deny-by-default), so this file
+# uses the post-0.19 schema only.
+#
+# Verified against all 447 resolved packages: `cargo deny check` is GREEN on
+# first run today. Re-run after every `cargo update`.
+
+# ---------------------------------------------------------------------------
+# Advisories: RustSec DB (same source cargo-audit uses). Pulled live, so this
+# is the one section that can newly fail as advisories are published.
+# ---------------------------------------------------------------------------
+[advisories]
+# Default RustSec advisory DB. Vulnerabilities are deny-by-default in 0.19.
+# Unmaintained crates: only consider workspace (first-party) dep trees, not
+# the entire transitive registry — avoids churn from deep transitive crates
+# we cannot action, while still flagging anything our own crates pull in.
+unmaintained = "workspace"
+# Yanked crates in the lockfile are a reproducibility hazard for a public tag.
+yanked = "deny"
+# No advisories ignored. Add `ignore = ["RUSTSEC-XXXX-NNNN"]` with a comment
+# and a tracking issue if a transitive advisory is genuinely un-actionable.
+ignore = []
+
+# ---------------------------------------------------------------------------
+# Licenses: allow-list. In cargo-deny 0.14+ the [licenses] table has no
+# copyleft / allow-osi-fsf-free toggles — the allow[] list is authoritative
+# and anything not listed (or any undeterminable license) is an error.
+#
+# This list covers EVERY atomic SPDX id present across all 447 packages.
+# AND-compound expressions make several of these MANDATORY, not optional:
+#   ring 0.17        = Apache-2.0 AND ISC          -> ISC required
+#   matchit 0.8      = MIT AND BSD-3-Clause         -> BSD-3-Clause required
+#   unicode-ident    = (MIT OR Apache-2.0) AND Unicode-3.0 -> Unicode-3.0 required
+#   aws-lc-sys 0.41  = ... AND BSD-3-Clause AND MIT-0     -> MIT-0 required
+#   webpki-roots     = CDLA-Permissive-2.0          -> CDLA-Permissive-2.0 required
+# LGPL-2.1-or-later is deliberately NOT listed: it appears only as a
+# never-chosen OR-branch on r-efi (which also offers MIT OR Apache-2.0), so
+# cargo-deny satisfies r-efi via Apache-2.0. No [licenses.exceptions] block is
+# needed: every "Apache-2.0 WITH LLVM-exception" crate also offers a plain
+# Apache-2.0/MIT branch, and there are zero missing-license crates.
+[licenses]
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "BSL-1.0",
+    "Unlicense",
+    "CDLA-Permissive-2.0",
+]
+# Be strict about fuzzy license-text matching.
+confidence-threshold = 0.93
+# No per-crate clarify needed (zero missing-license crates today). Add a
+# [[licenses.clarify]] entry only if a future vendored/mirrored source strips
+# its Cargo.toml license metadata.
+
+# ---------------------------------------------------------------------------
+# Bans: start permissive. The workspace has duplicate-version crate names
+# driven by unavoidable transitive skew: getrandom/rand/rand_core (0.2/0.3/0.4
+# and 0.8/0.9/0.10 generations), the RustCrypto 0.10-vs-0.11 split (digest,
+# block-buffer, sha2, crypto-common, hmac, const-oid), http/http-body 0.2-vs-1.0,
+# and aws-smithy-http 0.62-vs-0.63. These are build-bloat, not correctness bugs,
+# so multiple-versions is a WARN — it surfaces the skew in CI logs without
+# blocking the v0.0.1 tag. (The legacy rustls 0.21 TLS stack was eliminated in
+# 3378d84; only rustls 0.23 remains.) Flip to "deny" with targeted skips once
+# these generations converge.
+# ---------------------------------------------------------------------------
+[bans]
+multiple-versions = "warn"
+# Real crates.io `*` version requirements are a hazard and stay denied, but
+# workspace-internal path deps (`proxima-core = { path = "../core" }`) carry no
+# version field and cargo-deny would otherwise flag every one as a wildcard.
+wildcards = "deny"
+allow-wildcard-paths = true
+allow = []
+deny = []
+# When you dedup the crypto/runtime stack, flip multiple-versions to "deny" and
+# uncomment + pin the surviving skews (refresh the list with `cargo tree -d`):
+# skip = [
+#     { name = "getrandom" },
+#     { name = "rand_core" },
+#     { name = "digest" },
+#     { name = "http" },
+#     { name = "aws-smithy-http" },
+# ]
+
+# ---------------------------------------------------------------------------
+# Sources: only crates.io. The lockfile has NO git deps and all cross-crate
+# deps are path deps, so unknown registries/git sources are a hard error —
+# this catches a supply-chain-relevant change (a slipped-in git dependency)
+# at PR time.
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

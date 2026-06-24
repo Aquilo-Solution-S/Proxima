@@ -1,0 +1,4 @@
+[
+  {"query":"SELECT * FROM goals WHERE owner_org_id = $1","total_exec_time":1200.5,"calls":40,"mean_exec_time":30.01},
+  {"query":"SELECT * FROM memories","total_exec_time":600.2,"calls":12,"mean_exec_time":50.02}
+]

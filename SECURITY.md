@@ -18,10 +18,10 @@ timeline within 7 days.
 
 ## Supported Versions
 
-Proxima is in **design phase**. No code has been released, so there are
-no supported versions yet. Once the first tagged release ships
-(`v0.1.0`, see [`ROADMAP.md`](ROADMAP.md)), this section will be
-updated with the supported-version matrix.
+Proxima is pre-release: Rust crates have landed but no version is tagged
+yet. Until the first tagged release (v0.0.1), only current `main` is
+supported — report against it. A supported-version matrix lands with the
+first tagged release.
 
 ## Disclosure
 

@@ -1,0 +1,37 @@
+//! Consolidated storage-pg integration tests (single linked binary).
+
+mod change_event_invariants_pg;
+mod close_batch_pg;
+mod common;
+mod connect;
+mod derive_append_pg;
+mod edge_invariants_pg;
+mod event_history_pg;
+mod event_ingest_pg;
+mod event_ingest_with_sidecar_pg;
+mod external_agent_constraint_pg;
+mod fact_cleanup_pg;
+mod fact_embeddings_pg;
+mod fact_entity_citations_pg;
+mod fact_entity_cleanup_pg;
+mod fact_entity_edges_pg;
+mod fact_entity_ingest_pg;
+mod fact_entity_schema_pg;
+mod fact_with_citation_pg;
+mod goal_external_authorship_pg;
+mod goal_state_transitions_pg;
+mod goal_write_pg;
+mod lineage_pg;
+mod list_active_goals_pg;
+mod master_token_personality_pg;
+mod migrations;
+mod persist_mcp_call;
+mod personality_wake_pg;
+mod query_pg;
+mod read_mcp_call_history_pg;
+mod read_scope_pg;
+mod search_pg;
+mod set_wake_entries_within_pg;
+mod sidecar_macro_pg;
+mod sql_enums_pg;
+mod subject_personality_pg;

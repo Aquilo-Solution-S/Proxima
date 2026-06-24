@@ -1,0 +1,2 @@
+{"ts_ms":1,"method":"POST","route":"/mcp","status":200,"req_bytes":40,"resp_bytes":800,"dur_ms":120}
+{"ts_ms":2,"method":"POST","route":"/mcp","status":200,"req_bytes":40,"resp_bytes":900,"dur_ms":150}

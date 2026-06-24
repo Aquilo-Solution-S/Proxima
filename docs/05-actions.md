@@ -1,351 +1,163 @@
 # 05 — Actions
 
-Actions occupy the Goals → Actions → Reality arc of the wheel.
+Actions occupy the Goals -> Actions -> Reality arc of the wheel.
 
 ## Claim
 
-Actions are **Events from a built-in `system` source**. No separate
-entity, no separate `ActionSchema`, no lifecycle. Tool invocations land
-as Facts via the same pipeline as external observations.
+Action = attempted intervention in Reality.
 
-Component 05 = built-in source + tool registry. No new memory kind.
-Universe stays F/A/P.
+Substrate shape:
 
-## System EventSource
+| Concept | Rule |
+|---|---|
+| Action attempt | ordinary Fact emitted by a trusted source or tool path |
+| External effect | later ordinary Fact emitted by the observing EventSource |
+| Action identity | Fact `memory_id`; no `ActionId` |
+| Action schema | registered `FactPayload`; no separate action payload family |
+| Motivation | later A/P interpretation or Goal evidence, never Fact mutation |
 
-Built-in to core. Implements the 01 `EventSource` trait.
+No Action entity. No Action lifecycle. No special action edge class.
+Actions become traceable because attempts and consequences re-enter the
+append-only Fact stream.
 
-```rust
-const SYSTEM: SourceId = SourceId::builtin("system");
+## Shape
 
-struct SystemEventSource;
-
-impl EventSource for SystemEventSource {
-    fn source_id(&self) -> SourceId { SYSTEM }
-    fn source_uri(&self) -> Uri { "proxima://system".into() }
-    fn schema_version(&self) -> Version { Version::new(1) }
-}
+```
+Goal / Perspective / user intent
+  -> wake entry or trusted EventSource
+  -> tool / external side-effect attempt
+  -> Fact(action attempt)
+  -> Reality changes or refuses
+  -> EventSource observation
+  -> Fact(effect)
+  -> F->A / A->P / A->Goal interpretation
 ```
 
-Tool invocation → Event from `SYSTEM` → Fact under a registered
-`FactSchema` (e.g. `system-question-asked`, `system-tool-call-X`).
+The wheel closes through observation, not by mutating the action row.
 
-The emitted `SYSTEM` event carries the `Owner` of the user/org being
-actuated for. The decider supplies the `Owner` at invocation; the
-engine validates that the invoking principal has permission to act in
-that scope.
+## Wake-trigger principle
 
-`SYSTEM` also emits dispatcher-driven `LlmCallV1` and `EmbeddingCallV1`
-Facts for every LLM and embedding call the engine makes — see
-§Dispatcher-emitted call Facts below.
+Automated action selection is wake execution.
 
-## Tool registry
+| Trigger | Selector | Output |
+|---|---|---|
+| `change_event` | matching wake entry | tool call, A/P/Goal/Edge write, or no output |
+| UI / chat / trusted source | user or source policy | action-attempt Fact |
+| external callback | EventSource | effect Fact |
 
-```rust
-struct ToolRegistration {
-    id:            ToolId,
-    name:          String,         // "ask-question"
-    schema_id:     SchemaId,       // payload schema (FactSchema)
-    availability:  AvailabilityFn, // ctx -> bool
-    callable:      ToolCallable,
-}
+There is no standalone action-selection registry in core. Wake entries are
+detect-only. An external harness receives tool scope from token capabilities
+intersected with the deployment tool-surface profile, plus visible read scope,
+active Goals, and prompt/instructions from flavor/runtime config (see 04).
 
-enum ToolCallable {
-    EngineLocal(BoxedFn),                  // Proxima invokes directly
-    External { request_topic: String },    // emit; external executes
-}
-```
+Manual action is the same shape: a user-facing surface emits or approves a
+Fact through a trusted source. The distinction is authoring, not entity kind.
 
-Available set at time `t` for `Owner ω`:
-`{ T ∈ tools | T.availability(ctx) }` where `ctx` includes `ω`.
-Cardinality `0..n`. Tool registry itself is global; availability per
-owner is the per-call check.
+## Tool boundary
 
-Tools split into two tiers (see [12 — Tool Manifest](docs/12-tool-manifest.md) for the full tool manifest specification and T1/T2 tier details):
+Tools are effect adapters.
 
-- **T2 (build-time):** registered at startup from the linked flavor
-  crate's `register` call. v1 ships T2 only.
-- **T1 (runtime, post-v1):** signed manifests installed via API,
-  bodies sandboxed in WASM or proxied to MCP / HTTP. T1 cannot invent
-  Fact schemas or relations — capabilities are validated against the
-  T2-frozen set at install time.
+| Boundary | Rule |
+|---|---|
+| Tool vocabulary | 12 owns build-time tool classes, MCP dispatch, and compliance declarations |
+| Runtime tool scope | auth token scope ∩ deployment profile (`ToolScope::Palette` when narrowed) |
+| Persistence | tool result enters storage only as registered Fact / Edge writes |
+| A/P writes | operator/wake output protocol only; tools do not bypass 04 |
+| Failure | failed attempts are Facts when the source/tool schema models them |
 
-A/P authorship is operator-only regardless of tier. Tools may only
-emit Facts.
-
-## Deciders — flavor-supplied
-
-A decider is a loop that picks **which** tool to call when — the only
-piece that decides *to act*. F→A, A→P, and edge operators interpret
-state; the decider selects action. Substrate does **not** enforce one.
-
-A flavor registers **zero, one, or many** deciders:
-
-- **Zero** — fully manual or observation-only. The user (or another
-  trusted EventSource — a chat command, a UI button) emits `SYSTEM`
-  events directly; no automated loop exists. Pure-observation flavors
-  that never act sit here permanently.
-- **One** — typical for a flavor with a single action surface.
-- **Many** — separate deciders per use case (`code/triage-decider`,
-  `code/auto-merge-decider`), each gated by its own per-call
-  `availability` predicate. Programmed-rule and LLM-driven deciders
-  may coexist; the available set at time `t` is the union, filtered
-  by availability.
-
-Implementation styles compose freely:
-
-- **Programmed rules:** `if X then Y`. No LLM call.
-- **Tool-calling LLM agents:** model receives the available tool set
-  and goal/perspective context, picks the act.
-- **Human-in-the-loop:** decider emits a proposal Fact; a separate
-  EventSource (UI, chat) emits the approval, which triggers the tool.
-  Falls out of existing primitives — no new substrate machinery.
-
-### Gradual scaling
-
-Decider sophistication is use-case dependent and grown over time.
-Substrate gives the primitives; the trajectory is a flavor + deployment
-decision:
-
-- **Phase 1 — manual.** No decider registered. User drives action via
-  the UI; the F→A / A→P pipeline runs and surfaces interpretation, but
-  every act is a human choice. Builds trust in the chain.
-- **Phase 2 — selective automation.** Programmed-rule decider added for
-  classes of action that have proven safe (e.g. auto-label issues that
-  match a known pattern). Manual still handles novelty.
-- **Phase 3 — full auto.** LLM-driven decider takes over once the
-  action pipeline is well-understood. Manual remains as a fallback path
-  for high-risk classes via the same per-tool availability gate.
-
-Promotion between phases is a deployment-config event, not a substrate
-event — register the new decider, gate the old one off, no schema
-change.
-
-### Routing and protocol
-
-Deciders live **inside** the binary, registered alongside the flavor's
-operators and prompts ([08 §What a flavor supplies](docs/08-core-and-flavors.md#what-a-flavor-supplies)).
-LLM-driven deciders declare `tier` and `requires` like other operators
-([10 §Operator declaration](docs/10-configuration.md#operator-declaration)) —
-typically `tier: Standard` with `requires: { tool_use: true }` for the
-agent-loop variant. Programmed-rule deciders omit both.
-
-The substrate ships the dispatcher, the tool registry, and the
-inference layer ([10 §LLM credential resolution](docs/10-configuration.md#llm-credential-resolution));
-deciders ride on top — call "the LLM at this tier" and the engine
-resolves credentials per the call's `Owner`.
-
-From the protocol surface ([14](docs/14-protocol-surface.md)) deciders
-are invisible — they never appear on the wire. Clients observe only
-the resulting `SYSTEM` events.
-
-## Dispatcher-emitted call Facts
-
-The `SYSTEM` source emits more than tool invocations. The substrate's
-LLM and embedding dispatcher emits **one `LlmCallV1` or `EmbeddingCallV1`
-Fact per dispatcher-driven call**, success or failure, under the same
-`SYSTEM` source and the same Fact pipeline as everything else.
-
-```rust
-struct LlmCallV1 {
-    consumer:           ConsumerId,        // Operator | Decider | Source
-    owner:              OwnerId,
-    personality_id:     Option<PersonalityId>,
-    tier:               ModelTier,
-    vendor:             String,
-    model_id:           String,
-    prompt_tokens:      u32,               // uncached input tokens
-    cache_read_tokens:  Option<u32>,       // when vendor reports cache hits
-    cache_write_tokens: Option<u32>,       // tokens written to cache this call
-    completion_tokens:  u32,
-    latency_ms:         u32,
-    cost_micro_usd:     Option<u64>,       // 1 USD = 1_000_000 micro-USD
-    status:             CallStatus,        // Ok | Timeout | Refused | Error(kind)
-}
-
-struct EmbeddingCallV1 {
-    consumer:       ConsumerId,
-    owner:          OwnerId,
-    vendor:         String,
-    model_id:       String,
-    dim:            u32,
-    n_inputs:       u32,
-    total_tokens:   u32,
-    latency_ms:     u32,
-    cost_micro_usd: Option<u64>,
-    status:         CallStatus,
-}
-```
-
-`ConsumerId` carries the typed identity of the caller (operator id,
-decider id, or source id) so cost can be grouped without parsing
-strings. `cost_micro_usd` is `None` when the price book has no entry
-for `(vendor, model_id)` — typically BYOK against an unrecognised
-model. Token counts are always present; downstream consumers can
-reprice retroactively if they fill in the gap. The unit is
-micro-USD (10⁻⁶ USD) so calls under one cent are still
-distinguishable; computation of the field is specified in
-[10 §Price book](docs/10-configuration.md#price-book).
-
-### Invariant — all LLM and embedding traffic routes via dispatcher
-
-Operators, deciders, and EventSources do not call vendor SDKs directly.
-The dispatcher exposes typed `Llm` and `Embedder` handles; consumers
-take one and call through it. Fact emission is unconditional — there
-is no code path that talks to a vendor without producing the
-corresponding `LlmCallV1` / `EmbeddingCallV1` Fact.
-
-A flavor that adds a "small direct Anthropic call inside its source"
-violates the invariant. It creates blind spots in:
-
-- **Cost tracking** — usage metering ([10 §Operator concurrency](docs/10-configuration.md#operator-concurrency))
-  reads from this Fact stream; off-dispatcher calls are invisible to
-  billing and dashboards.
-- **Quota enforcement** — `cost_cap.llm_concurrency` and
-  `llm_tokens_per_minute` only bind on the dispatcher.
-- **Credential resolution** — BYOK and per-Owner key routing
-  ([10 §LLM credential resolution](docs/10-configuration.md#llm-credential-resolution))
-  only run inside dispatcher entry.
-- **Audit** — every external paid call should be a memory citable by
-  whatever consumed its output.
-
-### Read pattern — events or periodic, same surface
-
-Cost-by-(Owner, personality, operator, tier) is a SQL group-by over
-`proxima_core.fact_llm_call_v1`. Real-time consumers (dashboards,
-anomaly detection, kill-switches) tail the change feed; batch
-consumers (monthly billing, weekly cost reports) query periodically.
-
-"Spending on self-model is up 4× this week" can itself be an
-Abstraction — F→A over `core/llm-call-v1` Facts emitting a
-`core/cost-anomaly` payload — surfaced through the same UI as every
-other interpretation. No counter table; no separate metrics pipeline.
-Calls don't get retracted, so the stream is append-only without
-supersession.
-
-## Execution boundary — per tool
-
-`ToolCallable::EngineLocal` — Proxima invokes the callable.
-`ToolCallable::External` — Proxima publishes a request message; an
-external process executes and reports back via its own EventSource (or
-re-publishes to `SYSTEM` with the result payload).
-
-No single rule. Per-tool config.
+Current v1 tool execution is MCP dispatch.
+External HTTP/WASM body transports are deferred. That execution detail
+is not an action ontology.
 
 ## Effect on Reality
 
-Real-world consequence re-enters via the normal EventSource path (chat
-EventSource emits "user replied", etc.). Edge from action-Fact to
-effect-Fact falls out of payload references (`message_id`,
-`thread_id`, `request_id`) — same structural-edge mechanism as
-anywhere else. No special wiring.
+External state is outside the substrate.
 
-## Motivation
+Rules:
 
-Motivations are interpretive — they live as **Abstractions citing
-Action-Facts**, never on the action-Fact itself. An Action-Fact has
-zero, one, or many motivation Abstractions:
+- A successful tool call may change Reality before Proxima observes the result.
+- The observed consequence returns through the normal EventSource path.
+- Request ids, message ids, branch names, issue ids, and payload references may
+  create ordinary structural edges.
+- No action-effect shortcut relation is required.
+- No rollback is implied by deleting or superseding Proxima rows (see 13).
 
-- Zero: reflex / programmed-rule act with no motivating goal recorded.
-- One: a single goal explains the act.
-- Many: the act was poly-motivated (e.g. "ship the patch" and
-  "unblock the team" together).
+## MCP-call Facts
 
-This preserves the F/A separation. Facts are deterministic (what
-happened); motivations are interpretations under a Π and belong in A.
+MCP tool calls can be logged as ordinary content-addressed Facts by
+`persist_mcp_call`.
 
-### `core/motivated-by` — decider's fast-path hint as an edge
+Registered schemas:
 
-Action-Facts may carry a `core/motivated-by` edge to the Goal that
-prompted them — the structural fast-path hint, separate from the
-richer `MotivationV1` Abstractions below. The edge is registered by
-core ([06 §Goals participate in the edge graph](docs/06-goals-and-self.md#goals-participate-in-the-edge-graph)), class `Causal`,
-authorship `EventSource(SYSTEM)` for tool-emitted Action-Facts.
+| Schema | Kind | Contents |
+|---|---|
+| `core/mcp-call-logged-v1` | Fact | tool, actor, status, latency, I/O hash |
+| `core/mcp-call-io-v1` | CitedObject | inline I/O bytes, byte length, truncation flag |
+| `core/mcp-call-io-citation-v1` | CitationMapping | pure link; no sidecar table |
 
-Set by the decider when the motivating goal is known at decision
-time (programmed rules, explicit selection). Engine does not
-enforce. Not a substitute for motivation Abstractions — it is a
-low-cost annotation, not the rich account.
+Invariant:
 
-Action-Fact payloads do **not** carry a `motivated_by_goal: Option<GoalId>`
-field — the relation lives in the edge graph, not buried inside payload
-structures. This keeps motivation queryable uniformly across Action-Facts
-emitted by any flavor.
+- Call audit is Fact-only; I/O bytes are cited as bibliographic payload.
+- Idempotency is `McpCallLogInput::event_id`.
+- Vendor LLM-call / embedding-call families, price books, tier accounting,
+  token-count accounting, and cost tables are deferred.
 
-### `MotivationV1` — core `AbstractionPayload`
+## Human approval
 
-Bare core registers `MotivationV1` so every flavor has a uniform
-motivation query surface.
+Some tools require human approval before external execution.
 
-```rust
-struct MotivationV1 {
-    goal_ids:   Vec<GoalId>,         // goals motivating this action; ≥ 1
-    kind:       MotivationKind,
-    confidence: f32,                  // [0.0, 1.0]
-}
+| Case | Rule |
+|---|---|
+| Legal consequence | tool metadata marks the risk; user-authored approval remains required design intent |
+| Proposal | wake/source emits a proposal Fact |
+| Approval | user-authored EventSource Fact is the firing observation |
+| Execution | approved tool call emits its own attempt/result Facts |
 
-enum MotivationKind {
-    Pursuit,        // toward a positive goal
-    Avoidance,      // away from an undesired state
-    Obligation,     // external commitment (deadline, promise)
-    Curiosity,      // exploratory / information-seeking
-    Maintenance,    // preserving an existing state
-}
-```
-
-A motivation Abstraction cites the Action-Fact via the normal F→A
-provenance edge (Abstraction → Fact). N such Abstractions citing one
-Action express N motivations.
-
-### Per-domain expansion
-
-Flavors register richer schemas when the domain demands more fields
-— e.g. a Code flavor's `BugFixMotivationV1` with `severity` and
-`regression_risk`. Same registration machinery as any other
-`AbstractionPayload` (03/08); core's `MotivationV1` is the default,
-not a forcing function.
-
-## Gating — out of scope
-
-Per-tool. v1 tools are deterministic-output: system chooses *content*,
-not *whether to act*. Any non-deterministic proposal/approval gating is
-the tool's concern.
+Approval is an EventSource pattern, not a new entity or lifecycle.
 
 ## Idempotency
 
-`event_id` is the key. Same dedup as any EventSource. No `ActionId`.
+Same rule as any EventSource:
+
+| Path | Key |
+|---|---|
+| action-attempt Fact | source-defined `event_id` |
+| effect Fact | observing source's `event_id` |
+| tool result persistence | tool/source request id inside its Fact payload when needed |
+
+No `ActionId`. Re-receipt dedups at the EventSource boundary.
 
 ## Validation at ingest
 
-Registry lookup on every `SYSTEM` event: payload's tool reference must
-match a registered `ToolRegistration`. Unknown tool → reject.
+Every action-attempt or effect Fact follows the ordinary ingest contract:
 
-Publication is **synchronous**: the tool callable returns only after
-the resulting Fact (and any structural edges from its payload) is
-materialized. The agent loop must see its own action as a Fact before
-the next decide step.
+| Check | Rule |
+|---|---|
+| owner | source/tool may write only within the authorized Owner |
+| schema | `schema_id` / version must resolve to a registered `FactPayload` |
+| relation | structural edges must use registered relation descriptors |
+| capability | tool output must stay within registered schemas/relations and resolved tool scope |
+| atomicity | Fact, sidecar, structural edges, and change event commit together |
+
+Publication is synchronous with Fact materialization for engine-mediated tool
+paths: the wake run sees its own emitted Fact before any later step depends on
+it.
 
 ## Versioning
 
-Tools follow `FactSchema` ([03](docs/03-schema-registry.md)) migration discipline. Schema bump on a
-tool is a `SchemaMigration` over its sidecar; old version is dropped
-after migration completes. Tool deregistration is migration to a
-no-op schema or explicit drop with audit.
+Action-attempt and effect payloads follow Fact schema migration discipline
+(see 03). Tool vocabulary follows build-time core/flavor versioning
+(see 08, 12).
 
-## Anchors
+Schema evolution moves sidecar bytes only. Fact identity, citations, and
+provenance stay fixed.
 
-- `claim`
-- `system-eventsource`
-- `tool-registry`
-- `deciders-flavor-supplied`
-- `dispatcher-emitted-call-facts`
-- `execution-boundary-per-tool`
-- `effect-on-reality`
-- `motivation`
-- `core-motivated-by`
-- `motivationv1-core-abstractionpayload`
-- `per-domain-expansion`
-- `gating-out-of-scope`
-- `idempotency`
-- `validation-at-ingest`
-- `versioning`
+## Invariants
+
+- EventSource membrane and Owner scoping: 01.
+- Fact payload typing and migration: 03.
+- Wake execution and output protocol: 04.
+- Tool vocabulary and MCP dispatch: 12.
+- External side effects and approval posture: 13.
+- Motivation is interpretation over Facts or Goal evidence, not a core action
+  field.
