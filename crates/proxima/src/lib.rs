@@ -358,4 +358,21 @@ mod tests {
         let owner = super::company_owner(id);
         assert!(matches!(owner, Principal::Group(_)));
     }
+
+    #[test]
+    fn proxima_builder_debug_redacts_database_url() {
+        let owner = super::company_owner(uuid::Uuid::now_v7());
+        let builder = super::ProximaBuilder::new(
+            super::EmbedConfig {
+                database_url: "postgres://user:secret@localhost/proxima".to_string(),
+                s3: None,
+            },
+            owner,
+        );
+        let debug = format!("{builder:?}");
+
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("secret"));
+        assert!(!debug.contains("postgres://user"));
+    }
 }

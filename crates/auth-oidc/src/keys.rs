@@ -8,6 +8,8 @@ use async_trait::async_trait;
 use jsonwebtoken::DecodingKey;
 use tokio::sync::RwLock;
 
+use crate::config::{OidcConfigError, validate_https_url};
+
 /// Minimum spacing between JWKS refetches. Bounds the outbound-fetch rate so a
 /// flood of tokens carrying random unknown `kid`s cannot amplify into one
 /// upstream JWKS request per inbound request.
@@ -21,6 +23,8 @@ pub enum KeyError {
     Fetch(String),
     #[error("jwks parse failed: {0}")]
     Parse(String),
+    #[error("jwks config invalid: {0}")]
+    Config(String),
 }
 
 /// Resolves a signing key by `kid`.
@@ -97,15 +101,22 @@ impl std::fmt::Debug for HttpJwksResolver {
 }
 
 impl HttpJwksResolver {
-    #[must_use]
-    pub fn new(issuer: String, jwks_uri: Option<String>) -> Self {
-        Self {
+    /// # Errors
+    ///
+    /// Returns an error when the issuer or explicit JWKS endpoint is not
+    /// HTTPS. Test builds allow loopback HTTP for mock `IdPs`.
+    pub fn new(issuer: String, jwks_uri: Option<String>) -> Result<Self, OidcConfigError> {
+        validate_https_url("issuer", &issuer)?;
+        if let Some(uri) = &jwks_uri {
+            validate_https_url("jwks_uri", uri)?;
+        }
+        Ok(Self {
             issuer,
             jwks_uri,
             http: reqwest::Client::new(),
             cache: RwLock::new(HashMap::new()),
             last_refresh: RwLock::new(None),
-        }
+        })
     }
 
     async fn jwks_endpoint(&self) -> Result<String, KeyError> {
@@ -127,6 +138,8 @@ impl HttpJwksResolver {
             .json()
             .await
             .map_err(|e| KeyError::Parse(e.to_string()))?;
+        validate_https_url("discovered jwks_uri", &cfg.jwks_uri)
+            .map_err(|err| KeyError::Config(err.to_string()))?;
         Ok(cfg.jwks_uri)
     }
 
@@ -182,6 +195,8 @@ impl KeyResolver for HttpJwksResolver {
 mod http_tests {
     use axum::{Router, routing::get};
 
+    use crate::config::{OidcConfigError, validate_https_url};
+
     use super::{HttpJwksResolver, KeyError, KeyResolver};
 
     // Static 2048-bit RSA public key as JWK n/e (base64url). Baked so this
@@ -226,7 +241,7 @@ mod http_tests {
                 .expect("mock idp server failed");
         });
 
-        let resolver = HttpJwksResolver::new(issuer, None);
+        let resolver = HttpJwksResolver::new(issuer, None).expect("loopback http allowed in tests");
         assert!(resolver.key_for("k1").await.is_ok());
         assert!(matches!(
             resolver.key_for("missing").await,
@@ -234,5 +249,16 @@ mod http_tests {
         ));
 
         server.abort();
+    }
+
+    #[test]
+    fn rejects_discovered_http_jwks_uri() {
+        assert!(matches!(
+            validate_https_url("discovered jwks_uri", "http://issuer.example/keys"),
+            Err(OidcConfigError::InsecureUrl {
+                field: "discovered jwks_uri",
+                ..
+            })
+        ));
     }
 }

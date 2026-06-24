@@ -35,13 +35,17 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks the graph-read role, or `Internal` when the storage query fails.
+    /// lacks the graph-read role, `InvalidArgument` when `req.limit == 0`, or
+    /// `Internal` when the storage query fails.
     pub async fn query(
         &self,
         authz: &AuthzContext,
         req: &QueryRequest,
     ) -> Result<QueryResponse, ProtocolError> {
         super::authorize(authz, &req.principal, Role::GraphRead)?;
+        if req.limit == 0 {
+            return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
+        }
         let mut effective = req.clone();
         if effective.stateful_heads.is_empty() {
             effective.stateful_heads = match effective.schema_id.as_ref() {
@@ -150,8 +154,8 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks the graph-read role, or `Internal` when `req.limit == 0` or
-    /// the storage read fails.
+    /// lacks the graph-read role, `InvalidArgument` when `req.limit == 0`, or
+    /// `Internal` when the storage read fails.
     pub async fn read_mcp_call_history(
         &self,
         authz: &AuthzContext,
@@ -159,9 +163,7 @@ impl Engine {
     ) -> Result<McpCallHistoryResponse, ProtocolError> {
         super::authorize(authz, &req.principal, Role::GraphRead)?;
         if req.limit == 0 {
-            return Err(ProtocolError::internal(
-                "read_mcp_call_history.limit must be > 0",
-            ));
+            return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
         }
         let mut effective = req.clone();
         if effective.limit > MAX_MCP_CALL_HISTORY_LIMIT {
