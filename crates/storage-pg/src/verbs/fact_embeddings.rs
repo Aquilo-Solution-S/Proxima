@@ -350,14 +350,13 @@ pub async fn list_facts_missing_embedding(
 /// Stale `processing` jobs orphaned by a crashed or restarted drainer are
 /// reclaimed after fifteen minutes. The window MUST exceed the embedding
 /// client's request timeout (currently ten minutes,
-/// `crates/llm-openai-compat/src/openai_compat.rs:29`), and the worker drains
-/// one job per claim, so a row is `processing` for at most one embed call.
-/// Therefore, a row older than the window can only belong to a dead worker,
-/// never a slow live one. The claim `UPDATE` resets `updated_at = now()`, so a
+/// `crates/llm-openai-compat/src/openai_compat.rs:29`). Inline drainers call
+/// this with `limit = 1` in a loop, so a claimed row is actively processed
+/// immediately and cannot age past the reclaim window behind earlier jobs in
+/// the same batch. The claim `UPDATE` resets `updated_at = now()`, so a
 /// reclaimed orphan restarts its clock. Reclaim does not increment attempts;
 /// crash-loop poison-pill bounding is out of scope, while embed-error retries
-/// still go through
-/// `fail_embedding_job`.
+/// still go through `fail_embedding_job`.
 ///
 /// # Errors
 ///
@@ -367,6 +366,15 @@ pub async fn claim_pending_embedding_jobs(
     pool: &PgPool,
     model_id: &str,
     limit: i64,
+) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
+    claim_pending_embedding_jobs_excluding(pool, model_id, limit, &[]).await
+}
+
+async fn claim_pending_embedding_jobs_excluding(
+    pool: &PgPool,
+    model_id: &str,
+    limit: i64,
+    exclude_entity_ids: &[uuid::Uuid],
 ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
     let limit = ensure_nonnegative_limit(limit)?;
     if limit == 0 {
@@ -381,6 +389,7 @@ pub async fn claim_pending_embedding_jobs(
                 AND (status = 'pending'
                      OR (status = 'processing'
                          AND updated_at < now() - interval '15 minutes'))
+                AND NOT (entity_id = ANY($2::uuid[]))
               ORDER BY enqueued_at ASC,
                        owner_principal_kind ASC,
                        owner_principal_id ASC,
@@ -388,7 +397,7 @@ pub async fn claim_pending_embedding_jobs(
                        entity_id ASC,
                        embedding_version ASC
               FOR UPDATE SKIP LOCKED
-              LIMIT $2
+              LIMIT $3
          )
          UPDATE proxima_core.embedding_jobs j
             SET status = 'processing',
@@ -405,6 +414,7 @@ pub async fn claim_pending_embedding_jobs(
                   j.attempts",
     )
     .bind(model_id)
+    .bind(exclude_entity_ids)
     .bind(limit)
     .fetch_all(pool)
     .await
@@ -629,9 +639,22 @@ pub async fn drain_embedding_jobs_inline(
     client: &dyn EmbeddingClient,
     limit: i64,
 ) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
-    let claims = claim_pending_embedding_jobs(pool, client.model_id(), limit).await?;
+    let limit = ensure_nonnegative_limit(limit)?;
     let mut outcome = EmbeddingInlineDrainOutcome::default();
-    for claim in claims {
+    let mut processed_entity_ids = Vec::new();
+    for _ in 0..limit {
+        let Some(claim) = claim_pending_embedding_jobs_excluding(
+            pool,
+            client.model_id(),
+            1,
+            &processed_entity_ids,
+        )
+        .await?
+        .into_iter()
+        .next() else {
+            break;
+        };
+        processed_entity_ids.push(claim.entity_id.into_inner());
         match embed_claim(pool, client, &claim).await {
             Ok(true) => {
                 complete_embedding_job(pool, &claim).await?;

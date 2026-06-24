@@ -10,9 +10,10 @@ use proxima_core::verbs::event_ingest::{
 use proxima_core::verbs::query::{MemoryLineageDirection, MemoryLineageRequest, QueryRequest};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
-    AuthPath, AuthzContext, EntityKind, FactPayload, FlavorRegistry, MemoryId, Owner,
-    PayloadKeyBuilder, Role, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, SourceId,
-    Storage, StorageError, canonical_json_bytes,
+    AuthPath, AuthzContext, CORE_MOTIVATED_BY_RELATION, ChangeEventKind, EntityKind, EntityRef,
+    FactPayload, FlavorRegistry, GoalId, MemoryId, Owner, PayloadKeyBuilder, Role, SchemaId,
+    SchemaVersion, SidecarPayload, SourceBatchId, SourceId, Storage, StorageError,
+    canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemoryPayloadFuture};
 use proxima_storage_pg::verbs::event_ingest::{EventIngestSidecarFuture, PgFactSidecar};
@@ -681,6 +682,38 @@ async fn tombstone_fact_is_idempotent() -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
+#[tokio::test]
+async fn tombstone_fact_drops_goal_evidence_edge() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+    let engine = Engine::new(registry).with_storage(storage);
+
+    let ingest = engine
+        .event_ingest(&authz, fresh_draft(owner.clone()))
+        .await?;
+    let fact_id = ingest.memory_id.into_inner();
+    let goal_id = insert_active_goal(&pg, &owner).await?;
+    let edge_id = insert_motivated_by_edge(&pg, &owner, goal_id, fact_id).await?;
+
+    let outcome = engine
+        .tombstone_fact(&authz, &owner, ingest.memory_id)
+        .await?;
+    assert!(outcome.fact_erased);
+
+    assert_edge_erased(&pg, edge_id).await?;
+    assert_goal_active(&pg, goal_id).await?;
+    assert_motivated_by_edge_delete_emitted(&pg, &owner, edge_id, goal_id, fact_id).await?;
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
 async fn assert_fact_erased(
     pg: &proxima_storage_pg::PgStorage,
     fact_id: Uuid,
@@ -865,6 +898,65 @@ async fn current_memory_id(
     .await?)
 }
 
+async fn insert_active_goal(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let goal_id = Uuid::now_v7();
+    let (owner_kind, owner_principal_id) = owner.columns();
+    sqlx::query(
+        "INSERT INTO proxima_core.goals
+            (goal_id, schema_id, owner_principal_kind, owner_principal_id,
+             text, state, authorship_kind, request_id, schema_version,
+             payload, title)
+         VALUES ($1, 'core/simple-text-v1', $2, $3,
+                 'goal text', 'Active', 'User', $4, 1,
+                 $5, 'goal title')",
+    )
+    .bind(goal_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(format!("cleanup-goal-{}", Uuid::now_v7()))
+    .bind(b"{}".to_vec())
+    .execute(pg.pool())
+    .await?;
+    Ok(goal_id)
+}
+
+async fn insert_motivated_by_edge(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    goal_id: Uuid,
+    fact_id: Uuid,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let edge_id = Uuid::now_v7();
+    let (owner_kind, owner_principal_id) = owner.columns();
+
+    sqlx::query(
+        "INSERT INTO proxima_core.edges
+            (edge_id, relation, relation_class,
+             source_kind, source_goal_id,
+             target_kind, target_memory_id,
+             authorship_kind,
+             owner_principal_kind, owner_principal_id)
+         VALUES ($1, $2, 'Structural',
+                 'Goal', $3,
+                 'Fact', $4,
+                 'User',
+                 $5, $6)",
+    )
+    .bind(edge_id)
+    .bind(CORE_MOTIVATED_BY_RELATION)
+    .bind(goal_id)
+    .bind(fact_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .execute(pg.pool())
+    .await?;
+
+    Ok(edge_id)
+}
+
 async fn assert_cited_object_erased(
     pg: &proxima_storage_pg::PgStorage,
     cited_object_id: Uuid,
@@ -927,6 +1019,64 @@ async fn assert_entity_delete_emitted(
     .fetch_one(pg.pool())
     .await?;
     assert_eq!(delete_events, 1);
+    Ok(())
+}
+
+async fn assert_motivated_by_edge_delete_emitted(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    edge_id: Uuid,
+    goal_id: Uuid,
+    fact_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let delete_events = pg.list_change_events_after(owner, Uuid::nil(), 100).await?;
+    let found = delete_events.iter().any(|event| {
+        matches!(
+            &event.event.kind,
+            ChangeEventKind::EdgeDelete {
+                edge_id: seen_edge_id,
+                relation,
+                source: EntityRef::Goal(seen_goal_id),
+                target: EntityRef::Memory(seen_fact_id),
+            } if *seen_edge_id == edge_id
+                && relation == CORE_MOTIVATED_BY_RELATION
+                && *seen_goal_id == GoalId::new(goal_id)
+                && *seen_fact_id == MemoryId::new(fact_id)
+        )
+    });
+    assert!(
+        found,
+        "expected EdgeDelete change_event for motivated-by edge"
+    );
+    Ok(())
+}
+
+async fn assert_edge_erased(
+    pg: &proxima_storage_pg::PgStorage,
+    edge_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let edge_count: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxima_core.edges
+          WHERE edge_id = $1",
+    )
+    .bind(edge_id)
+    .fetch_one(pg.pool())
+    .await?;
+    assert_eq!(edge_count, 0);
+    Ok(())
+}
+
+async fn assert_goal_active(
+    pg: &proxima_storage_pg::PgStorage,
+    goal_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state: proxima_core::verbs::goal_write::GoalState =
+        sqlx::query_scalar("SELECT state FROM proxima_core.goals WHERE goal_id = $1")
+            .bind(goal_id)
+            .fetch_one(pg.pool())
+            .await?;
+    assert_eq!(state, proxima_core::verbs::goal_write::GoalState::Active);
     Ok(())
 }
 

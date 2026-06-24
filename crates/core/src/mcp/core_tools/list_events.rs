@@ -77,15 +77,15 @@ pub async fn list_events(
     };
     let limit = args.limit.unwrap_or(100).clamp(1, 1000) as usize;
     let rows = storage
-        .list_change_events_after(&ctx.owner, after, limit)
+        .list_change_events_after(&ctx.owner, after, overfetch_limit(limit))
         .await?;
     let edge_kinds = load_edge_endpoint_kinds(&ctx, &rows).await?;
 
+    let (rows, has_more) = page_rows(rows, limit);
     let events = rows
         .into_iter()
         .map(|row| event_item(&ctx, row, &edge_kinds))
         .collect::<Vec<_>>();
-    let has_more = events.len() == limit;
     let next_since = events.last().map(|event| event.seq.clone()).or(args.since);
 
     Ok(ListEventsOutput {
@@ -95,6 +95,16 @@ pub async fn list_events(
     })
 }
 
+fn overfetch_limit(limit: usize) -> usize {
+    limit.saturating_add(1)
+}
+
+fn page_rows(mut rows: Vec<ChangeEventForWake>, limit: usize) -> (Vec<ChangeEventForWake>, bool) {
+    let has_more = rows.len() > limit;
+    rows.truncate(limit);
+    (rows, has_more)
+}
+
 async fn load_edge_endpoint_kinds(
     ctx: &McpToolCtx,
     rows: &[ChangeEventForWake],
@@ -102,7 +112,8 @@ async fn load_edge_endpoint_kinds(
     let edge_ids = rows
         .iter()
         .filter_map(|row| match &row.event.kind {
-            ChangeEventKind::EdgeAppend { edge_id, .. } => Some(EdgeId::new(*edge_id)),
+            ChangeEventKind::EdgeAppend { edge_id, .. }
+            | ChangeEventKind::EdgeDelete { edge_id, .. } => Some(EdgeId::new(*edge_id)),
             ChangeEventKind::EntityAppend { .. } | ChangeEventKind::EntityDelete { .. } => None,
         })
         .collect::<Vec<_>>();
@@ -198,6 +209,39 @@ fn event_item(
                 target: Some(format_ref(ctx, &target, target_kind)),
             }
         }
+        ChangeEventKind::EdgeDelete {
+            edge_id,
+            relation,
+            source,
+            target,
+        } => {
+            let (source_kind, target_kind) = edge_kinds
+                .get(&edge_id)
+                .copied()
+                .unwrap_or((kind_from_ref(&source), kind_from_ref(&target)));
+            EventItem {
+                seq,
+                kind: "edge_delete".into(),
+                authoring_personality,
+                wake_chain_depth: row.event.wake_chain_depth,
+                entity: None,
+                entity_kind: None,
+                schema_id: None,
+                schema_version: None,
+                supersedes: None,
+                edge: Some(ctx.format_edge(EdgeId::new(edge_id))),
+                relation: Some(relation),
+                source: Some(format_ref(ctx, &source, source_kind)),
+                target: Some(format_ref(ctx, &target, target_kind)),
+            }
+        }
+    }
+}
+
+fn kind_from_ref(r: &EntityRef) -> EntityKind {
+    match r {
+        EntityRef::Goal(_) => EntityKind::Goal,
+        EntityRef::FactEntity(_) | EntityRef::Memory(_) => EntityKind::Fact,
     }
 }
 
@@ -210,5 +254,57 @@ fn format_ref(ctx: &McpToolCtx, r: &EntityRef, kind: EntityKind) -> String {
             EntityKind::Perspective => ctx.format_perspective_memory(*m),
             EntityKind::Fact | EntityKind::Goal => ctx.format_fact_memory(*m),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{overfetch_limit, page_rows};
+    use crate::change_event::{ChangeEvent, ChangeEventKind};
+    use crate::personality::{ChangeEventForWake, WakeChainDepth};
+    use crate::{EntityKind, EntityRef, MemoryId, SchemaId, SchemaVersion};
+
+    fn row(seq: uuid::Uuid) -> ChangeEventForWake {
+        ChangeEventForWake {
+            event: ChangeEvent {
+                seq,
+                owner: crate::Principal::User(crate::UserId::new(uuid::Uuid::now_v7())),
+                kind: ChangeEventKind::EntityDelete {
+                    entity_kind: EntityKind::Fact,
+                    entity: EntityRef::Memory(MemoryId::new(uuid::Uuid::now_v7())),
+                    schema_id: SchemaId::new("test/schema".into()),
+                    schema_version: SchemaVersion::new(1),
+                },
+                authoring_personality_instance_id: None,
+                wake_chain_depth: 0,
+            },
+            authoring_personality_instance_id: None,
+            wake_chain_depth: WakeChainDepth::new(0),
+        }
+    }
+
+    #[test]
+    fn page_rows_reports_no_more_on_exact_final_page() {
+        let rows = vec![row(uuid::Uuid::now_v7()), row(uuid::Uuid::now_v7())];
+        let (page, has_more) = page_rows(rows, 2);
+        assert_eq!(page.len(), 2);
+        assert!(!has_more);
+    }
+
+    #[test]
+    fn page_rows_reports_more_only_from_extra_row() {
+        let rows = vec![
+            row(uuid::Uuid::now_v7()),
+            row(uuid::Uuid::now_v7()),
+            row(uuid::Uuid::now_v7()),
+        ];
+        let (page, has_more) = page_rows(rows, 2);
+        assert_eq!(page.len(), 2);
+        assert!(has_more);
+    }
+
+    #[test]
+    fn overfetch_limit_adds_one() {
+        assert_eq!(overfetch_limit(1000), 1001);
     }
 }

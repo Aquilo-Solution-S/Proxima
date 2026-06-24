@@ -157,7 +157,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         &session,
         &bearer,
         "core_personality",
-        json!({ "action": "tombstone", "personality": p_handle }),
+        json!({ "action": "tombstone", "personality": p_handle, "confirm": true, "expect_handle": p_handle }),
     )
     .await?;
     assert_eq!(
@@ -171,7 +171,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         &session,
         &bearer,
         "core_personality",
-        json!({ "action": "tombstone", "personality": p_handle }),
+        json!({ "action": "tombstone", "personality": p_handle, "confirm": true, "expect_handle": p_handle }),
     )
     .await?;
     assert_eq!(

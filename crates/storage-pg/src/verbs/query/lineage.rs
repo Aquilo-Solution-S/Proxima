@@ -236,16 +236,31 @@ async fn load_nodes(
 }
 
 const ANCESTORS_SQL: &str = r"
-WITH RECURSIVE walk AS (
+WITH RECURSIVE edge_heads AS (
+    SELECT e.edge_id, e.relation, e.relation_class,
+           COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
+           COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id,
+           e.owner_principal_kind, e.owner_principal_id
+      FROM proxima_core.edges e
+      LEFT JOIN proxima_core.fact_entities sfe
+        ON sfe.fact_entity_id = e.source_fact_entity_id
+       AND sfe.owner_principal_kind = e.owner_principal_kind
+       AND sfe.owner_principal_id = e.owner_principal_id
+      LEFT JOIN proxima_core.fact_entities tfe
+        ON tfe.fact_entity_id = e.target_fact_entity_id
+       AND tfe.owner_principal_kind = e.owner_principal_kind
+       AND tfe.owner_principal_id = e.owner_principal_id
+     WHERE e.owner_principal_kind = $1
+       AND e.owner_principal_id = $2
+),
+walk AS (
     SELECT 1 AS distance,
            ARRAY[$3::uuid, e.target_memory_id] AS path,
            e.edge_id, e.relation, e.relation_class,
            e.source_memory_id, e.target_memory_id,
            e.target_memory_id AS next_memory_id
-    FROM proxima_core.edges e
-    WHERE e.owner_principal_kind = $1
-      AND e.owner_principal_id = $2
-      AND e.source_memory_id = $3
+    FROM edge_heads e
+    WHERE e.source_memory_id = $3
       AND e.target_memory_id IS NOT NULL
       AND e.relation_class IN ('Provenance', 'Supersession')
       AND EXISTS (
@@ -276,10 +291,8 @@ WITH RECURSIVE walk AS (
            e.source_memory_id, e.target_memory_id,
            e.target_memory_id
     FROM walk w
-    JOIN proxima_core.edges e
-      ON e.owner_principal_kind = $1
-     AND e.owner_principal_id = $2
-     AND e.source_memory_id = w.next_memory_id
+    JOIN edge_heads e
+      ON e.source_memory_id = w.next_memory_id
      AND e.target_memory_id IS NOT NULL
      AND e.relation_class IN ('Provenance', 'Supersession')
     WHERE w.distance < $4
@@ -314,16 +327,31 @@ LIMIT $5
 ";
 
 const DESCENDANTS_SQL: &str = r"
-WITH RECURSIVE walk AS (
+WITH RECURSIVE edge_heads AS (
+    SELECT e.edge_id, e.relation, e.relation_class,
+           COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
+           COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id,
+           e.owner_principal_kind, e.owner_principal_id
+      FROM proxima_core.edges e
+      LEFT JOIN proxima_core.fact_entities sfe
+        ON sfe.fact_entity_id = e.source_fact_entity_id
+       AND sfe.owner_principal_kind = e.owner_principal_kind
+       AND sfe.owner_principal_id = e.owner_principal_id
+      LEFT JOIN proxima_core.fact_entities tfe
+        ON tfe.fact_entity_id = e.target_fact_entity_id
+       AND tfe.owner_principal_kind = e.owner_principal_kind
+       AND tfe.owner_principal_id = e.owner_principal_id
+     WHERE e.owner_principal_kind = $1
+       AND e.owner_principal_id = $2
+),
+walk AS (
     SELECT 1 AS distance,
            ARRAY[$3::uuid, e.source_memory_id] AS path,
            e.edge_id, e.relation, e.relation_class,
            e.source_memory_id, e.target_memory_id,
            e.source_memory_id AS next_memory_id
-    FROM proxima_core.edges e
-    WHERE e.owner_principal_kind = $1
-      AND e.owner_principal_id = $2
-      AND e.target_memory_id = $3
+    FROM edge_heads e
+    WHERE e.target_memory_id = $3
       AND e.source_memory_id IS NOT NULL
       AND e.relation_class IN ('Provenance', 'Supersession')
       AND EXISTS (
@@ -354,10 +382,8 @@ WITH RECURSIVE walk AS (
            e.source_memory_id, e.target_memory_id,
            e.source_memory_id
     FROM walk w
-    JOIN proxima_core.edges e
-      ON e.owner_principal_kind = $1
-     AND e.owner_principal_id = $2
-     AND e.target_memory_id = w.next_memory_id
+    JOIN edge_heads e
+      ON e.target_memory_id = w.next_memory_id
      AND e.source_memory_id IS NOT NULL
      AND e.relation_class IN ('Provenance', 'Supersession')
     WHERE w.distance < $4
