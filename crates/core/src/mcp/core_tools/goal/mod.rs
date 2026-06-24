@@ -1,4 +1,4 @@
-use crate::mcp::{CoreActionMeta, McpTool, McpToolCtx, McpToolError};
+use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 use crate::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     GoalAtomicContext, GoalAuthorship, GoalDraft, GoalEvidenceRef, GoalPayloadWrite, GoalState,
@@ -86,12 +86,16 @@ pub struct GoalPayloadArgs {
         description = "The goal stated in prose, 1 to 20000 chars — what pursuing or achieving it means."
     )]
     pub text: String,
-    #[serde(default)]
+    #[serde(default = "default_empty_object")]
     #[schemars(
         with = "std::collections::BTreeMap<String, serde_json::Value>",
-        description = "Structured goal payload conforming to `schema_id`@`schema_version`; must be a JSON object."
+        description = "Structured goal payload conforming to `schema_id`@`schema_version`; must be a JSON object. Omit for `{}`."
     )]
     pub body: serde_json::Value,
+}
+
+fn default_empty_object() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -146,6 +150,56 @@ impl McpTool for CoreGoalTool {
     const DESCRIPTION: &'static str =
         "Goal write dispatcher — set/transition/modify/mark_achieved/decompose.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = CORE_GOAL_PRODUCES_SCHEMA_IDS;
+    const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
+        McpActionArgSpec {
+            action: "set",
+            allowed_fields: &[
+                "schema_id",
+                "schema_version",
+                "title",
+                "text",
+                "body",
+                "evidence",
+                "target_personality",
+                "idempotency_key",
+            ],
+            required_fields: &["schema_id", "title", "text"],
+        },
+        McpActionArgSpec {
+            action: "transition",
+            allowed_fields: &["goal", "transition", "idempotency_key"],
+            required_fields: &["goal", "transition"],
+        },
+        McpActionArgSpec {
+            action: "modify",
+            allowed_fields: &[
+                "goal",
+                "schema_id",
+                "schema_version",
+                "title",
+                "text",
+                "body",
+                "evidence",
+                "idempotency_key",
+            ],
+            required_fields: &["goal", "schema_id", "title", "text"],
+        },
+        McpActionArgSpec {
+            action: "mark_achieved",
+            allowed_fields: &["goal", "evidence", "idempotency_key"],
+            required_fields: &["goal", "evidence"],
+        },
+        McpActionArgSpec {
+            action: "decompose",
+            allowed_fields: &[
+                "parent_goal",
+                "children",
+                "target_personality",
+                "idempotency_key",
+            ],
+            required_fields: &["parent_goal", "children", "idempotency_key"],
+        },
+    ];
     type Args = CoreGoalArgs;
     type Output = CoreGoalOutput;
 

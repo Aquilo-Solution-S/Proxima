@@ -156,6 +156,17 @@ fn dispatcher_tool_arg_schemas_expose_action_enum() {
             .unwrap_or_else(|| {
                 panic!("dispatcher tool {tool_name} must expose action enum: {schema:#}")
             });
+        let action_metadata = schema
+            .get("x-proxima-actions")
+            .and_then(serde_json::Value::as_object)
+            .unwrap_or_else(|| {
+                panic!("dispatcher tool {tool_name} must expose x-proxima-actions: {schema:#}")
+            });
+        assert_eq!(
+            action_metadata.len(),
+            expected_actions.len(),
+            "dispatcher tool {tool_name} must expose one metadata entry per action",
+        );
         let mut actions = action_enum
             .iter()
             .map(|value| {
@@ -171,7 +182,70 @@ fn dispatcher_tool_arg_schemas_expose_action_enum() {
             actions, expected,
             "dispatcher tool {tool_name} must preserve expected action variants",
         );
+        for action in expected_actions {
+            assert!(
+                action_metadata.contains_key(*action),
+                "dispatcher tool {tool_name} metadata must include action {action}",
+            );
+        }
     }
+}
+
+#[test]
+fn core_goal_action_metadata_preserves_required_fields() {
+    let frozen = FlavorRegistry::default().freeze();
+    let schema = &frozen
+        .list_mcp_tools()
+        .iter()
+        .find(|tool| tool.name == "core_goal")
+        .expect("core_goal registered")
+        .args_schema;
+
+    let required_for = |action: &str| -> Vec<&str> {
+        schema
+            .pointer(&format!("/x-proxima-actions/{action}/required"))
+            .and_then(serde_json::Value::as_array)
+            .unwrap_or_else(|| panic!("core_goal metadata must expose required for {action}"))
+            .iter()
+            .map(|item| item.as_str().expect("required field names are strings"))
+            .collect()
+    };
+
+    assert!(
+        required_for("decompose").contains(&"idempotency_key"),
+        "decompose must advertise its required idempotency_key",
+    );
+    assert!(
+        required_for("mark_achieved").contains(&"evidence"),
+        "mark_achieved must advertise required completion evidence",
+    );
+
+    for field in ["evidence", "title", "schema_id"] {
+        let description = schema
+            .pointer(&format!("/properties/{field}/description"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("{field} root description"));
+        assert!(
+            description.contains("Shared dispatcher field"),
+            "shared root {field} description must be neutral, not action-specific: {description}",
+        );
+        assert!(
+            description.contains("x-proxima-actions"),
+            "shared root {field} description must point LLMs to action metadata: {description}",
+        );
+    }
+    assert!(
+        schema.pointer("/properties/evidence/default").is_none(),
+        "shared root evidence schema must not keep an action-specific default",
+    );
+    let mark_achieved_evidence_description = schema
+        .pointer("/x-proxima-actions/mark_achieved/fieldDescriptions/evidence")
+        .and_then(serde_json::Value::as_str)
+        .expect("mark_achieved evidence field description");
+    assert!(
+        mark_achieved_evidence_description.contains("at least one"),
+        "action metadata must preserve action-specific evidence semantics: {mark_achieved_evidence_description}",
+    );
 }
 
 /// Every registered MCP tool's argument schema must be fully inlined —

@@ -1,4 +1,4 @@
-use crate::mcp::{CoreActionMeta, McpTool, McpToolCtx, McpToolError};
+use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -91,6 +91,33 @@ impl McpTool for CoreWakeTool {
     const NAME: &'static str = "core_wake";
     const DESCRIPTION: &'static str = "Wake-entry dispatcher — add/update/remove/set/list.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = PERSONALITY_CONFIG_CHANGED_SCHEMA_IDS;
+    const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
+        McpActionArgSpec {
+            action: "add",
+            allowed_fields: &["personality", "entry"],
+            required_fields: &["personality", "entry"],
+        },
+        McpActionArgSpec {
+            action: "update",
+            allowed_fields: &["wake_entry", "patch"],
+            required_fields: &["wake_entry", "patch"],
+        },
+        McpActionArgSpec {
+            action: "remove",
+            allowed_fields: &["wake_entry"],
+            required_fields: &["wake_entry"],
+        },
+        McpActionArgSpec {
+            action: "set",
+            allowed_fields: &["personality", "entries"],
+            required_fields: &["personality", "entries"],
+        },
+        McpActionArgSpec {
+            action: "list",
+            allowed_fields: &["personality"],
+            required_fields: &["personality"],
+        },
+    ];
     type Args = CoreWakeArgs;
     type Output = CoreWakeOutput;
 
