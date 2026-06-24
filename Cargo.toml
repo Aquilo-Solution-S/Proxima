@@ -44,7 +44,7 @@ http-body-util = "0.1"
 tokio-util = "0.7"
 tower = "0.5"
 hex = "0.4"
-sha2 = "0.10"
+sha2 = "0.11"
 aws-config = "1"
 # Drop aws-sdk-s3's default `rustls` feature: it pulls the LEGACY rustls 0.21
 # stack (aws-smithy-http-client/legacy-rustls-ring -> rustls-webpki 0.101.7,
