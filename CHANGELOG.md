@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.3
+
+- MCP dispatcher schema flattening now honors the enum's actual
+  `#[serde(tag = "...")]` discriminator instead of assuming `action`, so flavors
+  may use any tag (e.g. `kind`). No change for `action`-tagged dispatchers — the
+  flattened output is byte-identical to before.
+- Clearer `ensure_client_safe_root` error message for non-flattenable Args
+  types, spelling out the internally-tagged-enum requirement.
+
 ## v0.0.2
 
 - **Breaking (MCP wire):** action-dispatch tools (`core_goal`, `core_wake`,

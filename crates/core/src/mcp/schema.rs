@@ -31,7 +31,8 @@ pub(crate) fn mcp_tool_schema<T: JsonSchema>() -> serde_json::Value {
 }
 
 /// Flatten a schemars root `oneOf` for an internally tagged enum into a plain
-/// object schema with an `action` enum discriminator.
+/// object schema whose discriminator is the enum's own `#[serde(tag = "...")]`
+/// key (e.g. `action`, `kind`), exposed as a string enum.
 ///
 /// Anthropic/OpenAI-compatible tool schemas cannot rely on a root-level union.
 /// Runtime serde validation remains authoritative for per-action required
@@ -44,64 +45,34 @@ fn flatten_root_tagged_enum(value: &mut serde_json::Value) {
         return;
     };
 
+    // Detect the discriminator KEY: the single property name present across
+    // every variant carrying a string `const`, with a distinct value per
+    // variant. For an internally-tagged enum this is the `#[serde(tag = ...)]`
+    // field. Bail (leaving the schema unflattened) if there is not exactly one.
+    let Some(discriminator) = detect_discriminator_key(variants) else {
+        return;
+    };
+
     let mut action_values = Vec::with_capacity(variants.len());
     let mut merged_properties = serde_json::Map::new();
     let mut action_metadata = serde_json::Map::new();
     let mut field_occurrences = std::collections::BTreeMap::<String, usize>::new();
 
     for variant in variants {
-        let Some(properties) = variant
-            .get("properties")
-            .and_then(serde_json::Value::as_object)
-        else {
+        // A missing-properties / missing-const variant means this is not the
+        // internally-tagged shape we can flatten; bail and leave it unflattened.
+        if merge_variant(
+            variant,
+            &discriminator,
+            &mut action_values,
+            &mut merged_properties,
+            &mut action_metadata,
+            &mut field_occurrences,
+        )
+        .is_none()
+        {
             return;
-        };
-        let Some(action) = properties
-            .get("action")
-            .and_then(|schema| schema.get("const"))
-            .and_then(serde_json::Value::as_str)
-        else {
-            return;
-        };
-        action_values.push(serde_json::Value::String(action.to_string()));
-        let required = variant
-            .get("required")
-            .and_then(serde_json::Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .filter(|field| *field != "action")
-                    .map(|field| serde_json::Value::String(field.to_string()))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let mut allowed_fields = Vec::new();
-        let mut field_descriptions = serde_json::Map::new();
-        for (name, property_schema) in properties {
-            if name != "action" {
-                *field_occurrences.entry(name.clone()).or_default() += 1;
-                allowed_fields.push(serde_json::Value::String(name.clone()));
-                if let Some(description) = property_schema
-                    .get("description")
-                    .and_then(serde_json::Value::as_str)
-                {
-                    field_descriptions.insert(
-                        name.clone(),
-                        serde_json::Value::String(description.to_string()),
-                    );
-                }
-                merge_property_schema(&mut merged_properties, name, property_schema, action);
-            }
         }
-        action_metadata.insert(
-            action.to_string(),
-            serde_json::json!({
-                "allowed_fields": allowed_fields,
-                "required_fields": required,
-                "field_descriptions": field_descriptions,
-            }),
-        );
     }
 
     if action_values.is_empty() {
@@ -117,7 +88,7 @@ fn flatten_root_tagged_enum(value: &mut serde_json::Value) {
     }
 
     merged_properties.insert(
-        "action".to_string(),
+        discriminator.clone(),
         serde_json::json!({
             "type": "string",
             "enum": action_values,
@@ -129,7 +100,10 @@ fn flatten_root_tagged_enum(value: &mut serde_json::Value) {
         "properties".to_string(),
         serde_json::Value::Object(merged_properties),
     );
-    map.insert("required".to_string(), serde_json::json!(["action"]));
+    map.insert(
+        "required".to_string(),
+        serde_json::json!([discriminator.clone()]),
+    );
     map.insert(
         "additionalProperties".to_string(),
         serde_json::Value::Bool(false),
@@ -138,6 +112,113 @@ fn flatten_root_tagged_enum(value: &mut serde_json::Value) {
         "x-proxima-actions".to_string(),
         serde_json::Value::Object(action_metadata),
     );
+}
+
+/// Fold one tagged-enum variant into the flattener's accumulators.
+///
+/// Returns `None` when the variant is not the expected internally-tagged object
+/// shape (no `properties`, or no string `const` under `discriminator`), which
+/// signals the caller to abort flattening and leave the schema as a root union.
+fn merge_variant(
+    variant: &serde_json::Value,
+    discriminator: &str,
+    action_values: &mut Vec<serde_json::Value>,
+    merged_properties: &mut serde_json::Map<String, serde_json::Value>,
+    action_metadata: &mut serde_json::Map<String, serde_json::Value>,
+    field_occurrences: &mut std::collections::BTreeMap<String, usize>,
+) -> Option<()> {
+    let properties = variant
+        .get("properties")
+        .and_then(serde_json::Value::as_object)?;
+    let action = properties
+        .get(discriminator)
+        .and_then(|schema| schema.get("const"))
+        .and_then(serde_json::Value::as_str)?;
+    action_values.push(serde_json::Value::String(action.to_string()));
+    let required = variant
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .filter(|field| *field != discriminator)
+                .map(|field| serde_json::Value::String(field.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut allowed_fields = Vec::new();
+    let mut field_descriptions = serde_json::Map::new();
+    for (name, property_schema) in properties {
+        if name != discriminator {
+            *field_occurrences.entry(name.clone()).or_default() += 1;
+            allowed_fields.push(serde_json::Value::String(name.clone()));
+            if let Some(description) = property_schema
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+            {
+                field_descriptions.insert(
+                    name.clone(),
+                    serde_json::Value::String(description.to_string()),
+                );
+            }
+            merge_property_schema(merged_properties, name, property_schema, action);
+        }
+    }
+    action_metadata.insert(
+        action.to_string(),
+        serde_json::json!({
+            "allowed_fields": allowed_fields,
+            "required_fields": required,
+            "field_descriptions": field_descriptions,
+        }),
+    );
+    Some(())
+}
+
+/// Detect the internally-tagged discriminator KEY across a root `oneOf`'s
+/// variants.
+///
+/// An internally-tagged enum (`#[serde(tag = "k")]`) emits one object variant
+/// per case, each carrying the tag field as a string `const` whose value is the
+/// (renamed) variant name. The discriminator is the property name that, across
+/// *all* variants, is present with a string `const` and takes a *distinct*
+/// value per variant. Returns `Some(key)` iff exactly one such key exists;
+/// otherwise `None`, signalling the caller to leave the schema unflattened.
+fn detect_discriminator_key(variants: &[serde_json::Value]) -> Option<String> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    // For each candidate property key, collect the string `const` value it
+    // carries in each variant it appears in.
+    let mut const_values: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for variant in variants {
+        let properties = variant
+            .get("properties")
+            .and_then(serde_json::Value::as_object)?;
+        for (name, property_schema) in properties {
+            if let Some(value) = property_schema
+                .get("const")
+                .and_then(serde_json::Value::as_str)
+            {
+                const_values
+                    .entry(name.clone())
+                    .or_default()
+                    .push(value.to_string());
+            }
+        }
+    }
+
+    let mut candidates = const_values.into_iter().filter(|(_, values)| {
+        // Present in every variant, with a distinct value in each.
+        values.len() == variants.len()
+            && values.iter().collect::<BTreeSet<_>>().len() == values.len()
+    });
+    let key = candidates.next()?.0;
+    if candidates.next().is_some() {
+        // Ambiguous: more than one property qualifies as a discriminator.
+        return None;
+    }
+    Some(key)
 }
 
 fn merge_property_schema(
@@ -240,7 +321,7 @@ fn ensure_client_safe_root<T: JsonSchema>(value: &mut serde_json::Value) {
     for keyword in ["oneOf", "anyOf", "allOf"] {
         assert!(
             !map.contains_key(keyword),
-            "MCP tool type `{}` leaves root schema combinator `{keyword}` after normalization; use an internally tagged dispatcher enum or a struct Args type",
+            "MCP tool type `{}` leaves root schema combinator `{keyword}` after normalization. A dispatcher Args type must be an internally tagged enum (`#[serde(tag = \"...\")]`) whose variants each carry the tag as a distinct string `const`; adjacently/externally tagged enums, untagged enums, or otherwise heterogeneous variants cannot be made client-safe. Use such an enum or a plain struct Args type.",
             std::any::type_name::<T>(),
         );
     }
@@ -280,6 +361,7 @@ fn schema_contains_ref(value: &serde_json::Value) -> bool {
 mod tests {
     use super::*;
     use schemars::JsonSchema;
+    use serde::Deserialize;
 
     #[derive(JsonSchema)]
     #[allow(dead_code)]
@@ -325,6 +407,19 @@ mod tests {
     enum CollidingDispatcher {
         Text { value: String },
         Count { value: u32 },
+    }
+
+    /// A dispatcher whose discriminator tag is `kind`, not `action` — the
+    /// downstream-flavor shape (e.g. working-hero's query tool). The flattener
+    /// must honor the actual serde tag rather than assuming `action`.
+    #[derive(Deserialize, JsonSchema)]
+    #[allow(dead_code)]
+    #[serde(tag = "kind")]
+    enum Demo {
+        #[serde(rename = "a")]
+        A { x: Option<String> },
+        #[serde(rename = "b")]
+        B {},
     }
 
     #[test]
@@ -386,6 +481,87 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("Description authored as a schemars attribute."),
             "schemars-attribute description must survive into the schema: {schema:#}",
+        );
+    }
+
+    #[test]
+    fn non_action_discriminator_flattens_under_its_own_tag() {
+        let schema = mcp_tool_schema::<Demo>();
+
+        assert_eq!(
+            schema.get("type").and_then(serde_json::Value::as_str),
+            Some("object"),
+            "kind-tagged dispatcher must have an object root: {schema:#}",
+        );
+        assert!(
+            schema
+                .get("properties")
+                .is_some_and(serde_json::Value::is_object),
+            "kind-tagged dispatcher must expose a top-level properties object: {schema:#}",
+        );
+        for combinator in ["oneOf", "anyOf", "allOf"] {
+            assert!(
+                schema.get(combinator).is_none(),
+                "kind-tagged dispatcher must not leave a root {combinator}: {schema:#}",
+            );
+        }
+
+        // The discriminator lives at `properties.kind`, NOT `properties.action`.
+        assert!(
+            schema.pointer("/properties/action").is_none(),
+            "kind-tagged dispatcher must not invent an `action` discriminator: {schema:#}",
+        );
+        let mut kind_values = schema
+            .pointer("/properties/kind/enum")
+            .and_then(serde_json::Value::as_array)
+            .unwrap_or_else(|| {
+                panic!("discriminator must live at properties.kind.enum: {schema:#}")
+            })
+            .iter()
+            .map(|value| value.as_str().expect("kind enum values are strings"))
+            .collect::<Vec<_>>();
+        kind_values.sort_unstable();
+        assert_eq!(
+            kind_values,
+            ["a", "b"],
+            "kind enum must carry the renamed variant values: {schema:#}",
+        );
+
+        // `required` names the detected discriminator, not `action`.
+        let required = schema
+            .pointer("/required")
+            .and_then(serde_json::Value::as_array)
+            .unwrap_or_else(|| panic!("flattened schema must declare required: {schema:#}"));
+        assert!(
+            required.iter().any(|item| item == "kind"),
+            "flattened schema must require the `kind` discriminator: {schema:#}",
+        );
+        assert!(
+            !required.iter().any(|item| item == "action"),
+            "flattened schema must not require a phantom `action` field: {schema:#}",
+        );
+
+        // `x-proxima-actions` is keyed by the variant values, not by `action`.
+        let actions = schema
+            .get("x-proxima-actions")
+            .and_then(serde_json::Value::as_object)
+            .unwrap_or_else(|| {
+                panic!("flattened schema must expose x-proxima-actions: {schema:#}")
+            });
+        assert!(
+            actions.contains_key("a") && actions.contains_key("b"),
+            "x-proxima-actions must be keyed by the kind values a/b: {schema:#}",
+        );
+        assert_eq!(
+            actions.len(),
+            2,
+            "x-proxima-actions must hold one entry per variant: {schema:#}",
+        );
+
+        // The optional `x` field of variant `a` survives as a top-level property.
+        assert!(
+            schema.pointer("/properties/x").is_some(),
+            "variant fields must be merged into top-level properties: {schema:#}",
         );
     }
 }
