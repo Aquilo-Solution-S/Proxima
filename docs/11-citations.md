@@ -45,8 +45,8 @@ all other payload traits (see invariant 7).
 
 ```rust
 trait CitedObjectPayload: Serialize + Deserialize + 'static {
-    const SCHEMA_ID:        SchemaId;        // "doc-pdf", "media-image", "chat-telegram-session", ...
-    const SCHEMA_VERSION:   SchemaVersion;
+    const SCHEMA_ID:        &'static str;    // "doc-pdf", "media-image", "chat-telegram-session", ...
+    const SCHEMA_VERSION:   u32;
     const SPECIAL_CATEGORY: bool;            // see [03 §Special-category declaration](03-schema-registry.md#special-category-declaration)
     fn sidecar_table() -> &'static str;      // "cited_<schema>_v<n>"
 
@@ -57,10 +57,10 @@ trait CitedObjectPayload: Serialize + Deserialize + 'static {
 }
 
 trait CitationMappingPayload: Serialize + Deserialize + 'static {
-    const SCHEMA_ID:        SchemaId;        // "doc-pdf-page-paragraph", "media-image-bbox", ...
-    const SCHEMA_VERSION:   SchemaVersion;
+    const SCHEMA_ID:        &'static str;    // "doc-pdf-page-paragraph", "media-image-bbox", ...
+    const SCHEMA_VERSION:   u32;
     const SPECIAL_CATEGORY: bool;            // see [03 §Special-category declaration](03-schema-registry.md#special-category-declaration)
-    fn sidecar_table() -> &'static str;      // "citation_<schema>_v<n>"
+    fn sidecar_table() -> Option<&'static str>; // None for pure-link mappings
 
     /// Which CitedObjectPayload schema this mapping annotates.
     /// Engine validates that the linked cited_object_id resolves to
@@ -97,7 +97,7 @@ citation_mappings(
     created_at,
     UNIQUE (memory_id)                       -- one mapping per Fact (multiplicity 0..1)
 )
--- Per-schema sidecar (one per registered CitationMappingPayload):
+-- Optional per-schema sidecar (only when CitationMappingPayload::sidecar_table() = Some):
 citation_doc_pdf_page_paragraph_v1(citation_mapping_id pk FK, page, paragraph, char_range, ...)
 citation_media_image_bbox_v1(citation_mapping_id pk FK, bbox, caption?, ...)
 citation_chat_telegram_message_v1(citation_mapping_id pk FK, message_external_id, char_range, ...)

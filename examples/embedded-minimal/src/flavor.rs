@@ -1,9 +1,6 @@
 //! Example out-of-tree flavor: one Fact schema for "a document was filed".
 
-use proxima::{
-    AppInfo, FlavorApp, FlavorBundle, MemoryId, NamedMigrator, PgMemoryPayload,
-    PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, SidecarPayload, StorageError,
-};
+use proxima::{AppInfo, FlavorApp, FlavorBundle, NamedMigrator};
 use proxima_core::{
     FactPayload, FlavorRegistry, PayloadKeyBuilder, SearchProjection, SearchProjectionColumnKind,
     SearchProjectionField,
@@ -45,46 +42,16 @@ impl FactPayload for DocumentFiledV1 {
     }
 }
 
-impl PgMemorySidecar for DocumentFiledV1 {
-    fn insert_memory_sidecar<'t>(
-        &'t self,
-        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
-        memory_id: MemoryId,
-    ) -> PgSidecarFuture<'t> {
-        Box::pin(async move {
-            sqlx::query(
-                "INSERT INTO embedded_minimal.document_filed_v1
-                    (memory_id, source_path, title)
-                 VALUES ($1, $2, $3)",
-            )
-            .bind(memory_id.into_inner())
-            .bind(&self.source_path)
-            .bind(&self.title)
-            .execute(tx.as_mut())
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
-            Ok(())
-        })
-    }
-}
-
-impl PgMemoryPayload for DocumentFiledV1 {
-    fn load_memory_payload(pool: &sqlx::PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_> {
-        Box::pin(async move {
-            let row: Option<(String, String)> = sqlx::query_as(
-                "SELECT source_path, title
-                   FROM embedded_minimal.document_filed_v1
-                  WHERE memory_id = $1",
-            )
-            .bind(memory_id.into_inner())
-            .fetch_optional(pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
-            Ok(row.map(|(source_path, title)| {
-                SidecarPayload::fact(DocumentFiledV1 { source_path, title })
-            }))
-        })
-    }
+proxima::pg_sidecar! {
+    payload: DocumentFiledV1,
+    row: DocumentFiledRow,
+    kinds: [Fact],
+    table: "embedded_minimal.document_filed_v1",
+    key: memory_id,
+    fields: {
+        source_path => source_path: (text),
+        title => title: (text),
+    },
 }
 
 proxima_core::proxima_flavor! {
@@ -129,5 +96,79 @@ impl FlavorApp for EmbeddedMinimalFlavor {
             title: "Embedded Minimal Example",
             version: "0.1.0",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use proxima::Proxima;
+    use proxima_core::verbs::schema::PayloadKind;
+    use proxima_core::{Principal, Role, UserId};
+    use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+    use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemorySidecar};
+    use proxima_storage_pg::verbs::event_ingest::ingest_fact;
+
+    use super::{DocumentFiledV1, EmbeddedMinimalFlavor};
+
+    #[tokio::test]
+    async fn document_filed_sidecar_roundtrips_through_migrations() {
+        let db_name = unique_db_name("embedded_minimal");
+        create_db(&db_name).await.expect("PG required for tests");
+        let url = db_url(&db_name);
+
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let booted = Proxima::<EmbeddedMinimalFlavor>::app()
+                .database_url(url)
+                .owner(Principal::User(UserId::new(uuid::Uuid::now_v7())))
+                .allow_insecure_single_owner()
+                .build()
+                .await?;
+            let authz = booted
+                .single_owner_authz()
+                .expect("insecure single-owner mode is enabled");
+            let payload = DocumentFiledV1 {
+                source_path: "/example/intake/r-2026-0001.pdf".into(),
+                title: "Example invoice".into(),
+            };
+            let sidecar_payload = payload.clone();
+
+            let outcome = ingest_fact(
+                &booted.pool,
+                &booted.engine,
+                &authz,
+                Role::SourceIngest,
+                &payload,
+                move |tx, outcome| {
+                    Box::pin(async move {
+                        sidecar_payload
+                            .insert_memory_sidecar(tx, outcome.memory_id)
+                            .await
+                    })
+                },
+            )
+            .await?;
+
+            let loaded =
+                DocumentFiledV1::load_batch(&booted.pool, PayloadKind::Fact, &[outcome.memory_id])
+                    .await?;
+            assert_eq!(loaded.len(), 1, "document_filed_v1 sidecar row must exist");
+            let (loaded_memory_id, loaded) = loaded.into_iter().next().expect("checked len");
+            assert_eq!(loaded_memory_id, outcome.memory_id);
+            assert_eq!(loaded.kind, PayloadKind::Fact);
+            assert_eq!(
+                loaded.downcast_ref::<DocumentFiledV1>(),
+                Some(&DocumentFiledV1 {
+                    source_path: "/example/intake/r-2026-0001.pdf".into(),
+                    title: "Example invoice".into(),
+                })
+            );
+
+            booted.shutdown();
+            Ok(())
+        }
+        .await;
+
+        let _ = drop_db(&db_name).await;
+        result.expect("document_filed_sidecar_roundtrips_through_migrations failed");
     }
 }
