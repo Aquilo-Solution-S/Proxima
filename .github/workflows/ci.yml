@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main, road-to-v1]
+  pull_request:
+    branches: [main, road-to-v1]
+
+# Least-privilege default: every job's GITHUB_TOKEN is read-only (no job
+# writes contents, packages, or PRs).
+permissions:
+  contents: read
+
+# Cancel superseded in-progress runs on PR pushes; never cancel a push to a
+# protected branch, so a tip commit's required status is never orphaned.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  lint:
+    name: fmt + clippy + doc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml pins the channel (1.96.0) + components (rustfmt, clippy).
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all --check
+      - name: clippy
+        # Workspace lints set warnings = deny, clippy::pedantic = deny.
+        run: cargo clippy --workspace --all-targets --all-features --locked
+      - name: doc
+        # Fail on broken intra-doc links / rustdoc warnings before a public tag.
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --no-deps --all-features --locked
+
+  deny:
+    name: cargo-deny (advisories + licenses + bans + sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # cargo-deny-action v2.0.20 pinned by commit SHA (bundles cargo-deny 0.19.8,
+      # the schema deny.toml targets). Dependabot's github-actions ecosystem keeps
+      # this current via reviewable PRs.
+      - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe
+        with:
+          command: check advisories licenses bans sources
+
+  test:
+    name: test (postgres + pgvector)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: proxima
+          POSTGRES_PASSWORD: proxima
+          POSTGRES_DB: proxima
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U proxima"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Force offline sqlx codegen (committed .sqlx cache) so DATABASE_URL below
+      # doesn't make sqlx::query! introspect the un-migrated service at BUILD time.
+      SQLX_OFFLINE: "true"
+      # pg-testkit clones per-test DBs from this template (admin) URL.
+      PROXIMA_TEST_PG_URL: postgres://proxima:proxima@localhost:5432/proxima
+      # The HTTP e2e tests boot the facade against a DEDICATED database (created
+      # below) so they never contend with pg-testkit's clone source. end_to_end.rs
+      # reads DATABASE_URL; oidc_e2e.rs reads PROXIMA_TEST_DATABASE_URL.
+      DATABASE_URL: postgres://proxima:proxima@localhost:5432/proxima_e2e
+      PROXIMA_TEST_DATABASE_URL: postgres://proxima:proxima@localhost:5432/proxima_e2e
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # self_ingestion_pg shallow-clones the workspace and ingests its
+          # most-recent commits; a single-commit CI checkout would starve
+          # it, so fetch full history here (the test itself bounds depth).
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@v2
+      - name: create e2e database
+        # Dedicated DB for the HTTP e2e tests, isolated from pg-testkit's
+        # per-test clones (psql ships on the ubuntu-latest runner).
+        run: psql "postgres://proxima:proxima@localhost:5432/proxima" -c 'CREATE DATABASE proxima_e2e;'
+      - name: install nextest
+        uses: taiki-e/install-action@nextest
+      - name: build
+        run: cargo build --workspace --all-targets --locked
+      - name: test
+        run: cargo nextest run --workspace --locked
+      - name: test (code flavor — MCP/OIDC e2e)
+        # oidc_e2e.rs is #![cfg(feature = "code")]; this step compiles + runs the
+        # code-flavor surface (Code tools served over HTTP behind OIDC bearer auth).
+        run: cargo nextest run -p proxima-mcp --features code --locked

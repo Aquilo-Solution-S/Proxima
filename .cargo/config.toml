@@ -1,0 +1,53 @@
+# Compile-time performance optimizations for Proxima workspace
+# See: https://doc.rust-lang.org/cargo/reference/config.html
+
+[build]
+# Enable incremental compilation - cache compilation artifacts between builds
+# This is the single biggest win for iterative development
+incremental = true
+
+# Parallel job count is left to cargo auto-detection (CPU cores); do not pin
+# it here — a committed value penalizes machines with other core counts.
+
+# Use pipelined compilation where possible (Rust 1.70+)
+pipelining = true
+
+# Environment variables for faster native code compilation (tree-sitter, etc.)
+# The `cc` crate (used by tree-sitter) caches compiled C objects in target/
+# by default. To use ccache (more effective caching), install it:
+#   brew install ccache
+# Then either:
+#   1. Prepend ccache symlinks to PATH:
+#      export PATH="/opt/homebrew/opt/ccache/libexec:$PATH"
+#   2. Or set CC=ccache
+#
+# With ccache enabled, workspace builds go from minutes to seconds.
+# Tested results:
+#   - First build: ~16s (with ccache caching C compilation)
+#   - Subsequent builds: ~0.6s (full cache hits)
+#   - Without ccache: ~10-15s for proxima-core, much longer for full workspace
+
+# Artifact size reduction:
+#   - debug=0 for deps: ~70% reduction in debug artifacts
+#   - split-debuginfo="packed": Additional ~20% reduction
+#   - Use `cargo sweep` to clean unused artifacts: https://github.com/hobofan/cargo-sweep
+#   - Use `cargo trim` to remove unused .rlib files: https://github.com/holochain/cargo-trim
+
+[profile.dev]
+# Optimize debug builds slightly for faster compilation
+# opt-level=1 gives ~10-20% faster compiles with minimal runtime impact
+opt-level = 1
+
+# Disable full debug info for dependencies in dev mode (huge size reduction)
+split-debuginfo = "packed"
+debug = 0
+
+# Disable debug info for ALL dependencies (massive size reduction)
+[profile.dev.package."*"]
+debug = 0
+
+# NOTE: `release` and `bench` profiles are defined in the workspace Cargo.toml
+# (the canonical source of truth). They are intentionally NOT redefined here —
+# a `.cargo/config.toml` profile silently overrides Cargo.toml, which had
+# downgraded the release `codegen-units` from 1 to 16. Build-script release
+# optimization lives in Cargo.toml `[profile.release.build-override]`.

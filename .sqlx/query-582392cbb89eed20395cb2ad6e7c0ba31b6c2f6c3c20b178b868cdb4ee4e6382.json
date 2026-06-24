@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO proxima_core.change_event\n            (seq, owner_principal_kind, owner_principal_id, kind,\n             entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,\n             entity_personality_instance_id, wake_chain_depth)\n         VALUES ($1, $2, $3, 'EntityAppend', 'Perspective', $4, $5, 1, $6, 0)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        {
+          "Custom": {
+            "name": "proxima_core.owner_principal_kind",
+            "kind": {
+              "Enum": [
+                "User",
+                "Group"
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "582392cbb89eed20395cb2ad6e7c0ba31b6c2f6c3c20b178b868cdb4ee4e6382"
+}

@@ -1,0 +1,76 @@
+//! `core/list_substrate_tools` — dispatchable substrate and flavor MCP tools.
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::mcp::{McpToolCtx, McpToolDescriptor, McpToolError, McpToolOrigin};
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct ListSubstrateToolsArgs {}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SubstrateToolItem {
+    pub tool_id: String,
+    pub source: String,
+    pub description: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ListSubstrateToolsOutput {
+    pub tools: Vec<SubstrateToolItem>,
+}
+
+pub(super) fn substrate_tool_source(desc: &McpToolDescriptor) -> String {
+    match &desc.origin {
+        McpToolOrigin::Substrate => "substrate".into(),
+        McpToolOrigin::Flavor(id) => format!("flavor:{id}"),
+    }
+}
+
+#[allow(clippy::unused_async)]
+/// # Errors
+///
+/// This projection is infallible today; the `Result` shape matches the tool
+/// dispatch contract.
+pub async fn list_substrate_tools(
+    ctx: McpToolCtx,
+    _args: ListSubstrateToolsArgs,
+) -> Result<ListSubstrateToolsOutput, McpToolError> {
+    let mut tools = Vec::new();
+    for desc in ctx.registry.list_mcp_tools() {
+        if !ctx
+            .authz
+            .capabilities
+            .tool_scope
+            .allows_group_advertisement(desc.name)
+        {
+            continue;
+        }
+        tools.push(SubstrateToolItem {
+            tool_id: desc.name.to_string(),
+            source: substrate_tool_source(desc),
+            description: desc.description.to_string(),
+        });
+    }
+    Ok(ListSubstrateToolsOutput { tools })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::FlavorRegistry;
+
+    #[test]
+    fn default_substrate_tools_classify_as_substrate() {
+        let registry = FlavorRegistry::new().freeze();
+
+        for desc in registry.list_mcp_tools() {
+            assert!(
+                matches!(desc.origin, McpToolOrigin::Substrate),
+                "default tool {} must be substrate-origin",
+                desc.name
+            );
+            assert_eq!(substrate_tool_source(desc), "substrate");
+        }
+    }
+}

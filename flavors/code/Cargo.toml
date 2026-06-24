@@ -1,0 +1,42 @@
+[package]
+name = "proxima-code"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "proxima_code"
+
+[dependencies]
+proxima-core = { path = "../../crates/core" }
+proxima = { path = "../../crates/proxima" }
+proxima-storage-pg = { path = "../../crates/storage-pg" }
+async-trait = { workspace = true }
+futures = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+time = { workspace = true }
+blake3 = { workspace = true }
+hex = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-rust = { workspace = true }
+tree-sitter-typescript = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "process"] }
+
+[dev-dependencies]
+proxima-mcp-server = { path = "../../crates/mcp-server" }
+proxima-core = { path = "../../crates/core", features = ["test-fixtures"] }
+proxima-pg-testkit = { path = "../../crates/pg-testkit" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs", "process"] }
+tokio-stream = { workspace = true }
+tempfile = "3"
+
+[lints]
+workspace = true

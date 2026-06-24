@@ -1,0 +1,43 @@
+[package]
+name = "proxima"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+proxima-core = { path = "../core" }
+proxima-storage-pg = { path = "../storage-pg" }
+proxima-blob-s3 = { path = "../blob-s3" }
+proxima-llm-openai-compat = { path = "../llm-openai-compat", optional = true }
+proxima-mcp-server = { path = "../mcp-server" }
+proxima-pg-testkit = { path = "../pg-testkit", optional = true }
+axum = { workspace = true }
+http = { workspace = true }
+sqlx = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
+tokio-util = { workspace = true }
+tower = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[features]
+default = ["openai-compat-embed"]
+openai-compat-embed = ["dep:proxima-llm-openai-compat"]
+testkit = ["dep:proxima-pg-testkit"]
+
+[dev-dependencies]
+async-trait = { workspace = true }
+futures = { workspace = true }
+proxima-core = { path = "../core", features = ["test-fixtures"] }
+proxima-pg-testkit = { path = "../pg-testkit" }
+serde = { workspace = true, features = ["derive"] }
+time = { workspace = true }
+tower = { workspace = true, features = ["util"] }

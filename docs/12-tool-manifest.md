@@ -1,208 +1,216 @@
 # 12 — Tool Manifest
 
-Tools split into two tiers:
+## Claim
 
-| Tier | Brings | Trust | Registration |
+Tool = build-time registered call surface.
+
+| Rule | Contract |
+|---|---|
+| Registration | core/flavor crates only; frozen in `FlavorRegistry` at startup |
+| Selection | auth token tool scope ∩ deployment tool-surface profile |
+| Execution | MCP dispatch; external harnesses drive decisions |
+| Persistence | normal Fact / Edge / Goal paths only |
+| Observation | clients observe change events and stored entities, not a Tool entity |
+
+No runtime registration tier. No install/revoke API. No `tools` table.
+
+## Tool Classes
+
+| Class | Owner | Vocabulary | Dispatch |
 |---|---|---|---|
-| **T1** | Manifest + body. Uses *existing* registered Fact schemas and relations. | Sandboxed (WASM) and/or signed. | Runtime, via API. |
-| **T2** | Schemas + sources + tools + prompts. | Audited release. | Build-time (08). |
+| Core MCP tools | core | `add_substrate_mcp_tool<T>()` | `McpToolCtx` |
+| Flavor MCP tools | flavor crate | `add_mcp_tool<T>(prefix)` | `McpToolCtx` |
 
-T1 is the marketplace. T2 is unchanged from 08. **T1 cannot invent schemas or relations**; capability declarations are validated against the linker-frozen set at install time.
+Stored ids:
 
-A/P authorship is operator-only regardless of tier. Tools may only emit Facts.
+| Surface | Id form |
+|---|---|
+| Core MCP tool | provider-safe registered names, currently `core_*` (for example `core_remember`, `core_goal`) |
+| Flavor MCP tool | provider-safe `<flavor>_<name>` |
 
-## Manifest format
+Registered MCP tool names are already provider-safe. Slash-separated
+schema/relation ids remain separate from MCP wire ids.
 
-`tools/<name>.toml`:
+## Rust Surface
 
-```toml
-[tool]
-id          = "code/forgejo-comment-issue"
-version     = 1
-description = "Post a comment on a Forgejo issue."
-
-# OpenAI-compatible function definition. Fed verbatim to the decider LLM.
-[tool.function]
-name        = "forgejo_comment_issue"
-description = "Post a comment on a Forgejo issue."
-parameters  = { type = "object", properties = {
-    repo  = { type = "string" },
-    issue = { type = "integer" },
-    body  = { type = "string" }
-}, required = ["repo", "issue", "body"] }
-
-# Engine-enforced. Not LLM-visible.
-[tool.capabilities]
-emit_facts     = ["forgejo-comment-posted"]   # registered FactPayload SCHEMA_IDs
-emit_relations = ["code/comment-on-issue"]    # registered RelationDescriptor ids
-owner_scope    = "invocation"                 # "invocation" | "user" | "group:<id>"
-
-[tool.body]
-kind = "wasm"                                 # "wasm" | "mcp" | "http"
-module = "sha256:abcd...ef01"
-
-# Alternatives:
-# [tool.body] kind = "mcp"
-# server    = "stdio:/usr/local/bin/forgejo-mcp"   # or "sse:https://..."
-# tool_name = "comment_issue"
-#
-# [tool.body] kind = "http"
-# endpoint = "https://forgejo-bridge.aquilo.internal/comment"
-# auth     = "bearer:env:FORGEJO_BRIDGE_TOKEN"
-
-[tool.signature]
-signer    = "aquilo-solutions"
-algorithm = "ed25519"
-sig       = "..."
-```
-
-`[tool.function]` is the OpenAI / Anthropic function-call shape verbatim; passed to the decider unchanged. `[tool.capabilities]` and `[tool.body]` are Proxima-specific and never reach the LLM.
-
-## Rust types
+MCP tools:
 
 ```rust
-#[derive(Deserialize)]
-pub struct ToolManifest { pub tool: Tool }
+pub trait McpTool: Send + Sync + 'static {
+    const NAME: &'static str;
+    const DESCRIPTION: &'static str;
+    const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
 
-#[derive(Deserialize)]
-pub struct Tool {
-    pub id:           ToolId,
-    pub version:      u32,
-    pub description:  String,
-    pub function:     OpenAIFunction,
-    pub capabilities: Capabilities,
-    pub body:         Body,
-    pub signature:    Signature,
+    type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;
+    type Output: serde::Serialize + Send + 'static;
+
+    fn call(
+        ctx: McpToolCtx,
+        args: Self::Args,
+    ) -> BoxFuture<'static, Result<Self::Output, McpToolError>>;
 }
 
-#[derive(Deserialize, Serialize)]
-pub struct OpenAIFunction {
-    pub name:        String,
-    pub description: String,
-    pub parameters:  serde_json::Value,        // JSON Schema; opaque to engine
-}
-
-#[derive(Deserialize)]
-pub struct Capabilities {
-    pub emit_facts:     Vec<SchemaId>,
-    pub emit_relations: Vec<RelationId>,
-    pub owner_scope:    OwnerScope,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-pub enum Body {
-    Wasm { module: ContentHash },
-    Mcp  { server: McpEndpoint, tool_name: String },
-    Http { endpoint: Url, auth: AuthRef },
+pub struct McpToolDescriptor {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub produces_schema_ids: &'static [&'static str],
+    pub args_schema: serde_json::Value,
+    pub call: McpCallFn,
 }
 ```
 
-## Registry surface
+Registration:
 
 ```rust
-trait ToolRegistry {
-    fn install(&mut self, m: ToolManifest, allowlist: &[SignerId]) -> Result<ToolId, InstallError>;
-    fn revoke(&mut self, id: ToolId)        -> Result<(), RevokeError>;
-    fn lookup(&self, id: ToolId)            -> Option<&Tool>;
-    fn available_for(&self, ctx: &CallContext) -> Vec<&OpenAIFunction>;
+impl FlavorRegistry {
+    pub(crate) fn add_substrate_mcp_tool<T: McpTool>(&mut self);
+    pub fn add_mcp_tool<T: McpTool>(&mut self, expected_prefix: &str);
+    pub fn freeze(self) -> FlavorRegistryFrozen;
 }
 
-enum InstallError {
-    UnknownFactSchema(SchemaId),
-    UnknownRelation(RelationId),
-    BadSignature,
-    UntrustedSigner,
-    DuplicateToolId,
-    BodyUnreachable,
+impl FlavorRegistryFrozen {
+    pub fn list_mcp_tools(&self) -> &[McpToolDescriptor];
+    pub fn mcp_tool_ids(&self) -> HashSet<String>;
 }
 ```
 
-`install` validates `capabilities.emit_facts` and `capabilities.emit_relations` against the registered (build-time) set. Unknown id ⇒ reject. T1 cannot widen what T2 has frozen.
+Prefix rules live in 08:
 
-`available_for` returns the exact OpenAI function set the decider sees; nothing more.
+| Tool owner | Prefix |
+|---|---|
+| substrate MCP tool | `core_` |
+| flavor MCP tool | `<flavor>_` |
 
-## Invocation flow
+`FlavorRegistry::freeze()` rejects duplicate MCP tool names. Schema and
+relation validation remains the registry's build-time responsibility
+(see 08 §Freeze Guards).
 
-For how tools integrate with the SYSTEM EventSource, see [05-actions.md](docs/05-actions.md).
+## Tool Schema Contract
 
-1. Decider receives `available_for(ctx)`; selects a tool with arguments.
-2. Engine validates args against `manifest.function.parameters` (jsonschema crate).
-3. Engine dispatches `body`:
-   - `Wasm`: wasmtime; host imports = read-only context.
-   - `Mcp`:  JSON-RPC `tools/call` to server; parse `CallToolResult`.
-   - `Http`: POST args; parse JSON.
-4. Body returns `ToolResult { fact: FactPayloadJson, relations: Vec<EdgeRef> }`.
-5. Engine validates `fact.schema_id ∈ capabilities.emit_facts` and every `relation.id ∈ capabilities.emit_relations`.
-6. Engine emits `SYSTEM` event → Fact + structural edges in one transaction ([05](docs/05-actions.md)).
-7. Engine returns `memory_id` to the decider.
+A tool's argument type *is* its schema. Shape, field descriptions,
+required/optional, and enum variants all derive from the Rust type via
+`schemars`. No code mutates the generated schema out of band.
 
-A failed validation aborts; nothing is persisted; the failure is recorded on `tool_invocations.error`.
+- Every MCP tool argument schema is produced by one function,
+  `mcp_tool_schema<T: JsonSchema>()` in `crates/core/src/mcp/schema.rs`.
+- The emitted schema is JSON Schema draft 2020-12 and **`$ref`-free /
+  `$defs`-free**.
+- Field descriptions originate only from the Rust type: a `///`
+  doc-comment or `#[schemars(description = "...")]`.
+- A recursive tool argument type is a registration error.
+- Tool outputs are advertised by registered-schema-id reference
+  (`McpToolDescriptor.produces_schema_ids`) and resolved against the
+  `FlavorRegistry`.
 
-## Storage
+## Wake-Entry Detect Config
 
-```sql
-CREATE TABLE tools (
-    id              text PRIMARY KEY,
-    version         int  NOT NULL,
-    manifest_json   jsonb NOT NULL,
-    manifest_hash   text NOT NULL,
-    signer          text NOT NULL,
-    body_kind       text NOT NULL,
-    installed_at    timestamptz NOT NULL DEFAULT now(),
-    revoked_at      timestamptz,
-    UNIQUE (id, version)
-);
+Wake entry fields:
 
-CREATE TABLE tool_invocations (
-    id              uuid PRIMARY KEY,
-    tool_id         text NOT NULL REFERENCES tools(id),
-    tool_version    int  NOT NULL,
-    owner_principal_kind text NOT NULL,
-    owner_principal_id   text NOT NULL,
-    owner_org_id         text NOT NULL,
-    args_json       jsonb NOT NULL,
-    started_at      timestamptz NOT NULL,
-    finished_at     timestamptz,
-    result_memory   uuid REFERENCES memory(id),
-    error           text
-);
+```rust
+pub struct WakeEntryDraft {
+    pub wake_entry_id: Uuid,
+    pub personality_instance_id: PersonalityInstanceId,
+    pub trigger_kind: WakeEntryTriggerKind,
+    pub trigger_id: String,
+    pub label: String,
+    pub enabled: bool,
+    pub authored_by: WakeEntryAuthoredBy,
+    pub probability_promille: u16,
+    pub goal_scope: WakeEntryGoalScope,
+    pub instructions: String,
+}
 ```
 
-Append-only in the audit sense: revoke sets `revoked_at`; never `DELETE`.
+Write-time validation:
 
-## State and long-running tools
+| Field | Contract |
+|---|---|
+| `(trigger_kind, trigger_id)` | unique per active personality instance |
+| `trigger_id`, `label` | non-empty |
+| `probability_promille` | `0..=1000` |
 
-- **No side storage.** Tools persist state only via Facts (a `tool-state` schema) or per-call ephemerally. Anything else rots the audit trail.
-- **Streaming / async.** Long-running invocations land as two Facts joined by `request_id`: an `invoked` Fact at dispatch and a `result` Fact when the body returns. Falls out of 05's "effect re-enters via EventSource path"; no special wiring.
+Wake entries carry trigger config only. Model/tool/run policy stays external.
 
-## Why this layering
+## Invocation Flow
 
-- **OpenAI shape for the LLM-facing slice.** Universal across decider models; zero glue.
-- **MCP as a body transport.** Mount Anthropic / GitHub / Slack tool servers without inventing a wire format. MCP's capability model is *not* used; Proxima's `[tool.capabilities]` block is authoritative.
-- **Capability declaration on top.** Output Fact schema, allowed relations, owner scope — none of which OpenAI or MCP define. This is the engine-enforceable part.
+Live MCP dispatch:
 
-## What this does not do
+```
+MCP request
+  provider-safe name
+    -> canonical id
+    -> McpToolDescriptor.call(McpToolCtx, args)
+```
 
-- Does not let T1 author Abstractions or Perspectives.
-- Does not let T1 register new Fact schemas or relations.
-- Does not replace `Registrant` machinery — there is none. T2 stays the typed-Rust path described in 08.
-- Does not validate semantic correctness of the body's output beyond schema conformance and capability scope.
+Proxima is a passive brain hub. External harnesses own model choice,
+tool planning, execution policy, and cursors.
 
-## Anchors
+MCP dispatch contract:
 
-- `manifest-format`
-- `openai-compatible-function-definition`
-- `engine-enforced-not-llm-visible`
-- `rust-types`
-- `registry-surface`
-- `invocation-flow`
-- `storage`
-- `state-and-long-running-tools`
-- `why-this-layering`
-- `what-this-does-not-do`
-- `relationship-to-t1-marketplace-12`
-- `non-goals-for-v1`
-- `why-formalize-now`
-- `cross-references`
-erences`
+| Step | Contract |
+|---|---|
+| Auth | host `Authenticator` or master token |
+| Owner | from auth context; Owner = principal (doc 01) |
+| Tool scope | token capabilities intersected with deployment profile |
+| Args | JSON decoded into `McpTool::Args` |
+| Output | serialized `McpTool::Output` |
+| Ids | prefixed ids (`F:/A:/P:/G:/E:` form, `OutputMode::PrefixedIds`) |
+
+## Persistence
+
+Current storage:
+
+| Data | Storage |
+|---|---|
+| tool effects | `memories`, sidecar tables, `edges`, `goals`, change events |
+
+Not present in v1:
+
+| Table / API | Status |
+|---|---|
+| `tools` | absent |
+| per-tool invocation table | absent |
+| per-wake invocation table | absent |
+| per-wake tool allowlist storage | absent |
+| runtime install API | absent |
+| runtime manifest upload | absent |
+| signed external tool body registry | deferred |
+
+Tool output that persists must pass the same registered schema,
+relation, Owner, layering, citation, and append-only checks as any other
+engine write.
+
+## Compliance Metadata
+
+Design-intent fields for external-effect tools:
+
+| Field | Purpose |
+|---|---|
+| `data_residency: Region` | third-country / region check for data leaving the substrate |
+| `recipients: Vec<RecipientId>` | Art. 19 recipient notification inventory |
+| `legal_consequence: bool` | Art. 22 human-approval gate |
+
+Declared / deferred:
+
+| Item | v1 status |
+|---|---|
+| field vocabulary | defined in [13 §Compliance vocabulary](13-compliance.md#compliance-vocabulary) |
+| field placement on tool descriptors | deferred |
+| startup failure for missing fields | deferred |
+| Owner residency allowlist enforcement for tool calls | deferred |
+| recipient export from tool-call records | deferred; no per-tool invocation table |
+| `legal_consequence` automatic wake blocking | deferred; human-approval pattern remains required design intent |
+
+Until these fields land on the current `McpToolDescriptor` surface,
+docs must not claim implemented storage or runtime enforcement.
+Owner-policy enforcement belongs to 13.
+
+## Non-Goals
+
+- No runtime schema, relation, source, prompt, or tool registration.
+- No dynamic tool install path in v1.
+- No OpenAI-function manifest as substrate authority.
+- No MCP capability model as substrate authority.
+- No generic external HTTP/WASM body transport in v1.
+- No tool-specific entity lifecycle.
+- No direct A/P persistence bypassing 04.

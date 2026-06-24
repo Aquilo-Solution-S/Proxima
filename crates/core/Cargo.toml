@@ -1,0 +1,40 @@
+[package]
+name = "proxima-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "proxima_core"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+test-fixtures = []
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["process", "time"] }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+time = { workspace = true }
+tracing = { workspace = true }
+futures-util = { workspace = true }
+futures = { workspace = true }
+schemars = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "test-util"] }
+proxima-storage-pg = { path = "../storage-pg", features = ["test-fixtures"] }
+proxima-pg-testkit = { path = "../pg-testkit" }
+sqlx = { workspace = true }
+hex = { workspace = true }
