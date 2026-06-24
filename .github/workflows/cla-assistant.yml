@@ -5,7 +5,7 @@ on:
     types: [opened, reopened, synchronize]
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
   repository-projects: read
 
@@ -24,4 +24,4 @@ jobs:
           path-to-signatures: '.github/cla/signatures.json'
           path-to-document: 'https://github.com/Aquilo-Solution-S/Proxima/blob/main/.github/cla/CLA.md'
           branch: 'main'
-          allowlist: 'heinrichvonhelmolt,cla-assistant,dependabot,dependabot[bot]'
+          allowlist: 'HeinrichvH,heinrichvonhelmolt,cla-assistant,dependabot,dependabot[bot]'
