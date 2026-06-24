@@ -35,7 +35,11 @@ tokio-stream = { version = "0.1", default-features = false, features = ["sync"] 
 rmcp = { version = "1.6", default-features = false, features = ["server", "transport-streamable-http-server"] }
 schemars = { version = "1", features = ["uuid1", "preserve_order"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
-jsonwebtoken = "10"
+# v10 split the crypto backend out of default features (default = ["use_pem"] only),
+# so a bare dep panics at first RS256 sign/verify ("could not determine CryptoProvider").
+# Enable the aws-lc-rs backend to match the workspace's rustls-0.23/aws-lc-rs posture
+# (already in-tree) and avoid the `rust_crypto` backend's `rsa` dep (RUSTSEC-2023-0071).
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 base64 = "0.22"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 http = "1"
