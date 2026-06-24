@@ -940,8 +940,13 @@ pub fn memory_insert_sql(
 ///
 /// # Errors
 ///
-/// Returns `StorageError::Internal` when the table, key column, or selected
-/// column identifiers are not valid Postgres identifiers.
+/// Returns `StorageError::Internal` when the table or key column are not valid
+/// Postgres identifiers. The `columns` entries are compile-time SELECT
+/// projection expressions emitted by `pg_sidecar_select_col!` from
+/// `$column:ident` tokens — bare `col` for most kinds, `col::text AS col` for
+/// enum columns. Rust's identifier grammar makes them injection-safe, and
+/// because the enum form is a projection expression (not a bare identifier) it
+/// must NOT be routed through `PgIdent::column`.
 pub fn memory_select_batch_sql(
     table: &str,
     key_column: &str,
@@ -949,13 +954,9 @@ pub fn memory_select_batch_sql(
 ) -> Result<String, StorageError> {
     let table = PgIdent::table(table)?.as_str();
     let key_column = PgIdent::column(key_column)?.as_str();
-    let columns = columns
-        .iter()
-        .map(|column| PgIdent::column(column).map(PgIdent::as_str))
-        .collect::<Result<Vec<_>, StorageError>>()?;
     let mut sql = String::new();
     write!(&mut sql, "SELECT {key_column}").expect("writing SQL into String cannot fail");
-    for column in &columns {
+    for column in columns {
         write!(&mut sql, ", {column}").expect("writing SQL into String cannot fail");
     }
     write!(&mut sql, " FROM {table} WHERE {key_column} = ANY($1)")
@@ -1859,8 +1860,20 @@ mod tests {
             "SELECT memory_id, title, tags FROM proxima_core.agent_note_v1 \
              WHERE memory_id = ANY($1)"
         );
+        // Regression: enum projection expressions (`<col>::text AS <col>`,
+        // emitted by `pg_sidecar_select_col!`) are trusted compile-time
+        // expressions and must be accepted verbatim, not rejected as
+        // non-identifiers.
+        let enum_sql =
+            memory_select_batch_sql("proxima_core.agent_note_v1", "memory_id", &[
+                "state::text AS state",
+            ])
+            .unwrap();
+        assert!(enum_sql.contains("state::text AS state"));
+        // The table and key column are still validated as identifiers.
+        assert!(memory_select_batch_sql("bad table;", "memory_id", &["title"]).is_err());
         assert!(
-            memory_select_batch_sql("proxima_core.agent_note_v1", "memory_id", &["title;"])
+            memory_select_batch_sql("proxima_core.agent_note_v1", "memory_id;", &["title"])
                 .is_err()
         );
     }
