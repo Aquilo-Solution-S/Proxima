@@ -205,7 +205,9 @@ fn core_goal_action_metadata_preserves_required_fields() {
         schema
             .pointer(&format!("/x-proxima-actions/{action}/required_fields"))
             .and_then(serde_json::Value::as_array)
-            .unwrap_or_else(|| panic!("core_goal metadata must expose required_fields for {action}"))
+            .unwrap_or_else(|| {
+                panic!("core_goal metadata must expose required_fields for {action}")
+            })
             .iter()
             .map(|item| item.as_str().expect("required field names are strings"))
             .collect()
@@ -286,14 +288,21 @@ fn action_arg_specs_match_schema_derived_action_fields() {
                 meta.get(key)
                     .and_then(serde_json::Value::as_array)
                     .unwrap_or_else(|| {
-                        panic!("{} action `{}` metadata missing `{key}`", tool.name, spec.action)
+                        panic!(
+                            "{} action `{}` metadata missing `{key}`",
+                            tool.name, spec.action
+                        )
                     })
                     .iter()
                     .map(|field| field.as_str().expect("field names are strings").to_string())
                     .collect()
             };
-            let spec_fields =
-                |fields: &[&str]| fields.iter().map(|s| (*s).to_string()).collect::<BTreeSet<_>>();
+            let spec_fields = |fields: &[&str]| {
+                fields
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect::<BTreeSet<_>>()
+            };
 
             assert_eq!(
                 schema_fields("allowed_fields"),
