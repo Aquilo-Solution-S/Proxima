@@ -15,6 +15,7 @@ use super::memory::search::{NeighborEdge, load_graph_payloads, neighbor_edges};
 
 const SEMANTIC_SEARCH_UNAVAILABLE: &str =
     "semantic search unavailable: no embedding client is configured (set MISTRAL_API_KEY)";
+const DEFAULT_BODY_MAX_CHARS: usize = 8_000;
 
 #[derive(Debug, Default)]
 pub struct SearchMemoriesTool;
@@ -246,6 +247,7 @@ impl McpTool for SearchMemoriesTool {
             let rows = storage
                 .search_memories(&req, ctx.registry.search_projections())
                 .await?;
+            let body_max_chars = effective_body_max_chars(args.body_max_chars);
             let degraded_to_lexical =
                 resolver_degraded || semantic_search_degraded_to_lexical(effective_mode, &rows);
             let memory_ids: Vec<_> = rows.iter().map(|row| row.memory_id.into_inner()).collect();
@@ -269,7 +271,7 @@ impl McpTool for SearchMemoriesTool {
                             payloads
                                 .get(&mid)
                                 .and_then(|payload| payload.body.clone())
-                                .map(|body| truncate_body(body, args.body_max_chars))
+                                .map(|body| truncate_body(&body, body_max_chars))
                         })
                         .flatten();
                     search_memory_output(&ctx, row, tags, body)
@@ -286,11 +288,14 @@ impl McpTool for SearchMemoriesTool {
     }
 }
 
-fn truncate_body(body: String, max_chars: Option<usize>) -> String {
-    match max_chars {
-        Some(max) => body.chars().take(max).collect(),
-        None => body,
-    }
+fn truncate_body(body: &str, max_chars: usize) -> String {
+    body.chars().take(max_chars).collect()
+}
+
+fn effective_body_max_chars(requested: Option<usize>) -> usize {
+    requested.map_or(DEFAULT_BODY_MAX_CHARS, |max| {
+        max.min(DEFAULT_BODY_MAX_CHARS)
+    })
 }
 
 fn search_memory_output(
@@ -374,7 +379,10 @@ fn format_rfc3339(value: time::OffsetDateTime) -> Result<String, McpToolError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SEMANTIC_SEARCH_UNAVAILABLE, degraded_to_lexical, resolve_effective_search_mode};
+    use super::{
+        DEFAULT_BODY_MAX_CHARS, SEMANTIC_SEARCH_UNAVAILABLE, degraded_to_lexical,
+        effective_body_max_chars, resolve_effective_search_mode, truncate_body,
+    };
     use crate::mcp::McpToolError;
     use crate::verbs::query::SearchMode;
 
@@ -421,5 +429,29 @@ mod tests {
             }
             other => panic!("expected semantic unavailable error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn truncate_body_applies_default_hydration_cap() {
+        let body = "x".repeat(DEFAULT_BODY_MAX_CHARS + 1);
+        assert_eq!(
+            truncate_body(&body, DEFAULT_BODY_MAX_CHARS).chars().count(),
+            DEFAULT_BODY_MAX_CHARS
+        );
+    }
+
+    #[test]
+    fn truncate_body_respects_smaller_caller_cap() {
+        assert_eq!(truncate_body("abcdef", 3), "abc");
+    }
+
+    #[test]
+    fn effective_body_max_chars_keeps_server_ceiling() {
+        assert_eq!(effective_body_max_chars(None), DEFAULT_BODY_MAX_CHARS);
+        assert_eq!(effective_body_max_chars(Some(12)), 12);
+        assert_eq!(
+            effective_body_max_chars(Some(DEFAULT_BODY_MAX_CHARS + 1)),
+            DEFAULT_BODY_MAX_CHARS
+        );
     }
 }
