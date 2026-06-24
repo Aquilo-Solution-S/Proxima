@@ -1,5 +1,5 @@
 //! Typed `ChangeEvent` — the hydrated form of a `change_event` row
-//! (`EntityAppend`, `EntityDelete`, or `EdgeAppend`), returned by the
+//! (`EntityAppend`, `EntityDelete`, `EdgeAppend`, or `EdgeDelete`), returned by the
 //! pull reads (`EventHistory` / `list_change_events_*`). The LISTEN/NOTIFY
 //! Subscribe push path was retired — `change_event` is a pull-only log.
 //! See docs/14 §`EventHistory` and §Consistency.
@@ -57,6 +57,7 @@ pub enum ChangeEventKindTag {
     EntityAppend,
     EntityDelete,
     EdgeAppend,
+    EdgeDelete,
 }
 
 /// Endpoint of an Edge or supersedes target. Sum type matching
@@ -84,6 +85,12 @@ pub enum ChangeEventKind {
         schema_version: SchemaVersion,
     },
     EdgeAppend {
+        edge_id: Uuid,
+        relation: String,
+        source: EntityRef,
+        target: EntityRef,
+    },
+    EdgeDelete {
         edge_id: Uuid,
         relation: String,
         source: EntityRef,
