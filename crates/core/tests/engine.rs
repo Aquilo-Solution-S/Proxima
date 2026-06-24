@@ -278,6 +278,28 @@ async fn read_mcp_call_history_rejects_context_without_graph_read_role() {
 }
 
 #[tokio::test]
+async fn read_mcp_call_history_rejects_zero_limit_as_invalid_argument() {
+    let (principal, owner) = fresh_owner();
+    let engine = boot_engine(principal, owner.clone());
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+
+    let err = engine
+        .read_mcp_call_history(
+            &authz,
+            &McpCallHistoryRequest {
+                principal: owner,
+                actor_oid: None,
+                limit: 0,
+            },
+        )
+        .await
+        .expect_err("zero limit must be rejected before storage");
+    assert_eq!(err.code, ErrorCode::InvalidArgument);
+    assert!(err.message.contains("limit"));
+    assert!(err.message.contains("must be > 0"));
+}
+
+#[tokio::test]
 async fn fact_retention_rejects_owner_the_context_cannot_access() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner.clone());
