@@ -15,8 +15,14 @@ Proxima Streamable HTTP MCP server.
 
 Required:
   --owner-user <UUID>      Fixed owner principal
+
+Auth (choose one mode):
   --master-token <UUID>    Local bearer token (or PROXIMA_MCP_MASTER_TOKEN);
-                           clients send Authorization: Bearer pxm_<token>
+                           clients send Authorization: Bearer pxm_<token>.
+                           Loopback-only (mutually exclusive with network
+                           exposure). Omit when using OIDC.
+  (OIDC)                   Set PROXIMA_OIDC_ISSUER + PROXIMA_OIDC_AUDIENCE
+                           (see Environment) for bearer-JWT auth instead.
 
 Optional:
   --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxima_dev)

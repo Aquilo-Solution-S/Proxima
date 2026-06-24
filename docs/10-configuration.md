@@ -108,12 +108,12 @@ Profiles:
 | Profile | Scope |
 |---|---|
 | `full` | Default. No filtering (`ToolScope::All`) when allow/deny are unset; otherwise all registered ids resolved to a palette. |
-| `memory` | Curated memory-brain palette: memory authoring/retrieval, citations, graph/schema introspection, Fact tombstones, goals, and code-as-memory repository/chunk/commit reads. |
+| `memory` | Curated memory-brain palette: memory authoring/retrieval, citations, graph/schema introspection, non-destructive Fact/citation actions (the destructive `core_fact:tombstone` and retention/cleanup stay host/config-only — excluded), the full goal lifecycle, and code-as-memory repository/chunk/commit reads. |
 
 Allow/deny ids use canonical scope keys: tool ids (`core_search_memories`),
 group-action leaf keys (`core_wake:add`, `core_fact:tombstone`), resource
 keys (`resource:memory`, `resource:events`), or flavor ids
-(`proxima-code/search_chunks`). Unknown profile names fail boot. Unknown
+(`proxima-code_search_chunks`). Unknown profile names fail boot. Unknown
 ids in allow/deny log `warn` and do not fail boot.
 
 <a id="embedding-client"></a>
