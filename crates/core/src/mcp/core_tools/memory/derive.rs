@@ -11,6 +11,7 @@ use crate::AgentDerivationV1;
 
 use super::util::{memory_kind_for_edge, normalize_tags};
 
+const MAX_SOURCE_HANDLES: usize = 256;
 const DERIVED_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x9d, 0xc1, 0x37, 0x10, 0x4f, 0xa6, 0x4c, 0x4e, 0x95, 0x73, 0xc8, 0x18, 0x9d, 0xfb, 0xa7, 0x40,
 ]);
@@ -107,10 +108,21 @@ impl McpTool for DeriveTool {
             }
             let tags = normalize_tags(args.tags)?;
 
+            if args.source_handles.len() > MAX_SOURCE_HANDLES {
+                return Err(McpToolError::InvalidInput(format!(
+                    "source_handles must contain at most {MAX_SOURCE_HANDLES} handles"
+                )));
+            }
+            let mut seen_sources = std::collections::HashSet::with_capacity(
+                args.source_handles.len().min(MAX_SOURCE_HANDLES),
+            );
             let mut source_uuids = Vec::with_capacity(args.source_handles.len());
             for handle in &args.source_handles {
                 let memory_id = ctx.resolve_memory(handle)?;
-                source_uuids.push(memory_id.into_inner());
+                let source_uuid = memory_id.into_inner();
+                if seen_sources.insert(source_uuid) {
+                    source_uuids.push(source_uuid);
+                }
             }
 
             let source_kinds = load_source_kinds(&ctx, &source_uuids).await?;
@@ -288,7 +300,7 @@ async fn load_provenance_edge_handles(
 
 #[cfg(test)]
 mod tests {
-    use super::derived_memory_id;
+    use super::{MAX_SOURCE_HANDLES, derived_memory_id};
     use crate::{Principal, UserId};
     use uuid::Uuid;
 
@@ -305,5 +317,10 @@ mod tests {
             id,
             Uuid::parse_str("cb6d3947-82cc-52be-b0f2-2368ec9c7288").expect("uuid literal")
         );
+    }
+
+    #[test]
+    fn source_handle_cap_is_pinned() {
+        assert_eq!(MAX_SOURCE_HANDLES, 256);
     }
 }

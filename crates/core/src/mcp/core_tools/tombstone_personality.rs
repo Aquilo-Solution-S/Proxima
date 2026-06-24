@@ -15,6 +15,10 @@ use crate::mcp::{McpToolCtx, McpToolError};
 pub struct TombstonePersonalityArgs {
     /// `I`-handle of the personality to tombstone.
     pub personality: String,
+    /// Must be true to confirm destructive personality tombstoning.
+    pub confirm: bool,
+    /// Must exactly echo `personality`.
+    pub expect_handle: String,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -28,6 +32,7 @@ pub(super) async fn tombstone_personality(
     ctx: McpToolCtx,
     args: TombstonePersonalityArgs,
 ) -> Result<TombstonePersonalityOutput, McpToolError> {
+    validate_confirm_gate(args.confirm, &args.expect_handle, &args.personality)?;
     let pid = ctx.resolve_personality(&args.personality)?;
     let engine = ctx
         .engine()
@@ -72,4 +77,46 @@ pub(super) async fn tombstone_personality(
         idempotent_replay: resp.idempotent_replay,
         audit_emit_failed,
     })
+}
+
+fn validate_confirm_gate(
+    confirm: bool,
+    expect_handle: &str,
+    personality: &str,
+) -> Result<(), McpToolError> {
+    if !confirm {
+        return Err(McpToolError::InvalidInput("confirm must be true".into()));
+    }
+    if expect_handle != personality {
+        return Err(McpToolError::InvalidInput(
+            "expect_handle must equal personality".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_confirm_gate;
+    use crate::mcp::McpToolError;
+
+    #[test]
+    fn confirm_gate_requires_confirm_true() {
+        match validate_confirm_gate(false, "I:target", "I:target") {
+            Err(McpToolError::InvalidInput(message)) => {
+                assert!(message.contains("confirm"));
+            }
+            other => panic!("expected confirm invalid input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn confirm_gate_requires_expect_handle_match() {
+        match validate_confirm_gate(true, "I:other", "I:target") {
+            Err(McpToolError::InvalidInput(message)) => {
+                assert!(message.contains("expect_handle"));
+            }
+            other => panic!("expected expect_handle invalid input, got {other:?}"),
+        }
+    }
 }
