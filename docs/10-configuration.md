@@ -51,8 +51,8 @@ Proxima::<App>::app().from_env().authenticator(auth).run().await?;
 | `PROXIMA_EXPOSE_NETWORK` | Network exposure gate for non-loopback binds. |
 | `PROXIMA_ALLOWED_ORIGINS` | Comma-separated MCP origin allowlist. |
 | `PROXIMA_ALLOWED_HOSTS` | Comma-separated inbound `Host` allowlist (hostnames or `host:port`, no wildcards) for the DNS-rebinding guard; defaults to the host of `PROXIMA_PUBLIC_URL` + the allowed origins. Loopback always permitted. |
-| `PROXIMA_STREAM_MAX_LIFETIME` | Max lifetime (seconds) of a subscribe stream. |
-| `PROXIMA_STREAM_EPOCH_INTERVAL` | Stream epoch re-check interval (seconds). |
+| `PROXIMA_STREAM_MAX_LIFETIME` | Max lifetime (seconds) of an authenticated MCP (Streamable HTTP) response stream before re-validation. (The `Subscribe` push verb is retired — see docs/14; this governs response-stream revalidation, not a subscription.) |
+| `PROXIMA_STREAM_EPOCH_INTERVAL` | Auth-epoch re-check interval (seconds) for an open MCP response stream. |
 | `MISTRAL_API_KEY` | Enables `proxima-mcp` embeddings with Mistral. |
 | `PROXIMA_EMBED_MODEL` | Optional embedding model for `proxima-mcp`; defaults to `mistral-embed`. |
 | `MISTRAL_API_BASE` | Optional Mistral-compatible API base; defaults to `https://api.mistral.ai/v1`. |
