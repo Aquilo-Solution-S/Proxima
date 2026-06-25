@@ -7,6 +7,7 @@ existing axioms/theorems from Memory, Edges, and Operators.
 -/
 
 import Foundations.Operators
+import Foundations.Personality
 
 namespace Proxima
 
@@ -67,5 +68,12 @@ theorem principle_6b_read_scope_governs_authored_derived_reads :
     or matrix-event state accessor. -/
 def principle_6b_append_only_compatibility_note : String :=
   "read_scope has no matrix-version/event state accessor"
+
+/-- P7 — personality character supervenes on the active Perspective
+    head set. The aggregation semantics stay opaque in `character_of`. -/
+theorem principle_7_personality_is_aggregate_of_perspectives :
+    ∀ p q : PersonalityInstance, activePerspectiveHeads p = activePerspectiveHeads q →
+      personality_character p = personality_character q :=
+  fun _ _ h => congrArg character_of h
 
 end Proxima
