@@ -86,6 +86,10 @@ def operatorEdgeShape : EdgeAuthorship → Edge → Prop
       (relation_class (edge_relation e) = .Causal ∨
        relation_class (edge_relation e) = .Interpretive) ∧
       (∃ ms : Memory, edge_source e = .memory ms ∧ memory_kind ms = .Perspective)
+  | .PerspectiveGoalLink, e =>
+      relation_class (edge_relation e) = .Causal ∧
+      (∃ g : Goal, edge_source e = .goal g) ∧
+      (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Fact)
   | _, _ => True
 
 /-- CN-1..CN-4 — every edge satisfies its authorship's shape. -/

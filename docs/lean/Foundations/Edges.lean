@@ -63,6 +63,9 @@ inductive EdgeAuthorship where
   | OperatorAtoP    -- A→P provenance
   | OperatorAtoGoal -- A→Goal provenance
   | PerspectiveLink -- P-authored causal / interpretive framing
+  /-- Goal-analogue of `PerspectiveLink`: carries the perspectival
+      causal-attribution "the pursuit of this goal produced this outcome". -/
+  | PerspectiveGoalLink
   | Engine          -- substrate-authored (supersession / authored)
   | User            -- explicit user/API graph edits
   | ExternalAgent   -- agent-authored MCP / imported edges
@@ -113,6 +116,15 @@ axiom edge_id_authorship_split :
   ∀ e : Edge,
     (∃ h : ContentHash, edge_id e = .sourceAuthored h) ↔
     edge_authorship e = .EventSource
+
+/-- N4 — any Causal edge touching a Goal endpoint is perspectival:
+    a Goal and a Fact may be related causally only by a
+    perspective-authored claim, never a structural/EventSource/user edge. -/
+axiom causal_goal_edge_perspectival :
+  ∀ e : Edge, relation_class (edge_relation e) = .Causal →
+    ((∃ g : Goal, edge_source e = .goal g) ∨
+      (∃ g : Goal, edge_target e = .goal g)) →
+    edge_authorship e = .PerspectiveGoalLink
 
 /-- SR-25 / ST-5 — edges are immutable and insert-only in v1; rewrites
     produce new memories and new edges, old edges remain attached. -/

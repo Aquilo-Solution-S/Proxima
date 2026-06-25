@@ -51,6 +51,16 @@ theorem principle_3b_goal_close_is_an_act :
       ∃ m : Memory, goal_close_fact g = some m ∧ memory_kind m = .Fact :=
   terminal_goal_closes_with_fact
 
+/-- P3c — the loop's causal closure is perspectival: a goal and a
+    fact may be related causally ONLY by a perspective-authored
+    claim, never a structural/EventSource/user edge. -/
+theorem principle_3c_causal_closure_is_perspectival :
+    ∀ e : Edge, relation_class (edge_relation e) = .Causal →
+      ((∃ g : Goal, edge_source e = .goal g) ∨
+        (∃ g : Goal, edge_target e = .goal g)) →
+      edge_authorship e = .PerspectiveGoalLink :=
+  causal_goal_edge_perspectival
+
 /-- P4 — direct Fact→Fact relations are non-interpretive: the matrix
     permits exactly Structural or Provenance for Fact→Fact. -/
 theorem principle_4_facts_connect_non_interpretively :
