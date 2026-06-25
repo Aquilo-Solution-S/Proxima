@@ -59,6 +59,7 @@ inductive RelationClass where
 inductive EdgeAuthorship where
   | EventSource     -- payload-derived structural edges
   | OperatorFtoA    -- F→A provenance
+  | OperatorAtoA    -- A→A provenance
   | OperatorAtoP    -- A→P provenance
   | OperatorAtoGoal -- A→Goal provenance
   | PerspectiveLink -- P-authored causal / interpretive framing
@@ -152,7 +153,7 @@ def legalClasses : MemoryKind → MemoryKind → Set RelationClass
   | .Abstraction, .Fact =>
       fun c => c = .Provenance ∨ c = .Structural
   | .Abstraction, .Abstraction =>
-      fun c => c = .Structural ∨ c = .Supersession
+      fun c => c = .Structural ∨ c = .Supersession ∨ c = .Provenance
   | .Perspective, .Fact =>
       fun c => c = .Causal ∨ c = .Interpretive ∨ c = .Structural
   | .Perspective, .Abstraction =>
