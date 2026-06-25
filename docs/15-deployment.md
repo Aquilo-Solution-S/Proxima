@@ -1,5 +1,7 @@
 # 15 — Deployment
 
+> **Status:** current + deferred sections. Deferred rows are design intent, not implementation claims.
+
 Containerized Code-flavor MCP server, authenticated exclusively via
 Zitadel bearer JWT, with a single unauthenticated route:
 `GET /.well-known/oauth-protected-resource` (RFC 9728). The binary is
@@ -70,7 +72,7 @@ endpoints require an `aud`-bound Zitadel JWT, validated in-process.
 (RFC 9728). Defense in depth: the same JWT MUST be validated at the
 cluster edge (see [§Edge defense-in-depth](#edge-defense-in-depth)).
 
-> **Single-tenant OIDC trust model.** v0.0.1 intentionally has no
+> **Single-tenant OIDC trust model.** Current pre-1.0 releases intentionally have no
 > per-user RBAC. Every token valid for the configured issuer and
 > `PROXIMA_OIDC_AUDIENCE` maps to the one configured owner with full
 > capabilities: all roles, including `SourceIngest`, and all tools,
@@ -141,7 +143,7 @@ column to cross-check it.
 - The client must request the resource as audience.
 - Optionally enable Dynamic Client Registration (RFC 7591).
 
-## Edge defense-in-depth (guidance)
+## Edge defense-in-depth
 
 Ingress MUST:
 - Terminate TLS.

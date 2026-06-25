@@ -1,5 +1,7 @@
 # 14 — Protocol Surface
 
+> **Status:** current + deferred sections. Deferred rows are design intent, not implementation claims.
+
 Transport-agnostic engine contract. 14 owns verb semantics,
 change-log semantics, consistency, auth, and error shape. Transport
 framing and UI are consumer concerns (see [§Out of scope](#out-of-scope)).

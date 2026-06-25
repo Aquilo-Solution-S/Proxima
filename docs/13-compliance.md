@@ -1,5 +1,7 @@
 # 13 — Compliance Primitives
 
+> **Status:** design intent plus current primitive inventory. Deferred enforcement rows are not implementation claims.
+
 Architecture contract for substrate-level compliance operations.
 Controller policy decides when to invoke them; the substrate defines
 bounded primitives and metadata vocabulary.

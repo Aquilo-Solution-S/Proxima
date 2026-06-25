@@ -107,7 +107,7 @@ pub fn build_instructions(
     );
 
     if s.derive {
-        out.push_str("HARD LAW: Facts cannot link Facts. ");
+        out.push_str("HARD LAW FOR AGENT LINKS: agent-authored `core_link` edges cannot use Facts as sources. ");
         if s.link {
             out.push_str(
                 "`core_link` authors edges only from an Abstraction or Perspective; a Fact \
@@ -115,10 +115,12 @@ pub fn build_instructions(
             );
         }
         out.push_str(
-            "To relate Facts you do not link them — you `core_derive` an Abstraction (or \
-             Perspective) over them and pass their handles as `source_handles`, which \
-             auto-creates the `derived-from` provenance edges. That IS how the graph is built; \
-             the urge to connect two Facts is the signal to abstract, not to link. ",
+            "To semantically relate Facts you do not link them — you `core_derive` an Abstraction \
+             (or Perspective) over them and pass their handles as `source_handles`, which \
+             auto-creates the `derived-from` provenance edges. Structural/provenance Fact edges, \
+             when present, are authored by the substrate or trusted sources, not by agent \
+             `core_link` calls. That IS how the agent graph is built; the urge to connect two \
+             Facts is the signal to abstract, not to link. ",
         );
     }
 
@@ -236,15 +238,17 @@ fn push_law(out: &mut String, s: Surface) {
     if !s.derive {
         return;
     }
-    out.push_str("## The one hard law: Facts cannot link Facts\n\n");
+    out.push_str("## The one hard law for agent-authored links\n\n");
     if s.link {
         out.push_str(
             "`core_link` authors edges **only from an Abstraction or Perspective**. A Fact \
              source is rejected at storage: `relation core/agent-link-refers-to rejects source \
-             kind Fact`. Facts are immutable observations — they do not interpret each other.\n\n",
+             kind Fact`. Facts are immutable observations; semantic interpretation belongs in \
+             Abstractions/Perspectives. Structural/provenance Fact edges, when present, are \
+             authored by the substrate or trusted sources, not by agent `core_link` calls.\n\n",
         );
     }
-    out.push_str("**To relate Facts, do not link them — derive over them:**\n\n");
+    out.push_str("**To semantically relate Facts, do not link them — derive over them:**\n\n");
     out.push_str("```\n");
     out.push_str(
         "core_derive(kind=\"Abstraction\", title=..., body=...,\n\
@@ -445,8 +449,9 @@ mod tests {
     #[test]
     fn instructions_teach_the_hard_law_and_remember_vs_derive() {
         let s = build_instructions(&full_tool_set(), &full_resource_set());
-        assert!(s.contains("Facts cannot link Facts"));
+        assert!(s.contains("agent-authored `core_link` edges cannot use Facts as sources"));
         assert!(s.contains("rejects source kind Fact"));
+        assert!(s.contains("Structural/provenance Fact edges"));
         assert!(s.contains("source_handles"));
         assert!(s.contains("`core_remember`"));
         assert!(s.contains("`core_derive`"));
@@ -470,7 +475,7 @@ mod tests {
         assert!(!trimmed.contains("goal"));
         assert!(!trimmed.contains("proxima-code_"));
         // Core memory contract still present.
-        assert!(trimmed.contains("Facts cannot link Facts"));
+        assert!(trimmed.contains("agent-authored `core_link` edges cannot use Facts as sources"));
         assert!(trimmed.contains("`core_remember`"));
     }
 
@@ -503,8 +508,8 @@ mod tests {
         tools.remove(LinkTool::NAME);
         let s = build_instructions(&tools, &full_resource_set());
         // The law (derive over Facts) survives; the core_link specifics don't.
-        assert!(s.contains("Facts cannot link Facts"));
-        assert!(!s.contains("`core_link`"));
+        assert!(s.contains("agent-authored `core_link` edges cannot use Facts as sources"));
+        assert!(!s.contains("`core_link` authors edges"));
     }
 
     #[test]
@@ -517,7 +522,8 @@ mod tests {
     #[test]
     fn how_to_documents_law_examples_and_decision_guide() {
         let s = how_to_markdown(&full_tool_set(), &full_resource_set());
-        assert!(s.contains("Facts cannot link Facts"));
+        assert!(s.contains("The one hard law for agent-authored links"));
+        assert!(s.contains("Structural/provenance Fact edges"));
         assert!(s.contains("derived-from"));
         assert!(s.contains("core_derive(kind=\"Abstraction\""));
         assert!(s.contains("## What to capture → which tool"));
@@ -536,7 +542,7 @@ mod tests {
         assert!(!trimmed.contains("core_goal"));
         assert!(!trimmed.contains("proxima-code_"));
         // Layering law + relate-memories row still taught.
-        assert!(trimmed.contains("Facts cannot link Facts"));
+        assert!(trimmed.contains("The one hard law for agent-authored links"));
         assert!(trimmed.contains("Relate / connect memories"));
     }
 }

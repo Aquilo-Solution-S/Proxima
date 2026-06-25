@@ -8,6 +8,10 @@ deployment-level artefact storage, and an optional host-injected
 embedding client for retrieval plus an optional host-injected model-seat
 client.
 
+For a consolidated human inventory of environment variables, see
+[reference/env-vars.md](reference/env-vars.md). Source code and deployment
+manifests remain authoritative.
+
 Proxima hosts no model loop. It does not register inference targets,
 tier registries, or LLM credentials — external harnesses own model
 selection. The only LLM-adjacent runtime knob is the embedding client a
@@ -68,11 +72,11 @@ Proxima::<App>::app().from_env().authenticator(auth).run().await?;
 
 Builder methods override env per field. Defaults, precedence
 (`configure < env < explicit`), and the fail-closed network/auth matrix
-are specified by `crates/proxima` rustdoc:
-[`RuntimeBuilder`](../crates/proxima/src/runtime_config.rs),
-[`RuntimeConfig::validate`](../crates/proxima/src/runtime_config.rs),
-[`EmbedConfig`](../crates/proxima/src/config.rs), and
-[`Proxima<A>`](../crates/proxima/src/runtime.rs).
+are specified by `crates/proxima` rustdoc and source:
+[`RuntimeBuilder`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs),
+[`RuntimeConfig::validate`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs),
+[`EmbedConfig`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/config.rs), and
+[`Proxima<A>`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime.rs).
 
 <a id="mcp-endpoint-and-auth"></a>
 ## MCP Endpoint and Authentication
