@@ -1,0 +1,17 @@
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "core_derive",
+    "arguments": {
+      "kind": "Abstraction",
+      "title": "Agent docs should start with live MCP discovery",
+      "body": "Because tool profiles can hide capabilities, offline docs should teach agents to read initialize.instructions, list tools/resources, and then read proxima://how-to before calling memory tools.",
+      "source_handles": ["F:example-observation-1", "F:example-observation-2"],
+      "tags": ["proxima", "docs", "agent", "pattern"],
+      "model_id": "docs-plan-operator",
+      "idempotency_key": "docs-agent-live-discovery-pattern"
+    }
+  }
+}

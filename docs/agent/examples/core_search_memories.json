@@ -1,0 +1,12 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "core_search_memories",
+    "arguments": {
+      "query": "prior architecture decision about Fact Abstraction Perspective layering",
+      "limit": 5
+    }
+  }
+}

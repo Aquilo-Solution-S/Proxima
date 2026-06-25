@@ -17,7 +17,7 @@ formal kernel in `docs/lean/`. This guide covers how to contribute.
 
 1. **Open an Issue** for:
    - Questions about the design or the code
-   - Proposals for new numbered docs (12+, or gaps in 01-11)
+   - Proposals for new documentation lanes or invariant/design changes
    - Edge cases the spec does not cover
    - Contradictions you believe you've found (flag explicitly; don't paper over)
 
@@ -36,6 +36,34 @@ formal kernel in `docs/lean/`. This guide covers how to contribute.
   invariants in [`AGENTS.md`](AGENTS.md)
 - Doc fixes (typos, broken links, inconsistencies) and answers to open
   `Q1-Qx` questions are welcome as PRs
+- New public how-to/tutorial/reference pages belong under `docs/getting-started/`,
+  `docs/tutorials/`, `docs/how-to/`, or `docs/reference/`.
+- New invariant/design changes belong in the numbered docs and, when domainless,
+  in `docs/lean/Foundations/` plus `docs/lean/COVERAGE.md`.
+- Agent-facing usage rules belong in `docs/agent/` and the root `llms.txt` files.
+
+Before opening a PR, run the narrowest relevant checks and always run:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --locked
+git diff --check
+```
+
+Docs-only changes:
+
+```sh
+python3 scripts/check-doc-links.py
+python3 scripts/check-doc-status.py
+git diff --check
+```
+
+Domainless invariant changes also require:
+
+```sh
+cd docs/lean && lake build
+```
 
 ## Pull Request Process
 

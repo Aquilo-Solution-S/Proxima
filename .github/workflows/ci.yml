@@ -41,6 +41,28 @@ jobs:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --workspace --no-deps --all-features --locked
 
+  docs:
+    name: docs links + status + lean
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: install docs dependencies
+        run: python3 -m pip install -r requirements-docs.txt
+      - name: mkdocs strict build
+        run: python3 -m mkdocs build --strict
+      - name: markdown local links
+        run: python3 scripts/check-doc-links.py
+      - name: docs status labels
+        run: python3 scripts/check-doc-status.py
+      - name: set up Lean/Lake
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: docs/lean
+          build: false
+          test: false
+      - name: lean kernel
+        run: cd docs/lean && lake build
+
   deny:
     name: cargo-deny (advisories + licenses + bans + sources)
     runs-on: ubuntu-latest

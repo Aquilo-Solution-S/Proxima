@@ -97,7 +97,7 @@ async fn initialize_returns_instructions_and_how_to_resource()
         .expect("instructions present at initialize");
     assert!(!instructions.is_empty());
     assert!(
-        instructions.contains("Facts cannot link Facts"),
+        instructions.contains("agent-authored `core_link` edges cannot use Facts as sources"),
         "got: {instructions}"
     );
     assert!(instructions.contains("`core_derive`"));
@@ -141,7 +141,7 @@ async fn initialize_returns_instructions_and_how_to_resource()
     let body = read["result"]["contents"][0]["text"]
         .as_str()
         .expect("resource text");
-    assert!(body.contains("Facts cannot link Facts"));
+    assert!(body.contains("The one hard law for agent-authored links"));
     assert!(body.contains("derived-from"));
     assert!(body.contains("## Worked example"));
 
@@ -186,7 +186,10 @@ async fn memory_profile_instructions_omit_excluded_tools() -> Result<(), Box<dyn
         .as_str()
         .expect("instructions present");
     // Core contract still taught.
-    assert!(instructions.contains("Facts cannot link Facts"));
+    assert!(
+        instructions.contains("agent-authored `core_link` edges cannot use Facts as sources"),
+        "got: {instructions}"
+    );
     assert!(instructions.contains("`core_remember`"));
     assert!(instructions.contains("proxima://memory/{id}"));
     // Excluded tools get no guidance.
