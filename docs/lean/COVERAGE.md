@@ -264,3 +264,27 @@ Additions forced by review (both reviewers + AGENTS.md invariant 17):
 
 Rejected by adversarial verify: 2 proposals (one stale, one inverse of an
 already-landed r1 fix).
+
+## Principle surface map
+
+| Principle | Named surface prop | Kernel carrier |
+|---|---|---|
+| P1 | `principle_1_facts_below_perspective` | `personality_may_read` (Memory.lean) Fact branch. |
+| P2 | `principle_2_operator_goals_carry_evidence` | `operator_edges_shaped` + `operatorEdgeShape .OperatorAtoGoal`; WEAKENED to operator-derived Goals only, with goal measurement/justification left to a decider. |
+| P3 | `principle_3_goals_never_author_facts`; `principle_3b_goal_close_is_an_act`; `principle_3c_causal_closure_is_perspectival` | `facts_only_from_sources`; `terminal_goal_closes_with_fact` + `goal_close_fact`; `causal_goal_edge_perspectival`. |
+| P4 | `principle_4_facts_connect_non_interpretively` | `legalClasses .Fact .Fact`. |
+| P5 | `principle_5_memories_grounded_in_facts` | `grounding_wf` + `derived_has_provenance` → `memory_grounds_in_facts`; A→A provenance via the matrix cell + `operatorEdgeShape .OperatorAtoA`; temporal companion `derivation_created_at_monotone`. |
+| P6 | `principle_6a_derivation_provenance_strictly_upward`; `principle_6b_read_scope_governs_authored_derived_reads` | `edge_layer_rule`; `read_scope`/`personality_may_read`. Decider/exclusion notes: conditioning mechanism is outside the kernel; future-only matrix evolution is a string note because there is no matrix-version accessor. |
+| P7 | `principle_7_personality_is_aggregate_of_perspectives` | `character_of` (opaque) over `activePerspectiveHeads` via congruence. |
+
+Principle decider exclusions:
+- P2 goal measurement/justification.
+- P7 F5 aggregation weights inside opaque `character_of`.
+- P6 conditioning mechanism.
+- P6 future-only matrix evolution.
+
+Parked design choices:
+- P2 goal-row-total evidence bridge deliberately not added; the spec weakened
+  P2 to operator-derived Goals only.
+- P6 matrix-version axis deliberately absent; no matrix-version accessor exists
+  in the current kernel.
