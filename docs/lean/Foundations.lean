@@ -12,6 +12,7 @@ import Foundations.Memory
 import Foundations.Goals
 import Foundations.Edges
 import Foundations.Operators
+import Foundations.Principles
 import Foundations.Citations
 import Foundations.Compliance
 import Foundations.Composition
