@@ -1,0 +1,70 @@
+site_name: Proxima
+site_description: Typed durable memory substrate for agentic systems
+repo_url: https://github.com/Aquilo-Solution-S/Proxima
+edit_uri: edit/main/docs/
+docs_dir: docs
+site_dir: site
+exclude_docs: |
+  superpowers/**
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - content.code.copy
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+validation:
+  links:
+    not_found: ignore
+    anchors: ignore
+nav:
+  - Home: README.md
+  - Getting Started:
+      - Overview: getting-started/overview.md
+      - Local Development: getting-started/local-dev.md
+      - Connect an Agent: getting-started/connect-agent.md
+  - Tutorials:
+      - Run MCP Server: tutorials/run-mcp-server.md
+      - Embedded Minimal: tutorials/embedded-minimal.md
+      - Build First Flavor: tutorials/build-first-flavor.md
+      - Add First Fact Schema: tutorials/add-first-fact-schema.md
+      - Add First MCP Tool: tutorials/add-first-mcp-tool.md
+  - How-to:
+      - Troubleshooting: how-to/troubleshoot.md
+  - Reference:
+      - Architecture: reference/architecture.md
+      - Public API: reference/public-api.md
+      - Environment Variables: reference/env-vars.md
+      - MCP Tools: reference/mcp-tools.md
+      - Compliance Status: reference/compliance-status.md
+  - Agent:
+      - Quickstart: agent/quickstart.md
+      - Proxima Memory Skill: skills/proxima-memory/SKILL.md
+      - Recall Before Work: agent/prompts/recall-before-work.md
+      - Consolidate at End: agent/prompts/consolidate-at-end.md
+      - Remember vs Derive: agent/prompts/remember-vs-derive.md
+  - Design:
+      - Universe: universe.md
+      - Event Source: 01-event-source.md
+      - Memory: 02-memory.md
+      - Schema Registry: 03-schema-registry.md
+      - Consolidation: 04-consolidation.md
+      - Actions: 05-actions.md
+      - Goals and Self: 06-goals-and-self.md
+      - Storage: 07-storage.md
+      - Core and Flavors: 08-core-and-flavors.md
+      - Developing Flavors: 09-developing-flavors.md
+      - Configuration: 10-configuration.md
+      - Citations: 11-citations.md
+      - Tool Manifest: 12-tool-manifest.md
+      - Compliance: 13-compliance.md
+      - Protocol Surface: 14-protocol-surface.md
+      - Deployment: 15-deployment.md
+      - Dev Perf Fixture: dev-perf.md
+  - Kernel:
+      - Lean Kernel: lean/README.md
+      - Coverage: lean/COVERAGE.md

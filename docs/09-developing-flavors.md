@@ -1,5 +1,7 @@
 # 09. Developing Flavors
 
+> New to flavor authoring? Start with [tutorials/build-first-flavor.md](tutorials/build-first-flavor.md), then return here for the complete checklist.
+
 ## Contract
 
 Flavor = build-time vocabulary crate.

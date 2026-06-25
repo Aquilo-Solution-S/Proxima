@@ -1,0 +1,42 @@
+{
+  "status": "example-only",
+  "authority": "A running Proxima server's tools/list and proxima://tools resource are authoritative.",
+  "profile": "substrate-dev-example",
+  "tools": [
+    {
+      "name": "core_search_memories",
+      "purpose": "Search owner-scoped memories.",
+      "exampleArguments": {
+        "query": "docs architecture decision",
+        "limit": 5
+      }
+    },
+    {
+      "name": "core_remember",
+      "purpose": "Record an observation as a Fact.",
+      "exampleArguments": {
+        "title": "Example observation",
+        "body": "A durable observation worth retrieving later.",
+        "tags": ["example"],
+        "idempotency_key": "example-observation"
+      }
+    },
+    {
+      "name": "core_derive",
+      "purpose": "Create an Abstraction or Perspective with provenance.",
+      "exampleArguments": {
+        "kind": "Abstraction",
+        "title": "Example pattern",
+        "body": "A pattern derived from source Facts.",
+        "source_handles": ["F:example-1"],
+        "model_id": "example-operator"
+      }
+    }
+  ],
+  "resources": [
+    "proxima://how-to",
+    "proxima://tools",
+    "proxima://events{?since,limit}",
+    "proxima://memory/{id}"
+  ]
+}

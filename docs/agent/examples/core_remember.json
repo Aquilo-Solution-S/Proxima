@@ -1,0 +1,14 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "core_remember",
+    "arguments": {
+      "title": "Developer observed Proxima docs need an agent quickstart",
+      "body": "A documentation audit found the MCP connection snippet exists, but worked agent tool-call examples are missing.",
+      "tags": ["proxima", "docs", "agent"],
+      "idempotency_key": "docs-agent-quickstart-observation"
+    }
+  }
+}

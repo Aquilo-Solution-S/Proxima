@@ -18,10 +18,15 @@ timeline within 7 days.
 
 ## Supported Versions
 
-Proxima is pre-release: Rust crates have landed but no version is tagged
-yet. Until the first tagged release (v0.0.1), only current `main` is
-supported — report against it. A supported-version matrix lands with the
-first tagged release.
+| Version | Supported |
+|---|---|
+| `main` | best-effort development branch |
+| latest `v0.0.x` tag | security fixes when practical |
+| older `v0.0.x` tags | not routinely patched |
+
+Proxima is pre-1.0. Security fixes may land on `main` first and be released as a
+new tag. If a vulnerability affects a tagged release, the advisory will state the
+fixed tag or commit.
 
 ## Disclosure
 

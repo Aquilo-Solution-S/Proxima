@@ -1,5 +1,7 @@
 # 12 — Tool Manifest
 
+> **Status:** current + deferred sections. Deferred rows are design intent, not implementation claims.
+
 ## Claim
 
 Tool = build-time registered call surface.
