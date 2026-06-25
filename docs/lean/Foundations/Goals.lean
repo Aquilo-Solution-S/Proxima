@@ -162,6 +162,17 @@ axiom goal_parents_acyclic : ∀ g : Goal, ¬ goalAncestor g g
 -- Heads and the active set (doc 06 §Goal Entity)
 -- ============================================================
 
+/-- Closing a Goal is itself an act. This includes laying it down
+    (`Abandoned`), not only reaching it (`Achieved`). By principle 3,
+    an act that touches the world emits a Fact, so terminal Goals
+    require a close-Fact reference. Whether that Fact justifies the
+    close is measurement/decider responsibility, not a kernel claim. -/
+axiom goal_close_fact : Goal → Option Memory
+
+axiom terminal_goal_closes_with_fact :
+  ∀ g : Goal, (goal_state g).terminal = true →
+    ∃ m : Memory, goal_close_fact g = some m ∧ memory_kind m = .Fact
+
 /-- A lifecycle head: no later row supersedes it. "Stale prior cannot
     be lifecycle head" (GoalWrite supersession constraint) is the
     contrapositive — superseded rows are not heads. -/
