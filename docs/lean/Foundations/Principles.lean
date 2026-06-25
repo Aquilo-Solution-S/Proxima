@@ -8,6 +8,7 @@ existing axioms/theorems from Memory, Edges, and Operators.
 
 import Foundations.Operators
 import Foundations.Personality
+import Foundations.Provenance
 
 namespace Proxima
 
@@ -68,6 +69,13 @@ theorem principle_4_facts_connect_non_interpretively :
       c ∈ legalClasses .Fact .Fact ↔ c = .Structural ∨ c = .Provenance := by
   intro c
   rfl
+
+/-- P5 — every memory is grounded in Facts: a well-founded derivation/
+    supersession descent (incl. higher-order A→A provenance) bottoms out
+    at Facts. Names the Provenance.lean grounding theorem. -/
+theorem principle_5_memories_grounded_in_facts :
+    ∀ m : Memory, GroundsInFact m :=
+  memory_grounds_in_facts
 
 /-- P6a — derivation/provenance edges obey the layer directionality
     law: for memory→memory edges, ℓ(source) ≥ ℓ(target). This names
