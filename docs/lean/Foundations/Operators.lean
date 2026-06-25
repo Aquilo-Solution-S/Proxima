@@ -62,14 +62,18 @@ axiom facts_only_from_sources :
     one def over the closed `EdgeAuthorship` vocabulary (the same
     move `legalClasses` makes for kinds). Non-operator authorships
     (EventSource, Engine, User, ExternalAgent) carry no extra shape
-    here: their legality is the matrix + masks. Target kinds for
-    F→A / A→P are deliberately NOT stated — they are forced by the
-    matrix (theorems below). -/
+    here: their legality is the matrix + masks. Target kind for A→P
+    remains matrix-forced; F→A states its Fact target directly because
+    A→A provenance is legal. -/
 def operatorEdgeShape : EdgeAuthorship → Edge → Prop
   | .OperatorFtoA, e =>
       relation_class (edge_relation e) = .Provenance ∧
       (∃ ms : Memory, edge_source e = .memory ms ∧ memory_kind ms = .Abstraction) ∧
-      (∃ mt : Memory, edge_target e = .memory mt)
+      (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Fact)
+  | .OperatorAtoA, e =>
+      relation_class (edge_relation e) = .Provenance ∧
+      (∃ ms : Memory, edge_source e = .memory ms ∧ memory_kind ms = .Abstraction) ∧
+      (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Abstraction)
   | .OperatorAtoP, e =>
       relation_class (edge_relation e) = .Provenance ∧
       (∃ ms : Memory, edge_source e = .memory ms ∧ memory_kind ms = .Perspective) ∧
@@ -94,7 +98,8 @@ theorem provenance_pins_target :
     ∀ (e : Edge) (ms mt : Memory),
       edge_source e = .memory ms → edge_target e = .memory mt →
       relation_class (edge_relation e) = .Provenance →
-      (memory_kind ms = .Abstraction → memory_kind mt = .Fact) ∧
+      (memory_kind ms = .Abstraction →
+        memory_kind mt = .Fact ∨ memory_kind mt = .Abstraction) ∧
       (memory_kind ms = .Perspective → memory_kind mt = .Abstraction) := by
   intro e ms mt hs ht hc
   have hleg := edge_class_legal e ms mt hs ht
@@ -105,7 +110,8 @@ theorem provenance_pins_target :
     revert hleg
     cases memory_kind mt <;> intro hleg <;>
       first
-        | rfl
+        | exact Or.inl rfl
+        | exact Or.inr rfl
         | exact hleg.elim
         | (rcases hleg with h' | h' <;> first | exact (nomatch h') | exact (nomatch h'))
   · intro hk
@@ -131,9 +137,7 @@ theorem ftoa_edge_shape :
   intro e ha
   have h := operator_edges_shaped e
   rw [ha] at h
-  obtain ⟨hc, ⟨ms, hs, hk⟩, ⟨mt, ht⟩⟩ := h
-  exact ⟨hc, ⟨ms, hs, hk⟩,
-    ⟨mt, ht, (provenance_pins_target e ms mt hs ht hc).1 hk⟩⟩
+  exact h
 
 /-- CN-2 in full — A→P writes `Perspective → Abstraction` provenance
     edges. THEOREM: the target kind is matrix-forced. -/
@@ -173,7 +177,8 @@ theorem abstraction_has_provenance :
     ∀ m : Memory, memory_kind m = .Abstraction →
       ∃ e : Edge, edge_source e = .memory m ∧
         relation_class (edge_relation e) = .Provenance ∧
-        (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Fact) := by
+        (∃ mt : Memory, edge_target e = .memory mt ∧
+          (memory_kind mt = .Fact ∨ memory_kind mt = .Abstraction)) := by
   intro m hk
   have hne : memory_kind m ≠ .Fact := by rw [hk]; intro h; exact (nomatch h)
   obtain ⟨e, hs, hc, ⟨mt, ht⟩⟩ := derived_has_provenance m hne
