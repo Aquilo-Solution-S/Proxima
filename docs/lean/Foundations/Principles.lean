@@ -22,6 +22,21 @@ theorem principle_1_facts_below_perspective :
   unfold personality_may_read
   exact ⟨ho, Or.inl hk⟩
 
+/-- P2 (weakened) — operator-derived Goals carry evidence by an
+    A→Goal Structural edge from the Goal to a non-Perspective Memory.
+    This does NOT say every Goal carries evidence: User/External Goals
+    need none here. Whether the evidence satisfies the Goal is a
+    measurement/decider judgment, not a universal kernel rule. -/
+theorem principle_2_operator_goals_carry_evidence :
+    ∀ e : Edge, edge_authorship e = .OperatorAtoGoal →
+      relation_class (edge_relation e) = .Structural ∧
+      (∃ g : Goal, edge_source e = .goal g) ∧
+      (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt ≠ .Perspective) := by
+  intro e ha
+  have h := operator_edges_shaped e
+  rw [ha] at h
+  exact h
+
 /-- P3 — Goals/operators never author Facts: Facts have no authoring
     personality. Discharged by CN-5 `facts_only_from_sources`. -/
 theorem principle_3_goals_never_author_facts :
@@ -29,6 +44,12 @@ theorem principle_3_goals_never_author_facts :
       memory_kind m = .Fact →
       memory_authoring_personality m = none :=
   facts_only_from_sources
+
+/-- P3b — closing a Goal is an act, and the close-act emits a Fact. -/
+theorem principle_3b_goal_close_is_an_act :
+    ∀ g : Goal, (goal_state g).terminal = true →
+      ∃ m : Memory, goal_close_fact g = some m ∧ memory_kind m = .Fact :=
+  terminal_goal_closes_with_fact
 
 /-- P4 — direct Fact→Fact relations are non-interpretive: the matrix
     permits exactly Structural or Provenance for Fact→Fact. -/
