@@ -71,8 +71,7 @@ impl Engine {
         role: Role,
         draft: EventDraft,
     ) -> Result<AuthorizedEventIngest, ProtocolError> {
-        super::authorize(authz, &draft.principal, role)?;
-        super::authorize_memory_grant(authz, &draft.principal, MemoryAction::Write)?;
+        super::authorize_action(authz, &draft.principal, role, MemoryAction::Write)?;
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
@@ -112,8 +111,7 @@ impl Engine {
         cited_object: InlineCitedObjectDraft,
         mapping: InlineCitationMappingDraft,
     ) -> Result<AuthorizedFactWithCitation, ProtocolError> {
-        super::authorize(authz, &draft.principal, role)?;
-        super::authorize_memory_grant(authz, &draft.principal, MemoryAction::Write)?;
+        super::authorize_action(authz, &draft.principal, role, MemoryAction::Write)?;
 
         // Validate the Fact only by schema-existence, matching
         // `authorize_event_ingest`. The Fact payload is built from a
@@ -153,8 +151,7 @@ impl Engine {
         cited_object: InlineCitedObjectDraft,
         mapping: InlineCitationMappingDraft,
     ) -> Result<AuthorizedCitationAttachment, ProtocolError> {
-        super::authorize(authz, &principal, role)?;
-        super::authorize_memory_grant(authz, &principal, MemoryAction::Write)?;
+        super::authorize_action(authz, &principal, role, MemoryAction::Write)?;
         let owner = authz.scoped_owner(principal);
         let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
         Ok(AuthorizedCitationAttachment::new(
@@ -450,8 +447,7 @@ impl Engine {
         mut input: McpCallLogInput,
     ) -> Result<McpCallLogOutcome, ProtocolError> {
         let owner = authz.scoped_owner(input.owner.clone());
-        super::authorize(authz, &owner, Role::SourceIngest)?;
-        super::authorize_memory_grant(authz, &owner, MemoryAction::Write)?;
+        super::authorize_action(authz, &owner, Role::SourceIngest, MemoryAction::Write)?;
         input.owner = owner;
         self.storage
             .persist_mcp_call_atomic(&input)
@@ -476,8 +472,7 @@ impl Engine {
         principal: Principal,
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, ProtocolError> {
-        super::authorize(authz, &principal, Role::SourceIngest)?;
-        super::authorize_memory_grant(authz, &principal, MemoryAction::Write)?;
+        super::authorize_action(authz, &principal, Role::SourceIngest, MemoryAction::Write)?;
         let outcome = self
             .storage
             .close_batch(&principal, source_batch_id)

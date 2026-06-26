@@ -33,8 +33,7 @@ impl Engine {
         owner: &Owner,
         seconds: u64,
     ) -> Result<(), ProtocolError> {
-        super::authorize(authz, owner, Role::Admin)?;
-        super::authorize_memory_action(authz, owner, MemoryAction::Admin)?;
+        super::authorize_action(authz, owner, Role::Admin, MemoryAction::Admin)?;
         let seconds = retention_seconds_to_i64(seconds)?;
         let owner = authz.scoped_owner(owner.clone());
         self.storage
@@ -54,8 +53,7 @@ impl Engine {
         authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<Option<i64>, ProtocolError> {
-        super::authorize(authz, owner, Role::Admin)?;
-        super::authorize_memory_action(authz, owner, MemoryAction::Admin)?;
+        super::authorize_action(authz, owner, Role::Admin, MemoryAction::Admin)?;
         let owner = authz.scoped_owner(owner.clone());
         self.storage
             .get_fact_retention(&owner)
@@ -74,8 +72,7 @@ impl Engine {
         authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<bool, ProtocolError> {
-        super::authorize(authz, owner, Role::Admin)?;
-        super::authorize_memory_action(authz, owner, MemoryAction::Admin)?;
+        super::authorize_action(authz, owner, Role::Admin, MemoryAction::Admin)?;
         let owner = authz.scoped_owner(owner.clone());
         self.storage
             .clear_fact_retention(&owner)
@@ -95,8 +92,7 @@ impl Engine {
         authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<CleanupDueFactsOutcome, ProtocolError> {
-        super::authorize(authz, owner, Role::Admin)?;
-        super::authorize_memory_action(authz, owner, MemoryAction::Admin)?;
+        super::authorize_action(authz, owner, Role::Admin, MemoryAction::Admin)?;
         let owner = authz.scoped_owner(owner.clone());
         let fact_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Fact);
         let edge_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Edge);
@@ -132,8 +128,7 @@ impl Engine {
         owner: &Owner,
         fact_id: MemoryId,
     ) -> Result<TombstoneFactOutcome, ProtocolError> {
-        super::authorize(authz, owner, Role::SourceIngest)?;
-        super::authorize_memory_grant(authz, owner, MemoryAction::Write)?;
+        super::authorize_action(authz, owner, Role::SourceIngest, MemoryAction::Write)?;
         let owner = authz.scoped_owner(owner.clone());
         let fact_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Fact);
         let edge_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Edge);

@@ -18,8 +18,7 @@ impl Engine {
         principal: &Principal,
         include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, ProtocolError> {
-        super::authorize(authz, principal, Role::Admin)?;
-        super::authorize_memory_action(authz, principal, MemoryAction::Admin)?;
+        super::authorize_action(authz, principal, Role::Admin, MemoryAction::Admin)?;
         let owner = authz.scoped_owner(principal.clone());
         self.storage
             .list_personality_instances(&owner, include_tombstoned)
@@ -37,8 +36,7 @@ impl Engine {
         authz: &AuthzContext,
         req: TombstonePersonalityRequest,
     ) -> Result<TombstonePersonalityResponse, ProtocolError> {
-        super::authorize(authz, &req.principal, Role::Admin)?;
-        super::authorize_memory_action(authz, &req.principal, MemoryAction::Admin)?;
+        super::authorize_action(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
         self.storage
             .tombstone_personality(&req)
             .await
@@ -60,8 +58,7 @@ impl Engine {
         authz: &AuthzContext,
         req: InstantiatePersonalityRequest,
     ) -> Result<InstantiatePersonalityResponse, ProtocolError> {
-        super::authorize(authz, &req.principal, Role::Admin)?;
-        super::authorize_memory_action(authz, &req.principal, MemoryAction::Admin)?;
+        super::authorize_action(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
         if req.display_name.trim().is_empty() {
             return Err(ProtocolError::invalid_argument(
                 "display_name",

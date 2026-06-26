@@ -136,8 +136,7 @@ impl Engine {
         authz: &AuthzContext,
         req: &SetWakeEntriesRequest,
     ) -> Result<SetWakeEntriesResponse, ProtocolError> {
-        authorize(authz, &req.principal, Role::Admin)?;
-        authorize_memory_action(authz, &req.principal, MemoryAction::Admin)?;
+        authorize_action(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
         let effective = req.clone();
         crate::personality::validate_wake_entries_detect_config(&effective.entries)?;
         self.storage
@@ -252,31 +251,34 @@ pub(crate) fn authorize(
     Ok(())
 }
 
-/// Full owner-space gate: owner visibility, the action's default role, and the
-/// space grant. Use where the owner-space action is the sole authorization
-/// gate (graph reads, the admin tool surface).
-pub(crate) fn authorize_memory_action(
+/// The single owner-space gate for every engine verb: the operation's explicit
+/// `role` AND the owner-space `action` grant, with NO coupling between them.
+/// `role` is the engine-layer authority; the grant layers on top and never
+/// re-imposes `action.required_role()`.
+///
+/// This is the only authorization gate at the verb layer, so the `(role,
+/// action)` pair is always visible at the call site — source-ingest writes pass
+/// `Role::SourceIngest`, graph writes `Role::GraphWrite`, reads
+/// `Role::GraphRead`, the admin surface `Role::Admin`. Decoupling the two axes
+/// is load-bearing: a source-ingest verb must NOT be forced to require
+/// `GraphWrite` merely because `MemoryAction::Write.required_role()` is
+/// `GraphWrite`. There is deliberately no `action`-only variant that derives the
+/// role from the action — that coupling is the regression this gate prevents.
+pub(crate) fn authorize_action(
     authz: &AuthzContext,
     principal: &Principal,
+    role: Role,
     action: MemoryAction,
 ) -> Result<(), ProtocolError> {
-    if !authz.identity.can_access_principal(principal) {
-        return Err(ProtocolError::forbidden(
-            "principal cannot access requested principal",
-        ));
-    }
-    let required_role = action.required_role();
-    if !authz.capabilities.roles.has(required_role) {
-        return Err(ProtocolError::forbidden(required_role.denied_message()));
-    }
+    authorize(authz, principal, role)?;
     authorize_memory_grant(authz, principal, action)
 }
 
-/// Owner-space GRANT gate (owner visibility + the space grant) WITHOUT the role
-/// check. The operation's role is enforced separately by the caller via
-/// [`authorize`]. Source-ingest writes (`event_ingest`, `persist_mcp_call`,
-/// `tombstone_fact`, `close_batch`) keep their `SourceIngest` role and gate on
-/// this so `GraphWrite` is not silently required on top of it.
+/// Owner-space GRANT primitive (owner visibility + the space grant) WITHOUT any
+/// role check. Composed with [`authorize`] by [`authorize_action`]; verbs gate
+/// through `authorize_action`, not this directly. Keeping the grant check free
+/// of `action.required_role()` is what lets source-ingest writes carry
+/// `SourceIngest` without silently requiring `GraphWrite` on top of it.
 pub(crate) fn authorize_memory_grant(
     authz: &AuthzContext,
     principal: &Principal,
