@@ -1,14 +1,16 @@
+use crate::engine::{
+    GoalCreatePayloadWriteRequest, GoalDecomposeRequest, GoalMarkAchievedRequest,
+    GoalModifyRequest, GoalTargetSelf, GoalTransitionRequest,
+};
 use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 use crate::verbs::goal_write::{
-    AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
-    GoalAtomicContext, GoalAuthorship, GoalDraft, GoalEvidenceRef, GoalPayloadWrite, GoalState,
-    GoalWriteOutcome, IdempotencyKey, ModifyGoalAtomicRequest, OperatorKind, SystemOrigin,
-    TransitionGoalAtomicRequest,
+    ChildGoalDraft, GoalAuthorship, GoalEvidenceRef, GoalPayloadWrite, GoalState, GoalWriteOutcome,
+    IdempotencyKey, OperatorKind, SystemOrigin,
 };
 use crate::verbs::schema::PayloadKind;
 use crate::{
-    EdgeId, MemoryAction, MemoryId, ModelId, OperatorId, PersonalityInstanceId, PromptVersion,
-    SchemaId, SchemaVersion, ToolId,
+    EdgeId, ModelId, OperatorId, PersonalityInstanceId, PromptVersion, SchemaId, SchemaVersion,
+    ToolId,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -228,39 +230,31 @@ impl McpTool for CoreGoalTool {
 }
 
 async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput, McpToolError> {
-    authorize_goal_write(&ctx)?;
     let payload = encode_goal_payload(&ctx, args.payload)?;
     let evidence = resolve_evidence(&ctx, &args.evidence)?;
-    let target_self = target_self_perspective(&ctx, args.target_personality.as_deref()).await?;
+    let target_self = target_self_perspective(&ctx, args.target_personality.as_deref())?;
     let request_id = IdempotencyKey::optional_or_generated("goal_set", args.idempotency_key)
         .map_err(McpToolError::InvalidInput)?;
     let authorship = system_operator_authorship(&ctx, "goal_set")?;
-    let draft = GoalDraft {
-        principal: ctx.owner.clone(),
-        schema_id: payload.schema_id.clone(),
-        schema_version: payload.schema_version,
-        title: payload.title.clone(),
-        text: payload.text.clone(),
-        payload: payload.payload.clone(),
-        sidecar_payload: payload.sidecar_payload.clone(),
-        state: GoalState::Active,
-        parent_goal_ids: Vec::new(),
-        supersedes_goal_id: None,
-        authorship,
-        request_id: request_id.into_string(),
-    };
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-    let outcome = storage
-        .create_goal_atomic(&CreateGoalAtomicRequest {
-            draft,
-            context: goal_atomic_context(&ctx),
-            target_self_perspective_id: target_self,
-            evidence,
-        })
+    let engine = ctx
+        .engine()
+        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let outcome = engine
+        .create_goal_from_payload_write(
+            &ctx.authz,
+            &GoalCreatePayloadWriteRequest {
+                principal: ctx.owner.clone(),
+                target_self,
+                payload,
+                request_id,
+                evidence,
+                parent_goal_ids: Vec::new(),
+                authorship,
+                author_self_perspective_id: ctx.caller_self_perspective,
+            },
+        )
         .await
-        .map_err(McpToolError::Storage)?;
+        .map_err(McpToolError::Protocol)?;
     Ok(format_goal_write_output(&ctx, outcome))
 }
 
@@ -288,7 +282,6 @@ async fn goal_transition(
     ctx: McpToolCtx,
     args: GoalTransitionArgs,
 ) -> Result<GoalWriteOutput, McpToolError> {
-    authorize_goal_write(&ctx)?;
     let prior = ctx.resolve_goal(&args.goal)?;
     let next_state = match args.transition {
         GoalTransition::Pause => GoalState::Paused,
@@ -297,20 +290,23 @@ async fn goal_transition(
     };
     let request_id = IdempotencyKey::optional_or_generated("goal_transition", args.idempotency_key)
         .map_err(McpToolError::InvalidInput)?;
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-    let outcome = storage
-        .transition_goal_atomic(&TransitionGoalAtomicRequest {
-            owner: ctx.owner.clone(),
-            prior_goal_id: prior,
-            next_state,
-            authorship: GoalAuthorship::User,
-            request_id,
-            context: goal_atomic_context(&ctx),
-        })
+    let engine = ctx
+        .engine()
+        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let outcome = engine
+        .transition_goal(
+            &ctx.authz,
+            &GoalTransitionRequest {
+                principal: ctx.owner.clone(),
+                prior_goal_id: prior,
+                next_state,
+                authorship: GoalAuthorship::User,
+                request_id,
+                author_self_perspective_id: ctx.caller_self_perspective,
+            },
+        )
         .await
-        .map_err(McpToolError::Storage)?;
+        .map_err(McpToolError::Protocol)?;
     Ok(format_goal_write_output(&ctx, outcome))
 }
 
@@ -332,7 +328,6 @@ async fn goal_mark_achieved(
     ctx: McpToolCtx,
     args: GoalMarkAchievedArgs,
 ) -> Result<GoalWriteOutput, McpToolError> {
-    authorize_goal_write(&ctx)?;
     if args.evidence.is_empty() {
         return Err(McpToolError::InvalidInput(
             "evidence must contain at least one memory handle".into(),
@@ -343,22 +338,25 @@ async fn goal_mark_achieved(
     let request_id =
         IdempotencyKey::optional_or_generated("goal_mark_achieved", args.idempotency_key)
             .map_err(McpToolError::InvalidInput)?;
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-    let outcome = storage
-        .achieve_goal_atomic(&AchieveGoalAtomicRequest {
-            owner: ctx.owner.clone(),
-            prior_goal_id: prior,
-            authorship: GoalAuthorship::System(SystemOrigin::Tool {
-                tool_id: ToolId::new(CORE_GOAL_MARK_ACHIEVED_SCOPE_KEY),
-            }),
-            request_id,
-            context: goal_atomic_context(&ctx),
-            evidence,
-        })
+    let engine = ctx
+        .engine()
+        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let outcome = engine
+        .mark_goal_achieved(
+            &ctx.authz,
+            &GoalMarkAchievedRequest {
+                principal: ctx.owner.clone(),
+                prior_goal_id: prior,
+                authorship: GoalAuthorship::System(SystemOrigin::Tool {
+                    tool_id: ToolId::new(CORE_GOAL_MARK_ACHIEVED_SCOPE_KEY),
+                }),
+                request_id,
+                evidence,
+                author_self_perspective_id: ctx.caller_self_perspective,
+            },
+        )
         .await
-        .map_err(McpToolError::Storage)?;
+        .map_err(McpToolError::Protocol)?;
     Ok(format_goal_write_output(&ctx, outcome))
 }
 
@@ -382,7 +380,6 @@ async fn goal_modify(
     ctx: McpToolCtx,
     args: GoalModifyArgs,
 ) -> Result<GoalWriteOutput, McpToolError> {
-    authorize_goal_write(&ctx)?;
     let prior = ctx.resolve_goal(&args.goal)?;
     let payload = encode_goal_payload(&ctx, args.payload)?;
     let evidence = args
@@ -392,21 +389,24 @@ async fn goal_modify(
         .transpose()?;
     let request_id = IdempotencyKey::optional_or_generated("goal_modify", args.idempotency_key)
         .map_err(McpToolError::InvalidInput)?;
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-    let outcome = storage
-        .modify_goal_atomic(&ModifyGoalAtomicRequest {
-            owner: ctx.owner.clone(),
-            prior_goal_id: prior,
-            replacement: payload,
-            authorship: GoalAuthorship::User,
-            request_id,
-            context: goal_atomic_context(&ctx),
-            evidence,
-        })
+    let engine = ctx
+        .engine()
+        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let outcome = engine
+        .modify_goal(
+            &ctx.authz,
+            &GoalModifyRequest {
+                principal: ctx.owner.clone(),
+                prior_goal_id: prior,
+                replacement: payload,
+                authorship: GoalAuthorship::User,
+                request_id,
+                evidence,
+                author_self_perspective_id: ctx.caller_self_perspective,
+            },
+        )
         .await
-        .map_err(McpToolError::Storage)?;
+        .map_err(McpToolError::Protocol)?;
     Ok(format_goal_write_output(&ctx, outcome))
 }
 
@@ -452,7 +452,6 @@ async fn goal_decompose(
     ctx: McpToolCtx,
     args: GoalDecomposeArgs,
 ) -> Result<GoalDecomposeOutput, McpToolError> {
-    authorize_goal_write(&ctx)?;
     if args.children.is_empty() {
         return Err(McpToolError::InvalidInput(
             "children must contain at least one child goal".into(),
@@ -464,7 +463,7 @@ async fn goal_decompose(
         )));
     }
     let parent = ctx.resolve_goal(&args.parent_goal)?;
-    let target_self = target_self_perspective(&ctx, args.target_personality.as_deref()).await?;
+    let target_self = target_self_perspective(&ctx, args.target_personality.as_deref())?;
     let root_key = IdempotencyKey::new(args.idempotency_key).map_err(McpToolError::InvalidInput)?;
     let mut children = Vec::with_capacity(args.children.len());
     for (index, child) in args.children.into_iter().enumerate() {
@@ -476,22 +475,25 @@ async fn goal_decompose(
                 .map_err(McpToolError::InvalidInput)?,
         });
     }
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-    let outcome = storage
-        .decompose_goal_atomic(&DecomposeGoalAtomicRequest {
-            owner: ctx.owner.clone(),
-            parent_goal_id: parent,
-            authorship: GoalAuthorship::System(SystemOrigin::Tool {
-                tool_id: ToolId::new(CORE_GOAL_DECOMPOSE_SCOPE_KEY),
-            }),
-            context: goal_atomic_context(&ctx),
-            target_self_perspective_id: target_self,
-            children,
-        })
+    let engine = ctx
+        .engine()
+        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let outcome = engine
+        .decompose_goal(
+            &ctx.authz,
+            &GoalDecomposeRequest {
+                principal: ctx.owner.clone(),
+                parent_goal_id: parent,
+                authorship: GoalAuthorship::System(SystemOrigin::Tool {
+                    tool_id: ToolId::new(CORE_GOAL_DECOMPOSE_SCOPE_KEY),
+                }),
+                target_self,
+                children,
+                author_self_perspective_id: ctx.caller_self_perspective,
+            },
+        )
         .await
-        .map_err(McpToolError::Storage)?;
+        .map_err(McpToolError::Protocol)?;
     Ok(GoalDecomposeOutput {
         parent_goal: ctx.format_goal(parent),
         children: outcome
@@ -501,18 +503,6 @@ async fn goal_decompose(
             .collect(),
         idempotent_replay: outcome.idempotent_replay,
     })
-}
-
-fn authorize_goal_write(ctx: &McpToolCtx) -> Result<(), McpToolError> {
-    if !ctx
-        .authz
-        .allows_memory_action(&ctx.owner, MemoryAction::Write)
-    {
-        return Err(
-            crate::error::ProtocolError::forbidden("requires memory.write on owner").into(),
-        );
-    }
-    Ok(())
 }
 
 fn encode_goal_payload(
@@ -588,34 +578,24 @@ fn resolve_evidence(
         .collect()
 }
 
-async fn target_self_perspective(
+fn target_self_perspective(
     ctx: &McpToolCtx,
     target_personality: Option<&str>,
-) -> Result<MemoryId, McpToolError> {
+) -> Result<GoalTargetSelf, McpToolError> {
     match target_personality {
         Some(handle) => {
             let instance_id = ctx.resolve_personality(handle)?;
-            personality_root(ctx, instance_id).await
+            Ok(GoalTargetSelf::Personality(instance_id))
         }
-        None => ctx.caller_self_perspective.ok_or_else(|| {
-            McpToolError::InvalidInput(
-                "target_personality or caller_self_perspective is required".into(),
-            )
-        }),
+        None => ctx
+            .caller_self_perspective
+            .map(GoalTargetSelf::SelfPerspective)
+            .ok_or_else(|| {
+                McpToolError::InvalidInput(
+                    "target_personality or caller_self_perspective is required".into(),
+                )
+            }),
     }
-}
-
-async fn personality_root(
-    ctx: &McpToolCtx,
-    instance_id: PersonalityInstanceId,
-) -> Result<MemoryId, McpToolError> {
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-    storage
-        .active_personality_root(&ctx.owner, instance_id)
-        .await?
-        .ok_or_else(|| McpToolError::InvalidInput("target personality not found".into()))
 }
 
 fn system_operator_authorship(
@@ -637,14 +617,6 @@ fn system_operator_authorship(
         prompt_version: PromptVersion::new(prompt_version),
         personality_instance_id: PersonalityInstanceId::new(pid),
     }))
-}
-
-fn goal_atomic_context(ctx: &McpToolCtx) -> GoalAtomicContext<'_> {
-    GoalAtomicContext {
-        registry: &ctx.registry,
-        embedding_model_id: None,
-        author_self_perspective_id: ctx.caller_self_perspective,
-    }
 }
 
 fn format_goal_write_output(ctx: &McpToolCtx, outcome: GoalWriteOutcome) -> GoalWriteOutput {
