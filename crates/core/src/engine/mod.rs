@@ -103,8 +103,13 @@ fn map_set_wake_entries_storage_err(
 }
 
 impl Engine {
+    /// Storage handle, restricted to the engine module so the MCP tool layer
+    /// cannot reach storage directly — every owner-scoped operation must go
+    /// through an engine verb that runs the authz pipeline. Sealing this is what
+    /// makes the old "tool authorizes itself then hits storage" pattern
+    /// structurally non-reintroducible (it stops compiling).
     #[must_use]
-    pub(crate) fn storage(&self) -> &StorageHandle {
+    pub(in crate::engine) fn storage(&self) -> &StorageHandle {
         &self.storage
     }
 
@@ -283,35 +288,12 @@ pub(crate) fn authorize(
     Ok(())
 }
 
-/// The single owner-space gate for every engine verb: the operation's explicit
-/// `role` AND the owner-space `action` grant, with NO coupling between them.
-/// `role` is the engine-layer authority; the grant layers on top and never
-/// re-imposes `action.required_role()`.
-///
-/// This is the only authorization gate at the verb layer, so the `(role,
-/// action)` pair is always visible at the call site — source-ingest writes pass
-/// `Role::SourceIngest`, graph writes `Role::GraphWrite`, reads
-/// `Role::GraphRead`, the admin surface `Role::Admin`. Decoupling the two axes
-/// is load-bearing: a source-ingest verb must NOT be forced to require
-/// `GraphWrite` merely because `MemoryAction::Write.required_role()` is
-/// `GraphWrite`. There is deliberately no `action`-only variant that derives the
-/// role from the action — that coupling is the regression this gate prevents.
-#[expect(dead_code, reason = "kept for the follow-up task that deletes it")]
-pub(crate) fn authorize_action(
-    authz: &AuthzContext,
-    principal: &Principal,
-    role: Role,
-    action: MemoryAction,
-) -> Result<(), ProtocolError> {
-    authorize(authz, principal, role)?;
-    authorize_memory_grant(authz, principal, action)
-}
-
 /// Owner-space GRANT primitive (owner visibility + the space grant) WITHOUT any
-/// role check. Composed with [`authorize`] by [`authorize_action`]; verbs gate
-/// through `authorize_action`, not this directly. Keeping the grant check free
-/// of `action.required_role()` is what lets source-ingest writes carry
-/// `SourceIngest` without silently requiring `GraphWrite` on top of it.
+/// role check. Composed with [`authorize`] by the `authorize_request` pipeline
+/// (`engine::pipeline`); verbs gate through `authorize_request`, not this
+/// directly. Keeping the grant check free of `action.required_role()` is what
+/// lets source-ingest writes carry `SourceIngest` without silently requiring
+/// `GraphWrite` on top of it.
 pub(crate) fn authorize_memory_grant(
     authz: &AuthzContext,
     principal: &Principal,
