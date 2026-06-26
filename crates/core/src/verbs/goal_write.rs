@@ -5,8 +5,8 @@
 //! storage-side body lives in proxima-storage-pg.
 
 use crate::{
-    GoalId, MemoryId, ModelId, OperatorId, Owner, PersonalityInstanceId, Principal, PromptVersion,
-    SchemaId, SchemaVersion, SidecarPayload, ToolId,
+    GoalId, GoalPayload, MemoryId, ModelId, OperatorId, Owner, PersonalityInstanceId, Principal,
+    PromptVersion, SchemaId, SchemaVersion, SidecarPayload, ToolId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, sqlx::Type)]
@@ -62,6 +62,17 @@ pub enum GoalAuthorship {
     External,
 }
 
+pub const MAX_GOAL_TITLE_CHARS: usize = 240;
+pub const MAX_GOAL_TEXT_CHARS: usize = 20_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum GoalWriteBuildError {
+    #[error("goal title must be 1..={MAX_GOAL_TITLE_CHARS} chars")]
+    InvalidTitle,
+    #[error("goal text must be 1..={MAX_GOAL_TEXT_CHARS} chars")]
+    InvalidText,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalDraft {
     pub principal: Principal,
@@ -80,6 +91,31 @@ pub struct GoalDraft {
 }
 
 impl GoalDraft {
+    /// Build an Active Goal draft from an already-encoded typed payload.
+    #[must_use]
+    pub fn active_from_payload_write(
+        principal: Principal,
+        payload: GoalPayloadWrite,
+        parent_goal_ids: Vec<GoalId>,
+        authorship: GoalAuthorship,
+        request_id: IdempotencyKey,
+    ) -> Self {
+        Self {
+            principal,
+            schema_id: payload.schema_id,
+            schema_version: payload.schema_version,
+            title: payload.title,
+            text: payload.text,
+            payload: payload.payload,
+            sidecar_payload: payload.sidecar_payload,
+            state: GoalState::Active,
+            parent_goal_ids,
+            supersedes_goal_id: None,
+            authorship,
+            request_id: request_id.into_string(),
+        }
+    }
+
     /// The storage `Owner` (= principal) for this draft.
     #[must_use]
     pub fn owner(&self) -> Owner {
@@ -164,6 +200,135 @@ pub struct GoalPayloadWrite {
     pub text: String,
     pub payload: Vec<u8>,
     pub sidecar_payload: Option<SidecarPayload>,
+}
+
+impl GoalPayloadWrite {
+    /// Encode a typed [`GoalPayload`] for `GoalWrite` without exposing
+    /// storage table shape to host applications.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GoalWriteBuildError::InvalidTitle`] when `title` is
+    /// blank after trimming or exceeds [`MAX_GOAL_TITLE_CHARS`]. Returns
+    /// [`GoalWriteBuildError::InvalidText`] when `text` is blank after
+    /// trimming or exceeds [`MAX_GOAL_TEXT_CHARS`].
+    pub fn from_payload<P>(
+        title: impl AsRef<str>,
+        text: impl AsRef<str>,
+        payload: P,
+    ) -> Result<Self, GoalWriteBuildError>
+    where
+        P: GoalPayload,
+    {
+        let title = normalize_goal_display_field(
+            title.as_ref(),
+            MAX_GOAL_TITLE_CHARS,
+            GoalWriteBuildError::InvalidTitle,
+        )?;
+        let text = normalize_goal_display_field(
+            text.as_ref(),
+            MAX_GOAL_TEXT_CHARS,
+            GoalWriteBuildError::InvalidText,
+        )?;
+        let key = payload.goal_key();
+        Ok(Self {
+            schema_id: P::schema_id(),
+            schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
+            title,
+            text,
+            payload: key,
+            sidecar_payload: Some(SidecarPayload::goal(payload)),
+        })
+    }
+}
+
+fn normalize_goal_display_field(
+    value: &str,
+    max_chars: usize,
+    err: GoalWriteBuildError,
+) -> Result<String, GoalWriteBuildError> {
+    let trimmed = value.trim();
+    let count = trimmed.chars().count();
+    if count == 0 || count > max_chars {
+        return Err(err);
+    }
+    Ok(trimmed.to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalCreateRequest<P> {
+    pub principal: Principal,
+    pub target_self_perspective_id: MemoryId,
+    pub title: String,
+    pub text: String,
+    pub payload: P,
+    pub request_id: IdempotencyKey,
+    pub evidence: Vec<GoalEvidenceRef>,
+    pub parent_goal_ids: Vec<GoalId>,
+    pub authorship: GoalAuthorship,
+    pub author_self_perspective_id: Option<MemoryId>,
+}
+
+impl<P> GoalCreateRequest<P> {
+    /// Product/app Active Goal create request for an authenticated
+    /// user flow.
+    ///
+    /// Defaults to [`GoalAuthorship::User`]: the product UX is acting
+    /// for the signed-in owner. Use [`Self::with_authorship`] for
+    /// system-originated goals.
+    ///
+    /// `target_self_perspective_id` is explicit by design: current
+    /// Proxima Goal assignment is a `Goal --core/inspires--> Self`
+    /// edge, not an unassigned owner-scoped row.
+    #[must_use]
+    pub fn product(
+        principal: Principal,
+        target_self_perspective_id: MemoryId,
+        request_id: IdempotencyKey,
+        title: impl Into<String>,
+        text: impl Into<String>,
+        payload: P,
+    ) -> Self {
+        Self {
+            principal,
+            target_self_perspective_id,
+            title: title.into(),
+            text: text.into(),
+            payload,
+            request_id,
+            evidence: Vec::new(),
+            parent_goal_ids: Vec::new(),
+            authorship: GoalAuthorship::User,
+            author_self_perspective_id: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_evidence(mut self, evidence: Vec<GoalEvidenceRef>) -> Self {
+        self.evidence = evidence;
+        self
+    }
+
+    #[must_use]
+    pub fn with_parent_goal(mut self, parent_goal_id: GoalId) -> Self {
+        self.parent_goal_ids.push(parent_goal_id);
+        self
+    }
+
+    #[must_use]
+    pub fn with_authorship(mut self, authorship: GoalAuthorship) -> Self {
+        self.authorship = authorship;
+        self
+    }
+
+    #[must_use]
+    pub fn with_author_self_perspective_id(
+        mut self,
+        author_self_perspective_id: Option<MemoryId>,
+    ) -> Self {
+        self.author_self_perspective_id = author_self_perspective_id;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
