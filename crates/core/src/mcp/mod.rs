@@ -145,13 +145,6 @@ impl McpToolCtx {
         self.engine.as_deref()
     }
 
-    /// Convenience: storage handle bound to the engine. Same scope as
-    /// `engine()` — only available when an engine is attached.
-    #[must_use]
-    pub fn storage(&self) -> Option<&dyn crate::Storage> {
-        self.engine.as_ref().map(|e| &**e.storage())
-    }
-
     #[must_use]
     pub fn extension<T>(&self) -> Option<Arc<T>>
     where
@@ -1170,7 +1163,7 @@ mod ctx_engine_tests {
     use std::sync::Arc;
 
     #[tokio::test]
-    async fn ctx_storage_returns_none_when_engine_unwired() {
+    async fn ctx_engine_returns_none_when_unwired() {
         let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
         let ctx = McpToolCtx {
             owner: owner.clone(),
@@ -1190,12 +1183,11 @@ mod ctx_engine_tests {
             extensions: McpToolExtensions::default(),
             engine: None,
         };
-        assert!(ctx.storage().is_none());
         assert!(ctx.engine().is_none());
     }
 
     #[tokio::test]
-    async fn ctx_storage_returns_some_when_engine_wired() {
+    async fn ctx_engine_returns_some_when_wired() {
         let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
         let engine = Arc::new(Engine::new(FlavorRegistry::new().freeze()));
         let ctx = McpToolCtx {
@@ -1217,6 +1209,5 @@ mod ctx_engine_tests {
             engine: Some(engine.clone()),
         };
         assert!(ctx.engine().is_some());
-        assert!(ctx.storage().is_some());
     }
 }
