@@ -19,11 +19,11 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when `authz` cannot access the request Owner
-    /// or lacks `graph_write`; `UnknownSchema` when the typed
-    /// [`GoalPayload`] schema is not registered as a Goal; `InvalidArgument`
-    /// for malformed title/text/evidence/parent references; or `Internal`
-    /// for storage failures.
+    /// Returns `Forbidden` when `authz` cannot access the request Owner,
+    /// lacks `graph_write`, or lacks a `memory.write` grant on the owner space;
+    /// `UnknownSchema` when the typed [`GoalPayload`] schema is not registered
+    /// as a Goal; `InvalidArgument` for malformed title/text/evidence/parent
+    /// references; or `Internal` for storage failures.
     pub async fn create_goal<P>(
         &self,
         authz: &AuthzContext,
@@ -33,7 +33,7 @@ impl Engine {
         P: GoalPayload,
     {
         super::authorize(authz, &request.principal, Role::GraphWrite)?;
-        super::authorize_memory_action(authz, &request.principal, MemoryAction::Write)?;
+        super::authorize_memory_grant(authz, &request.principal, MemoryAction::Write)?;
 
         let GoalCreateRequest {
             principal,

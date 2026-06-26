@@ -385,12 +385,15 @@ impl AuthzContext {
         principal
     }
 
+    /// Owner-space GRANT check: owner visibility plus the space's grant for
+    /// `action`, WITHOUT the role gate. The role an operation requires is
+    /// enforced separately at the verb (see `engine::authorize`). Source-ingest
+    /// write paths keep their `SourceIngest` role and must not have `GraphWrite`
+    /// re-imposed via `action.required_role()`, so they gate on this rather than
+    /// on [`Self::allows_memory_action`].
     #[must_use]
-    pub fn allows_memory_action(&self, owner: &Owner, action: MemoryAction) -> bool {
+    pub fn allows_memory_grant(&self, owner: &Owner, action: MemoryAction) -> bool {
         if !self.identity.can_access_principal(owner) {
-            return false;
-        }
-        if !self.capabilities.roles.has(action.required_role()) {
             return false;
         }
         match &self.capabilities.memory_spaces {
@@ -401,6 +404,17 @@ impl AuthzContext {
                 .grant_for_owner(owner)
                 .is_some_and(|grant| grant.actions.allows(action)),
         }
+    }
+
+    /// Full owner-space action check: the grant ([`Self::allows_memory_grant`])
+    /// plus the action's default role (`action.required_role()`). Use where the
+    /// owner-space action is the sole authorization gate — graph reads and the
+    /// admin tool surface. Write paths that already enforce an explicit
+    /// operation role gate on [`Self::allows_memory_grant`] instead.
+    #[must_use]
+    pub fn allows_memory_action(&self, owner: &Owner, action: MemoryAction) -> bool {
+        self.capabilities.roles.has(action.required_role())
+            && self.allows_memory_grant(owner, action)
     }
 
     /// Self-scoped, full-capability context for trusted in-process
@@ -817,6 +831,89 @@ mod tests {
         assert!(ctx.allows_memory_action(&shared, MemoryAction::Read));
         assert!(ctx.allows_memory_action(&shared, MemoryAction::Search));
         assert!(!ctx.allows_memory_action(&shared, MemoryAction::Write));
+    }
+
+    #[test]
+    fn source_ingest_write_grant_passes_grant_check_without_graph_write_role() {
+        // A pure source-ingest identity: source_ingest only, NO graph_write.
+        let user = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let mut accessible_principals = HashSet::new();
+        accessible_principals.insert(user.clone());
+
+        let ctx = AuthzContext {
+            identity: Identity {
+                principal: user.clone(),
+                accessible_principals,
+                expires_at: None,
+                auth_epoch: 0,
+            },
+            capabilities: CapabilitySet {
+                tool_scope: ToolScope::All,
+                roles: RoleSet {
+                    graph_read: false,
+                    graph_write: false,
+                    source_ingest: true,
+                    admin: false,
+                },
+                memory_spaces: MemorySpaceGrants::explicit(vec![MemorySpaceGrant {
+                    key: "personal".into(),
+                    label: "Personal".into(),
+                    owner: user.clone(),
+                    actions: MemoryActionSet {
+                        search: false,
+                        read: false,
+                        write: true,
+                        publish: false,
+                        admin: false,
+                    },
+                }]),
+            },
+            auth_path: AuthPath::HostBearer,
+        };
+
+        // The grant-only gate passes: the write grant is present and the owner
+        // is visible. Source-ingest writes (event_ingest, persist_mcp_call,
+        // tombstone_fact, close_batch) use this, so they no longer demand
+        // graph_write on top of their SourceIngest role.
+        assert!(ctx.allows_memory_grant(&user, MemoryAction::Write));
+        // The full action gate still fails: Write's required role is
+        // graph_write, which this source-ingest identity lacks. Graph-write
+        // tool paths (derive/link/remember/goals) keep this stricter check.
+        assert!(!ctx.allows_memory_action(&user, MemoryAction::Write));
+    }
+
+    #[test]
+    fn grant_check_still_enforces_owner_visibility_and_missing_write_grant() {
+        let user = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let other = Principal::Group(crate::GroupId::new(uuid::Uuid::now_v7()));
+        let mut accessible_principals = HashSet::new();
+        accessible_principals.insert(user.clone());
+
+        let ctx = AuthzContext {
+            identity: Identity {
+                principal: user.clone(),
+                accessible_principals,
+                expires_at: None,
+                auth_epoch: 0,
+            },
+            capabilities: CapabilitySet {
+                tool_scope: ToolScope::All,
+                roles: RoleSet::all(),
+                memory_spaces: MemorySpaceGrants::explicit(vec![MemorySpaceGrant {
+                    key: "personal".into(),
+                    label: "Personal".into(),
+                    owner: user.clone(),
+                    actions: MemoryActionSet::read_only(),
+                }]),
+            },
+            auth_path: AuthPath::HostBearer,
+        };
+
+        // Grant-only still denies a read-only grant a write, and denies an
+        // owner the identity cannot access — visibility and grant are intact.
+        assert!(!ctx.allows_memory_grant(&user, MemoryAction::Write));
+        assert!(ctx.allows_memory_grant(&user, MemoryAction::Read));
+        assert!(!ctx.allows_memory_grant(&other, MemoryAction::Read));
     }
 
     #[test]
