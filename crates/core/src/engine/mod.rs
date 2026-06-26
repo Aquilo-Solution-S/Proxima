@@ -3,6 +3,7 @@
 
 mod builder;
 mod fact_retention;
+mod goal_write;
 mod ingest;
 pub mod mcp_listener;
 mod memory_authoring;

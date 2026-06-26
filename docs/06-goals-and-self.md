@@ -100,6 +100,23 @@ Supersession constraints:
 Lifecycle Facts are observations of Goal lifecycle writes. They do not
 replace Goal identity.
 
+Public Rust surface:
+
+| Caller | API | Notes |
+|---|---|---|
+| Embedded host / product app | `Engine::create_goal` + `GoalCreateRequest::product` | typed `GoalPayload`, stable `IdempotencyKey`, no table knowledge |
+| MCP client | `core_goal action=set` | tool-shaped JSON wrapper over the same storage atom |
+| Storage implementer | `CreateGoalAtomicRequest` | low-level atom; not the preferred host API |
+
+`GoalCreateRequest::product` defaults to `GoalAuthorship::User` because
+an embedded product flow writes on behalf of the authenticated owner.
+System-originated host flows may override authorship explicitly; External
+authorship still cannot seed concrete Goal state. The host must pass
+`target_self_perspective_id`; assignment is explicit because
+`active_goals(instance)` is defined through `core/inspires` edges to the
+Self Perspective. Simple owner-scoped, unassigned Goal creation remains
+out-of-scope until the Self query model changes.
+
 <a id="self--flavor-projection"></a>
 
 ## Self -- Flavor Projection

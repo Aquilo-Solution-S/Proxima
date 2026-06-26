@@ -51,6 +51,11 @@ pub use proxima_core::verbs::event_ingest::{
     AuthorizedCitationAttachment, CitationSpec, EventDraft, EventIngestOutcome,
     InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
+pub use proxima_core::verbs::goal_write::{
+    GoalAuthorship, GoalCreateRequest, GoalEvidenceRef, GoalPayloadWrite, GoalState,
+    GoalWriteBuildError, GoalWriteOutcome, IdempotencyKey, MAX_GOAL_TEXT_CHARS,
+    MAX_GOAL_TITLE_CHARS, OperatorKind, SystemOrigin,
+};
 pub use proxima_core::verbs::mcp_call_history::{
     MAX_MCP_CALL_HISTORY_LIMIT, McpCallHistoryRequest, McpCallHistoryResponse, McpCallRecord,
 };
@@ -64,10 +69,11 @@ pub use proxima_core::verbs::schema::PayloadKind;
 pub use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, CapabilitySet, CitationMappingPayload,
     CitedObjectPayload, Engine, EngineHandle, FactPayload, FlavorRegistry, GoalPayload, GroupId,
-    Identity, McpCallLogInput, McpCallLogOutcome, MemoryId, Owner, PerspectivePayload, Principal,
-    Role, RoleSet, SchemaId, SchemaVersion, SearchProjection, SearchProjectionColumnKind,
-    SearchProjectionField, SidecarPayload, SourceBatchId, SourceId, StorageError, ToolScope,
-    UserId, canonical_json_bytes, provider_safe_tool_name, proxima_flavor,
+    Identity, McpCallLogInput, McpCallLogOutcome, MemoryId, ModelId, OperatorId, Owner,
+    PersonalityInstanceId, PerspectivePayload, Principal, PromptVersion, Role, RoleSet, SchemaId,
+    SchemaVersion, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
+    SidecarPayload, SourceBatchId, SourceId, StorageError, ToolId, ToolScope, UserId,
+    canonical_json_bytes, provider_safe_tool_name, proxima_flavor,
 };
 pub use proxima_core::{
     AuthorDerivedEdgeInput, AuthorDerivedOutcome, AuthorDerivedRequestInput, AuthorshipKindMask,

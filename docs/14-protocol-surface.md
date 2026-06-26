@@ -157,9 +157,31 @@ Owner-scoped append or supersession of a Goal row (see
 |---|---|
 | schema | validates registered `GoalPayload` schema |
 | request id | `(Owner, request_id)` idempotency key |
-| replay | same body returns prior `GoalId`; different body returns conflict |
+| replay | same body and side-effect inputs return prior `GoalId`; drift returns conflict |
 | supersession | prior goal must be same Owner and current head |
 | log | success commits the Goal row and its `change_event` row |
+
+Embedded Rust hosts use the typed helper instead of table SQL:
+
+```rust
+let outcome = engine
+    .create_goal(
+        &authz,
+        GoalCreateRequest::product(
+            owner,
+            target_self_perspective_id,
+            IdempotencyKey::new("product:onboarding:initial-goal:1")?,
+            "Practice goal",
+            "Practice every weekday.",
+            ProductGoalPayload { external_goal_id },
+        ),
+    )
+    .await?;
+```
+
+Current create semantics assign every new Active Goal to an explicit
+Self Perspective by writing `Goal --core/inspires--> Perspective`.
+Unassigned owner-only Goal rows are not part of the public helper.
 
 ### EventIngest
 
