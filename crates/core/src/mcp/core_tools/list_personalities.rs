@@ -4,6 +4,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::MemoryAction;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::personality::PersonalityStatus;
 
@@ -34,6 +35,14 @@ pub(super) async fn list_personalities(
     ctx: McpToolCtx,
     args: ListPersonalitiesArgs,
 ) -> Result<ListPersonalitiesOutput, McpToolError> {
+    if !ctx
+        .authz
+        .allows_memory_action(&ctx.owner, MemoryAction::Admin)
+    {
+        return Err(
+            crate::error::ProtocolError::forbidden("requires memory.admin on owner").into(),
+        );
+    }
     let storage = ctx
         .storage()
         .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;

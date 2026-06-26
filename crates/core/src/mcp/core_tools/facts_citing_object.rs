@@ -3,6 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::MemoryAction;
 use crate::mcp::{McpToolCtx, McpToolError};
 
 use super::get_memory::{
@@ -26,6 +27,12 @@ pub(super) async fn facts_citing_object(
     ctx: McpToolCtx,
     args: FactsCitingObjectArgs,
 ) -> Result<FactsCitingObjectOutput, McpToolError> {
+    if !ctx
+        .authz
+        .allows_memory_action(&ctx.owner, MemoryAction::Read)
+    {
+        return Err(crate::error::ProtocolError::forbidden("requires memory.read on owner").into());
+    }
     let cited_object_id = parse_cited_object_id(&args.cited_object_id)?;
     let storage = ctx
         .storage()
@@ -49,6 +56,7 @@ pub(super) async fn facts_citing_object(
             Ok(GetMemoryOutput {
                 handle: handle.clone(),
                 memory: handle,
+                space: "current".into(),
                 kind: snapshot.kind,
                 schema_id: snapshot.schema_id.as_str().to_string(),
                 schema_version: snapshot.schema_version.into_inner(),

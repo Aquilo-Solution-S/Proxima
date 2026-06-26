@@ -1,5 +1,5 @@
 use super::Engine;
-use crate::authz::{AuthzContext, Role};
+use crate::authz::{AuthzContext, MemoryAction};
 use crate::error::ProtocolError;
 use crate::verbs::event_history::{
     EventHistoryRequest, EventHistoryResponse, MAX_EVENT_HISTORY_LIMIT,
@@ -42,7 +42,7 @@ impl Engine {
         authz: &AuthzContext,
         req: &QueryRequest,
     ) -> Result<QueryResponse, ProtocolError> {
-        super::authorize(authz, &req.principal, Role::GraphRead)?;
+        super::authorize_memory_action(authz, &req.principal, MemoryAction::Read)?;
         if req.limit == 0 {
             return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
         }
@@ -72,7 +72,7 @@ impl Engine {
         authz: &AuthzContext,
         req: &EdgeReadRequest,
     ) -> Result<EdgeReadResponse, ProtocolError> {
-        super::authorize(authz, &req.principal, Role::GraphRead)?;
+        super::authorize_memory_action(authz, &req.principal, MemoryAction::Read)?;
         if req.limit == 0 {
             return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
         }
@@ -93,7 +93,7 @@ impl Engine {
         authz: &AuthzContext,
         req: &EdgeExistsRequest,
     ) -> Result<EdgeExistsResponse, ProtocolError> {
-        super::authorize(authz, &req.principal, Role::GraphRead)?;
+        super::authorize_memory_action(authz, &req.principal, MemoryAction::Read)?;
         self.storage
             .edge_exists(req)
             .await
@@ -112,7 +112,7 @@ impl Engine {
         authz: &AuthzContext,
         req: &MemoryLineageRequest,
     ) -> Result<MemoryLineageResponse, ProtocolError> {
-        super::authorize(authz, &req.principal, Role::GraphRead)?;
+        super::authorize_memory_action(authz, &req.principal, MemoryAction::Read)?;
         self.storage
             .walk_memory_lineage(req)
             .await
@@ -133,7 +133,7 @@ impl Engine {
         authz: &AuthzContext,
         req: &EventHistoryRequest,
     ) -> Result<EventHistoryResponse, ProtocolError> {
-        super::authorize(authz, &req.principal, Role::GraphRead)?;
+        super::authorize_memory_action(authz, &req.principal, MemoryAction::Read)?;
         if req.limit == 0 {
             return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
         }
@@ -161,7 +161,7 @@ impl Engine {
         authz: &AuthzContext,
         req: &McpCallHistoryRequest,
     ) -> Result<McpCallHistoryResponse, ProtocolError> {
-        super::authorize(authz, &req.principal, Role::GraphRead)?;
+        super::authorize_memory_action(authz, &req.principal, MemoryAction::Read)?;
         if req.limit == 0 {
             return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
         }

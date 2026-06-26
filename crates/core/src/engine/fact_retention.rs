@@ -1,6 +1,6 @@
 use super::Engine;
 use crate::MemoryId;
-use crate::authz::{AuthzContext, Role};
+use crate::authz::{AuthzContext, MemoryAction, Role};
 use crate::error::ProtocolError;
 use crate::owner::Owner;
 use crate::sidecar_tables;
@@ -34,6 +34,7 @@ impl Engine {
         seconds: u64,
     ) -> Result<(), ProtocolError> {
         super::authorize(authz, owner, Role::Admin)?;
+        super::authorize_memory_action(authz, owner, MemoryAction::Admin)?;
         let seconds = retention_seconds_to_i64(seconds)?;
         let owner = authz.scoped_owner(owner.clone());
         self.storage
@@ -54,6 +55,7 @@ impl Engine {
         owner: &Owner,
     ) -> Result<Option<i64>, ProtocolError> {
         super::authorize(authz, owner, Role::Admin)?;
+        super::authorize_memory_action(authz, owner, MemoryAction::Admin)?;
         let owner = authz.scoped_owner(owner.clone());
         self.storage
             .get_fact_retention(&owner)
@@ -73,6 +75,7 @@ impl Engine {
         owner: &Owner,
     ) -> Result<bool, ProtocolError> {
         super::authorize(authz, owner, Role::Admin)?;
+        super::authorize_memory_action(authz, owner, MemoryAction::Admin)?;
         let owner = authz.scoped_owner(owner.clone());
         self.storage
             .clear_fact_retention(&owner)
@@ -93,6 +96,7 @@ impl Engine {
         owner: &Owner,
     ) -> Result<CleanupDueFactsOutcome, ProtocolError> {
         super::authorize(authz, owner, Role::Admin)?;
+        super::authorize_memory_action(authz, owner, MemoryAction::Admin)?;
         let owner = authz.scoped_owner(owner.clone());
         let fact_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Fact);
         let edge_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Edge);
@@ -128,6 +132,7 @@ impl Engine {
         fact_id: MemoryId,
     ) -> Result<TombstoneFactOutcome, ProtocolError> {
         super::authorize(authz, owner, Role::SourceIngest)?;
+        super::authorize_memory_action(authz, owner, MemoryAction::Write)?;
         let owner = authz.scoped_owner(owner.clone());
         let fact_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Fact);
         let edge_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Edge);

@@ -3,7 +3,7 @@ pub mod link;
 pub mod record_utterance;
 pub mod remember;
 pub mod search;
-mod util;
+pub(super) mod util;
 
 pub use derive::DeriveTool;
 pub use link::LinkTool;

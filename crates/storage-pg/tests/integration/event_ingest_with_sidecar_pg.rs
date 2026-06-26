@@ -10,8 +10,8 @@ use proxima_core::verbs::event_ingest::{
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
     AuthPath, AuthzContext, CapabilitySet, Engine, ErrorCode, FactPayload, FlavorRegistryFrozen,
-    Identity, Owner, PayloadKeyBuilder, Role, RoleSet, SchemaId, SchemaVersion, SourceBatchId,
-    SourceId, Storage, StorageError, ToolScope,
+    Identity, MemorySpaceGrants, Owner, PayloadKeyBuilder, Role, RoleSet, SchemaId, SchemaVersion,
+    SourceBatchId, SourceId, Storage, StorageError, ToolScope,
 };
 use proxima_storage_pg::verbs::event_ingest::{event_ingest_with_sidecar_atomic, ingest_fact};
 use uuid::Uuid;
@@ -112,6 +112,7 @@ fn reduced_authz(owner: &Owner) -> AuthzContext {
                 source_ingest: false,
                 admin: false,
             },
+            memory_spaces: MemorySpaceGrants::legacy(),
         },
         auth_path: AuthPath::System,
     }

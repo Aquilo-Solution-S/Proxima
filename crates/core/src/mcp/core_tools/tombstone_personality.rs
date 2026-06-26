@@ -4,12 +4,12 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::TombstonePersonalityRequest;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
     PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::{McpToolCtx, McpToolError};
+use crate::{MemoryAction, TombstonePersonalityRequest};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TombstonePersonalityArgs {
@@ -32,6 +32,14 @@ pub(super) async fn tombstone_personality(
     ctx: McpToolCtx,
     args: TombstonePersonalityArgs,
 ) -> Result<TombstonePersonalityOutput, McpToolError> {
+    if !ctx
+        .authz
+        .allows_memory_action(&ctx.owner, MemoryAction::Admin)
+    {
+        return Err(
+            crate::error::ProtocolError::forbidden("requires memory.admin on owner").into(),
+        );
+    }
     validate_confirm_gate(args.confirm, &args.expect_handle, &args.personality)?;
     let pid = ctx.resolve_personality(&args.personality)?;
     let engine = ctx

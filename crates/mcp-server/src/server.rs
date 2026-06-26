@@ -364,6 +364,7 @@ fn parse_memory_resource_path(path: &str, query: &[(&str, &str)]) -> Option<Pars
     Some(ParsedResource::Memory(GetMemoryArgs {
         memory: rest.to_string(),
         expand_neighbors: query_bool(query, "expand_neighbors"),
+        space: None,
     }))
 }
 

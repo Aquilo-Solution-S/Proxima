@@ -17,7 +17,7 @@ use futures::future::BoxFuture;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
-use crate::authz::{AuthzContext, Role};
+use crate::authz::{AuthzContext, MemoryAction, Role};
 use crate::error::ProtocolError;
 use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage::{StorageError, StorageHandle};
@@ -137,6 +137,7 @@ impl Engine {
         req: &SetWakeEntriesRequest,
     ) -> Result<SetWakeEntriesResponse, ProtocolError> {
         authorize(authz, &req.principal, Role::Admin)?;
+        authorize_memory_action(authz, &req.principal, MemoryAction::Admin)?;
         let effective = req.clone();
         crate::personality::validate_wake_entries_detect_config(&effective.entries)?;
         self.storage
@@ -247,6 +248,32 @@ pub(crate) fn authorize(
     }
     if !authz.capabilities.roles.has(role) {
         return Err(ProtocolError::forbidden(role.denied_message()));
+    }
+    Ok(())
+}
+
+pub(crate) fn authorize_memory_action(
+    authz: &AuthzContext,
+    principal: &Principal,
+    action: MemoryAction,
+) -> Result<(), ProtocolError> {
+    if !authz.identity.can_access_principal(principal) {
+        return Err(ProtocolError::forbidden(
+            "principal cannot access requested principal",
+        ));
+    }
+    let required_role = action.required_role();
+    if !authz.capabilities.roles.has(required_role) {
+        return Err(ProtocolError::forbidden(required_role.denied_message()));
+    }
+    if !authz.allows_memory_action(principal, action) {
+        return Err(ProtocolError::forbidden(match action {
+            MemoryAction::Search => "requires memory.search on owner",
+            MemoryAction::Read => "requires memory.read on owner",
+            MemoryAction::Write => "requires memory.write on owner",
+            MemoryAction::Publish => "requires memory.publish on owner",
+            MemoryAction::Admin => "requires memory.admin on owner",
+        }));
     }
     Ok(())
 }

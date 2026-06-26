@@ -4,13 +4,13 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::SetWakeEntriesRequest;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
     PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::core_tools::wake_entry_input::WakeEntryDraftInput;
 use crate::mcp::{McpToolCtx, McpToolError};
+use crate::{MemoryAction, SetWakeEntriesRequest};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetWakeEntriesArgs {
@@ -29,6 +29,14 @@ pub(super) async fn set_wake_entries(
     ctx: McpToolCtx,
     args: SetWakeEntriesArgs,
 ) -> Result<SetWakeEntriesOutput, McpToolError> {
+    if !ctx
+        .authz
+        .allows_memory_action(&ctx.owner, MemoryAction::Admin)
+    {
+        return Err(
+            crate::error::ProtocolError::forbidden("requires memory.admin on owner").into(),
+        );
+    }
     let pid = ctx.resolve_personality(&args.personality)?;
     let engine = ctx
         .engine()

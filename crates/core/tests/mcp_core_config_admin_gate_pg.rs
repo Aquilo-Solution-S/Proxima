@@ -3,7 +3,9 @@ mod common;
 use std::sync::Arc;
 
 use common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::authz::{AuthPath, AuthzContext, CapabilitySet, RoleSet, ToolScope};
+use proxima_core::authz::{
+    AuthPath, AuthzContext, CapabilitySet, MemorySpaceGrants, RoleSet, ToolScope,
+};
 use proxima_core::mcp::core_tools::add_wake_entry::AddWakeEntryArgs;
 use proxima_core::mcp::core_tools::personality::{CorePersonalityArgs, CorePersonalityTool};
 use proxima_core::mcp::core_tools::remove_wake_entry::RemoveWakeEntryArgs;
@@ -32,6 +34,7 @@ fn non_admin_authz(owner: &Owner) -> AuthzContext {
             source_ingest: false,
             admin: false,
         },
+        memory_spaces: MemorySpaceGrants::legacy(),
     };
     authz
 }

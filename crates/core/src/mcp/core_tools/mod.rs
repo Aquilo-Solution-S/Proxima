@@ -10,6 +10,7 @@ pub mod citation_of_fact;
 pub mod fact;
 pub mod facts_citing_object;
 pub mod payload;
+pub mod publish_memory;
 pub mod remove_wake_entry;
 pub mod search_memories;
 pub mod set_wake_entries;
@@ -29,6 +30,7 @@ pub mod list_schemas;
 pub mod list_substrate_tools;
 pub mod list_wake_entries;
 pub mod memory;
+pub mod memory_spaces;
 pub mod personality;
 pub mod set_read_scope;
 pub mod tombstone_fact;
@@ -40,11 +42,13 @@ pub use audit::{AuditEmit, emit_personality_config_changed};
 pub use fact::CoreFactTool;
 pub use goal::CoreGoalTool;
 pub use memory::{DeriveTool, LinkTool, RecordUtteranceTool, RememberTool};
+pub use memory_spaces::MemorySpacesTool;
 pub use payload::{
     PersonalityConfigChangedCaller, PersonalityConfigChangedSubject, PersonalityConfigChangedV1,
     PersonalityConfigChangedVerb,
 };
 pub use personality::CorePersonalityTool;
+pub use publish_memory::PublishMemoryTool;
 pub use search_memories::SearchMemoriesTool;
 pub use update_wake_entry::WakeEntryPatch;
 pub use wake::CoreWakeTool;
@@ -78,6 +82,8 @@ const DESTRUCTIVE_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
 /// Called from `FlavorRegistry::default()`.
 pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<SearchMemoriesTool>();
+    registry.add_substrate_mcp_tool::<MemorySpacesTool>();
+    registry.add_substrate_mcp_tool::<PublishMemoryTool>();
     registry.add_substrate_mcp_tool::<RememberTool>();
     registry.add_substrate_mcp_tool::<RecordUtteranceTool>();
     registry.add_substrate_mcp_tool::<DeriveTool>();

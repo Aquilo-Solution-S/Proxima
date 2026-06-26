@@ -1,8 +1,8 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::{
     AbstractionPayload, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
-    CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EndpointBinding, MemoryId, SchemaId,
-    SchemaVersion, SidecarPayload,
+    CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EndpointBinding, MemoryAction, MemoryId, Owner,
+    SchemaId, SchemaVersion, SidecarPayload,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,11 @@ pub struct DeriveArgs {
         description = "Optional stable idempotency key. Omit or null to derive one from model_id and body."
     )]
     pub idempotency_key: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Memory space key from core_memory_spaces. All handles in this call must belong to this space."
+    )]
+    pub space: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
@@ -113,6 +118,32 @@ impl McpTool for DeriveTool {
                     "source_handles must contain at most {MAX_SOURCE_HANDLES} handles"
                 )));
             }
+            let space = super::super::memory_spaces::resolve_space_owner(
+                &ctx,
+                args.space.as_deref(),
+                super::super::memory_spaces::SpaceDefault::Current,
+            )?;
+            if !ctx
+                .authz
+                .allows_memory_action(&space.owner, MemoryAction::Read)
+            {
+                return Err(crate::error::ProtocolError::forbidden(format!(
+                    "requires memory.read on space {}",
+                    space.key
+                ))
+                .into());
+            }
+            if !ctx
+                .authz
+                .allows_memory_action(&space.owner, MemoryAction::Write)
+            {
+                return Err(crate::error::ProtocolError::forbidden(format!(
+                    "requires memory.write on space {}",
+                    space.key
+                ))
+                .into());
+            }
+
             let mut seen_sources = std::collections::HashSet::with_capacity(
                 args.source_handles.len().min(MAX_SOURCE_HANDLES),
             );
@@ -125,7 +156,7 @@ impl McpTool for DeriveTool {
                 }
             }
 
-            let source_kinds = load_source_kinds(&ctx, &source_uuids).await?;
+            let source_kinds = load_source_kinds(&ctx, &space.owner, &source_uuids).await?;
 
             // Pre-validate provenance edge shapes against the relation's kind
             // masks so layering failures surface as LayeringViolation instead
@@ -163,7 +194,7 @@ impl McpTool for DeriveTool {
                     blake3::hash(body.as_bytes()).to_hex()
                 )
             });
-            let memory_id = derived_memory_id(&ctx.owner, args.kind.as_str(), &key);
+            let memory_id = derived_memory_id(&space.owner, args.kind.as_str(), &key);
             let sidecar = AgentDerivationV1 {
                 title: title.to_string(),
                 body: body.to_string(),
@@ -197,7 +228,7 @@ impl McpTool for DeriveTool {
             let outcome = engine
                 .author_derived(AuthorDerivedRequestInput {
                     memory_id,
-                    owner: ctx.owner.clone(),
+                    owner: space.owner.clone(),
                     kind: args.kind.to_entity_kind(),
                     text: body.to_string(),
                     schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
@@ -218,7 +249,7 @@ impl McpTool for DeriveTool {
             let provenance_edge_handles = if outcome.idempotent_replay || edges.is_empty() {
                 Vec::new()
             } else {
-                load_provenance_edge_handles(&ctx, memory_id, &source_uuids).await?
+                load_provenance_edge_handles(&ctx, &space.owner, memory_id, &source_uuids).await?
             };
 
             Ok(DeriveOutput {
@@ -235,6 +266,7 @@ impl McpTool for DeriveTool {
 
 async fn load_source_kinds(
     ctx: &McpToolCtx,
+    owner: &Owner,
     memory_ids: &[uuid::Uuid],
 ) -> Result<Vec<Option<crate::EntityKind>>, McpToolError> {
     let storage = ctx
@@ -245,7 +277,7 @@ async fn load_source_kinds(
         .copied()
         .map(MemoryId::new)
         .collect::<Vec<_>>();
-    let rows = storage.load_memory_kinds(&ctx.owner, &ids).await?;
+    let rows = storage.load_memory_kinds(owner, &ids).await?;
     let by_id = rows
         .into_iter()
         .map(|row| (row.memory_id.into_inner(), row.kind))
@@ -253,7 +285,9 @@ async fn load_source_kinds(
     let mut out = Vec::with_capacity(ids.len());
     for memory_id in memory_ids {
         let kind = by_id.get(memory_id).copied().ok_or_else(|| {
-            McpToolError::InvalidInput(format!("source memory {memory_id} not found for owner"))
+            McpToolError::InvalidInput(
+                "cross-space derive/link is not supported; choose one memory space".into(),
+            )
         })?;
         out.push(kind);
     }
@@ -275,6 +309,7 @@ fn derived_memory_id(owner: &crate::Owner, kind: &str, key: &str) -> uuid::Uuid 
 
 async fn load_provenance_edge_handles(
     ctx: &McpToolCtx,
+    owner: &Owner,
     memory_id: MemoryId,
     source_ids: &[uuid::Uuid],
 ) -> Result<Vec<String>, McpToolError> {
@@ -290,7 +325,7 @@ async fn load_provenance_edge_handles(
         .map(MemoryId::new)
         .collect::<Vec<_>>();
     let rows = storage
-        .load_memory_edge_ids(&ctx.owner, CORE_DERIVED_FROM_RELATION, memory_id, &targets)
+        .load_memory_edge_ids(owner, CORE_DERIVED_FROM_RELATION, memory_id, &targets)
         .await?;
     Ok(rows
         .into_iter()

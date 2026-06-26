@@ -7,8 +7,8 @@ use crate::verbs::goal_write::{
 };
 use crate::verbs::schema::PayloadKind;
 use crate::{
-    EdgeId, MemoryId, ModelId, OperatorId, PersonalityInstanceId, PromptVersion, SchemaId,
-    SchemaVersion, ToolId,
+    EdgeId, MemoryAction, MemoryId, ModelId, OperatorId, PersonalityInstanceId, PromptVersion,
+    SchemaId, SchemaVersion, ToolId,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -228,6 +228,7 @@ impl McpTool for CoreGoalTool {
 }
 
 async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput, McpToolError> {
+    authorize_goal_write(&ctx)?;
     let payload = encode_goal_payload(&ctx, args.payload)?;
     let evidence = resolve_evidence(&ctx, &args.evidence)?;
     let target_self = target_self_perspective(&ctx, args.target_personality.as_deref()).await?;
@@ -287,6 +288,7 @@ async fn goal_transition(
     ctx: McpToolCtx,
     args: GoalTransitionArgs,
 ) -> Result<GoalWriteOutput, McpToolError> {
+    authorize_goal_write(&ctx)?;
     let prior = ctx.resolve_goal(&args.goal)?;
     let next_state = match args.transition {
         GoalTransition::Pause => GoalState::Paused,
@@ -330,6 +332,7 @@ async fn goal_mark_achieved(
     ctx: McpToolCtx,
     args: GoalMarkAchievedArgs,
 ) -> Result<GoalWriteOutput, McpToolError> {
+    authorize_goal_write(&ctx)?;
     if args.evidence.is_empty() {
         return Err(McpToolError::InvalidInput(
             "evidence must contain at least one memory handle".into(),
@@ -379,6 +382,7 @@ async fn goal_modify(
     ctx: McpToolCtx,
     args: GoalModifyArgs,
 ) -> Result<GoalWriteOutput, McpToolError> {
+    authorize_goal_write(&ctx)?;
     let prior = ctx.resolve_goal(&args.goal)?;
     let payload = encode_goal_payload(&ctx, args.payload)?;
     let evidence = args
@@ -448,6 +452,7 @@ async fn goal_decompose(
     ctx: McpToolCtx,
     args: GoalDecomposeArgs,
 ) -> Result<GoalDecomposeOutput, McpToolError> {
+    authorize_goal_write(&ctx)?;
     if args.children.is_empty() {
         return Err(McpToolError::InvalidInput(
             "children must contain at least one child goal".into(),
@@ -496,6 +501,18 @@ async fn goal_decompose(
             .collect(),
         idempotent_replay: outcome.idempotent_replay,
     })
+}
+
+fn authorize_goal_write(ctx: &McpToolCtx) -> Result<(), McpToolError> {
+    if !ctx
+        .authz
+        .allows_memory_action(&ctx.owner, MemoryAction::Write)
+    {
+        return Err(
+            crate::error::ProtocolError::forbidden("requires memory.write on owner").into(),
+        );
+    }
+    Ok(())
 }
 
 fn encode_goal_payload(

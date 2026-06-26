@@ -63,6 +63,7 @@ Hard deletion must not reopen ingest.
 | operation identity | uuidv7 operation id, owner/scope, requester |
 | timing | requested/completed timestamps |
 | outcome | `completed`, `refused`, `not-found`, `unauthorized` |
+| owner-space RBAC | grant administration and denials for `search/read/write/publish/admin` are audit-worthy controller events; personal-memory MCP calls should be logged metadata-only or redacted by host/admin policy, not copied into a shared audit payload |
 | counts | affected-row counts only |
 | refusal | structured reason and retention/legal citation |
 | forbidden content | deleted payloads, payload diffs, natural-person identifiers, decision trees |
@@ -70,6 +71,8 @@ Hard deletion must not reopen ingest.
 | retention | indefinite controller evidence |
 
 Audit survives `delete_owner` for the same Owner.
+
+Owner remains the storage and graph isolation primitive. Owner-space grants are an authorization layer above Owner: the host resolves which `(subject, Owner, action)` grants exist, and Core enforces the resolved grants at verb/tool entry. Grants never add org semantics to Core and never permit cross-owner edges.
 
 ## External side effects
 

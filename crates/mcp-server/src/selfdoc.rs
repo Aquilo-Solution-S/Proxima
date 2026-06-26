@@ -18,7 +18,7 @@ use std::fmt::Write as _;
 
 use proxima_core::mcp::McpTool;
 use proxima_core::mcp::core_tools::{
-    CoreGoalTool, DeriveTool, LinkTool, RememberTool, SearchMemoriesTool,
+    CoreGoalTool, DeriveTool, LinkTool, MemorySpacesTool, RememberTool, SearchMemoriesTool,
 };
 
 /// Canonical URI of the on-demand How-To resource.
@@ -56,6 +56,7 @@ struct Surface {
     derive: bool,
     link: bool,
     search: bool,
+    memory_spaces: bool,
     get_memory: bool,
     lineage: bool,
     list_edge_types: bool,
@@ -75,6 +76,7 @@ impl Surface {
             derive: has_tool(DeriveTool::NAME),
             link: has_tool(LinkTool::NAME),
             search: has_tool(SearchMemoriesTool::NAME),
+            memory_spaces: has_tool(MemorySpacesTool::NAME),
             get_memory: has_resource(RESOURCE_MEMORY),
             lineage: has_resource(RESOURCE_MEMORY_LINEAGE),
             list_edge_types: has_resource(RESOURCE_EDGE_TYPES),
@@ -125,6 +127,9 @@ pub fn build_instructions(
     }
 
     if s.remember || s.derive {
+        if s.memory_spaces {
+            out.push_str("In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_search_memories`, `core_get_memory`, and `core_publish_memory`. Omitted `space` preserves the current owner behavior for single-owner deployments. `core_publish_memory` v1 copies only `core/agent-note-v1`; flavor-specific publish is a host/flavor concern until typed replay is designed. ");
+        }
         if s.remember {
             out.push_str("`core_remember` appends a Fact (an observation). ");
         }
@@ -218,6 +223,9 @@ pub fn how_to_markdown(
     );
 
     push_law(&mut out, s);
+    if s.memory_spaces {
+        out.push_str("## Memory spaces\n\nIn multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_search_memories`, `core_get_memory`, and `core_publish_memory`. Omitted `space` preserves the current owner behavior for single-owner deployments. Space keys are selectors only; every write/read is re-authorized by the server. `core_publish_memory` v1 copies only `core/agent-note-v1`; flavor-specific publish is a host/flavor concern until typed replay is designed.\n\n");
+    }
     push_capture_table(&mut out, s);
     push_edges(&mut out, s);
     push_worked_example(&mut out, s);

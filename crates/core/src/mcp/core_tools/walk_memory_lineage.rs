@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::verbs::query::{MemoryLineageDirection, MemoryLineageRequest};
-use crate::{EdgeId, MemoryHandleClass, MemoryId};
+use crate::{EdgeId, MemoryAction, MemoryHandleClass, MemoryId};
 
 use super::get_memory::memory_class;
 
@@ -87,6 +87,12 @@ pub async fn walk_memory_lineage(
     ctx: McpToolCtx,
     args: WalkMemoryLineageArgs,
 ) -> Result<WalkMemoryLineageOutput, McpToolError> {
+    if !ctx
+        .authz
+        .allows_memory_action(&ctx.owner, MemoryAction::Read)
+    {
+        return Err(crate::error::ProtocolError::forbidden("requires memory.read on owner").into());
+    }
     let start = ctx.resolve_memory(&args.memory)?;
     let direction = MemoryLineageDirection::from(args.direction);
     let storage = ctx

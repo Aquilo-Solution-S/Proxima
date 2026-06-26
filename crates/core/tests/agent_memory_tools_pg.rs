@@ -1165,6 +1165,7 @@ async fn read_memory_prefixed(
         GetMemoryArgs {
             memory: memory.to_string(),
             expand_neighbors,
+            space: None,
         },
     )
     .await?;
