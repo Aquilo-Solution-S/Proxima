@@ -174,17 +174,6 @@ pub enum MemoryAction {
     Admin,
 }
 
-impl MemoryAction {
-    #[must_use]
-    pub const fn required_role(self) -> Role {
-        match self {
-            Self::Search | Self::Read => Role::GraphRead,
-            Self::Write | Self::Publish => Role::GraphWrite,
-            Self::Admin => Role::Admin,
-        }
-    }
-}
-
 #[expect(
     clippy::struct_excessive_bools,
     reason = "five independent owner-space actions; named fields keep grant checks readable"
@@ -393,8 +382,7 @@ impl AuthzContext {
     /// `action`, WITHOUT the role gate. The role an operation requires is
     /// enforced separately at the verb (see `engine::authorize`). Source-ingest
     /// write paths keep their `SourceIngest` role and must not have `GraphWrite`
-    /// re-imposed via `action.required_role()`, so they gate on this rather than
-    /// on [`Self::allows_memory_action`].
+    /// re-imposed by translating the memory action into a graph role.
     #[must_use]
     pub fn allows_memory_grant(&self, owner: &Owner, action: MemoryAction) -> bool {
         if !self.identity.can_access_principal(owner) {
@@ -408,17 +396,6 @@ impl AuthzContext {
                 .grant_for_owner(owner)
                 .is_some_and(|grant| grant.actions.allows(action)),
         }
-    }
-
-    /// Full owner-space action check: the grant ([`Self::allows_memory_grant`])
-    /// plus the action's default role (`action.required_role()`). Use where the
-    /// owner-space action is the sole authorization gate — graph reads and the
-    /// admin tool surface. Write paths that already enforce an explicit
-    /// operation role gate on [`Self::allows_memory_grant`] instead.
-    #[must_use]
-    pub fn allows_memory_action(&self, owner: &Owner, action: MemoryAction) -> bool {
-        self.capabilities.roles.has(action.required_role())
-            && self.allows_memory_grant(owner, action)
     }
 
     /// Self-scoped, full-capability context for trusted in-process
@@ -768,9 +745,18 @@ mod tests {
             auth_path: AuthPath::HostBearer,
         };
 
-        assert!(ctx.allows_memory_action(&personal, MemoryAction::Read));
-        assert!(!ctx.allows_memory_action(&shared, MemoryAction::Read));
-        assert!(!ctx.allows_memory_action(&shared, MemoryAction::Write));
+        assert!(
+            ctx.capabilities.roles.has(Role::GraphRead)
+                && ctx.allows_memory_grant(&personal, MemoryAction::Read)
+        );
+        assert!(
+            !(ctx.capabilities.roles.has(Role::GraphRead)
+                && ctx.allows_memory_grant(&shared, MemoryAction::Read))
+        );
+        assert!(
+            !(ctx.capabilities.roles.has(Role::GraphWrite)
+                && ctx.allows_memory_grant(&shared, MemoryAction::Write))
+        );
     }
 
     #[test]
@@ -800,8 +786,14 @@ mod tests {
             auth_path: AuthPath::HostBearer,
         };
 
-        assert!(!ctx.allows_memory_action(&hidden, MemoryAction::Read));
-        assert!(!ctx.allows_memory_action(&hidden, MemoryAction::Write));
+        assert!(
+            !(ctx.capabilities.roles.has(Role::GraphRead)
+                && ctx.allows_memory_grant(&hidden, MemoryAction::Read))
+        );
+        assert!(
+            !(ctx.capabilities.roles.has(Role::GraphWrite)
+                && ctx.allows_memory_grant(&hidden, MemoryAction::Write))
+        );
     }
 
     #[test]
@@ -832,9 +824,18 @@ mod tests {
             auth_path: AuthPath::HostBearer,
         };
 
-        assert!(ctx.allows_memory_action(&shared, MemoryAction::Read));
-        assert!(ctx.allows_memory_action(&shared, MemoryAction::Search));
-        assert!(!ctx.allows_memory_action(&shared, MemoryAction::Write));
+        assert!(
+            ctx.capabilities.roles.has(Role::GraphRead)
+                && ctx.allows_memory_grant(&shared, MemoryAction::Read)
+        );
+        assert!(
+            ctx.capabilities.roles.has(Role::GraphRead)
+                && ctx.allows_memory_grant(&shared, MemoryAction::Search)
+        );
+        assert!(
+            !(ctx.capabilities.roles.has(Role::GraphWrite)
+                && ctx.allows_memory_grant(&shared, MemoryAction::Write))
+        );
     }
 
     #[test]
@@ -880,10 +881,9 @@ mod tests {
         // tombstone_fact, close_batch) use this, so they no longer demand
         // graph_write on top of their SourceIngest role.
         assert!(ctx.allows_memory_grant(&user, MemoryAction::Write));
-        // The full action gate still fails: Write's required role is
-        // graph_write, which this source-ingest identity lacks. Graph-write
-        // tool paths (derive/link/remember/goals) keep this stricter check.
-        assert!(!ctx.allows_memory_action(&user, MemoryAction::Write));
+        // The role gate still fails: graph_write is absent. Graph-write tool
+        // paths (derive/link/remember/goals) keep that explicit role check.
+        assert!(!ctx.capabilities.roles.has(Role::GraphWrite));
     }
 
     #[test]

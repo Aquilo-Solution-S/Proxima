@@ -109,8 +109,8 @@ pub enum SpaceDefault {
 }
 
 /// Resolve a public space key to a server-issued Owner. The key is a selector
-/// only: callers must still check the returned Owner with
-/// `AuthzContext::allows_memory_action` for the concrete verb.
+/// only: callers must still check the returned Owner with the concrete verb's
+/// role gate plus `AuthzContext::allows_memory_grant`.
 ///
 /// # Errors
 ///
