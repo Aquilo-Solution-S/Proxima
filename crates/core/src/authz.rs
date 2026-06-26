@@ -5,6 +5,8 @@
 //! resulting [`AuthzContext`]. Companion to `auth.rs`, which now only
 //! carries credential material and auth failures.
 
+pub mod hooks;
+
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
@@ -18,6 +20,8 @@ use tokio::time::{Instant, Interval, Sleep};
 
 use crate::auth::{AuthError, Credentials};
 use crate::{Owner, Principal};
+
+pub use hooks::{AuthorizationHook, AuthzInput, AuthzOutcome, AuthzVeto, OwnerResolver};
 
 /// WHO: the authorization currency for owner scoping.
 #[derive(Debug, Clone, PartialEq)]
