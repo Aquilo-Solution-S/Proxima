@@ -1,15 +1,15 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::{
     AbstractionPayload, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
-    CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EndpointBinding, MemoryAction, MemoryId, Owner,
-    SchemaId, SchemaVersion, SidecarPayload,
+    CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, MemoryId, SchemaId, SchemaVersion,
+    SidecarPayload,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::AgentDerivationV1;
 
-use super::util::{memory_kind_for_edge, normalize_tags};
+use super::util::normalize_tags;
 
 const MAX_SOURCE_HANDLES: usize = 256;
 const DERIVED_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
@@ -123,27 +123,6 @@ impl McpTool for DeriveTool {
                 args.space.as_deref(),
                 super::super::memory_spaces::SpaceDefault::Current,
             )?;
-            if !ctx
-                .authz
-                .allows_memory_action(&space.owner, MemoryAction::Read)
-            {
-                return Err(crate::error::ProtocolError::forbidden(format!(
-                    "requires memory.read on space {}",
-                    space.key
-                ))
-                .into());
-            }
-            if !ctx
-                .authz
-                .allows_memory_action(&space.owner, MemoryAction::Write)
-            {
-                return Err(crate::error::ProtocolError::forbidden(format!(
-                    "requires memory.write on space {}",
-                    space.key
-                ))
-                .into());
-            }
-
             let mut seen_sources = std::collections::HashSet::with_capacity(
                 args.source_handles.len().min(MAX_SOURCE_HANDLES),
             );
@@ -156,35 +135,18 @@ impl McpTool for DeriveTool {
                 }
             }
 
-            let source_kinds = load_source_kinds(&ctx, &space.owner, &source_uuids).await?;
-
-            // Pre-validate provenance edge shapes against the relation's kind
-            // masks so layering failures surface as LayeringViolation instead
-            // of a storage constraint error from the edge append.
             let relation = if source_uuids.is_empty() {
                 None
             } else {
-                let relation = ctx
-                    .registry
-                    .resolve_relation(CORE_DERIVED_FROM_RELATION)
-                    .ok_or_else(|| {
-                        McpToolError::Other(format!(
-                            "relation {CORE_DERIVED_FROM_RELATION} not registered"
-                        ))
-                    })?;
-                for source_kind in &source_kinds {
-                    relation
-                        .descriptor
-                        .validate_edge_shape(
-                            args.kind.to_entity_kind().as_str(),
-                            EndpointBinding::Pin,
-                            memory_kind_for_edge(*source_kind).as_str(),
-                            EndpointBinding::Pin,
-                            EdgeAuthorshipKind::ExternalAgent.as_str(),
-                        )
-                        .map_err(McpToolError::LayeringViolation)?;
-                }
-                Some(relation)
+                Some(
+                    ctx.registry
+                        .resolve_relation(CORE_DERIVED_FROM_RELATION)
+                        .ok_or_else(|| {
+                            McpToolError::Other(format!(
+                                "relation {CORE_DERIVED_FROM_RELATION} not registered"
+                            ))
+                        })?,
+                )
             };
 
             let key = args.idempotency_key.clone().unwrap_or_else(|| {
@@ -210,12 +172,11 @@ impl McpTool for DeriveTool {
             let edges: Vec<_> = relation.map_or_else(Vec::new, |relation| {
                 source_uuids
                     .iter()
-                    .zip(source_kinds.iter().copied())
-                    .map(|(source_id, source_kind)| AuthorDerivedEdgeInput {
+                    .map(|source_id| AuthorDerivedEdgeInput {
                         relation,
                         source_kind: args.kind.to_entity_kind(),
                         source_memory_id: memory_id,
-                        target_kind: memory_kind_for_edge(source_kind),
+                        target_kind: crate::EntityKind::Fact,
                         target_memory_id: MemoryId::new(*source_id),
                         authorship_kind: EdgeAuthorshipKind::ExternalAgent,
                         authorship_owner_memory_id: ctx.caller_self_perspective,
@@ -226,36 +187,40 @@ impl McpTool for DeriveTool {
                 .engine()
                 .ok_or_else(|| McpToolError::InvalidInput("engine required".into()))?;
             let outcome = engine
-                .author_derived(AuthorDerivedRequestInput {
-                    memory_id,
-                    owner: space.owner.clone(),
-                    kind: args.kind.to_entity_kind(),
-                    text: body.to_string(),
-                    schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
-                    schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
-                    operator_kind: crate::MemoryOperatorKind::ExternalAgent,
-                    model_id: &args.model_id,
-                    prompt_version: "mcp-agent-v1",
-                    author_personality_instance_id: ctx.author.personality_instance_id,
-                    sidecar_payload: match args.kind {
-                        DerivedKind::Abstraction => SidecarPayload::abstraction(sidecar),
-                        DerivedKind::Perspective => SidecarPayload::perspective(sidecar),
+                .author_derived_authorized(
+                    &ctx.authz,
+                    AuthorDerivedRequestInput {
+                        memory_id,
+                        owner: space.owner.clone(),
+                        kind: args.kind.to_entity_kind(),
+                        text: body.to_string(),
+                        schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
+                        schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+                        operator_kind: crate::MemoryOperatorKind::ExternalAgent,
+                        model_id: &args.model_id,
+                        prompt_version: "mcp-agent-v1",
+                        author_personality_instance_id: ctx.author.personality_instance_id,
+                        sidecar_payload: match args.kind {
+                            DerivedKind::Abstraction => SidecarPayload::abstraction(sidecar),
+                            DerivedKind::Perspective => SidecarPayload::perspective(sidecar),
+                        },
+                        supersedes: None,
+                        edges: &edges,
                     },
-                    supersedes: None,
-                    edges: &edges,
-                })
-                .await?;
+                )
+                .await
+                .map_err(map_derive_authoring_error)?;
 
-            let provenance_edge_handles = if outcome.idempotent_replay || edges.is_empty() {
-                Vec::new()
-            } else {
-                load_provenance_edge_handles(&ctx, &space.owner, memory_id, &source_uuids).await?
-            };
+            let provenance_edge_handles = outcome
+                .edge_ids
+                .into_iter()
+                .map(|edge_id| ctx.format_edge(edge_id))
+                .collect();
 
             Ok(DeriveOutput {
                 handle: match args.kind {
-                    DerivedKind::Abstraction => ctx.format_abstraction_memory(memory_id),
-                    DerivedKind::Perspective => ctx.format_perspective_memory(memory_id),
+                    DerivedKind::Abstraction => ctx.format_abstraction_memory(outcome.memory_id),
+                    DerivedKind::Perspective => ctx.format_perspective_memory(outcome.memory_id),
                 },
                 idempotent_replay: outcome.idempotent_replay,
                 provenance_edge_handles,
@@ -264,34 +229,18 @@ impl McpTool for DeriveTool {
     }
 }
 
-async fn load_source_kinds(
-    ctx: &McpToolCtx,
-    owner: &Owner,
-    memory_ids: &[uuid::Uuid],
-) -> Result<Vec<Option<crate::EntityKind>>, McpToolError> {
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-    let ids = memory_ids
-        .iter()
-        .copied()
-        .map(MemoryId::new)
-        .collect::<Vec<_>>();
-    let rows = storage.load_memory_kinds(owner, &ids).await?;
-    let by_id = rows
-        .into_iter()
-        .map(|row| (row.memory_id.into_inner(), row.kind))
-        .collect::<std::collections::HashMap<_, _>>();
-    let mut out = Vec::with_capacity(ids.len());
-    for memory_id in memory_ids {
-        let kind = by_id.get(memory_id).copied().ok_or_else(|| {
-            McpToolError::InvalidInput(
-                "cross-space derive/link is not supported; choose one memory space".into(),
-            )
-        })?;
-        out.push(kind);
+fn map_derive_authoring_error(err: crate::error::ProtocolError) -> McpToolError {
+    if err.code == crate::error::ErrorCode::InvalidArgument
+        && err.message.contains("relation core/derived-from")
+    {
+        return McpToolError::LayeringViolation(
+            err.message
+                .strip_prefix("invalid argument edges: ")
+                .unwrap_or(err.message.as_str())
+                .to_string(),
+        );
     }
-    Ok(out)
+    err.into()
 }
 
 fn derived_memory_id(owner: &crate::Owner, kind: &str, key: &str) -> uuid::Uuid {
@@ -305,32 +254,6 @@ fn derived_memory_id(owner: &crate::Owner, kind: &str, key: &str) -> uuid::Uuid 
     buf.push(0);
     buf.extend_from_slice(key.as_bytes());
     uuid::Uuid::new_v5(&DERIVED_NAMESPACE, &buf)
-}
-
-async fn load_provenance_edge_handles(
-    ctx: &McpToolCtx,
-    owner: &Owner,
-    memory_id: MemoryId,
-    source_ids: &[uuid::Uuid],
-) -> Result<Vec<String>, McpToolError> {
-    if source_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-    let targets = source_ids
-        .iter()
-        .copied()
-        .map(MemoryId::new)
-        .collect::<Vec<_>>();
-    let rows = storage
-        .load_memory_edge_ids(owner, CORE_DERIVED_FROM_RELATION, memory_id, &targets)
-        .await?;
-    Ok(rows
-        .into_iter()
-        .map(|edge_id| ctx.format_edge(edge_id))
-        .collect())
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
-use crate::mcp::{McpToolCtx, McpToolError};
-use crate::{MemoryId, Owner};
+use crate::MemoryId;
+use crate::mcp::McpToolCtx;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -8,30 +8,6 @@ pub struct NeighborEdge {
     pub relation: String,
     pub source: Option<String>,
     pub target: Option<String>,
-}
-
-/// # Errors
-///
-/// Returns storage errors from the owner-filtered edge query.
-pub async fn neighbor_edges(
-    ctx: &McpToolCtx,
-    owner: &Owner,
-    memory_ids: &[uuid::Uuid],
-) -> Result<Vec<NeighborEdge>, McpToolError> {
-    if memory_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-    let ids = memory_ids
-        .iter()
-        .copied()
-        .map(MemoryId::new)
-        .collect::<Vec<_>>();
-    let rows = storage.load_neighbor_memory_edges(owner, &ids, 200).await?;
-
-    Ok(neighbor_edges_from_rows(ctx, rows))
 }
 
 pub(crate) fn neighbor_edges_from_rows(

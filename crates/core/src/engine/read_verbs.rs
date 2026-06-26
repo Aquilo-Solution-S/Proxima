@@ -366,7 +366,7 @@ impl Engine {
             .map_err(|err| storage_error("list_read_scope", &err))
     }
 
-    fn sidecar_specs(&self) -> Vec<SidecarSpec> {
+    pub(in crate::engine) fn sidecar_specs(&self) -> Vec<SidecarSpec> {
         self.registry
             .list()
             .into_iter()

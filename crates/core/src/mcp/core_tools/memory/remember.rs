@@ -1,6 +1,6 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::verbs::event_ingest::{EventDraft, InlineCitationMappingDraft, InlineCitedObjectDraft};
-use crate::{MemoryAction, Role, SchemaId, SchemaVersion, SourceBatchId, canonical_json_bytes};
+use crate::{Role, SchemaId, SchemaVersion, SourceBatchId, canonical_json_bytes};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -75,10 +75,6 @@ impl McpTool for RememberTool {
     type Args = RememberArgs;
     type Output = RememberOutput;
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "remember validates input, resolves space grants, and handles optional inline citation atomically"
-    )]
     fn call(
         ctx: McpToolCtx,
         args: RememberArgs,
@@ -108,16 +104,6 @@ impl McpTool for RememberTool {
                 args.space.as_deref(),
                 super::super::memory_spaces::SpaceDefault::Current,
             )?;
-            if !ctx
-                .authz
-                .allows_memory_action(&space.owner, MemoryAction::Write)
-            {
-                return Err(crate::error::ProtocolError::forbidden(format!(
-                    "requires memory.write on space {}",
-                    space.key
-                ))
-                .into());
-            }
             let tags = normalize_tags(args.tags)?;
             let note_id = args
                 .idempotency_key
@@ -170,7 +156,6 @@ impl McpTool for RememberTool {
                     )
                     .map_err(|err| McpToolError::Other(err.to_string()))?;
                 engine
-                    .storage()
                     .ingest_fact_with_citation_and_typed_sidecar(
                         &authorized,
                         &SidecarPayload::fact(payload.clone()),
@@ -182,7 +167,6 @@ impl McpTool for RememberTool {
                     .authorize_event_ingest(&ctx.authz, Role::GraphWrite, draft)
                     .map_err(|err| McpToolError::Other(err.to_string()))?;
                 engine
-                    .storage()
                     .ingest_event_with_typed_sidecar(
                         &authorized,
                         &SidecarPayload::fact(payload.clone()),

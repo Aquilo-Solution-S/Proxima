@@ -14,7 +14,7 @@ use crate::verbs::event_ingest::{
 };
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::verbs::schema::{PayloadKind, ProtocolPayload, SchemaInfo};
-use crate::{EntityKind, MemoryId, Owner, Principal, SourceBatchId};
+use crate::{EntityKind, MemoryId, Owner, Principal, SidecarPayload, SourceBatchId};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EmbeddingDrainOutcome {
@@ -133,6 +133,40 @@ impl Engine {
             fact_sidecar_table,
             fact_natural_key_columns,
         ))
+    }
+
+    /// Persist an already-authorized typed-sidecar event ingest.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Internal` when the atomic storage write fails.
+    pub async fn ingest_event_with_typed_sidecar(
+        &self,
+        authorized: &AuthorizedEventIngest,
+        sidecar: &SidecarPayload,
+        embedding_model_id: Option<&str>,
+    ) -> Result<EventIngestOutcome, ProtocolError> {
+        self.storage()
+            .ingest_event_with_typed_sidecar(authorized, sidecar, embedding_model_id)
+            .await
+            .map_err(|err| ProtocolError::internal(err.to_string()))
+    }
+
+    /// Persist an already-authorized typed-sidecar Fact with inline citation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Internal` when the atomic storage write fails.
+    pub async fn ingest_fact_with_citation_and_typed_sidecar(
+        &self,
+        authorized: &AuthorizedFactWithCitation,
+        sidecar: &SidecarPayload,
+        embedding_model_id: Option<&str>,
+    ) -> Result<EventIngestOutcome, ProtocolError> {
+        self.storage()
+            .ingest_fact_with_citation_and_typed_sidecar(authorized, sidecar, embedding_model_id)
+            .await
+            .map_err(|err| ProtocolError::internal(err.to_string()))
     }
 
     /// Authorize + schema-validate + owner-stamp a citation attachment
@@ -512,10 +546,11 @@ impl std::fmt::Debug for SchemaIdDisplay<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::ErrorCode;
     use crate::ids::UserId;
     use crate::llm::{EMBEDDING_DIM, LlmError};
     use crate::verbs::schema::FlavorRegistryFrozen;
-    use crate::{AuthPath, FactPayload, FlavorRegistry, PayloadKeyBuilder};
+    use crate::{AuthPath, FactPayload, FlavorRegistry, PayloadKeyBuilder, SchemaId};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug)]
@@ -582,6 +617,68 @@ mod tests {
             .expect("single-owner System context should authorize ingest");
 
         assert_eq!(&authorized.draft().principal, authorized.permit().owner());
+    }
+
+    #[test]
+    fn authorize_event_ingest_denies_denied_context() {
+        let owner = test_owner();
+        let mut registry = FlavorRegistry::new();
+        registry.add_fact_schema::<TestFact>();
+        let engine = Engine::new(registry.freeze());
+        let draft = EventDraft::from_payload(
+            &owner,
+            "test/source",
+            SourceBatchId::new(uuid::Uuid::now_v7()),
+            &TestFact {
+                fact_id: "fact-1".to_string(),
+            },
+            time::OffsetDateTime::now_utc(),
+        );
+
+        let err = engine
+            .authorize_event_ingest(&AuthzContext::denied(&owner), Role::GraphWrite, draft)
+            .expect_err("denied context must fail");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[test]
+    fn authorize_fact_with_citation_denies_denied_context() {
+        let owner = test_owner();
+        let mut registry = FlavorRegistry::new();
+        registry.add_fact_schema::<TestFact>();
+        let engine = Engine::new(registry.freeze());
+        let draft = EventDraft::from_payload(
+            &owner,
+            "test/source",
+            SourceBatchId::new(uuid::Uuid::now_v7()),
+            &TestFact {
+                fact_id: "fact-1".to_string(),
+            },
+            time::OffsetDateTime::now_utc(),
+        );
+        let cited_object = InlineCitedObjectDraft {
+            schema_id: SchemaId::new("test/cited-object".into()),
+            schema_version: SchemaVersion::new(1),
+            payload_bytes: Vec::new(),
+        };
+        let mapping = InlineCitationMappingDraft {
+            schema_id: SchemaId::new("test/citation-mapping".into()),
+            schema_version: SchemaVersion::new(1),
+            payload_bytes: Vec::new(),
+        };
+
+        let err = engine
+            .authorize_fact_with_citation(
+                &AuthzContext::denied(&owner),
+                Role::GraphWrite,
+                draft,
+                cited_object,
+                mapping,
+            )
+            .expect_err("denied context must fail before schema validation");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
     }
 
     #[tokio::test]
