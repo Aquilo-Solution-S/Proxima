@@ -291,8 +291,8 @@ pub(crate) fn authorize(
 /// Owner-space GRANT primitive (owner visibility + the space grant) WITHOUT any
 /// role check. Composed with [`authorize`] by the `authorize_request` pipeline
 /// (`engine::pipeline`); verbs gate through `authorize_request`, not this
-/// directly. Keeping the grant check free of `action.required_role()` is what
-/// lets source-ingest writes carry `SourceIngest` without silently requiring
+/// directly. Keeping the grant check separate from role checks lets
+/// source-ingest writes carry `SourceIngest` without silently requiring
 /// `GraphWrite` on top of it.
 pub(crate) fn authorize_memory_grant(
     authz: &AuthzContext,

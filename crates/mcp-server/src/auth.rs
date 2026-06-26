@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use proxima_core::{
     AuthPath, Authenticator, AuthzContext, CapabilitySet, Credentials, Identity, MemoryAction,
-    Owner, ToolScope,
+    Owner, Role, ToolScope,
 };
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -170,8 +170,9 @@ impl McpEdgeAuth {
             return None;
         }
         let can_access_configured_owner = authz.identity.can_access_principal(owner)
-            && (authz.allows_memory_action(owner, MemoryAction::Search)
-                || authz.allows_memory_action(owner, MemoryAction::Read));
+            && authz.capabilities.roles.has(Role::GraphRead)
+            && (authz.allows_memory_grant(owner, MemoryAction::Search)
+                || authz.allows_memory_grant(owner, MemoryAction::Read));
         if !can_access_configured_owner {
             return None;
         }
