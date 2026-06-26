@@ -1,6 +1,6 @@
-import Foundations.Edges
+import Causa.Edges
 
-namespace Proxima
+namespace Causa
 
 /-- Proposed residue axiom (shape disjunction WITHOUT the same-kind
     conjunct), taken as hypothesis. Verify: full ME-12 is derivable
@@ -28,4 +28,4 @@ theorem me12_from_residue
         | exact .inl ⟨ms, mt, hs, ht, hks.trans hkt.symm⟩
         | exact absurd hmem (by intro h; rcases h with h | h | h | h <;> nomatch h)
 
-end Proxima
+end Causa

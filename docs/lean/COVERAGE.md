@@ -3,7 +3,7 @@
 Every invariant extracted from the source docs (inventories of 2026-06-11) maps
 to exactly one row: a kernel construct, a structural carrier ("the shape IS the
 rule"), or an explicit exclusion with reason. Axiom names are in
-`docs/lean/Foundations/*.lean`; namespace `Proxima`.
+`docs/lean/Causa/*.lean`; namespace `Causa`.
 
 Carrier kinds: `axiom` | `def` | `inductive`/`structural` (the type shape
 carries the rule) | `comment` (recorded as design commentary at the named

@@ -15,7 +15,7 @@ app. Generic agent memory and Goal substrate are core; domain
 vocabularies such as code remain flavors. There is no external
 flavor/tool catalog and no runtime registration.
 
-The formal kernel is `docs/lean/Foundations/`, not the Rust crate
+The formal kernel is `docs/lean/Causa/`, not the Rust crate
 boundary.
 
 ## Boundary

@@ -39,7 +39,7 @@ formal kernel in `docs/lean/`. This guide covers how to contribute.
 - New public how-to/tutorial/reference pages belong under `docs/getting-started/`,
   `docs/tutorials/`, `docs/how-to/`, or `docs/reference/`.
 - New invariant/design changes belong in the numbered docs and, when domainless,
-  in `docs/lean/Foundations/` plus `docs/lean/COVERAGE.md`.
+  in `docs/lean/Causa/` plus `docs/lean/COVERAGE.md`.
 - Agent-facing usage rules belong in `docs/agent/` and the root `llms.txt` files.
 
 Before opening a PR, run the narrowest relevant checks and always run:

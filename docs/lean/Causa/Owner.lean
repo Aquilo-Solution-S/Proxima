@@ -1,5 +1,5 @@
 /-
-Proxima Foundations — Owner
+Causa — Owner
 
 The scoping primitive (doc 01 §Owner). Every Event, Memory, and Goal
 carries an Owner: the access scope. Ontologically, Owner IS the
@@ -24,9 +24,9 @@ Per-memory ACL (`AccessGrant`) is a v2+ extension layered above
 Owner — deliberately absent here.
 -/
 
-import Foundations.Prelude
+import Causa.Prelude
 
-namespace Proxima
+namespace Causa
 
 -- ============================================================
 -- Identity slots
@@ -81,4 +81,4 @@ def visible (o : Owner) (requester : UserId) : Prop :=
   | .user u  => u = requester
   | .group g => requester ∈ group_members g
 
-end Proxima
+end Causa

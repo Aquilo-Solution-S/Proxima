@@ -39,7 +39,7 @@ the repository Pages/hosting policy is known.
 
 ## Authority
 
-The Lean kernel under `lean/Foundations/` is authoritative for domainless
+The Lean kernel under `lean/Causa/` is authoritative for domainless
 invariants; start from [lean/README.md](lean/README.md). Numbered Markdown docs are prose reference and rationale.
 Public tutorials and how-to guides must link back to the relevant reference/design
 section instead of restating invariants.

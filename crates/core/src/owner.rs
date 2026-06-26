@@ -9,7 +9,7 @@ use crate::{GroupId, UserId};
 /// Track B (S0, 2026-06): the former tenant scalar was removed from Core
 /// entirely. There is no tenant field in the access predicate, the identity
 /// hashes, or storage rows; tenancy is a flavor/app concern. Mirrors the Lean
-/// kernel `def Owner : Type := Principal` (docs/lean/Foundations/Owner.lean).
+/// kernel `def Owner : Type := Principal` (docs/lean/Causa/Owner.lean).
 pub type Owner = Principal;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]

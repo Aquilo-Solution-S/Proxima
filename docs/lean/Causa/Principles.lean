@@ -1,16 +1,16 @@
 /-
-Proxima Foundations — Principles
+Causa — Principles
 
 Named principle surface over existing kernel content. This file adds no
 trusted assumptions; each theorem below is discharged by definitions or
 existing axioms/theorems from Memory, Edges, and Operators.
 -/
 
-import Foundations.Operators
-import Foundations.Personality
-import Foundations.Provenance
+import Causa.Operators
+import Causa.Personality
+import Causa.Provenance
 
-namespace Proxima
+namespace Causa
 
 /-- P1 — Facts sit below Perspective/read-scope: within one Owner, a
     Fact is readable unconditionally. -/
@@ -115,4 +115,4 @@ theorem principle_7_personality_is_aggregate_of_perspectives :
       personality_character p = personality_character q :=
   fun _ _ h => congrArg character_of h
 
-end Proxima
+end Causa

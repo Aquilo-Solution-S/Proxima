@@ -85,7 +85,7 @@ build-time flavor registry, protocol verbs, wake/personality runtime, MCP tool
 substrate, and storage traits. Applications normally embed it through the
 `proxima` crate and add domains via flavor crates.
 
-The formal kernel is [`docs/lean/Foundations`](docs/lean/Foundations): the
+The formal kernel is [`docs/lean/Causa`](docs/lean/Causa): the
 invariant spec and proof surface, not the Rust crate boundary.
 
 ## Embedding Proxima
@@ -109,7 +109,7 @@ template. Runtime env/default semantics live in
 
 ## Design and Kernel Authority
 
-The Lean kernel in [`docs/lean/Foundations`](docs/lean/Foundations) is the
+The Lean kernel in [`docs/lean/Causa`](docs/lean/Causa) is the
 source of truth for domainless invariants. The numbered Markdown docs are the
 human-readable design/reference layer. When prose, code, and Lean disagree on a
 domainless invariant, Lean wins until the decision is renegotiated in writing.

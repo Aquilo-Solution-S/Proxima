@@ -1,14 +1,14 @@
 /-
-Proxima Foundations — Provenance grounding
+Causa — Provenance grounding
 
 N1: every memory is grounded by a well-founded derivation /
 supersession descent. Temporal monotonicity is a companion law, not
 the acyclicity source.
 -/
 
-import Foundations.Operators
+import Causa.Operators
 
-namespace Proxima
+namespace Causa
 
 /-- Descent through Provenance or Supersession. `m'` sits below `m`:
     `m` derives from, or supersedes, `m'`. -/
@@ -51,4 +51,4 @@ theorem abstraction_grounds_in_facts :
     ∀ m : Memory, memory_kind m = .Abstraction → GroundsInFact m :=
   fun m _ => memory_grounds_in_facts m
 
-end Proxima
+end Causa

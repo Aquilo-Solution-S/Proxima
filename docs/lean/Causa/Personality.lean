@@ -1,13 +1,13 @@
 /-
-Proxima Foundations — Personality Character
+Causa — Personality Character
 
 N5 — character is a query over active Perspective heads authored by
 one personality. It is not stored as Memory, Goal, or Self state.
 -/
 
-import Foundations.Memory
+import Causa.Memory
 
-namespace Proxima
+namespace Causa
 
 /-- Opaque personality character. No constructors: flavor weighting
     stays inside `character_of`. -/
@@ -32,4 +32,4 @@ def activePerspectiveHeads (p : PersonalityInstance) : Set Memory :=
 noncomputable def personality_character (p : PersonalityInstance) : Character :=
   character_of (activePerspectiveHeads p)
 
-end Proxima
+end Causa
