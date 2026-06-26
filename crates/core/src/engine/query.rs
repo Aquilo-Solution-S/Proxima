@@ -1,4 +1,4 @@
-use super::Engine;
+use super::{Engine, MemoryPermit};
 use crate::authz::{AuthzContext, MemoryAction, Role};
 use crate::error::ProtocolError;
 use crate::verbs::event_history::{
@@ -42,11 +42,21 @@ impl Engine {
         authz: &AuthzContext,
         req: &QueryRequest,
     ) -> Result<QueryResponse, ProtocolError> {
-        super::authorize_action(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        let permit =
+            self.authorize_request(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        self.query_authorized(&permit, req).await
+    }
+
+    async fn query_authorized(
+        &self,
+        permit: &MemoryPermit,
+        req: &QueryRequest,
+    ) -> Result<QueryResponse, ProtocolError> {
         if req.limit == 0 {
             return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
         }
         let mut effective = req.clone();
+        effective.principal = permit.owner().clone();
         if effective.stateful_heads.is_empty() {
             effective.stateful_heads = match effective.schema_id.as_ref() {
                 Some(sid) => self.registry.stateful_filters_for_schema(sid),
@@ -72,12 +82,23 @@ impl Engine {
         authz: &AuthzContext,
         req: &EdgeReadRequest,
     ) -> Result<EdgeReadResponse, ProtocolError> {
-        super::authorize_action(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        let permit =
+            self.authorize_request(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        self.read_edges_authorized(&permit, req).await
+    }
+
+    async fn read_edges_authorized(
+        &self,
+        permit: &MemoryPermit,
+        req: &EdgeReadRequest,
+    ) -> Result<EdgeReadResponse, ProtocolError> {
         if req.limit == 0 {
             return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
         }
+        let mut effective = req.clone();
+        effective.principal = permit.owner().clone();
         self.storage
-            .read_edges(req)
+            .read_edges(&effective)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
@@ -93,9 +114,20 @@ impl Engine {
         authz: &AuthzContext,
         req: &EdgeExistsRequest,
     ) -> Result<EdgeExistsResponse, ProtocolError> {
-        super::authorize_action(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        let permit =
+            self.authorize_request(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        self.edge_exists_authorized(&permit, req).await
+    }
+
+    async fn edge_exists_authorized(
+        &self,
+        permit: &MemoryPermit,
+        req: &EdgeExistsRequest,
+    ) -> Result<EdgeExistsResponse, ProtocolError> {
+        let mut effective = req.clone();
+        effective.principal = permit.owner().clone();
         self.storage
-            .edge_exists(req)
+            .edge_exists(&effective)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
@@ -112,9 +144,20 @@ impl Engine {
         authz: &AuthzContext,
         req: &MemoryLineageRequest,
     ) -> Result<MemoryLineageResponse, ProtocolError> {
-        super::authorize_action(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        let permit =
+            self.authorize_request(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        self.walk_memory_lineage_authorized(&permit, req).await
+    }
+
+    async fn walk_memory_lineage_authorized(
+        &self,
+        permit: &MemoryPermit,
+        req: &MemoryLineageRequest,
+    ) -> Result<MemoryLineageResponse, ProtocolError> {
+        let mut effective = req.clone();
+        effective.principal = permit.owner().clone();
         self.storage
-            .walk_memory_lineage(req)
+            .walk_memory_lineage(&effective)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
@@ -133,11 +176,21 @@ impl Engine {
         authz: &AuthzContext,
         req: &EventHistoryRequest,
     ) -> Result<EventHistoryResponse, ProtocolError> {
-        super::authorize_action(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        let permit =
+            self.authorize_request(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        self.event_history_authorized(&permit, req).await
+    }
+
+    async fn event_history_authorized(
+        &self,
+        permit: &MemoryPermit,
+        req: &EventHistoryRequest,
+    ) -> Result<EventHistoryResponse, ProtocolError> {
         if req.limit == 0 {
             return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
         }
         let mut effective = req.clone();
+        effective.principal = permit.owner().clone();
         if effective.limit > MAX_EVENT_HISTORY_LIMIT {
             effective.limit = MAX_EVENT_HISTORY_LIMIT;
         }
@@ -161,11 +214,21 @@ impl Engine {
         authz: &AuthzContext,
         req: &McpCallHistoryRequest,
     ) -> Result<McpCallHistoryResponse, ProtocolError> {
-        super::authorize_action(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        let permit =
+            self.authorize_request(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        self.read_mcp_call_history_authorized(&permit, req).await
+    }
+
+    async fn read_mcp_call_history_authorized(
+        &self,
+        permit: &MemoryPermit,
+        req: &McpCallHistoryRequest,
+    ) -> Result<McpCallHistoryResponse, ProtocolError> {
         if req.limit == 0 {
             return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
         }
         let mut effective = req.clone();
+        effective.principal = permit.owner().clone();
         if effective.limit > MAX_MCP_CALL_HISTORY_LIMIT {
             effective.limit = MAX_MCP_CALL_HISTORY_LIMIT;
         }
