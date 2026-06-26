@@ -4,6 +4,7 @@
 //! shape as its `Storage` trait method. The `Storage for PgStorage`
 //! impl in `lib.rs` is a thin delegation layer over these.
 
+pub(crate) mod access_grants;
 pub(crate) mod active_goals;
 pub mod close_batch;
 pub mod consolidate;
