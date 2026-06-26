@@ -1,0 +1,31 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Proxima">
+<title>Proxima</title>
+<circle cx="50" cy="50" r="48" fill="#0E1013"/>
+<circle cx="50" cy="50" r="47.4" fill="none" stroke="#2B313B" stroke-width="0.4"/>
+<g opacity="0.6">
+<circle cx="50" cy="50" r="34" fill="none" stroke="#2B313B" stroke-width="0.25" stroke-dasharray="0.6 1.2"/>
+<ellipse cx="50" cy="50" rx="11" ry="3.2" fill="none" stroke="#3A4150" stroke-width="0.35"/>
+<ellipse cx="50" cy="50" rx="3.2" ry="11" fill="none" stroke="#3A4150" stroke-width="0.35" opacity="0.6"/>
+</g>
+<g opacity="0.35">
+<line x1="50" y1="16" x2="20.5551" y2="67" stroke="#2B313B" stroke-width="0.3" stroke-dasharray="0.4 0.8"/>
+<line x1="50" y1="16" x2="79.4449" y2="67" stroke="#2B313B" stroke-width="0.3" stroke-dasharray="0.4 0.8"/>
+<line x1="20.5551" y1="67" x2="79.4449" y2="67" stroke="#2B313B" stroke-width="0.3"/>
+</g>
+<path d="M 20.5551 67 Q 50 88 79.4449 67" fill="none" stroke="#C9A86A" stroke-width="0.4" opacity="0.45"/>
+<g>
+<ellipse cx="50" cy="50" rx="9.5" ry="2.2" fill="none" stroke="#3A3220" stroke-width="0.7"/>
+<circle cx="50" cy="50" r="4.2" fill="#D9C28A"/>
+<path d="M 46.4 48.4 a 4.2 4.2 0 0 0 6.8 2.4 a 3.2 3.2 0 0 1 -6.8 -2.4 z" fill="#3A3220" opacity="0.6"/>
+<path d="M 40.5 50 a 9.5 2.2 0 0 0 19 0" fill="none" stroke="#3A3220" stroke-width="0.7"/>
+</g>
+<g>
+<circle cx="50" cy="16" r="2.6" fill="#E8E4D6"/>
+<line x1="50" y1="11.8" x2="50" y2="10.4" stroke="#E8E4D6" stroke-width="0.4"/>
+<line x1="50" y1="20.2" x2="50" y2="21.6" stroke="#E8E4D6" stroke-width="0.4"/>
+<line x1="45.8" y1="16" x2="44.4" y2="16" stroke="#E8E4D6" stroke-width="0.4"/>
+<line x1="54.2" y1="16" x2="55.6" y2="16" stroke="#E8E4D6" stroke-width="0.4"/>
+</g>
+<circle cx="20.5551" cy="67" r="2" fill="#A8AEBA"/>
+<circle cx="79.4449" cy="67" r="2" fill="#C9A86A"/>
+</svg>
