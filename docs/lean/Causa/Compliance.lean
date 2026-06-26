@@ -1,5 +1,5 @@
 /-
-Proxima Foundations — Compliance
+Causa — Compliance
 
 The ONLY delete path in the system (doc 13; ST-13). Two lifecycles,
 strictly separated (doc 13 §Contract boundary):
@@ -22,14 +22,14 @@ cleanup is a controller obligation), owner-policy defaults
 (CO-46..52), GDPR article mappings (CO-53..58).
 -/
 
-import Foundations.Prelude
-import Foundations.Owner
-import Foundations.Identity
-import Foundations.Memory
-import Foundations.Goals
-import Foundations.Edges
+import Causa.Prelude
+import Causa.Owner
+import Causa.Identity
+import Causa.Memory
+import Causa.Goals
+import Causa.Edges
 
-namespace Proxima
+namespace Causa
 
 -- ============================================================
 -- Operations and outcomes (doc 13 §Operations, §Outcomes)
@@ -145,4 +145,4 @@ theorem erasure_removes_edges :
     are untouched (append-only; pause is not erasure). -/
 axiom paused : Owner → Prop
 
-end Proxima
+end Causa

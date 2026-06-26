@@ -1,5 +1,5 @@
-name = "foundations"
-defaultTargets = ["Foundations"]
+name = "causa"
+defaultTargets = ["Causa"]
 
 [[lean_lib]]
-name = "Foundations"
+name = "Causa"
