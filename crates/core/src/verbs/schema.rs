@@ -3,12 +3,15 @@
 //! See docs/14-protocol-surface.md §"Schema" and
 //! docs/03-schema-registry.md.
 
+use crate::authz::{AuthorizationHook, AuthzContext, AuthzInput, AuthzOutcome, OwnerResolver};
+use crate::error::ProtocolError;
 use crate::{
-    CapabilityTag, DependencySatisfactionRule, FlavorDescriptor, McpToolDescriptor,
+    CapabilityTag, DependencySatisfactionRule, FlavorDescriptor, McpToolDescriptor, Owner,
     RegisteredRelation, RelationDescriptor, SchemaId, SchemaVersion, SearchProjectionColumnKind,
     SidecarPayload,
 };
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 pub type ProtocolPayloadIngress = fn(&serde_json::Value) -> Result<ProtocolPayload, String>;
 
@@ -216,7 +219,9 @@ pub struct FlavorRegistryFrozen {
     protocol_ingress: Vec<ProtocolPayloadIngressEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
     flavors: Vec<FlavorDescriptor>,
-    dependency_satisfaction_rules: Vec<(String, std::sync::Arc<dyn DependencySatisfactionRule>)>,
+    dependency_satisfaction_rules: Vec<(String, Arc<dyn DependencySatisfactionRule>)>,
+    owner_resolver: Option<Arc<dyn OwnerResolver>>,
+    authorization_hooks: Vec<Arc<dyn AuthorizationHook>>,
     /// Lookup acceleration, rebuilt by every constructor. Not part of
     /// the logical registry — derived purely from the `Vec`s above.
     index: FrozenIndex,
@@ -277,6 +282,8 @@ impl FlavorRegistryFrozen {
             mcp_tools,
             flavors,
             dependency_satisfaction_rules,
+            owner_resolver,
+            authorization_hooks,
         } = registry;
         let schema_capability_tags = crate::flavor::schema_capability_map(&schema_capability_tags);
         let index = FrozenIndex::build(&schemas, &protocol_ingress, &relations);
@@ -289,6 +296,8 @@ impl FlavorRegistryFrozen {
             mcp_tools,
             flavors,
             dependency_satisfaction_rules,
+            owner_resolver,
+            authorization_hooks,
             index,
         }
     }
@@ -379,11 +388,49 @@ impl FlavorRegistryFrozen {
     pub fn dependency_satisfaction_rule(
         &self,
         schema_id: &str,
-    ) -> Option<std::sync::Arc<dyn DependencySatisfactionRule>> {
+    ) -> Option<Arc<dyn DependencySatisfactionRule>> {
         self.dependency_satisfaction_rules
             .iter()
             .find(|(id, _)| id == schema_id)
             .map(|(_, rule)| rule.clone())
+    }
+
+    /// # Errors
+    ///
+    /// Returns the registered resolver error when owner resolution denies.
+    pub(crate) fn resolve_owner(
+        &self,
+        authz: &AuthzContext,
+        requested: &Owner,
+    ) -> Result<Owner, ProtocolError> {
+        match &self.owner_resolver {
+            Some(resolver) => resolver.resolve(authz, requested),
+            None => Ok(requested.clone()),
+        }
+    }
+
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when an authorization hook vetoes the request.
+    pub(crate) fn run_authorization_vetoes(
+        &self,
+        input: &AuthzInput<'_>,
+    ) -> Result<(), ProtocolError> {
+        for hook in &self.authorization_hooks {
+            hook.veto(input)
+                .map_err(|veto| ProtocolError::forbidden(veto.0))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn run_authorization_observers(
+        &self,
+        input: &AuthzInput<'_>,
+        outcome: AuthzOutcome,
+    ) {
+        for hook in &self.authorization_hooks {
+            hook.observe(input, outcome);
+        }
     }
 
     /// All `FlavorDescriptor`s registered through `proxima_flavor!`.

@@ -4,6 +4,7 @@
 //!
 //! See docs/08 §Registration mechanism.
 
+use crate::authz::{AuthorizationHook, OwnerResolver};
 use crate::mcp::schema::mcp_tool_schema;
 use crate::mcp::validate_action_args;
 use crate::verbs::schema::{
@@ -72,6 +73,8 @@ pub struct FlavorRegistry {
     pub(crate) mcp_tools: Vec<McpToolDescriptor>,
     pub(crate) flavors: Vec<FlavorDescriptor>,
     pub(crate) dependency_satisfaction_rules: Vec<(String, Arc<dyn DependencySatisfactionRule>)>,
+    pub(crate) owner_resolver: Option<Arc<dyn OwnerResolver>>,
+    pub(crate) authorization_hooks: Vec<Arc<dyn AuthorizationHook>>,
 }
 
 impl Default for FlavorRegistry {
@@ -85,6 +88,8 @@ impl Default for FlavorRegistry {
             mcp_tools: Vec::new(),
             flavors: Vec::new(),
             dependency_satisfaction_rules: Vec::new(),
+            owner_resolver: None,
+            authorization_hooks: Vec::new(),
         };
         // Substrate-shipped Fact schema for MCP-CRUD audit.
         registry.add_fact_schema::<crate::mcp::core_tools::PersonalityConfigChangedV1>();
@@ -350,6 +355,24 @@ impl FlavorRegistry {
     ) {
         self.dependency_satisfaction_rules
             .push((schema_id.into(), rule));
+    }
+
+    /// Register the composed app's owner resolver.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a resolver is already registered. Composition permits at most
+    /// one owner resolver.
+    pub fn set_owner_resolver(&mut self, resolver: Arc<dyn OwnerResolver>) {
+        assert!(
+            self.owner_resolver.is_none(),
+            "duplicate OwnerResolver registered"
+        );
+        self.owner_resolver = Some(resolver);
+    }
+
+    pub fn add_authorization_hook(&mut self, hook: Arc<dyn AuthorizationHook>) {
+        self.authorization_hooks.push(hook);
     }
 
     /// Register a `FlavorDescriptor`. Called once per

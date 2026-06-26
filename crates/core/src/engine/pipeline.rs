@@ -3,7 +3,7 @@
 //! body that requires a permit cannot run without one and cannot forge one.
 
 use crate::Owner;
-use crate::authz::{AuthzContext, MemoryAction, Role};
+use crate::authz::{AuthzContext, AuthzInput, AuthzOutcome, MemoryAction, Role};
 use crate::error::ProtocolError;
 
 use super::{Engine, authorize, authorize_memory_grant};
@@ -51,13 +51,10 @@ impl MemoryPermit {
 }
 
 impl Engine {
-    /// The one Tier-2 gate. Resolves owner (identity for now), runs the existing
-    /// decoupled primitives (role check AND owner-space grant, no coupling),
-    /// mints the permit. The `(role, action)` pair stays explicit at the caller.
-    #[expect(
-        clippy::unused_self,
-        reason = "later owner resolution will use engine state; Task 1 is identity-only"
-    )]
+    /// The one Tier-2 gate. Resolves owner, runs the existing decoupled
+    /// primitives (role check AND owner-space grant, no coupling), runs
+    /// deny-only veto hooks, then mints the permit. The `(role, action)` pair
+    /// stays explicit at the caller.
     pub(in crate::engine) fn authorize_request(
         &self,
         authz: &AuthzContext,
@@ -65,17 +62,64 @@ impl Engine {
         role: Role,
         action: MemoryAction,
     ) -> Result<MemoryPermit, ProtocolError> {
-        let resolved: Owner = requested.clone();
-        authorize(authz, &resolved, role)?;
-        authorize_memory_grant(authz, &resolved, action)?;
+        let resolved = match self.registry.resolve_owner(authz, requested) {
+            Ok(owner) => owner,
+            Err(err) => {
+                let input = AuthzInput {
+                    authz,
+                    requested,
+                    resolved: requested,
+                    role,
+                    action,
+                };
+                self.registry
+                    .run_authorization_observers(&input, AuthzOutcome::DeniedResolution);
+                return Err(err);
+            }
+        };
+        let input = AuthzInput {
+            authz,
+            requested,
+            resolved: &resolved,
+            role,
+            action,
+        };
+        let (result, outcome) = match self.gate_and_veto(authz, &resolved, role, action, &input) {
+            Ok(()) => (Ok(()), AuthzOutcome::Allowed),
+            Err((err, outcome)) => (Err(err), outcome),
+        };
+        self.registry.run_authorization_observers(&input, outcome);
+        result?;
         Ok(MemoryPermit::new(resolved, requested.clone(), role, action))
+    }
+
+    fn gate_and_veto(
+        &self,
+        authz: &AuthzContext,
+        owner: &Owner,
+        role: Role,
+        action: MemoryAction,
+        input: &AuthzInput<'_>,
+    ) -> Result<(), (ProtocolError, AuthzOutcome)> {
+        authorize(authz, owner, role).map_err(|err| (err, AuthzOutcome::DeniedRole))?;
+        authorize_memory_grant(authz, owner, action)
+            .map_err(|err| (err, AuthzOutcome::DeniedGrant))?;
+        self.registry
+            .run_authorization_vetoes(input)
+            .map_err(|err| (err, AuthzOutcome::DeniedVeto))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::authz::{AuthPath, AuthzContext, MemoryAction, Role};
+    use std::sync::{Arc, Mutex};
+
+    use crate::authz::{
+        AuthPath, AuthorizationHook, AuthzContext, AuthzInput, AuthzOutcome, AuthzVeto,
+        MemoryAction, OwnerResolver, Role,
+    };
     use crate::error::ErrorCode;
+    use crate::error::ProtocolError;
     use crate::{FlavorRegistry, Owner, Principal, UserId};
 
     use super::Engine;
@@ -84,8 +128,54 @@ mod tests {
         Engine::new(FlavorRegistry::new().freeze())
     }
 
+    fn engine_from_registry(registry: FlavorRegistry) -> Engine {
+        Engine::new(registry.freeze())
+    }
+
     fn owner() -> Owner {
         Principal::User(UserId::new(uuid::Uuid::now_v7()))
+    }
+
+    #[derive(Debug)]
+    struct StaticResolver {
+        resolved: Owner,
+    }
+
+    impl OwnerResolver for StaticResolver {
+        fn resolve(
+            &self,
+            _authz: &AuthzContext,
+            _requested: &Owner,
+        ) -> Result<Owner, ProtocolError> {
+            Ok(self.resolved.clone())
+        }
+    }
+
+    #[derive(Debug)]
+    struct VetoHook;
+
+    impl AuthorizationHook for VetoHook {
+        fn veto(&self, input: &AuthzInput<'_>) -> Result<(), AuthzVeto> {
+            assert_eq!(input.requested, input.resolved);
+            Err(AuthzVeto("test veto".into()))
+        }
+    }
+
+    #[derive(Debug)]
+    struct RecordingHook {
+        outcomes: Arc<Mutex<Vec<AuthzOutcome>>>,
+    }
+
+    impl AuthorizationHook for RecordingHook {
+        fn observe(&self, input: &AuthzInput<'_>, outcome: AuthzOutcome) {
+            assert!(matches!(
+                input.authz.auth_path,
+                AuthPath::System | AuthPath::Denied
+            ));
+            assert_eq!(input.role, Role::GraphRead);
+            assert_eq!(input.action, MemoryAction::Read);
+            self.outcomes.lock().expect("recorder lock").push(outcome);
+        }
     }
 
     #[test]
@@ -115,5 +205,65 @@ mod tests {
             .expect_err("denied context should reject authorization");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[test]
+    fn resolver_remap_still_gates_resolved_owner() {
+        let requested = owner();
+        let hidden = owner();
+        let mut registry = FlavorRegistry::new();
+        registry.set_owner_resolver(Arc::new(StaticResolver {
+            resolved: hidden.clone(),
+        }));
+        let engine = engine_from_registry(registry);
+        let authz = AuthzContext::single_owner(&requested, AuthPath::System);
+
+        let err = engine
+            .authorize_request(&authz, &requested, Role::GraphRead, MemoryAction::Read)
+            .expect_err("resolved hidden owner should be denied");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[test]
+    fn veto_hook_denies_otherwise_allowed_request() {
+        let owner = owner();
+        let mut registry = FlavorRegistry::new();
+        registry.add_authorization_hook(Arc::new(VetoHook));
+        let engine = engine_from_registry(registry);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+
+        let err = engine
+            .authorize_request(&authz, &owner, Role::GraphRead, MemoryAction::Read)
+            .expect_err("veto should deny otherwise-allowed request");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
+        assert_eq!(err.message, "test veto");
+    }
+
+    #[test]
+    fn observer_records_allowed_and_denied_outcomes() {
+        let owner = owner();
+        let outcomes = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = FlavorRegistry::new();
+        registry.add_authorization_hook(Arc::new(RecordingHook {
+            outcomes: outcomes.clone(),
+        }));
+        let engine = engine_from_registry(registry);
+        let allowed = AuthzContext::single_owner(&owner, AuthPath::System);
+        let denied = AuthzContext::denied(&owner);
+
+        engine
+            .authorize_request(&allowed, &owner, Role::GraphRead, MemoryAction::Read)
+            .expect("allowed request should pass");
+        let err = engine
+            .authorize_request(&denied, &owner, Role::GraphRead, MemoryAction::Read)
+            .expect_err("denied context should reject authorization");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
+        assert_eq!(
+            *outcomes.lock().expect("recorder lock"),
+            vec![AuthzOutcome::Allowed, AuthzOutcome::DeniedRole],
+        );
     }
 }
