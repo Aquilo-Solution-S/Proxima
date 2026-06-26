@@ -322,3 +322,52 @@ async fn engine_goalwrite_rejects_unregistered_goal_schema() {
     let _ = drop_db(&db_name).await;
     result.expect("typed product GoalWrite schema-validation test failed");
 }
+
+#[tokio::test]
+async fn engine_goalwrite_rejects_unauthorized_callers_before_write() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let (pg, owner, target_self, engine, _authz) = boot_registered(&url).await?;
+
+        // Cross-owner: a context scoped to `owner` cannot create a Goal for a
+        // different principal (the `can_access_principal` branch), even with
+        // full graph_write capabilities.
+        let other_owner = Principal::User(UserId::new(Uuid::now_v7()));
+        let owner_authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let cross_owner = engine
+            .create_goal(
+                &owner_authz,
+                product_request(&other_owner, target_self, "Practice every weekday."),
+            )
+            .await
+            .expect_err("cross-owner principal is rejected");
+        assert_eq!(cross_owner.code, ErrorCode::Forbidden);
+
+        // Fail-closed: the zero-capability denied context (the unauthenticated
+        // posture) carries no graph_write role and is rejected.
+        let denied = AuthzContext::denied(&owner);
+        let denied_err = engine
+            .create_goal(
+                &denied,
+                product_request(&owner, target_self, "Practice every weekday."),
+            )
+            .await
+            .expect_err("denied (no graph_write) context is rejected");
+        assert_eq!(denied_err.code, ErrorCode::Forbidden);
+
+        // Authorization is enforced before any storage write: no Goal row exists.
+        let goal_count: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
+            .fetch_one(pg.pool())
+            .await?;
+        assert_eq!(goal_count.0, 0);
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("typed product GoalWrite authz test failed");
+}
