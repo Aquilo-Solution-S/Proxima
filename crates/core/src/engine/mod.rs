@@ -252,6 +252,9 @@ pub(crate) fn authorize(
     Ok(())
 }
 
+/// Full owner-space gate: owner visibility, the action's default role, and the
+/// space grant. Use where the owner-space action is the sole authorization
+/// gate (graph reads, the admin tool surface).
 pub(crate) fn authorize_memory_action(
     authz: &AuthzContext,
     principal: &Principal,
@@ -266,7 +269,25 @@ pub(crate) fn authorize_memory_action(
     if !authz.capabilities.roles.has(required_role) {
         return Err(ProtocolError::forbidden(required_role.denied_message()));
     }
-    if !authz.allows_memory_action(principal, action) {
+    authorize_memory_grant(authz, principal, action)
+}
+
+/// Owner-space GRANT gate (owner visibility + the space grant) WITHOUT the role
+/// check. The operation's role is enforced separately by the caller via
+/// [`authorize`]. Source-ingest writes (`event_ingest`, `persist_mcp_call`,
+/// `tombstone_fact`, `close_batch`) keep their `SourceIngest` role and gate on
+/// this so `GraphWrite` is not silently required on top of it.
+pub(crate) fn authorize_memory_grant(
+    authz: &AuthzContext,
+    principal: &Principal,
+    action: MemoryAction,
+) -> Result<(), ProtocolError> {
+    if !authz.identity.can_access_principal(principal) {
+        return Err(ProtocolError::forbidden(
+            "principal cannot access requested principal",
+        ));
+    }
+    if !authz.allows_memory_grant(principal, action) {
         return Err(ProtocolError::forbidden(match action {
             MemoryAction::Search => "requires memory.search on owner",
             MemoryAction::Read => "requires memory.read on owner",

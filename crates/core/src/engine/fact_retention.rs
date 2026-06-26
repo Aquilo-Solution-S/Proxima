@@ -123,8 +123,9 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `owner` or
-    /// lacks `SourceIngest`, and `Internal` for storage failures.
+    /// Returns `Forbidden` when the context cannot access `owner`, lacks
+    /// `SourceIngest`, or lacks a `memory.write` grant on the owner space, and
+    /// `Internal` for storage failures.
     pub async fn tombstone_fact(
         &self,
         authz: &AuthzContext,
@@ -132,7 +133,7 @@ impl Engine {
         fact_id: MemoryId,
     ) -> Result<TombstoneFactOutcome, ProtocolError> {
         super::authorize(authz, owner, Role::SourceIngest)?;
-        super::authorize_memory_action(authz, owner, MemoryAction::Write)?;
+        super::authorize_memory_grant(authz, owner, MemoryAction::Write)?;
         let owner = authz.scoped_owner(owner.clone());
         let fact_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Fact);
         let edge_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Edge);
