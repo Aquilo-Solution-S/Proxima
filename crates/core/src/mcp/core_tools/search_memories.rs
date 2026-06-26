@@ -5,13 +5,14 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 
+use crate::engine::SearchReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::verbs::query::{
     EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
-use crate::{McpTool, MemoryAction, PersonalityInstanceId, SchemaId};
+use crate::{McpTool, PersonalityInstanceId, SchemaId};
 
-use super::memory::search::{NeighborEdge, load_graph_payloads, neighbor_edges};
+use super::memory::search::{NeighborEdge, neighbor_edges_from_rows};
 
 const SEMANTIC_SEARCH_UNAVAILABLE: &str =
     "semantic search unavailable: no embedding client is configured (set MISTRAL_API_KEY)";
@@ -312,27 +313,6 @@ async fn search_one_space(
     prepared: &PreparedSearch,
     space: super::memory_spaces::ResolvedMemorySpace,
 ) -> Result<SpaceSearchResult, McpToolError> {
-    if !ctx
-        .authz
-        .allows_memory_action(&space.owner, MemoryAction::Search)
-    {
-        return Err(crate::error::ProtocolError::forbidden(format!(
-            "requires memory.search on space {}",
-            space.key
-        ))
-        .into());
-    }
-    if (args.include_body || args.include_neighbor_edges)
-        && !ctx
-            .authz
-            .allows_memory_action(&space.owner, MemoryAction::Read)
-    {
-        return Err(crate::error::ProtocolError::forbidden(format!(
-            "requires memory.read on space {}",
-            space.key
-        ))
-        .into());
-    }
     let req = MemorySearchRequest {
         principal: space.owner.clone(),
         query: prepared.query.clone(),
@@ -350,20 +330,27 @@ async fn search_one_space(
         embedding_model_id: prepared.embedding_model_id.clone(),
         reader_personality_instance_id: prepared.reader,
     };
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-    let rows = storage
-        .search_memories(&req, ctx.registry.search_projections())
+    let engine = ctx
+        .engine()
+        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let response = engine
+        .search(
+            &ctx.authz,
+            &SearchReadRequest {
+                search: req,
+                include_body: args.include_body,
+                include_neighbor_edges: args.include_neighbor_edges,
+            },
+        )
         .await?;
+    let rows = response.memories;
     let degraded_to_lexical = semantic_search_degraded_to_lexical(prepared.effective_mode, &rows);
-    let memory_ids: Vec<_> = rows.iter().map(|row| row.memory_id.into_inner()).collect();
-    let payloads = load_graph_payloads(ctx, &space.owner, &memory_ids, args.include_body).await?;
-    let neighbor_edges = if args.include_neighbor_edges {
-        neighbor_edges(ctx, &space.owner, &memory_ids).await?
-    } else {
-        Vec::new()
-    };
+    let payloads = response
+        .payloads
+        .into_iter()
+        .map(|payload| (payload.memory_id.into_inner(), payload))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let neighbor_edges = neighbor_edges_from_rows(ctx, response.neighbor_edges);
     let memories = rows
         .into_iter()
         .map(|row| {

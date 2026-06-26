@@ -13,9 +13,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::change_event::{ChangeEventKind, EntityRef};
+use crate::engine::ListEventsReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::personality::ChangeEventForWake;
-use crate::{EdgeId, EntityKind, MemoryAction};
+use crate::{EdgeId, EntityKind};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListEventsArgs {
@@ -66,15 +67,6 @@ pub async fn list_events(
     ctx: McpToolCtx,
     args: ListEventsArgs,
 ) -> Result<ListEventsOutput, McpToolError> {
-    if !ctx
-        .authz
-        .allows_memory_action(&ctx.owner, MemoryAction::Read)
-    {
-        return Err(crate::error::ProtocolError::forbidden("requires memory.read on owner").into());
-    }
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
     let after = match &args.since {
         None => uuid::Uuid::nil(),
         Some(since) => since.parse::<uuid::Uuid>().map_err(|err| {
@@ -82,12 +74,26 @@ pub async fn list_events(
         })?,
     };
     let limit = args.limit.unwrap_or(100).clamp(1, 1000) as usize;
-    let rows = storage
-        .list_change_events_after(&ctx.owner, after, overfetch_limit(limit))
+    let engine = ctx
+        .engine()
+        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let response = engine
+        .list_events(
+            &ctx.authz,
+            &ListEventsReadRequest {
+                principal: ctx.owner.clone(),
+                after,
+                limit: overfetch_limit(limit),
+            },
+        )
         .await?;
-    let edge_kinds = load_edge_endpoint_kinds(&ctx, &rows).await?;
+    let edge_kinds = response
+        .edge_endpoint_kinds
+        .into_iter()
+        .map(|row| (row.edge_id.into_inner(), (row.source_kind, row.target_kind)))
+        .collect::<HashMap<_, _>>();
 
-    let (rows, has_more) = page_rows(rows, limit);
+    let (rows, has_more) = page_rows(response.events, limit);
     let events = rows
         .into_iter()
         .map(|row| event_item(&ctx, row, &edge_kinds))
@@ -109,33 +115,6 @@ fn page_rows(mut rows: Vec<ChangeEventForWake>, limit: usize) -> (Vec<ChangeEven
     let has_more = rows.len() > limit;
     rows.truncate(limit);
     (rows, has_more)
-}
-
-async fn load_edge_endpoint_kinds(
-    ctx: &McpToolCtx,
-    rows: &[ChangeEventForWake],
-) -> Result<HashMap<uuid::Uuid, (EntityKind, EntityKind)>, McpToolError> {
-    let edge_ids = rows
-        .iter()
-        .filter_map(|row| match &row.event.kind {
-            ChangeEventKind::EdgeAppend { edge_id, .. }
-            | ChangeEventKind::EdgeDelete { edge_id, .. } => Some(EdgeId::new(*edge_id)),
-            ChangeEventKind::EntityAppend { .. } | ChangeEventKind::EntityDelete { .. } => None,
-        })
-        .collect::<Vec<_>>();
-    if edge_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-    let rows = storage.load_edge_endpoint_kinds(&edge_ids).await?;
-
-    Ok(rows
-        .into_iter()
-        .map(|row| (row.edge_id.into_inner(), (row.source_kind, row.target_kind)))
-        .collect())
 }
 
 fn event_item(

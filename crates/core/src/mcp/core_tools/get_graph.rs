@@ -11,7 +11,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::MemoryAction;
+use crate::engine::GetGraphReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::verbs::schema::PayloadKind;
 
@@ -72,38 +72,22 @@ pub async fn get_graph(
     ctx: McpToolCtx,
     args: GetGraphArgs,
 ) -> Result<GetGraphOutput, McpToolError> {
-    if !ctx
-        .authz
-        .allows_memory_action(&ctx.owner, MemoryAction::Admin)
-    {
-        return Err(
-            crate::error::ProtocolError::forbidden("requires memory.admin on owner").into(),
-        );
-    }
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-    let embeddings_client_configured = ctx
-        .engine()
-        .and_then(crate::engine::Engine::embed_client)
-        .is_some();
-    let pending_embedding_jobs = storage
-        .count_pending_embedding_jobs(&ctx.owner)
-        .await
-        .map_err(McpToolError::Storage)?;
     let engine = ctx
         .engine()
         .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
-    let fact_retention_seconds = engine
-        .get_fact_retention(&ctx.authz, &ctx.owner)
-        .await
-        .map_err(|err| McpToolError::Other(err.to_string()))?;
+    let embeddings_client_configured = engine.embed_client().is_some();
+    let graph = engine
+        .get_graph(
+            &ctx.authz,
+            &GetGraphReadRequest {
+                principal: ctx.owner.clone(),
+                include_tombstoned: args.include_tombstoned,
+            },
+        )
+        .await?;
 
-    let personality_rows = storage
-        .list_personality_instances(&ctx.owner, args.include_tombstoned)
-        .await
-        .map_err(McpToolError::Storage)?;
-    let personalities = personality_rows
+    let personalities = graph
+        .personalities
         .into_iter()
         .map(|row| {
             let personality = ctx.format_personality(row.personality_instance_id);
@@ -159,8 +143,8 @@ pub async fn get_graph(
 
     Ok(GetGraphOutput {
         embeddings_client_configured,
-        pending_embedding_jobs,
-        fact_retention_seconds,
+        pending_embedding_jobs: graph.pending_embedding_jobs,
+        fact_retention_seconds: graph.fact_retention_seconds,
         personalities,
         schemas,
         edge_types,
