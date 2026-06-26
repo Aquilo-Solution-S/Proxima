@@ -158,8 +158,8 @@ impl Engine {
         owner: &Owner,
         fact_id: MemoryId,
     ) -> Result<TombstoneFactOutcome, ProtocolError> {
-        super::authorize_action(authz, owner, Role::SourceIngest, MemoryAction::Write)?;
-        let owner = authz.scoped_owner(owner.clone());
+        let permit =
+            self.authorize_request(authz, owner, Role::SourceIngest, MemoryAction::Write)?;
         let fact_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Fact);
         let edge_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Edge);
         let citation_mapping_sidecar_tables =
@@ -168,7 +168,7 @@ impl Engine {
             sidecar_tables(self.registry.schemas(), PayloadKind::CitedObject);
         self.storage
             .tombstone_fact(
-                &owner,
+                permit.owner(),
                 fact_id.into_inner(),
                 &fact_sidecar_tables,
                 &edge_sidecar_tables,

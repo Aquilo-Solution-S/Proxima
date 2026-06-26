@@ -6,6 +6,7 @@
 
 use uuid::Uuid;
 
+use crate::engine::MemoryPermit;
 use crate::{
     EventId, FactPayload, MemoryId, Owner, PersonalityInstanceId, Principal, SchemaId,
     SchemaVersion, SidecarPayload, SourceBatchId, SourceId,
@@ -130,6 +131,7 @@ pub struct EventDraft {
 /// caller cannot reach the sidecar-ingest primitive below the gate.
 #[derive(Debug)]
 pub struct AuthorizedEventIngest {
+    permit: MemoryPermit,
     draft: EventDraft,
     fact_sidecar_table: Option<String>,
     fact_natural_key_columns: Vec<String>,
@@ -137,15 +139,22 @@ pub struct AuthorizedEventIngest {
 
 impl AuthorizedEventIngest {
     pub(crate) fn new(
+        permit: MemoryPermit,
         draft: EventDraft,
         fact_sidecar_table: Option<String>,
         fact_natural_key_columns: Vec<String>,
     ) -> Self {
         Self {
+            permit,
             draft,
             fact_sidecar_table,
             fact_natural_key_columns,
         }
+    }
+
+    #[must_use]
+    pub fn permit(&self) -> &MemoryPermit {
+        &self.permit
     }
 
     #[must_use]
@@ -249,6 +258,7 @@ impl AuthorizedInlineCitationMapping {
 /// mapping target validation.
 #[derive(Debug)]
 pub struct AuthorizedCitationAttachment {
+    permit: MemoryPermit,
     memory_id: MemoryId,
     owner: Owner,
     cited_object: AuthorizedInlineCitedObject,
@@ -257,17 +267,24 @@ pub struct AuthorizedCitationAttachment {
 
 impl AuthorizedCitationAttachment {
     pub(crate) fn new(
+        permit: MemoryPermit,
         memory_id: MemoryId,
         owner: Owner,
         cited_object: AuthorizedInlineCitedObject,
         mapping: AuthorizedInlineCitationMapping,
     ) -> Self {
         Self {
+            permit,
             memory_id,
             owner,
             cited_object,
             mapping,
         }
+    }
+
+    #[must_use]
+    pub fn permit(&self) -> &MemoryPermit {
+        &self.permit
     }
 
     #[must_use]
@@ -296,6 +313,7 @@ impl AuthorizedCitationAttachment {
 /// mapping target validation.
 #[derive(Debug)]
 pub struct AuthorizedFactWithCitation {
+    permit: MemoryPermit,
     draft: EventDraft,
     cited_object: AuthorizedInlineCitedObject,
     mapping: AuthorizedInlineCitationMapping,
@@ -306,6 +324,7 @@ pub struct AuthorizedFactWithCitation {
 
 impl AuthorizedFactWithCitation {
     pub(crate) fn new(
+        permit: MemoryPermit,
         draft: EventDraft,
         cited_object: AuthorizedInlineCitedObject,
         mapping: AuthorizedInlineCitationMapping,
@@ -314,6 +333,7 @@ impl AuthorizedFactWithCitation {
     ) -> Self {
         let author_personality_instance_id = draft.author_personality_instance_id;
         Self {
+            permit,
             draft,
             cited_object,
             mapping,
@@ -321,6 +341,11 @@ impl AuthorizedFactWithCitation {
             fact_sidecar_table,
             fact_natural_key_columns,
         }
+    }
+
+    #[must_use]
+    pub fn permit(&self) -> &MemoryPermit {
+        &self.permit
     }
 
     #[must_use]
