@@ -3,12 +3,13 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::engine::GetMemoryReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::personality::{PersonalityInstanceId, SidecarSpec};
 use crate::verbs::schema::PayloadKind;
-use crate::{MemoryAction, MemoryHandleClass, MemoryId, SchemaId};
+use crate::{MemoryHandleClass, MemoryId, SchemaId};
 
-use super::memory::search::{NeighborEdge, neighbor_edges};
+use super::memory::search::{NeighborEdge, neighbor_edges_from_rows};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetMemoryArgs {
@@ -50,29 +51,27 @@ pub async fn get_memory(
     args: GetMemoryArgs,
 ) -> Result<GetMemoryOutput, McpToolError> {
     let memory_id = resolve_memory_reference(&ctx, &args.memory)?;
-    let memory_uuid = memory_id.into_inner();
     let space = super::memory_spaces::resolve_space_owner(
         &ctx,
         args.space.as_deref(),
         super::memory_spaces::SpaceDefault::Current,
     )?;
-    if !ctx
-        .authz
-        .allows_memory_action(&space.owner, MemoryAction::Read)
-    {
-        return Err(crate::error::ProtocolError::forbidden(format!(
-            "requires memory.read on space {}",
-            space.key
-        ))
-        .into());
-    }
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-    let sidecars = sidecar_specs(&ctx);
-    let snapshot = storage
-        .load_memory_by_id(&space.owner, memory_id, None, &sidecars)
-        .await?
+    let engine = ctx
+        .engine()
+        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let response = engine
+        .get_memory(
+            &ctx.authz,
+            &GetMemoryReadRequest {
+                principal: space.owner.clone(),
+                memory_id,
+                reader_personality_instance_id: None,
+                include_neighbor_edges: args.expand_neighbors,
+            },
+        )
+        .await?;
+    let snapshot = response
+        .memory
         .ok_or_else(|| McpToolError::InvalidInput(format!("memory {memory_id:?} not found")))?;
     let class = memory_class(&snapshot.kind)?;
     let handle = ctx.format_memory_with_class(snapshot.memory_id, class);
@@ -84,7 +83,7 @@ pub async fn get_memory(
         .or_else(|| snapshot.text.clone());
     let tags = payload_tags(&payload);
     let neighbor_edges = if args.expand_neighbors {
-        Some(neighbor_edges(&ctx, &space.owner, &[memory_uuid]).await?)
+        Some(neighbor_edges_from_rows(&ctx, response.neighbor_edges))
     } else {
         None
     };

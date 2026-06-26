@@ -10,6 +10,7 @@ mod memory_authoring;
 mod personality;
 mod pipeline;
 mod query;
+mod read_verbs;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -29,6 +30,11 @@ pub use ingest::EmbeddingDrainOutcome;
 pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
 pub use memory_authoring::{AuthorDerivedEdgeInput, AuthorDerivedRequestInput};
 pub use pipeline::MemoryPermit;
+pub use read_verbs::{
+    EntityHeadCitationReadRequest, FactCitationReadRequest, FactsCitingObjectReadRequest,
+    GetGraphReadRequest, GetGraphReadResponse, GetMemoryReadRequest, GetMemoryReadResponse,
+    ListEventsReadRequest, ListEventsReadResponse, SearchReadRequest, SearchReadResponse,
+};
 
 pub struct Engine {
     registry: FlavorRegistryFrozen,
