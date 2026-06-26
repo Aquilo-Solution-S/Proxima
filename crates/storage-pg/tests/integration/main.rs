@@ -21,6 +21,7 @@ mod fact_with_citation_pg;
 mod goal_external_authorship_pg;
 mod goal_state_transitions_pg;
 mod goal_write_pg;
+mod goal_write_surface_pg;
 mod lineage_pg;
 mod list_active_goals_pg;
 mod master_token_personality_pg;

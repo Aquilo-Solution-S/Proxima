@@ -164,6 +164,15 @@ pub(crate) async fn create_goal_atomic(
     let evidence = validate_evidence_in_owner(&mut tx, &req.draft.owner(), &req.evidence).await?;
     let inserted = insert_or_replay_goal(&mut tx, sidecars, &req.draft, None, req.context).await?;
     let outcome = if inserted.idempotent_replay {
+        ensure_create_goal_replay_side_effects_match(
+            &mut tx,
+            inserted.goal_id,
+            req.target_self_perspective_id,
+            &evidence,
+            req.context.author_self_perspective_id,
+            &req.draft.request_id,
+        )
+        .await?;
         replay_goal_outcome(
             &mut tx,
             inserted,
@@ -562,10 +571,7 @@ async fn insert_or_replay_goal(
                 idempotent_replay: true,
             });
         }
-        return Err(StorageError::ConstraintViolation(format!(
-            "idempotency_conflict:{}",
-            draft.request_id
-        )));
+        return Err(idempotency_conflict(&draft.request_id));
     }
 
     let goal_id = uuid::Uuid::now_v7();
@@ -653,6 +659,104 @@ async fn insert_goal_sidecar(
         draft.schema_id.as_str(),
         draft.schema_version.into_inner(),
     )))
+}
+
+async fn ensure_create_goal_replay_side_effects_match(
+    tx: &mut Transaction<'_, Postgres>,
+    goal_id: GoalId,
+    target_self_perspective_id: MemoryId,
+    evidence: &[EvidenceTarget],
+    author_self_perspective_id: Option<MemoryId>,
+    request_id: &str,
+) -> Result<(), StorageError> {
+    if !goal_self_assignment_matches(tx, goal_id, target_self_perspective_id).await? {
+        return Err(idempotency_conflict(request_id));
+    }
+    if !goal_evidence_edges_match(tx, goal_id, evidence).await? {
+        return Err(idempotency_conflict(request_id));
+    }
+    let Some(lifecycle_memory_id) =
+        lifecycle_memory_for_goal(tx, goal_id, GoalLifecycleFact::Activated).await?
+    else {
+        return Err(idempotency_conflict(request_id));
+    };
+    if !lifecycle_author_edge_matches(tx, lifecycle_memory_id, author_self_perspective_id).await? {
+        return Err(idempotency_conflict(request_id));
+    }
+    Ok(())
+}
+
+async fn goal_self_assignment_matches(
+    tx: &mut Transaction<'_, Postgres>,
+    goal_id: GoalId,
+    target_self_perspective_id: MemoryId,
+) -> Result<bool, StorageError> {
+    let rows: Vec<(Option<uuid::Uuid>,)> = sqlx::query_as(
+        "SELECT target_memory_id
+           FROM proxima_core.edges
+          WHERE source_goal_id = $1
+            AND relation = $2
+          ORDER BY edge_id ASC",
+    )
+    .bind(goal_id.into_inner())
+    .bind(proxima_core::relation::CORE_INSPIRES_RELATION)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    Ok(rows.len() == 1 && rows[0].0 == Some(target_self_perspective_id.into_inner()))
+}
+
+async fn goal_evidence_edges_match(
+    tx: &mut Transaction<'_, Postgres>,
+    goal_id: GoalId,
+    evidence: &[EvidenceTarget],
+) -> Result<bool, StorageError> {
+    let rows: Vec<(EntityKind, uuid::Uuid)> = sqlx::query_as(
+        "SELECT target_kind, target_memory_id
+           FROM proxima_core.edges
+          WHERE source_goal_id = $1
+            AND relation = $2
+          ORDER BY edge_id ASC",
+    )
+    .bind(goal_id.into_inner())
+    .bind(CORE_MOTIVATED_BY_RELATION)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    let stored = rows.into_iter().collect::<HashSet<_>>();
+    let requested = evidence
+        .iter()
+        .map(|target| (target.kind, target.memory_id.into_inner()))
+        .collect::<HashSet<_>>();
+    Ok(stored == requested)
+}
+
+async fn lifecycle_author_edge_matches(
+    tx: &mut Transaction<'_, Postgres>,
+    lifecycle_memory_id: MemoryId,
+    author_self_perspective_id: Option<MemoryId>,
+) -> Result<bool, StorageError> {
+    let rows: Vec<(Option<uuid::Uuid>,)> = sqlx::query_as(
+        "SELECT source_memory_id
+           FROM proxima_core.edges
+          WHERE target_memory_id = $1
+            AND relation = $2
+          ORDER BY edge_id ASC",
+    )
+    .bind(lifecycle_memory_id.into_inner())
+    .bind(CORE_AUTHORED_RELATION)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    let expected = author_self_perspective_id.map(MemoryId::into_inner);
+    match expected {
+        Some(expected) => Ok(rows.len() == 1 && rows[0].0 == Some(expected)),
+        None => Ok(rows.is_empty()),
+    }
+}
+
+fn idempotency_conflict(request_id: &str) -> StorageError {
+    StorageError::ConstraintViolation(format!("idempotency_conflict:{request_id}"))
 }
 
 async fn existing_goal_body_matches(
@@ -1005,8 +1109,14 @@ async fn validate_evidence_in_owner(
     evidence: &[GoalEvidenceRef],
 ) -> Result<Vec<EvidenceTarget>, StorageError> {
     let (owner_kind, owner_principal_id) = owner.columns();
+    let mut seen = HashSet::with_capacity(evidence.len());
     let mut out = Vec::with_capacity(evidence.len());
     for item in evidence {
+        if !seen.insert(item.memory_id) {
+            return Err(StorageError::ConstraintViolation(
+                "duplicate goal evidence".into(),
+            ));
+        }
         let row: Option<EvidenceRow> = sqlx::query_as(
             "SELECT kind, owner_principal_kind, owner_principal_id
                FROM proxima_core.memories

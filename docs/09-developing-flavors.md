@@ -128,6 +128,12 @@ Key = replay/idempotency contract.
 | Result Fact | request memory id + status + artifact/log identity |
 | Goal payload | payload-specific lifecycle identity, not title/text |
 
+Embedded hosts create product-authored Goals through
+`Engine::create_goal(GoalCreateRequest::product(...))`. The helper calls
+`GoalPayload::goal_key()`, validates the registered Goal schema, applies
+the stable request id, and writes the required Self assignment edge; host
+apps do not insert `proxima_core.goals` rows directly.
+
 Include `SCHEMA_ID` and `SCHEMA_VERSION` through `PayloadKeyBuilder::new`.
 Never derive keys from arbitrary JSON serialization.
 
