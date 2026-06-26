@@ -5,7 +5,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::ListReadScopeRequest;
-use crate::MemoryAction;
 use crate::mcp::{McpToolCtx, McpToolError};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -25,25 +24,19 @@ pub(super) async fn list_read_scope(
     ctx: McpToolCtx,
     args: ListReadScopeArgs,
 ) -> Result<ListReadScopeOutput, McpToolError> {
-    if !ctx
-        .authz
-        .allows_memory_action(&ctx.owner, MemoryAction::Admin)
-    {
-        return Err(
-            crate::error::ProtocolError::forbidden("requires memory.admin on owner").into(),
-        );
-    }
     let pid = ctx.resolve_personality(&args.personality)?;
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-    let response = storage
-        .list_read_scope(&ListReadScopeRequest {
-            principal: ctx.owner.clone(),
-            reader_personality_instance_id: pid,
-        })
-        .await
-        .map_err(McpToolError::Storage)?;
+    let engine = ctx
+        .engine()
+        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let response = engine
+        .list_read_scope(
+            &ctx.authz,
+            &ListReadScopeRequest {
+                principal: ctx.owner.clone(),
+                reader_personality_instance_id: pid,
+            },
+        )
+        .await?;
     let readable_personalities = response
         .readable_personality_instance_ids
         .into_iter()

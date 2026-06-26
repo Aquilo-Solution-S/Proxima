@@ -3,12 +3,12 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::MemoryAction;
+use crate::engine::FactsCitingObjectReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
 
 use super::get_memory::{
     GetMemoryOutput, format_authoring_personality, memory_class, payload_string, payload_tags,
-    sidecar_specs, snapshot_payload_value,
+    snapshot_payload_value,
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -27,19 +27,18 @@ pub(super) async fn facts_citing_object(
     ctx: McpToolCtx,
     args: FactsCitingObjectArgs,
 ) -> Result<FactsCitingObjectOutput, McpToolError> {
-    if !ctx
-        .authz
-        .allows_memory_action(&ctx.owner, MemoryAction::Read)
-    {
-        return Err(crate::error::ProtocolError::forbidden("requires memory.read on owner").into());
-    }
     let cited_object_id = parse_cited_object_id(&args.cited_object_id)?;
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-    let sidecars = sidecar_specs(&ctx);
-    let snapshots = storage
-        .facts_citing_object(&ctx.owner, cited_object_id, &sidecars)
+    let engine = ctx
+        .engine()
+        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let snapshots = engine
+        .facts_citing_object(
+            &ctx.authz,
+            &FactsCitingObjectReadRequest {
+                principal: ctx.owner.clone(),
+                cited_object_id,
+            },
+        )
         .await?;
     let facts = snapshots
         .into_iter()
