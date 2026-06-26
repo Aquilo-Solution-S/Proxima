@@ -18,11 +18,3 @@ pub fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, McpToolError> {
     out.dedup();
     Ok(out)
 }
-
-pub fn memory_kind_for_edge(kind: Option<crate::EntityKind>) -> crate::EntityKind {
-    match kind {
-        Some(crate::EntityKind::Abstraction) => crate::EntityKind::Abstraction,
-        Some(crate::EntityKind::Perspective) => crate::EntityKind::Perspective,
-        None | Some(_) => crate::EntityKind::Fact,
-    }
-}

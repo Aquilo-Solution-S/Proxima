@@ -5,9 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::GetMemoryReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::personality::{PersonalityInstanceId, SidecarSpec};
-use crate::verbs::schema::PayloadKind;
-use crate::{MemoryHandleClass, MemoryId, SchemaId};
+use crate::personality::PersonalityInstanceId;
+use crate::{MemoryHandleClass, MemoryId};
 
 use super::memory::search::{NeighborEdge, neighbor_edges_from_rows};
 
@@ -132,24 +131,6 @@ pub(super) fn snapshot_payload_value(
     payload
         .to_protocol_json()
         .map_err(|err| McpToolError::Other(format!("serialize typed payload: {err}")))
-}
-
-pub(super) fn sidecar_specs(ctx: &McpToolCtx) -> Vec<SidecarSpec> {
-    ctx.registry
-        .list()
-        .into_iter()
-        .filter(|schema| {
-            matches!(
-                schema.kind,
-                PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
-            ) && schema.sidecar_table.is_some()
-        })
-        .map(|schema| SidecarSpec {
-            schema_id: SchemaId::new(schema.schema_id.as_str().to_string()),
-            schema_version: schema.schema_version,
-            sidecar_table: schema.sidecar_table.expect("filtered to sidecar schemas"),
-        })
-        .collect()
 }
 
 pub(super) fn memory_class(kind: &str) -> Result<MemoryHandleClass, McpToolError> {
