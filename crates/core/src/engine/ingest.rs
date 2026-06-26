@@ -69,9 +69,10 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         role: Role,
-        draft: EventDraft,
+        mut draft: EventDraft,
     ) -> Result<AuthorizedEventIngest, ProtocolError> {
-        super::authorize_action(authz, &draft.principal, role, MemoryAction::Write)?;
+        let permit = self.authorize_request(authz, &draft.principal, role, MemoryAction::Write)?;
+        draft.principal = permit.owner().clone();
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
@@ -86,6 +87,7 @@ impl Engine {
             )?;
         }
         Ok(AuthorizedEventIngest::new(
+            permit,
             draft,
             fact_sidecar_table,
             fact_natural_key_columns,
@@ -107,11 +109,12 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         role: Role,
-        draft: EventDraft,
+        mut draft: EventDraft,
         cited_object: InlineCitedObjectDraft,
         mapping: InlineCitationMappingDraft,
     ) -> Result<AuthorizedFactWithCitation, ProtocolError> {
-        super::authorize_action(authz, &draft.principal, role, MemoryAction::Write)?;
+        let permit = self.authorize_request(authz, &draft.principal, role, MemoryAction::Write)?;
+        draft.principal = permit.owner().clone();
 
         // Validate the Fact only by schema-existence, matching
         // `authorize_event_ingest`. The Fact payload is built from a
@@ -123,6 +126,7 @@ impl Engine {
         let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
 
         Ok(AuthorizedFactWithCitation::new(
+            permit,
             draft,
             cited_object,
             mapping,
@@ -151,10 +155,12 @@ impl Engine {
         cited_object: InlineCitedObjectDraft,
         mapping: InlineCitationMappingDraft,
     ) -> Result<AuthorizedCitationAttachment, ProtocolError> {
-        super::authorize_action(authz, &principal, role, MemoryAction::Write)?;
-        let owner = authz.scoped_owner(principal);
+        let requested = principal;
+        let permit = self.authorize_request(authz, &requested, role, MemoryAction::Write)?;
+        let owner = permit.owner().clone();
         let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
         Ok(AuthorizedCitationAttachment::new(
+            permit,
             memory_id,
             owner,
             cited_object,
@@ -447,8 +453,9 @@ impl Engine {
         mut input: McpCallLogInput,
     ) -> Result<McpCallLogOutcome, ProtocolError> {
         let owner = authz.scoped_owner(input.owner.clone());
-        super::authorize_action(authz, &owner, Role::SourceIngest, MemoryAction::Write)?;
-        input.owner = owner;
+        let permit =
+            self.authorize_request(authz, &owner, Role::SourceIngest, MemoryAction::Write)?;
+        input.owner = permit.owner().clone();
         self.storage
             .persist_mcp_call_atomic(&input)
             .await
@@ -472,10 +479,12 @@ impl Engine {
         principal: Principal,
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, ProtocolError> {
-        super::authorize_action(authz, &principal, Role::SourceIngest, MemoryAction::Write)?;
+        let requested = principal;
+        let permit =
+            self.authorize_request(authz, &requested, Role::SourceIngest, MemoryAction::Write)?;
         let outcome = self
             .storage
-            .close_batch(&principal, source_batch_id)
+            .close_batch(permit.owner(), source_batch_id)
             .await
             .map_err(|e| match e {
                 StorageError::NotFound => ProtocolError::not_found("source batch not found"),
@@ -506,6 +515,8 @@ mod tests {
     use crate::ids::UserId;
     use crate::llm::{EMBEDDING_DIM, LlmError};
     use crate::verbs::schema::FlavorRegistryFrozen;
+    use crate::{AuthPath, FactPayload, FlavorRegistry, PayloadKeyBuilder};
+    use serde::{Deserialize, Serialize};
 
     #[derive(Debug)]
     struct TestEmbedding;
@@ -527,6 +538,50 @@ mod tests {
 
     fn test_owner() -> Owner {
         Principal::User(UserId::new(uuid::Uuid::now_v7()))
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct TestFact {
+        fact_id: String,
+    }
+
+    impl FactPayload for TestFact {
+        const SCHEMA_ID: &'static str = "test/ingest-stamp-fact";
+        const SCHEMA_VERSION: u32 = 1;
+
+        fn event_key(&self) -> Vec<u8> {
+            let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+            key.field_str("fact_id", &self.fact_id);
+            key.finish()
+        }
+
+        fn render(&self) -> String {
+            self.fact_id.clone()
+        }
+    }
+
+    #[test]
+    fn authorize_event_ingest_stamps_draft_owner_from_permit() {
+        let owner = test_owner();
+        let mut registry = FlavorRegistry::new();
+        registry.add_fact_schema::<TestFact>();
+        let engine = Engine::new(registry.freeze());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let draft = EventDraft::from_payload(
+            &owner,
+            "test/source",
+            SourceBatchId::new(uuid::Uuid::now_v7()),
+            &TestFact {
+                fact_id: "fact-1".to_string(),
+            },
+            time::OffsetDateTime::now_utc(),
+        );
+
+        let authorized = engine
+            .authorize_event_ingest(&authz, Role::SourceIngest, draft)
+            .expect("single-owner System context should authorize ingest");
+
+        assert_eq!(&authorized.draft().principal, authorized.permit().owner());
     }
 
     #[tokio::test]
