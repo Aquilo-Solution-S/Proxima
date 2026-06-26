@@ -1,6 +1,6 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::verbs::event_ingest::EventDraft;
-use crate::{MemoryAction, Role, SourceBatchId};
+use crate::{Role, SourceBatchId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -66,17 +66,6 @@ impl McpTool for RecordUtteranceTool {
                 args.space.as_deref(),
                 super::super::memory_spaces::SpaceDefault::Current,
             )?;
-            if !ctx
-                .authz
-                .allows_memory_action(&space.owner, MemoryAction::Write)
-            {
-                return Err(crate::error::ProtocolError::forbidden(format!(
-                    "requires memory.write on space {}",
-                    space.key
-                ))
-                .into());
-            }
-
             let payload = UtteranceV1 {
                 speaker: args.speaker,
                 conversation_id: conversation_id.to_string(),
@@ -111,7 +100,6 @@ impl McpTool for RecordUtteranceTool {
                 .authorize_event_ingest(&ctx.authz, Role::GraphWrite, draft)
                 .map_err(|err| McpToolError::Other(err.to_string()))?;
             let outcome = engine
-                .storage()
                 .ingest_event_with_typed_sidecar(
                     &authorized,
                     &SidecarPayload::fact(payload.clone()),

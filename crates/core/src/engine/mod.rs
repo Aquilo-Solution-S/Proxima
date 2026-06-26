@@ -28,7 +28,10 @@ use crate::{Owner, Principal, SetWakeEntriesRequest, SetWakeEntriesResponse, Wak
 
 pub use ingest::EmbeddingDrainOutcome;
 pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
-pub use memory_authoring::{AuthorDerivedEdgeInput, AuthorDerivedRequestInput};
+pub use memory_authoring::{
+    AppendMemoryEdgeRequestInput, AuthorDerivedAuthorizedOutcome, AuthorDerivedEdgeInput,
+    AuthorDerivedRequestInput, PublishMemoryOutcome, PublishMemoryRequestInput,
+};
 pub use pipeline::MemoryPermit;
 pub use read_verbs::{
     EntityHeadCitationReadRequest, FactCitationReadRequest, FactsCitingObjectReadRequest,

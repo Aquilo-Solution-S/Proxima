@@ -1,12 +1,9 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
-use crate::storage::DerivedEdgeSpec;
-use crate::{EdgeAuthorshipKind, MemoryAction, MemoryId, Owner, SidecarPayload};
+use crate::{AppendMemoryEdgeRequestInput, EdgeAuthorshipKind, MemoryId, SidecarPayload};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{AGENT_LINK_RELATION, AgentLinkV1};
-
-use super::util::memory_kind_for_edge;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LinkArgs {
@@ -71,47 +68,11 @@ impl McpTool for LinkTool {
                 args.space.as_deref(),
                 super::super::memory_spaces::SpaceDefault::Current,
             )?;
-            if !ctx
-                .authz
-                .allows_memory_action(&space.owner, MemoryAction::Read)
-            {
-                return Err(crate::error::ProtocolError::forbidden(format!(
-                    "requires memory.read on space {}",
-                    space.key
-                ))
-                .into());
-            }
-            if !ctx
-                .authz
-                .allows_memory_action(&space.owner, MemoryAction::Write)
-            {
-                return Err(crate::error::ProtocolError::forbidden(format!(
-                    "requires memory.write on space {}",
-                    space.key
-                ))
-                .into());
-            }
-
             let source_id = resolve_memory(&ctx, &args.source)?;
             let target_id = resolve_memory(&ctx, &args.target)?;
             if source_id == target_id {
                 return Err(McpToolError::InvalidInput("self-loop link rejected".into()));
             }
-
-            let source_kind = load_kind(&ctx, &space.owner, source_id).await?;
-            // Only Abstractions/Perspectives may source an agent link; a Fact
-            // (or any non-A/P) source violates strict layering (inv 1).
-            if !matches!(
-                source_kind,
-                Some(crate::EntityKind::Abstraction | crate::EntityKind::Perspective)
-            ) {
-                return Err(McpToolError::InvalidInput(
-                    "a Fact cannot be a link source (strict layering: source layer ≥ target \
-                     layer); derive an Abstraction over the Fact and link from that"
-                        .into(),
-                ));
-            }
-            let target_kind = load_kind(&ctx, &space.owner, target_id).await?;
 
             let relation = ctx
                 .registry
@@ -123,12 +84,10 @@ impl McpTool for LinkTool {
                 reason: reason.to_string(),
                 confidence: args.confidence,
             });
-            let edge = DerivedEdgeSpec {
-                owner: &space.owner,
+            let edge = AppendMemoryEdgeRequestInput {
+                owner: space.owner.clone(),
                 relation,
-                source_kind: memory_kind_for_edge(source_kind),
                 source_memory_id: source_id,
-                target_kind: memory_kind_for_edge(target_kind),
                 target_memory_id: target_id,
                 authorship_kind: EdgeAuthorshipKind::ExternalAgent,
                 authorship_owner_memory_id: ctx.caller_self_perspective,
@@ -137,7 +96,10 @@ impl McpTool for LinkTool {
             let engine = ctx
                 .engine()
                 .ok_or_else(|| McpToolError::InvalidInput("engine required".into()))?;
-            let edge_id = engine.storage().append_memory_edge(&edge).await?;
+            let edge_id = engine
+                .append_memory_edge_authorized(&ctx.authz, edge)
+                .await
+                .map_err(map_link_authoring_error)?;
 
             Ok(LinkOutput {
                 edge_handle: ctx.format_edge(edge_id),
@@ -150,23 +112,15 @@ fn resolve_memory(ctx: &McpToolCtx, raw: &str) -> Result<MemoryId, McpToolError>
     ctx.resolve_memory(raw)
 }
 
-async fn load_kind(
-    ctx: &McpToolCtx,
-    owner: &Owner,
-    memory_id: MemoryId,
-) -> Result<Option<crate::EntityKind>, McpToolError> {
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-    storage
-        .load_memory_kinds(owner, &[memory_id])
-        .await?
-        .into_iter()
-        .next()
-        .map(|row| row.kind)
-        .ok_or_else(|| {
-            McpToolError::InvalidInput(
-                "cross-space derive/link is not supported; choose one memory space".into(),
-            )
-        })
+fn map_link_authoring_error(err: crate::error::ProtocolError) -> McpToolError {
+    if err.code == crate::error::ErrorCode::InvalidArgument
+        && err.message.contains("rejects source kind Fact")
+    {
+        return McpToolError::InvalidInput(
+            "a Fact cannot be a link source (strict layering: source layer ≥ target layer); derive \
+             an Abstraction over the Fact and link from that"
+                .into(),
+        );
+    }
+    err.into()
 }
