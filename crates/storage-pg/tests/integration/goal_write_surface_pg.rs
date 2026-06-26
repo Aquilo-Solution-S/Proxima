@@ -1,10 +1,14 @@
 //! Public typed `GoalWrite` surface for embedded product hosts.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::common::{create_db, db_url, drop_db};
 
-use proxima_core::authz::AuthPath;
+use proxima_core::authz::{
+    AuthPath, CapabilitySet, Identity, MemoryActionSet, MemorySpaceGrant, MemorySpaceGrants,
+    RoleSet, ToolScope,
+};
 use proxima_core::error::ErrorCode;
 use proxima_core::verbs::goal_write::{GoalCreateRequest, GoalEvidenceRef, IdempotencyKey};
 use proxima_core::{
@@ -100,6 +104,33 @@ fn product_request(
 
 fn assert_idempotency_conflict(err: &proxima_core::error::ProtocolError) {
     assert_eq!(err.code, ErrorCode::IdempotencyConflict);
+}
+
+fn explicit_without_memory_write(owner: &Owner) -> AuthzContext {
+    AuthzContext {
+        identity: Identity {
+            principal: owner.clone(),
+            accessible_principals: HashSet::from([owner.clone()]),
+            expires_at: None,
+            auth_epoch: 0,
+        },
+        capabilities: CapabilitySet {
+            tool_scope: ToolScope::All,
+            roles: RoleSet {
+                graph_read: true,
+                graph_write: true,
+                source_ingest: true,
+                admin: false,
+            },
+            memory_spaces: MemorySpaceGrants::explicit(vec![MemorySpaceGrant {
+                key: "personal".into(),
+                label: "Personal".into(),
+                owner: owner.clone(),
+                actions: MemoryActionSet::read_only(),
+            }]),
+        },
+        auth_path: AuthPath::System,
+    }
 }
 
 async fn boot_registered(
@@ -345,6 +376,19 @@ async fn engine_goalwrite_rejects_unauthorized_callers_before_write() {
             .await
             .expect_err("cross-owner principal is rejected");
         assert_eq!(cross_owner.code, ErrorCode::Forbidden);
+
+        // Owner-space RBAC: graph_write alone is not enough once explicit
+        // memory spaces are installed. GoalWrite must also require
+        // memory.write before reaching storage.
+        let no_memory_write = explicit_without_memory_write(&owner);
+        let no_memory_write_err = engine
+            .create_goal(
+                &no_memory_write,
+                product_request(&owner, target_self, "Practice every weekday."),
+            )
+            .await
+            .expect_err("explicit grant without memory.write is rejected");
+        assert_eq!(no_memory_write_err.code, ErrorCode::Forbidden);
 
         // Fail-closed: the zero-capability denied context (the unauthenticated
         // posture) carries no graph_write role and is rejected.

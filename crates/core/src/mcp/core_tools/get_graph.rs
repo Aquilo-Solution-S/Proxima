@@ -11,6 +11,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::MemoryAction;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::verbs::schema::PayloadKind;
 
@@ -71,6 +72,14 @@ pub async fn get_graph(
     ctx: McpToolCtx,
     args: GetGraphArgs,
 ) -> Result<GetGraphOutput, McpToolError> {
+    if !ctx
+        .authz
+        .allows_memory_action(&ctx.owner, MemoryAction::Admin)
+    {
+        return Err(
+            crate::error::ProtocolError::forbidden("requires memory.admin on owner").into(),
+        );
+    }
     let storage = ctx
         .storage()
         .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;

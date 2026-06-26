@@ -1,6 +1,6 @@
 use super::Engine;
 use crate::Principal;
-use crate::authz::{AuthzContext, Role};
+use crate::authz::{AuthzContext, MemoryAction, Role};
 use crate::error::ProtocolError;
 use crate::personality::{
     InstantiatePersonalityRequest, InstantiatePersonalityResponse, PersonalityInstanceRow,
@@ -19,6 +19,7 @@ impl Engine {
         include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, ProtocolError> {
         super::authorize(authz, principal, Role::Admin)?;
+        super::authorize_memory_action(authz, principal, MemoryAction::Admin)?;
         let owner = authz.scoped_owner(principal.clone());
         self.storage
             .list_personality_instances(&owner, include_tombstoned)
@@ -37,6 +38,7 @@ impl Engine {
         req: TombstonePersonalityRequest,
     ) -> Result<TombstonePersonalityResponse, ProtocolError> {
         super::authorize(authz, &req.principal, Role::Admin)?;
+        super::authorize_memory_action(authz, &req.principal, MemoryAction::Admin)?;
         self.storage
             .tombstone_personality(&req)
             .await
@@ -59,6 +61,7 @@ impl Engine {
         req: InstantiatePersonalityRequest,
     ) -> Result<InstantiatePersonalityResponse, ProtocolError> {
         super::authorize(authz, &req.principal, Role::Admin)?;
+        super::authorize_memory_action(authz, &req.principal, MemoryAction::Admin)?;
         if req.display_name.trim().is_empty() {
             return Err(ProtocolError::invalid_argument(
                 "display_name",

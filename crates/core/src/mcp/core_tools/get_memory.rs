@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::personality::{PersonalityInstanceId, SidecarSpec};
 use crate::verbs::schema::PayloadKind;
-use crate::{MemoryHandleClass, MemoryId, SchemaId};
+use crate::{MemoryAction, MemoryHandleClass, MemoryId, SchemaId};
 
 use super::memory::search::{NeighborEdge, neighbor_edges};
 
@@ -17,12 +17,16 @@ pub struct GetMemoryArgs {
     /// Include edges touching the memory. Default: false.
     #[serde(default)]
     pub expand_neighbors: bool,
+    /// Memory space key from `core_memory_spaces`. Omit for current owner.
+    #[serde(default)]
+    pub space: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct GetMemoryOutput {
     pub handle: String,
     pub memory: String,
+    pub space: String,
     pub kind: String,
     pub schema_id: String,
     pub schema_version: u32,
@@ -47,12 +51,27 @@ pub async fn get_memory(
 ) -> Result<GetMemoryOutput, McpToolError> {
     let memory_id = resolve_memory_reference(&ctx, &args.memory)?;
     let memory_uuid = memory_id.into_inner();
+    let space = super::memory_spaces::resolve_space_owner(
+        &ctx,
+        args.space.as_deref(),
+        super::memory_spaces::SpaceDefault::Current,
+    )?;
+    if !ctx
+        .authz
+        .allows_memory_action(&space.owner, MemoryAction::Read)
+    {
+        return Err(crate::error::ProtocolError::forbidden(format!(
+            "requires memory.read on space {}",
+            space.key
+        ))
+        .into());
+    }
     let storage = ctx
         .storage()
         .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
     let sidecars = sidecar_specs(&ctx);
     let snapshot = storage
-        .load_memory_by_id(&ctx.owner, memory_id, None, &sidecars)
+        .load_memory_by_id(&space.owner, memory_id, None, &sidecars)
         .await?
         .ok_or_else(|| McpToolError::InvalidInput(format!("memory {memory_id:?} not found")))?;
     let class = memory_class(&snapshot.kind)?;
@@ -65,13 +84,14 @@ pub async fn get_memory(
         .or_else(|| snapshot.text.clone());
     let tags = payload_tags(&payload);
     let neighbor_edges = if args.expand_neighbors {
-        Some(neighbor_edges(&ctx, &[memory_uuid]).await?)
+        Some(neighbor_edges(&ctx, &space.owner, &[memory_uuid]).await?)
     } else {
         None
     };
     Ok(GetMemoryOutput {
         handle: handle.clone(),
         memory: handle,
+        space: space.key,
         kind: snapshot.kind,
         schema_id: snapshot.schema_id.as_str().to_string(),
         schema_version: snapshot.schema_version.into_inner(),

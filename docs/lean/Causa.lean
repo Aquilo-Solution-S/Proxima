@@ -16,6 +16,7 @@ import Causa.Edges
 import Causa.Operators
 import Causa.Provenance
 import Causa.Citations
+import Causa.Authorization
 import Causa.Compliance
 import Causa.Composition
 import Causa.Principles

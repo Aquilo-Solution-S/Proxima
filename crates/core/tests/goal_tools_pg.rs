@@ -1,11 +1,12 @@
 //! End-to-end MCP Goal tools against transient PG storage.
 
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{collections::HashSet, future::Future, pin::Pin, sync::Arc};
 
 mod common;
 
 use common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
+use proxima_core::error::ErrorCode;
 use proxima_core::goal::relations::CORE_MOTIVATED_BY_RELATION;
 use proxima_core::mcp::core_tools::goal::{
     ChildGoalInput, CoreGoalArgs, CoreGoalOutput, CoreGoalTool, GoalDecomposeArgs,
@@ -14,9 +15,10 @@ use proxima_core::mcp::core_tools::goal::{
 };
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
-    AuthPath, AuthzContext, EntityKind, FlavorRegistry, FlavorRegistryFrozen, GoalId, McpTool,
-    McpToolError, MemoryId, MemoryOperatorKind, Owner, OwnerPrincipalKind, PersonalityInstanceId,
-    PersonalityStatus, Principal,
+    AuthPath, AuthzContext, CapabilitySet, EntityKind, FlavorRegistry, FlavorRegistryFrozen,
+    GoalId, Identity, McpTool, McpToolError, MemoryActionSet, MemoryId, MemoryOperatorKind,
+    MemorySpaceGrant, MemorySpaceGrants, Owner, OwnerPrincipalKind, PersonalityInstanceId,
+    PersonalityStatus, Principal, RoleSet, ToolScope,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -242,6 +244,32 @@ async fn goal_full_lifecycle_accepts_structured_body_payload() -> TestResult {
 }
 
 #[tokio::test]
+async fn goal_set_tool_requires_memory_write() -> TestResult {
+    with_harness(|harness| {
+        Box::pin(async move {
+            let err = CoreGoalTool::call(
+                harness.ctx_with_authz(harness.explicit_without_memory_write()),
+                CoreGoalArgs::Set(goal_set_args(
+                    "Denied goal",
+                    "This goal write must be rejected before storage.",
+                    "goal-set-no-memory-write",
+                )),
+            )
+            .await
+            .expect_err("explicit grant without memory.write is rejected");
+            match err {
+                McpToolError::Protocol(err) => assert_eq!(err.code, ErrorCode::Forbidden),
+                other => panic!("expected forbidden protocol error, got {other:?}"),
+            }
+            assert_eq!(count_goals(harness.pg.pool()).await?, 0);
+            assert_eq!(count_goal_activated(harness.pg.pool()).await?, 0);
+            Ok(())
+        })
+    })
+    .await
+}
+
+#[tokio::test]
 async fn goal_transition_tool_rejects_raw_uuid() -> TestResult {
     with_harness(|harness| {
         Box::pin(async move {
@@ -430,10 +458,41 @@ impl ToolHarness {
         self.handles.resolve_goal(handle)
     }
 
+    fn explicit_without_memory_write(&self) -> AuthzContext {
+        AuthzContext {
+            identity: Identity {
+                principal: self.owner.clone(),
+                accessible_principals: HashSet::from([self.owner.clone()]),
+                expires_at: None,
+                auth_epoch: 0,
+            },
+            capabilities: CapabilitySet {
+                tool_scope: ToolScope::All,
+                roles: RoleSet {
+                    graph_read: true,
+                    graph_write: true,
+                    source_ingest: true,
+                    admin: false,
+                },
+                memory_spaces: MemorySpaceGrants::explicit(vec![MemorySpaceGrant {
+                    key: "personal".into(),
+                    label: "Personal".into(),
+                    owner: self.owner.clone(),
+                    actions: MemoryActionSet::read_only(),
+                }]),
+            },
+            auth_path: AuthPath::System,
+        }
+    }
+
     fn ctx(&self) -> McpToolCtx {
+        self.ctx_with_authz(AuthzContext::single_owner(&self.owner, AuthPath::System))
+    }
+
+    fn ctx_with_authz(&self, authz: AuthzContext) -> McpToolCtx {
         McpToolCtx {
             owner: self.owner.clone(),
-            authz: AuthzContext::single_owner(&self.owner, AuthPath::System),
+            authz,
             handles: Some(self.handles.clone()),
             mode: OutputMode::Handles,
             registry: self.registry.clone(),
