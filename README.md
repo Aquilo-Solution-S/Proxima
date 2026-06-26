@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/proxima-seal-dark.svg">
+    <img alt="Proxima" src="docs/assets/proxima-seal-light.svg" width="128" height="128">
+  </picture>
+</p>
+
 # Proxima
 
 Proxima is a typed, owner-scoped durable memory substrate for agentic systems.
