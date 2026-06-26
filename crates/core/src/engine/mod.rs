@@ -138,8 +138,18 @@ impl Engine {
         authz: &AuthzContext,
         req: &SetWakeEntriesRequest,
     ) -> Result<SetWakeEntriesResponse, ProtocolError> {
-        authorize_action(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
-        let effective = req.clone();
+        let permit =
+            self.authorize_request(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
+        self.set_wake_entries_authorized(&permit, req).await
+    }
+
+    async fn set_wake_entries_authorized(
+        &self,
+        permit: &MemoryPermit,
+        req: &SetWakeEntriesRequest,
+    ) -> Result<SetWakeEntriesResponse, ProtocolError> {
+        let mut effective = req.clone();
+        effective.principal = permit.owner().clone();
         crate::personality::validate_wake_entries_detect_config(&effective.entries)?;
         self.storage
             .set_wake_entries(&effective)

@@ -54,13 +54,6 @@ impl Engine {
     /// The one Tier-2 gate. Resolves owner (identity for now), runs the existing
     /// decoupled primitives (role check AND owner-space grant, no coupling),
     /// mints the permit. The `(role, action)` pair stays explicit at the caller.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Task 1 adds the chokepoint before verb call sites migrate to permits"
-        )
-    )]
     #[expect(
         clippy::unused_self,
         reason = "later owner resolution will use engine state; Task 1 is identity-only"

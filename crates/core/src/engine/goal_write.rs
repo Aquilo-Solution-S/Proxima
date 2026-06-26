@@ -1,4 +1,4 @@
-use super::Engine;
+use super::{Engine, MemoryPermit};
 use crate::GoalPayload;
 use crate::authz::{AuthzContext, MemoryAction, Role};
 use crate::error::ProtocolError;
@@ -32,15 +32,25 @@ impl Engine {
     where
         P: GoalPayload,
     {
-        super::authorize_action(
+        let permit = self.authorize_request(
             authz,
             &request.principal,
             Role::GraphWrite,
             MemoryAction::Write,
         )?;
+        self.create_goal_authorized(&permit, request).await
+    }
 
+    async fn create_goal_authorized<P>(
+        &self,
+        permit: &MemoryPermit,
+        request: GoalCreateRequest<P>,
+    ) -> Result<GoalWriteOutcome, ProtocolError>
+    where
+        P: GoalPayload,
+    {
         let GoalCreateRequest {
-            principal,
+            principal: _,
             target_self_perspective_id,
             title,
             text,
@@ -74,7 +84,7 @@ impl Engine {
         let embedding_client = self.embed_client();
         let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
         let draft = GoalDraft::active_from_payload_write(
-            principal,
+            permit.owner().clone(),
             payload_write,
             parent_goal_ids,
             authorship,

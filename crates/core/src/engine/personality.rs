@@ -1,4 +1,4 @@
-use super::Engine;
+use super::{Engine, MemoryPermit};
 use crate::Principal;
 use crate::authz::{AuthzContext, MemoryAction, Role};
 use crate::error::ProtocolError;
@@ -18,10 +18,19 @@ impl Engine {
         principal: &Principal,
         include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, ProtocolError> {
-        super::authorize_action(authz, principal, Role::Admin, MemoryAction::Admin)?;
-        let owner = authz.scoped_owner(principal.clone());
+        let permit = self.authorize_request(authz, principal, Role::Admin, MemoryAction::Admin)?;
+        self.list_personality_instances_authorized(&permit, principal, include_tombstoned)
+            .await
+    }
+
+    async fn list_personality_instances_authorized(
+        &self,
+        permit: &MemoryPermit,
+        _principal: &Principal,
+        include_tombstoned: bool,
+    ) -> Result<Vec<PersonalityInstanceRow>, ProtocolError> {
         self.storage
-            .list_personality_instances(&owner, include_tombstoned)
+            .list_personality_instances(permit.owner(), include_tombstoned)
             .await
             .map_err(|e| ProtocolError::internal(format!("list_personality_instances: {e}")))
     }
@@ -36,14 +45,25 @@ impl Engine {
         authz: &AuthzContext,
         req: TombstonePersonalityRequest,
     ) -> Result<TombstonePersonalityResponse, ProtocolError> {
-        super::authorize_action(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
+        let permit =
+            self.authorize_request(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
+        self.tombstone_personality_authorized(&permit, req).await
+    }
+
+    async fn tombstone_personality_authorized(
+        &self,
+        permit: &MemoryPermit,
+        req: TombstonePersonalityRequest,
+    ) -> Result<TombstonePersonalityResponse, ProtocolError> {
+        let mut effective = req;
+        effective.principal = permit.owner().clone();
         self.storage
-            .tombstone_personality(&req)
+            .tombstone_personality(&effective)
             .await
             .map_err(|e| match e {
                 StorageError::NotFound => ProtocolError::not_found(format!(
                     "personality instance not found: {}",
-                    req.personality_instance_id.into_inner()
+                    effective.personality_instance_id.into_inner()
                 )),
                 other => ProtocolError::internal(format!("tombstone_personality: {other}")),
             })
@@ -58,15 +78,26 @@ impl Engine {
         authz: &AuthzContext,
         req: InstantiatePersonalityRequest,
     ) -> Result<InstantiatePersonalityResponse, ProtocolError> {
-        super::authorize_action(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
+        let permit =
+            self.authorize_request(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
+        self.instantiate_personality_authorized(&permit, req).await
+    }
+
+    async fn instantiate_personality_authorized(
+        &self,
+        permit: &MemoryPermit,
+        req: InstantiatePersonalityRequest,
+    ) -> Result<InstantiatePersonalityResponse, ProtocolError> {
         if req.display_name.trim().is_empty() {
             return Err(ProtocolError::invalid_argument(
                 "display_name",
                 "must not be empty",
             ));
         }
+        let mut effective = req;
+        effective.principal = permit.owner().clone();
         self.storage
-            .instantiate_personality(&req)
+            .instantiate_personality(&effective)
             .await
             .map_err(|e| ProtocolError::internal(format!("instantiate_personality: {e}")))
     }
