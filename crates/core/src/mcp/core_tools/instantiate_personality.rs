@@ -5,9 +5,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::InstantiatePersonalityRequest;
-use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
+use crate::mcp::core_tools::audit::{audit_emit_failed, personality_config_changed_input};
 use crate::mcp::core_tools::payload::{
-    PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
+    PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::{McpToolCtx, McpToolError};
 
@@ -39,33 +39,28 @@ pub(super) async fn instantiate_personality(
         principal: ctx.owner.clone(),
         display_name: display_name.clone(),
     };
-    let resp = engine
-        .instantiate_personality(&ctx.authz, req)
-        .await
-        .map_err(|e| McpToolError::Other(e.to_string()))?;
-    let after = PersonalityConfigChangeSnapshot::Personality {
-        personality_instance_id: Some(resp.instance_id.into_inner()),
-        display_name: Some(display_name),
-        status: None,
-        wake_entry_count: None,
-    };
-    let audit = emit_personality_config_changed(
+    let (audit, preflight_failure) = match personality_config_changed_input(
         &ctx,
         PersonalityConfigChangedVerb::Instantiate,
-        PersonalityConfigChangedSubject::Personality(resp.instance_id.into_inner()),
+        PersonalityConfigChangedSubject::Personality(uuid::Uuid::nil()),
         None,
-        Some(after),
-    )
-    .await;
-    let audit_emit_failed = match audit {
-        AuditEmit::Ok => None,
-        AuditEmit::Failed { reason } => {
+        None,
+    ) {
+        Ok(input) => (Some(input), None),
+        Err(reason) => {
             tracing::warn!(reason, "personality_config_changed audit emit failed");
-            Some(reason)
+            (None, Some(reason))
         }
     };
+    let resp = engine
+        .instantiate_personality_with_audit(&ctx.authz, req, audit)
+        .await
+        .map_err(|e| McpToolError::Other(e.to_string()))?;
+    if let crate::engine::PersonalityConfigAuditEmit::Failed { reason } = &resp.audit_emit {
+        tracing::warn!(reason, "personality_config_changed audit emit failed");
+    }
     Ok(InstantiatePersonalityOutput {
-        personality: ctx.format_personality(resp.instance_id),
-        audit_emit_failed,
+        personality: ctx.format_personality(resp.response.instance_id),
+        audit_emit_failed: audit_emit_failed(preflight_failure, resp.audit_emit),
     })
 }

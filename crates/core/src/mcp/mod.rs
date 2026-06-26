@@ -9,7 +9,7 @@ pub(crate) mod schema;
 
 pub use core_tools::{
     AuditEmit, PersonalityConfigChangedCaller, PersonalityConfigChangedSubject,
-    PersonalityConfigChangedV1, PersonalityConfigChangedVerb, emit_personality_config_changed,
+    PersonalityConfigChangedV1, PersonalityConfigChangedVerb,
 };
 pub use handles::{
     EntityKind, EntityRef, Handle, HandleTable, MemoryHandleClass, PrefixedUuidClass,

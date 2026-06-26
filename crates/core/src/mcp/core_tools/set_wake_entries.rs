@@ -4,13 +4,13 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
+use crate::SetWakeEntriesRequest;
+use crate::mcp::core_tools::audit::{audit_emit_failed, personality_config_changed_input};
 use crate::mcp::core_tools::payload::{
-    PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
+    PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::core_tools::wake_entry_input::WakeEntryDraftInput;
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::{MemoryAction, SetWakeEntriesRequest};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetWakeEntriesArgs {
@@ -29,34 +29,10 @@ pub(super) async fn set_wake_entries(
     ctx: McpToolCtx,
     args: SetWakeEntriesArgs,
 ) -> Result<SetWakeEntriesOutput, McpToolError> {
-    if !ctx
-        .authz
-        .allows_memory_action(&ctx.owner, MemoryAction::Admin)
-    {
-        return Err(
-            crate::error::ProtocolError::forbidden("requires memory.admin on owner").into(),
-        );
-    }
     let pid = ctx.resolve_personality(&args.personality)?;
     let engine = ctx
         .engine()
         .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
-    let storage = ctx
-        .storage()
-        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-
-    // Snapshot before for audit.
-    let before_rows = storage
-        .list_personality_instances(&ctx.owner, true)
-        .await
-        .map_err(McpToolError::Storage)?;
-    let before = before_rows
-        .iter()
-        .find(|r| r.personality_instance_id == pid)
-        .map(|r| PersonalityConfigChangeSnapshot::WakeEntries {
-            wake_entry_count: r.wake_entries.len(),
-            wake_entry_ids: r.wake_entries.iter().map(|e| e.wake_entry_id).collect(),
-        });
 
     // Resolve inputs into drafts.
     let drafts = args
@@ -70,8 +46,18 @@ pub(super) async fn set_wake_entries(
         personality_instance_id: pid,
         entries: drafts.clone(),
     };
+    let (audit, preflight_failure) = match personality_config_changed_input(
+        &ctx,
+        PersonalityConfigChangedVerb::SetWakeEntries,
+        PersonalityConfigChangedSubject::Personality(pid.into_inner()),
+        None,
+        None,
+    ) {
+        Ok(input) => (Some(input), None),
+        Err(reason) => (None, Some(reason)),
+    };
     let resp = engine
-        .set_wake_entries(&ctx.authz, &req)
+        .set_wake_entries_with_audit(&ctx.authz, &req, audit)
         .await
         .map_err(|e| McpToolError::Other(e.to_string()))?;
 
@@ -79,26 +65,9 @@ pub(super) async fn set_wake_entries(
         .iter()
         .map(|d| ctx.format_wake_entry(d.wake_entry_id))
         .collect();
-
-    let after = PersonalityConfigChangeSnapshot::WakeEntries {
-        wake_entry_count: drafts.len(),
-        wake_entry_ids: drafts.iter().map(|d| d.wake_entry_id).collect(),
-    };
-    let audit = emit_personality_config_changed(
-        &ctx,
-        PersonalityConfigChangedVerb::SetWakeEntries,
-        PersonalityConfigChangedSubject::Personality(pid.into_inner()),
-        before,
-        Some(after),
-    )
-    .await;
-    let audit_emit_failed = match audit {
-        AuditEmit::Ok => None,
-        AuditEmit::Failed { reason } => Some(reason),
-    };
     Ok(SetWakeEntriesOutput {
-        active_entries: resp.active_entries,
+        active_entries: resp.response.active_entries,
         entry_handles,
-        audit_emit_failed,
+        audit_emit_failed: audit_emit_failed(preflight_failure, resp.audit_emit),
     })
 }
