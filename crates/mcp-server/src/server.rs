@@ -14,10 +14,10 @@ use proxima_core::mcp::core_tools::{
     },
 };
 use proxima_core::mcp::{
-    McpAuthorContext, McpToolCtx, McpToolError, McpToolErrorKind, McpToolExtensions, OutputMode,
-    core_action_meta, core_tool_has_actions, tool_name_matches,
+    McpAuthorContext, McpToolCtx, McpToolError, McpToolErrorKind, McpToolExtensions, Next,
+    OutputMode, TerminalDispatch, ToolCall, tool_name_matches,
 };
-use proxima_core::{AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner, ToolScope};
+use proxima_core::{AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner};
 use serde::Serialize;
 
 use crate::auth::McpAuthContext;
@@ -202,8 +202,19 @@ impl McpToolHost {
         {
             let owner = auth.as_ref().map(|ctx| ctx.owner.clone());
             let ctx = self.ctx_for(author, owner, auth.as_ref());
-            enforce_tool_scope(&ctx.authz.capabilities.tool_scope, descriptor.name, &args)?;
-            return (descriptor.call)(ctx, args).await.map_err(Into::into);
+            let call_fn = descriptor.call;
+            let terminal: TerminalDispatch<'_> = Box::new(move |call| {
+                let ToolCall { args, ctx, .. } = call;
+                call_fn(ctx, args)
+            });
+            return Next::new(self.registry.request_behaviors(), terminal)
+                .run(ToolCall {
+                    name: descriptor.name.to_string(),
+                    args,
+                    ctx,
+                })
+                .await
+                .map_err(Into::into);
         }
 
         Err(ToolInvocationError::ToolNotFound(name.to_string()))
@@ -255,7 +266,16 @@ pub enum ToolInvocationError {
     #[error("tool not found: {0}")]
     ToolNotFound(String),
     #[error("tool error: {0}")]
-    Tool(#[from] McpToolError),
+    Tool(McpToolError),
+}
+
+impl From<McpToolError> for ToolInvocationError {
+    fn from(err: McpToolError) -> Self {
+        match err {
+            McpToolError::NotAuthorized(tool) => Self::NotAuthorized(tool),
+            err => Self::Tool(err),
+        }
+    }
 }
 
 impl ToolInvocationError {
@@ -267,33 +287,6 @@ impl ToolInvocationError {
             Self::Tool(inner) => inner.kind(),
         }
     }
-}
-
-fn enforce_tool_scope(
-    scope: &ToolScope,
-    tool: &str,
-    args: &serde_json::Value,
-) -> Result<(), ToolInvocationError> {
-    if core_tool_has_actions(tool) {
-        let Some(action) = args.get("action").and_then(serde_json::Value::as_str) else {
-            return Err(ToolInvocationError::Tool(McpToolError::InvalidInput(
-                format!("tool {tool} requires string action"),
-            )));
-        };
-        if core_action_meta(tool, action).is_none() {
-            return Err(ToolInvocationError::Tool(McpToolError::InvalidInput(
-                format!("unknown action {action:?} for tool {tool}"),
-            )));
-        }
-        if !scope.allows_action(tool, action) {
-            return Err(ToolInvocationError::NotAuthorized(format!(
-                "{tool}:{action}"
-            )));
-        }
-    } else if !scope.allows(tool) {
-        return Err(ToolInvocationError::NotAuthorized(tool.to_string()));
-    }
-    Ok(())
 }
 
 enum ParsedResource {
