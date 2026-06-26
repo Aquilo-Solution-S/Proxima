@@ -1,0 +1,31 @@
+# Categorisation for auto-generated release notes (gh release --generate-notes
+# and the Release workflow). GitHub groups merged PRs by label; the first
+# matching category wins, '*' is the catch-all. Dependabot applies the
+# `dependencies` label automatically, so that bucket populates without manual
+# labelling — the rest depend on PRs being labelled.
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+  categories:
+    - title: ⚠️ Breaking Changes
+      labels:
+        - breaking
+    - title: ✨ Features
+      labels:
+        - feature
+        - enhancement
+    - title: 🐛 Fixes
+      labels:
+        - bug
+        - fix
+    - title: 📚 Docs
+      labels:
+        - documentation
+    - title: 🔒 Security & Dependencies
+      labels:
+        - security
+        - dependencies
+    - title: Other Changes
+      labels:
+        - "*"

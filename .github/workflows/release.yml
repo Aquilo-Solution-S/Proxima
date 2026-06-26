@@ -1,0 +1,44 @@
+name: Release
+
+# Publish a GitHub Release when a version tag is pushed. The tagged commit is
+# already gated: main is PR-only with the CI workflow's jobs as required status
+# checks, so every commit reachable from a tag has passed fmt/clippy/doc, the
+# docs+lean build, cargo-deny, and the pg/pgvector test suite. This workflow
+# therefore does NOT re-run the suite — it only turns the tag into a Release
+# with generated notes (categorised via .github/release.yml).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Only this workflow needs write: creating the Release object.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: publish github release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # --verify-tag refuses to publish if the git tag is missing.
+        # --generate-notes uses .github/release.yml for categorisation.
+        # Pre-1.0 tags ship as pre-releases; flip the gate at the v1 tag.
+        run: |
+          PRERELEASE=""
+          case "${GITHUB_REF_NAME}" in
+            v0.*) PRERELEASE="--prerelease" ;;
+          esac
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --verify-tag \
+            --generate-notes \
+            ${PRERELEASE}
