@@ -3,12 +3,12 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::MemoryAction;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
     PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::{McpToolCtx, McpToolError};
+use crate::{MemoryAction, Role};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RemoveWakeEntryArgs {
@@ -25,7 +25,7 @@ pub(super) async fn remove_wake_entry(
     ctx: McpToolCtx,
     args: RemoveWakeEntryArgs,
 ) -> Result<RemoveWakeEntryOutput, McpToolError> {
-    crate::engine::authorize_memory_action(&ctx.authz, &ctx.owner, MemoryAction::Admin)
+    crate::engine::authorize_action(&ctx.authz, &ctx.owner, Role::Admin, MemoryAction::Admin)
         .map_err(|e| McpToolError::Other(e.to_string()))?;
     let wid = ctx.resolve_wake_entry(&args.wake_entry)?;
     let storage = ctx
