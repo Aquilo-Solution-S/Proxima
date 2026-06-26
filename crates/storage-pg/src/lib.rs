@@ -14,6 +14,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proxima_core::SidecarPayload;
+use proxima_core::access::{
+    AccessGrantRow, EntryAccessFacts, GrantResource, GrantSelector, NewAccessGrant,
+    RemoveOwnerOutcome, Visibility,
+};
 use proxima_core::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, ListReadScopeRequest, ListReadScopeResponse, MemorySnapshot,
@@ -1137,5 +1141,89 @@ impl Storage for PgStorage {
         source_memory_id: MemoryId,
     ) -> Result<Vec<MemoryDependency>, StorageError> {
         verbs::consolidate::list_memory_dependencies(&self.pool, owner, source_memory_id).await
+    }
+
+    // --- Entry-level access grants (migration 0005, see crate::access) --------
+
+    async fn resolve_space_relations(
+        &self,
+        space_owner: &Owner,
+        principal: &Principal,
+    ) -> Result<Vec<AccessGrantRow>, StorageError> {
+        verbs::access_grants::resolve_space_relations(&self.pool, space_owner, principal).await
+    }
+
+    async fn resolve_entry_relations(
+        &self,
+        memory_id: MemoryId,
+        principal: &Principal,
+    ) -> Result<Vec<AccessGrantRow>, StorageError> {
+        verbs::access_grants::resolve_entry_relations(&self.pool, memory_id, principal).await
+    }
+
+    async fn resolve_entry_owner(
+        &self,
+        memory_id: MemoryId,
+    ) -> Result<Option<EntryAccessFacts>, StorageError> {
+        verbs::access_grants::resolve_entry_owner(&self.pool, memory_id).await
+    }
+
+    async fn insert_access_grant(&self, grant: &NewAccessGrant) -> Result<(), StorageError> {
+        verbs::access_grants::insert_access_grant(&self.pool, grant).await
+    }
+
+    async fn revoke_access_grants(&self, selector: &GrantSelector) -> Result<u64, StorageError> {
+        verbs::access_grants::revoke_access_grants(&self.pool, selector).await
+    }
+
+    async fn list_access_grants(
+        &self,
+        space_owner: &Owner,
+        resource: GrantResource,
+    ) -> Result<Vec<AccessGrantRow>, StorageError> {
+        verbs::access_grants::list_access_grants(&self.pool, space_owner, resource).await
+    }
+
+    async fn set_memory_visibility(
+        &self,
+        owner: &Owner,
+        memory_id: MemoryId,
+        visibility: Visibility,
+    ) -> Result<(), StorageError> {
+        verbs::access_grants::set_memory_visibility(&self.pool, owner, memory_id, visibility).await
+    }
+
+    async fn count_active_entry_grants(
+        &self,
+        owner: &Owner,
+        memory_id: MemoryId,
+    ) -> Result<u64, StorageError> {
+        verbs::access_grants::count_active_entry_grants(&self.pool, owner, memory_id).await
+    }
+
+    async fn init_space_owner(
+        &self,
+        space: &Owner,
+        owner_principal: &Principal,
+        granted_by: PersonalityInstanceId,
+    ) -> Result<(), StorageError> {
+        verbs::access_grants::init_space_owner(&self.pool, space, owner_principal, granted_by).await
+    }
+
+    async fn add_space_owner(
+        &self,
+        space: &Owner,
+        new_owner: &Principal,
+        granted_by: PersonalityInstanceId,
+    ) -> Result<(), StorageError> {
+        verbs::access_grants::add_space_owner(&self.pool, space, new_owner, granted_by).await
+    }
+
+    async fn remove_space_owner(
+        &self,
+        space: &Owner,
+        owner_principal: &Principal,
+    ) -> Result<RemoveOwnerOutcome, StorageError> {
+        verbs::access_grants::remove_space_owner(&self.pool, space, owner_principal).await
     }
 }

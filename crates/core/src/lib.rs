@@ -2,6 +2,7 @@
 #[cfg(feature = "test-fixtures")]
 extern crate self as proxima_core;
 
+pub mod access;
 pub mod auth;
 pub mod authz;
 pub mod canonical_json;
@@ -30,6 +31,7 @@ pub mod storage;
 pub mod test_fixtures;
 pub mod verbs;
 
+pub use access::*;
 pub use auth::*;
 pub use authz::*;
 pub use canonical_json::canonical_json_bytes;

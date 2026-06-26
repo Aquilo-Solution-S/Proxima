@@ -7,6 +7,10 @@ use std::any::{Any, TypeId};
 use std::sync::Arc;
 
 use crate::SourceBatchId;
+use crate::access::{
+    AccessGrantRow, EntryAccessFacts, GrantResource, GrantSelector, NewAccessGrant,
+    RemoveOwnerOutcome, Visibility,
+};
 use crate::dependency::MemoryDependency;
 use crate::personality::WakeEntryDraft;
 use crate::personality::{
@@ -866,6 +870,86 @@ pub trait Storage: Send + Sync {
     ) -> Result<Vec<MemoryDependency>, StorageError> {
         Ok(Vec::new())
     }
+
+    // --- Entry-level access grants (see crate::access) -----------------------
+
+    /// Active space-level grants for `space_owner` whose subject is `principal`
+    /// or a group `principal` is a `member` of (one level, no nesting).
+    /// Includes `owner` rows so step-0 owner-by-row resolves through here.
+    async fn resolve_space_relations(
+        &self,
+        space_owner: &Owner,
+        principal: &crate::Principal,
+    ) -> Result<Vec<AccessGrantRow>, StorageError>;
+
+    /// Active entry-level grants for `memory_id` whose subject is `principal`
+    /// or a group `principal` is a `member` of.
+    async fn resolve_entry_relations(
+        &self,
+        memory_id: crate::MemoryId,
+        principal: &crate::Principal,
+    ) -> Result<Vec<AccessGrantRow>, StorageError>;
+
+    /// The owner-space + visibility of a LIVE entry, resolved inside the storage
+    /// boundary (never from client input). `None` when absent or tombstoned.
+    async fn resolve_entry_owner(
+        &self,
+        memory_id: crate::MemoryId,
+    ) -> Result<Option<EntryAccessFacts>, StorageError>;
+
+    /// Insert one active grant. The DB existence trigger rejects a memory grant
+    /// on an absent/tombstoned/wrong-owner target.
+    async fn insert_access_grant(&self, grant: &NewAccessGrant) -> Result<(), StorageError>;
+
+    /// Revoke (`grant_state='revoked'`) matching active grants; returns the
+    /// number of rows revoked.
+    async fn revoke_access_grants(&self, selector: &GrantSelector) -> Result<u64, StorageError>;
+
+    /// "Who can access this" — active grants on a space or memory resource.
+    async fn list_access_grants(
+        &self,
+        space_owner: &Owner,
+        resource: GrantResource,
+    ) -> Result<Vec<AccessGrantRow>, StorageError>;
+
+    /// Set a memory's denormalized visibility (owner-gated at the verb).
+    async fn set_memory_visibility(
+        &self,
+        owner: &Owner,
+        memory_id: crate::MemoryId,
+        visibility: Visibility,
+    ) -> Result<(), StorageError>;
+
+    /// Count active entry-level grants on a memory (drives the shared/private
+    /// visibility recompute on unshare).
+    async fn count_active_entry_grants(
+        &self,
+        owner: &Owner,
+        memory_id: crate::MemoryId,
+    ) -> Result<u64, StorageError>;
+
+    /// Bootstrap the FIRST owner row for a Group space (provisioning op).
+    async fn init_space_owner(
+        &self,
+        space: &Owner,
+        owner_principal: &crate::Principal,
+        granted_by: PersonalityInstanceId,
+    ) -> Result<(), StorageError>;
+
+    /// Add a co-owner row to a space (owner-gated at the verb).
+    async fn add_space_owner(
+        &self,
+        space: &Owner,
+        new_owner: &crate::Principal,
+        granted_by: PersonalityInstanceId,
+    ) -> Result<(), StorageError>;
+
+    /// Remove an owner row, refusing to drop the last owner of a Group space.
+    async fn remove_space_owner(
+        &self,
+        space: &Owner,
+        owner_principal: &crate::Principal,
+    ) -> Result<RemoveOwnerOutcome, StorageError>;
 }
 
 pub type StorageHandle = Arc<dyn Storage>;
@@ -1331,5 +1415,89 @@ impl Storage for NoopStorage {
         _sidecars: &[SidecarSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
         Ok(None)
+    }
+
+    // --- Entry-level access grants: fail-closed (deny / reject writes) --------
+
+    async fn resolve_space_relations(
+        &self,
+        _space_owner: &Owner,
+        _principal: &crate::Principal,
+    ) -> Result<Vec<AccessGrantRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn resolve_entry_relations(
+        &self,
+        _memory_id: crate::MemoryId,
+        _principal: &crate::Principal,
+    ) -> Result<Vec<AccessGrantRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn resolve_entry_owner(
+        &self,
+        _memory_id: crate::MemoryId,
+    ) -> Result<Option<EntryAccessFacts>, StorageError> {
+        Ok(None)
+    }
+
+    async fn insert_access_grant(&self, _grant: &NewAccessGrant) -> Result<(), StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn revoke_access_grants(&self, _selector: &GrantSelector) -> Result<u64, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn list_access_grants(
+        &self,
+        _space_owner: &Owner,
+        _resource: GrantResource,
+    ) -> Result<Vec<AccessGrantRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn set_memory_visibility(
+        &self,
+        _owner: &Owner,
+        _memory_id: crate::MemoryId,
+        _visibility: Visibility,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn count_active_entry_grants(
+        &self,
+        _owner: &Owner,
+        _memory_id: crate::MemoryId,
+    ) -> Result<u64, StorageError> {
+        Ok(0)
+    }
+
+    async fn init_space_owner(
+        &self,
+        _space: &Owner,
+        _owner_principal: &crate::Principal,
+        _granted_by: PersonalityInstanceId,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn add_space_owner(
+        &self,
+        _space: &Owner,
+        _new_owner: &crate::Principal,
+        _granted_by: PersonalityInstanceId,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn remove_space_owner(
+        &self,
+        _space: &Owner,
+        _owner_principal: &crate::Principal,
+    ) -> Result<RemoveOwnerOutcome, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 }
