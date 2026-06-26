@@ -34,10 +34,10 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `draft.principal` or
-    /// lacks the source-ingest role, `UnknownSchema` when the Fact schema or
-    /// provided citation schemas are not registered, or `Internal` when the
-    /// atomic ingest fails.
+    /// Returns `Forbidden` when the context cannot access `draft.principal`,
+    /// lacks the source-ingest role, or lacks a `memory.write` grant on the
+    /// owner space; `UnknownSchema` when the Fact schema or provided citation
+    /// schemas are not registered; or `Internal` when the atomic ingest fails.
     pub async fn event_ingest(
         &self,
         authz: &AuthzContext,
@@ -61,9 +61,10 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `draft.principal`
-    /// or lacks `role`, or `UnknownSchema` when the Fact schema or provided
-    /// citation schemas are not registered.
+    /// Returns `Forbidden` when the context cannot access `draft.principal`,
+    /// lacks `role`, or lacks a `memory.write` grant on the owner space;
+    /// `UnknownSchema` when the Fact schema or provided citation schemas are
+    /// not registered.
     pub fn authorize_event_ingest(
         &self,
         authz: &AuthzContext,
@@ -71,7 +72,7 @@ impl Engine {
         draft: EventDraft,
     ) -> Result<AuthorizedEventIngest, ProtocolError> {
         super::authorize(authz, &draft.principal, role)?;
-        super::authorize_memory_action(authz, &draft.principal, MemoryAction::Write)?;
+        super::authorize_memory_grant(authz, &draft.principal, MemoryAction::Write)?;
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
@@ -98,7 +99,8 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `draft.principal`,
-    /// lacks `role`, or the citation mapping targets a different cited-object
+    /// lacks `role`, lacks a `memory.write` grant on the owner space, or the
+    /// citation mapping targets a different cited-object
     /// schema; `UnknownSchema` when any schema is absent for the required kind;
     /// `InvalidArgument` when JSON payload validation fails; or `Internal` when
     /// a registered citation schema has no sidecar inserter.
@@ -111,7 +113,7 @@ impl Engine {
         mapping: InlineCitationMappingDraft,
     ) -> Result<AuthorizedFactWithCitation, ProtocolError> {
         super::authorize(authz, &draft.principal, role)?;
-        super::authorize_memory_action(authz, &draft.principal, MemoryAction::Write)?;
+        super::authorize_memory_grant(authz, &draft.principal, MemoryAction::Write)?;
 
         // Validate the Fact only by schema-existence, matching
         // `authorize_event_ingest`. The Fact payload is built from a
@@ -137,7 +139,8 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `principal`,
-    /// lacks `role`, or the citation mapping targets a different cited-object
+    /// lacks `role`, lacks a `memory.write` grant on the owner space, or the
+    /// citation mapping targets a different cited-object
     /// schema; `UnknownSchema` when a citation schema is absent for the
     /// required kind; `InvalidArgument` when JSON payload validation fails; or
     /// `Internal` when a registered cited-object schema has no sidecar inserter.
@@ -151,7 +154,7 @@ impl Engine {
         mapping: InlineCitationMappingDraft,
     ) -> Result<AuthorizedCitationAttachment, ProtocolError> {
         super::authorize(authz, &principal, role)?;
-        super::authorize_memory_action(authz, &principal, MemoryAction::Write)?;
+        super::authorize_memory_grant(authz, &principal, MemoryAction::Write)?;
         let owner = authz.scoped_owner(principal);
         let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
         Ok(AuthorizedCitationAttachment::new(
@@ -438,16 +441,17 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when `authz` cannot access the log Owner or
-    /// lacks the source-ingest role, or `Internal` when the atomic write
-    /// fails.
+    /// Returns `Forbidden` when `authz` cannot access the log Owner, lacks the
+    /// source-ingest role, or lacks a `memory.write` grant on the owner space;
+    /// or `Internal` when the atomic write fails.
     pub async fn persist_mcp_call(
         &self,
         authz: &AuthzContext,
         mut input: McpCallLogInput,
     ) -> Result<McpCallLogOutcome, ProtocolError> {
         let owner = authz.scoped_owner(input.owner.clone());
-        super::authorize_memory_action(authz, &owner, MemoryAction::Write)?;
+        super::authorize(authz, &owner, Role::SourceIngest)?;
+        super::authorize_memory_grant(authz, &owner, MemoryAction::Write)?;
         input.owner = owner;
         self.storage
             .persist_mcp_call_atomic(&input)
@@ -463,8 +467,9 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `NotFound` when the batch doesn't exist or belongs to a
-    /// different owner; `Forbidden` when the context cannot access `owner`
-    /// or lacks the source-ingest role.
+    /// different owner; `Forbidden` when the context cannot access `owner`,
+    /// lacks the source-ingest role, or lacks a `memory.write` grant on the
+    /// owner space.
     pub async fn close_batch(
         &self,
         authz: &AuthzContext,
@@ -472,6 +477,7 @@ impl Engine {
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, ProtocolError> {
         super::authorize(authz, &principal, Role::SourceIngest)?;
+        super::authorize_memory_grant(authz, &principal, MemoryAction::Write)?;
         let outcome = self
             .storage
             .close_batch(&principal, source_batch_id)
