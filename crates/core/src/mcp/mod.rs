@@ -3,10 +3,12 @@
 //! Composite binaries register tools through flavor crates at startup;
 //! there is no runtime registration path.
 
+pub mod behavior;
 pub mod core_tools;
 pub mod handles;
 pub(crate) mod schema;
 
+pub use behavior::{Next, RequestBehavior, ScopeGateBehavior, TerminalDispatch, ToolCall};
 pub use core_tools::{
     AuditEmit, PersonalityConfigChangedCaller, PersonalityConfigChangedSubject,
     PersonalityConfigChangedV1, PersonalityConfigChangedVerb,
@@ -502,6 +504,8 @@ fn parse_flavor_prefixed_uuid(raw: &str) -> Result<uuid::Uuid, McpToolError> {
 pub enum McpToolError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    #[error("tool not authorized: {0}")]
+    NotAuthorized(String),
     #[error("{0}")]
     Resolve(ResolveError),
     #[error("{0}")]
@@ -526,6 +530,7 @@ impl McpToolError {
     pub fn kind(&self) -> McpToolErrorKind {
         match self {
             Self::InvalidInput(_) | Self::Resolve(_) => McpToolErrorKind::InvalidInput,
+            Self::NotAuthorized(_) | Self::LayeringViolation(_) => McpToolErrorKind::InvalidRequest,
             Self::Protocol(e) => match e.code {
                 crate::error::ErrorCode::InvalidArgument => McpToolErrorKind::InvalidInput,
                 crate::error::ErrorCode::Internal => McpToolErrorKind::Internal,
@@ -541,7 +546,6 @@ impl McpToolError {
                     McpToolErrorKind::InvalidRequest
                 }
             },
-            Self::LayeringViolation(_) => McpToolErrorKind::InvalidRequest,
             Self::Storage(storage) => match storage {
                 crate::StorageError::ConstraintViolation(_) | crate::StorageError::NotFound => {
                     McpToolErrorKind::InvalidInput
@@ -557,6 +561,9 @@ impl McpToolError {
 
     #[must_use]
     pub fn client_message(&self) -> String {
+        if let Self::NotAuthorized(name) = self {
+            return format!("tool {name} not authorized for this MCP token");
+        }
         match self.kind() {
             McpToolErrorKind::InvalidInput | McpToolErrorKind::InvalidRequest => self.to_string(),
             McpToolErrorKind::Internal => "internal server error".to_string(),

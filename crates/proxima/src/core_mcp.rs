@@ -97,8 +97,7 @@ impl CoreMcpTools {
     ///
     /// This intentionally does not filter by `ToolScope`: the embedding
     /// host owns presentation/gating on its unified endpoint, and
-    /// [`Self::call_core_tool`] still enforces per-call scope before
-    /// dispatch.
+    /// [`Self::call_core_tool`] runs the host behavior chain before dispatch.
     #[must_use]
     pub fn list_core_tools(&self) -> Vec<CoreToolInfo> {
         self.host
@@ -136,9 +135,9 @@ impl CoreMcpTools {
     ///
     /// # Errors
     ///
-    /// Returns `NotAuthorized` when the caller's tool scope rejects `name`,
-    /// `NotFound` for an unknown registry tool, or `Tool` for the tool's own
-    /// validation/storage/role errors.
+    /// Returns `NotAuthorized` when the host behavior chain rejects `name`,
+    /// `NotFound` for an unknown registry tool, or `Tool` for validation,
+    /// storage, or role errors.
     pub async fn call_core_tool(
         &self,
         authz: AuthzContext,
@@ -151,13 +150,6 @@ impl CoreMcpTools {
             return Err(CoreMcpError::NotFound(name.to_string()));
         };
         let canonical_name = descriptor.name;
-        if !authz
-            .capabilities
-            .tool_scope
-            .allows_group_advertisement(canonical_name)
-        {
-            return Err(CoreMcpError::NotAuthorized(name.to_string()));
-        }
 
         let author = McpAuthorContext {
             model_id: model_id.clone().unwrap_or_else(|| "unknown".to_string()),

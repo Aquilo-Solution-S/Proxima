@@ -238,15 +238,6 @@ impl ServerHandler for DynamicHandler {
             let request_name = request.name.to_string();
             let canonical_name =
                 canonical_tool_name(&server, &request_name).unwrap_or_else(|| request_name.clone());
-            if !scope_allows(
-                auth.as_ref().map(|ctx| &ctx.authz.capabilities.tool_scope),
-                &canonical_name,
-            ) {
-                return Err(ErrorData::invalid_request(
-                    format!("tool {} not authorized for this MCP token", request.name),
-                    None,
-                ));
-            }
             let mut args = request
                 .arguments
                 .map_or_else(|| serde_json::json!({}), serde_json::Value::Object);
@@ -546,6 +537,19 @@ mod tests {
         let err = mcp_tool_error_to_error_data(&McpToolError::Other("storage DSN leaked".into()));
         assert_eq!(err.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
         assert_eq!(err.message, "internal server error");
+    }
+
+    #[test]
+    fn tool_scope_denials_remain_invalid_request() {
+        let err = tool_invocation_error_to_error_data(
+            McpToolError::NotAuthorized("core_wake:set".into()).into(),
+        );
+
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert_eq!(
+            err.message,
+            "tool core_wake:set not authorized for this MCP token"
+        );
     }
 
     // Completeness gate: every `core_` tool the substrate registers must

@@ -16,7 +16,8 @@ use crate::{
     AbstractionPayload, CapabilityTag, CitationMappingPayload, CitedObjectPayload,
     DependencySatisfactionRule, EdgePayload, FactPayload, GoalPayload, McpCallFn, McpTool,
     McpToolDescriptor, McpToolError, McpToolOrigin, PerspectivePayload, RelationDescriptor,
-    SchemaId, SchemaVersion, SidecarPayload, core_relation_descriptors,
+    RequestBehavior, SchemaId, SchemaVersion, ScopeGateBehavior, SidecarPayload,
+    core_relation_descriptors,
 };
 
 use std::collections::BTreeSet;
@@ -71,6 +72,7 @@ pub struct FlavorRegistry {
     pub(crate) relations: Vec<RelationDescriptor>,
     pub(crate) protocol_ingress: Vec<ProtocolPayloadIngressEntry>,
     pub(crate) mcp_tools: Vec<McpToolDescriptor>,
+    pub(crate) request_behaviors: Vec<Arc<dyn RequestBehavior>>,
     pub(crate) flavors: Vec<FlavorDescriptor>,
     pub(crate) dependency_satisfaction_rules: Vec<(String, Arc<dyn DependencySatisfactionRule>)>,
     pub(crate) owner_resolver: Option<Arc<dyn OwnerResolver>>,
@@ -86,6 +88,7 @@ impl Default for FlavorRegistry {
             relations: core_relation_descriptors(),
             protocol_ingress: Vec::new(),
             mcp_tools: Vec::new(),
+            request_behaviors: vec![Arc::new(ScopeGateBehavior)],
             flavors: Vec::new(),
             dependency_satisfaction_rules: Vec::new(),
             owner_resolver: None,
@@ -373,6 +376,10 @@ impl FlavorRegistry {
 
     pub fn add_authorization_hook(&mut self, hook: Arc<dyn AuthorizationHook>) {
         self.authorization_hooks.push(hook);
+    }
+
+    pub fn add_request_behavior(&mut self, behavior: impl RequestBehavior + 'static) {
+        self.request_behaviors.push(Arc::new(behavior));
     }
 
     /// Register a `FlavorDescriptor`. Called once per

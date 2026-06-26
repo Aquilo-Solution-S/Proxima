@@ -5,6 +5,7 @@
 
 use crate::authz::{AuthorizationHook, AuthzContext, AuthzInput, AuthzOutcome, OwnerResolver};
 use crate::error::ProtocolError;
+use crate::mcp::RequestBehavior;
 use crate::{
     CapabilityTag, DependencySatisfactionRule, FlavorDescriptor, McpToolDescriptor, Owner,
     RegisteredRelation, RelationDescriptor, SchemaId, SchemaVersion, SearchProjectionColumnKind,
@@ -218,6 +219,7 @@ pub struct FlavorRegistryFrozen {
     relations: Vec<RelationDescriptor>,
     protocol_ingress: Vec<ProtocolPayloadIngressEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
+    request_behaviors: Vec<Arc<dyn RequestBehavior>>,
     flavors: Vec<FlavorDescriptor>,
     dependency_satisfaction_rules: Vec<(String, Arc<dyn DependencySatisfactionRule>)>,
     owner_resolver: Option<Arc<dyn OwnerResolver>>,
@@ -280,6 +282,7 @@ impl FlavorRegistryFrozen {
             relations,
             protocol_ingress,
             mcp_tools,
+            request_behaviors,
             flavors,
             dependency_satisfaction_rules,
             owner_resolver,
@@ -294,6 +297,7 @@ impl FlavorRegistryFrozen {
             relations,
             protocol_ingress,
             mcp_tools,
+            request_behaviors,
             flavors,
             dependency_satisfaction_rules,
             owner_resolver,
@@ -359,6 +363,11 @@ impl FlavorRegistryFrozen {
     #[must_use]
     pub fn list_mcp_tools(&self) -> &[McpToolDescriptor] {
         &self.mcp_tools
+    }
+
+    #[must_use]
+    pub fn request_behaviors(&self) -> &[Arc<dyn RequestBehavior>] {
+        &self.request_behaviors
     }
 
     #[must_use]
