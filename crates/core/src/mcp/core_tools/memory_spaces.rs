@@ -68,10 +68,10 @@ impl McpTool for MemorySpacesTool {
 #[must_use]
 pub fn list_memory_spaces(ctx: &McpToolCtx) -> Vec<MemorySpaceOutput> {
     match &ctx.authz.capabilities.memory_spaces {
-        MemorySpaceGrants::LegacyAccessiblePrincipals => vec![MemorySpaceOutput {
+        MemorySpaceGrants::Unrestricted => vec![MemorySpaceOutput {
             key: "current".into(),
             label: "Current owner".into(),
-            actions: MemoryActionSet::legacy_from_roles(ctx.authz.capabilities.roles).into(),
+            actions: MemoryActionSet::all().into(),
         }],
         MemorySpaceGrants::Explicit(grants) => grants
             .iter()
@@ -126,7 +126,7 @@ pub fn resolve_space_owner(
         SpaceDefault::Identity => ctx.authz.identity.principal.clone(),
     };
     match &ctx.authz.capabilities.memory_spaces {
-        MemorySpaceGrants::LegacyAccessiblePrincipals => {
+        MemorySpaceGrants::Unrestricted => {
             if let Some(key) = raw
                 && key != "current"
             {

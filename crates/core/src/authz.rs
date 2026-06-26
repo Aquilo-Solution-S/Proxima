@@ -233,17 +233,6 @@ impl MemoryActionSet {
     }
 
     #[must_use]
-    pub const fn legacy_from_roles(roles: RoleSet) -> Self {
-        Self {
-            search: roles.graph_read,
-            read: roles.graph_read,
-            write: roles.graph_write,
-            publish: roles.graph_write,
-            admin: roles.admin,
-        }
-    }
-
-    #[must_use]
     pub const fn allows(self, action: MemoryAction) -> bool {
         match action {
             MemoryAction::Search => self.search,
@@ -265,14 +254,16 @@ pub struct MemorySpaceGrant {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemorySpaceGrants {
-    LegacyAccessiblePrincipals,
+    /// Visibility-gated full access to any owner in the caller's
+    /// accessible-principal set.
+    Unrestricted,
     Explicit(Vec<MemorySpaceGrant>),
 }
 
 impl MemorySpaceGrants {
     #[must_use]
-    pub const fn legacy() -> Self {
-        Self::LegacyAccessiblePrincipals
+    pub const fn unrestricted() -> Self {
+        Self::Unrestricted
     }
 
     /// # Errors
@@ -313,7 +304,7 @@ impl MemorySpaceGrants {
     #[must_use]
     pub fn grant_for_owner(&self, owner: &Owner) -> Option<&MemorySpaceGrant> {
         match self {
-            Self::LegacyAccessiblePrincipals => None,
+            Self::Unrestricted => None,
             Self::Explicit(grants) => grants.iter().find(|grant| &grant.owner == owner),
         }
     }
@@ -321,7 +312,7 @@ impl MemorySpaceGrants {
     #[must_use]
     pub fn grant_for_key(&self, key: &str) -> Option<&MemorySpaceGrant> {
         match self {
-            Self::LegacyAccessiblePrincipals => None,
+            Self::Unrestricted => None,
             Self::Explicit(grants) => grants.iter().find(|grant| grant.key == key),
         }
     }
@@ -329,7 +320,7 @@ impl MemorySpaceGrants {
     #[must_use]
     pub fn explicit_grants(&self) -> &[MemorySpaceGrant] {
         match self {
-            Self::LegacyAccessiblePrincipals => &[],
+            Self::Unrestricted => &[],
             Self::Explicit(grants) => grants.as_slice(),
         }
     }
@@ -348,7 +339,7 @@ impl CapabilitySet {
         Self {
             tool_scope: ToolScope::All,
             roles: RoleSet::all(),
-            memory_spaces: MemorySpaceGrants::legacy(),
+            memory_spaces: MemorySpaceGrants::unrestricted(),
         }
     }
 }
@@ -389,7 +380,7 @@ impl AuthzContext {
             return false;
         }
         match &self.capabilities.memory_spaces {
-            MemorySpaceGrants::LegacyAccessiblePrincipals => true,
+            MemorySpaceGrants::Unrestricted => true,
             MemorySpaceGrants::Explicit(_) => self
                 .capabilities
                 .memory_spaces
@@ -439,7 +430,7 @@ impl AuthzContext {
             capabilities: CapabilitySet {
                 tool_scope: ToolScope::Palette(Vec::new()),
                 roles: RoleSet::none(),
-                memory_spaces: MemorySpaceGrants::legacy(),
+                memory_spaces: MemorySpaceGrants::unrestricted(),
             },
             auth_path: AuthPath::Denied,
         }
@@ -797,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_memory_grants_preserve_existing_role_behavior() {
+    fn unrestricted_memory_grants_preserve_role_gate_behavior() {
         let user = Principal::User(UserId::new(uuid::Uuid::now_v7()));
         let shared = Principal::Group(crate::GroupId::new(uuid::Uuid::now_v7()));
         let mut accessible_principals = HashSet::new();
@@ -819,7 +810,7 @@ mod tests {
                     source_ingest: false,
                     admin: false,
                 },
-                memory_spaces: MemorySpaceGrants::legacy(),
+                memory_spaces: MemorySpaceGrants::unrestricted(),
             },
             auth_path: AuthPath::HostBearer,
         };
