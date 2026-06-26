@@ -38,7 +38,7 @@ pub mod tombstone_personality;
 pub mod wake;
 pub mod walk_memory_lineage;
 
-pub use audit::{AuditEmit, emit_personality_config_changed};
+pub use audit::AuditEmit;
 pub use fact::CoreFactTool;
 pub use goal::CoreGoalTool;
 pub use memory::{DeriveTool, LinkTool, RecordUtteranceTool, RememberTool};

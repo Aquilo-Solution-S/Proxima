@@ -36,6 +36,13 @@ pub use memory_authoring::{
     AppendMemoryEdgeRequestInput, AuthorDerivedAuthorizedOutcome, AuthorDerivedEdgeInput,
     AuthorDerivedRequestInput, PublishMemoryOutcome, PublishMemoryRequestInput,
 };
+pub use personality::{
+    AddWakeEntryRequest, AddWakeEntryResponse, InstantiatePersonalityAdminResponse,
+    PersonalityConfigAuditEmit, PersonalityConfigChangedInput, RemoveWakeEntryRequest,
+    RemoveWakeEntryResponse, SetReadScopeAdminRequest, SetReadScopeAdminResponse,
+    SetWakeEntriesAdminResponse, TombstonePersonalityAdminResponse, UpdateWakeEntryRequest,
+    UpdateWakeEntryResponse, WakeEntryPatchInput,
+};
 pub use pipeline::MemoryPermit;
 pub use read_verbs::{
     EntityHeadCitationReadRequest, FactCitationReadRequest, FactsCitingObjectReadRequest,
@@ -289,6 +296,7 @@ pub(crate) fn authorize(
 /// `GraphWrite` merely because `MemoryAction::Write.required_role()` is
 /// `GraphWrite`. There is deliberately no `action`-only variant that derives the
 /// role from the action — that coupling is the regression this gate prevents.
+#[expect(dead_code, reason = "kept for the follow-up task that deletes it")]
 pub(crate) fn authorize_action(
     authz: &AuthzContext,
     principal: &Principal,
