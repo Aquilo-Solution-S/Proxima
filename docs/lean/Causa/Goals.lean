@@ -1,5 +1,5 @@
 /-
-Proxima Foundations — Goals
+Causa — Goals
 
 Goal: intended direction — desired future state, DAG position,
 lifecycle head (doc 06 §Contract). A core entity on its own axis:
@@ -15,12 +15,12 @@ absence of a `Self` axiom here is the invariant; COVERAGE.md records
 it explicitly.
 -/
 
-import Foundations.Prelude
-import Foundations.Owner
-import Foundations.Identity
-import Foundations.Memory
+import Causa.Prelude
+import Causa.Owner
+import Causa.Identity
+import Causa.Memory
 
-namespace Proxima
+namespace Causa
 
 -- ============================================================
 -- States and lifecycle (doc 06 §Goal Entity)
@@ -204,4 +204,4 @@ def personality_may_read_goal (p : PersonalityInstance) (g : Goal) : Prop :=
    | some author => read_scope (goal_owner g) p author
    | none        => True)
 
-end Proxima
+end Causa

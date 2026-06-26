@@ -1,5 +1,5 @@
 /-
-Proxima Foundations — Operators
+Causa — Operators
 
 The production rules (doc 02 §The Layering Principle, doc 04):
 
@@ -32,14 +32,14 @@ storage/runtime contracts, not kernel axioms — same stance WH takes
 on event/projection atomicity. Recorded as exclusions in COVERAGE.md.
 -/
 
-import Foundations.Prelude
-import Foundations.Owner
-import Foundations.Identity
-import Foundations.Memory
-import Foundations.Goals
-import Foundations.Edges
+import Causa.Prelude
+import Causa.Owner
+import Causa.Identity
+import Causa.Memory
+import Causa.Goals
+import Causa.Edges
 
-namespace Proxima
+namespace Causa
 
 -- ============================================================
 -- CN-5 — no downward writes
@@ -240,4 +240,4 @@ axiom ftoa_batch_exclusive :
     memory_schema m1 = memory_schema m2 →
     m1 = m2
 
-end Proxima
+end Causa

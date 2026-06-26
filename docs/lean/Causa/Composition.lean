@@ -1,5 +1,5 @@
 /-
-Proxima Foundations — Composition
+Causa — Composition
 
 The architecture-flexibility axioms (docs 03, 08), cemented in the
 kernel by explicit decision (Heinrich, 2026-06-11). The substrate is
@@ -26,7 +26,7 @@ learning world, a legal world) integrates as a flavor with ZERO
 kernel change. The kernel is the DNA; flavors are gene expression.
 
 CF-F — RelationClass closedness is carried by the inductive in
-Foundations.Edges: flavors add relation ids, never classes.
+Causa.Edges: flavors add relation ids, never classes.
 
 Excluded as Rust/build mechanics (→ COVERAGE.md): the
 `proxima_flavor!` macro surface (CF-8..19, CF-25), Cargo-derived
@@ -35,15 +35,15 @@ kernel content is the composition law + namespace discipline),
 sidecar SQL mechanics (SR-35..41), tool catalogs (CF-36..42).
 -/
 
-import Foundations.Prelude
-import Foundations.Owner
-import Foundations.Identity
-import Foundations.Memory
-import Foundations.Goals
-import Foundations.Edges
-import Foundations.Citations
+import Causa.Prelude
+import Causa.Owner
+import Causa.Identity
+import Causa.Memory
+import Causa.Goals
+import Causa.Edges
+import Causa.Citations
 
-namespace Proxima
+namespace Causa
 
 -- ============================================================
 -- Namespaces (doc 08 §Schema Namespacing)
@@ -242,4 +242,4 @@ axiom relation_endpoint_required_tags_valid :
       (∀ tag, tag ∈ relation_target_required_tags r →
         tag ∈ schema_capabilities (NodeRef.schema t))
 
-end Proxima
+end Causa

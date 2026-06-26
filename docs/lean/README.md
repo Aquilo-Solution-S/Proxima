@@ -1,4 +1,4 @@
-# Proxima Foundations — the Lean kernel
+# Causa — the Proxima Lean kernel
 
 The domainless invariants of Proxima — the F/A/P memory ontology, operators,
 edges, owner scoping, goals, citations, compliance, and composition — as a
@@ -20,16 +20,16 @@ from the core (the minimization discipline) — a failing build is drift.
 
 | File | Carries |
 |---|---|
-| `Foundations/Prelude.lean` | minimal `Set`, `Instant`, `Text` |
-| `Foundations/Owner.lean` | Principal (User/Group), Owner, visibility rule (doc 01) |
-| `Foundations/Identity.lean` | ids, Event, append-only/immutable/supersedable classes, vector-store independence (docs 01, 07) |
-| `Foundations/Memory.lean` | F/A/P kinds, ℓ, fact↔event, text rule, supersession, personality, read-scope matrix (doc 02) |
-| `Foundations/Goals.lean` | Goal states, lifecycle, DAG acyclicity, active set (doc 06) |
-| `Foundations/Edges.lean` | relation classes, directionality matrix, single-owner scope, masks (doc 02) |
-| `Foundations/Operators.lean` | F→A / A→P / A→Goal shapes, no downward writes, provenance obligations, batch gate (docs 02, 04) |
-| `Foundations/Citations.lean` | Fact-only bibliography, 1:1 mapping, owner match (doc 11) |
-| `Foundations/Compliance.lean` | erasure scopes, suppression guard, pause (doc 13) |
-| `Foundations/Composition.lean` | core independence, namespace discipline, frozen registry, payload opacity (docs 03, 08) |
+| `Causa/Prelude.lean` | minimal `Set`, `Instant`, `Text` |
+| `Causa/Owner.lean` | Principal (User/Group), Owner, visibility rule (doc 01) |
+| `Causa/Identity.lean` | ids, Event, append-only/immutable/supersedable classes, vector-store independence (docs 01, 07) |
+| `Causa/Memory.lean` | F/A/P kinds, ℓ, fact↔event, text rule, supersession, personality, read-scope matrix (doc 02) |
+| `Causa/Goals.lean` | Goal states, lifecycle, DAG acyclicity, active set (doc 06) |
+| `Causa/Edges.lean` | relation classes, directionality matrix, single-owner scope, masks (doc 02) |
+| `Causa/Operators.lean` | F→A / A→P / A→Goal shapes, no downward writes, provenance obligations, batch gate (docs 02, 04) |
+| `Causa/Citations.lean` | Fact-only bibliography, 1:1 mapping, owner match (doc 11) |
+| `Causa/Compliance.lean` | erasure scopes, suppression guard, pause (doc 13) |
+| `Causa/Composition.lean` | core independence, namespace discipline, frozen registry, payload opacity (docs 03, 08) |
 
 ## Coverage
 

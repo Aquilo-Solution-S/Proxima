@@ -1,11 +1,11 @@
 /-
-Proxima Foundations — Identity
+Causa — Identity
 
 ID types, the Event (EventSource emission — doc 01), and the
 append-only storage discipline (doc 07). The storage rule in one
 line (doc 07 §Append-Only): INSERT is the normal write path; UPDATE
 is not part of the cognitive entity lifecycle; DELETE exists only as
-compliance erasure (ST-11, ST-13 — see Foundations.Compliance).
+compliance erasure (ST-11, ST-13 — see Causa.Compliance).
 
 Identity rules (doc 07 §Identity Rules):
   - Fact / Abstraction / Perspective: fresh UUIDv7 MemoryId.
@@ -16,10 +16,10 @@ Identity rules (doc 07 §Identity Rules):
   - Embedding: re-embed writes a new row; the entity row is untouched.
 -/
 
-import Foundations.Prelude
-import Foundations.Owner
+import Causa.Prelude
+import Causa.Owner
 
-namespace Proxima
+namespace Causa
 
 -- ============================================================
 -- ID slots
@@ -43,7 +43,7 @@ axiom EdgeUuid    : Type
     EventSource-authored edges carry a deterministic content hash
     (payload-derived structural edges are deduplicable); operator /
     user / engine edges carry a fresh UUIDv7. The authorship coupling
-    is pinned in Foundations.Edges (`edge_id_authorship_split`). -/
+    is pinned in Causa.Edges (`edge_id_authorship_split`). -/
 inductive EdgeId where
   | sourceAuthored (h : ContentHash)
   | authored       (u : EdgeUuid)
@@ -59,7 +59,7 @@ axiom SourceBatchId : Type
 /-- Opaque (schema_id, schema_version) reference. THE domainless
     boundary: the kernel sees that every Memory/Goal/Event is
     schema-typed, never what the schema contains. Resolution to a
-    namespaced SchemaId happens in Foundations.Composition. -/
+    namespaced SchemaId happens in Causa.Composition. -/
 axiom SchemaRef : Type
 
 -- ============================================================
@@ -89,7 +89,7 @@ class Supersedable (α : Type) where
     Reality into the agent (doc 01 §The contract). NOTE: "Event" in
     Proxima is the EventSource emission — not WorkingHero's audit
     primitive. Every Fact traces back to exactly one Event; this is
-    grounded in Foundations.Memory (`fact_iff_event`). -/
+    grounded in Causa.Memory (`fact_iff_event`). -/
 axiom Event : Type
 axiom event_id          : Event → EventId
 axiom event_source      : Event → SourceId
@@ -122,7 +122,7 @@ axiom event_id_payload_determined :
    both). Removed by the minimization pass — the scoped validation is
    an engine check with no kernel-observable face; the F→A gate now
    carries its own owner dimension (`ftoa_batch_exclusive`,
-   Foundations.Operators). Decision:
+   Causa.Operators). Decision:
    `docs/domain/decisions/2026-06-11-batch-id-scope.md`. -/
 
 -- ============================================================
@@ -150,4 +150,4 @@ axiom embedding_target : Embedding → EmbeddingTarget
 
 instance : Immutable Embedding := ⟨⟩
 
-end Proxima
+end Causa

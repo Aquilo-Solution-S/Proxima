@@ -1,5 +1,5 @@
 /-
-Proxima Foundations — Prelude
+Causa — Prelude
 
 Kernel-wide primitives with no dependencies of their own:
 - The minimal `Set` definition (avoids Mathlib).
@@ -7,7 +7,7 @@ Kernel-wide primitives with no dependencies of their own:
   identity earns a kernel slot (`Instant`, `Text`).
 - Forward-referenced Types needed across domain files.
 
-Every file in `Foundations/` imports this module. Nothing else
+Every file in `Causa/` imports this module. Nothing else
 imports anything heavier here — keep the prelude clean.
 
 This kernel is the source of truth for Proxima's domainless
@@ -17,7 +17,7 @@ until renegotiated in writing. Spec-mode Lean: every primitive is
 an `axiom` or closed `inductive`; there are no proof obligations.
 -/
 
-namespace Proxima
+namespace Causa
 
 -- ============================================================
 -- Minimal Set primitive (avoids a Mathlib dependency).
@@ -47,4 +47,4 @@ instance : LE Instant := ⟨Instant.le⟩
     (doc 03 §Renderer), which is engine behavior, not kernel. -/
 axiom Text : Type
 
-end Proxima
+end Causa

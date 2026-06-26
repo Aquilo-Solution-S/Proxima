@@ -1,5 +1,5 @@
 /-
-Proxima Foundations — Memory
+Causa — Memory
 
 The F/A/P cognitive graph (doc 02, universe.md). The architectural
 commitment, verbatim (universe §Conclusions):
@@ -11,20 +11,20 @@ commitment, verbatim (universe §Conclusions):
 U-1 — the layering is enforced structurally across three files:
   - here: what each kind IS (Fact ↔ sourced from an Event; A/P ↔
     authored text + personality);
-  - Foundations.Edges: the directionality rule ℓ(source) ≥ ℓ(target)
+  - Causa.Edges: the directionality rule ℓ(source) ≥ ℓ(target)
     and the class-legality matrix;
-  - Foundations.Operators: production shapes (no downward writes).
+  - Causa.Operators: production shapes (no downward writes).
 
 The Trauma Test (doc 02): Facts are accepted, not revised;
 Abstractions and Perspectives are re-derivable; personality change
 affects future derivations, never existing Facts.
 -/
 
-import Foundations.Prelude
-import Foundations.Owner
-import Foundations.Identity
+import Causa.Prelude
+import Causa.Owner
+import Causa.Identity
 
-namespace Proxima
+namespace Causa
 
 -- ============================================================
 -- Kinds and layers (doc 02 §The Layering Principle)
@@ -103,7 +103,7 @@ axiom text_iff_derived :
 /-- The supersession pointer: `new_entity --core/supersedes-->
     old_entity`, append-only — modeled as an accessor on the NEW row.
     Engine-side this IS the `core/supersedes` edge; the bridge axiom
-    `supersession_pointer_is_edge` (Foundations.Edges) pins that
+    `supersession_pointer_is_edge` (Causa.Edges) pins that
     identification, and ME-4 (Facts never supersede), ME-5a (same
     kind), ME-5b (same owner) are PROVED there from the edge matrix
     and edge scope — minimization pass, 2026-06-11. -/
@@ -125,7 +125,7 @@ axiom personality_owner : PersonalityInstance → Owner
 
 /-- Authoring personality of a derived memory (reproducibility
     metadata lives inline on the row — doc 02 §The Core Entity).
-    `none` for Facts (Foundations.Operators, `facts_only_from_sources`)
+    `none` for Facts (Causa.Operators, `facts_only_from_sources`)
     and for non-personality-bound writes. -/
 axiom memory_authoring_personality : Memory → Option PersonalityInstance
 
@@ -173,4 +173,4 @@ def personality_may_read (p : PersonalityInstance) (m : Memory) : Prop :=
     | some author => read_scope (memory_owner m) p author
     | none        => True)
 
-end Proxima
+end Causa

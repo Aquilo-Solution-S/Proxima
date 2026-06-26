@@ -1,5 +1,5 @@
 /-
-Proxima Foundations — Citations
+Causa — Citations
 
 Bibliographic provenance is artefact-only and Fact-only (doc 11).
 The three-layer model: only Facts may cite (OPTIONAL as of 2026-06-13);
@@ -16,17 +16,17 @@ and the FK as one relation kept consistent by the engine; the kernel
 now encodes exactly one.
 
 CI-12/13 — edges do not cite (no citation accessor on Edge; see
-Foundations.Edges). CI-14 — operator reproducibility (model id,
+Causa.Edges). CI-14 — operator reproducibility (model id,
 prompt version, personality) is inline row metadata, not citation.
 S3 storage coordinates (CI-15/16) are engine concerns — excluded.
 -/
 
-import Foundations.Prelude
-import Foundations.Owner
-import Foundations.Identity
-import Foundations.Memory
+import Causa.Prelude
+import Causa.Owner
+import Causa.Identity
+import Causa.Memory
 
-namespace Proxima
+namespace Causa
 
 -- ============================================================
 -- Entities (doc 11 §Trait families)
@@ -155,4 +155,4 @@ axiom citation_owner_match :
   ∀ c : CitationMapping,
     memory_owner (citation_fact c) = cited_object_owner (citation_object c)
 
-end Proxima
+end Causa

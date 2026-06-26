@@ -1,8 +1,8 @@
 /-
-Proxima Foundations — Edges
+Causa — Edges
 
 Edges connect Memories and Goals (doc 02 §Edges). Every relation
-resolves to a build-time RelationDescriptor (Foundations.Composition);
+resolves to a build-time RelationDescriptor (Causa.Composition);
 unregistered relations are invalid.
 
 The philosophical load (universe §Perspectivist constructivism):
@@ -31,13 +31,13 @@ An edge's reasoning provenance is its authorship; anything
 citation-worthy is already on the authoring memory's citation chain.
 -/
 
-import Foundations.Prelude
-import Foundations.Owner
-import Foundations.Identity
-import Foundations.Memory
-import Foundations.Goals
+import Causa.Prelude
+import Causa.Owner
+import Causa.Identity
+import Causa.Memory
+import Causa.Goals
 
-namespace Proxima
+namespace Causa
 
 -- ============================================================
 -- Relation classes (doc 02 §Relation Registry)
@@ -96,7 +96,7 @@ noncomputable def NodeRef.schema : NodeRef → SchemaRef
 
 /-- Flavor-qualified relation identity (e.g. `core/derived-from`,
     `core/motivated-by`). Namespacing is pinned in
-    Foundations.Composition. -/
+    Causa.Composition. -/
 axiom RelationId : Type
 axiom relation_class : RelationId → RelationClass
 
@@ -236,7 +236,7 @@ theorem edge_layer_rule :
 /-- The pointer↔edge bridge: a supersession pointer IS a
     Supersession-class edge (doc 02, verbatim: "new_entity
     --core/supersedes--> old_entity"). The pointer accessor lives in
-    Foundations.Memory; this axiom identifies it with its edge. -/
+    Causa.Memory; this axiom identifies it with its edge. -/
 axiom supersession_pointer_is_edge :
   ∀ m m' : Memory, memory_supersedes m = some m' →
     ∃ e : Edge,
@@ -306,4 +306,4 @@ axiom supersession_same_endpoint_shape :
         memory_kind ms = memory_kind mt) ∨
      (∃ gs gt : Goal, edge_source e = .goal gs ∧ edge_target e = .goal gt))
 
-end Proxima
+end Causa

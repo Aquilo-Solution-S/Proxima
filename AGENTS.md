@@ -65,7 +65,7 @@ proxima/
 
 ## Kernel authority
 
-The Lean kernel at `docs/lean/Foundations/` is the source of truth for
+The Lean kernel at `docs/lean/Causa/` is the source of truth for
 Proxima's domainless invariants (F/A/P layering, edges, operators, owner
 scoping, goals, citations, compliance, composition). The prose docs under
 `docs/*.md` are rationale and commentary. When code or docs disagree with the
