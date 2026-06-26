@@ -8,6 +8,7 @@ mod ingest;
 pub mod mcp_listener;
 mod memory_authoring;
 mod personality;
+mod pipeline;
 mod query;
 
 use std::net::SocketAddr;
@@ -27,6 +28,7 @@ use crate::{Owner, Principal, SetWakeEntriesRequest, SetWakeEntriesResponse, Wak
 pub use ingest::EmbeddingDrainOutcome;
 pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
 pub use memory_authoring::{AuthorDerivedEdgeInput, AuthorDerivedRequestInput};
+pub use pipeline::MemoryPermit;
 
 pub struct Engine {
     registry: FlavorRegistryFrozen,
