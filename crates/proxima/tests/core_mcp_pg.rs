@@ -168,7 +168,7 @@ fn host_authz(owner: &Owner, tool_scope: ToolScope) -> AuthzContext {
                 source_ingest: true,
                 admin: false,
             },
-            memory_spaces: MemorySpaceGrants::legacy(),
+            memory_spaces: MemorySpaceGrants::unrestricted(),
         },
         auth_path: AuthPath::HostBearer,
     }

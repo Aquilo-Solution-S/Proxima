@@ -112,7 +112,7 @@ fn reduced_authz(owner: &Owner) -> AuthzContext {
                 source_ingest: false,
                 admin: false,
             },
-            memory_spaces: MemorySpaceGrants::legacy(),
+            memory_spaces: MemorySpaceGrants::unrestricted(),
         },
         auth_path: AuthPath::System,
     }
