@@ -26,6 +26,10 @@ use crate::storage::{StorageError, StorageHandle};
 use crate::verbs::schema::FlavorRegistryFrozen;
 use crate::{Owner, Principal, SetWakeEntriesRequest, SetWakeEntriesResponse, WakeEntryDraft};
 
+pub use goal_write::{
+    GoalCreatePayloadWriteRequest, GoalDecomposeRequest, GoalMarkAchievedRequest,
+    GoalModifyRequest, GoalTargetSelf, GoalTransitionRequest,
+};
 pub use ingest::EmbeddingDrainOutcome;
 pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
 pub use memory_authoring::{
