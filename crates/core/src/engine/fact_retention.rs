@@ -1,4 +1,4 @@
-use super::Engine;
+use super::{Engine, MemoryPermit};
 use crate::MemoryId;
 use crate::authz::{AuthzContext, MemoryAction, Role};
 use crate::error::ProtocolError;
@@ -33,11 +33,20 @@ impl Engine {
         owner: &Owner,
         seconds: u64,
     ) -> Result<(), ProtocolError> {
-        super::authorize_action(authz, owner, Role::Admin, MemoryAction::Admin)?;
+        let permit = self.authorize_request(authz, owner, Role::Admin, MemoryAction::Admin)?;
+        self.set_fact_retention_authorized(&permit, owner, seconds)
+            .await
+    }
+
+    async fn set_fact_retention_authorized(
+        &self,
+        permit: &MemoryPermit,
+        _owner: &Owner,
+        seconds: u64,
+    ) -> Result<(), ProtocolError> {
         let seconds = retention_seconds_to_i64(seconds)?;
-        let owner = authz.scoped_owner(owner.clone());
         self.storage
-            .upsert_fact_retention(&owner, seconds)
+            .upsert_fact_retention(permit.owner(), seconds)
             .await
             .map_err(|e| ProtocolError::internal(format!("set_fact_retention: {e}")))
     }
@@ -53,10 +62,17 @@ impl Engine {
         authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<Option<i64>, ProtocolError> {
-        super::authorize_action(authz, owner, Role::Admin, MemoryAction::Admin)?;
-        let owner = authz.scoped_owner(owner.clone());
+        let permit = self.authorize_request(authz, owner, Role::Admin, MemoryAction::Admin)?;
+        self.get_fact_retention_authorized(&permit, owner).await
+    }
+
+    async fn get_fact_retention_authorized(
+        &self,
+        permit: &MemoryPermit,
+        _owner: &Owner,
+    ) -> Result<Option<i64>, ProtocolError> {
         self.storage
-            .get_fact_retention(&owner)
+            .get_fact_retention(permit.owner())
             .await
             .map_err(|e| ProtocolError::internal(format!("get_fact_retention: {e}")))
     }
@@ -72,10 +88,17 @@ impl Engine {
         authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<bool, ProtocolError> {
-        super::authorize_action(authz, owner, Role::Admin, MemoryAction::Admin)?;
-        let owner = authz.scoped_owner(owner.clone());
+        let permit = self.authorize_request(authz, owner, Role::Admin, MemoryAction::Admin)?;
+        self.clear_fact_retention_authorized(&permit, owner).await
+    }
+
+    async fn clear_fact_retention_authorized(
+        &self,
+        permit: &MemoryPermit,
+        _owner: &Owner,
+    ) -> Result<bool, ProtocolError> {
         self.storage
-            .clear_fact_retention(&owner)
+            .clear_fact_retention(permit.owner())
             .await
             .map_err(|e| ProtocolError::internal(format!("clear_fact_retention: {e}")))
     }
@@ -92,8 +115,15 @@ impl Engine {
         authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<CleanupDueFactsOutcome, ProtocolError> {
-        super::authorize_action(authz, owner, Role::Admin, MemoryAction::Admin)?;
-        let owner = authz.scoped_owner(owner.clone());
+        let permit = self.authorize_request(authz, owner, Role::Admin, MemoryAction::Admin)?;
+        self.cleanup_due_facts_authorized(&permit, owner).await
+    }
+
+    async fn cleanup_due_facts_authorized(
+        &self,
+        permit: &MemoryPermit,
+        _owner: &Owner,
+    ) -> Result<CleanupDueFactsOutcome, ProtocolError> {
         let fact_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Fact);
         let edge_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Edge);
         let citation_mapping_sidecar_tables =
@@ -102,7 +132,7 @@ impl Engine {
             sidecar_tables(self.registry.schemas(), PayloadKind::CitedObject);
         self.storage
             .cleanup_due_facts(
-                &owner,
+                permit.owner(),
                 &fact_sidecar_tables,
                 &edge_sidecar_tables,
                 &citation_mapping_sidecar_tables,
