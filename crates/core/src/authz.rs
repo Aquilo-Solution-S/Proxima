@@ -160,10 +160,193 @@ impl RoleSet {
     }
 }
 
+/// Owner-space memory action vocabulary. Resource granularity is [`Owner`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MemoryAction {
+    Search,
+    Read,
+    Write,
+    Publish,
+    Admin,
+}
+
+impl MemoryAction {
+    #[must_use]
+    pub const fn required_role(self) -> Role {
+        match self {
+            Self::Search | Self::Read => Role::GraphRead,
+            Self::Write | Self::Publish => Role::GraphWrite,
+            Self::Admin => Role::Admin,
+        }
+    }
+}
+
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "five independent owner-space actions; named fields keep grant checks readable"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryActionSet {
+    pub search: bool,
+    pub read: bool,
+    pub write: bool,
+    pub publish: bool,
+    pub admin: bool,
+}
+
+impl MemoryActionSet {
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            search: true,
+            read: true,
+            write: true,
+            publish: true,
+            admin: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            search: false,
+            read: false,
+            write: false,
+            publish: false,
+            admin: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn read_only() -> Self {
+        Self {
+            search: true,
+            read: true,
+            write: false,
+            publish: false,
+            admin: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn read_write_publish_admin() -> Self {
+        Self {
+            search: true,
+            read: true,
+            write: true,
+            publish: true,
+            admin: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn legacy_from_roles(roles: RoleSet) -> Self {
+        Self {
+            search: roles.graph_read,
+            read: roles.graph_read,
+            write: roles.graph_write,
+            publish: roles.graph_write,
+            admin: roles.admin,
+        }
+    }
+
+    #[must_use]
+    pub const fn allows(self, action: MemoryAction) -> bool {
+        match action {
+            MemoryAction::Search => self.search,
+            MemoryAction::Read => self.read,
+            MemoryAction::Write => self.write,
+            MemoryAction::Publish => self.publish,
+            MemoryAction::Admin => self.admin,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemorySpaceGrant {
+    pub key: String,
+    pub label: String,
+    pub owner: Owner,
+    pub actions: MemoryActionSet,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemorySpaceGrants {
+    LegacyAccessiblePrincipals,
+    Explicit(Vec<MemorySpaceGrant>),
+}
+
+impl MemorySpaceGrants {
+    #[must_use]
+    pub const fn legacy() -> Self {
+        Self::LegacyAccessiblePrincipals
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when a grant has an empty key, duplicate key, or
+    /// duplicate owner. Explicit-mode public selectors must be unambiguous in
+    /// both directions (`key -> Owner` and omitted-space `Owner -> key`).
+    pub fn try_explicit(grants: Vec<MemorySpaceGrant>) -> Result<Self, String> {
+        let mut keys = std::collections::HashSet::new();
+        let mut owners = std::collections::HashSet::new();
+        for grant in &grants {
+            if grant.key.trim().is_empty() {
+                return Err("memory space key must not be empty".into());
+            }
+            if !keys.insert(grant.key.clone()) {
+                return Err(format!("duplicate memory space key: {}", grant.key));
+            }
+            if !owners.insert(grant.owner.clone()) {
+                return Err(format!(
+                    "duplicate memory space owner for key: {}",
+                    grant.key
+                ));
+            }
+        }
+        Ok(Self::Explicit(grants))
+    }
+
+    /// # Panics
+    ///
+    /// Panics when `grants` contain an empty key, duplicate key, or duplicate
+    /// owner. Use [`Self::try_explicit`] when the caller must handle invalid
+    /// grant sets without panicking.
+    #[must_use]
+    pub fn explicit(grants: Vec<MemorySpaceGrant>) -> Self {
+        Self::try_explicit(grants).expect("valid explicit memory-space grants")
+    }
+
+    #[must_use]
+    pub fn grant_for_owner(&self, owner: &Owner) -> Option<&MemorySpaceGrant> {
+        match self {
+            Self::LegacyAccessiblePrincipals => None,
+            Self::Explicit(grants) => grants.iter().find(|grant| &grant.owner == owner),
+        }
+    }
+
+    #[must_use]
+    pub fn grant_for_key(&self, key: &str) -> Option<&MemorySpaceGrant> {
+        match self {
+            Self::LegacyAccessiblePrincipals => None,
+            Self::Explicit(grants) => grants.iter().find(|grant| grant.key == key),
+        }
+    }
+
+    #[must_use]
+    pub fn explicit_grants(&self) -> &[MemorySpaceGrant] {
+        match self {
+            Self::LegacyAccessiblePrincipals => &[],
+            Self::Explicit(grants) => grants.as_slice(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CapabilitySet {
     pub tool_scope: ToolScope,
     pub roles: RoleSet,
+    pub memory_spaces: MemorySpaceGrants,
 }
 
 impl CapabilitySet {
@@ -172,6 +355,7 @@ impl CapabilitySet {
         Self {
             tool_scope: ToolScope::All,
             roles: RoleSet::all(),
+            memory_spaces: MemorySpaceGrants::legacy(),
         }
     }
 }
@@ -199,6 +383,24 @@ impl AuthzContext {
     #[must_use]
     pub fn scoped_owner(&self, principal: Principal) -> Owner {
         principal
+    }
+
+    #[must_use]
+    pub fn allows_memory_action(&self, owner: &Owner, action: MemoryAction) -> bool {
+        if !self.identity.can_access_principal(owner) {
+            return false;
+        }
+        if !self.capabilities.roles.has(action.required_role()) {
+            return false;
+        }
+        match &self.capabilities.memory_spaces {
+            MemorySpaceGrants::LegacyAccessiblePrincipals => true,
+            MemorySpaceGrants::Explicit(_) => self
+                .capabilities
+                .memory_spaces
+                .grant_for_owner(owner)
+                .is_some_and(|grant| grant.actions.allows(action)),
+        }
     }
 
     /// Self-scoped, full-capability context for trusted in-process
@@ -242,6 +444,7 @@ impl AuthzContext {
             capabilities: CapabilitySet {
                 tool_scope: ToolScope::Palette(Vec::new()),
                 roles: RoleSet::none(),
+                memory_spaces: MemorySpaceGrants::legacy(),
             },
             auth_path: AuthPath::Denied,
         }
@@ -516,6 +719,131 @@ mod tests {
         assert!(!ctx.capabilities.roles.has(Role::Admin));
         // Empty palette — no tool is allowed.
         assert!(!ctx.capabilities.tool_scope.allows("resource:memory"));
+    }
+
+    #[test]
+    fn explicit_memory_grants_deny_absent_owner_even_if_principal_access_exists() {
+        let user = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let personal = user.clone();
+        let shared = Principal::Group(crate::GroupId::new(uuid::Uuid::now_v7()));
+        let mut accessible_principals = HashSet::new();
+        accessible_principals.insert(personal.clone());
+        accessible_principals.insert(shared.clone());
+
+        let ctx = AuthzContext {
+            identity: Identity {
+                principal: user,
+                accessible_principals,
+                expires_at: None,
+                auth_epoch: 0,
+            },
+            capabilities: CapabilitySet {
+                tool_scope: ToolScope::All,
+                roles: RoleSet::all(),
+                memory_spaces: MemorySpaceGrants::explicit(vec![MemorySpaceGrant {
+                    key: "personal".into(),
+                    label: "Personal memory".into(),
+                    owner: personal.clone(),
+                    actions: MemoryActionSet::read_write_publish_admin(),
+                }]),
+            },
+            auth_path: AuthPath::HostBearer,
+        };
+
+        assert!(ctx.allows_memory_action(&personal, MemoryAction::Read));
+        assert!(!ctx.allows_memory_action(&shared, MemoryAction::Read));
+        assert!(!ctx.allows_memory_action(&shared, MemoryAction::Write));
+    }
+
+    #[test]
+    fn explicit_memory_grant_without_owner_visibility_still_denies() {
+        let user = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let hidden = Principal::Group(crate::GroupId::new(uuid::Uuid::now_v7()));
+        let mut accessible_principals = HashSet::new();
+        accessible_principals.insert(user.clone());
+
+        let ctx = AuthzContext {
+            identity: Identity {
+                principal: user,
+                accessible_principals,
+                expires_at: None,
+                auth_epoch: 0,
+            },
+            capabilities: CapabilitySet {
+                tool_scope: ToolScope::All,
+                roles: RoleSet::all(),
+                memory_spaces: MemorySpaceGrants::explicit(vec![MemorySpaceGrant {
+                    key: "hidden".into(),
+                    label: "Hidden".into(),
+                    owner: hidden.clone(),
+                    actions: MemoryActionSet::all(),
+                }]),
+            },
+            auth_path: AuthPath::HostBearer,
+        };
+
+        assert!(!ctx.allows_memory_action(&hidden, MemoryAction::Read));
+        assert!(!ctx.allows_memory_action(&hidden, MemoryAction::Write));
+    }
+
+    #[test]
+    fn legacy_memory_grants_preserve_existing_role_behavior() {
+        let user = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let shared = Principal::Group(crate::GroupId::new(uuid::Uuid::now_v7()));
+        let mut accessible_principals = HashSet::new();
+        accessible_principals.insert(user.clone());
+        accessible_principals.insert(shared.clone());
+
+        let ctx = AuthzContext {
+            identity: Identity {
+                principal: user,
+                accessible_principals,
+                expires_at: None,
+                auth_epoch: 0,
+            },
+            capabilities: CapabilitySet {
+                tool_scope: ToolScope::All,
+                roles: RoleSet {
+                    graph_read: true,
+                    graph_write: false,
+                    source_ingest: false,
+                    admin: false,
+                },
+                memory_spaces: MemorySpaceGrants::legacy(),
+            },
+            auth_path: AuthPath::HostBearer,
+        };
+
+        assert!(ctx.allows_memory_action(&shared, MemoryAction::Read));
+        assert!(ctx.allows_memory_action(&shared, MemoryAction::Search));
+        assert!(!ctx.allows_memory_action(&shared, MemoryAction::Write));
+    }
+
+    #[test]
+    fn explicit_memory_grants_reject_duplicate_keys_and_owners() {
+        let user = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let shared = Principal::Group(crate::GroupId::new(uuid::Uuid::now_v7()));
+        let grant = |key: &str, owner: Principal| MemorySpaceGrant {
+            key: key.into(),
+            label: key.into(),
+            owner,
+            actions: MemoryActionSet::read_only(),
+        };
+
+        assert!(
+            MemorySpaceGrants::try_explicit(vec![
+                grant("personal", user.clone()),
+                grant("personal", shared.clone()),
+            ])
+            .is_err()
+        );
+        assert!(
+            MemorySpaceGrants::try_explicit(vec![
+                grant("personal", user.clone()),
+                grant("also-personal", user),
+            ])
+            .is_err()
+        );
     }
 
     #[test]

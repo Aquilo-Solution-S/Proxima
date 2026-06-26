@@ -5,6 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::ListReadScopeRequest;
+use crate::MemoryAction;
 use crate::mcp::{McpToolCtx, McpToolError};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -24,6 +25,14 @@ pub(super) async fn list_read_scope(
     ctx: McpToolCtx,
     args: ListReadScopeArgs,
 ) -> Result<ListReadScopeOutput, McpToolError> {
+    if !ctx
+        .authz
+        .allows_memory_action(&ctx.owner, MemoryAction::Admin)
+    {
+        return Err(
+            crate::error::ProtocolError::forbidden("requires memory.admin on owner").into(),
+        );
+    }
     let pid = ctx.resolve_personality(&args.personality)?;
     let storage = ctx
         .storage()

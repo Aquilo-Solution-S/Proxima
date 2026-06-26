@@ -9,7 +9,7 @@ use crate::mcp::{McpToolCtx, McpToolError};
 use crate::verbs::query::{
     EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
-use crate::{McpTool, SchemaId};
+use crate::{McpTool, MemoryAction, PersonalityInstanceId, SchemaId};
 
 use super::memory::search::{NeighborEdge, load_graph_payloads, neighbor_edges};
 
@@ -148,6 +148,11 @@ pub struct SearchMemoriesArgs {
         description = "Optional max character count for hydrated body text. Applies only when include_body=true."
     )]
     pub body_max_chars: Option<usize>,
+    #[serde(default)]
+    #[schemars(
+        description = "Memory space keys from core_memory_spaces. Empty/omitted searches current owner."
+    )]
+    pub spaces: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -161,6 +166,7 @@ pub struct SearchMemoriesOutput {
 #[derive(Debug, Serialize)]
 pub struct SearchMemoryOutput {
     pub memory: String,
+    pub space: String,
     pub kind: String,
     pub schema_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -207,84 +213,199 @@ impl McpTool for SearchMemoriesTool {
                 .as_deref()
                 .map(|raw| ctx.resolve_personality(raw))
                 .transpose()?;
-            let mut req = MemorySearchRequest {
-                principal: ctx.owner.clone(),
-                query: query.to_string(),
-                mode: effective_mode,
-                supersession: args.supersession.into(),
-                limit: args.limit.clamp(1, 50),
-                kind: args.kind.map(EntityKind::from),
-                schema_id: args.schema_id.map(SchemaId::new),
-                tags: args.tags,
-                tag_match: args.tag_match,
-                since,
-                until,
-                order: args.order,
-                query_embedding: None,
-                embedding_model_id: None,
-                reader_personality_instance_id: reader,
-            };
-
-            if matches!(effective_mode, SearchMode::Semantic | SearchMode::Hybrid) {
-                let engine = ctx.engine().ok_or_else(|| {
-                    McpToolError::Other("engine required for semantic search".into())
-                })?;
-                let embed = engine
-                    .embed_client()
-                    .ok_or_else(|| McpToolError::Other(SEMANTIC_SEARCH_UNAVAILABLE.into()))?;
-                req.query_embedding = Some(
-                    embed
+            let (query_embedding, embedding_model_id) =
+                if matches!(effective_mode, SearchMode::Semantic | SearchMode::Hybrid) {
+                    let engine = ctx.engine().ok_or_else(|| {
+                        McpToolError::Other("engine required for semantic search".into())
+                    })?;
+                    let embed = engine
+                        .embed_client()
+                        .ok_or_else(|| McpToolError::Other(SEMANTIC_SEARCH_UNAVAILABLE.into()))?;
+                    let embedding = embed
                         .embed(query)
                         .await
-                        .map_err(|err| McpToolError::Other(format!("embed query: {err}")))?,
-                );
-                req.embedding_model_id = Some(embed.model_id().to_string());
-            }
-
-            let storage = ctx
-                .storage()
-                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
-            let rows = storage
-                .search_memories(&req, ctx.registry.search_projections())
-                .await?;
-            let body_max_chars = effective_body_max_chars(args.body_max_chars);
-            let degraded_to_lexical =
-                resolver_degraded || semantic_search_degraded_to_lexical(effective_mode, &rows);
-            let memory_ids: Vec<_> = rows.iter().map(|row| row.memory_id.into_inner()).collect();
-            let payloads = load_graph_payloads(&ctx, &memory_ids, args.include_body).await?;
-            let neighbor_edges = if args.include_neighbor_edges {
-                neighbor_edges(&ctx, &memory_ids).await?
-            } else {
-                Vec::new()
+                        .map_err(|err| McpToolError::Other(format!("embed query: {err}")))?;
+                    (Some(embedding), Some(embed.model_id().to_string()))
+                } else {
+                    (None, None)
+                };
+            let prepared = PreparedSearch {
+                query: query.to_string(),
+                effective_mode,
+                since,
+                until,
+                reader,
+                query_embedding,
+                embedding_model_id,
+                body_max_chars: effective_body_max_chars(args.body_max_chars),
+                limit: args.limit.clamp(1, 50),
             };
-            let memories = rows
-                .into_iter()
-                .map(|row| {
-                    let mid = row.memory_id.into_inner();
-                    let tags = payloads
-                        .get(&mid)
-                        .and_then(|payload| payload.tags.clone())
-                        .unwrap_or_default();
-                    let body = args
-                        .include_body
-                        .then(|| {
-                            payloads
-                                .get(&mid)
-                                .and_then(|payload| payload.body.clone())
-                                .map(|body| truncate_body(&body, body_max_chars))
-                        })
-                        .flatten();
-                    search_memory_output(&ctx, row, tags, body)
-                })
-                .collect::<Result<Vec<_>, McpToolError>>()?;
+            let spaces = resolve_search_spaces(&ctx, &args.spaces)?;
+            let mut all_memories = Vec::new();
+            let mut all_neighbor_edges = Vec::new();
+            let mut degraded_to_lexical = resolver_degraded;
+            for space in spaces {
+                let result = search_one_space(&ctx, &args, &prepared, space).await?;
+                degraded_to_lexical |= result.degraded_to_lexical;
+                all_memories.extend(result.memories);
+                all_neighbor_edges.extend(result.neighbor_edges);
+            }
+            sort_search_outputs(&mut all_memories, args.order);
+            all_memories.truncate(prepared.limit as usize);
 
             Ok(SearchMemoriesOutput {
                 mode: format!("{mode:?}").to_lowercase(),
                 degraded_to_lexical,
-                memories,
-                neighbor_edges,
+                memories: all_memories,
+                neighbor_edges: all_neighbor_edges,
             })
         })
+    }
+}
+
+struct PreparedSearch {
+    query: String,
+    effective_mode: SearchMode,
+    since: Option<time::OffsetDateTime>,
+    until: Option<time::OffsetDateTime>,
+    reader: Option<PersonalityInstanceId>,
+    query_embedding: Option<Vec<f32>>,
+    embedding_model_id: Option<String>,
+    body_max_chars: usize,
+    limit: u32,
+}
+
+struct SpaceSearchResult {
+    degraded_to_lexical: bool,
+    memories: Vec<SearchMemoryOutput>,
+    neighbor_edges: Vec<NeighborEdge>,
+}
+
+fn resolve_search_spaces(
+    ctx: &McpToolCtx,
+    raw_spaces: &[String],
+) -> Result<Vec<super::memory_spaces::ResolvedMemorySpace>, McpToolError> {
+    if raw_spaces.is_empty() {
+        return Ok(vec![super::memory_spaces::resolve_space_owner(
+            ctx,
+            None,
+            super::memory_spaces::SpaceDefault::Current,
+        )?]);
+    }
+    let mut seen = std::collections::HashSet::with_capacity(raw_spaces.len());
+    let mut out = Vec::with_capacity(raw_spaces.len());
+    for key in raw_spaces {
+        if seen.insert(key.as_str()) {
+            out.push(super::memory_spaces::resolve_space_owner(
+                ctx,
+                Some(key.as_str()),
+                super::memory_spaces::SpaceDefault::Current,
+            )?);
+        }
+    }
+    Ok(out)
+}
+
+async fn search_one_space(
+    ctx: &McpToolCtx,
+    args: &SearchMemoriesArgs,
+    prepared: &PreparedSearch,
+    space: super::memory_spaces::ResolvedMemorySpace,
+) -> Result<SpaceSearchResult, McpToolError> {
+    if !ctx
+        .authz
+        .allows_memory_action(&space.owner, MemoryAction::Search)
+    {
+        return Err(crate::error::ProtocolError::forbidden(format!(
+            "requires memory.search on space {}",
+            space.key
+        ))
+        .into());
+    }
+    if (args.include_body || args.include_neighbor_edges)
+        && !ctx
+            .authz
+            .allows_memory_action(&space.owner, MemoryAction::Read)
+    {
+        return Err(crate::error::ProtocolError::forbidden(format!(
+            "requires memory.read on space {}",
+            space.key
+        ))
+        .into());
+    }
+    let req = MemorySearchRequest {
+        principal: space.owner.clone(),
+        query: prepared.query.clone(),
+        mode: prepared.effective_mode,
+        supersession: args.supersession.into(),
+        limit: prepared.limit,
+        kind: args.kind.map(EntityKind::from),
+        schema_id: args.schema_id.clone().map(SchemaId::new),
+        tags: args.tags.clone(),
+        tag_match: args.tag_match,
+        since: prepared.since,
+        until: prepared.until,
+        order: args.order,
+        query_embedding: prepared.query_embedding.clone(),
+        embedding_model_id: prepared.embedding_model_id.clone(),
+        reader_personality_instance_id: prepared.reader,
+    };
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
+    let rows = storage
+        .search_memories(&req, ctx.registry.search_projections())
+        .await?;
+    let degraded_to_lexical = semantic_search_degraded_to_lexical(prepared.effective_mode, &rows);
+    let memory_ids: Vec<_> = rows.iter().map(|row| row.memory_id.into_inner()).collect();
+    let payloads = load_graph_payloads(ctx, &space.owner, &memory_ids, args.include_body).await?;
+    let neighbor_edges = if args.include_neighbor_edges {
+        neighbor_edges(ctx, &space.owner, &memory_ids).await?
+    } else {
+        Vec::new()
+    };
+    let memories = rows
+        .into_iter()
+        .map(|row| {
+            let mid = row.memory_id.into_inner();
+            let tags = payloads
+                .get(&mid)
+                .and_then(|payload| payload.tags.clone())
+                .unwrap_or_default();
+            let body = args
+                .include_body
+                .then(|| {
+                    payloads
+                        .get(&mid)
+                        .and_then(|payload| payload.body.clone())
+                        .map(|body| truncate_body(&body, prepared.body_max_chars))
+                })
+                .flatten();
+            search_memory_output(ctx, &space.key, row, tags, body)
+        })
+        .collect::<Result<Vec<_>, McpToolError>>()?;
+    Ok(SpaceSearchResult {
+        degraded_to_lexical,
+        memories,
+        neighbor_edges,
+    })
+}
+
+fn sort_search_outputs(memories: &mut [SearchMemoryOutput], order: SearchOrder) {
+    match order {
+        SearchOrder::Relevance => memories.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.created_at.cmp(&a.created_at))
+        }),
+        SearchOrder::Recency => memories.sort_by(|a, b| {
+            b.created_at.cmp(&a.created_at).then_with(|| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        }),
     }
 }
 
@@ -300,6 +421,7 @@ fn effective_body_max_chars(requested: Option<usize>) -> usize {
 
 fn search_memory_output(
     ctx: &McpToolCtx,
+    space: &str,
     row: crate::verbs::query::MemorySearchResult,
     tags: Vec<String>,
     body: Option<String>,
@@ -307,6 +429,7 @@ fn search_memory_output(
     let class = super::get_memory::memory_class(row.kind.as_str())?;
     Ok(SearchMemoryOutput {
         memory: ctx.format_memory_with_class(row.memory_id, class),
+        space: space.to_string(),
         kind: row.kind.as_str().to_string(),
         schema_id: row.schema_id.as_str().to_string(),
         authoring_personality_instance_id: super::get_memory::format_authoring_personality(

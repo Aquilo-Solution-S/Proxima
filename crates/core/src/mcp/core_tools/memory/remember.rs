@@ -1,6 +1,6 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::verbs::event_ingest::{EventDraft, InlineCitationMappingDraft, InlineCitedObjectDraft};
-use crate::{Role, SchemaId, SchemaVersion, SourceBatchId, canonical_json_bytes};
+use crate::{MemoryAction, Role, SchemaId, SchemaVersion, SourceBatchId, canonical_json_bytes};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +33,9 @@ pub struct RememberArgs {
         description = "Optional typed inline citation linking this Fact to an external artifact; the object/mapping schemas must be registered (`CitedObject`/`CitationMapping` kinds — see `core_list_schemas`)."
     )]
     pub citation: Option<RememberCitation>,
+    #[serde(default)]
+    #[schemars(description = "Memory space key from core_memory_spaces. Omit for current owner.")]
+    pub space: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -72,6 +75,10 @@ impl McpTool for RememberTool {
     type Args = RememberArgs;
     type Output = RememberOutput;
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "remember validates input, resolves space grants, and handles optional inline citation atomically"
+    )]
     fn call(
         ctx: McpToolCtx,
         args: RememberArgs,
@@ -96,6 +103,21 @@ impl McpTool for RememberTool {
                     "idempotency_key must be 1..=200 chars when provided".into(),
                 ));
             }
+            let space = super::super::memory_spaces::resolve_space_owner(
+                &ctx,
+                args.space.as_deref(),
+                super::super::memory_spaces::SpaceDefault::Current,
+            )?;
+            if !ctx
+                .authz
+                .allows_memory_action(&space.owner, MemoryAction::Write)
+            {
+                return Err(crate::error::ProtocolError::forbidden(format!(
+                    "requires memory.write on space {}",
+                    space.key
+                ))
+                .into());
+            }
             let tags = normalize_tags(args.tags)?;
             let note_id = args
                 .idempotency_key
@@ -112,7 +134,7 @@ impl McpTool for RememberTool {
             };
             let observed_at = time::OffsetDateTime::now_utc();
             let mut draft = EventDraft::from_payload(
-                &ctx.owner,
+                &space.owner,
                 SOURCE_ID,
                 SourceBatchId::new(uuid::Uuid::now_v7()),
                 &payload,

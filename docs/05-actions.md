@@ -61,6 +61,7 @@ Tools are effect adapters.
 |---|---|
 | Tool vocabulary | 12 owns build-time tool classes, MCP dispatch, and compliance declarations |
 | Runtime tool scope | auth token scope ∩ deployment profile (`ToolScope::Palette` when narrowed) |
+| Memory-space RBAC | memory reads/writes/actions are gated by owner-space grants plus tool scope; grants are host-resolved `(subject, Owner, action)` capabilities over the `search/read/write/publish/admin` action vocabulary |
 | Persistence | tool result enters storage only as registered Fact / Edge writes |
 | A/P writes | operator/wake output protocol only; tools do not bypass 04 |
 | Failure | failed attempts are Facts when the source/tool schema models them |
@@ -134,6 +135,7 @@ Every action-attempt or effect Fact follows the ordinary ingest contract:
 | Check | Rule |
 |---|---|
 | owner | source/tool may write only within the authorized Owner |
+| owner-space grant | memory writes require the resolved `write` action for that Owner; publish requires `read` + `publish` on the source space and `write` on the target space |
 | schema | `schema_id` / version must resolve to a registered `FactPayload` |
 | relation | structural edges must use registered relation descriptors |
 | capability | tool output must stay within registered schemas/relations and resolved tool scope |

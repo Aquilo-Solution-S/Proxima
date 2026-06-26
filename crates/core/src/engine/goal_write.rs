@@ -1,6 +1,6 @@
 use super::Engine;
 use crate::GoalPayload;
-use crate::authz::{AuthzContext, Role};
+use crate::authz::{AuthzContext, MemoryAction, Role};
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
 use crate::verbs::goal_write::{
@@ -33,6 +33,7 @@ impl Engine {
         P: GoalPayload,
     {
         super::authorize(authz, &request.principal, Role::GraphWrite)?;
+        super::authorize_memory_action(authz, &request.principal, MemoryAction::Write)?;
 
         let GoalCreateRequest {
             principal,

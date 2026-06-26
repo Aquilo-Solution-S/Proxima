@@ -3,8 +3,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::FactEntityId;
 use crate::mcp::{McpToolCtx, McpToolError};
+use crate::{FactEntityId, MemoryAction};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CitationOfFactArgs {
@@ -44,6 +44,12 @@ pub(super) async fn citation_of_fact(
     ctx: McpToolCtx,
     args: CitationOfFactArgs,
 ) -> Result<CitationOfFactOutput, McpToolError> {
+    if !ctx
+        .authz
+        .allows_memory_action(&ctx.owner, MemoryAction::Read)
+    {
+        return Err(crate::error::ProtocolError::forbidden("requires memory.read on owner").into());
+    }
     let fact_memory_id = ctx.resolve_fact_memory(&args.fact)?;
     let storage = ctx
         .storage()
@@ -67,6 +73,12 @@ pub(super) async fn citation_of_entity_head(
     ctx: McpToolCtx,
     args: CitationOfEntityHeadArgs,
 ) -> Result<CitationOfEntityHeadOutput, McpToolError> {
+    if !ctx
+        .authz
+        .allows_memory_action(&ctx.owner, MemoryAction::Read)
+    {
+        return Err(crate::error::ProtocolError::forbidden("requires memory.read on owner").into());
+    }
     let fact_entity_uuid = args
         .fact_entity_id
         .parse::<uuid::Uuid>()

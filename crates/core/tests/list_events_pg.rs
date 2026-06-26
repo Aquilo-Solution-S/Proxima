@@ -222,6 +222,7 @@ impl ToolHarness {
                 source_handles: vec![fact.handle.clone()],
                 model_id: "codex-test".into(),
                 idempotency_key: Some("list-events-source".into()),
+                space: None,
             })
             .await?;
         let edge = self
@@ -230,6 +231,7 @@ impl ToolHarness {
                 target: fact.handle.clone(),
                 reason: "The abstraction refers to the target fact.".into(),
                 confidence: 80,
+                space: None,
             })
             .await?;
         Ok(ProducedGraph {
@@ -262,6 +264,7 @@ fn remember_args(title: &str, body: &str, idempotency_key: &str) -> RememberArgs
         tags: Vec::new(),
         idempotency_key: Some(idempotency_key.into()),
         citation: None,
+        space: None,
     }
 }
 

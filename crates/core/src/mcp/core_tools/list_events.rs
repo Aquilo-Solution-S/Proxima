@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::change_event::{ChangeEventKind, EntityRef};
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::personality::ChangeEventForWake;
-use crate::{EdgeId, EntityKind};
+use crate::{EdgeId, EntityKind, MemoryAction};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListEventsArgs {
@@ -66,6 +66,12 @@ pub async fn list_events(
     ctx: McpToolCtx,
     args: ListEventsArgs,
 ) -> Result<ListEventsOutput, McpToolError> {
+    if !ctx
+        .authz
+        .allows_memory_action(&ctx.owner, MemoryAction::Read)
+    {
+        return Err(crate::error::ProtocolError::forbidden("requires memory.read on owner").into());
+    }
     let storage = ctx
         .storage()
         .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;

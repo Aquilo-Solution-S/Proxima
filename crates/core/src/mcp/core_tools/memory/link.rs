@@ -1,6 +1,6 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::storage::DerivedEdgeSpec;
-use crate::{EdgeAuthorshipKind, MemoryId, SidecarPayload};
+use crate::{EdgeAuthorshipKind, MemoryAction, MemoryId, Owner, SidecarPayload};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +24,11 @@ pub struct LinkArgs {
     #[serde(default = "default_confidence")]
     #[schemars(description = "Confidence score from 0 to 100. Defaults to 80.")]
     pub confidence: u8,
+    #[serde(default)]
+    #[schemars(
+        description = "Memory space key from core_memory_spaces. All handles in this call must belong to this space."
+    )]
+    pub space: Option<String>,
 }
 
 fn default_confidence() -> u8 {
@@ -61,13 +66,39 @@ impl McpTool for LinkTool {
                     "confidence must be 0..=100".into(),
                 ));
             }
+            let space = super::super::memory_spaces::resolve_space_owner(
+                &ctx,
+                args.space.as_deref(),
+                super::super::memory_spaces::SpaceDefault::Current,
+            )?;
+            if !ctx
+                .authz
+                .allows_memory_action(&space.owner, MemoryAction::Read)
+            {
+                return Err(crate::error::ProtocolError::forbidden(format!(
+                    "requires memory.read on space {}",
+                    space.key
+                ))
+                .into());
+            }
+            if !ctx
+                .authz
+                .allows_memory_action(&space.owner, MemoryAction::Write)
+            {
+                return Err(crate::error::ProtocolError::forbidden(format!(
+                    "requires memory.write on space {}",
+                    space.key
+                ))
+                .into());
+            }
+
             let source_id = resolve_memory(&ctx, &args.source)?;
             let target_id = resolve_memory(&ctx, &args.target)?;
             if source_id == target_id {
                 return Err(McpToolError::InvalidInput("self-loop link rejected".into()));
             }
 
-            let source_kind = load_kind(&ctx, source_id).await?;
+            let source_kind = load_kind(&ctx, &space.owner, source_id).await?;
             // Only Abstractions/Perspectives may source an agent link; a Fact
             // (or any non-A/P) source violates strict layering (inv 1).
             if !matches!(
@@ -80,7 +111,7 @@ impl McpTool for LinkTool {
                         .into(),
                 ));
             }
-            let target_kind = load_kind(&ctx, target_id).await?;
+            let target_kind = load_kind(&ctx, &space.owner, target_id).await?;
 
             let relation = ctx
                 .registry
@@ -93,7 +124,7 @@ impl McpTool for LinkTool {
                 confidence: args.confidence,
             });
             let edge = DerivedEdgeSpec {
-                owner: &ctx.owner,
+                owner: &space.owner,
                 relation,
                 source_kind: memory_kind_for_edge(source_kind),
                 source_memory_id: source_id,
@@ -121,21 +152,21 @@ fn resolve_memory(ctx: &McpToolCtx, raw: &str) -> Result<MemoryId, McpToolError>
 
 async fn load_kind(
     ctx: &McpToolCtx,
+    owner: &Owner,
     memory_id: MemoryId,
 ) -> Result<Option<crate::EntityKind>, McpToolError> {
     let storage = ctx
         .storage()
         .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
     storage
-        .load_memory_kinds(&ctx.owner, &[memory_id])
+        .load_memory_kinds(owner, &[memory_id])
         .await?
         .into_iter()
         .next()
         .map(|row| row.kind)
         .ok_or_else(|| {
-            McpToolError::InvalidInput(format!(
-                "memory {} not found for owner",
-                memory_id.into_inner()
-            ))
+            McpToolError::InvalidInput(
+                "cross-space derive/link is not supported; choose one memory space".into(),
+            )
         })
 }

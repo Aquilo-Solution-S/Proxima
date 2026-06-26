@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use super::Engine;
 use crate::SchemaVersion;
-use crate::authz::{AuthzContext, Role};
+use crate::authz::{AuthzContext, MemoryAction, Role};
 use crate::error::ProtocolError;
 use crate::llm::EmbeddingClient;
 use crate::storage::StorageError;
@@ -71,6 +71,7 @@ impl Engine {
         draft: EventDraft,
     ) -> Result<AuthorizedEventIngest, ProtocolError> {
         super::authorize(authz, &draft.principal, role)?;
+        super::authorize_memory_action(authz, &draft.principal, MemoryAction::Write)?;
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
@@ -110,6 +111,7 @@ impl Engine {
         mapping: InlineCitationMappingDraft,
     ) -> Result<AuthorizedFactWithCitation, ProtocolError> {
         super::authorize(authz, &draft.principal, role)?;
+        super::authorize_memory_action(authz, &draft.principal, MemoryAction::Write)?;
 
         // Validate the Fact only by schema-existence, matching
         // `authorize_event_ingest`. The Fact payload is built from a
@@ -149,6 +151,7 @@ impl Engine {
         mapping: InlineCitationMappingDraft,
     ) -> Result<AuthorizedCitationAttachment, ProtocolError> {
         super::authorize(authz, &principal, role)?;
+        super::authorize_memory_action(authz, &principal, MemoryAction::Write)?;
         let owner = authz.scoped_owner(principal);
         let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
         Ok(AuthorizedCitationAttachment::new(
@@ -444,7 +447,7 @@ impl Engine {
         mut input: McpCallLogInput,
     ) -> Result<McpCallLogOutcome, ProtocolError> {
         let owner = authz.scoped_owner(input.owner.clone());
-        super::authorize(authz, &owner, Role::SourceIngest)?;
+        super::authorize_memory_action(authz, &owner, MemoryAction::Write)?;
         input.owner = owner;
         self.storage
             .persist_mcp_call_atomic(&input)

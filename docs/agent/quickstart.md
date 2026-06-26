@@ -26,6 +26,10 @@ Live server discovery is authoritative:
 4. Read `proxima://how-to`.
 5. Read `proxima://tools`.
 
+In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_search_memories`, `core_get_memory`, and `core_publish_memory`. Omitted `space` preserves the current owner behavior for single-owner deployments.
+
+`core_publish_memory` v1 copies only `core/agent-note-v1`; flavor-specific publish is a host/flavor concern until typed replay is designed.
+
 ## Illustrative JSON-RPC Examples
 
 Exact transport wrappers vary by MCP client; these examples show the MCP

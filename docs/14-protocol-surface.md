@@ -26,10 +26,12 @@ No runtime schema/source/tool/flavor registration surface exists.
 
 Agent long-term memory is core substrate. MCP tools are thin callers of
 Engine verbs; MCP resources expose read-only graph and registry views.
-Storage stays behind the Engine. The substrate surface is 9 tools + 7
+Storage stays behind the Engine. The substrate surface is 11 tools + 7
 resources; `proxima://tools` returns the live tool catalog only, and
 resources are discovered through MCP `resources/list` and
 `resources/templates/list`.
+
+Owner remains the storage and graph isolation primitive. Owner-space grants are an authorization layer above Owner: the host resolves which `(subject, Owner, action)` grants exist, and Core enforces the resolved grants at verb/tool entry. Grants never add org semantics to Core and never permit cross-owner edges.
 
 Canonical substrate tools:
 
@@ -39,7 +41,9 @@ Canonical substrate tools:
 | `core_record_utterance` | write utterance Fact |
 | `core_derive` | write agent-authored Abstraction |
 | `core_link` | write registered relation edge |
-| `core_search_memories` | search memories; may include neighbor edges, per-result tags, and lexical-degradation status |
+| `core_search_memories` | search memories; may include neighbor edges, per-result tags, lexical-degradation status, and owner-space labels when explicit grants are present |
+| `core_memory_spaces` | list server-issued memory-space keys and the per-space `search/read/write/publish/admin` actions available to the caller |
+| `core_publish_memory` | copy/re-ingest a core AgentNote Fact from one authorized owner-space to another; v1 never mutates Owner and never creates cross-owner edges |
 | `core_goal` | goal action dispatcher: `set`, `transition`, `modify`, `mark_achieved`, `decompose` |
 | `core_wake` | wake-config action dispatcher: `add`, `update`, `remove`, `set`, `list` |
 | `core_personality` | personality action dispatcher: `instantiate`, `tombstone`, `set_read_scope`, `list`, `get`, `list_read_scope` |
@@ -105,7 +109,10 @@ Dispatch verifies caller access to that Owner.
 | single-tenant | one accessible Owner |
 | multi-tenant | same calls, different Owner per call |
 | multi-owner event reads | one `EventHistory` / poll call per Owner |
+| multi-space memory search | MCP fanout over authorized single-Owner searches, merged with per-result space labels |
 | cross-owner graph data | not exposed by protocol |
+
+Owner-space grant actions are `search`, `read`, `write`, `publish`, and `admin`. Public MCP inputs may name server-issued space keys from `core_memory_spaces`; the keys are selectors only, not authority. Each use is resolved through `AuthzContext` grants and Owner visibility before calling the existing single-owner storage/graph path.
 
 ## Graph Verbs
 

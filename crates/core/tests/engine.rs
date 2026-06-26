@@ -14,7 +14,10 @@ use proxima_core::verbs::event_history::EventHistoryRequest;
 use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, SchemaRequest};
-use proxima_core::{AuthPath, AuthzContext, McpCallLogInput, RoleSet};
+use proxima_core::{
+    AuthPath, AuthzContext, CapabilitySet, Identity, McpCallLogInput, MemoryActionSet,
+    MemorySpaceGrant, MemorySpaceGrants, RoleSet, ToolScope,
+};
 use test_fixtures::ConstantEmbedding;
 use uuid::Uuid;
 
@@ -193,6 +196,30 @@ async fn cross_owner_context_is_forbidden_on_graph_read() {
     );
 }
 
+fn explicit_memory_authz(owner: &Owner, actions: MemoryActionSet) -> AuthzContext {
+    let mut accessible_principals = std::collections::HashSet::new();
+    accessible_principals.insert(owner.clone());
+    AuthzContext {
+        identity: Identity {
+            principal: owner.clone(),
+            accessible_principals,
+            expires_at: None,
+            auth_epoch: 0,
+        },
+        capabilities: CapabilitySet {
+            tool_scope: ToolScope::All,
+            roles: RoleSet::all(),
+            memory_spaces: MemorySpaceGrants::explicit(vec![MemorySpaceGrant {
+                key: "current".into(),
+                label: "Current".into(),
+                owner: owner.clone(),
+                actions,
+            }]),
+        },
+        auth_path: AuthPath::HostBearer,
+    }
+}
+
 fn sample_mcp_input(owner: &Owner) -> McpCallLogInput {
     McpCallLogInput {
         owner: owner.clone(),
@@ -208,6 +235,39 @@ fn sample_mcp_input(owner: &Owner) -> McpCallLogInput {
         observed_at: time::OffsetDateTime::UNIX_EPOCH,
         occurred_at: time::OffsetDateTime::UNIX_EPOCH,
     }
+}
+
+#[tokio::test]
+async fn persist_mcp_call_rejects_context_without_write_grant() {
+    let (principal, owner) = fresh_owner();
+    let engine = boot_engine(principal, owner.clone());
+    let authz = explicit_memory_authz(&owner, MemoryActionSet::read_only());
+
+    let err = engine
+        .persist_mcp_call(&authz, sample_mcp_input(&owner))
+        .await
+        .expect_err("write grant required");
+    assert!(err.to_string().contains("requires memory.write"));
+}
+
+#[tokio::test]
+async fn read_mcp_call_history_rejects_context_without_read_grant() {
+    let (principal, owner) = fresh_owner();
+    let engine = boot_engine(principal, owner.clone());
+    let authz = explicit_memory_authz(&owner, MemoryActionSet::none());
+
+    let err = engine
+        .read_mcp_call_history(
+            &authz,
+            &McpCallHistoryRequest {
+                principal: owner,
+                actor_oid: None,
+                limit: 10,
+            },
+        )
+        .await
+        .expect_err("read grant required");
+    assert!(err.to_string().contains("requires memory.read"));
 }
 
 #[tokio::test]
@@ -227,17 +287,17 @@ async fn persist_mcp_call_rejects_owner_the_context_cannot_access() {
 }
 
 #[tokio::test]
-async fn persist_mcp_call_rejects_context_without_source_ingest_role() {
+async fn persist_mcp_call_rejects_context_without_graph_write_role() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner.clone());
-    // Right owner, but no source-ingest role.
+    // Right owner, but no memory-write backing graph_write role.
     let mut authz = AuthzContext::single_owner(&owner, AuthPath::System);
     authz.capabilities.roles = RoleSet::none();
 
     let err = engine
         .persist_mcp_call(&authz, sample_mcp_input(&owner))
         .await
-        .expect_err("missing source-ingest role must be rejected");
+        .expect_err("missing graph-write role must be rejected");
     assert_eq!(err.code, ErrorCode::Forbidden);
 }
 

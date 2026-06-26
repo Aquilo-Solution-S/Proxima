@@ -1,6 +1,6 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::verbs::event_ingest::EventDraft;
-use crate::{Role, SourceBatchId};
+use crate::{MemoryAction, Role, SourceBatchId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +23,9 @@ pub struct RecordUtteranceArgs {
         description = "Optional stable idempotency key; replaying the same key is a no-op, not a duplicate."
     )]
     pub idempotency_key: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Memory space key from core_memory_spaces. Omit for current owner.")]
+    pub space: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -58,6 +61,22 @@ impl McpTool for RecordUtteranceTool {
                 ));
             }
 
+            let space = super::super::memory_spaces::resolve_space_owner(
+                &ctx,
+                args.space.as_deref(),
+                super::super::memory_spaces::SpaceDefault::Current,
+            )?;
+            if !ctx
+                .authz
+                .allows_memory_action(&space.owner, MemoryAction::Write)
+            {
+                return Err(crate::error::ProtocolError::forbidden(format!(
+                    "requires memory.write on space {}",
+                    space.key
+                ))
+                .into());
+            }
+
             let payload = UtteranceV1 {
                 speaker: args.speaker,
                 conversation_id: conversation_id.to_string(),
@@ -73,7 +92,7 @@ impl McpTool for RecordUtteranceTool {
 
             let observed_at = time::OffsetDateTime::now_utc();
             let mut draft = EventDraft::from_payload(
-                &ctx.owner,
+                &space.owner,
                 source_id,
                 SourceBatchId::new(uuid::Uuid::now_v7()),
                 &payload,

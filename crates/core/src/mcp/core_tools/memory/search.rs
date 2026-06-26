@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use crate::MemoryId;
 use crate::mcp::{McpToolCtx, McpToolError};
+use crate::{MemoryId, Owner};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -14,6 +14,7 @@ pub struct NeighborEdge {
 
 pub(crate) async fn load_graph_payloads(
     ctx: &McpToolCtx,
+    owner: &Owner,
     memory_ids: &[uuid::Uuid],
     include_body: bool,
 ) -> Result<BTreeMap<uuid::Uuid, GraphPayloadRow>, McpToolError> {
@@ -29,7 +30,7 @@ pub(crate) async fn load_graph_payloads(
         .map(MemoryId::new)
         .collect::<Vec<_>>();
     let rows = storage
-        .load_memory_graph_payloads(&ctx.owner, &ids, include_body)
+        .load_memory_graph_payloads(owner, &ids, include_body)
         .await?;
     Ok(rows
         .into_iter()
@@ -57,6 +58,7 @@ pub(crate) struct GraphPayloadRow {
 /// Returns storage errors from the owner-filtered edge query.
 pub async fn neighbor_edges(
     ctx: &McpToolCtx,
+    owner: &Owner,
     memory_ids: &[uuid::Uuid],
 ) -> Result<Vec<NeighborEdge>, McpToolError> {
     if memory_ids.is_empty() {
@@ -70,9 +72,7 @@ pub async fn neighbor_edges(
         .copied()
         .map(MemoryId::new)
         .collect::<Vec<_>>();
-    let rows = storage
-        .load_neighbor_memory_edges(&ctx.owner, &ids, 200)
-        .await?;
+    let rows = storage.load_neighbor_memory_edges(owner, &ids, 200).await?;
 
     Ok(rows
         .into_iter()

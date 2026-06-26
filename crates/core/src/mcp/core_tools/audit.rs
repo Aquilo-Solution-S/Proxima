@@ -21,7 +21,7 @@ use crate::mcp::core_tools::payload::{
     PersonalityConfigChangedSubject, PersonalityConfigChangedV1, PersonalityConfigChangedVerb,
 };
 use crate::verbs::event_ingest::{Citation, CitationMappingHint, CitedObjectHint, EventDraft};
-use crate::{SchemaId, SchemaVersion, SourceBatchId};
+use crate::{MemoryAction, SchemaId, SchemaVersion, SourceBatchId};
 
 /// Outcome of an audit-emit attempt. Tools surface `Failed` as a
 /// non-fatal warning attached to their successful response (the verb
@@ -91,6 +91,12 @@ async fn resolve_caller(ctx: &McpToolCtx) -> Result<PersonalityConfigChangedCall
 }
 
 async fn write_fact(ctx: &McpToolCtx, payload: &PersonalityConfigChangedV1) -> Result<(), String> {
+    if !ctx
+        .authz
+        .allows_memory_action(&ctx.owner, MemoryAction::Write)
+    {
+        return Err("requires memory.write on owner".into());
+    }
     let storage = ctx
         .storage()
         .ok_or_else(|| "engine storage unavailable".to_string())?;

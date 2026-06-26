@@ -42,6 +42,9 @@ with before/after counts.
 | ES-13 | Per-memory ACL (AccessGrant) is v2+, not v1 | structural absence + Owner.lean header comment |
 | ES-14 | Push vs pull is source-side implementation detail | excluded: engine |
 | ES-15 | Bootstrap/founding-goal is flavor onboarding | excluded: app-layer |
+| AUTH-1 | Owner-space grant predicate | `Authorization.lean` `MemoryAction`, `owner_space_grant`, `may_memory_action` |
+| AUTH-2 | Grants do not replace Owner visibility | axiom `owner_space_grant_owner_visible` |
+| AUTH-3 | Per-memory ACL absent in v1 | excluded: doc 01 keeps `AccessGrant` as v2+ extension layered above Owner |
 
 ## 02 — Memory (ME)
 
