@@ -32,8 +32,12 @@ impl Engine {
     where
         P: GoalPayload,
     {
-        super::authorize(authz, &request.principal, Role::GraphWrite)?;
-        super::authorize_memory_grant(authz, &request.principal, MemoryAction::Write)?;
+        super::authorize_action(
+            authz,
+            &request.principal,
+            Role::GraphWrite,
+            MemoryAction::Write,
+        )?;
 
         let GoalCreateRequest {
             principal,

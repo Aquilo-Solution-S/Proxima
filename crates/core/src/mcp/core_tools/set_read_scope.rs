@@ -3,13 +3,13 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::MemoryAction;
 use crate::SetReadScopeRequest;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
     PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::{McpToolCtx, McpToolError};
+use crate::{MemoryAction, Role};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetReadScopeArgs {
@@ -32,7 +32,7 @@ pub(super) async fn set_read_scope(
     ctx: McpToolCtx,
     args: SetReadScopeArgs,
 ) -> Result<SetReadScopeOutput, McpToolError> {
-    crate::engine::authorize_memory_action(&ctx.authz, &ctx.owner, MemoryAction::Admin)
+    crate::engine::authorize_action(&ctx.authz, &ctx.owner, Role::Admin, MemoryAction::Admin)
         .map_err(|e| McpToolError::Other(e.to_string()))?;
     let pid = ctx.resolve_personality(&args.personality)?;
     let readable_ids = args
