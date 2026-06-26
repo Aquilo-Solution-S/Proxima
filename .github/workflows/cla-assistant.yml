@@ -24,4 +24,4 @@ jobs:
           path-to-signatures: '.github/cla/signatures.json'
           path-to-document: 'https://github.com/Aquilo-Solution-S/Proxima/blob/main/.github/cla/CLA.md'
           branch: 'main'
-          allowlist: 'HeinrichvH,heinrichvonhelmolt,cla-assistant,dependabot,dependabot[bot]'
+          allowlist: 'HeinrichvH,heinrichvonhelmolt,boreas-aquilo,cla-assistant,dependabot,dependabot[bot]'
