@@ -655,7 +655,6 @@ pub(in crate::engine) mod tests {
 
         async fn load_memory_by_id(
             &self,
-            _owner: &Owner,
             _memory_id: MemoryId,
             _reader_personality_instance_id: Option<PersonalityInstanceId>,
             _sidecars: &[SidecarSpec],

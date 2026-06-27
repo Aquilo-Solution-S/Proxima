@@ -98,6 +98,7 @@ impl MemoryPermit {
         }
     }
 
+    #[allow(dead_code)]
     fn entry(mode: PermitMode, owner: Owner, requested: Owner, relation: Relation) -> Self {
         Self {
             mode,
@@ -338,7 +339,7 @@ impl Engine {
     /// storage, so callers cannot select the owner-space used for the read.
     // TEMP: grant resolution was gutted in the vocab swap; the .await returns in
     // Task 5.3/Phase 4 when this is replaced by `authorize_entry_read`. Remove then.
-    #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async, dead_code)]
     pub(in crate::engine) async fn authorize_entry_request(
         &self,
         authz: &AuthzContext,
@@ -401,6 +402,7 @@ impl Engine {
         Ok(basis)
     }
 
+    #[allow(dead_code)]
     fn veto_and_observe(&self, input: &AuthzInput<'_>) -> Result<(), ProtocolError> {
         let (result, outcome) = match self.registry.run_authorization_vetoes(input) {
             Ok(()) => (Ok(()), AuthzOutcome::Allowed),
@@ -410,6 +412,7 @@ impl Engine {
         result
     }
 
+    #[allow(dead_code)]
     fn observe_unresolved_entry(
         &self,
         authz: &AuthzContext,

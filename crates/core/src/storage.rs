@@ -867,13 +867,10 @@ pub trait Storage: Send + Sync {
         req: &PersonalityWriteRequest<'_>,
     ) -> Result<PersonalityWriteOutcome, StorageError>;
 
-    /// Owner-scoped fetch of a single memory by id, joined with whichever
-    /// sidecar table holds its typed payload (matched by `schema_id`).
-    /// Returns `None` when the memory does not exist or belongs to a
-    /// different owner.
+    /// Unconditional load of an id already authorized via `authorize_entry_read`;
+    /// carries no ownership filter by design.
     async fn load_memory_by_id(
         &self,
-        owner: &Owner,
         memory_id: crate::MemoryId,
         reader_personality_instance_id: Option<PersonalityInstanceId>,
         sidecars: &[SidecarSpec],
@@ -1367,7 +1364,6 @@ impl Storage for NoopStorage {
 
     async fn load_memory_by_id(
         &self,
-        _owner: &Owner,
         _memory_id: crate::MemoryId,
         _reader_personality_instance_id: Option<PersonalityInstanceId>,
         _sidecars: &[SidecarSpec],

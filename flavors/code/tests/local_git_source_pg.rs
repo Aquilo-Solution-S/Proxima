@@ -188,6 +188,7 @@ async fn local_git_source_full_cycle() {
         // matters for downstream consumers.
         let q = QueryRequest {
             principal: owner.clone(),
+            read_owners: vec![owner.clone()],
             entity_kind: None,
             schema_id: Some(SchemaId::new(
                 <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID.into(),
@@ -263,6 +264,7 @@ async fn local_git_source_full_cycle() {
         // Old revision still exists as history (IncludeSuperseded view).
         let q_all = QueryRequest {
             principal: owner.clone(),
+            read_owners: vec![owner.clone()],
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
