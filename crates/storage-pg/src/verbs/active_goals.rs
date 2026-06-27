@@ -26,6 +26,14 @@ pub(crate) async fn list_active_goals(
                 AND e.target_memory_id = $3
                 AND EXISTS (
                     SELECT 1
+                      FROM proxima_core.entity_owner teo
+                      JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS t(kind, id)
+                        ON teo.owner_principal_kind = t.kind
+                       AND teo.owner_principal_id = t.id
+                     WHERE teo.entity_id = $3
+                )
+                AND EXISTS (
+                    SELECT 1
                       FROM proxima_core.entity_owner eo
                       JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
                         ON eo.owner_principal_kind = s.kind

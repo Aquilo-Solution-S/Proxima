@@ -155,6 +155,51 @@ async fn list_change_events_applies_public_source_guard_to_edge_events()
     result
 }
 
+#[tokio::test]
+async fn list_change_events_for_replay_applies_public_source_guard_to_edge_events()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let result = async {
+        let gp = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let private = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let world = world();
+
+        let a_public = seed_memory(&pg, &gp, EntityKind::Abstraction, "A public").await?;
+        let f_private = seed_memory(&pg, &private, EntityKind::Fact, "private").await?;
+        share_entity(&pg, a_public.into_inner(), &world).await?;
+
+        let edge = seed_memory_edge(
+            &pg,
+            &gp,
+            (EntityKind::Abstraction, a_public),
+            (EntityKind::Fact, f_private),
+            CORE_DERIVED_FROM_RELATION,
+            RelationClass::Provenance,
+        )
+        .await?;
+        insert_edge_append_event(&pg, &gp, edge, a_public, f_private).await?;
+
+        let replay_events = pg
+            .list_change_events_for_replay(&gp, uuid::Uuid::nil(), None, 100)
+            .await?;
+        assert!(
+            !replay_events.iter().any(|e| matches!(
+                &e.event.kind,
+                ChangeEventKind::EdgeAppend { edge_id, .. } if *edge_id == edge.into_inner()
+            )),
+            "replay must omit public-source/private-target edge event"
+        );
+
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
+}
+
 async fn insert_edge_append_event(
     pg: &proxima_storage_pg::PgStorage,
     owner: &Principal,

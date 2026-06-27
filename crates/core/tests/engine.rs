@@ -199,12 +199,12 @@ async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
 }
 
 #[tokio::test]
-async fn cross_owner_context_is_forbidden_on_graph_read() {
+async fn event_history_ignores_client_principal_as_access_vector() {
     let (principal, owner_a) = fresh_owner();
     let engine = boot_engine(principal, owner_a.clone());
     let (_, owner_b) = fresh_owner();
     let authz = AuthzContext::single_owner(&owner_a, AuthPath::System);
-    let err = engine
+    let response = engine
         .event_history(
             &authz,
             &EventHistoryRequest {
@@ -214,8 +214,9 @@ async fn cross_owner_context_is_forbidden_on_graph_read() {
             },
         )
         .await
-        .expect_err("cross-owner access must be forbidden");
-    assert!(err.to_string().contains("requires viewer on this owner"));
+        .expect("client principal must not participate in read authorization");
+    assert!(response.events.is_empty());
+    assert!(response.seq_high_water.is_none());
 }
 
 fn sample_mcp_input(owner: &Owner) -> McpCallLogInput {
