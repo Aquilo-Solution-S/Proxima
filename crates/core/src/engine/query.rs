@@ -22,9 +22,13 @@ impl Engine {
         self.registry.handle(req)
     }
 
-    /// docs/14 §"Query" — Owner-scoped. Caller passes the
-    /// transport-extracted authorization context; engine gates owner
-    /// access and [`Relation::Viewer`].
+    /// docs/14 §"Query" — scoped to the authorization context's read access
+    /// set (`S_read`). Caller passes the transport-extracted authorization
+    /// context; the engine resolves the readable owners from it and filters
+    /// results to `entity_owner ∈ S_read`. A client-supplied
+    /// [`QueryRequest::principal`] is NOT an access vector — it can never widen
+    /// what the caller sees (writes/admin reject a foreign owner; reads simply
+    /// return the caller's accessible subset).
     ///
     /// For heads-only requests targeting a stateful Fact schema (one
     /// whose `FactPayload::natural_key_columns()` is non-empty), the
@@ -35,9 +39,9 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks [`Relation::Viewer`], `InvalidArgument` when `req.limit == 0`, or
-    /// `Internal` when the storage query fails.
+    /// Returns `Forbidden` when the authorization context resolves to an empty
+    /// read set (a denied context authorizes nothing), `InvalidArgument` when
+    /// `req.limit == 0`, or `Internal` when the storage query fails.
     pub async fn query(
         &self,
         authz: &AuthzContext,
@@ -69,14 +73,16 @@ impl Engine {
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
 
-    /// Owner-scoped edge read. Same auth shape as `Query`; callers can
-    /// hydrate by edge id or by relation/source/target filter.
+    /// Edge read scoped to the context's read access set (`S_read`). Same auth
+    /// shape as `Query`; callers can hydrate by edge id or by
+    /// relation/source/target filter. Edges are source-owned: an edge is
+    /// visible iff its source is readable, with unreadable targets redacted.
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks [`Relation::Viewer`], `InvalidArgument` when `req.limit == 0`, or
-    /// `Internal` when storage fails.
+    /// Returns `Forbidden` when the authorization context resolves to an empty
+    /// read set, `InvalidArgument` when `req.limit == 0`, or `Internal` when
+    /// storage fails.
     pub async fn read_edges(
         &self,
         authz: &AuthzContext,
