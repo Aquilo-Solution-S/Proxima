@@ -3,6 +3,9 @@ use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::verbs::goal_write::{
     CreateGoalAtomicRequest, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalState,
 };
+use proxima_core::verbs::query::{
+    MemorySearchRequest, QueryRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
+};
 use proxima_core::{
     EntityId, EntityKind, FlavorRegistry, GroupId, MemoryId, MemoryOperatorKind, Owner,
     OwnerPrincipalKind, Principal, Relation, SchemaId, SchemaVersion, SourceBatchId, SourceId,
@@ -186,6 +189,138 @@ async fn entity_is_readable_respects_membership() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn discovery_reads_filter_by_read_owners_not_legacy_memory_owner() {
+    let (pg, db) = common::fresh_pg().await;
+    let p = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+    let q = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+    let g1 = GroupId::new(uuid::Uuid::now_v7());
+
+    seed_membership(&pg, g1, &q, Relation::Viewer).await;
+
+    let mut f1_draft = fresh_event_draft(Principal::Group(g1));
+    f1_draft.rendered_text = Some("boundaryneedle group fact".to_string());
+    let f1 = pg
+        .ingest_event_atomic(&f1_draft, None)
+        .await
+        .unwrap()
+        .memory_id;
+    let mut hidden_target_draft = fresh_event_draft(Principal::Group(g1));
+    hidden_target_draft.rendered_text = Some("unreadable edge target".to_string());
+    let hidden_target = pg
+        .ingest_event_atomic(&hidden_target_draft, None)
+        .await
+        .unwrap()
+        .memory_id;
+    move_entity_owner_home(&pg, hidden_target, &p).await;
+    let a = seed_abstraction_memory(
+        &pg,
+        &p,
+        Principal::Group(g1),
+        "boundaryneedle personal abstraction",
+    )
+    .await;
+    let leaky_edge = seed_edge_between_memories(&pg, Principal::Group(g1), f1, hidden_target).await;
+    let q_read_owners = read_owners(&pg, &q).await;
+
+    let query = pg
+        .query_memories(
+            &QueryRequest {
+                principal: q.clone(),
+                read_owners: q_read_owners.clone(),
+                entity_kind: None,
+                schema_id: None,
+                supersession: SupersessionStatus::HeadsOnly,
+                tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
+                personality_roots:
+                    proxima_core::verbs::query::PersonalityRootFilter::IncludeInactive,
+                limit: 50,
+                include_payloads: false,
+                memory_ids: Vec::new(),
+                goal_ids: Vec::new(),
+                edge_ids: Vec::new(),
+                stateful_heads: Vec::new(),
+                reader_personality_instance_id: None,
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    let query_ids = query.memories.iter().map(|row| row.id).collect::<Vec<_>>();
+    assert!(query_ids.contains(&f1));
+    assert!(
+        !query_ids.contains(&hidden_target),
+        "Q must not query P-owned target Fact"
+    );
+    assert!(!query_ids.contains(&a), "Q must not query P's singleton A");
+    assert!(
+        query.edges.iter().all(|edge| edge.id != leaky_edge),
+        "query_memories must not return an edge whose target is unreadable"
+    );
+
+    let edge_by_id = pg
+        .query_memories(
+            &QueryRequest {
+                principal: q.clone(),
+                read_owners: q_read_owners.clone(),
+                entity_kind: None,
+                schema_id: None,
+                supersession: SupersessionStatus::HeadsOnly,
+                tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
+                personality_roots:
+                    proxima_core::verbs::query::PersonalityRootFilter::IncludeInactive,
+                limit: 50,
+                include_payloads: false,
+                memory_ids: Vec::new(),
+                goal_ids: Vec::new(),
+                edge_ids: vec![leaky_edge],
+                stateful_heads: Vec::new(),
+                reader_personality_instance_id: None,
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(
+        edge_by_id.edges.is_empty(),
+        "edge-id hydration must require both endpoints to be readable"
+    );
+
+    let search = pg
+        .search_memories(
+            &MemorySearchRequest {
+                principal: q,
+                read_owners: q_read_owners,
+                query: "boundaryneedle".to_string(),
+                mode: SearchMode::Lexical,
+                supersession: SupersessionStatus::HeadsOnly,
+                limit: 10,
+                kind: None,
+                schema_id: None,
+                tags: Vec::new(),
+                tag_match: TagMatch::Any,
+                since: None,
+                until: None,
+                order: SearchOrder::Relevance,
+                query_embedding: None,
+                embedding_model_id: None,
+                reader_personality_instance_id: None,
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    let search_ids = search.iter().map(|row| row.memory_id).collect::<Vec<_>>();
+    assert!(search_ids.contains(&f1));
+    assert!(
+        !search_ids.contains(&a),
+        "Q must not search P's singleton A"
+    );
+
+    common::drop_db(&db).await.unwrap();
+}
+
+#[tokio::test]
 async fn home_row_created_on_event_ingest() {
     let (pg, db) = common::fresh_pg().await;
     let owner = Principal::User(UserId::new(Uuid::now_v7()));
@@ -271,6 +406,99 @@ async fn seed_memory_owned(pg: &proxima_storage_pg::PgStorage, owner: Principal)
     .await
     .unwrap();
     EntityId::Memory(MemoryId::new(entity_id))
+}
+
+async fn seed_abstraction_memory(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Principal,
+    legacy_owner: Principal,
+    text: &str,
+) -> MemoryId {
+    let memory_id = uuid::Uuid::now_v7();
+    let (legacy_owner_kind, legacy_owner_id) = legacy_owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_principal_kind, owner_principal_id,
+             schema_id, schema_version, kind, text, operator_kind, model_id,
+             prompt_version, personality_instance_id)
+         VALUES ($1, $2, $3, 'test/entity-owner-abstraction-v1', 1,
+                 'Abstraction', $4, 'FtoA', 'test-model', 'v1', $5)",
+    )
+    .bind(memory_id)
+    .bind(legacy_owner_kind)
+    .bind(legacy_owner_id)
+    .bind(text)
+    .bind(uuid::Uuid::nil())
+    .execute(pg.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO proxima_core.entity_owner
+            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
+         VALUES ($1,$2::proxima_core.owner_principal_kind,$3,true,$4)",
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(uuid::Uuid::nil())
+    .execute(pg.pool())
+    .await
+    .unwrap();
+    MemoryId::new(memory_id)
+}
+
+async fn move_entity_owner_home(
+    pg: &proxima_storage_pg::PgStorage,
+    memory_id: MemoryId,
+    owner: &Principal,
+) {
+    let (owner_kind, owner_id) = owner.columns();
+    sqlx::query(
+        "UPDATE proxima_core.entity_owner
+            SET owner_principal_kind = $2::proxima_core.owner_principal_kind,
+                owner_principal_id = $3
+          WHERE entity_id = $1 AND is_home",
+    )
+    .bind(memory_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_id)
+    .execute(pg.pool())
+    .await
+    .unwrap();
+}
+
+async fn seed_edge_between_memories(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: Principal,
+    source: MemoryId,
+    target: MemoryId,
+) -> uuid::Uuid {
+    let edge_id = uuid::Uuid::now_v7();
+    let (owner_kind, owner_id) = owner.columns();
+    sqlx::query(
+        "INSERT INTO proxima_core.edges
+           (edge_id, relation, relation_class,
+            source_kind, source_memory_id, source_goal_id,
+            target_kind, target_memory_id, target_goal_id,
+            authorship_kind, authorship_owner_memory_id,
+            owner_principal_kind, owner_principal_id)
+         VALUES
+           ($1, 'test/leaky-edge', 'Structural',
+            'Fact', $2, NULL,
+            'Fact', $3, NULL,
+            'EventSource', NULL,
+            $4, $5)",
+    )
+    .bind(edge_id)
+    .bind(source.into_inner())
+    .bind(target.into_inner())
+    .bind(owner_kind)
+    .bind(owner_id)
+    .execute(pg.pool())
+    .await
+    .unwrap();
+    edge_id
 }
 
 async fn read_owners(pg: &proxima_storage_pg::PgStorage, principal: &Principal) -> Vec<Principal> {

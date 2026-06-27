@@ -126,8 +126,8 @@ pub(crate) async fn edge_exists(
 pub(super) async fn query_edges(
     pool: &PgPool,
     req: &QueryRequest,
-    owner_kind: OwnerPrincipalKind,
-    owner_principal_id: uuid::Uuid,
+    read_owner_kinds: &[OwnerPrincipalKind],
+    read_owner_ids: &[uuid::Uuid],
     visible_memory_ids: &[uuid::Uuid],
     visible_goal_ids: &[uuid::Uuid],
     schemas: &[SchemaInfo],
@@ -141,8 +141,8 @@ pub(super) async fn query_edges(
             pool,
             req,
             &edge_ids,
-            owner_kind,
-            owner_principal_id,
+            read_owner_kinds,
+            read_owner_ids,
             schemas,
         )
         .await;
@@ -155,22 +155,15 @@ pub(super) async fn query_edges(
     if visible_memory_ids.is_empty() && visible_goal_ids.is_empty() {
         return Ok(Vec::new());
     }
-    query_edges_between_visible_nodes(
-        pool,
-        owner_kind,
-        owner_principal_id,
-        visible_memory_ids,
-        visible_goal_ids,
-    )
-    .await
+    query_edges_between_visible_nodes(pool, visible_memory_ids, visible_goal_ids).await
 }
 
 async fn query_edges_by_id(
     pool: &PgPool,
     req: &QueryRequest,
     edge_ids: &[uuid::Uuid],
-    owner_kind: OwnerPrincipalKind,
-    owner_principal_id: uuid::Uuid,
+    read_owner_kinds: &[OwnerPrincipalKind],
+    read_owner_ids: &[uuid::Uuid],
     schemas: &[SchemaInfo],
 ) -> Result<Vec<EdgeRow>, StorageError> {
     let mut rows = sqlx::query_as::<_, EdgeRowDb>(
@@ -179,15 +172,11 @@ async fn query_edges_by_id(
                 target_memory_id, target_goal_id, target_fact_entity_id, \
                 owner_principal_kind, \
                 owner_principal_id \
-         FROM proxima_core.edges \
-         WHERE owner_principal_kind = $1 \
-           AND owner_principal_id = $2 \
-           AND edge_id = ANY($3::uuid[]) \
-         ORDER BY created_at DESC \
-         LIMIT $4",
+         FROM proxima_core.edges e \
+         WHERE edge_id = ANY($1::uuid[]) \
+         ORDER BY e.created_at DESC \
+         LIMIT $2",
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(edge_ids)
     .bind(i64::from(req.limit))
     .fetch_all(pool)
@@ -207,8 +196,8 @@ async fn query_edges_by_id(
     let (visible_memory_ids, visible_goal_ids) = visible_ids_for(
         pool,
         req,
-        owner_kind,
-        owner_principal_id,
+        read_owner_kinds,
+        read_owner_ids,
         &endpoint_memory_ids,
         &endpoint_goal_ids,
         schemas,
@@ -247,8 +236,6 @@ fn endpoint_visible(
 
 async fn query_edges_between_visible_nodes(
     pool: &PgPool,
-    owner_kind: OwnerPrincipalKind,
-    owner_principal_id: uuid::Uuid,
     visible_memory_ids: &[uuid::Uuid],
     visible_goal_ids: &[uuid::Uuid],
 ) -> Result<Vec<EdgeRow>, StorageError> {
@@ -269,22 +256,15 @@ async fn query_edges_between_visible_nodes(
            ON tfe.fact_entity_id = e.target_fact_entity_id \
           AND tfe.owner_principal_kind = e.owner_principal_kind \
           AND tfe.owner_principal_id = e.owner_principal_id \
-         WHERE e.owner_principal_kind = $1 \
-           AND e.owner_principal_id = $2 \
-           AND ( \
-             (e.source_memory_id = ANY($3::uuid[]) \
-              OR e.source_goal_id = ANY($4::uuid[]) \
-              OR sfe.current_memory_id = ANY($3::uuid[])) \
-             AND \
-             (e.target_memory_id = ANY($3::uuid[]) \
-              OR e.target_goal_id = ANY($4::uuid[]) \
-              OR tfe.current_memory_id = ANY($3::uuid[])) \
-           ) \
+         WHERE (e.source_memory_id = ANY($1::uuid[]) \
+                OR e.source_goal_id = ANY($2::uuid[]) \
+                OR sfe.current_memory_id = ANY($1::uuid[])) \
+           AND (e.target_memory_id = ANY($1::uuid[]) \
+                OR e.target_goal_id = ANY($2::uuid[]) \
+                OR tfe.current_memory_id = ANY($1::uuid[])) \
          ORDER BY e.created_at DESC \
-         LIMIT $5",
+         LIMIT $3",
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(visible_memory_ids)
     .bind(visible_goal_ids)
     .bind(i64::try_from(MAX_SNAPSHOT_EDGES).expect("MAX_SNAPSHOT_EDGES fits in i64"))

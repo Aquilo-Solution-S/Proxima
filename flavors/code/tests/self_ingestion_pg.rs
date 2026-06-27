@@ -178,6 +178,7 @@ async fn self_ingestion_streams_proxima_main() {
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 &proxima_core::verbs::query::QueryRequest {
                     principal: owner.clone(),
+                    read_owners: vec![owner.clone()],
                     entity_kind: Some(proxima_core::verbs::query::EntityKind::Fact),
                     schema_id: Some(commit_schema.clone()),
                     supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,
@@ -235,6 +236,7 @@ async fn self_ingestion_streams_proxima_main() {
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 &proxima_core::verbs::query::QueryRequest {
                     principal: owner.clone(),
+                    read_owners: vec![owner.clone()],
                     entity_kind: Some(proxima_core::verbs::query::EntityKind::Fact),
                     schema_id: None,
                     supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,

@@ -859,13 +859,7 @@ async fn insert_goal_row(
     .execute(&mut **tx)
     .await
     .map_err(map_goal_insert_err)?;
-    insert_entity_owner_home(
-        tx,
-        goal_id,
-        &owner,
-        authorship.personality_instance_id,
-    )
-    .await?;
+    insert_entity_owner_home(tx, goal_id, &owner, authorship.personality_instance_id).await?;
     Ok(())
 }
 

@@ -43,15 +43,8 @@ pub(crate) async fn facts_citing_object(
 
     let mut snapshots = Vec::with_capacity(memory_ids.len());
     for memory_id in memory_ids {
-        if let Some(snapshot) = load_memory_by_id(
-            pool,
-            pg_sidecars,
-            owner,
-            MemoryId::new(memory_id),
-            None,
-            sidecars,
-        )
-        .await?
+        if let Some(snapshot) =
+            load_memory_by_id(pool, pg_sidecars, MemoryId::new(memory_id), None, sidecars).await?
         {
             snapshots.push(snapshot);
         }

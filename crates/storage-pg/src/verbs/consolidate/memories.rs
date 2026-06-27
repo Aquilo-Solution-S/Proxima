@@ -272,12 +272,10 @@ pub async fn load_perspective_heads(
 pub async fn load_memory_by_id(
     pool: &PgPool,
     pg_sidecars: &PgSidecarRegistryFrozen,
-    owner: &Owner,
     memory_id: MemoryId,
     reader_personality_instance_id: Option<PersonalityInstanceId>,
     sidecars: &[SidecarSpec],
 ) -> Result<Option<MemorySnapshot>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner.columns();
     let head: Option<(
         Option<EntityKind>,
         String,
@@ -285,21 +283,30 @@ pub async fn load_memory_by_id(
         Option<String>,
         i16,
         Option<uuid::Uuid>,
+        OwnerPrincipalKind,
+        uuid::Uuid,
     )> = sqlx::query_as(
-        "SELECT kind, schema_id, schema_version, text, wake_chain_depth, personality_instance_id
+        "SELECT kind, schema_id, schema_version, text, wake_chain_depth,
+                personality_instance_id, owner_principal_kind, owner_principal_id
          FROM proxima_core.memories
          WHERE memory_id = $1
-           AND owner_principal_kind = $2
-           AND owner_principal_id = $3
            AND tombstoned_at IS NULL",
     )
     .bind(memory_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .fetch_optional(pool)
     .await
     .map_err(map_err)?;
-    let Some((kind, schema_id, schema_version, text, depth, personality_instance_id)) = head else {
+    let Some((
+        kind,
+        schema_id,
+        schema_version,
+        text,
+        depth,
+        personality_instance_id,
+        owner_kind,
+        owner_principal_id,
+    )) = head
+    else {
         return Ok(None);
     };
     if !memory_visible_to_reader(
