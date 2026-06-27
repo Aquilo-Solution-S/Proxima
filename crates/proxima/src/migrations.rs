@@ -1,7 +1,7 @@
 //! Shared migration facade for embedded Proxima hosts.
 //!
 //! Core and flavor migrators share `SQLx`'s default `_sqlx_migrations`
-//! table in v0.0.1. The facade keeps that global namespace explicit:
+//! table in v0.0.1. The facade pins that global namespace to `public`:
 //! core runs first, flavors run in composition order, every migrator has
 //! `ignore_missing(true)`, and duplicate versions fail before the
 //! database is touched.
@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 
 use proxima_storage_pg::{PgStorage, core_migrator};
+use sqlx::PgConnection;
 use sqlx::migrate::{MigrateError, Migrator};
 
 const CORE_SOURCE: &str = "proxima-core";
@@ -60,6 +61,12 @@ pub enum MigrationError {
         second_source: &'static str,
         second_description: String,
     },
+    #[error("failed to acquire migration connection: {0}")]
+    Connection(#[source] sqlx::Error),
+    #[error("failed to pin migration search_path to public: {0}")]
+    PinSearchPath(#[source] sqlx::Error),
+    #[error("failed to reset migration search_path after migrations: {0}")]
+    ResetSearchPath(#[source] sqlx::Error),
     #[error("core migrations failed: {0}")]
     Core(#[source] MigrateError),
     #[error("flavor migrations failed for {source}: {err}")]
@@ -75,26 +82,80 @@ pub enum MigrationError {
 /// # Errors
 ///
 /// Returns `MigrationError::DuplicateVersion` before any database write
-/// if two sources claim the same migration version. Returns `Core` or
-/// `Flavor` if `SQLx` fails while applying that source.
+/// if two sources claim the same migration version. Returns `Connection`
+/// or `PinSearchPath` if the pinned migration connection cannot be prepared.
+/// Returns `Core` or `Flavor` if `SQLx` fails while applying that source.
 pub async fn run_core_and_flavor_migrations(
     pg: &PgStorage,
     flavors: impl IntoIterator<Item = NamedMigrator>,
 ) -> Result<MigrationRunReport, MigrationError> {
     let sources = prepare_sources(flavors)?;
     let report = MigrationRunReport::from_sources(&sources);
+    let mut conn = pg
+        .pool()
+        .acquire()
+        .await
+        .map_err(MigrationError::Connection)?;
 
+    pin_migration_search_path(&mut conn)
+        .await
+        .map_err(MigrationError::PinSearchPath)?;
+
+    let migration_result = run_sources_on_connection(&mut conn, sources).await;
+    let reset_result = reset_migration_search_path(&mut conn).await;
+
+    match (migration_result, reset_result) {
+        (Ok(()), Ok(())) => Ok(report),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(()), Err(err)) => {
+            conn.close_on_drop();
+            Err(MigrationError::ResetSearchPath(err))
+        }
+        (Err(err), Err(reset_err)) => {
+            conn.close_on_drop();
+            tracing::warn!(
+                error = %reset_err,
+                "failed to reset migration search_path after migration error"
+            );
+            Err(err)
+        }
+    }
+}
+
+impl MigrationRunReport {
+    fn from_sources(sources: &[NamedMigrator]) -> Self {
+        let sources = sources.iter().map(|source| source.source).collect();
+        Self { sources }
+    }
+}
+
+async fn pin_migration_search_path(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
+    sqlx::query("SET search_path TO public")
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+async fn reset_migration_search_path(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
+    sqlx::query("RESET search_path").execute(&mut *conn).await?;
+    Ok(())
+}
+
+async fn run_sources_on_connection(
+    conn: &mut PgConnection,
+    sources: Vec<NamedMigrator>,
+) -> Result<(), MigrationError> {
     for source in sources {
         if source.source == CORE_SOURCE {
             source
                 .migrator
-                .run(pg.pool())
+                .run_direct(&mut *conn)
                 .await
                 .map_err(MigrationError::Core)?;
         } else {
             source
                 .migrator
-                .run(pg.pool())
+                .run_direct(&mut *conn)
                 .await
                 .map_err(|err| MigrationError::Flavor {
                     source: source.source,
@@ -103,14 +164,7 @@ pub async fn run_core_and_flavor_migrations(
         }
     }
 
-    Ok(report)
-}
-
-impl MigrationRunReport {
-    fn from_sources(sources: &[NamedMigrator]) -> Self {
-        let sources = sources.iter().map(|source| source.source).collect();
-        Self { sources }
-    }
+    Ok(())
 }
 
 fn prepare_sources(
