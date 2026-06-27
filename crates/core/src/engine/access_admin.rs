@@ -1,8 +1,16 @@
 //! Owner-gated entry-access grant management and public marketplace browse.
+//!
+//! Grant-management is owner-only by design: it closes admin self-escalation.
+//! Flavors layer restrictive policy via the [`AuthzOperation`] deny-hook
+//! (review-gated publish, restricted sharing). Delegation of sharing is
+//! co-ownership through `add_owner`; `owner` dominates grant-management and
+//! transfer. A finer non-owner sharing-admin relation is a future extension.
+//! Core deliberately has no allow/widening hook; a hook that can grant access
+//! would reopen the escalation surface this model closes.
 
 use crate::access::{
     AccessGrantRow, AccessScope, GrantResource, GrantSelector, GrantSubject, NewAccessGrant,
-    Relation, RemoveOwnerOutcome, Visibility,
+    Relation, RelationSelector, RemoveOwnerOutcome, Visibility,
 };
 use crate::authz::{AuthPath, AuthzContext, AuthzInput, AuthzOperation};
 use crate::error::ProtocolError;
@@ -58,12 +66,13 @@ impl Engine {
         permit: &MemoryPermit,
         grant: ShareEntryGrant,
     ) -> Result<(), ProtocolError> {
-        reject_ungrantable_relation(grant.relation)?;
+        reject_entry_grant_relation(grant.relation)?;
         self.run_access_admin_hooks(
             authz,
             permit.owner(),
             AuthzOperation::ShareEntry {
                 memory_id: grant.memory_id,
+                subject: grant.subject.clone(),
                 relation: grant.relation,
             },
         )?;
@@ -114,7 +123,7 @@ impl Engine {
             .unshare_entry_atomic(&GrantSelector {
                 space_owner: permit.owner().clone(),
                 resource: GrantResource::Memory(memory_id),
-                relation: None,
+                relation: RelationSelector::AllGrantable,
                 subject,
             })
             .await
@@ -193,11 +202,14 @@ impl Engine {
         subject: GrantSubject,
         relation: Relation,
     ) -> Result<(), ProtocolError> {
-        reject_ungrantable_relation(relation)?;
+        reject_space_grant_relation(relation)?;
         self.run_access_admin_hooks(
             authz,
             permit.owner(),
-            AuthzOperation::SetSpaceBinding { relation },
+            AuthzOperation::SetSpaceBinding {
+                subject: subject.clone(),
+                relation,
+            },
         )?;
         let granted_by = self.grant_author_personality(permit.owner(), authz).await?;
         self.storage
@@ -239,7 +251,7 @@ impl Engine {
             .revoke_access_grants(&GrantSelector {
                 space_owner: permit.owner().clone(),
                 resource: GrantResource::Space,
-                relation: None,
+                relation: RelationSelector::AllGrantable,
                 subject,
             })
             .await
@@ -319,7 +331,7 @@ impl Engine {
         authz: &AuthzContext,
         space: Owner,
         owner_principal: Principal,
-    ) -> Result<RemoveOwnerOutcome, ProtocolError> {
+    ) -> Result<(), ProtocolError> {
         let permit = self
             .authorize_request(authz, &space, Relation::Owner)
             .await?;
@@ -331,18 +343,19 @@ impl Engine {
         &self,
         permit: &MemoryPermit,
         owner_principal: &Principal,
-    ) -> Result<RemoveOwnerOutcome, ProtocolError> {
+    ) -> Result<(), ProtocolError> {
         match self
             .storage
             .remove_space_owner(permit.owner(), owner_principal)
             .await
             .map_err(|err| storage_error("remove_space_owner", &err))?
         {
+            RemoveOwnerOutcome::Removed => Ok(()),
             RemoveOwnerOutcome::RefusedLastOwner => Err(ProtocolError::invalid_argument(
                 "owner_principal",
                 "cannot remove the last owner",
             )),
-            outcome => Ok(outcome),
+            RemoveOwnerOutcome::NotFound => Err(ProtocolError::not_found("owner grant not found")),
         }
     }
 
@@ -456,8 +469,24 @@ impl Engine {
     }
 }
 
-fn reject_ungrantable_relation(relation: Relation) -> Result<(), ProtocolError> {
-    if relation == Relation::Owner || !relation.is_grantable() {
+fn reject_entry_grant_relation(relation: Relation) -> Result<(), ProtocolError> {
+    if relation == Relation::Owner {
+        return Err(ProtocolError::invalid_argument(
+            "relation",
+            "owner relation is reserved for owner bootstrap/transfer verbs",
+        ));
+    }
+    if !relation.is_entry_grantable() {
+        return Err(ProtocolError::invalid_argument(
+            "relation",
+            "entry grants support only editor or viewer",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_space_grant_relation(relation: Relation) -> Result<(), ProtocolError> {
+    if !relation.is_space_grantable() {
         return Err(ProtocolError::invalid_argument(
             "relation",
             "owner relation is reserved for owner bootstrap/transfer verbs",

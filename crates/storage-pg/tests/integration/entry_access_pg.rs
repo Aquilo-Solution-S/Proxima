@@ -10,7 +10,8 @@ use crate::common::personality::ingest_test_fact;
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 
 use proxima_core::access::{
-    GrantResource, GrantSelector, GrantSubject, NewAccessGrant, Relation, Visibility,
+    GrantResource, GrantSelector, GrantSubject, NewAccessGrant, Relation, RelationSelector,
+    Visibility,
 };
 use proxima_core::engine::GetMemoryReadRequest;
 use proxima_core::error::ErrorCode;
@@ -112,7 +113,7 @@ async fn friend_with_viewer_grant_reads_shared_entry() -> Result<(), Box<dyn std
     pg.revoke_access_grants(&GrantSelector {
         space_owner: owner.clone(),
         resource: GrantResource::Memory(entry),
-        relation: None,
+        relation: RelationSelector::AllGrantable,
         subject: GrantSubject::Principal(friend.clone()),
     })
     .await?;

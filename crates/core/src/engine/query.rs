@@ -24,7 +24,7 @@ impl Engine {
 
     /// docs/14 §"Query" — Owner-scoped. Caller passes the
     /// transport-extracted authorization context; engine gates owner
-    /// access and graph-read capability.
+    /// access and [`Relation::Viewer`].
     ///
     /// For heads-only requests targeting a stateful Fact schema (one
     /// whose `FactPayload::natural_key_columns()` is non-empty), the
@@ -36,7 +36,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks the graph-read role, `InvalidArgument` when `req.limit == 0`, or
+    /// lacks [`Relation::Viewer`], `InvalidArgument` when `req.limit == 0`, or
     /// `Internal` when the storage query fails.
     pub async fn query(
         &self,
@@ -77,7 +77,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks graph-read, `InvalidArgument` when `req.limit == 0`, or
+    /// lacks [`Relation::Viewer`], `InvalidArgument` when `req.limit == 0`, or
     /// `Internal` when storage fails.
     pub async fn read_edges(
         &self,
@@ -111,7 +111,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks graph-read, or `Internal` when storage fails.
+    /// lacks [`Relation::Viewer`], or `Internal` when storage fails.
     pub async fn edge_exists(
         &self,
         authz: &AuthzContext,
@@ -142,7 +142,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks graph-read, or `Internal` when storage fails.
+    /// lacks [`Relation::Viewer`], or `Internal` when storage fails.
     pub async fn walk_memory_lineage(
         &self,
         authz: &AuthzContext,
@@ -174,7 +174,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks the graph-read role, `InvalidArgument` when `req.limit == 0`, or
+    /// lacks [`Relation::Viewer`], `InvalidArgument` when `req.limit == 0`, or
     /// `Internal` when the storage read fails.
     pub async fn event_history(
         &self,
@@ -213,7 +213,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks the graph-read role, `InvalidArgument` when `req.limit == 0`, or
+    /// lacks [`Relation::Viewer`], `InvalidArgument` when `req.limit == 0`, or
     /// `Internal` when the storage read fails.
     pub async fn read_mcp_call_history(
         &self,

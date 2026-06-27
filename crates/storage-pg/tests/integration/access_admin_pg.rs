@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use crate::common::personality::ingest_test_fact;
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 
-use proxima_core::access::{GrantResource, GrantSubject, Relation, RemoveOwnerOutcome, Visibility};
+use proxima_core::access::{GrantResource, GrantSubject, Relation, Visibility};
 use proxima_core::engine::GetMemoryReadRequest;
 use proxima_core::error::ErrorCode;
 use proxima_core::verbs::schema::FlavorRegistryFrozen;
@@ -304,12 +304,9 @@ async fn group_owner_provisioning_and_orphan_guard() -> Result<(), Box<dyn std::
         .await?;
 
     // p1 is removable while p2 remains; removing the last owner is refused.
-    assert_eq!(
-        engine
-            .remove_owner(&granted_authz(&p2), space.clone(), p1.clone())
-            .await?,
-        RemoveOwnerOutcome::Removed
-    );
+    engine
+        .remove_owner(&granted_authz(&p2), space.clone(), p1.clone())
+        .await?;
     let err = engine
         .remove_owner(&granted_authz(&p2), space.clone(), p2.clone())
         .await
@@ -379,12 +376,9 @@ async fn revoke_space_binding_cannot_remove_owner_rows() -> Result<(), Box<dyn s
     );
 
     // The proper path still works and still guards the last owner.
-    assert_eq!(
-        engine
-            .remove_owner(&granted_authz(&p2), space.clone(), p1.clone())
-            .await?,
-        RemoveOwnerOutcome::Removed
-    );
+    engine
+        .remove_owner(&granted_authz(&p2), space.clone(), p1.clone())
+        .await?;
     let err = engine
         .remove_owner(&granted_authz(&p2), space.clone(), p2.clone())
         .await
