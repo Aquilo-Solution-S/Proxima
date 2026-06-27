@@ -9,6 +9,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::{internal, map_err};
+use crate::verbs::entity_owner::insert_entity_owner_home;
 
 /// Persist one MCP call log in a new transaction.
 ///
@@ -114,6 +115,10 @@ pub async fn persist_mcp_call_in_tx(
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
+    // System-logged MCP-call Fact: no authoring personality (the memories row uses a
+    // nil sentinel because its column is NOT NULL). entity_owner.granted_by is nullable,
+    // so record the absence honestly as NULL rather than propagating the nil sentinel.
+    insert_entity_owner_home(tx.as_mut(), memory_id, &input.owner, None).await?;
 
     sqlx::query(
         r"INSERT INTO proxima_core.source_batches

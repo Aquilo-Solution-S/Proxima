@@ -9,6 +9,7 @@ use sqlx::{Postgres, Transaction};
 
 use crate::error::map_err;
 use crate::sidecars::PgSidecarFuture;
+use crate::verbs::entity_owner::insert_entity_owner_home;
 
 #[derive(Debug, Clone)]
 pub struct DerivedDraft<'a> {
@@ -83,6 +84,13 @@ pub async fn append_derived_in_tx(
             idempotent_replay: true,
         });
     }
+    insert_entity_owner_home(
+        &mut **tx,
+        draft.memory_id,
+        &draft.owner,
+        Some(author_personality_instance_id),
+    )
+    .await?;
 
     let outcome = DerivedOutcome {
         memory_id: MemoryId::new(draft.memory_id),
