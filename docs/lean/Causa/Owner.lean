@@ -1,29 +1,30 @@
 /-
 Causa — Owner
 
-The scoping primitive (doc 01 §Owner). Every Memory and Goal carries
-an Owner: its access scope.
+The scoping primitive (doc 01 §Owner). Every Memory and Goal carries an Owner:
+its access scope.
 
-Ontology (realign 2026-06-28): **an Owner is always a Group**, and a
-Group IS the set of users permitted to join it. A "user" is the special
-case — the singleton group only that user can join. There is no
-User/Group sum and no group-handle primitive: the one irreducible atom
-is `User` (a person); groups, owners, and World are all structural over
-it. Owner equality is therefore extensional — an owner *is* its
-membership — which is exactly the identity-collapse the access layer
-wants (the same person under two billing labels is one identity).
+Ontology (realign 2026-06-28): **an Owner is always a Group**, and a Group maps
+each member to a `Role`. The one irreducible atom is `User` (a person); groups,
+owners, roles, and World are structural over it.
 
-**Org is not a kernel concept** (decision `2026-06-11-org-out-of-kernel.md`).
-Billing/quota attribution is engine metadata, never a kernel face;
-org-wide visibility is expressed as a default `<org>-everyone` group
-whose membership auto-syncs with org membership (doc 01 v1 constraints).
+A `Role` is two independent capability ceilings over the access ladder
+F < A < P < G — how high a member may READ and how high they may WRITE (read and
+write are separate, so a source-ingest role never widens into a general editor)
+— plus a `manage` flag for META-MANAGEMENT of the group itself (membership and
+role assignment). A "user" is the special case of a Group: the personal group,
+automatically present for every user, in which that user holds the maximal
+`personal` role and no one else is a member. Personal groups are auto-derived
+and forbid meta-management (`personal_forbids_manage`).
 
-Owner here is the single `is_home` WRITE owner. Read-only sharing is
-realized as `entity_owner` reachability rows in `Causa.Authorization`
-(`reaches` / `may_read`), never as a flag on the entity: an entity
-carries one home Owner yet is reachable by many. `visible` below is the
-per-Owner reachability primitive those read/write sets are built from,
-not the whole access rule.
+**Org is not a kernel concept** (decision `2026-06-11-org-out-of-kernel.md`):
+billing/quota attribution is engine metadata, never a kernel face; org-wide
+visibility is a default `<org>-everyone` group.
+
+Owner here is the single `is_home` WRITE owner. Read-only sharing is realized
+as `entity_owner` reachability rows in `Causa.Authorization` (`reaches` /
+`may_read`), never as a flag on the entity: an entity carries one home Owner
+yet is reachable by many.
 -/
 
 import Causa.Prelude
@@ -34,63 +35,101 @@ namespace Causa
 -- The one irreducible atom
 -- ============================================================
 
-/-- A person — the single identity primitive of the kernel. The kernel
-    cannot define the set of persons structurally; their existence is
-    its one input from the world. Identity is the whole content of
-    `User`: two users differ because they are different inhabitants.
-    Attributes (name, preferences, …) are flavor sidecar data over this
-    atom, never kernel fields — a field no proof reads is dead trusted
-    weight, so properties arrive only when a theorem consumes them. -/
+/-- A person — the single identity primitive of the kernel. The kernel cannot
+    define the set of persons structurally; their existence is its one input
+    from the world. Identity is the whole content of `User`: two users differ
+    because they are different inhabitants. Per-person attributes are flavor
+    sidecar data over this atom, never kernel fields. -/
 axiom User : Type
 
--- ============================================================
--- Group — a set of users
--- ============================================================
-
-/-- A Group IS the set of users permitted to join it. No separate
-    group-handle primitive: a group's identity is exactly its
-    membership (extensional). `abbrev` keeps it reducible so the `Set`
-    membership instance resolves through `Group` / `Owner`. -/
-abbrev Group : Type := Set User
+/-- Spec-mode kernel: decidable person-equality comes from classical logic
+    (noncomputable). Lets the personal group be written as a literal singleton
+    without adding a primitive. -/
+noncomputable instance : DecidableEq User := fun a b => Classical.propDecidable (a = b)
 
 -- ============================================================
--- Owner — always a Group
+-- The access ladder and roles
 -- ============================================================
 
-/-- An Owner is always a Group (doc 01 §Owner). The access scope of
-    every Memory and Goal. -/
+/-- The four core entity kinds, ranked for ACCESS. This is the access axis
+    (who may touch what); it is distinct from the edge-directionality layer ℓ
+    in `Causa.Edges`, which keeps Goals outside the F/A/P comparison (ME-14).
+    Here all four are linearly ranked. -/
+inductive AccessKind where
+  | fact | abstraction | perspective | goal
+  deriving DecidableEq, Repr
+
+def AccessKind.rank : AccessKind → Nat
+  | .fact => 0 | .abstraction => 1 | .perspective => 2 | .goal => 3
+
+/-- A role = two capability ceilings over the access ladder plus a
+    meta-management flag. `read` / `write` are layer counts (0 = none, 1 = F,
+    2 = F+A, 3 = F+A+P, 4 = all incl. Goals); capability over a kind `k` is
+    `k.rank < ceiling`. `manage` is the authority to write the GROUP's own role
+    map (add/remove members, assign roles) — distinct from writing entities.
+    `write_le_read` makes "write ⊆ read" a structural field, not an axiom — a
+    member can always read at least what it may write. -/
+structure Role where
+  read  : Nat
+  write : Nat
+  manage : Bool
+  write_le_read : write ≤ read
+
+def Role.mayRead  (x : Role) (k : AccessKind) : Prop := k.rank < x.read
+def Role.mayWrite (x : Role) (k : AccessKind) : Prop := k.rank < x.write
+/-- Meta-management authority: may add/remove members and assign roles in the
+    group. A group-level rule still gates the use of it — personal groups
+    forbid management entirely (see `personal_forbids_manage`). -/
+def Role.manages (x : Role) : Prop := x.manage = true
+
+/-- Maximal ENTITY authority over one's own scope, but NOT an admin role: the
+    personal group is auto-derived and unmanageable, so `manage := false`. -/
+def Role.personal : Role := ⟨4, 4, false, by omega⟩
+/-- Read every kind, write none, no management. -/
+def Role.viewer   : Role := ⟨4, 0, false, by omega⟩
+/-- Source ingest: Facts in and out only. -/
+def Role.ingest   : Role := ⟨1, 1, false, by omega⟩
+/-- Author up to Perspectives, not Goals (illustrative preset). -/
+def Role.editor   : Role := ⟨4, 3, false, by omega⟩
+/-- Group admin: full read/write plus meta-management of the group. -/
+def Role.admin    : Role := ⟨4, 4, true, by omega⟩
+
+-- ============================================================
+-- Group and Owner
+-- ============================================================
+
+/-- A Group maps each member to their `Role`; `none` = not a member. No
+    separate group-handle primitive. `abbrev` keeps it reducible. -/
+abbrev Group : Type := User → Option Role
+
+/-- An Owner is always a Group (doc 01 §Owner). The access scope of every
+    Memory and Goal. -/
 abbrev Owner : Type := Group
 
-/-- A user as an Owner: the personal group only that user can join — the
-    singleton `{u}` (written explicitly, the minimal `Set` carries no
-    singleton notation). This is what "a User" denotes at the access
-    layer; a User is the special case of a Group. -/
-def Owner.ofUser (u : User) : Owner := fun x => x = u
+/-- A user as an Owner: the personal group, in which only that user is a
+    member and holds the maximal `personal` role. -/
+noncomputable def Owner.ofUser (u : User) : Owner :=
+  fun x => if x = u then some Role.personal else none
 
-/-- An Owner is personal iff it is some user's singleton group. -/
+/-- An Owner is personal iff it is some user's personal group. -/
 def Owner.isPersonal (o : Owner) : Prop := ∃ u : User, o = Owner.ofUser u
 
 -- ============================================================
--- Visibility — per-Owner reachability (the read-set primitive)
+-- Membership
 -- ============================================================
 
-/-- ES-2 — a requester reaches an Owner iff they are a member of its
-    group:
+/-- ES-2 — a requester is a member of (visible to) an Owner iff it holds any
+    role there. Read/write authority is then the role's ceiling over the kind
+    (see `Causa.Authorization`). For a personal owner, membership reduces to
+    identity (`visible_personal`): "only the user can join it". A definition,
+    not an axiom. ES-3: org does not exist at this layer. -/
+def visible (o : Owner) (requester : User) : Prop := o requester ≠ none
 
-      visible(o, requester) iff requester ∈ o
-
-    For a personal owner this reduces to identity
-    (`requester ∈ Owner.ofUser u ↔ requester = u`) — "only the user can
-    join it". A definition, not an axiom: the kernel fixes the rule's
-    content. Under group-ownership this is the per-Owner test; an entity
-    is reachable through any of its `entity_owner` Owners, assembled into
-    `S_read` (see `Causa.Authorization.may_read`). ES-3: org does not
-    exist at this layer — never an access predicate, never identity. -/
-def visible (o : Owner) (requester : User) : Prop := requester ∈ o
-
-/-- The personal-owner reduction, made explicit: reaching a user's own
-    group is exactly being that user. -/
+/-- The personal-owner reduction: membership in a user's own group is exactly
+    being that user. -/
 theorem visible_personal (u requester : User) :
-    visible (Owner.ofUser u) requester ↔ requester = u := Iff.rfl
+    visible (Owner.ofUser u) requester ↔ requester = u := by
+  simp only [visible, Owner.ofUser]
+  split <;> simp_all
 
 end Causa
