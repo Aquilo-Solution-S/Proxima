@@ -163,7 +163,7 @@ const fn owner_kind_sort_key(kind: OwnerPrincipalKind) -> u8 {
     }
 }
 
-fn space_key(owner: &Owner) -> String {
+pub(crate) fn space_key(owner: &Owner) -> String {
     let (kind, id) = owner.columns();
     match kind {
         OwnerPrincipalKind::User => format!("user:{id}"),
@@ -171,7 +171,7 @@ fn space_key(owner: &Owner) -> String {
     }
 }
 
-fn space_label(owner: &Owner) -> String {
+pub(crate) fn space_label(owner: &Owner) -> String {
     let (kind, id) = owner.columns();
     match kind {
         OwnerPrincipalKind::User => format!("User {id}"),
