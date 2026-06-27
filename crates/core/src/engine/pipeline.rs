@@ -1,4 +1,4 @@
-use crate::access::{AccessScope, EntityId, Relation};
+use crate::access::{AccessScope, EntityId, Relation, world};
 use crate::authz::{AuthPath, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome};
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
@@ -157,7 +157,6 @@ impl Engine {
             }
         };
 
-        let access = self.resolve_access(authz).await?;
         let input = AuthzInput {
             authz,
             requested: owner,
@@ -166,6 +165,15 @@ impl Engine {
             operation: AuthzOperation::Relation { relation: required },
         };
 
+        if resolved == world() {
+            self.registry
+                .run_authorization_observers(&input, AuthzOutcome::DeniedGrant);
+            return Err(ProtocolError::forbidden(
+                "World is read-only and never a write owner",
+            ));
+        }
+
+        let access = self.resolve_access(authz).await?;
         if !access.can_write(&resolved, required) {
             self.registry
                 .run_authorization_observers(&input, AuthzOutcome::DeniedGrant);
@@ -417,6 +425,7 @@ mod tests {
             membership_relation,
             home_owner: None,
             entity_readable: false,
+            memory_kind: None,
         }
     }
 
@@ -432,6 +441,7 @@ mod tests {
             membership_relation: Relation::Viewer,
             home_owner,
             entity_readable,
+            memory_kind: None,
         }
     }
 
@@ -614,6 +624,36 @@ mod tests {
             .expect_err("denied context should reject write authorization");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn authorize_write_denies_world_for_every_write_relation() {
+        let p = owner();
+        let g1 = GroupId::new(uuid::Uuid::now_v7());
+        let engine = engine_with_storage(storage(p.clone(), g1));
+        let authz = AuthzContext {
+            identity: Identity {
+                principal: p.clone(),
+                accessible_principals: HashSet::from([p, world()]),
+                expires_at: None,
+                auth_epoch: 0,
+            },
+            capabilities: CapabilitySet {
+                tool_scope: ToolScope::All,
+                access: AccessScope::Unrestricted,
+            },
+            auth_path: AuthPath::HostBearer,
+        };
+
+        for relation in [Relation::Admin, Relation::Editor, Relation::Ingest] {
+            let err = engine
+                .authorize_write(&authz, &world(), relation)
+                .await
+                .expect_err("World must never be writable");
+
+            assert_eq!(err.code, ErrorCode::Forbidden);
+            assert_eq!(err.message, "World is read-only and never a write owner");
+        }
     }
 
     #[tokio::test]

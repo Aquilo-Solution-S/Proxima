@@ -322,7 +322,7 @@ impl Engine {
         Ok(out)
     }
 
-    async fn load_required_memory_kind(
+    pub(in crate::engine) async fn load_required_memory_kind(
         &self,
         owner: &Owner,
         memory_id: MemoryId,

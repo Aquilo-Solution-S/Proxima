@@ -1,5 +1,5 @@
 use super::{Engine, pipeline::WritePermit};
-use crate::access::Relation;
+use crate::access::{EntityId, Relation};
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
@@ -10,7 +10,7 @@ use crate::verbs::goal_write::{
     ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
 use crate::verbs::schema::PayloadKind;
-use crate::{GoalPayload, MemoryId, PersonalityInstanceId};
+use crate::{EntityKind, GoalPayload, MemoryId, PersonalityInstanceId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoalTargetSelf {
@@ -97,7 +97,7 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &request.principal, Relation::Editor)
             .await?;
-        self.create_goal_authorized(&permit, request).await
+        self.create_goal_authorized(authz, &permit, request).await
     }
 
     /// Create an Active Goal from a dynamic protocol payload.
@@ -119,7 +119,10 @@ impl Engine {
             .await?;
         let payload = self.normalize_payload_write(req.payload.clone())?;
         let target_self = self
-            .target_self_perspective_authorized(&permit, req.target_self)
+            .target_self_perspective_authorized(authz, &permit, req.target_self)
+            .await?;
+        let author_self_perspective_id = self
+            .author_self_perspective_authorized(authz, req.author_self_perspective_id)
             .await?;
         let draft = GoalDraft::active_from_payload_write(
             permit.owner().clone(),
@@ -130,7 +133,7 @@ impl Engine {
         );
         let embedding_client = self.embed_client();
         let context =
-            self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
+            self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
         self.storage()
             .create_goal_atomic(&CreateGoalAtomicRequest {
                 draft,
@@ -158,9 +161,12 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &req.principal, Relation::Editor)
             .await?;
+        let author_self_perspective_id = self
+            .author_self_perspective_authorized(authz, req.author_self_perspective_id)
+            .await?;
         let embedding_client = self.embed_client();
         let context =
-            self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
+            self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
         self.storage()
             .transition_goal_atomic(&TransitionGoalAtomicRequest {
                 owner: permit.owner().clone(),
@@ -190,9 +196,12 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &req.principal, Relation::Editor)
             .await?;
+        let author_self_perspective_id = self
+            .author_self_perspective_authorized(authz, req.author_self_perspective_id)
+            .await?;
         let embedding_client = self.embed_client();
         let context =
-            self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
+            self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
         self.storage()
             .achieve_goal_atomic(&AchieveGoalAtomicRequest {
                 owner: permit.owner().clone(),
@@ -223,9 +232,12 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &req.principal, Relation::Editor)
             .await?;
+        let author_self_perspective_id = self
+            .author_self_perspective_authorized(authz, req.author_self_perspective_id)
+            .await?;
         let embedding_client = self.embed_client();
         let context =
-            self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
+            self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
         self.storage()
             .modify_goal_atomic(&ModifyGoalAtomicRequest {
                 owner: permit.owner().clone(),
@@ -258,7 +270,7 @@ impl Engine {
             .authorize_write(authz, &req.principal, Relation::Editor)
             .await?;
         let target_self = self
-            .target_self_perspective_authorized(&permit, req.target_self)
+            .target_self_perspective_authorized(authz, &permit, req.target_self)
             .await?;
         let mut children = Vec::with_capacity(req.children.len());
         for child in &req.children {
@@ -268,9 +280,12 @@ impl Engine {
                 request_id: child.request_id.clone(),
             });
         }
+        let author_self_perspective_id = self
+            .author_self_perspective_authorized(authz, req.author_self_perspective_id)
+            .await?;
         let embedding_client = self.embed_client();
         let context =
-            self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
+            self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
         self.storage()
             .decompose_goal_atomic(&DecomposeGoalAtomicRequest {
                 owner: permit.owner().clone(),
@@ -286,6 +301,7 @@ impl Engine {
 
     async fn create_goal_authorized<P>(
         &self,
+        authz: &AuthzContext,
         permit: &WritePermit,
         request: GoalCreateRequest<P>,
     ) -> Result<GoalWriteOutcome, ProtocolError>
@@ -304,6 +320,13 @@ impl Engine {
             authorship,
             author_self_perspective_id,
         } = request;
+
+        let target_self_perspective_id = self
+            .target_self_memory_authorized(authz, target_self_perspective_id)
+            .await?;
+        let author_self_perspective_id = self
+            .author_self_perspective_authorized(authz, author_self_perspective_id)
+            .await?;
 
         let mut payload_write =
             GoalPayloadWrite::from_payload(title, text, payload).map_err(map_goal_build_error)?;
@@ -388,11 +411,14 @@ impl Engine {
 
     async fn target_self_perspective_authorized(
         &self,
+        authz: &AuthzContext,
         permit: &WritePermit,
         target_self: GoalTargetSelf,
     ) -> Result<MemoryId, ProtocolError> {
         match target_self {
-            GoalTargetSelf::SelfPerspective(memory_id) => Ok(memory_id),
+            GoalTargetSelf::SelfPerspective(memory_id) => {
+                self.target_self_memory_authorized(authz, memory_id).await
+            }
             GoalTargetSelf::Personality(instance_id) => self
                 .storage()
                 .active_personality_root(permit.owner(), instance_id)
@@ -405,6 +431,56 @@ impl Engine {
                     )
                 }),
         }
+    }
+
+    async fn target_self_memory_authorized(
+        &self,
+        authz: &AuthzContext,
+        memory_id: MemoryId,
+    ) -> Result<MemoryId, ProtocolError> {
+        let permit = self
+            .authorize_entry_read(authz, EntityId::Memory(memory_id))
+            .await?;
+        self.require_perspective_kind(permit.owner(), memory_id, "target_self")
+            .await?;
+        Ok(memory_id)
+    }
+
+    async fn author_self_perspective_authorized(
+        &self,
+        authz: &AuthzContext,
+        memory_id: Option<MemoryId>,
+    ) -> Result<Option<MemoryId>, ProtocolError> {
+        let Some(memory_id) = memory_id else {
+            return Ok(None);
+        };
+        let home_owner = self
+            .storage()
+            .entity_home_owner(EntityId::Memory(memory_id))
+            .await
+            .map_err(|err| ProtocolError::internal(format!("entity_home_owner: {err}")))?
+            .ok_or_else(|| ProtocolError::forbidden("entry not found"))?;
+        self.authorize_write(authz, &home_owner, Relation::Editor)
+            .await?;
+        self.require_perspective_kind(&home_owner, memory_id, "author_self_perspective_id")
+            .await?;
+        Ok(Some(memory_id))
+    }
+
+    async fn require_perspective_kind(
+        &self,
+        owner: &crate::Owner,
+        memory_id: MemoryId,
+        field: &'static str,
+    ) -> Result<(), ProtocolError> {
+        let kind = self.load_required_memory_kind(owner, memory_id).await?;
+        if kind != EntityKind::Perspective {
+            return Err(ProtocolError::invalid_argument(
+                field,
+                "self perspective must be a Perspective",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -442,9 +518,27 @@ fn map_goal_storage_error(err: StorageError) -> ProtocolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use super::super::access_sets::tests::MembershipStorage;
     use crate::error::ErrorCode;
     use crate::verbs::goal_write::{GoalEvidenceRef, SystemOrigin};
-    use crate::{Engine, FlavorRegistry, GoalId, SchemaId, SchemaVersion, ToolId};
+    use crate::{
+        AuthPath, Engine, FlavorRegistry, GoalId, GoalPayload, GroupId, Owner, Principal, SchemaId,
+        SchemaVersion, ToolId, UserId,
+    };
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct TestGoalPayload;
+
+    impl GoalPayload for TestGoalPayload {
+        const SCHEMA_ID: &'static str = "test/goal";
+        const SCHEMA_VERSION: u32 = 1;
+
+        fn goal_key(&self) -> Vec<u8> {
+            b"test-goal".to_vec()
+        }
+    }
 
     fn engine() -> Engine {
         Engine::new(FlavorRegistry::new().freeze())
@@ -452,6 +546,28 @@ mod tests {
 
     fn owner() -> crate::Principal {
         crate::Principal::User(crate::UserId::new(uuid::Uuid::now_v7()))
+    }
+
+    fn storage_with_memory(
+        member: Principal,
+        home_owner: Owner,
+        entity_readable: bool,
+        memory_kind: EntityKind,
+    ) -> MembershipStorage {
+        MembershipStorage {
+            member,
+            group: GroupId::new(uuid::Uuid::now_v7()),
+            membership_relation: Relation::Viewer,
+            home_owner: Some(home_owner),
+            entity_readable,
+            memory_kind: Some(memory_kind),
+        }
+    }
+
+    fn engine_with_storage(storage: MembershipStorage) -> Engine {
+        Engine::compose(Arc::new(storage), |registry| {
+            registry.add_goal_schema::<TestGoalPayload>();
+        })
     }
 
     fn goal_id() -> GoalId {
@@ -485,6 +601,144 @@ mod tests {
 
     fn assert_forbidden(err: &ProtocolError) {
         assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn author_self_perspective_denies_foreign_write_owner() {
+        let owner = owner();
+        let foreign = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let memory_id = memory_id();
+        let engine = engine_with_storage(storage_with_memory(
+            owner.clone(),
+            foreign,
+            true,
+            EntityKind::Perspective,
+        ));
+
+        let err = engine
+            .author_self_perspective_authorized(
+                &AuthzContext::single_owner(&owner, AuthPath::System),
+                Some(memory_id),
+            )
+            .await
+            .expect_err("foreign author Self perspective must require write authority");
+
+        assert_forbidden(&err);
+    }
+
+    #[tokio::test]
+    async fn author_self_perspective_allows_writable_perspective() {
+        let owner = owner();
+        let memory_id = memory_id();
+        let engine = engine_with_storage(storage_with_memory(
+            owner.clone(),
+            owner.clone(),
+            true,
+            EntityKind::Perspective,
+        ));
+
+        let authorized = engine
+            .author_self_perspective_authorized(
+                &AuthzContext::single_owner(&owner, AuthPath::System),
+                Some(memory_id),
+            )
+            .await
+            .expect("writable Perspective should authorize");
+
+        assert_eq!(authorized, Some(memory_id));
+    }
+
+    #[tokio::test]
+    async fn create_goal_from_payload_write_denies_unreadable_self_perspective_target() {
+        let owner = owner();
+        let foreign = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let target = memory_id();
+        let engine = engine_with_storage(storage_with_memory(
+            owner.clone(),
+            foreign,
+            false,
+            EntityKind::Perspective,
+        ));
+        let req = GoalCreatePayloadWriteRequest {
+            principal: owner.clone(),
+            target_self: GoalTargetSelf::SelfPerspective(target),
+            payload: payload_write(),
+            request_id: request_id("create-unreadable-target"),
+            evidence: Vec::new(),
+            parent_goal_ids: Vec::new(),
+            authorship: tool_authorship(),
+            author_self_perspective_id: None,
+        };
+
+        let err = engine
+            .create_goal_from_payload_write(
+                &AuthzContext::single_owner(&owner, AuthPath::System),
+                &req,
+            )
+            .await
+            .expect_err("unreadable target Self perspective must be rejected before write");
+
+        assert_forbidden(&err);
+    }
+
+    #[tokio::test]
+    async fn decompose_goal_denies_unreadable_self_perspective_target() {
+        let owner = owner();
+        let foreign = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let target = memory_id();
+        let engine = engine_with_storage(storage_with_memory(
+            owner.clone(),
+            foreign,
+            false,
+            EntityKind::Perspective,
+        ));
+        let req = GoalDecomposeRequest {
+            principal: owner.clone(),
+            parent_goal_id: goal_id(),
+            authorship: tool_authorship(),
+            target_self: GoalTargetSelf::SelfPerspective(target),
+            children: vec![ChildGoalDraft {
+                payload: payload_write(),
+                evidence: Vec::new(),
+                request_id: request_id("decompose-unreadable-target"),
+            }],
+            author_self_perspective_id: None,
+        };
+
+        let err = engine
+            .decompose_goal(&AuthzContext::single_owner(&owner, AuthPath::System), &req)
+            .await
+            .expect_err("unreadable target Self perspective must be rejected before write");
+
+        assert_forbidden(&err);
+    }
+
+    #[tokio::test]
+    async fn target_self_perspective_allows_readable_perspective() {
+        let owner = owner();
+        let target = memory_id();
+        let engine = engine_with_storage(storage_with_memory(
+            owner.clone(),
+            owner.clone(),
+            true,
+            EntityKind::Perspective,
+        ));
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let permit = engine
+            .authorize_write(&authz, &owner, Relation::Editor)
+            .await
+            .expect("owner write should authorize");
+
+        let authorized = engine
+            .target_self_perspective_authorized(
+                &authz,
+                &permit,
+                GoalTargetSelf::SelfPerspective(target),
+            )
+            .await
+            .expect("readable Perspective should authorize");
+
+        assert_eq!(authorized, target);
     }
 
     #[tokio::test]
