@@ -108,7 +108,7 @@ impl Engine {
         };
 
         let mut effective = req.search.clone();
-        effective.read_owners = read_owners;
+        effective.read_owners = read_owners.clone();
         let memories = self
             .storage
             .search_memories(&effective, self.registry.search_projections())
@@ -131,11 +131,8 @@ impl Engine {
             if memory_ids.is_empty() {
                 Vec::new()
             } else {
-                let owner = hydration_permit
-                    .as_ref()
-                    .map_or(&req.search.principal, |permit| permit.owner());
                 self.storage
-                    .load_neighbor_memory_edges(owner, &memory_ids, NEIGHBOR_EDGE_LIMIT)
+                    .load_neighbor_memory_edges(&read_owners, &memory_ids, NEIGHBOR_EDGE_LIMIT)
                     .await
                     .map_err(|err| storage_error("load_neighbor_memory_edges", &err))?
             }
@@ -161,20 +158,19 @@ impl Engine {
         authz: &AuthzContext,
         req: &GetMemoryReadRequest,
     ) -> Result<GetMemoryReadResponse, ProtocolError> {
-        let permit = self
+        let _permit = self
             .authorize_entry_read(authz, EntityId::Memory(req.memory_id))
             .await?;
+        let read_owners = self.authorize_read(authz).await?;
         let sidecars = self.sidecar_specs();
         let memory = self
             .storage
             .load_memory_by_id(req.memory_id, req.reader_personality_instance_id, &sidecars)
             .await
             .map_err(|err| storage_error("load_memory_by_id", &err))?;
-        let neighbor_edges = if req.include_neighbor_edges
-            && permit.owner() == &authz.identity.principal
-        {
+        let neighbor_edges = if req.include_neighbor_edges {
             self.storage
-                .load_neighbor_memory_edges(permit.owner(), &[req.memory_id], NEIGHBOR_EDGE_LIMIT)
+                .load_neighbor_memory_edges(&read_owners, &[req.memory_id], NEIGHBOR_EDGE_LIMIT)
                 .await
                 .map_err(|err| storage_error("load_neighbor_memory_edges", &err))?
         } else {
