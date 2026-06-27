@@ -85,7 +85,7 @@ pub async fn append_derived_in_tx(
         });
     }
     insert_entity_owner_home(
-        &mut **tx,
+        tx,
         draft.memory_id,
         &draft.owner,
         Some(author_personality_instance_id),

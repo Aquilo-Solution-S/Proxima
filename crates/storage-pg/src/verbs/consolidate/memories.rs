@@ -542,7 +542,7 @@ pub async fn append_personality_memories(
         .await
         .map_err(map_err)?;
         insert_entity_owner_home(
-            &mut *tx,
+            &mut tx,
             memory_id,
             &req.owner,
             Some(req.instance.personality_instance_id.into_inner()),

@@ -90,17 +90,9 @@ impl Engine {
         authz: &AuthzContext,
         req: AuthorDerivedRequestInput<'_>,
     ) -> Result<AuthorDerivedAuthorizedOutcome, ProtocolError> {
-        let read_permit = self
-            .authorize_request(authz, &req.owner, Relation::Viewer)
-            .await?;
         let write_permit = self
-            .authorize_request(authz, &req.owner, Relation::Editor)
+            .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
-        if read_permit.owner() != write_permit.owner() {
-            return Err(ProtocolError::forbidden(
-                "read and write permits resolved to different owners",
-            ));
-        }
 
         let owner = write_permit.owner().clone();
         let edges = self.validated_author_derived_edges(&owner, &req).await?;
