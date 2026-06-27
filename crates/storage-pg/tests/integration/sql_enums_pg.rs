@@ -6,7 +6,6 @@ async fn core_closed_vocab_columns_use_sql_enums() -> Result<(), Box<dyn std::er
         pg.run_migrations().await?;
 
         for (table, column) in [
-            ("memories", "owner_principal_kind"),
             ("memories", "kind"),
             ("memories", "operator_kind"),
             ("goals", "state"),

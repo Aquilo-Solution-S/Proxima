@@ -43,7 +43,10 @@ async fn cross_owner_derived_edge_requires_source_write_and_target_read()
         )
         .await?;
         assert_eq!(ok.edge_ids.len(), 1);
-        assert_eq!(edge_owner(&pg, ok.edge_ids[0].into_inner()).await?, gp);
+        assert_eq!(
+            edge_change_event_owner(&pg, ok.edge_ids[0].into_inner()).await?,
+            gp
+        );
 
         let err = author_abstraction_over_target(
             &engine,
@@ -186,14 +189,15 @@ async fn seed_membership(
     Ok(())
 }
 
-async fn edge_owner(
+async fn edge_change_event_owner(
     pg: &proxima_storage_pg::PgStorage,
     edge_id: Uuid,
 ) -> Result<Principal, sqlx::Error> {
     let (kind, id): (proxima_core::OwnerPrincipalKind, Uuid) = sqlx::query_as(
         "SELECT owner_principal_kind, owner_principal_id
-           FROM proxima_core.edges
-          WHERE edge_id = $1",
+           FROM proxima_core.change_event
+          WHERE edge_id = $1
+            AND kind = 'EdgeAppend'",
     )
     .bind(edge_id)
     .fetch_one(pg.pool())

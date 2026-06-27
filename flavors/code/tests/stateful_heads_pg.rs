@@ -144,29 +144,21 @@ async fn seed_file_revision_state(
 
 async fn insert_memory_edge(
     pool: &PgPool,
-    owner: &Owner,
+    _owner: &Owner,
     source_memory_id: Uuid,
     target_memory_id: Uuid,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let edge_id = Uuid::now_v7();
-    let owner_kind = proxima_core::OwnerPrincipalKind::of(owner);
-    let owner_principal_id = match owner {
-        Principal::User(u) => u.into_inner(),
-        Principal::Group(g) => g.into_inner(),
-    };
     sqlx::query(
         "INSERT INTO proxima_core.edges \
             (edge_id, relation, relation_class, source_kind, source_memory_id, \
-             target_kind, target_memory_id, authorship_kind, owner_principal_kind, \
-             owner_principal_id) \
-         VALUES ($1, $2, 'Provenance', 'Fact', $3, 'Fact', $4, 'Engine', $5, $6)",
+             target_kind, target_memory_id, authorship_kind) \
+         VALUES ($1, $2, 'Provenance', 'Fact', $3, 'Fact', $4, 'Engine')",
     )
     .bind(edge_id)
     .bind(CORE_DERIVED_FROM_RELATION)
     .bind(source_memory_id)
     .bind(target_memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .execute(pool)
     .await?;
     Ok(edge_id)

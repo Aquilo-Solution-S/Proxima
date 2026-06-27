@@ -518,16 +518,14 @@ async fn insert_edge_row(
     tx: &mut sqlx::PgConnection,
     draft: &EdgeDraft<'_>,
 ) -> Result<bool, StorageError> {
-    let (owner_kind, owner_principal_id) = draft.owner.columns();
     let descriptor = draft.relation.descriptor;
     let inserted: Option<(uuid::Uuid,)> = sqlx::query_as(
         "INSERT INTO proxima_core.edges \
             (edge_id, relation, relation_class, \
              source_kind, source_memory_id, source_goal_id, source_fact_entity_id, \
              target_kind, target_memory_id, target_goal_id, target_fact_entity_id, \
-             authorship_kind, authorship_owner_memory_id, \
-             owner_principal_kind, owner_principal_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
+             authorship_kind, authorship_owner_memory_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
          ON CONFLICT (edge_id) DO NOTHING \
          RETURNING edge_id",
     )
@@ -544,8 +542,6 @@ async fn insert_edge_row(
     .bind(draft.target_fact_entity_id)
     .bind(draft.authorship_kind)
     .bind(draft.authorship_owner_memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(map_err)?;

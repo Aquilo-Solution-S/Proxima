@@ -120,8 +120,11 @@ async fn count_commit_v1_facts(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid
         "SELECT COUNT(*)::bigint \
          FROM proxima_core.memories m \
          JOIN proxima_code.commit_v1 s USING (memory_id) \
-         WHERE m.owner_principal_kind = $1 \
-           AND m.owner_principal_id = $2 \
+         JOIN proxima_core.entity_owner eo \
+           ON eo.entity_id = m.memory_id \
+          AND eo.is_home \
+         WHERE eo.owner_principal_kind = $1 \
+           AND eo.owner_principal_id = $2 \
            AND s.repo_id = $3",
     )
     .bind(kind)

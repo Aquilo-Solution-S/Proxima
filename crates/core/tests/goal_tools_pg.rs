@@ -580,15 +580,12 @@ async fn seed_personality_self(
     let (owner_kind, owner_principal_id) = owner_parts(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, 'test/self-perspective-v1', 1, $4,
-                 'goal tool self perspective', $5, 'codex-test', 'self-v1', $6, 0)",
+         VALUES ($1, 'test/self-perspective-v1', 1, $2,
+                 'goal tool self perspective', $3, 'codex-test', 'self-v1', $4, 0)",
     )
     .bind(root_memory_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(EntityKind::Perspective)
     .bind(MemoryOperatorKind::AtoP)
     .bind(personality_id.into_inner())
@@ -657,13 +654,10 @@ async fn seed_fact_memory(
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, event_id, personality_instance_id)
-         VALUES ($1, $2, $3, 'test/evidence-v1', 1, $4, $5)",
+            (memory_id, schema_id, schema_version, event_id, personality_instance_id)
+         VALUES ($1, 'test/evidence-v1', 1, $2, $3)",
     )
     .bind(memory_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(event_id)
     .bind(Uuid::nil())
     .execute(pg.pool())

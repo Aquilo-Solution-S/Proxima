@@ -23,19 +23,15 @@ async fn insert_self(
     pg: &PgStorage,
     owner: &Owner,
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
     let memory_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id)
-         VALUES ($1, $2, $3, 'test/self', 1, $4,
-                 'self', $5, 'test-model', 'v1', $6)",
+         VALUES ($1, 'test/self', 1, $2,
+                 'self', $3, 'test-model', 'v1', $4)",
     )
     .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(proxima_core::EntityKind::Perspective)
     .bind(proxima_core::MemoryOperatorKind::AtoP)
     .bind(Uuid::nil())
@@ -57,13 +53,12 @@ async fn insert_goal(
     sqlx::query(
         "INSERT INTO proxima_core.goals
             (goal_id, schema_id, schema_version,
-             owner_principal_kind, owner_principal_id,
              title, text, payload, state, supersedes,
-             authorship_kind, request_id)
+             authorship_kind, request_id, idempotency_key)
          VALUES ($1, 'core/simple-text-v1', 1,
-                 $2, $3,
                  $4, $4, convert_to('{}', 'UTF8'), $5, $6,
-                 'User', $7)",
+                 'User', $7,
+                 md5($2::text || ':' || $3::text || ':' || $7))",
     )
     .bind(goal_id.into_inner())
     .bind(owner_kind)
@@ -250,7 +245,6 @@ async fn insert_goal_activated_fact(
     owner: &Owner,
     goal_id: GoalId,
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
     let memory_id = Uuid::now_v7();
     let mut tx = pg.pool().begin().await?;
 
@@ -260,15 +254,12 @@ async fn insert_goal_activated_fact(
     let (event_id, citation_mapping_id) = insert_dummy_fact_refs(&mut tx, owner, memory_id).await?;
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, event_id, citation_mapping_id,
+            (memory_id, schema_id, schema_version, event_id, citation_mapping_id,
              personality_instance_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7,
+         VALUES ($1, $2, $3, $4, $5,
                  '00000000-0000-0000-0000-000000000000'::uuid)",
     )
     .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind("core/goal-activated-v1")
     .bind(1_i32)
     .bind(&event_id)
