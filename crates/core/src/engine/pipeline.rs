@@ -1,6 +1,7 @@
-use crate::access::{AccessScope, Relation};
+use crate::access::{AccessScope, EntityId, Relation};
 use crate::authz::{AuthPath, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome};
 use crate::error::ProtocolError;
+use crate::storage::StorageError;
 use crate::{MemoryId, Owner, PersonalityInstanceId, Principal};
 
 use super::Engine;
@@ -29,6 +30,44 @@ pub enum PermitMode {
     },
     /// World-readable published entry. Resource-only.
     PublicRead { resource: MemoryId },
+}
+
+/// Proof that the resolved owner passed a write gate for `relation`. Sealed:
+/// only this module's authorization gates can mint it.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct WritePermit {
+    owner: Principal,
+    relation: Relation,
+}
+
+#[allow(dead_code)]
+impl WritePermit {
+    #[must_use]
+    pub fn owner(&self) -> &Principal {
+        &self.owner
+    }
+
+    #[must_use]
+    pub fn relation(&self) -> Relation {
+        self.relation
+    }
+}
+
+/// Proof that one entry passed the read-scope predicate. Sealed: only this
+/// module's authorization gates can mint it.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct EntryReadPermit {
+    owner: Principal,
+}
+
+#[allow(dead_code)]
+impl EntryReadPermit {
+    #[must_use]
+    pub fn owner(&self) -> &Principal {
+        &self.owner
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +135,133 @@ impl MemoryPermit {
 }
 
 impl Engine {
+    /// Targeted write/config gate over the resolved access sets.
+    #[allow(dead_code)]
+    pub(in crate::engine) async fn authorize_write(
+        &self,
+        authz: &AuthzContext,
+        owner: &Principal,
+        required: Relation,
+    ) -> Result<WritePermit, ProtocolError> {
+        if authz.auth_path == AuthPath::Denied {
+            let input = AuthzInput {
+                authz,
+                requested: owner,
+                resolved: owner,
+                relation: required,
+                operation: AuthzOperation::Relation { relation: required },
+            };
+            self.registry
+                .run_authorization_observers(&input, AuthzOutcome::DeniedResolution);
+            return Err(ProtocolError::forbidden(
+                "denied context authorizes nothing",
+            ));
+        }
+
+        let resolved = match self.registry.resolve_owner(authz, owner) {
+            Ok(owner) => owner,
+            Err(err) => {
+                let input = AuthzInput {
+                    authz,
+                    requested: owner,
+                    resolved: owner,
+                    relation: required,
+                    operation: AuthzOperation::Relation { relation: required },
+                };
+                self.registry
+                    .run_authorization_observers(&input, AuthzOutcome::DeniedResolution);
+                return Err(err);
+            }
+        };
+
+        let access = self.resolve_access(authz).await?;
+        let input = AuthzInput {
+            authz,
+            requested: owner,
+            resolved: &resolved,
+            relation: required,
+            operation: AuthzOperation::Relation { relation: required },
+        };
+
+        if !access.can_write(&resolved, required) {
+            self.registry
+                .run_authorization_observers(&input, AuthzOutcome::DeniedGrant);
+            return Err(ProtocolError::forbidden(required.denied_message()));
+        }
+
+        if let Err(err) = self.registry.run_authorization_vetoes(&input) {
+            self.registry
+                .run_authorization_observers(&input, AuthzOutcome::DeniedVeto);
+            return Err(err);
+        }
+
+        self.registry
+            .run_authorization_observers(&input, AuthzOutcome::Allowed);
+        Ok(WritePermit {
+            owner: resolved,
+            relation: required,
+        })
+    }
+
+    /// Read gate returning the resolved owner set visible to this context.
+    #[allow(dead_code)]
+    pub(in crate::engine) async fn authorize_read(
+        &self,
+        authz: &AuthzContext,
+    ) -> Result<Vec<Principal>, ProtocolError> {
+        let access = self.resolve_access(authz).await?;
+        let read = access.read_owners().to_vec();
+        let principal = authz.identity.principal.clone();
+        let input = AuthzInput {
+            authz,
+            requested: &principal,
+            resolved: &principal,
+            relation: Relation::Viewer,
+            operation: AuthzOperation::Relation {
+                relation: Relation::Viewer,
+            },
+        };
+
+        if read.is_empty() {
+            self.registry
+                .run_authorization_observers(&input, AuthzOutcome::DeniedResolution);
+            return Err(ProtocolError::forbidden(
+                "denied context authorizes nothing",
+            ));
+        }
+
+        self.registry
+            .run_authorization_observers(&input, AuthzOutcome::Allowed);
+        Ok(read)
+    }
+
+    /// Single-entry read gate. Existence is not disclosed to non-readers.
+    #[allow(dead_code)]
+    pub(in crate::engine) async fn authorize_entry_read(
+        &self,
+        authz: &AuthzContext,
+        entity: EntityId,
+    ) -> Result<EntryReadPermit, ProtocolError> {
+        let read = self.authorize_read(authz).await?;
+        let home = self
+            .storage()
+            .entity_home_owner(entity)
+            .await
+            .map_err(|err| storage_error("entity_home_owner", &err))?
+            .ok_or_else(|| ProtocolError::forbidden("entry not found"))?;
+
+        let readable = self
+            .storage()
+            .entity_is_readable(entity, &read)
+            .await
+            .map_err(|err| storage_error("entity_is_readable", &err))?;
+        if !readable {
+            return Err(ProtocolError::forbidden("entry not found"));
+        }
+
+        Ok(EntryReadPermit { owner: home })
+    }
+
     /// The one Tier-2 owner/space-scoped gate. Async because relation resolution
     /// reads persisted grants (skipped for Unrestricted). `denied` contexts are
     /// rejected before any resolution (replaces the old `RoleSet::none` gate).
@@ -283,12 +449,17 @@ impl Engine {
     }
 }
 
+#[allow(dead_code)]
+fn storage_error(context: &str, err: &StorageError) -> ProtocolError {
+    ProtocolError::internal(format!("{context}: {err}"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
     use std::sync::{Arc, Mutex};
 
-    use crate::access::{AccessScope, Relation};
+    use crate::access::{AccessScope, EntityId, Relation, world};
     use crate::authz::{
         AuthPath, AuthorizationHook, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome,
         AuthzVeto, CapabilitySet, Identity, OwnerResolver, ToolScope,
@@ -297,6 +468,7 @@ mod tests {
     use crate::error::ProtocolError;
     use crate::{FlavorRegistry, GroupId, MemoryId, Owner, Principal, UserId};
 
+    use super::super::access_sets::tests::MembershipStorage;
     use super::{AccessBasis, Engine, PermitMode};
 
     fn engine() -> Engine {
@@ -307,12 +479,46 @@ mod tests {
         Engine::new(registry.freeze())
     }
 
+    fn engine_with_storage(storage: MembershipStorage) -> Engine {
+        Engine::compose(Arc::new(storage), |_| {})
+    }
+
+    fn engine_from_registry_and_storage(
+        registry: FlavorRegistry,
+        storage: MembershipStorage,
+    ) -> Engine {
+        Engine::new(registry.freeze()).with_storage(Arc::new(storage))
+    }
+
     fn owner() -> Owner {
         Principal::User(UserId::new(uuid::Uuid::now_v7()))
     }
 
     fn group_owner() -> Owner {
         Principal::Group(GroupId::new(uuid::Uuid::now_v7()))
+    }
+
+    fn storage(member: Principal, group: GroupId) -> MembershipStorage {
+        MembershipStorage {
+            member,
+            group,
+            home_owner: None,
+            entity_readable: false,
+        }
+    }
+
+    fn storage_with_entity(
+        member: Principal,
+        group: GroupId,
+        home_owner: Option<Principal>,
+        entity_readable: bool,
+    ) -> MembershipStorage {
+        MembershipStorage {
+            member,
+            group,
+            home_owner,
+            entity_readable,
+        }
     }
 
     fn granted_context(owner: &Owner) -> AuthzContext {
@@ -370,7 +576,12 @@ mod tests {
                 AuthPath::System | AuthPath::HostBearer
             ));
             assert_eq!(input.relation, Relation::Viewer);
-            assert_eq!(input.operation, AuthzOperation::Relation { relation: Relation::Viewer });
+            assert_eq!(
+                input.operation,
+                AuthzOperation::Relation {
+                    relation: Relation::Viewer
+                }
+            );
             self.outcomes.lock().expect("recorder lock").push(outcome);
         }
     }
@@ -407,6 +618,161 @@ mod tests {
             }
         ));
         assert_eq!(permit.subject_personality(), None);
+    }
+
+    #[tokio::test]
+    async fn authorize_write_allows_self_editor() {
+        let p = owner();
+        let g1 = GroupId::new(uuid::Uuid::now_v7());
+        let engine = engine_with_storage(storage(p.clone(), g1));
+        let authz = granted_context(&p);
+
+        let permit = engine
+            .authorize_write(&authz, &p, Relation::Editor)
+            .await
+            .expect("granted self editor should authorize");
+
+        assert_eq!(permit.owner(), &p);
+        assert_eq!(permit.relation(), Relation::Editor);
+    }
+
+    #[tokio::test]
+    async fn authorize_write_denies_viewer_for_editor() {
+        let p = owner();
+        let g1 = GroupId::new(uuid::Uuid::now_v7());
+        let g1_owner = Principal::Group(g1);
+        let engine = engine_with_storage(storage(p.clone(), g1));
+        let authz = granted_context(&p);
+
+        let err = engine
+            .authorize_write(&authz, &g1_owner, Relation::Editor)
+            .await
+            .expect_err("viewer membership should not authorize editor writes");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn authorize_write_veto_denies() {
+        let p = owner();
+        let g1 = GroupId::new(uuid::Uuid::now_v7());
+        let mut registry = FlavorRegistry::new();
+        registry.add_authorization_hook(Arc::new(VetoHook));
+        let engine = engine_from_registry_and_storage(registry, storage(p.clone(), g1));
+        let authz = granted_context(&p);
+
+        let err = engine
+            .authorize_write(&authz, &p, Relation::Editor)
+            .await
+            .expect_err("veto should deny otherwise-allowed write");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
+        assert_eq!(err.message, "test veto");
+    }
+
+    #[tokio::test]
+    async fn authorize_write_denied_context_forbidden() {
+        let p = owner();
+        let g1 = GroupId::new(uuid::Uuid::now_v7());
+        let engine = engine_with_storage(storage(p.clone(), g1));
+        let authz = AuthzContext::denied(&p);
+
+        let err = engine
+            .authorize_write(&authz, &p, Relation::Editor)
+            .await
+            .expect_err("denied context should reject write authorization");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn authorize_read_returns_world_and_groups() {
+        let p = owner();
+        let g1 = GroupId::new(uuid::Uuid::now_v7());
+        let g1_owner = Principal::Group(g1);
+        let engine = engine_with_storage(storage(p.clone(), g1));
+        let authz = granted_context(&p);
+
+        let read = engine
+            .authorize_read(&authz)
+            .await
+            .expect("granted context should resolve read owners");
+
+        assert!(read.contains(&p));
+        assert!(read.contains(&g1_owner));
+        assert!(read.contains(&world()));
+    }
+
+    #[tokio::test]
+    async fn authorize_read_denied_forbidden() {
+        let p = owner();
+        let g1 = GroupId::new(uuid::Uuid::now_v7());
+        let engine = engine_with_storage(storage(p.clone(), g1));
+        let authz = AuthzContext::denied(&p);
+
+        let err = engine
+            .authorize_read(&authz)
+            .await
+            .expect_err("denied context should reject read authorization");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn authorize_entry_read_ok_when_readable() {
+        let p = owner();
+        let g1 = GroupId::new(uuid::Uuid::now_v7());
+        let engine = engine_with_storage(storage_with_entity(p.clone(), g1, Some(p.clone()), true));
+        let authz = granted_context(&p);
+
+        let permit = engine
+            .authorize_entry_read(
+                &authz,
+                EntityId::Memory(MemoryId::new(uuid::Uuid::now_v7())),
+            )
+            .await
+            .expect("readable entity should authorize");
+
+        assert_eq!(permit.owner(), &p);
+    }
+
+    #[tokio::test]
+    async fn authorize_entry_read_absent_is_forbidden() {
+        let p = owner();
+        let g1 = GroupId::new(uuid::Uuid::now_v7());
+        let engine = engine_with_storage(storage_with_entity(p.clone(), g1, None, true));
+        let authz = granted_context(&p);
+
+        let err = engine
+            .authorize_entry_read(
+                &authz,
+                EntityId::Memory(MemoryId::new(uuid::Uuid::now_v7())),
+            )
+            .await
+            .expect_err("absent entity should fail closed");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
+        assert_eq!(err.message, "entry not found");
+    }
+
+    #[tokio::test]
+    async fn authorize_entry_read_unreadable_is_forbidden() {
+        let p = owner();
+        let other = owner();
+        let g1 = GroupId::new(uuid::Uuid::now_v7());
+        let engine = engine_with_storage(storage_with_entity(p.clone(), g1, Some(other), false));
+        let authz = granted_context(&p);
+
+        let err = engine
+            .authorize_entry_read(
+                &authz,
+                EntityId::Memory(MemoryId::new(uuid::Uuid::now_v7())),
+            )
+            .await
+            .expect_err("unreadable entity should fail closed");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
+        assert_eq!(err.message, "entry not found");
     }
 
     #[tokio::test]
@@ -505,24 +871,10 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn entry_request_absent_entry_returns_forbidden() {
-        let engine = engine();
-        let owner = owner();
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
-
-        let err = engine
-            .authorize_entry_request(
-                &authz,
-                MemoryId::new(uuid::Uuid::now_v7()),
-                Relation::Viewer,
-            )
-            .await
-            .expect_err("absent entry should fail closed");
-
-        assert_eq!(err.code, ErrorCode::Forbidden);
-        assert_eq!(err.message, "entry not found");
-    }
+    // (removed) entry_request_absent_entry_returns_forbidden — the old
+    // authorize_entry_request lost its storage existence-check in the grant-vocab
+    // swap; existence-gating now lives in authorize_entry_read, covered by
+    // authorize_entry_read_absent_is_forbidden above. The old gate is deleted in Phase 4.
 
     #[tokio::test]
     async fn resolver_remap_still_gates_resolved_owner() {
