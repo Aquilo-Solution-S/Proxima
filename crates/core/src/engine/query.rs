@@ -164,44 +164,40 @@ impl Engine {
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
 
-    /// docs/14 §"`EventHistory`" — bounded change-event read for ONE owner the
-    /// caller selects via `req.principal` and the context can access (gated by
-    /// `authorize_request`, unlike `Query`/`read_edges` which span `S_read`).
-    /// Multi-owner event polling across `S_read` is the deferred spec-Q4 path
-    /// (`list_events`); this verb stays single-owner. Server clamps `limit` to
-    /// `MAX_EVENT_HISTORY_LIMIT`.
+    /// docs/14 §"`EventHistory`" — bounded change-event read scoped to the
+    /// authorization context's read access set (`S_read`), matching `Query` and
+    /// `read_edges`. A client-supplied [`EventHistoryRequest::principal`] is not
+    /// an access vector and cannot widen what the caller sees. Server clamps
+    /// `limit` to `MAX_EVENT_HISTORY_LIMIT`.
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks [`Relation::Viewer`], `InvalidArgument` when `req.limit == 0`, or
-    /// `Internal` when the storage read fails.
+    /// Returns `Forbidden` when the authorization context resolves to an empty
+    /// read set, `InvalidArgument` when `req.limit == 0`, or `Internal` when the
+    /// storage read fails.
     pub async fn event_history(
         &self,
         authz: &AuthzContext,
         req: &EventHistoryRequest,
     ) -> Result<EventHistoryResponse, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, &req.principal, Relation::Viewer)
-            .await?;
-        self.event_history_authorized(&permit, req).await
+        let read_owners = self.authorize_read(authz).await?;
+        self.event_history_authorized(&read_owners, req).await
     }
 
     async fn event_history_authorized(
         &self,
-        permit: &MemoryPermit,
+        read_owners: &[crate::Principal],
         req: &EventHistoryRequest,
     ) -> Result<EventHistoryResponse, ProtocolError> {
         if req.limit == 0 {
             return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
         }
         let mut effective = req.clone();
-        effective.principal = permit.owner().clone();
         if effective.limit > MAX_EVENT_HISTORY_LIMIT {
             effective.limit = MAX_EVENT_HISTORY_LIMIT;
         }
         self.storage
-            .event_history(&effective)
+            .event_history(read_owners, &effective)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }

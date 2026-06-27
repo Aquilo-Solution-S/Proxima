@@ -831,9 +831,10 @@ impl Storage for PgStorage {
 
     async fn event_history(
         &self,
+        read_owners: &[Principal],
         req: &EventHistoryRequest,
     ) -> Result<EventHistoryResponse, StorageError> {
-        verbs::event_history::event_history(&self.pool, req).await
+        verbs::event_history::event_history(&self.pool, read_owners, req).await
     }
 
     async fn read_mcp_call_history(

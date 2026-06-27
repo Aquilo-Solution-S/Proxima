@@ -1,5 +1,6 @@
-use crate::common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fresh_pg, owner_fixture, share_entity};
 
+use proxima_core::access::world;
 use proxima_core::relation::CORE_INSPIRES_RELATION;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::goal_write::GoalState;
@@ -337,6 +338,43 @@ async fn list_active_goals_filters_by_read_owners() -> Result<(), Box<dyn std::e
 
         let p_goals = pg.list_active_goals(&q_read_owners, self_p, 100).await?;
         assert!(p_goals.is_empty(), "Q must not see P's personal goal");
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn list_active_goals_requires_readable_seed_target() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg().await;
+
+    let result = async {
+        pg.run_migrations().await?;
+        let private = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let world = world();
+        let private_self = insert_self(&pg, &private).await?;
+        let goal = insert_goal(&pg, &private, GoalState::Active, None, "private-active").await?;
+        link_goal_to_self(&pg, &private, goal, private_self).await?;
+        share_entity(&pg, goal.into_inner(), &world).await?;
+
+        let world_goals = pg
+            .list_active_goals(std::slice::from_ref(&world), private_self, 100)
+            .await?;
+        assert!(
+            world_goals.is_empty(),
+            "World can read the source goal but not the private seed target"
+        );
+
+        let private_read = vec![private, world];
+        let private_goals = pg
+            .list_active_goals(&private_read, private_self, 100)
+            .await?;
+        assert_eq!(private_goals.len(), 1);
+        assert_eq!(private_goals[0].goal_id, goal);
+
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;

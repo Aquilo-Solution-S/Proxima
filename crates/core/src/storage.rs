@@ -563,13 +563,14 @@ pub trait Storage: Send + Sync {
         req: &DecomposeGoalAtomicRequest<'_>,
     ) -> Result<DecomposeGoalOutcome, StorageError>;
 
-    /// Owner-scoped bounded read of `change_event` rows, newest-first.
+    /// Read-set-scoped bounded read of visible `change_event` rows, newest-first.
     /// Server clamps `limit` to `MAX_EVENT_HISTORY_LIMIT`. When
     /// `before` is `Some(seq)`, returns rows with `seq < before`.
-    /// `seq_high_water` is the latest seq in the owner's `change_event`
+    /// `seq_high_water` is the latest visible seq in the read set's `change_event`
     /// log at read time (cursor for a follow-up pull).
     async fn event_history(
         &self,
+        read_owners: &[Principal],
         req: &EventHistoryRequest,
     ) -> Result<EventHistoryResponse, StorageError>;
 
@@ -1129,6 +1130,7 @@ impl Storage for NoopStorage {
 
     async fn event_history(
         &self,
+        _read_owners: &[Principal],
         _req: &EventHistoryRequest,
     ) -> Result<EventHistoryResponse, StorageError> {
         Ok(EventHistoryResponse {

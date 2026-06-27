@@ -10,6 +10,7 @@ mod read_scope;
 mod wake_entries;
 
 pub use dependencies::list_memory_dependencies;
+pub(crate) use events::edge_event_visibility_predicate;
 pub use events::{list_change_events_after, list_change_events_for_replay};
 pub(crate) use instances::instantiate_personality_on_conn;
 pub use instances::{instantiate_personality, list_personality_instances};

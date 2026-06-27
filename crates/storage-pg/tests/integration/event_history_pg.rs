@@ -1,16 +1,25 @@
 //! End-to-end `EventHistory` verb test against a transient PG database.
 
-use crate::common::{create_db, db_url, drop_db};
+use crate::common::{
+    create_db, db_url, drop_db, fresh_pg, seed_memory, seed_memory_edge, share_entity,
+};
+use std::collections::HashSet;
 use std::sync::Arc;
 
+use proxima_core::access::{AccessScope, world};
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_history::EventHistoryRequest;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
+use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
-use proxima_core::{Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId};
+use proxima_core::{
+    AuthPath, AuthzContext, CORE_DERIVED_FROM_RELATION, CapabilitySet, ChangeEventKind, EdgeId,
+    EntityKind, GroupId, Identity, MemoryId, Owner, Principal, RelationClass, SchemaId,
+    SchemaVersion, SourceBatchId, SourceId, ToolScope, UserId,
+};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
@@ -82,6 +91,25 @@ fn fresh_event_draft(owner: Owner, payload: Vec<u8>) -> EventDraft {
 fn build_engine(storage: Arc<dyn Storage>, _owner: Owner, _principal: Principal) -> Engine {
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     Engine::new(registry).with_storage(storage)
+}
+
+fn read_set_authz(
+    principal: Principal,
+    read_owners: impl IntoIterator<Item = Principal>,
+) -> AuthzContext {
+    AuthzContext {
+        identity: Identity {
+            principal,
+            accessible_principals: read_owners.into_iter().collect::<HashSet<_>>(),
+            expires_at: None,
+            auth_epoch: 0,
+        },
+        capabilities: CapabilitySet {
+            tool_scope: ToolScope::All,
+            access: AccessScope::Unrestricted,
+        },
+        auth_path: AuthPath::System,
+    }
 }
 
 #[tokio::test]
@@ -179,4 +207,110 @@ async fn event_history_returns_owner_scoped_newest_first() {
 
     let _ = drop_db(&db_name).await;
     result.expect("event_history_returns_owner_scoped_newest_first failed");
+}
+
+#[tokio::test]
+async fn event_history_applies_public_source_guard_to_edge_events()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let result = async {
+        let gp = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let private = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let p = Principal::User(UserId::new(Uuid::now_v7()));
+        let world = world();
+
+        let a_public = seed_memory(&pg, &gp, EntityKind::Abstraction, "A public").await?;
+        let f_private = seed_memory(&pg, &private, EntityKind::Fact, "private").await?;
+        share_entity(&pg, a_public.into_inner(), &world).await?;
+
+        let edge = seed_memory_edge(
+            &pg,
+            &gp,
+            (EntityKind::Abstraction, a_public),
+            (EntityKind::Fact, f_private),
+            CORE_DERIVED_FROM_RELATION,
+            RelationClass::Provenance,
+        )
+        .await?;
+        insert_edge_append_event(&pg, &gp, edge, a_public, f_private).await?;
+
+        let p_read = vec![p.clone(), gp.clone(), world.clone()];
+        let read_edges = pg
+            .read_edges(
+                &p_read,
+                &EdgeReadRequest {
+                    principal: p.clone(),
+                    edge_ids: vec![edge],
+                    filter: EdgeFilter::default(),
+                    limit: 10,
+                },
+            )
+            .await?;
+        assert!(
+            read_edges.edges.is_empty(),
+            "read_edges omits the public-source/private-target edge"
+        );
+
+        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let engine = build_engine(storage, p.clone(), p.clone());
+        let authz = read_set_authz(p, p_read);
+        let history = engine
+            .event_history(
+                &authz,
+                &EventHistoryRequest {
+                    principal: private,
+                    limit: 100,
+                    before: None,
+                },
+            )
+            .await?;
+
+        assert!(
+            !history.events.iter().any(|e| matches!(
+                &e.kind,
+                ChangeEventKind::EdgeAppend { edge_id, .. } if *edge_id == edge.into_inner()
+            )),
+            "event_history must not disclose an edge hidden by read_edges"
+        );
+        assert!(
+            history.seq_high_water.is_none(),
+            "high-water must be computed over visible events only"
+        );
+
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+async fn insert_edge_append_event(
+    pg: &PgStorage,
+    owner: &Principal,
+    edge_id: EdgeId,
+    source_memory_id: MemoryId,
+    target_memory_id: MemoryId,
+) -> Result<(), sqlx::Error> {
+    let (owner_kind, owner_principal_id) = owner.columns();
+    sqlx::query(
+        "INSERT INTO proxima_core.change_event \
+            (seq, owner_principal_kind, owner_principal_id, kind, \
+             edge_id, edge_relation, \
+             edge_source_memory_id, edge_source_goal_id, edge_source_fact_entity_id, \
+             edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id) \
+         VALUES ($1, $2, $3, 'EdgeAppend', $4, $5, $6, NULL, NULL, $7, NULL, NULL)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(edge_id.into_inner())
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(source_memory_id.into_inner())
+    .bind(target_memory_id.into_inner())
+    .execute(pg.pool())
+    .await
+    .map(|_| ())
 }

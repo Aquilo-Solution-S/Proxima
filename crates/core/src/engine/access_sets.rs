@@ -330,6 +330,7 @@ pub(in crate::engine) mod tests {
 
         async fn event_history(
             &self,
+            _read_owners: &[Principal],
             _req: &EventHistoryRequest,
         ) -> Result<EventHistoryResponse, StorageError> {
             Ok(EventHistoryResponse {
