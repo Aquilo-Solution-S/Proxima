@@ -90,9 +90,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.search.principal`,
-    /// lacks graph-read/search, or requests body/neighbor hydration without read;
-    /// returns `Internal` when storage reads fail.
+    /// Returns `Forbidden` when the context cannot access `req.search.principal`
+    /// or lacks [`Relation::Viewer`]; returns `Internal` when storage reads fail.
     pub async fn search(
         &self,
         authz: &AuthzContext,
@@ -101,14 +100,6 @@ impl Engine {
         let search_permit = self
             .authorize_request(authz, &req.search.principal, Relation::Viewer)
             .await?;
-        let read_permit = if req.include_body || req.include_neighbor_edges {
-            Some(
-                self.authorize_request(authz, &req.search.principal, Relation::Viewer)
-                    .await?,
-            )
-        } else {
-            None
-        };
 
         let mut effective = req.search.clone();
         effective.principal = search_permit.owner().clone();
@@ -122,39 +113,26 @@ impl Engine {
             .map_err(|err| storage_error("search_memories", &err))?;
 
         let memory_ids = memories.iter().map(|row| row.memory_id).collect::<Vec<_>>();
-        let payload_owner = read_permit
-            .as_ref()
-            .map_or(search_permit.owner(), |permit| permit.owner());
         let payloads = if memory_ids.is_empty() {
             Vec::new()
         } else {
             self.storage
-                .load_memory_graph_payloads(
-                    payload_owner,
-                    &memory_ids,
-                    req.include_body && read_permit.is_some(),
-                )
+                .load_memory_graph_payloads(search_permit.owner(), &memory_ids, req.include_body)
                 .await
                 .map_err(|err| storage_error("load_memory_graph_payloads", &err))?
         };
         let neighbor_edges = if req.include_neighbor_edges {
-            if let Some(permit) = read_permit.as_ref() {
-                if memory_ids.is_empty() {
-                    Vec::new()
-                } else {
-                    self.storage
-                        .load_neighbor_memory_edges(
-                            permit.owner(),
-                            &memory_ids,
-                            NEIGHBOR_EDGE_LIMIT,
-                        )
-                        .await
-                        .map_err(|err| storage_error("load_neighbor_memory_edges", &err))?
-                }
+            if memory_ids.is_empty() {
+                Vec::new()
             } else {
-                return Err(ProtocolError::internal(
-                    "read permit missing for neighbor edge hydration",
-                ));
+                self.storage
+                    .load_neighbor_memory_edges(
+                        search_permit.owner(),
+                        &memory_ids,
+                        NEIGHBOR_EDGE_LIMIT,
+                    )
+                    .await
+                    .map_err(|err| storage_error("load_neighbor_memory_edges", &err))?
             }
         } else {
             Vec::new()
@@ -235,7 +213,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks admin/admin, and `Internal` when storage reads fail.
+    /// lacks [`Relation::Admin`], and `Internal` when storage reads fail.
     pub async fn get_graph(
         &self,
         authz: &AuthzContext,
@@ -271,7 +249,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks graph-read/read, and `Internal` when storage reads fail.
+    /// lacks [`Relation::Viewer`], and `Internal` when storage reads fail.
     pub async fn list_events(
         &self,
         authz: &AuthzContext,
@@ -315,7 +293,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks graph-read/read, and `Internal` when storage reads fail.
+    /// lacks [`Relation::Viewer`], and `Internal` when storage reads fail.
     pub async fn read_fact_citation(
         &self,
         authz: &AuthzContext,
@@ -335,7 +313,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks graph-read/read, and `Internal` when storage reads fail.
+    /// lacks [`Relation::Viewer`], and `Internal` when storage reads fail.
     pub async fn read_entity_head_citation(
         &self,
         authz: &AuthzContext,
@@ -355,7 +333,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks graph-read/read, and `Internal` when storage reads fail.
+    /// lacks [`Relation::Viewer`], and `Internal` when storage reads fail.
     pub async fn facts_citing_object(
         &self,
         authz: &AuthzContext,
@@ -376,7 +354,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks admin/admin, and `Internal` when storage reads fail.
+    /// lacks [`Relation::Admin`], and `Internal` when storage reads fail.
     pub async fn list_read_scope(
         &self,
         authz: &AuthzContext,

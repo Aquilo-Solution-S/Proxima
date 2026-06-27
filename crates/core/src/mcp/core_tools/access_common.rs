@@ -53,8 +53,21 @@ pub struct StatusOutput {
 #[derive(Debug, Serialize)]
 pub struct GrantOutput {
     pub relation: String,
-    pub subject: String,
-    pub subject_is_group: bool,
+    pub subject: GrantSubjectOutput,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(tag = "subject_kind", rename_all = "snake_case")]
+pub enum GrantSubjectArg {
+    Principal { subject_id: String },
+    Group { subject_id: String },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "subject_kind", rename_all = "snake_case")]
+pub enum GrantSubjectOutput {
+    Principal { subject_id: String },
+    Group { subject_id: String },
 }
 
 pub(super) fn parse_principal(raw: &str) -> Result<Principal, McpToolError> {
@@ -88,24 +101,47 @@ pub(super) fn format_principal(principal: &Principal) -> String {
     }
 }
 
-pub(super) fn parse_grant_subject(
-    raw: &str,
-    subject_is_group: bool,
-) -> Result<GrantSubject, McpToolError> {
-    let principal = parse_principal(raw)?;
-    if !subject_is_group {
-        return Ok(GrantSubject::Principal(principal));
+fn parse_group_id(raw: &str) -> Result<GroupId, McpToolError> {
+    let Some((kind, id)) = raw.split_once(':') else {
+        return raw.parse::<uuid::Uuid>().map(GroupId::new).map_err(|err| {
+            McpToolError::InvalidInput(format!(
+                "group subject_id must be group:<uuid> or bare uuid: {err}"
+            ))
+        });
+    };
+    if kind != "group" {
+        return Err(McpToolError::InvalidInput(format!(
+            "group subject_id must use group:<uuid>, got {kind}:<uuid>"
+        )));
     }
-    match principal {
-        Principal::Group(group) => Ok(GrantSubject::Group(group)),
-        Principal::User(_) => Err(McpToolError::InvalidInput(
-            "group-inheriting subjects must be group:<uuid>".into(),
-        )),
+    id.parse::<uuid::Uuid>().map(GroupId::new).map_err(|err| {
+        McpToolError::InvalidInput(format!("group subject_id must be a uuid: {err}"))
+    })
+}
+
+pub(super) fn parse_grant_subject(arg: GrantSubjectArg) -> Result<GrantSubject, McpToolError> {
+    match arg {
+        GrantSubjectArg::Principal { subject_id } => {
+            parse_principal(&subject_id).map(GrantSubject::Principal)
+        }
+        GrantSubjectArg::Group { subject_id } => {
+            parse_group_id(&subject_id).map(GrantSubject::Group)
+        }
     }
 }
 
-pub(super) fn format_grant_subject(subject: &GrantSubject) -> String {
-    format_principal(&subject.principal())
+pub(super) fn format_grant_subject(subject: &GrantSubject) -> GrantSubjectOutput {
+    match subject {
+        GrantSubject::Principal(principal) => GrantSubjectOutput::Principal {
+            subject_id: format_principal(principal),
+        },
+        GrantSubject::Group(group) => {
+            let id = (*group).into_inner();
+            GrantSubjectOutput::Group {
+                subject_id: format!("group:{id}"),
+            }
+        }
+    }
 }
 
 pub(super) fn format_relation(relation: Relation) -> String {
@@ -124,6 +160,5 @@ pub(super) fn format_grant(row: &AccessGrantRow) -> GrantOutput {
     GrantOutput {
         relation: format_relation(row.relation),
         subject: format_grant_subject(&row.subject),
-        subject_is_group: row.subject.is_group(),
     }
 }

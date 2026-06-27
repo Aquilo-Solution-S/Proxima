@@ -8,7 +8,7 @@
 
 use proxima_core::access::{
     AccessGrantRow, EntryAccessFacts, GrantResource, GrantSelector, GrantSubject, NewAccessGrant,
-    Relation, RemoveOwnerOutcome, Visibility,
+    Relation, RelationSelector, RemoveOwnerOutcome, Visibility,
 };
 use proxima_core::personality::{MemorySnapshot, WakeChainDepth};
 use proxima_core::{
@@ -232,8 +232,9 @@ pub(crate) async fn revoke_access_grants(
     let (resource_kind, resource_id) = split_resource(selector.resource);
     let (subject_kind, subject_principal_kind, subject_principal_id) =
         subject_columns(&selector.subject);
-    let result = sqlx::query(
-        "UPDATE proxima_core.access_grants
+    let sql = match selector.relation {
+        RelationSelector::AllGrantable => {
+            "UPDATE proxima_core.access_grants
             SET grant_state = 'revoked', revoked_at = now()
           WHERE grant_state = 'active'
             AND owner_principal_kind = $1 AND owner_principal_id = $2
@@ -241,20 +242,32 @@ pub(crate) async fn revoke_access_grants(
             AND resource_id IS NOT DISTINCT FROM $4
             AND subject_kind = $5
             AND subject_principal_kind = $6 AND subject_principal_id = $7
-            AND (($8::proxima_core.grant_relation IS NULL AND relation <> 'owner')
-                 OR relation = $8)",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(resource_kind)
-    .bind(resource_id)
-    .bind(subject_kind)
-    .bind(subject_principal_kind)
-    .bind(subject_principal_id)
-    .bind(selector.relation)
-    .execute(pool)
-    .await
-    .map_err(map_err)?;
+            AND relation <> 'owner'"
+        }
+        RelationSelector::Exact(_) => {
+            "UPDATE proxima_core.access_grants
+            SET grant_state = 'revoked', revoked_at = now()
+          WHERE grant_state = 'active'
+            AND owner_principal_kind = $1 AND owner_principal_id = $2
+            AND resource_kind = $3
+            AND resource_id IS NOT DISTINCT FROM $4
+            AND subject_kind = $5
+            AND subject_principal_kind = $6 AND subject_principal_id = $7
+            AND relation = $8"
+        }
+    };
+    let mut query = sqlx::query(sql)
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(resource_kind)
+        .bind(resource_id)
+        .bind(subject_kind)
+        .bind(subject_principal_kind)
+        .bind(subject_principal_id);
+    if let RelationSelector::Exact(relation) = selector.relation {
+        query = query.bind(relation);
+    }
+    let result = query.execute(pool).await.map_err(map_err)?;
     Ok(result.rows_affected())
 }
 
@@ -322,8 +335,9 @@ pub(crate) async fn unshare_entry_atomic(
         subject_columns(&selector.subject);
     let mut tx = pool.begin().await.map_err(map_err)?;
 
-    let result = sqlx::query(
-        "UPDATE proxima_core.access_grants
+    let sql = match selector.relation {
+        RelationSelector::AllGrantable => {
+            "UPDATE proxima_core.access_grants
             SET grant_state = 'revoked', revoked_at = now()
           WHERE grant_state = 'active'
             AND owner_principal_kind = $1 AND owner_principal_id = $2
@@ -331,20 +345,32 @@ pub(crate) async fn unshare_entry_atomic(
             AND resource_id IS NOT DISTINCT FROM $4
             AND subject_kind = $5
             AND subject_principal_kind = $6 AND subject_principal_id = $7
-            AND (($8::proxima_core.grant_relation IS NULL AND relation <> 'owner')
-                 OR relation = $8)",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(resource_kind)
-    .bind(resource_id)
-    .bind(subject_kind)
-    .bind(subject_principal_kind)
-    .bind(subject_principal_id)
-    .bind(selector.relation)
-    .execute(&mut *tx)
-    .await
-    .map_err(map_err)?;
+            AND relation <> 'owner'"
+        }
+        RelationSelector::Exact(_) => {
+            "UPDATE proxima_core.access_grants
+            SET grant_state = 'revoked', revoked_at = now()
+          WHERE grant_state = 'active'
+            AND owner_principal_kind = $1 AND owner_principal_id = $2
+            AND resource_kind = $3
+            AND resource_id IS NOT DISTINCT FROM $4
+            AND subject_kind = $5
+            AND subject_principal_kind = $6 AND subject_principal_id = $7
+            AND relation = $8"
+        }
+    };
+    let mut query = sqlx::query(sql)
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(resource_kind)
+        .bind(resource_id)
+        .bind(subject_kind)
+        .bind(subject_principal_kind)
+        .bind(subject_principal_id);
+    if let RelationSelector::Exact(relation) = selector.relation {
+        query = query.bind(relation);
+    }
+    let result = query.execute(&mut *tx).await.map_err(map_err)?;
     let revoked = result.rows_affected();
 
     if let GrantResource::Memory(memory_id) = selector.resource {
@@ -507,7 +533,8 @@ pub(crate) async fn count_active_entry_grants(
     .fetch_one(pool)
     .await
     .map_err(map_err)?;
-    Ok(count.max(0).unsigned_abs())
+    u64::try_from(count)
+        .map_err(|_| StorageError::Internal(format!("negative active entry grant count: {count}")))
 }
 
 /// Shared owner-row insert for `init_space_owner` and `add_space_owner`. Both

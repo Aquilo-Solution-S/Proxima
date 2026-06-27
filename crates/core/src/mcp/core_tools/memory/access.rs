@@ -7,7 +7,8 @@ use crate::access::GrantResource;
 use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 
 use super::super::access_common::{
-    GrantOutput, RelationArg, StatusOutput, VisibilityArg, format_grant, parse_grant_subject,
+    GrantOutput, GrantSubjectArg, RelationArg, StatusOutput, VisibilityArg, format_grant,
+    parse_grant_subject,
 };
 use super::super::{DESTRUCTIVE_IDEMPOTENT, READ_ONLY, WRITE_IDEMPOTENT};
 
@@ -57,11 +58,8 @@ pub struct MemoryShareArgs {
         description = "Memory reference: F:<uuid>, A:<uuid>, P:<uuid>, raw uuid, or handle."
     )]
     pub memory: String,
-    #[schemars(description = "Grant subject as user:<uuid>, group:<uuid>, or bare user uuid.")]
-    pub subject: String,
-    #[serde(default)]
-    #[schemars(description = "Whether the subject is a group whose members inherit the grant.")]
-    pub subject_is_group: bool,
+    #[schemars(description = "Grant subject: {subject_kind, subject_id}.")]
+    pub subject: GrantSubjectArg,
     #[schemars(description = "Grant relation. owner is rejected by the engine.")]
     pub relation: RelationArg,
 }
@@ -72,11 +70,8 @@ pub struct MemoryUnshareArgs {
         description = "Memory reference: F:<uuid>, A:<uuid>, P:<uuid>, raw uuid, or handle."
     )]
     pub memory: String,
-    #[schemars(description = "Grant subject as user:<uuid>, group:<uuid>, or bare user uuid.")]
-    pub subject: String,
-    #[serde(default)]
-    #[schemars(description = "Whether the subject is a group whose members inherited the grant.")]
-    pub subject_is_group: bool,
+    #[schemars(description = "Grant subject: {subject_kind, subject_id}.")]
+    pub subject: GrantSubjectArg,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -133,12 +128,12 @@ impl McpTool for CoreMemoryTool {
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
             action: "share",
-            allowed_fields: &["memory", "subject", "subject_is_group", "relation"],
+            allowed_fields: &["memory", "subject", "relation"],
             required_fields: &["memory", "subject", "relation"],
         },
         McpActionArgSpec {
             action: "unshare",
-            allowed_fields: &["memory", "subject", "subject_is_group"],
+            allowed_fields: &["memory", "subject"],
             required_fields: &["memory", "subject"],
         },
         McpActionArgSpec {
@@ -184,7 +179,7 @@ async fn share(ctx: McpToolCtx, args: MemoryShareArgs) -> Result<StatusOutput, M
         .share_entry(
             &ctx.authz,
             resolve_memory_reference(&ctx, &args.memory)?,
-            parse_grant_subject(&args.subject, args.subject_is_group)?,
+            parse_grant_subject(args.subject)?,
             args.relation.into(),
         )
         .await?;
@@ -199,7 +194,7 @@ async fn unshare(ctx: McpToolCtx, args: MemoryUnshareArgs) -> Result<StatusOutpu
         .unshare_entry(
             &ctx.authz,
             resolve_memory_reference(&ctx, &args.memory)?,
-            parse_grant_subject(&args.subject, args.subject_is_group)?,
+            parse_grant_subject(args.subject)?,
         )
         .await?;
     Ok(StatusOutput { ok: true })
