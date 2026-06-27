@@ -108,12 +108,15 @@ impl Engine {
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
 
-    /// Owner-scoped edge existence probe. Same auth shape as `Query`.
+    /// Edge existence probe scoped to the context's read set (`S_read`), same
+    /// source-owned visibility as `read_edges`: existence is disclosed only for
+    /// edges whose source is readable (a client `req.principal` is not an access
+    /// vector).
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks [`Relation::Viewer`], or `Internal` when storage fails.
+    /// Returns `Forbidden` when the authorization context resolves to an empty
+    /// read set, or `Internal` when storage fails.
     pub async fn edge_exists(
         &self,
         authz: &AuthzContext,

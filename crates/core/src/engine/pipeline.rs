@@ -2,7 +2,7 @@ use crate::access::{AccessScope, EntityId, Relation};
 use crate::authz::{AuthPath, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome};
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
-use crate::{MemoryId, Owner, PersonalityInstanceId, Principal};
+use crate::{Owner, PersonalityInstanceId, Principal};
 
 use super::Engine;
 
@@ -19,17 +19,14 @@ pub struct MemoryPermit {
 
 #[derive(Debug, Clone)]
 pub enum PermitMode {
-    /// Caller operates within the owner-space.
+    /// Caller operates within the owner-space — the sole surviving permit mode.
+    /// The single-owner read verbs (`event_history` / `read_mcp_call_history`
+    /// via `authorize_request`) mint it; the entry-scoped and public-read modes
+    /// of the retired grant model are gone with their gate, replaced by
+    /// `authorize_entry_read` / source-owned reads.
     OwnerScoped {
         subject_personality: Option<PersonalityInstanceId>,
     },
-    /// Cross-principal accessor reaching one entry via an entry-level grant.
-    EntryScoped {
-        resource: MemoryId,
-        subject_personality: PersonalityInstanceId,
-    },
-    /// World-readable published entry. Resource-only.
-    PublicRead { resource: MemoryId },
 }
 
 /// Proof that the resolved owner passed a write gate for `relation`. Sealed:
@@ -61,12 +58,10 @@ impl From<WritePermit> for MemoryPermit {
 /// Proof that one entry passed the read-scope predicate. Sealed: only this
 /// module's authorization gates can mint it.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct EntryReadPermit {
     owner: Principal,
 }
 
-#[allow(dead_code)]
 impl EntryReadPermit {
     #[must_use]
     pub fn owner(&self) -> &Principal {
@@ -96,16 +91,6 @@ impl MemoryPermit {
         }
     }
 
-    #[allow(dead_code)]
-    fn entry(mode: PermitMode, owner: Owner, requested: Owner, relation: Relation) -> Self {
-        Self {
-            mode,
-            owner,
-            requested,
-            relation,
-        }
-    }
-
     #[must_use]
     pub fn mode(&self) -> &PermitMode {
         &self.mode
@@ -126,16 +111,10 @@ impl MemoryPermit {
 
     #[must_use]
     pub fn subject_personality(&self) -> Option<PersonalityInstanceId> {
-        match &self.mode {
-            PermitMode::OwnerScoped {
-                subject_personality,
-            } => *subject_personality,
-            PermitMode::EntryScoped {
-                subject_personality,
-                ..
-            } => Some(*subject_personality),
-            PermitMode::PublicRead { .. } => None,
-        }
+        let PermitMode::OwnerScoped {
+            subject_personality,
+        } = &self.mode;
+        *subject_personality
     }
 }
 
@@ -208,7 +187,6 @@ impl Engine {
     }
 
     /// Read gate returning the resolved owner set visible to this context.
-    #[allow(dead_code)]
     pub(in crate::engine) async fn authorize_read(
         &self,
         authz: &AuthzContext,
@@ -240,7 +218,6 @@ impl Engine {
     }
 
     /// Single-entry read gate. Existence is not disclosed to non-readers.
-    #[allow(dead_code)]
     pub(in crate::engine) async fn authorize_entry_read(
         &self,
         authz: &AuthzContext,
