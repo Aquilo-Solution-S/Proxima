@@ -16,42 +16,12 @@ pub struct MemorySpacesOutput {
 pub struct MemorySpaceOutput {
     pub key: String,
     pub label: String,
-    pub actions: MemoryActionSetOutput,
+    pub access: MemorySpaceAccessOutput,
 }
 
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "wire projection mirrors the five independent memory-space actions"
-)]
-#[derive(Debug, Clone, Serialize)]
-pub struct MemoryActionSetOutput {
-    pub search: bool,
-    pub read: bool,
-    pub write: bool,
-    pub publish: bool,
-    pub admin: bool,
-}
-
-impl MemoryActionSetOutput {
-    const fn full() -> Self {
-        Self {
-            search: true,
-            read: true,
-            write: true,
-            publish: true,
-            admin: true,
-        }
-    }
-
-    const fn deferred_to_grants() -> Self {
-        Self {
-            search: false,
-            read: false,
-            write: false,
-            publish: false,
-            admin: false,
-        }
-    }
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct MemorySpaceAccessOutput {
+    pub unrestricted: bool,
 }
 
 #[derive(Debug)]
@@ -77,10 +47,8 @@ impl McpTool for MemorySpacesTool {
 
 #[must_use]
 pub fn list_memory_spaces(ctx: &McpToolCtx) -> Vec<MemorySpaceOutput> {
-    let actions = if ctx.authz.capabilities.access == AccessScope::Unrestricted {
-        MemoryActionSetOutput::full()
-    } else {
-        MemoryActionSetOutput::deferred_to_grants()
+    let access = MemorySpaceAccessOutput {
+        unrestricted: ctx.authz.capabilities.access == AccessScope::Unrestricted,
     };
     sorted_accessible_principals(ctx)
         .into_iter()
@@ -97,7 +65,7 @@ pub fn list_memory_spaces(ctx: &McpToolCtx) -> Vec<MemorySpaceOutput> {
                 } else {
                     space_label(&owner)
                 },
-                actions: actions.clone(),
+                access,
             }
         })
         .collect()
@@ -284,13 +252,13 @@ mod tests {
             .unwrap();
         assert_eq!(out.spaces.len(), 2);
         assert_eq!(out.spaces[0].key, "current");
-        assert!(out.spaces[0].actions.write);
+        assert!(out.spaces[0].access.unrestricted);
         assert_eq!(out.spaces[1].key, shared_key);
-        assert!(out.spaces[1].actions.admin);
+        assert!(out.spaces[1].access.unrestricted);
     }
 
     #[tokio::test]
-    async fn memory_spaces_granted_scope_defers_actions_to_persisted_grants() {
+    async fn memory_spaces_granted_scope_reports_grant_gated_access() {
         let personal = Principal::User(UserId::new(uuid::Uuid::now_v7()));
         let ctx = make_ctx_with_accessible(vec![personal], AccessScope::Granted);
 
@@ -299,8 +267,7 @@ mod tests {
             .unwrap();
         assert_eq!(out.spaces.len(), 1);
         assert_eq!(out.spaces[0].key, "current");
-        assert!(!out.spaces[0].actions.read);
-        assert!(!out.spaces[0].actions.write);
+        assert!(!out.spaces[0].access.unrestricted);
     }
 
     #[test]

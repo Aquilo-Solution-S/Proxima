@@ -248,3 +248,61 @@ async fn entry_grant_visibility_and_existence() -> Result<(), Box<dyn std::error
     drop_db(&db).await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn memory_grant_relation_check_rejects_non_readwrite_relations()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let entry = ingest_test_fact(&pg, &owner, "relation checked").await;
+    let subject = user();
+    let (owner_kind, owner_id) = owner.columns();
+    let (subject_kind, subject_id) = subject.columns();
+
+    for relation in [
+        Relation::Admin,
+        Relation::Ingest,
+        Relation::Member,
+        Relation::Owner,
+    ] {
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.access_grants
+                 (grant_id, owner_principal_kind, owner_principal_id, resource_kind,
+                  resource_id, relation, subject_kind, subject_principal_kind,
+                  subject_principal_id, granted_by_personality_instance_id)
+             VALUES (gen_random_uuid(), $1, $2, 'memory', $3, $4, 'principal', $5, $6, $7)",
+        )
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(entry.into_inner())
+        .bind(relation)
+        .bind(subject_kind)
+        .bind(subject_id)
+        .bind(pers().into_inner())
+        .execute(pg.pool())
+        .await
+        .expect_err("memory grant with non-read/write relation must fail");
+        let sqlx::Error::Database(db_err) = err else {
+            panic!("expected database constraint error for {relation:?}");
+        };
+        assert!(
+            db_err.is_check_violation(),
+            "expected CHECK violation for {relation:?}, got {}",
+            db_err.message()
+        );
+        if matches!(relation, Relation::Admin | Relation::Ingest) {
+            assert!(
+                db_err
+                    .message()
+                    .contains("access_grants_memory_relation_chk"),
+                "new memory relation CHECK should reject {relation:?}, got {}",
+                db_err.message()
+            );
+        }
+    }
+
+    drop_db(&db).await?;
+    Ok(())
+}

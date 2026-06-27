@@ -65,7 +65,7 @@ pub struct McpAuthContext {
 }
 
 impl McpAuthContext {
-    /// Context for a local dev master token: all tools, all roles.
+    /// Context for a local dev master token: all tools, unrestricted access.
     #[must_use]
     pub fn for_master(token: Uuid, owner: Owner) -> Self {
         Self {
