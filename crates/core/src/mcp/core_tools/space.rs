@@ -11,22 +11,22 @@ use super::access_common::{
 };
 use super::{READ_ONLY, WRITE_IDEMPOTENT};
 
-const CORE_SPACE_SET_MEMBER_SCOPE_KEY: &str = "core_space:set_member";
-const CORE_SPACE_LIST_MEMBERS_SCOPE_KEY: &str = "core_space:list_members";
+const CORE_SPACE_SET_BINDING_SCOPE_KEY: &str = "core_space:set_binding";
+const CORE_SPACE_LIST_BINDINGS_SCOPE_KEY: &str = "core_space:list_bindings";
 
 pub const CORE_SPACE_ACTIONS: &[CoreActionMeta] = &[
     CoreActionMeta {
         tool: CoreSpaceTool::NAME,
-        action: "set_member",
-        scope_key: CORE_SPACE_SET_MEMBER_SCOPE_KEY,
+        action: "set_binding",
+        scope_key: CORE_SPACE_SET_BINDING_SCOPE_KEY,
         description: "Set one grant relation on a space for a principal or group subject.",
         produces_schema_ids: &[],
         annotations: WRITE_IDEMPOTENT,
     },
     CoreActionMeta {
         tool: CoreSpaceTool::NAME,
-        action: "list_members",
-        scope_key: CORE_SPACE_LIST_MEMBERS_SCOPE_KEY,
+        action: "list_bindings",
+        scope_key: CORE_SPACE_LIST_BINDINGS_SCOPE_KEY,
         description: "List active grants on a space.",
         produces_schema_ids: &[],
         annotations: READ_ONLY,
@@ -34,7 +34,7 @@ pub const CORE_SPACE_ACTIONS: &[CoreActionMeta] = &[
 ];
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct SpaceSetMemberArgs {
+pub struct SpaceSetBindingArgs {
     #[serde(default)]
     #[schemars(description = "Owner space key from core_memory_spaces. Omit for current owner.")]
     pub space: Option<String>,
@@ -45,14 +45,14 @@ pub struct SpaceSetMemberArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct SpaceListMembersArgs {
+pub struct SpaceListBindingsArgs {
     #[serde(default)]
     #[schemars(description = "Owner space key from core_memory_spaces. Omit for current owner.")]
     pub space: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct SpaceListMembersOutput {
+pub struct SpaceListBindingsOutput {
     pub space: String,
     pub owner: String,
     pub grants: Vec<GrantOutput>,
@@ -64,28 +64,28 @@ pub struct CoreSpaceTool;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum CoreSpaceArgs {
-    SetMember(SpaceSetMemberArgs),
-    ListMembers(SpaceListMembersArgs),
+    SetBinding(SpaceSetBindingArgs),
+    ListBindings(SpaceListBindingsArgs),
 }
 
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum CoreSpaceOutput {
     Status(StatusOutput),
-    ListMembers(SpaceListMembersOutput),
+    ListBindings(SpaceListBindingsOutput),
 }
 
 impl McpTool for CoreSpaceTool {
     const NAME: &'static str = "core_space";
-    const DESCRIPTION: &'static str = "Space access dispatcher — set_member/list_members.";
+    const DESCRIPTION: &'static str = "Space access dispatcher — set_binding/list_bindings.";
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
-            action: "set_member",
+            action: "set_binding",
             allowed_fields: &["space", "subject", "relation"],
             required_fields: &["subject", "relation"],
         },
         McpActionArgSpec {
-            action: "list_members",
+            action: "list_bindings",
             allowed_fields: &["space"],
             required_fields: &[],
         },
@@ -99,20 +99,20 @@ impl McpTool for CoreSpaceTool {
     ) -> BoxFuture<'static, Result<CoreSpaceOutput, McpToolError>> {
         Box::pin(async move {
             match args {
-                CoreSpaceArgs::SetMember(args) => {
-                    set_member(ctx, args).await.map(CoreSpaceOutput::Status)
+                CoreSpaceArgs::SetBinding(args) => {
+                    set_binding(ctx, args).await.map(CoreSpaceOutput::Status)
                 }
-                CoreSpaceArgs::ListMembers(args) => list_members(ctx, args)
+                CoreSpaceArgs::ListBindings(args) => list_bindings(ctx, args)
                     .await
-                    .map(CoreSpaceOutput::ListMembers),
+                    .map(CoreSpaceOutput::ListBindings),
             }
         })
     }
 }
 
-async fn set_member(
+async fn set_binding(
     ctx: McpToolCtx,
-    args: SpaceSetMemberArgs,
+    args: SpaceSetBindingArgs,
 ) -> Result<StatusOutput, McpToolError> {
     let space = super::memory_spaces::resolve_space_owner(
         &ctx,
@@ -133,10 +133,10 @@ async fn set_member(
     Ok(StatusOutput { ok: true })
 }
 
-async fn list_members(
+async fn list_bindings(
     ctx: McpToolCtx,
-    args: SpaceListMembersArgs,
-) -> Result<SpaceListMembersOutput, McpToolError> {
+    args: SpaceListBindingsArgs,
+) -> Result<SpaceListBindingsOutput, McpToolError> {
     let space = super::memory_spaces::resolve_space_owner(
         &ctx,
         args.space.as_deref(),
@@ -150,7 +150,7 @@ async fn list_members(
         .list_grants(&ctx.authz, space.owner, GrantResource::Space)
         .await?;
     let grants = grant_rows.iter().map(format_grant).collect();
-    Ok(SpaceListMembersOutput {
+    Ok(SpaceListBindingsOutput {
         space: space.key,
         owner,
         grants,

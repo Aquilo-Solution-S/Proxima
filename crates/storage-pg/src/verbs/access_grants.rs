@@ -547,15 +547,18 @@ pub(crate) async fn count_active_entry_grants(
 
 /// Shared owner-row insert for `init_space_owner` and `add_space_owner`. Both
 /// write `(space:G, owner, principal:owner_principal)`; the distinction is the
-/// gate at the verb (Unrestricted-provisioning vs owner-gated).
-async fn insert_owner_grant(
-    pool: &PgPool,
+/// surrounding transaction/gate (`init_space_owner`) vs owner-gated append.
+async fn insert_owner_grant<'e, E>(
+    executor: E,
     space: &Owner,
     owner_principal: &Principal,
     granted_by: PersonalityInstanceId,
-) -> Result<(), StorageError> {
-    insert_access_grant(
-        pool,
+) -> Result<(), StorageError>
+where
+    E: PgExecutor<'e>,
+{
+    insert_grant_row(
+        executor,
         &NewAccessGrant {
             space_owner: space.clone(),
             resource: GrantResource::Space,
@@ -573,7 +576,39 @@ pub(crate) async fn init_space_owner(
     owner_principal: &Principal,
     granted_by: PersonalityInstanceId,
 ) -> Result<(), StorageError> {
-    insert_owner_grant(pool, space, owner_principal, granted_by).await
+    let (owner_kind, owner_id) = space.columns();
+    let mut tx = pool.begin().await.map_err(map_err)?;
+
+    // Serialize the empty-row bootstrap case, then lock any existing owner rows.
+    sqlx::query("LOCK TABLE proxima_core.access_grants IN SHARE ROW EXCLUSIVE MODE")
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
+
+    let active_owner_rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
+        "SELECT grant_id
+           FROM proxima_core.access_grants
+          WHERE resource_kind = 'space' AND relation = 'owner'
+            AND grant_state = 'active'
+            AND owner_principal_kind = $1 AND owner_principal_id = $2
+          FOR UPDATE",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(map_err)?;
+
+    if !active_owner_rows.is_empty() {
+        tx.rollback().await.map_err(map_err)?;
+        return Err(StorageError::Conflict(
+            "space owner already provisioned".into(),
+        ));
+    }
+
+    insert_owner_grant(&mut *tx, space, owner_principal, granted_by).await?;
+    tx.commit().await.map_err(map_err)?;
+    Ok(())
 }
 
 pub(crate) async fn add_space_owner(

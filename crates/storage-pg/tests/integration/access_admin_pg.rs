@@ -14,7 +14,7 @@ use proxima_core::error::ErrorCode;
 use proxima_core::verbs::schema::FlavorRegistryFrozen;
 use proxima_core::{
     AccessScope, AuthPath, AuthzContext, CapabilitySet, Engine, GroupId, Identity, MemoryId,
-    Principal, ToolScope, UserId,
+    Principal, Storage, ToolScope, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -302,6 +302,17 @@ async fn group_owner_provisioning_and_orphan_guard() -> Result<(), Box<dyn std::
         .init_space_owner(&owner_authz(&space), space.clone(), p1.clone())
         .await?;
 
+    let err = engine
+        .init_space_owner(&owner_authz(&space), space.clone(), p2.clone())
+        .await
+        .expect_err("second bootstrap is rejected");
+    assert_eq!(err.code, ErrorCode::InvalidArgument);
+    assert!(
+        err.message.contains("space owner already provisioned"),
+        "unexpected error message: {}",
+        err.message
+    );
+
     // p1 is now a persisted owner and may add a co-owner.
     engine
         .add_owner(&granted_authz(&p1), space.clone(), p2.clone())
@@ -326,6 +337,30 @@ async fn group_owner_provisioning_and_orphan_guard() -> Result<(), Box<dyn std::
             .iter()
             .any(|g| g.relation == Relation::Owner
                 && g.subject == GrantSubject::Principal(p2.clone()))
+    );
+
+    drop_db(&db).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn init_space_owner_rejects_user_space() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db) = fresh_pg().await;
+    pg.run_migrations().await?;
+    let engine = engine_for(&pg);
+
+    let space = user();
+    let owner = user();
+    let err = engine
+        .init_space_owner(&owner_authz(&space), space.clone(), owner)
+        .await
+        .expect_err("User spaces are identity-owned");
+    assert_eq!(err.code, ErrorCode::InvalidArgument);
+
+    let grants = pg.list_access_grants(&space, GrantResource::Space).await?;
+    assert!(
+        grants.is_empty(),
+        "User-space init must not write owner rows"
     );
 
     drop_db(&db).await?;

@@ -107,6 +107,15 @@ impl Engine {
         relation: Relation,
     ) -> Result<MemoryPermit, ProtocolError> {
         if authz.auth_path == AuthPath::Denied {
+            let input = AuthzInput {
+                authz,
+                requested,
+                resolved: requested,
+                relation,
+                operation: AuthzOperation::Relation,
+            };
+            self.registry
+                .run_authorization_observers(&input, AuthzOutcome::DeniedResolution);
             return Err(ProtocolError::forbidden(
                 "denied context authorizes nothing",
             ));
@@ -174,6 +183,7 @@ impl Engine {
         relation: Relation,
     ) -> Result<MemoryPermit, ProtocolError> {
         if authz.auth_path == AuthPath::Denied {
+            self.observe_unresolved_entry(authz, memory_id, relation);
             return Err(ProtocolError::forbidden(
                 "denied context authorizes nothing",
             ));
@@ -444,6 +454,17 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct RecordingAnyHook {
+        outcomes: Arc<Mutex<Vec<AuthzOutcome>>>,
+    }
+
+    impl AuthorizationHook for RecordingAnyHook {
+        fn observe(&self, _input: &AuthzInput<'_>, outcome: AuthzOutcome) {
+            self.outcomes.lock().expect("recorder lock").push(outcome);
+        }
+    }
+
     #[tokio::test]
     async fn single_owner_context_mints_matching_permit() {
         let engine = engine();
@@ -496,6 +517,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn denied_context_notifies_observers() {
+        let owner = owner();
+        let outcomes = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = FlavorRegistry::new();
+        registry.add_authorization_hook(Arc::new(RecordingAnyHook {
+            outcomes: outcomes.clone(),
+        }));
+        let engine = engine_from_registry(registry);
+        let authz = AuthzContext::denied(&owner);
+
+        let err = engine
+            .authorize_request(&authz, &owner, Relation::Viewer)
+            .await
+            .expect_err("denied context should reject authorization");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
+        assert_eq!(
+            *outcomes.lock().expect("recorder lock"),
+            vec![AuthzOutcome::DeniedResolution],
+        );
+    }
+
+    #[tokio::test]
     async fn entry_request_denies_denied_context() {
         let engine = engine();
         let owner = owner();
@@ -511,6 +555,33 @@ mod tests {
             .expect_err("denied context should reject entry authorization");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn denied_entry_context_notifies_observers() {
+        let owner = owner();
+        let outcomes = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = FlavorRegistry::new();
+        registry.add_authorization_hook(Arc::new(RecordingAnyHook {
+            outcomes: outcomes.clone(),
+        }));
+        let engine = engine_from_registry(registry);
+        let authz = AuthzContext::denied(&owner);
+
+        let err = engine
+            .authorize_entry_request(
+                &authz,
+                MemoryId::new(uuid::Uuid::now_v7()),
+                Relation::Viewer,
+            )
+            .await
+            .expect_err("denied context should reject entry authorization");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
+        assert_eq!(
+            *outcomes.lock().expect("recorder lock"),
+            vec![AuthzOutcome::DeniedResolution],
+        );
     }
 
     #[tokio::test]

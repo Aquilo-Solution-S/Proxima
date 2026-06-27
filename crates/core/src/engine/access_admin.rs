@@ -367,6 +367,12 @@ impl Engine {
         space: Owner,
         owner_principal: Principal,
     ) -> Result<(), ProtocolError> {
+        if !matches!(space, Principal::Group(_)) {
+            return Err(ProtocolError::invalid_argument(
+                "space",
+                "User spaces are identity-owned; init_space_owner supports Group spaces only",
+            ));
+        }
         if authz.capabilities.access != AccessScope::Unrestricted
             || !authz.identity.can_access_principal(&space)
         {
@@ -385,10 +391,18 @@ impl Engine {
         owner_principal: &Principal,
     ) -> Result<(), ProtocolError> {
         let granted_by = self.grant_author_personality(space, authz).await?;
-        self.storage
+        match self
+            .storage
             .init_space_owner(space, owner_principal, granted_by)
             .await
-            .map_err(|err| storage_error("init_space_owner", &err))
+        {
+            Ok(()) => Ok(()),
+            Err(StorageError::Conflict(_)) => Err(ProtocolError::invalid_argument(
+                "space",
+                "space owner already provisioned",
+            )),
+            Err(err) => Err(storage_error("init_space_owner", &err)),
+        }
     }
 
     /// Browse public marketplace entries. This is intentionally not
