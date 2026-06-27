@@ -95,7 +95,7 @@ fn push_memberships(access: &mut AccessSets, memberships: Vec<MembershipRow>) {
 
 #[cfg(test)]
 #[allow(clippy::too_many_lines, clippy::wildcard_imports)]
-mod tests {
+pub(in crate::engine) mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;
 
@@ -111,9 +111,11 @@ mod tests {
     use crate::*;
 
     #[derive(Debug)]
-    struct MembershipStorage {
-        member: Principal,
-        group: GroupId,
+    pub(in crate::engine) struct MembershipStorage {
+        pub(in crate::engine) member: Principal,
+        pub(in crate::engine) group: GroupId,
+        pub(in crate::engine) home_owner: Option<Principal>,
+        pub(in crate::engine) entity_readable: bool,
     }
 
     #[async_trait::async_trait]
@@ -123,14 +125,18 @@ mod tests {
             _draft: &EventDraft,
             _embedding_model_id: Option<&str>,
         ) -> Result<EventIngestOutcome, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn persist_mcp_call_atomic(
             &self,
             _input: &McpCallLogInput,
         ) -> Result<McpCallLogOutcome, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn ingest_event_with_typed_sidecar(
@@ -139,7 +145,9 @@ mod tests {
             _sidecar_payload: &SidecarPayload,
             _embedding_model_id: Option<&str>,
         ) -> Result<EventIngestOutcome, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn ingest_fact_with_citation_and_typed_sidecar(
@@ -148,7 +156,9 @@ mod tests {
             _sidecar_payload: &SidecarPayload,
             _embedding_model_id: Option<&str>,
         ) -> Result<EventIngestOutcome, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn fact_entity_id_for(
@@ -165,14 +175,18 @@ mod tests {
             &self,
             _req: &AuthorDerivedRequest<'_>,
         ) -> Result<AuthorDerivedOutcome, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn append_memory_edge(
             &self,
             _edge: &DerivedEdgeSpec<'_>,
         ) -> Result<EdgeId, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn load_fact_text(
@@ -229,14 +243,18 @@ mod tests {
             _model_id: &str,
             _limit: i64,
         ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn complete_embedding_job(
             &self,
             _claim: &EmbeddingJobClaim,
         ) -> Result<(), StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn fail_embedding_job(
@@ -244,7 +262,9 @@ mod tests {
             _claim: &EmbeddingJobClaim,
             _error: &str,
         ) -> Result<(), StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn enqueue_missing_embedding_jobs(
@@ -253,7 +273,9 @@ mod tests {
             _model_id: &str,
             _limit: i64,
         ) -> Result<u64, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn count_pending_embedding_jobs(&self, _owner: &Owner) -> Result<u64, StorageError> {
@@ -264,35 +286,45 @@ mod tests {
             &self,
             _req: &CreateGoalAtomicRequest<'_>,
         ) -> Result<GoalWriteOutcome, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn transition_goal_atomic(
             &self,
             _req: &TransitionGoalAtomicRequest<'_>,
         ) -> Result<GoalWriteOutcome, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn achieve_goal_atomic(
             &self,
             _req: &AchieveGoalAtomicRequest<'_>,
         ) -> Result<GoalWriteOutcome, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn modify_goal_atomic(
             &self,
             _req: &ModifyGoalAtomicRequest<'_>,
         ) -> Result<GoalWriteOutcome, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn decompose_goal_atomic(
             &self,
             _req: &DecomposeGoalAtomicRequest<'_>,
         ) -> Result<DecomposeGoalOutcome, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn event_history(
@@ -411,14 +443,14 @@ mod tests {
             _entity: EntityId,
             _read_owners: &[Principal],
         ) -> Result<bool, StorageError> {
-            Ok(false)
+            Ok(self.entity_readable)
         }
 
         async fn entity_home_owner(
             &self,
             _entity: EntityId,
         ) -> Result<Option<Principal>, StorageError> {
-            Ok(None)
+            Ok(self.home_owner.clone())
         }
 
         async fn close_batch(
@@ -426,7 +458,9 @@ mod tests {
             _principal: &Principal,
             _source_batch_id: SourceBatchId,
         ) -> Result<CloseBatchOutcome, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn list_personality_instances(
@@ -441,14 +475,18 @@ mod tests {
             &self,
             _req: &TombstonePersonalityRequest,
         ) -> Result<TombstonePersonalityResponse, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn instantiate_personality(
             &self,
             _req: &InstantiatePersonalityRequest,
         ) -> Result<InstantiatePersonalityResponse, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn ensure_master_token_personality(
@@ -475,7 +513,9 @@ mod tests {
             &self,
             _req: &SetWakeEntriesRequest,
         ) -> Result<SetWakeEntriesResponse, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn set_wake_entries_within(
@@ -484,7 +524,9 @@ mod tests {
             _personality_instance_id: PersonalityInstanceId,
             _mutate: WakeEntriesMutator,
         ) -> Result<SetWakeEntriesResponse, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn list_read_scope(
@@ -500,7 +542,9 @@ mod tests {
             &self,
             _req: &SetReadScopeRequest,
         ) -> Result<SetReadScopeResponse, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn upsert_fact_retention(
@@ -508,15 +552,21 @@ mod tests {
             _owner: &Owner,
             _seconds: i64,
         ) -> Result<(), StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn get_fact_retention(&self, _owner: &Owner) -> Result<Option<i64>, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn clear_fact_retention(&self, _owner: &Owner) -> Result<bool, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn cleanup_due_facts(
@@ -527,7 +577,9 @@ mod tests {
             _citation_mapping_sidecar_tables: &[String],
             _cited_object_sidecar_tables: &[String],
         ) -> Result<CleanupDueFactsOutcome, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn tombstone_fact(
@@ -539,7 +591,9 @@ mod tests {
             _citation_mapping_sidecar_tables: &[String],
             _cited_object_sidecar_tables: &[String],
         ) -> Result<TombstoneFactOutcome, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn list_change_events_after(
@@ -593,7 +647,9 @@ mod tests {
             &self,
             _req: &PersonalityWriteRequest<'_>,
         ) -> Result<PersonalityWriteOutcome, StorageError> {
-            Err(StorageError::Internal("MembershipStorage rejects writes".into()))
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
 
         async fn load_memory_by_id(
@@ -617,6 +673,8 @@ mod tests {
             Arc::new(MembershipStorage {
                 member: p.clone(),
                 group: g1,
+                home_owner: None,
+                entity_readable: false,
             }),
             |_| {},
         );
