@@ -6,9 +6,9 @@ use proxima_core::verbs::event_ingest::{
 };
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, Engine, FactPayload,
-    FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner, PayloadKeyBuilder,
-    PersonalityInstanceId, Relation, SchemaId, SchemaVersion, SourceBatchId, SourceId, Storage,
-    StorageError, canonical_json_bytes,
+    FlavorRegistry, FlavorRegistryFrozen, GroupId, MemoryId, Owner, PayloadKeyBuilder,
+    PersonalityInstanceId, Principal, Relation, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    Storage, StorageError, UserId, canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgMemoryPayload, PgMemoryPayloadFuture,
@@ -267,6 +267,30 @@ async fn create_sidecar_tables(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+async fn seed_membership(
+    pool: &sqlx::PgPool,
+    group: &Principal,
+    member: &Principal,
+) -> Result<(), sqlx::Error> {
+    let Principal::Group(group_id) = group else {
+        panic!("group principal required");
+    };
+    let Principal::User(member_id) = member else {
+        panic!("user principal required");
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.group_membership
+            (group_id, member_user_id, relation, granted_by)
+         VALUES ($1, $2, 'viewer', $3)",
+    )
+    .bind(group_id.into_inner())
+    .bind(member_id.into_inner())
+    .bind(Uuid::nil())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 async fn ingest_plain_fact_for_attach(
     pg: &proxima_storage_pg::PgStorage,
     engine: &Engine,
@@ -428,9 +452,7 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
 
         let fact_outcome = ingest_plain_fact_for_attach(&pg, &engine, &authz).await?;
         assert!(
-            pg.citation_of_fact(&owner, fact_outcome.memory_id)
-                .await?
-                .is_none(),
+            pg.citation_of_fact(fact_outcome.memory_id).await?.is_none(),
             "plain Fact starts uncited"
         );
 
@@ -454,7 +476,7 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
         assert_eq!(first_attach.memory_id, fact_outcome.memory_id);
 
         let readback = pg
-            .citation_of_fact(&owner, fact_outcome.memory_id)
+            .citation_of_fact(fact_outcome.memory_id)
             .await?
             .expect("attached citation must be readable");
         assert_eq!(readback.cited_object_id, first_attach.cited_object_id);
@@ -504,6 +526,107 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
         drop(tx);
         assert!(matches!(err, StorageError::NotFound));
 
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn facts_citing_object_filters_by_read_owners() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        pg.run_migrations().await?;
+        create_sidecar_tables(pg.pool()).await?;
+
+        let engine = engine();
+        let p = Principal::User(UserId::new(Uuid::now_v7()));
+        let q = Principal::User(UserId::new(Uuid::now_v7()));
+        let g1 = Principal::Group(GroupId::new(Uuid::now_v7()));
+        seed_membership(pg.pool(), &g1, &q).await?;
+
+        let group_authorized = engine
+            .authorize_fact_with_citation(
+                &AuthzContext::single_owner(&g1, AuthPath::System),
+                Relation::Ingest,
+                draft(&g1, "group fact", None),
+                cited_object(),
+                citation_mapping(0, 4),
+            )
+            .await?;
+        let p_authorized = engine
+            .authorize_fact_with_citation(
+                &AuthzContext::single_owner(&p, AuthPath::System),
+                Relation::Ingest,
+                draft(&p, "p fact", None),
+                cited_object(),
+                citation_mapping(0, 4),
+            )
+            .await?;
+
+        let group_outcome = ingest_fact_with_citation_atomic(
+            pg.pool(),
+            pg.sidecars(),
+            &group_authorized,
+            None,
+            |tx, outcome| {
+                Box::pin(async move {
+                    sqlx::query(
+                        "INSERT INTO public.inline_cited_fact_sidecar (memory_id, note)
+                         VALUES ($1, 'group fact')",
+                    )
+                    .bind(outcome.memory_id.into_inner())
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|e| StorageError::Internal(e.to_string()))?;
+                    Ok(())
+                })
+            },
+        )
+        .await?;
+        let group_citation = pg
+            .citation_of_fact(group_outcome.memory_id)
+            .await?
+            .expect("group fact citation");
+        let p_outcome = ingest_fact_with_citation_atomic(
+            pg.pool(),
+            pg.sidecars(),
+            &p_authorized,
+            None,
+            |tx, outcome| {
+                Box::pin(async move {
+                    sqlx::query(
+                        "INSERT INTO public.inline_cited_fact_sidecar (memory_id, note)
+                         VALUES ($1, 'p fact')",
+                    )
+                    .bind(outcome.memory_id.into_inner())
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|e| StorageError::Internal(e.to_string()))?;
+                    Ok(())
+                })
+            },
+        )
+        .await?;
+        let p_citation = pg
+            .citation_of_fact(p_outcome.memory_id)
+            .await?
+            .expect("p fact citation");
+
+        let q_read_owners = vec![q, g1];
+        let group_facts = pg
+            .facts_citing_object(&q_read_owners, group_citation.cited_object_id, &[])
+            .await?;
+        assert_eq!(group_facts.len(), 1);
+        assert_eq!(group_facts[0].memory_id, group_outcome.memory_id);
+
+        let p_facts = pg
+            .facts_citing_object(&q_read_owners, p_citation.cited_object_id, &[])
+            .await?;
+        assert!(p_facts.is_empty(), "Q must not see P's personal citation");
         Ok(())
     }
     .await;

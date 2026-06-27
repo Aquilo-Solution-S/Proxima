@@ -10,7 +10,9 @@ use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
-use proxima_core::{Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId};
+use proxima_core::{
+    GroupId, Owner, Principal, Relation, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
@@ -309,7 +311,7 @@ async fn list_change_events_after_scopes_by_principal() {
         // Pull under the same principal: the event is returned, scoped by
         // principal alone.
         let rows = pg
-            .list_change_events_after(&requested_owner, Uuid::nil(), 10)
+            .list_change_events_after(std::slice::from_ref(&requested_owner), Uuid::nil(), 10)
             .await?;
         assert_eq!(rows.len(), 1, "pull scopes by principal");
         assert_eq!(rows[0].event.seq, ingested.change_event_seq);
@@ -320,4 +322,79 @@ async fn list_change_events_after_scopes_by_principal() {
 
     let _ = drop_db(&db_name).await;
     result.expect("change_event pull principal-scoping failed");
+}
+
+#[tokio::test]
+async fn list_change_events_after_filters_by_read_owners() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let engine = Engine::new(registry).with_storage(storage);
+
+        let p = Principal::User(UserId::new(Uuid::now_v7()));
+        let q = Principal::User(UserId::new(Uuid::now_v7()));
+        let g1 = Principal::Group(GroupId::new(Uuid::now_v7()));
+        seed_membership(pg.pool(), &g1, &q, Relation::Viewer).await?;
+
+        let group_event = engine
+            .event_ingest(
+                &proxima_core::AuthzContext::single_owner(&g1, proxima_core::AuthPath::System),
+                fresh_draft(g1.clone()),
+            )
+            .await?;
+        let p_event = engine
+            .event_ingest(
+                &proxima_core::AuthzContext::single_owner(&p, proxima_core::AuthPath::System),
+                fresh_draft(p.clone()),
+            )
+            .await?;
+
+        let q_read_owners = vec![q, g1];
+        let rows = pg
+            .list_change_events_after(&q_read_owners, Uuid::nil(), 10)
+            .await?;
+        let seqs = rows.iter().map(|row| row.event.seq).collect::<Vec<Uuid>>();
+        assert!(seqs.contains(&group_event.change_event_seq));
+        assert!(
+            !seqs.contains(&p_event.change_event_seq),
+            "Q must not see P's personal event"
+        );
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("change_event pull read-owner filtering failed");
+}
+
+async fn seed_membership(
+    pool: &sqlx::PgPool,
+    group: &Principal,
+    member: &Principal,
+    relation: Relation,
+) -> Result<(), sqlx::Error> {
+    let Principal::Group(group_id) = group else {
+        panic!("group principal required");
+    };
+    let Principal::User(member_id) = member else {
+        panic!("user principal required");
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.group_membership
+            (group_id, member_user_id, relation, granted_by)
+         VALUES ($1, $2, $3::proxima_core.membership_relation, $4)",
+    )
+    .bind(group_id.into_inner())
+    .bind(member_id.into_inner())
+    .bind(relation)
+    .bind(Uuid::nil())
+    .execute(pool)
+    .await?;
+    Ok(())
 }

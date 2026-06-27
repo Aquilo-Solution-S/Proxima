@@ -222,23 +222,21 @@ impl Engine {
         })
     }
 
-    /// Owner-scoped forward change-event read plus edge endpoint-kind domain rows.
+    /// Read-set-scoped forward change-event read plus edge endpoint-kind domain rows.
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks [`Relation::Viewer`], and `Internal` when storage reads fail.
+    /// Returns `Forbidden` when the context authorizes no read owners, and
+    /// `Internal` when storage reads fail.
     pub async fn list_events(
         &self,
         authz: &AuthzContext,
         req: &ListEventsReadRequest,
     ) -> Result<ListEventsReadResponse, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, &req.principal, Relation::Viewer)
-            .await?;
+        let read_owners = self.authorize_read(authz).await?;
         let events = self
             .storage
-            .list_change_events_after(permit.owner(), req.after, req.limit)
+            .list_change_events_after(&read_owners, req.after, req.limit)
             .await
             .map_err(|err| storage_error("list_change_events_after", &err))?;
         let edge_ids = events
@@ -266,63 +264,58 @@ impl Engine {
         })
     }
 
-    /// Owner-scoped inverse citation read for one Fact memory.
+    /// Confirmed-id inverse citation read for one Fact memory.
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks [`Relation::Viewer`], and `Internal` when storage reads fail.
+    /// Returns `Forbidden` when the context cannot access `req.fact_memory_id`,
+    /// and `Internal` when storage reads fail.
     pub async fn read_fact_citation(
         &self,
         authz: &AuthzContext,
         req: &FactCitationReadRequest,
     ) -> Result<Option<FactCitationReadback>, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, &req.principal, Relation::Viewer)
+        self.authorize_entry_read(authz, EntityId::Memory(req.fact_memory_id))
             .await?;
         self.storage
-            .citation_of_fact(permit.owner(), req.fact_memory_id)
+            .citation_of_fact(req.fact_memory_id)
             .await
             .map_err(|err| storage_error("citation_of_fact", &err))
     }
 
-    /// Owner-scoped inverse citation read for a stateful Fact entity head.
+    /// Read-set-scoped inverse citation read for a stateful Fact entity head.
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks [`Relation::Viewer`], and `Internal` when storage reads fail.
+    /// Returns `Forbidden` when the context authorizes no read owners, and
+    /// `Internal` when storage reads fail.
     pub async fn read_entity_head_citation(
         &self,
         authz: &AuthzContext,
         req: &EntityHeadCitationReadRequest,
     ) -> Result<Option<FactCitationReadback>, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, &req.principal, Relation::Viewer)
-            .await?;
+        let read_owners = self.authorize_read(authz).await?;
         self.storage
-            .citation_of_entity_head(permit.owner(), req.fact_entity_id)
+            .citation_of_entity_head(&read_owners, req.fact_entity_id)
             .await
             .map_err(|err| storage_error("citation_of_entity_head", &err))
     }
 
-    /// Owner-scoped citation-to-Fact read-back.
+    /// Read-set-scoped citation-to-Fact read-back.
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks [`Relation::Viewer`], and `Internal` when storage reads fail.
+    /// Returns `Forbidden` when the context authorizes no read owners, and
+    /// `Internal` when storage reads fail.
     pub async fn facts_citing_object(
         &self,
         authz: &AuthzContext,
         req: &FactsCitingObjectReadRequest,
     ) -> Result<Vec<MemorySnapshot>, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, &req.principal, Relation::Viewer)
-            .await?;
+        let read_owners = self.authorize_read(authz).await?;
         let sidecars = self.sidecar_specs();
         self.storage
-            .facts_citing_object(permit.owner(), req.cited_object_id, &sidecars)
+            .facts_citing_object(&read_owners, req.cited_object_id, &sidecars)
             .await
             .map_err(|err| storage_error("facts_citing_object", &err))
     }
