@@ -3,15 +3,15 @@ Causa — Operators
 
 The production rules (doc 02 §The Layering Principle, doc 04):
 
-  F→A   : 2^F × Π → A      facts become one typed Abstraction
-  A→P   : 2^A × Π → P      abstractions become one typed Perspective
-  A→Goal: 2^A × Π → Goal   goals derived from Abstraction evidence
+  F→A   : 2^F × wake context → A      facts become one typed Abstraction
+  A→P   : 2^A × wake context → P      abstractions become one typed Perspective
+  A→Goal: 2^A × wake context → Goal   goals derived from Abstraction evidence
   frame : P × A_cross → Edge
 
-Π = the active personality instance. In spec-mode Lean, operators are
-not modeled as functions — entities plus write-shape obligations
-carry the same content: what each authorship class may produce, and
-what every derived memory must possess.
+Wake context is not a materialized PersonalityInstance. In spec-mode
+Lean, operators are not modeled as functions — entities plus
+write-shape obligations carry the same content: what each authorship
+class may produce, and what every derived memory must possess.
 
 Minimized trusted core (2026-06-11): the four per-authorship shape
 axioms (CN-1..4) are ONE axiom over the `operatorEdgeShape` def; the
@@ -19,10 +19,10 @@ target-kind conjuncts of CN-1/CN-2 and of the provenance obligation
 are PROVED from the edge matrix (Provenance pins the target kind
 uniquely given the source kind).
 
-CN-5 — no downward writes (A→F, P→A, P→F): the kernel face is that
-Facts are NEVER operator/personality products. Combined with ME-1
-(Fact ⟷ source event), the only path into F is the EventSource
-membrane. "Dreaming" needs no axioms: dream outputs are ordinary
+CN-5 — no downward writes (A→F, P→A, P→F): the kernel face is the
+operator edge shape plus the class-legality matrix. Source/flavor
+ingest may materialize typed Facts, but the core kernel does not model
+a separate Event entity or materialized PersonalityInstance. "Dreaming" needs no axioms: dream outputs are ordinary
 typed writes under these same rules (doc 02 §Wake/Dream/Write — no
 Dream entity, no Dream relation class, no Core dream pipeline; the
 ABSENCE of dream primitives here is deliberate).
@@ -42,18 +42,6 @@ import Causa.Edges
 namespace Causa
 
 -- ============================================================
--- CN-5 — no downward writes
--- ============================================================
-
-/-- Facts are observations, never derivations: no Fact carries an
-    authoring personality (doc 01 §What the Event Source must not do;
-    doc 02 forbidden writes A→F, P→A, P→F). With ME-1, Facts enter
-    only through the membrane. -/
-axiom facts_only_from_sources :
-  ∀ m : Memory, memory_kind m = .Fact →
-    memory_authoring_personality m = none
-
--- ============================================================
 -- Operator edge shapes (doc 02 §Provenance, §Edge Scope authorship;
 -- doc 02 §Relation Registry for motivated-by's Structural class)
 -- ============================================================
@@ -61,7 +49,7 @@ axiom facts_only_from_sources :
 /-- What each authorship class is permitted to write — CN-1..CN-4 as
     one def over the closed `EdgeAuthorship` vocabulary (the same
     move `legalClasses` makes for kinds). Non-operator authorships
-    (EventSource, Engine, User, ExternalAgent) carry no extra shape
+    (source-ingest, Engine, User, ExternalAgent) carry no extra shape
     here: their legality is the matrix + masks. Target kind for A→P
     remains matrix-forced; F→A states its Fact target directly because
     A→A provenance is legal. -/
@@ -95,6 +83,44 @@ def operatorEdgeShape : EdgeAuthorship → Edge → Prop
 /-- CN-1..CN-4 — every edge satisfies its authorship's shape. -/
 axiom operator_edges_shaped :
   ∀ e : Edge, operatorEdgeShape (edge_authorship e) e
+
+/-- CN-5 — operator memory outputs are never Facts. The output side of
+    F→A/A→A/A→P operator edges is the source endpoint by Proxima's
+    provenance direction convention (`new -> inputs`). -/
+theorem operator_memory_output_not_fact :
+    ∀ (e : Edge) (m : Memory),
+      (edge_authorship e = .OperatorFtoA ∨
+       edge_authorship e = .OperatorAtoA ∨
+       edge_authorship e = .OperatorAtoP) →
+      edge_source e = .memory m →
+      memory_kind m ≠ .Fact := by
+  intro e m ha hsout
+  rcases ha with hfa | ha
+  · have h := operator_edges_shaped e
+    rw [hfa] at h
+    rcases h with ⟨_, ⟨ms, hsrc, hkind⟩, _⟩
+    rw [hsout] at hsrc
+    injection hsrc with heq
+    rw [heq, hkind]
+    intro hfalse
+    exact (nomatch hfalse)
+  · rcases ha with haa | hap
+    · have h := operator_edges_shaped e
+      rw [haa] at h
+      rcases h with ⟨_, ⟨ms, hsrc, hkind⟩, _⟩
+      rw [hsout] at hsrc
+      injection hsrc with heq
+      rw [heq, hkind]
+      intro hfalse
+      exact (nomatch hfalse)
+    · have h := operator_edges_shaped e
+      rw [hap] at h
+      rcases h with ⟨_, ⟨ms, hsrc, hkind⟩, _⟩
+      rw [hsout] at hsrc
+      injection hsrc with heq
+      rw [heq, hkind]
+      intro hfalse
+      exact (nomatch hfalse)
 
 /-- Helper: a Provenance-class memory→memory edge with a known source
     kind has its target kind pinned by the matrix. -/
@@ -232,7 +258,6 @@ axiom ftoa_batch_exclusive :
   ∀ m1 m2 : Memory,
     memory_kind m1 = .Abstraction → memory_kind m2 = .Abstraction →
     memory_owner m1 = memory_owner m2 →
-    memory_authoring_personality m1 = memory_authoring_personality m2 →
     memory_source_batch m1 ≠ none →
     memory_source_batch m1 = memory_source_batch m2 →
     memory_input_contract m1 = memory_input_contract m2 →

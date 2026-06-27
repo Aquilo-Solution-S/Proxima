@@ -10,7 +10,6 @@ import Causa.Prelude
 import Causa.Owner
 import Causa.Identity
 import Causa.Memory
-import Causa.Personality
 import Causa.Goals
 import Causa.Edges
 import Causa.Operators

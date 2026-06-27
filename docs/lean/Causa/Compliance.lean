@@ -57,30 +57,22 @@ inductive ComplianceOutcome where
 -- Suppression list (doc 13 §Suppression list)
 -- ============================================================
 
-/-- CO-15/16/20 — a suppression entry retains ONLY the opaque
-    content-derived idempotency key (EventId) plus operation
-    metadata (deletion timestamp, operation id — engine-level). The
-    accessor shape is the PII guard: no natural-person identifier —
-    and per the minimization pass, NO Owner — is reachable from a
-    suppression entry (doc 13 §Suppression list retains "opaque
-    idempotency key only"; owner is reachable only via operation id →
-    audit row, an audit-log concern). EventIds are content-derived
-    and opaque by construction (doc 01 §Idempotency-key constraint);
-    a non-opaque key would itself become PII surviving deletion. -/
+/-- CO-15/16/20 — a suppression entry retains ONLY an opaque
+    source/flavor ingest key plus operation metadata (deletion
+    timestamp, operation id — engine-level). The accessor shape is the
+    PII guard: no natural-person identifier — and per the minimization
+    pass, NO Owner — is reachable from a suppression entry (doc 13
+    §Suppression list retains "opaque idempotency key only"; owner is
+    reachable only via operation id → audit row, an audit-log concern).
+    A non-opaque key would itself become PII surviving deletion. -/
+axiom SuppressionKey : Type
 axiom SuppressionEntry : Type
-axiom suppression_key : SuppressionEntry → EventId
+axiom suppression_key : SuppressionEntry → SuppressionKey
 
-/-- CO-17/18 — source ingest checks suppression before dedup: a
-    suppressed event id produces no Fact. Global by key — the entry
-    carries no Owner, and EventId is already (source, owner, payload)-
-    determined (ES-4), so key-matching IS scope-matching. Rejection
-    is a no-op `Suppressed`, no retry pressure. CO-19 — entries are
-    retained indefinitely; survival of `delete_owner` is structural
-    (see below). -/
-axiom suppression_blocks_reingest :
-  ∀ (s : SuppressionEntry) (m : Memory) (e : Event),
-    memory_source_event m = some e →
-    event_id e ≠ suppression_key s
+/- CO-17/18 — source/flavor ingest checks suppression before dedup.
+   The check is an engine/flavor boundary obligation because core no
+   longer models Event as an entity. CO-19 — entries are retained
+   indefinitely; survival of `delete_owner` is structural (see below). -/
 
 -- ============================================================
 -- Erasure semantics (doc 13 §Operations)
@@ -124,14 +116,10 @@ theorem erasure_removes_edges :
 
 /- CO-7'b / CO-19 / CO-29 — suppression SURVIVES erasure, carried
     structurally: `erasure_removes_cognitive` does not range over
-    SuppressionEntry, and `suppression_blocks_reingest` above is
-    deliberately NOT conditioned on `¬ erased o` — the re-ingest
-    guard keeps holding for an erased Owner. That unconditional
-    quantification is the survival invariant; an explicit axiom
-    would be a tautology in this timeless model. Audit-row retention
-    (CO-21..29) is an engine-table concern → COVERAGE.md exclusion.
-    The kernel commits to the suppression face because it is what
-    makes erasure final against silent re-ingest. -/
+    SuppressionEntry. The core kernel retains only the opaque
+    suppression-key face; source/flavor ingest must consult it before
+    materializing a typed Fact. Audit-row retention (CO-21..29) is an
+    engine-table concern → COVERAGE.md exclusion. -/
 
 -- ============================================================
 -- Pause (doc 13 §Operations)
@@ -140,7 +128,7 @@ theorem erasure_removes_edges :
 /-- CO-9 — pause stops FUTURE operator dispatch and wake execution;
     reads and export remain available. CO-10 — resume clears it.
     Kernel face: `paused` is a state predicate; the dispatch gate is
-    that no personality-authored memory is created for a paused
+    that no wake/operator-authored memory is created for a paused
     Owner — expressed as creation-time guard in the engine, recorded
     here as the predicate the engine must consult. Existing memories
     are untouched (append-only; pause is not erasure). -/
