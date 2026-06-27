@@ -13,7 +13,10 @@ use proxima_core::verbs::event_history::EventHistoryRequest;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
-use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest};
+use proxima_core::verbs::query::{
+    EdgeFilter, EdgeReadRequest, PersonalityRootFilter, QueryRequest, SupersessionStatus,
+    TombstoneFilter,
+};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     AuthPath, AuthzContext, CORE_DERIVED_FROM_RELATION, CapabilitySet, ChangeEventKind, EdgeId,
@@ -287,14 +290,83 @@ async fn event_history_applies_public_source_guard_to_edge_events()
     result
 }
 
+#[tokio::test]
+async fn query_high_water_applies_public_source_guard_to_edge_events()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let result = async {
+        let gp = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let private = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let p = Principal::User(UserId::new(Uuid::now_v7()));
+        let world = world();
+
+        let a_public = seed_memory(&pg, &gp, EntityKind::Abstraction, "A public").await?;
+        let f_private = seed_memory(&pg, &private, EntityKind::Fact, "private").await?;
+        share_entity(&pg, a_public.into_inner(), &world).await?;
+
+        let edge = seed_memory_edge(
+            &pg,
+            &gp,
+            (EntityKind::Abstraction, a_public),
+            (EntityKind::Fact, f_private),
+            CORE_DERIVED_FROM_RELATION,
+            RelationClass::Provenance,
+        )
+        .await?;
+        let hidden_seq = insert_edge_append_event(&pg, &gp, edge, a_public, f_private).await?;
+
+        let p_read = vec![p.clone(), gp, world];
+        let query = pg
+            .query_memories(
+                &QueryRequest {
+                    principal: p,
+                    read_owners: p_read,
+                    entity_kind: None,
+                    schema_id: None,
+                    supersession: SupersessionStatus::HeadsOnly,
+                    tombstones: TombstoneFilter::PresentOnly,
+                    personality_roots: PersonalityRootFilter::IncludeInactive,
+                    limit: 10,
+                    include_payloads: false,
+                    memory_ids: Vec::new(),
+                    goal_ids: Vec::new(),
+                    edge_ids: Vec::new(),
+                    stateful_heads: Vec::new(),
+                    reader_personality_instance_id: None,
+                },
+                &[],
+            )
+            .await?;
+
+        assert_ne!(
+            query.seq_high_water,
+            Some(hidden_seq),
+            "query high-water must not expose a hidden edge event seq"
+        );
+        assert!(
+            query.seq_high_water.is_none(),
+            "with only a hidden readable-owner edge event, query high-water has no visible seq"
+        );
+
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
+}
+
 async fn insert_edge_append_event(
     pg: &PgStorage,
     owner: &Principal,
     edge_id: EdgeId,
     source_memory_id: MemoryId,
     target_memory_id: MemoryId,
-) -> Result<(), sqlx::Error> {
+) -> Result<Uuid, sqlx::Error> {
     let (owner_kind, owner_principal_id) = owner.columns();
+    let seq = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.change_event \
             (seq, owner_principal_kind, owner_principal_id, kind, \
@@ -303,7 +375,7 @@ async fn insert_edge_append_event(
              edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id) \
          VALUES ($1, $2, $3, 'EdgeAppend', $4, $5, $6, NULL, NULL, $7, NULL, NULL)",
     )
-    .bind(Uuid::now_v7())
+    .bind(seq)
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(edge_id.into_inner())
@@ -312,5 +384,5 @@ async fn insert_edge_append_event(
     .bind(target_memory_id.into_inner())
     .execute(pg.pool())
     .await
-    .map(|_| ())
+    .map(|_| seq)
 }
