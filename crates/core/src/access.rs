@@ -164,3 +164,77 @@ pub enum RemoveOwnerOutcome {
     RefusedLastOwner,
     NotFound,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Relation::{Admin, Editor, Ingest, Member, Owner, Viewer};
+    use super::*;
+
+    const ALL: [Relation; 6] = [Owner, Admin, Editor, Viewer, Ingest, Member];
+
+    #[test]
+    fn dominates_is_reflexive() {
+        for r in ALL {
+            assert!(r.dominates(r), "{r:?} must dominate itself");
+        }
+    }
+
+    #[test]
+    fn owner_dominates_only_the_readwrite_chain() {
+        // owner ⊒ editor ⊒ viewer
+        assert!(Owner.dominates(Editor));
+        assert!(Owner.dominates(Viewer));
+        // owner is NOT a superset of the incomparable relations.
+        assert!(!Owner.dominates(Admin));
+        assert!(!Owner.dominates(Ingest));
+        assert!(!Owner.dominates(Member));
+    }
+
+    #[test]
+    fn editor_dominates_viewer_only() {
+        assert!(Editor.dominates(Viewer));
+        assert!(!Editor.dominates(Owner));
+        assert!(!Editor.dominates(Admin));
+        assert!(!Editor.dominates(Ingest));
+        assert!(!Editor.dominates(Member));
+    }
+
+    #[test]
+    fn viewer_dominates_nothing_above_itself() {
+        for r in ALL {
+            assert_eq!(
+                Viewer.dominates(r),
+                r == Viewer,
+                "viewer must dominate only viewer, not {r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn admin_ingest_member_are_mutually_incomparable_and_incomparable_with_the_chain() {
+        for &r in &[Admin, Ingest, Member] {
+            for other in ALL {
+                // Each of admin/ingest/member dominates ONLY itself.
+                assert_eq!(
+                    r.dominates(other),
+                    r == other,
+                    "{r:?} must dominate only itself, not {other:?}"
+                );
+                // ...and nothing dominates them except themselves.
+                assert_eq!(
+                    other.dominates(r),
+                    r == other,
+                    "{other:?} must not dominate {r:?} unless equal"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_owner_is_ungrantable() {
+        assert!(!Owner.is_grantable());
+        for &r in &[Admin, Editor, Viewer, Ingest, Member] {
+            assert!(r.is_grantable(), "{r:?} must be grantable");
+        }
+    }
+}

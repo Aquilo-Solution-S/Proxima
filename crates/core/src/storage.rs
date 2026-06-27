@@ -920,6 +920,10 @@ pub trait Storage: Send + Sync {
         visibility: Visibility,
     ) -> Result<(), StorageError>;
 
+    /// Public marketplace scan, newest-first. Not owner-scoped; callers gate
+    /// only on an authenticated context before invoking this method.
+    async fn list_public_memories(&self, limit: i64) -> Result<Vec<MemorySnapshot>, StorageError>;
+
     /// Count active entry-level grants on a memory (drives the shared/private
     /// visibility recompute on unshare).
     async fn count_active_entry_grants(
@@ -1465,6 +1469,10 @@ impl Storage for NoopStorage {
         _visibility: Visibility,
     ) -> Result<(), StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn list_public_memories(&self, _limit: i64) -> Result<Vec<MemorySnapshot>, StorageError> {
+        Ok(Vec::new())
     }
 
     async fn count_active_entry_grants(
