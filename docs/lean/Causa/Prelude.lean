@@ -4,8 +4,7 @@ Causa — Prelude
 Kernel-wide primitives with no dependencies of their own:
 - The minimal `Set` definition (avoids Mathlib).
 - A logical insertion-time tick (`Instant := Nat`).
-- Opaque value Types whose representation is deferred but whose
-  identity earns a kernel slot (`Text`).
+- Kernel value aliases (`Instant`, `Text`) backed by Lean core types.
 - Forward-referenced Types needed across domain files.
 
 Every file in `Causa/` imports this module. Nothing else
@@ -37,10 +36,9 @@ instance {α : Type} : Membership α (Set α) := ⟨fun s a => s a⟩
     ordinary `≤` supplies the ordering without an extra trusted axiom. -/
 abbrev Instant : Type := Nat
 
-/-- Free text attached to a memory row. Opaque: the kernel commits
-    to the type slot, not its encoding or kind-based presence. Facts,
-    Abstractions, and Perspectives may all carry optional text;
-    flavor sidecars may carry additional opaque typed payload. -/
-axiom Text : Type
+/-- Free text attached to memory and goal rows. The kernel text type is
+    ordinary Lean `String`; storage encoding, normalization, rendering,
+    and flavor sidecar payloads remain engine/flavor concerns. -/
+abbrev Text : Type := String
 
 end Causa
