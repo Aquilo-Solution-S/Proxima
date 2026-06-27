@@ -174,7 +174,7 @@ async fn trigger_rejects_endpoint_kind_and_owner_mismatch() {
 
         let err = insert_memory_edge(
             &pg,
-            &owner,
+            &other,
             RelationClass::Structural,
             EntityKind::Fact,
             fact,
@@ -182,7 +182,7 @@ async fn trigger_rejects_endpoint_kind_and_owner_mismatch() {
             other_fact,
         )
         .await
-        .expect_err("cross-owner target must be rejected");
+        .expect_err("cross-owner source stamp must be rejected");
         assert!(err.to_string().contains("Owner boundary"));
         Ok(())
     }

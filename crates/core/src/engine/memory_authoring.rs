@@ -81,10 +81,10 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context lacks [`Relation::Viewer`] or
-    /// [`Relation::Editor`] on the owner; `InvalidArgument` when referenced
-    /// memories are not present in that owner space or edge shape validation
-    /// fails; and `Internal` for storage failures.
+    /// Returns `Forbidden` when the context lacks [`Relation::Editor`] on the
+    /// source owner or read access to an edge target; `InvalidArgument` when
+    /// referenced memories are absent or edge shape validation fails; and
+    /// `Internal` for storage failures.
     pub async fn author_derived_authorized(
         &self,
         authz: &AuthzContext,
@@ -95,7 +95,7 @@ impl Engine {
             .await?;
 
         let owner = write_permit.owner().clone();
-        let edges = self.validated_author_derived_edges(&owner, &req).await?;
+        let edges = self.validated_author_derived_edges(authz, &req).await?;
         let target_ids = req
             .edges
             .iter()
@@ -147,32 +147,28 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context lacks [`Relation::Viewer`] or
-    /// [`Relation::Editor`] on the owner; `InvalidArgument` when endpoints are
-    /// absent from the owner space or the relation rejects the shape; and
+    /// Returns `Forbidden` when the context lacks [`Relation::Editor`] on the
+    /// source owner or read access to the target; `InvalidArgument` when
+    /// endpoints are absent or the relation rejects the shape; and
     /// `Internal` for storage failures.
     pub async fn append_memory_edge_authorized(
         &self,
         authz: &AuthzContext,
         req: AppendMemoryEdgeRequestInput<'_>,
     ) -> Result<EdgeId, ProtocolError> {
-        let read_permit = self
-            .authorize_request(authz, &req.owner, Relation::Viewer)
-            .await?;
         let write_permit = self
-            .authorize_request(authz, &req.owner, Relation::Editor)
+            .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
-        if read_permit.owner() != write_permit.owner() {
-            return Err(ProtocolError::forbidden(
-                "read and write permits resolved to different owners",
-            ));
-        }
         let owner = write_permit.owner().clone();
-        let kinds = self
-            .load_required_memory_kinds(&owner, &[req.source_memory_id, req.target_memory_id])
+        let source_kind = self
+            .load_required_memory_kind(&owner, req.source_memory_id)
             .await?;
-        let source_kind = kinds[0];
-        let target_kind = kinds[1];
+        let target_read = self
+            .authorize_entry_read(authz, EntityId::Memory(req.target_memory_id))
+            .await?;
+        let target_kind = self
+            .load_required_memory_kind(target_read.owner(), req.target_memory_id)
+            .await?;
         validate_relation_shape(
             req.relation,
             source_kind,
@@ -210,24 +206,13 @@ impl Engine {
         authz: &AuthzContext,
         req: PublishMemoryRequestInput,
     ) -> Result<PublishMemoryOutcome, ProtocolError> {
-        let source_read = self
-            .authorize_request(authz, &req.source_owner, Relation::Viewer)
-            .await?;
         let source_publish = self
-            .authorize_request(authz, &req.source_owner, Relation::Editor)
+            .authorize_write(authz, &req.source_owner, Relation::Editor)
             .await?;
-        let target_write = self
-            .authorize_request(authz, &req.target_owner, Relation::Editor)
-            .await?;
-        if source_read.owner() != source_publish.owner() {
-            return Err(ProtocolError::forbidden(
-                "source read and publish permits resolved to different owners",
-            ));
-        }
         let entry_read = self
             .authorize_entry_read(authz, EntityId::Memory(req.memory_id))
             .await?;
-        if entry_read.owner() != source_read.owner() {
+        if entry_read.owner() != source_publish.owner() {
             return Err(ProtocolError::invalid_argument(
                 "memory_id",
                 "memory not found",
@@ -268,7 +253,7 @@ impl Engine {
         };
         let observed_at = time::OffsetDateTime::now_utc();
         let mut draft = EventDraft::from_payload(
-            target_write.owner(),
+            &req.target_owner,
             "core/agent-publish",
             SourceBatchId::new(uuid::Uuid::now_v7()),
             &copied,
@@ -391,50 +376,36 @@ impl Engine {
 
     async fn validated_author_derived_edges<'a>(
         &self,
-        owner: &Owner,
+        authz: &AuthzContext,
         req: &AuthorDerivedRequestInput<'a>,
     ) -> Result<Vec<AuthorDerivedEdgeInput<'a>>, ProtocolError> {
         if req.edges.is_empty() {
             return Ok(Vec::new());
         }
-        let mut existing = Vec::with_capacity(req.edges.len() * 2);
-        for edge in req.edges {
-            if edge.source_memory_id != req.memory_id {
-                existing.push(edge.source_memory_id);
-            }
-            if edge.target_memory_id != req.memory_id {
-                existing.push(edge.target_memory_id);
-            }
-        }
-        existing.sort_by_key(|memory_id| memory_id.into_inner());
-        existing.dedup();
-        let loaded = self.load_required_memory_kinds(owner, &existing).await?;
-        let by_id = existing
-            .into_iter()
-            .zip(loaded)
-            .collect::<std::collections::HashMap<_, _>>();
-
         let mut out = Vec::with_capacity(req.edges.len());
         for edge in req.edges {
             let source_kind = if edge.source_memory_id == req.memory_id {
                 req.kind
             } else {
-                *by_id.get(&edge.source_memory_id).ok_or_else(|| {
-                    ProtocolError::invalid_argument(
-                        "edges",
-                        "cross-space derive/link is not supported; choose one memory space",
-                    )
-                })?
+                let source_owner = self
+                    .storage()
+                    .entity_home_owner(EntityId::Memory(edge.source_memory_id))
+                    .await
+                    .map_err(|err| ProtocolError::internal(err.to_string()))?
+                    .ok_or_else(|| ProtocolError::invalid_argument("edges", "memory not found"))?;
+                self.authorize_write(authz, &source_owner, Relation::Editor)
+                    .await?;
+                self.load_required_memory_kind(&source_owner, edge.source_memory_id)
+                    .await?
             };
             let target_kind = if edge.target_memory_id == req.memory_id {
                 req.kind
             } else {
-                *by_id.get(&edge.target_memory_id).ok_or_else(|| {
-                    ProtocolError::invalid_argument(
-                        "edges",
-                        "cross-space derive/link is not supported; choose one memory space",
-                    )
-                })?
+                let target_read = self
+                    .authorize_entry_read(authz, EntityId::Memory(edge.target_memory_id))
+                    .await?;
+                self.load_required_memory_kind(target_read.owner(), edge.target_memory_id)
+                    .await?
             };
             validate_relation_shape(
                 edge.relation,
@@ -454,6 +425,15 @@ impl Engine {
             });
         }
         Ok(out)
+    }
+
+    async fn load_required_memory_kind(
+        &self,
+        owner: &Owner,
+        memory_id: MemoryId,
+    ) -> Result<EntityKind, ProtocolError> {
+        let mut kinds = self.load_required_memory_kinds(owner, &[memory_id]).await?;
+        Ok(kinds.remove(0))
     }
 
     async fn load_required_memory_kinds(
