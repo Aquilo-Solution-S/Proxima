@@ -106,7 +106,8 @@ pub struct CapabilitySet {
     pub tool_scope: ToolScope,
     /// The sole surviving per-token memory capability after the RoleSet/grant
     /// collapse. Unrestricted = acts as owner on every accessible principal;
-    /// Granted = decided purely by persisted `access_grants`.
+    /// Granted = decided by the persisted `group_membership` + `entity_owner`
+    /// reachability rows (the resolved `S_read`/`S_write` sets).
     pub access: AccessScope,
 }
 
