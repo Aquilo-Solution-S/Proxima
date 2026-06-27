@@ -1,10 +1,15 @@
 /-
-Causa — Authorization
+Causa — Authorization (group-ownership realign)
 
-Owner-space grants layer policy above Owner without changing Owner.
-Core stores and compares Owner as Principal. Hosts resolve group membership
-and role assignment; the kernel names only the granted action predicate the
-engine must enforce.
+Access leaves the entity row entirely (spec §10). Two host-resolved
+relations carry it: `group_membership` gives a User the roles of the groups
+they belong to; `entity_owner` gives each entity its reachable Owners —
+exactly one `is_home` write owner plus read-only share Owners plus the
+implicit World group. The request pipeline resolves the requester's read /
+write sets `S_read` / `S_write` ONCE; the kernel names only the gates those
+sets must satisfy. No grant or visibility flag lives on the entity: the
+retired owner-space `AccessGrant` / `MemoryAction` layer is gone, and with it
+the "is public" / "is shared" denormalized state (invariant #5).
 -/
 
 import Causa.Prelude
@@ -12,46 +17,88 @@ import Causa.Owner
 
 namespace Causa
 
-/-- Memory-space action vocabulary. Resource granularity is Owner. -/
-inductive MemoryAction where
-  | search
-  | read
-  | write
-  | publish
-  | admin
+/-- Membership roles (group_membership). Host-assigned; the kernel commits to
+    the authority each conveys: every relation reads, only the non-Viewer
+    relations write (Ingest writes source events, Editor authors, Admin
+    configures). The closed four-constructor shape is the axiom. -/
+inductive Relation where
+  | admin | editor | viewer | ingest
   deriving DecidableEq, Repr
 
-/-- Host-resolved grant predicate. The kernel does not model group membership
-    assignment or role bundles; those live before AuthzContext construction. -/
-axiom owner_space_grant : Principal → Owner → MemoryAction → Prop
+/-- Relations that confer write authority — everything but Viewer. -/
+def Relation.writes : Relation → Prop
+  | .viewer => False
+  | _       => True
 
-/-- Authorization gate for memory-space actions. -/
-def may_memory_action (subject : Principal) (owner : Owner) (action : MemoryAction) : Prop :=
-  owner_space_grant subject owner action
+/-- The reserved World group — public read (§2.2 / §6). An ordinary Group
+    Owner, distinguished only by being in every read set and never a write
+    target. -/
+axiom world : Owner
+axiom world_is_group : ∃ g : GroupId, world = Principal.group g
 
-/-- A principal can access an Owner-space. Mirrors the engine
-    `Identity::can_access_principal`: a user reaches their own space and any
-    group they belong to (`visible`); a group subject reaches its own space.
-    Host membership resolution may widen the group case app-side; the kernel
-    commits to the self-access floor. -/
-def principal_can_access (subject : Principal) (o : Owner) : Prop :=
-  match subject with
-  | .user u  => visible o u
-  | .group g => owner_principal o = .group g
+/-- `S_read r o` — Owner `o` is in requester `r`'s read set: `r`'s own
+    principal, every group `r` belongs to (`visible`, Causa.Owner), and
+    World. Host-resolved from group_membership; the kernel takes it as the
+    request's read access set and fixes only the floor laws below. -/
+axiom S_read  : Principal → Owner → Prop
+/-- `S_write r o` — Owner `o` is in requester `r`'s write set: an Owner `r`
+    reaches through a non-Viewer membership. World is never here. -/
+axiom S_write : Principal → Owner → Prop
 
-/-- A grant — for ANY subject principal, user or group — can only be minted
-    for an Owner that subject can access. This keeps RBAC above, not instead
-    of, the Owner visibility rule. The engine enforces it for both principal
-    kinds via `can_access_principal`; the kernel must too, so a maintainer
-    cannot read AUTH-2 as user-only and drop the group-subject check. -/
-axiom owner_space_grant_owner_visible :
-  ∀ (subject : Principal) (o : Owner) (a : MemoryAction),
-    owner_space_grant subject o a → principal_can_access subject o
+/-- AR-self — a requester always reaches its own principal for reads. -/
+axiom S_read_self  : ∀ r : Principal, S_read r r
+/-- AR-world — World is implicitly in every read set (invariant #4, read half). -/
+axiom S_read_world : ∀ r : Principal, S_read r world
+/-- AW-read — write authority implies read authority: a writer can read what
+    it may write. -/
+axiom S_write_subset_read : ∀ (r : Principal) (o : Owner), S_write r o → S_read r o
+/-- AW-world — World is read-only: never a write target (invariant #4, write
+    half). No write owner is ever World. -/
+axiom world_never_writable : ∀ r : Principal, ¬ S_write r world
 
-/-- Admin is not a read/write shortcut in the kernel; engines may map admin
-    to administrative operations only unless a concrete verb also checks read
-    or write. -/
-def admin_is_separate_action : String :=
-  "memory.admin does not imply memory.read or memory.write by definition"
+-- ============================================================
+-- Reachability and the gates (spec §3 / §10 invariants 1–2)
+-- ============================================================
+
+/-- An entity's reachable Owners — its `entity_owner` rows. The entity is
+    named by its single `is_home` write Owner `home` (memory_owner /
+    goal_owner in the cognitive layer); `reaches home o` additionally holds
+    for every read-only share Owner and for World once published. -/
+axiom reaches : Owner → Owner → Prop
+/-- RE-home — an entity is always reachable as its own home Owner. -/
+axiom reaches_home : ∀ home : Owner, reaches home home
+
+/-- AUTH-READ (invariant #2, "read = reachability") — a request may READ an
+    entity iff some reachable Owner of it is in the requester's read set.
+    This is the only read path; nothing on the entity row is consulted. -/
+def may_read (r : Principal) (home : Owner) : Prop :=
+  ∃ o : Owner, reaches home o ∧ S_read r o
+
+/-- AUTH-WRITE (invariant #1, "single write owner") — a request may WRITE an
+    entity iff its one home Owner is in the requester's write set. Shares
+    never confer write; there is no second source of write authority. -/
+def may_write (r : Principal) (home : Owner) : Prop :=
+  S_write r home
+
+/-- AUTH-1 — write implies read: whoever may write an entity may read it
+    (its home is reachable and write ⊆ read). THEOREM. -/
+theorem may_write_implies_read :
+    ∀ (r : Principal) (home : Owner), may_write r home → may_read r home := by
+  intro r home hw
+  exact ⟨home, reaches_home home, S_write_subset_read r home hw⟩
+
+/-- AUTH-2 — World is read-only: no requester may write an entity whose home
+    Owner is World (there is none). THEOREM. -/
+theorem world_read_only : ∀ r : Principal, ¬ may_write r world := by
+  intro r hw
+  exact world_never_writable r hw
+
+/-- AUTH-3 — World is universally readable: every requester may read a
+    World-published entity (World is in every read set and is reachable as a
+    share). THEOREM. -/
+theorem world_universally_readable :
+    ∀ (r : Principal) (home : Owner), reaches home world → may_read r home := by
+  intro r home hreach
+  exact ⟨world, hreach, S_read_world r⟩
 
 end Causa
