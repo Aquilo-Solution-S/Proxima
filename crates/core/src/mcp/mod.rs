@@ -973,12 +973,8 @@ mod tests {
 
     #[test]
     fn core_actions_manifest_is_internally_consistent() {
-        let allowed_tools = BTreeSet::from([
-            "core_goal",
-            "core_wake",
-            "core_personality",
-            "core_fact",
-        ]);
+        let allowed_tools =
+            BTreeSet::from(["core_goal", "core_wake", "core_personality", "core_fact"]);
         let expected_counts = BTreeMap::from([
             ("core_goal", 5_usize),
             ("core_wake", 5),
