@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use proxima::{
@@ -9,8 +10,10 @@ use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::{
     FactPayload, FlavorRegistry, GoalActivatedV1, MemoryId, SchemaId, SchemaVersion, SourceBatchId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::{PgSidecarKey, PgStorage};
+use sqlx::migrate::{Migration, MigrationType, Migrator};
+use sqlx::{Connection, Executor};
 use tokio::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -110,6 +113,36 @@ impl FlavorApp for GoalTestApp {
     }
 }
 
+fn quoted_ident(input: &str) -> String {
+    format!("\"{}\"", input.replace('"', "\"\""))
+}
+
+fn current_user_schema_migrator() -> Migrator {
+    Migrator {
+        migrations: Cow::Owned(vec![Migration::new(
+            20_990_101_000_000,
+            Cow::Borrowed("current user schema collision"),
+            MigrationType::Simple,
+            Cow::Borrowed("CREATE SCHEMA AUTHORIZATION CURRENT_USER;"),
+            false,
+        )]),
+        ..Migrator::DEFAULT
+    }
+}
+
+async fn force_role_first_search_path(db_name: &str) -> Result<(), sqlx::Error> {
+    let mut conn = sqlx::PgConnection::connect(&admin_url()).await?;
+    conn.execute(
+        format!(
+            "ALTER ROLE CURRENT_USER IN DATABASE {} SET search_path = \"$user\", public",
+            quoted_ident(db_name)
+        )
+        .as_str(),
+    )
+    .await?;
+    conn.close().await
+}
+
 #[tokio::test]
 async fn boots_engine_with_core_goal_tools_on_fresh_db() {
     let db_name = unique_db_name("proxima_test");
@@ -167,6 +200,57 @@ async fn migration_facade_runs_core_goal_schema_idempotently() {
 
     let _ = drop_db(&db_name).await;
     result.expect("migration facade integration test failed");
+}
+
+#[tokio::test]
+async fn migration_facade_keeps_tracking_public_when_flavor_creates_current_user_schema() {
+    let db_name = unique_db_name("proxima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    force_role_first_search_path(&db_name)
+        .await
+        .expect("test role search_path should be configurable");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&db_url).await?;
+        let report = run_core_and_flavor_migrations(
+            &pg,
+            [NamedMigrator::new(
+                "role-schema-flavor",
+                current_user_schema_migrator(),
+            )],
+        )
+        .await?;
+        assert_eq!(report.sources, ["proxima-core", "role-schema-flavor"]);
+        pg.pool().close().await;
+        drop(pg);
+
+        let pg = PgStorage::connect(&db_url).await?;
+        let report = run_core_and_flavor_migrations(
+            &pg,
+            [NamedMigrator::new(
+                "role-schema-flavor",
+                current_user_schema_migrator(),
+            )],
+        )
+        .await?;
+        assert_eq!(report.sources, ["proxima-core", "role-schema-flavor"]);
+
+        let tracking_schemas: Vec<String> = sqlx::query_scalar(
+            "SELECT table_schema::text
+               FROM information_schema.tables
+              WHERE table_name = '_sqlx_migrations'
+              ORDER BY table_schema",
+        )
+        .fetch_all(pg.pool())
+        .await?;
+        assert_eq!(tracking_schemas, ["public"]);
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("migration facade should pin sqlx tracking to public");
 }
 
 #[tokio::test]
