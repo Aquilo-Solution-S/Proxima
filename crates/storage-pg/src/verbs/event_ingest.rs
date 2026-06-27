@@ -26,6 +26,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use crate::error::{internal, map_err};
 use crate::pg_ident::PgIdent;
 use crate::sidecars::{PgMemorySidecar, PgSidecarRegistryFrozen};
+use crate::verbs::entity_owner::insert_entity_owner_home;
 
 pub type EventIngestSidecarFuture<'t> =
     Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
@@ -831,6 +832,13 @@ where
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
+    insert_entity_owner_home(
+        tx.as_mut(),
+        memory_id,
+        &owner,
+        Some(author_personality_instance_id),
+    )
+    .await?;
 
     let outcome = EventIngestOutcome {
         event_id,
