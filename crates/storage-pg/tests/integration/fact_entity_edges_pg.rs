@@ -1198,11 +1198,14 @@ async fn event_history_and_list_events_preserve_fact_entity_endpoints()
             append_follow_head_edge(&pg, &registry, &owner, source_entity, target_entity).await?;
 
         let history = pg
-            .event_history(&EventHistoryRequest {
-                principal: owner.clone(),
-                limit: 100,
-                before: None,
-            })
+            .event_history(
+                std::slice::from_ref(&owner),
+                &EventHistoryRequest {
+                    principal: owner.clone(),
+                    limit: 100,
+                    before: None,
+                },
+            )
             .await?;
         let history_edge = history
             .events

@@ -188,8 +188,15 @@ pub(super) async fn query_edges(
         !req.memory_ids.is_empty() || !req.goal_ids.is_empty() || !req.edge_ids.is_empty();
 
     if !edge_ids.is_empty() {
-        return query_edges_by_id(pool, req, &edge_ids, read_owner_kinds, read_owner_ids, schemas)
-            .await;
+        return query_edges_by_id(
+            pool,
+            req,
+            &edge_ids,
+            read_owner_kinds,
+            read_owner_ids,
+            schemas,
+        )
+        .await;
     }
     // Focused identity and entity-kind queries should not return graph
     // closure as a side effect. Atlas uses entity_kind = None to opt in.
@@ -266,7 +273,8 @@ async fn query_edges_by_id(
         .edges
         .into_iter()
         .filter(|edge| {
-            endpoint_present(&edge.source) && (!edge.target_readable || endpoint_present(&edge.target))
+            endpoint_present(&edge.source)
+                && (!edge.target_readable || endpoint_present(&edge.target))
         })
         .collect();
     Ok(edges)
