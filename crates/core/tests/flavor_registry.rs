@@ -95,42 +95,45 @@ fn all_mcp_tool_arg_schemas_avoid_root_combinators() {
     }
 }
 
+const CORE_GOAL_ACTION_NAMES: &[&str] =
+    &["set", "transition", "modify", "mark_achieved", "decompose"];
+const CORE_WAKE_ACTION_NAMES: &[&str] = &["add", "update", "remove", "set", "list"];
+const CORE_PERSONALITY_ACTION_NAMES: &[&str] = &[
+    "instantiate",
+    "tombstone",
+    "set_read_scope",
+    "list",
+    "get",
+    "list_read_scope",
+];
+const CORE_FACT_ACTION_NAMES: &[&str] = &[
+    "citation_of_fact",
+    "citation_of_entity_head",
+    "facts_citing_object",
+    "tombstone",
+];
+const CORE_MEMBERSHIP_ACTION_NAMES: &[&str] = &["add_member", "remove_member", "list_members"];
+const CORE_SHARE_ACTION_NAMES: &[&str] = &[
+    "share",
+    "unshare",
+    "publish",
+    "unpublish",
+    "list_shares",
+    "list_world",
+];
+const DISPATCHER_TOOL_ACTIONS: &[(&str, &[&str])] = &[
+    ("core_goal", CORE_GOAL_ACTION_NAMES),
+    ("core_wake", CORE_WAKE_ACTION_NAMES),
+    ("core_personality", CORE_PERSONALITY_ACTION_NAMES),
+    ("core_fact", CORE_FACT_ACTION_NAMES),
+    ("core_membership", CORE_MEMBERSHIP_ACTION_NAMES),
+    ("core_share", CORE_SHARE_ACTION_NAMES),
+];
+
 #[test]
 fn dispatcher_tool_arg_schemas_expose_action_enum() {
     let frozen = FlavorRegistry::default().freeze();
-    let dispatcher_tools = [
-        (
-            "core_goal",
-            ["set", "transition", "modify", "mark_achieved", "decompose"].as_slice(),
-        ),
-        (
-            "core_wake",
-            ["add", "update", "remove", "set", "list"].as_slice(),
-        ),
-        (
-            "core_personality",
-            [
-                "instantiate",
-                "tombstone",
-                "set_read_scope",
-                "list",
-                "get",
-                "list_read_scope",
-            ]
-            .as_slice(),
-        ),
-        (
-            "core_fact",
-            [
-                "citation_of_fact",
-                "citation_of_entity_head",
-                "facts_citing_object",
-                "tombstone",
-            ]
-            .as_slice(),
-        ),
-    ];
-    for (tool_name, expected_actions) in dispatcher_tools {
+    for &(tool_name, expected_actions) in DISPATCHER_TOOL_ACTIONS {
         let schema = &frozen
             .list_mcp_tools()
             .iter()
@@ -321,7 +324,14 @@ fn action_arg_specs_match_schema_derived_action_fields() {
         }
     }
 
-    for expected in ["core_goal", "core_wake", "core_personality", "core_fact"] {
+    for expected in [
+        "core_goal",
+        "core_wake",
+        "core_personality",
+        "core_fact",
+        "core_membership",
+        "core_share",
+    ] {
         assert!(
             dispatchers_seen.contains(expected),
             "expected dispatcher {expected} to carry ACTION_ARG_SPECS; saw {dispatchers_seen:?}",

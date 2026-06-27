@@ -853,6 +853,8 @@ pub fn all_core_actions() -> impl Iterator<Item = &'static CoreActionMeta> {
         .chain(core_tools::wake::CORE_WAKE_ACTIONS.iter())
         .chain(core_tools::personality::CORE_PERSONALITY_ACTIONS.iter())
         .chain(core_tools::fact::CORE_FACT_ACTIONS.iter())
+        .chain(core_tools::membership::CORE_MEMBERSHIP_ACTIONS.iter())
+        .chain(core_tools::share::CORE_SHARE_ACTIONS.iter())
 }
 
 #[must_use]
@@ -878,7 +880,7 @@ pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations>
             base.read_only(false).destructive(false).idempotent(false)
         }
 
-        "core_wake" | "core_personality" => {
+        "core_wake" | "core_personality" | "core_membership" | "core_share" => {
             base.read_only(false).destructive(true).idempotent(false)
         }
 
@@ -971,13 +973,21 @@ mod tests {
 
     #[test]
     fn core_actions_manifest_is_internally_consistent() {
-        let allowed_tools =
-            BTreeSet::from(["core_goal", "core_wake", "core_personality", "core_fact"]);
+        let allowed_tools = BTreeSet::from([
+            "core_goal",
+            "core_wake",
+            "core_personality",
+            "core_fact",
+            "core_membership",
+            "core_share",
+        ]);
         let expected_counts = BTreeMap::from([
             ("core_goal", 5_usize),
             ("core_wake", 5),
             ("core_personality", 6),
             ("core_fact", 4),
+            ("core_membership", 3),
+            ("core_share", 6),
         ]);
         let mut seen_scope_keys = BTreeSet::new();
         let mut counts = BTreeMap::<&'static str, usize>::new();
