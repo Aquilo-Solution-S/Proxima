@@ -1,11 +1,10 @@
 mod common;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::authz::{
-    AuthPath, AuthzContext, CapabilitySet, MemorySpaceGrants, RoleSet, ToolScope,
-};
+use proxima_core::authz::{AuthPath, AuthzContext, CapabilitySet, Identity, ToolScope};
 use proxima_core::mcp::core_tools::add_wake_entry::AddWakeEntryArgs;
 use proxima_core::mcp::core_tools::personality::{CorePersonalityArgs, CorePersonalityTool};
 use proxima_core::mcp::core_tools::remove_wake_entry::RemoveWakeEntryArgs;
@@ -19,24 +18,46 @@ use proxima_core::personality::{
 };
 use proxima_core::storage::Storage;
 use proxima_core::{
-    Engine, FlavorRegistry, Owner, PersonalityInstanceId, WakeEntryAuthoredBy, WakeEntryDraft,
+    AccessScope, Engine, FlavorRegistry, GrantResource, NewAccessGrant, Owner,
+    PersonalityInstanceId, Principal, Relation, UserId, WakeEntryAuthoredBy, WakeEntryDraft,
     WakeEntryTriggerKind,
 };
 use uuid::Uuid;
 
-fn non_admin_authz(owner: &Owner) -> AuthzContext {
-    let mut authz = AuthzContext::single_owner(owner, AuthPath::HostBearer);
-    authz.capabilities = CapabilitySet {
-        tool_scope: ToolScope::All,
-        roles: RoleSet {
-            graph_read: true,
-            graph_write: true,
-            source_ingest: false,
-            admin: false,
+async fn seed_space_grant(
+    pg: &proxima_storage_pg::PgStorage,
+    space_owner: &Principal,
+    relation: Relation,
+    subject: &Principal,
+) {
+    pg.insert_access_grant(&NewAccessGrant {
+        space_owner: space_owner.clone(),
+        resource: GrantResource::Space,
+        relation,
+        subject: subject.clone(),
+        subject_is_group: false,
+        granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
+    })
+    .await
+    .expect("seed grant");
+}
+
+async fn non_admin_authz(pg: &proxima_storage_pg::PgStorage, owner: &Owner) -> AuthzContext {
+    let editor_user = Principal::User(UserId::new(Uuid::now_v7()));
+    seed_space_grant(pg, owner, Relation::Editor, &editor_user).await;
+    AuthzContext {
+        identity: Identity {
+            principal: editor_user,
+            accessible_principals: HashSet::new(),
+            expires_at: None,
+            auth_epoch: 0,
         },
-        memory_spaces: MemorySpaceGrants::unrestricted(),
-    };
-    authz
+        capabilities: CapabilitySet {
+            tool_scope: ToolScope::All,
+            access: AccessScope::Granted,
+        },
+        auth_path: AuthPath::HostBearer,
+    }
 }
 
 fn ctx(owner: &Owner, pg: &proxima_storage_pg::PgStorage, authz: AuthzContext) -> McpToolCtx {
@@ -111,7 +132,7 @@ async fn wake_labels(
 }
 
 fn assert_admin_denied(err: &proxima_core::mcp::McpToolError) {
-    assert!(err.to_string().contains("requires admin role"));
+    assert!(err.to_string().contains("requires admin on this space"));
 }
 
 #[tokio::test]
@@ -138,7 +159,7 @@ async fn add_wake_entry_requires_admin_and_preserves_storage_on_denial()
     };
 
     let err = CoreWakeTool::call(
-        ctx(&owner, &pg, non_admin_authz(&owner)),
+        ctx(&owner, &pg, non_admin_authz(&pg, &owner).await),
         CoreWakeArgs::Add(args),
     )
     .await
@@ -199,7 +220,7 @@ async fn update_wake_entry_requires_admin_and_preserves_storage_on_denial()
         },
     };
     let err = CoreWakeTool::call(
-        ctx(&owner, &pg, non_admin_authz(&owner)),
+        ctx(&owner, &pg, non_admin_authz(&pg, &owner).await),
         CoreWakeArgs::Update(args),
     )
     .await
@@ -249,7 +270,7 @@ async fn remove_wake_entry_requires_admin_and_preserves_storage_on_denial()
         wake_entry: wid.to_string(),
     };
     let err = CoreWakeTool::call(
-        ctx(&owner, &pg, non_admin_authz(&owner)),
+        ctx(&owner, &pg, non_admin_authz(&pg, &owner).await),
         CoreWakeArgs::Remove(args),
     )
     .await
@@ -293,7 +314,7 @@ async fn set_read_scope_requires_admin_and_preserves_storage_on_denial()
         readable_personalities: vec![readable.into_inner().to_string()],
     };
     let err = CorePersonalityTool::call(
-        ctx(&owner, &pg, non_admin_authz(&owner)),
+        ctx(&owner, &pg, non_admin_authz(&pg, &owner).await),
         CorePersonalityArgs::SetReadScope(args),
     )
     .await

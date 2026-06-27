@@ -1,6 +1,7 @@
 use super::{Engine, MemoryPermit};
 use crate::MemoryId;
-use crate::authz::{AuthzContext, MemoryAction, Role};
+use crate::access::Relation;
+use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::owner::Owner;
 use crate::sidecar_tables;
@@ -33,7 +34,9 @@ impl Engine {
         owner: &Owner,
         seconds: u64,
     ) -> Result<(), ProtocolError> {
-        let permit = self.authorize_request(authz, owner, Role::Admin, MemoryAction::Admin)?;
+        let permit = self
+            .authorize_request(authz, owner, Relation::Admin)
+            .await?;
         self.set_fact_retention_authorized(&permit, owner, seconds)
             .await
     }
@@ -62,7 +65,9 @@ impl Engine {
         authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<Option<i64>, ProtocolError> {
-        let permit = self.authorize_request(authz, owner, Role::Admin, MemoryAction::Admin)?;
+        let permit = self
+            .authorize_request(authz, owner, Relation::Admin)
+            .await?;
         self.get_fact_retention_authorized(&permit, owner).await
     }
 
@@ -88,7 +93,9 @@ impl Engine {
         authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<bool, ProtocolError> {
-        let permit = self.authorize_request(authz, owner, Role::Admin, MemoryAction::Admin)?;
+        let permit = self
+            .authorize_request(authz, owner, Relation::Admin)
+            .await?;
         self.clear_fact_retention_authorized(&permit, owner).await
     }
 
@@ -115,7 +122,9 @@ impl Engine {
         authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<CleanupDueFactsOutcome, ProtocolError> {
-        let permit = self.authorize_request(authz, owner, Role::Admin, MemoryAction::Admin)?;
+        let permit = self
+            .authorize_request(authz, owner, Relation::Admin)
+            .await?;
         self.cleanup_due_facts_authorized(&permit, owner).await
     }
 
@@ -158,8 +167,9 @@ impl Engine {
         owner: &Owner,
         fact_id: MemoryId,
     ) -> Result<TombstoneFactOutcome, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, owner, Role::SourceIngest, MemoryAction::Write)?;
+        let permit = self
+            .authorize_request(authz, owner, Relation::Ingest)
+            .await?;
         let fact_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Fact);
         let edge_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Edge);
         let citation_mapping_sidecar_tables =

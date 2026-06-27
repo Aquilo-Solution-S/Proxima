@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use super::Engine;
 use crate::SchemaVersion;
-use crate::authz::{AuthzContext, MemoryAction, Role};
+use crate::access::Relation;
+use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::llm::EmbeddingClient;
 use crate::storage::StorageError;
@@ -43,7 +44,9 @@ impl Engine {
         authz: &AuthzContext,
         draft: EventDraft,
     ) -> Result<EventIngestOutcome, ProtocolError> {
-        let authorized = self.authorize_event_ingest(authz, Role::SourceIngest, draft)?;
+        let authorized = self
+            .authorize_event_ingest(authz, Relation::Ingest, draft)
+            .await?;
         let embedding_client = self.embed_client();
         let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
         let outcome = self
@@ -56,22 +59,24 @@ impl Engine {
 
     /// Authorize + schema-validate + owner-stamp an event ingest,
     /// returning a witness required by the sidecar-ingest primitive.
-    /// Does NOT write. `role` is the role the caller's operation
+    /// Does NOT write. `relation` is the relation the caller's operation
     /// requires.
     ///
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `draft.principal`,
-    /// lacks `role`, or lacks a `memory.write` grant on the owner space;
+    /// lacks `relation`;
     /// `UnknownSchema` when the Fact schema or provided citation schemas are
     /// not registered.
-    pub fn authorize_event_ingest(
+    pub async fn authorize_event_ingest(
         &self,
         authz: &AuthzContext,
-        role: Role,
+        relation: Relation,
         mut draft: EventDraft,
     ) -> Result<AuthorizedEventIngest, ProtocolError> {
-        let permit = self.authorize_request(authz, &draft.principal, role, MemoryAction::Write)?;
+        let permit = self
+            .authorize_request(authz, &draft.principal, relation)
+            .await?;
         draft.principal = permit.owner().clone();
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
@@ -100,20 +105,22 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `draft.principal`,
-    /// lacks `role`, lacks a `memory.write` grant on the owner space, or the
+    /// lacks `relation`, or the
     /// citation mapping targets a different cited-object
     /// schema; `UnknownSchema` when any schema is absent for the required kind;
     /// `InvalidArgument` when JSON payload validation fails; or `Internal` when
     /// a registered citation schema has no sidecar inserter.
-    pub fn authorize_fact_with_citation(
+    pub async fn authorize_fact_with_citation(
         &self,
         authz: &AuthzContext,
-        role: Role,
+        relation: Relation,
         mut draft: EventDraft,
         cited_object: InlineCitedObjectDraft,
         mapping: InlineCitationMappingDraft,
     ) -> Result<AuthorizedFactWithCitation, ProtocolError> {
-        let permit = self.authorize_request(authz, &draft.principal, role, MemoryAction::Write)?;
+        let permit = self
+            .authorize_request(authz, &draft.principal, relation)
+            .await?;
         draft.principal = permit.owner().clone();
 
         // Validate the Fact only by schema-existence, matching
@@ -175,22 +182,22 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `principal`,
-    /// lacks `role`, lacks a `memory.write` grant on the owner space, or the
+    /// lacks `relation`, or the
     /// citation mapping targets a different cited-object
     /// schema; `UnknownSchema` when a citation schema is absent for the
     /// required kind; `InvalidArgument` when JSON payload validation fails; or
     /// `Internal` when a registered cited-object schema has no sidecar inserter.
-    pub fn authorize_citation_attachment(
+    pub async fn authorize_citation_attachment(
         &self,
         authz: &AuthzContext,
-        role: Role,
+        relation: Relation,
         principal: Principal,
         memory_id: MemoryId,
         cited_object: InlineCitedObjectDraft,
         mapping: InlineCitationMappingDraft,
     ) -> Result<AuthorizedCitationAttachment, ProtocolError> {
         let requested = principal;
-        let permit = self.authorize_request(authz, &requested, role, MemoryAction::Write)?;
+        let permit = self.authorize_request(authz, &requested, relation).await?;
         let owner = permit.owner().clone();
         let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
         Ok(AuthorizedCitationAttachment::new(
@@ -487,8 +494,9 @@ impl Engine {
         mut input: McpCallLogInput,
     ) -> Result<McpCallLogOutcome, ProtocolError> {
         let owner = authz.scoped_owner(input.owner.clone());
-        let permit =
-            self.authorize_request(authz, &owner, Role::SourceIngest, MemoryAction::Write)?;
+        let permit = self
+            .authorize_request(authz, &owner, Relation::Ingest)
+            .await?;
         input.owner = permit.owner().clone();
         self.storage
             .persist_mcp_call_atomic(&input)
@@ -514,8 +522,9 @@ impl Engine {
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, ProtocolError> {
         let requested = principal;
-        let permit =
-            self.authorize_request(authz, &requested, Role::SourceIngest, MemoryAction::Write)?;
+        let permit = self
+            .authorize_request(authz, &requested, Relation::Ingest)
+            .await?;
         let outcome = self
             .storage
             .close_batch(permit.owner(), source_batch_id)
@@ -595,8 +604,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn authorize_event_ingest_stamps_draft_owner_from_permit() {
+    #[tokio::test]
+    async fn authorize_event_ingest_stamps_draft_owner_from_permit() {
         let owner = test_owner();
         let mut registry = FlavorRegistry::new();
         registry.add_fact_schema::<TestFact>();
@@ -613,14 +622,15 @@ mod tests {
         );
 
         let authorized = engine
-            .authorize_event_ingest(&authz, Role::SourceIngest, draft)
+            .authorize_event_ingest(&authz, Relation::Ingest, draft)
+            .await
             .expect("single-owner System context should authorize ingest");
 
         assert_eq!(&authorized.draft().principal, authorized.permit().owner());
     }
 
-    #[test]
-    fn authorize_event_ingest_denies_denied_context() {
+    #[tokio::test]
+    async fn authorize_event_ingest_denies_denied_context() {
         let owner = test_owner();
         let mut registry = FlavorRegistry::new();
         registry.add_fact_schema::<TestFact>();
@@ -636,14 +646,15 @@ mod tests {
         );
 
         let err = engine
-            .authorize_event_ingest(&AuthzContext::denied(&owner), Role::GraphWrite, draft)
+            .authorize_event_ingest(&AuthzContext::denied(&owner), Relation::Editor, draft)
+            .await
             .expect_err("denied context must fail");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
     }
 
-    #[test]
-    fn authorize_fact_with_citation_denies_denied_context() {
+    #[tokio::test]
+    async fn authorize_fact_with_citation_denies_denied_context() {
         let owner = test_owner();
         let mut registry = FlavorRegistry::new();
         registry.add_fact_schema::<TestFact>();
@@ -671,11 +682,12 @@ mod tests {
         let err = engine
             .authorize_fact_with_citation(
                 &AuthzContext::denied(&owner),
-                Role::GraphWrite,
+                Relation::Editor,
                 draft,
                 cited_object,
                 mapping,
             )
+            .await
             .expect_err("denied context must fail before schema validation");
 
         assert_eq!(err.code, ErrorCode::Forbidden);

@@ -5,14 +5,12 @@ use std::sync::Arc;
 
 use crate::common::{create_db, db_url, drop_db};
 
-use proxima_core::authz::{
-    AuthPath, CapabilitySet, Identity, MemoryActionSet, MemorySpaceGrant, MemorySpaceGrants,
-    RoleSet, ToolScope,
-};
+use proxima_core::authz::{AuthPath, CapabilitySet, Identity, ToolScope};
 use proxima_core::error::ErrorCode;
 use proxima_core::verbs::goal_write::{GoalCreateRequest, GoalEvidenceRef, IdempotencyKey};
 use proxima_core::{
-    AuthzContext, Engine, GoalPayload, MemoryId, Owner, PayloadKeyBuilder, Principal, UserId,
+    AccessScope, AuthzContext, Engine, GoalPayload, GrantResource, MemoryId, NewAccessGrant, Owner,
+    PayloadKeyBuilder, PersonalityInstanceId, Principal, Relation, Storage, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -106,30 +104,39 @@ fn assert_idempotency_conflict(err: &proxima_core::error::ProtocolError) {
     assert_eq!(err.code, ErrorCode::IdempotencyConflict);
 }
 
-fn explicit_without_memory_write(owner: &Owner) -> AuthzContext {
+async fn seed_space_grant(
+    pg: &PgStorage,
+    space_owner: &Principal,
+    relation: Relation,
+    subject: &Principal,
+) {
+    pg.insert_access_grant(&NewAccessGrant {
+        space_owner: space_owner.clone(),
+        resource: GrantResource::Space,
+        relation,
+        subject: subject.clone(),
+        subject_is_group: false,
+        granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
+    })
+    .await
+    .expect("seed grant");
+}
+
+async fn viewer_without_memory_write(pg: &PgStorage, owner: &Owner) -> AuthzContext {
+    let viewer = Principal::User(UserId::new(Uuid::now_v7()));
+    seed_space_grant(pg, owner, Relation::Viewer, &viewer).await;
     AuthzContext {
         identity: Identity {
-            principal: owner.clone(),
-            accessible_principals: HashSet::from([owner.clone()]),
+            principal: viewer,
+            accessible_principals: HashSet::default(),
             expires_at: None,
             auth_epoch: 0,
         },
         capabilities: CapabilitySet {
             tool_scope: ToolScope::All,
-            roles: RoleSet {
-                graph_read: true,
-                graph_write: true,
-                source_ingest: true,
-                admin: false,
-            },
-            memory_spaces: MemorySpaceGrants::explicit(vec![MemorySpaceGrant {
-                key: "personal".into(),
-                label: "Personal".into(),
-                owner: owner.clone(),
-                actions: MemoryActionSet::read_only(),
-            }]),
+            access: AccessScope::Granted,
         },
-        auth_path: AuthPath::System,
+        auth_path: AuthPath::HostBearer,
     }
 }
 
@@ -377,10 +384,9 @@ async fn engine_goalwrite_rejects_unauthorized_callers_before_write() {
             .expect_err("cross-owner principal is rejected");
         assert_eq!(cross_owner.code, ErrorCode::Forbidden);
 
-        // Owner-space RBAC: graph_write alone is not enough once explicit
-        // memory spaces are installed. GoalWrite must also require
-        // memory.write before reaching storage.
-        let no_memory_write = explicit_without_memory_write(&owner);
+        // Owner-space authorization: a Viewer grant is not enough for
+        // GoalWrite, which requires Editor before reaching storage.
+        let no_memory_write = viewer_without_memory_write(&pg, &owner).await;
         let no_memory_write_err = engine
             .create_goal(
                 &no_memory_write,

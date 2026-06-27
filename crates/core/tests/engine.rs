@@ -15,8 +15,7 @@ use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, SchemaRequest};
 use proxima_core::{
-    AuthPath, AuthzContext, CapabilitySet, Identity, McpCallLogInput, MemoryActionSet,
-    MemorySpaceGrant, MemorySpaceGrants, RoleSet, ToolScope,
+    AccessScope, AuthPath, AuthzContext, CapabilitySet, Identity, McpCallLogInput, ToolScope,
 };
 use test_fixtures::ConstantEmbedding;
 use uuid::Uuid;
@@ -31,6 +30,26 @@ fn fresh_owner() -> (Principal, Owner) {
 fn boot_engine(principal: Principal, owner: Owner) -> Engine {
     let _ = (principal, owner);
     Engine::new(FlavorRegistryFrozen::new())
+}
+
+fn fresh_caller() -> Principal {
+    Principal::User(UserId::new(Uuid::now_v7()))
+}
+
+fn granted_no_access_authz(auth_path: AuthPath) -> AuthzContext {
+    AuthzContext {
+        identity: Identity {
+            principal: fresh_caller(),
+            accessible_principals: std::collections::HashSet::new(),
+            expires_at: None,
+            auth_epoch: 0,
+        },
+        capabilities: CapabilitySet {
+            tool_scope: ToolScope::All,
+            access: AccessScope::Granted,
+        },
+        auth_path,
+    }
 }
 
 #[derive(Debug)]
@@ -148,13 +167,7 @@ async fn tombstone_personality_rejects_noop_storage_write() {
 async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner.clone());
-    let mut authz = AuthzContext::single_owner(&owner, AuthPath::Wake);
-    authz.capabilities.roles = RoleSet {
-        graph_read: true,
-        graph_write: true,
-        source_ingest: false,
-        admin: false,
-    };
+    let authz = granted_no_access_authz(AuthPath::Wake);
 
     let ingest_err = engine
         .close_batch(&authz, owner.clone(), SourceBatchId::new(Uuid::now_v7()))
@@ -163,14 +176,18 @@ async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
     assert!(
         ingest_err
             .to_string()
-            .contains("requires source_ingest role")
+            .contains("requires ingest on this space")
     );
 
     let admin_err = engine
         .list_personality_instances(&authz, &owner, false)
         .await
         .expect_err("wake context must not touch config verbs");
-    assert!(admin_err.to_string().contains("requires admin role"));
+    assert!(
+        admin_err
+            .to_string()
+            .contains("requires admin on this space")
+    );
 }
 
 #[tokio::test]
@@ -190,34 +207,7 @@ async fn cross_owner_context_is_forbidden_on_graph_read() {
         )
         .await
         .expect_err("cross-owner access must be forbidden");
-    assert!(
-        err.to_string()
-            .contains("principal cannot access requested principal")
-    );
-}
-
-fn explicit_memory_authz(owner: &Owner, actions: MemoryActionSet) -> AuthzContext {
-    let mut accessible_principals = std::collections::HashSet::new();
-    accessible_principals.insert(owner.clone());
-    AuthzContext {
-        identity: Identity {
-            principal: owner.clone(),
-            accessible_principals,
-            expires_at: None,
-            auth_epoch: 0,
-        },
-        capabilities: CapabilitySet {
-            tool_scope: ToolScope::All,
-            roles: RoleSet::all(),
-            memory_spaces: MemorySpaceGrants::explicit(vec![MemorySpaceGrant {
-                key: "current".into(),
-                label: "Current".into(),
-                owner: owner.clone(),
-                actions,
-            }]),
-        },
-        auth_path: AuthPath::HostBearer,
-    }
+    assert!(err.to_string().contains("requires viewer on this space"));
 }
 
 fn sample_mcp_input(owner: &Owner) -> McpCallLogInput {
@@ -238,23 +228,23 @@ fn sample_mcp_input(owner: &Owner) -> McpCallLogInput {
 }
 
 #[tokio::test]
-async fn persist_mcp_call_rejects_context_without_write_grant() {
+async fn persist_mcp_call_rejects_context_without_ingest_grant() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner.clone());
-    let authz = explicit_memory_authz(&owner, MemoryActionSet::read_only());
+    let authz = granted_no_access_authz(AuthPath::HostBearer);
 
     let err = engine
         .persist_mcp_call(&authz, sample_mcp_input(&owner))
         .await
-        .expect_err("write grant required");
-    assert!(err.to_string().contains("requires memory.write"));
+        .expect_err("ingest grant required");
+    assert!(err.to_string().contains("requires ingest on this space"));
 }
 
 #[tokio::test]
 async fn read_mcp_call_history_rejects_context_without_read_grant() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner.clone());
-    let authz = explicit_memory_authz(&owner, MemoryActionSet::none());
+    let authz = granted_no_access_authz(AuthPath::HostBearer);
 
     let err = engine
         .read_mcp_call_history(
@@ -267,7 +257,7 @@ async fn read_mcp_call_history_rejects_context_without_read_grant() {
         )
         .await
         .expect_err("read grant required");
-    assert!(err.to_string().contains("requires memory.read"));
+    assert!(err.to_string().contains("requires viewer on this space"));
 }
 
 #[tokio::test]
@@ -290,9 +280,7 @@ async fn persist_mcp_call_rejects_owner_the_context_cannot_access() {
 async fn persist_mcp_call_rejects_context_without_graph_write_role() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner.clone());
-    // Right owner, but no memory-write backing graph_write role.
-    let mut authz = AuthzContext::single_owner(&owner, AuthPath::System);
-    authz.capabilities.roles = RoleSet::none();
+    let authz = granted_no_access_authz(AuthPath::HostBearer);
 
     let err = engine
         .persist_mcp_call(&authz, sample_mcp_input(&owner))
@@ -320,8 +308,7 @@ async fn persist_mcp_call_authorized_context_clears_the_gate() {
 async fn read_mcp_call_history_rejects_context_without_graph_read_role() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner.clone());
-    let mut authz = AuthzContext::single_owner(&owner, AuthPath::System);
-    authz.capabilities.roles = RoleSet::none();
+    let authz = granted_no_access_authz(AuthPath::HostBearer);
 
     let err = engine
         .read_mcp_call_history(
@@ -395,8 +382,7 @@ async fn fact_retention_rejects_owner_the_context_cannot_access() {
 async fn fact_retention_rejects_context_without_admin_role() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner.clone());
-    let mut authz = AuthzContext::single_owner(&owner, AuthPath::System);
-    authz.capabilities.roles = RoleSet::none();
+    let authz = granted_no_access_authz(AuthPath::HostBearer);
 
     let err = engine
         .set_fact_retention(&authz, &owner, 86_400)

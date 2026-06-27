@@ -19,7 +19,7 @@ use proxima_core::verbs::event_ingest::{
 };
 use proxima_core::{
     AuthorizedEventIngest, AuthorizedFactWithCitation, AuthzContext, Engine, EntityKind,
-    FactPayload, MemoryId, Owner, OwnerPrincipalKind, Role, SourceBatchId, StorageError,
+    FactPayload, MemoryId, Owner, OwnerPrincipalKind, Relation, SourceBatchId, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -235,7 +235,7 @@ pub async fn ingest_fact_in_tx<P, F>(
     tx: &mut Transaction<'_, Postgres>,
     engine: &Engine,
     authz: &AuthzContext,
-    role: Role,
+    relation: Relation,
     payload: &P,
     sidecar: F,
 ) -> Result<EventIngestOutcome, StorageError>
@@ -256,7 +256,8 @@ where
         now,
     );
     let authorized = engine
-        .authorize_event_ingest(authz, role, draft)
+        .authorize_event_ingest(authz, relation, draft)
+        .await
         .map_err(internal)?;
     let embedding_client = engine.embed_client();
     let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
@@ -274,7 +275,7 @@ pub async fn ingest_fact<P, F>(
     pool: &PgPool,
     engine: &Engine,
     authz: &AuthzContext,
-    role: Role,
+    relation: Relation,
     payload: &P,
     sidecar: F,
 ) -> Result<EventIngestOutcome, StorageError>
@@ -286,7 +287,7 @@ where
     ) -> EventIngestSidecarFuture<'t>,
 {
     let mut tx = pool.begin().await.map_err(internal)?;
-    let outcome = ingest_fact_in_tx(&mut tx, engine, authz, role, payload, sidecar).await?;
+    let outcome = ingest_fact_in_tx(&mut tx, engine, authz, relation, payload, sidecar).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }

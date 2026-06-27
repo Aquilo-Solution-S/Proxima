@@ -1,4 +1,5 @@
-use crate::authz::{AuthzContext, MemoryAction, Role};
+use crate::access::Relation;
+use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::personality::{
     ChangeEventForWake, ListReadScopeRequest, ListReadScopeResponse, MemorySnapshot,
@@ -98,19 +99,14 @@ impl Engine {
         authz: &AuthzContext,
         req: &SearchReadRequest,
     ) -> Result<SearchReadResponse, ProtocolError> {
-        let search_permit = self.authorize_request(
-            authz,
-            &req.search.principal,
-            Role::GraphRead,
-            MemoryAction::Search,
-        )?;
+        let search_permit = self
+            .authorize_request(authz, &req.search.principal, Relation::Viewer)
+            .await?;
         let read_permit = if req.include_body || req.include_neighbor_edges {
-            Some(self.authorize_request(
-                authz,
-                &req.search.principal,
-                Role::GraphRead,
-                MemoryAction::Read,
-            )?)
+            Some(
+                self.authorize_request(authz, &req.search.principal, Relation::Viewer)
+                    .await?,
+            )
         } else {
             None
         };
@@ -180,8 +176,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &GetMemoryReadRequest,
     ) -> Result<GetMemoryReadResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Viewer)
+            .await?;
         let sidecars = self.sidecar_specs();
         let memory = self
             .storage
@@ -218,8 +215,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &GetGraphReadRequest,
     ) -> Result<GetGraphReadResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Admin)
+            .await?;
         let pending_embedding_jobs = self
             .storage
             .count_pending_embedding_jobs(permit.owner())
@@ -253,8 +251,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &ListEventsReadRequest,
     ) -> Result<ListEventsReadResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Viewer)
+            .await?;
         let events = self
             .storage
             .list_change_events_after(permit.owner(), req.after, req.limit)
@@ -296,8 +295,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &FactCitationReadRequest,
     ) -> Result<Option<FactCitationReadback>, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Viewer)
+            .await?;
         self.storage
             .citation_of_fact(permit.owner(), req.fact_memory_id)
             .await
@@ -315,8 +315,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &EntityHeadCitationReadRequest,
     ) -> Result<Option<FactCitationReadback>, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Viewer)
+            .await?;
         self.storage
             .citation_of_entity_head(permit.owner(), req.fact_entity_id)
             .await
@@ -334,8 +335,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &FactsCitingObjectReadRequest,
     ) -> Result<Vec<MemorySnapshot>, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Viewer)
+            .await?;
         let sidecars = self.sidecar_specs();
         self.storage
             .facts_citing_object(permit.owner(), req.cited_object_id, &sidecars)
@@ -354,8 +356,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &ListReadScopeRequest,
     ) -> Result<ListReadScopeResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Admin)
+            .await?;
         let effective = ListReadScopeRequest {
             principal: permit.owner().clone(),
             reader_personality_instance_id: req.reader_personality_instance_id,
@@ -393,15 +396,13 @@ fn storage_error(context: &str, err: &StorageError) -> ProtocolError {
 mod tests {
     use std::collections::HashSet;
 
-    use crate::authz::{
-        AuthPath, AuthzContext, CapabilitySet, Identity, MemoryActionSet, MemorySpaceGrant,
-        MemorySpaceGrants, RoleSet, ToolScope,
-    };
+    use crate::access::AccessScope;
+    use crate::authz::{AuthPath, AuthzContext, CapabilitySet, Identity, ToolScope};
     use crate::error::ErrorCode;
     use crate::verbs::query::{
         MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
     };
-    use crate::{Engine, FactEntityId, FlavorRegistry, MemoryId, Principal, UserId};
+    use crate::{Engine, FactEntityId, FlavorRegistry, GroupId, MemoryId, Principal, UserId};
 
     use super::{
         EntityHeadCitationReadRequest, FactCitationReadRequest, FactsCitingObjectReadRequest,
@@ -414,6 +415,10 @@ mod tests {
 
     fn owner() -> Principal {
         Principal::User(UserId::new(uuid::Uuid::now_v7()))
+    }
+
+    fn group_owner() -> Principal {
+        Principal::Group(GroupId::new(uuid::Uuid::now_v7()))
     }
 
     fn search_req(owner: &Principal) -> SearchReadRequest {
@@ -444,7 +449,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::Forbidden);
     }
 
-    fn search_only_authz(owner: &Principal) -> AuthzContext {
+    fn granted_authz(owner: &Principal) -> AuthzContext {
         let mut accessible_principals = HashSet::new();
         accessible_principals.insert(owner.clone());
         AuthzContext {
@@ -456,24 +461,7 @@ mod tests {
             },
             capabilities: CapabilitySet {
                 tool_scope: ToolScope::All,
-                roles: RoleSet {
-                    graph_read: true,
-                    graph_write: false,
-                    source_ingest: false,
-                    admin: false,
-                },
-                memory_spaces: MemorySpaceGrants::explicit(vec![MemorySpaceGrant {
-                    key: "search".into(),
-                    label: "Search".into(),
-                    owner: owner.clone(),
-                    actions: MemoryActionSet {
-                        search: true,
-                        read: false,
-                        write: false,
-                        publish: false,
-                        admin: false,
-                    },
-                }]),
+                access: AccessScope::Granted,
             },
             auth_path: AuthPath::HostBearer,
         }
@@ -490,14 +478,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_body_or_neighbor_hydration_requires_read_permit() {
-        let owner = owner();
-        let mut req = search_req(&owner);
+    async fn search_body_or_neighbor_hydration_requires_viewer_relation() {
+        let caller = owner();
+        let space = group_owner();
+        let mut req = search_req(&space);
         req.include_neighbor_edges = true;
         let err = engine()
-            .search(&search_only_authz(&owner), &req)
+            .search(&granted_authz(&caller), &req)
             .await
-            .expect_err("neighbor edges require read");
+            .expect_err("neighbor edges require viewer");
         assert_forbidden(&err);
     }
 

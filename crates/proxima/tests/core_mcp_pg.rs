@@ -2,16 +2,18 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use proxima::{
-    AppInfo, AuthPath, AuthzContext, CapabilitySet, CoreMcpError, CoreMcpErrorKind, CoreMcpTools,
-    FlavorApp, FlavorBundle, Identity, NamedMigrator, PgSidecarRegistry, Proxima, RoleSet,
+    AccessScope, AppInfo, AuthPath, AuthzContext, CapabilitySet, CoreMcpError, CoreMcpErrorKind,
+    CoreMcpTools, FlavorApp, FlavorBundle, Identity, NamedMigrator, PgSidecarRegistry, Proxima,
     StorageError, ToolScope, company_owner,
 };
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
-    CitationMappingPayload, CitedObjectPayload, FlavorRegistry, GroupId, MemoryActionSet, MemoryId,
-    MemorySpaceGrant, MemorySpaceGrants, Owner, Principal, SchemaId, UserId, all_core_resources,
+    CitationMappingPayload, CitedObjectPayload, FlavorRegistry, GrantResource, GroupId, MemoryId,
+    NewAccessGrant, Owner, PersonalityInstanceId, Principal, Relation, SchemaId, Storage, UserId,
+    all_core_resources,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgSidecarFuture,
 };
@@ -162,23 +164,14 @@ fn host_authz(owner: &Owner, tool_scope: ToolScope) -> AuthzContext {
         },
         capabilities: CapabilitySet {
             tool_scope,
-            roles: RoleSet {
-                graph_read: true,
-                graph_write: true,
-                source_ingest: true,
-                admin: false,
-            },
-            memory_spaces: MemorySpaceGrants::unrestricted(),
+            access: AccessScope::Unrestricted,
         },
         auth_path: AuthPath::HostBearer,
     }
 }
 
-fn explicit_space_authz(principal: Principal, grants: Vec<MemorySpaceGrant>) -> AuthzContext {
-    let accessible_principals = grants
-        .iter()
-        .map(|grant| grant.owner.clone())
-        .collect::<HashSet<_>>();
+fn space_authz(principal: Principal, owners: Vec<Owner>, access: AccessScope) -> AuthzContext {
+    let accessible_principals = owners.into_iter().collect::<HashSet<_>>();
     AuthzContext {
         identity: Identity {
             principal,
@@ -188,10 +181,37 @@ fn explicit_space_authz(principal: Principal, grants: Vec<MemorySpaceGrant>) -> 
         },
         capabilities: CapabilitySet {
             tool_scope: ToolScope::All,
-            roles: RoleSet::all(),
-            memory_spaces: MemorySpaceGrants::explicit(grants),
+            access,
         },
         auth_path: AuthPath::HostBearer,
+    }
+}
+
+async fn seed_space_grant(
+    pg: &PgStorage,
+    space_owner: &Principal,
+    relation: Relation,
+    subject: &Principal,
+) {
+    pg.insert_access_grant(&NewAccessGrant {
+        space_owner: space_owner.clone(),
+        resource: GrantResource::Space,
+        relation,
+        subject: subject.clone(),
+        subject_is_group: false,
+        granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
+    })
+    .await
+    .expect("seed grant");
+}
+
+fn space_key(current: &Owner, owner: &Owner) -> String {
+    if owner == current {
+        return "current".into();
+    }
+    match owner {
+        Principal::User(user) => format!("user:{}", user.into_inner()),
+        Principal::Group(group) => format!("group:{}", group.into_inner()),
     }
 }
 
@@ -228,27 +248,18 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
         let personal = Principal::User(UserId::new(Uuid::now_v7()));
         let shared = Principal::Group(GroupId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(db_url)
+            .database_url(db_url.clone())
             .owner(personal.clone())
             .build()
             .await?;
         let tools = built.core_mcp_tools();
-        let authz = explicit_space_authz(
+        let pg = PgStorage::connect(&db_url).await?;
+        seed_space_grant(&pg, &shared, Relation::Viewer, &personal).await;
+        let shared_space = space_key(&personal, &shared);
+        let authz = space_authz(
             personal.clone(),
-            vec![
-                MemorySpaceGrant {
-                    key: "personal".into(),
-                    label: "Personal".into(),
-                    owner: personal.clone(),
-                    actions: MemoryActionSet::read_write_publish_admin(),
-                },
-                MemorySpaceGrant {
-                    key: "shared".into(),
-                    label: "Shared".into(),
-                    owner: shared.clone(),
-                    actions: MemoryActionSet::read_only(),
-                },
-            ],
+            vec![personal.clone(), shared.clone()],
+            AccessScope::Granted,
         );
 
         let spaces = call_test_model_tool(
@@ -259,15 +270,15 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
             serde_json::json!({}),
         )
         .await?;
-        assert_eq!(spaces["spaces"][0]["key"], "personal");
-        assert_eq!(spaces["spaces"][1]["key"], "shared");
+        assert_eq!(spaces["spaces"][0]["key"], "current");
+        assert_eq!(spaces["spaces"][1]["key"], shared_space);
 
         call_test_model_tool(
             &tools,
             authz.clone(),
             personal.clone(),
             "core_remember",
-            serde_json::json!({"space":"personal","title":"private","body":"private body","tags":[]}),
+            serde_json::json!({"space":"current","title":"private","body":"private body","tags":[]}),
         )
         .await?;
 
@@ -276,11 +287,12 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
             authz,
             personal.clone(),
             "core_remember",
-            serde_json::json!({"space":"shared","title":"leak","body":"should deny","tags":[]}),
+            serde_json::json!({"space":shared_space,"title":"leak","body":"should deny","tags":[]}),
         )
         .await;
         assert!(denied.is_err(), "shared write must be denied");
 
+        drop(pg);
         built.shutdown();
         Ok(())
     }
@@ -305,22 +317,11 @@ async fn shared_space_include_body_uses_shared_owner() {
             .build()
             .await?;
         let tools = built.core_mcp_tools();
-        let authz = explicit_space_authz(
+        let shared_space = space_key(&personal, &shared);
+        let authz = space_authz(
             personal.clone(),
-            vec![
-                MemorySpaceGrant {
-                    key: "personal".into(),
-                    label: "Personal".into(),
-                    owner: personal.clone(),
-                    actions: MemoryActionSet::read_write_publish_admin(),
-                },
-                MemorySpaceGrant {
-                    key: "shared".into(),
-                    label: "Shared".into(),
-                    owner: shared.clone(),
-                    actions: MemoryActionSet::read_write_publish_admin(),
-                },
-            ],
+            vec![personal.clone(), shared.clone()],
+            AccessScope::Unrestricted,
         );
 
         let remembered = call_test_model_tool(
@@ -328,7 +329,7 @@ async fn shared_space_include_body_uses_shared_owner() {
             authz.clone(),
             personal.clone(),
             "core_remember",
-            serde_json::json!({"space":"shared","title":"shared note","body":"shared body unique needle","tags":["shared"]}),
+            serde_json::json!({"space":shared_space.clone(),"title":"shared note","body":"shared body unique needle","tags":["shared"]}),
         )
         .await?;
         let remembered_handle = remembered["handle"].as_str().expect("handle");
@@ -342,14 +343,14 @@ async fn shared_space_include_body_uses_shared_owner() {
                 "query": "unique needle",
                 "mode": "lexical",
                 "kind": "Fact",
-                "spaces": ["shared"],
+                "spaces": [shared_space.clone()],
                 "include_body": true,
                 "limit": 5
             }),
         )
         .await?;
         assert_eq!(search["memories"][0]["memory"], remembered_handle);
-        assert_eq!(search["memories"][0]["space"], "shared");
+        assert_eq!(search["memories"][0]["space"], shared_space);
         assert!(search["memories"][0]["body"].as_str().unwrap().contains("shared body"));
 
         built.shutdown();
@@ -376,22 +377,11 @@ async fn cross_space_derive_is_rejected_with_single_space_message() {
             .build()
             .await?;
         let tools = built.core_mcp_tools();
-        let authz = explicit_space_authz(
+        let shared_space = space_key(&personal, &shared);
+        let authz = space_authz(
             personal.clone(),
-            vec![
-                MemorySpaceGrant {
-                    key: "personal".into(),
-                    label: "Personal".into(),
-                    owner: personal.clone(),
-                    actions: MemoryActionSet::read_write_publish_admin(),
-                },
-                MemorySpaceGrant {
-                    key: "shared".into(),
-                    label: "Shared".into(),
-                    owner: shared.clone(),
-                    actions: MemoryActionSet::read_write_publish_admin(),
-                },
-            ],
+            vec![personal.clone(), shared.clone()],
+            AccessScope::Unrestricted,
         );
 
         let personal_fact = call_test_model_tool(
@@ -399,7 +389,7 @@ async fn cross_space_derive_is_rejected_with_single_space_message() {
             authz.clone(),
             personal.clone(),
             "core_remember",
-            serde_json::json!({"space":"personal","title":"personal fact","body":"personal source","tags":[]}),
+            serde_json::json!({"space":"current","title":"personal fact","body":"personal source","tags":[]}),
         )
         .await?;
         let shared_fact = call_test_model_tool(
@@ -407,7 +397,7 @@ async fn cross_space_derive_is_rejected_with_single_space_message() {
             authz.clone(),
             personal.clone(),
             "core_remember",
-            serde_json::json!({"space":"shared","title":"shared fact","body":"shared source","tags":[]}),
+            serde_json::json!({"space":shared_space,"title":"shared fact","body":"shared source","tags":[]}),
         )
         .await?;
 
@@ -417,7 +407,7 @@ async fn cross_space_derive_is_rejected_with_single_space_message() {
             personal.clone(),
             "core_derive",
             serde_json::json!({
-                "space": "personal",
+                "space": "current",
                 "kind": "Abstraction",
                 "title": "cross-space pattern",
                 "body": "should be rejected",
@@ -458,22 +448,11 @@ async fn publish_agent_note_copies_to_target_owner_without_cross_owner_edge() {
             .build()
             .await?;
         let tools = built.core_mcp_tools();
-        let authz = explicit_space_authz(
+        let shared_space = space_key(&personal, &shared);
+        let authz = space_authz(
             personal.clone(),
-            vec![
-                MemorySpaceGrant {
-                    key: "personal".into(),
-                    label: "Personal".into(),
-                    owner: personal.clone(),
-                    actions: MemoryActionSet::read_write_publish_admin(),
-                },
-                MemorySpaceGrant {
-                    key: "shared".into(),
-                    label: "Shared".into(),
-                    owner: shared.clone(),
-                    actions: MemoryActionSet::read_write_publish_admin(),
-                },
-            ],
+            vec![personal.clone(), shared.clone()],
+            AccessScope::Unrestricted,
         );
 
         let remembered = call_test_model_tool(
@@ -481,7 +460,7 @@ async fn publish_agent_note_copies_to_target_owner_without_cross_owner_edge() {
             authz.clone(),
             personal.clone(),
             "core_remember",
-            serde_json::json!({"space":"personal","title":"private note","body":"publish unique needle","tags":["private"]}),
+            serde_json::json!({"space":"current","title":"private note","body":"publish unique needle","tags":["private"]}),
         )
         .await?;
         let source = remembered["handle"].as_str().expect("source handle");
@@ -492,8 +471,8 @@ async fn publish_agent_note_copies_to_target_owner_without_cross_owner_edge() {
             "core_publish_memory",
             serde_json::json!({
                 "memory": source,
-                "from_space": "personal",
-                "to_space": "shared",
+                "from_space": "current",
+                "to_space": shared_space.clone(),
                 "confirm": true
             }),
         )
@@ -506,22 +485,22 @@ async fn publish_agent_note_copies_to_target_owner_without_cross_owner_edge() {
             authz.clone(),
             personal.clone(),
             "core_search_memories",
-            serde_json::json!({"spaces":["personal"],"query":"publish unique needle","mode":"lexical","kind":"Fact","include_body":true}),
+            serde_json::json!({"spaces":["current"],"query":"publish unique needle","mode":"lexical","kind":"Fact","include_body":true}),
         )
         .await?;
         assert_eq!(personal_search["memories"][0]["memory"], source);
-        assert_eq!(personal_search["memories"][0]["space"], "personal");
+        assert_eq!(personal_search["memories"][0]["space"], "current");
 
         let shared_search = call_test_model_tool(
             &tools,
             authz,
             personal.clone(),
             "core_search_memories",
-            serde_json::json!({"spaces":["shared"],"query":"publish unique needle","mode":"lexical","kind":"Fact","include_body":true}),
+            serde_json::json!({"spaces":[shared_space.clone()],"query":"publish unique needle","mode":"lexical","kind":"Fact","include_body":true}),
         )
         .await?;
         assert_eq!(shared_search["memories"][0]["memory"], published_handle);
-        assert_eq!(shared_search["memories"][0]["space"], "shared");
+        assert_eq!(shared_search["memories"][0]["space"], shared_space);
 
         let source_id = source.strip_prefix("F:").unwrap().parse::<Uuid>()?;
         let published_id = published_handle.strip_prefix("F:").unwrap().parse::<Uuid>()?;
@@ -560,18 +539,18 @@ async fn publish_memory_rejects_unsupported_payloads_and_missing_grants() {
         let shared = Principal::Group(GroupId::new(Uuid::now_v7()));
         let hidden = Principal::Group(GroupId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(db_url)
+            .database_url(db_url.clone())
             .owner(personal.clone())
             .build()
             .await?;
         let tools = built.core_mcp_tools();
-        let full_authz = explicit_space_authz(
+        let pg = PgStorage::connect(&db_url).await?;
+        let shared_space = space_key(&personal, &shared);
+        let hidden_space = space_key(&personal, &hidden);
+        let full_authz = space_authz(
             personal.clone(),
-            vec![
-                MemorySpaceGrant { key: "personal".into(), label: "Personal".into(), owner: personal.clone(), actions: MemoryActionSet::read_write_publish_admin() },
-                MemorySpaceGrant { key: "shared".into(), label: "Shared".into(), owner: shared.clone(), actions: MemoryActionSet::read_write_publish_admin() },
-                MemorySpaceGrant { key: "hidden".into(), label: "Hidden".into(), owner: hidden.clone(), actions: MemoryActionSet::read_write_publish_admin() },
-            ],
+            vec![personal.clone(), shared.clone(), hidden.clone()],
+            AccessScope::Unrestricted,
         );
 
         let note = call_test_model_tool(
@@ -579,7 +558,7 @@ async fn publish_memory_rejects_unsupported_payloads_and_missing_grants() {
             full_authz.clone(),
             personal.clone(),
             "core_remember",
-            serde_json::json!({"space":"personal","title":"publish negative","body":"negative note","tags":[]}),
+            serde_json::json!({"space":"current","title":"publish negative","body":"negative note","tags":[]}),
         ).await?;
         let note_handle = note["handle"].as_str().unwrap();
         let utterance = call_test_model_tool(
@@ -587,7 +566,7 @@ async fn publish_memory_rejects_unsupported_payloads_and_missing_grants() {
             full_authz.clone(),
             personal.clone(),
             "core_record_utterance",
-            serde_json::json!({"space":"personal","speaker":"user","conversation_id":"publish-negative","text":"not an AgentNote"}),
+            serde_json::json!({"space":"current","speaker":"user","conversation_id":"publish-negative","text":"not an AgentNote"}),
         ).await?;
         let utterance_handle = utterance["handle"].as_str().unwrap();
         let hidden_note = call_test_model_tool(
@@ -595,7 +574,7 @@ async fn publish_memory_rejects_unsupported_payloads_and_missing_grants() {
             full_authz.clone(),
             personal.clone(),
             "core_remember",
-            serde_json::json!({"space":"hidden","title":"hidden note","body":"hidden note","tags":[]}),
+            serde_json::json!({"space":hidden_space.clone(),"title":"hidden note","body":"hidden note","tags":[]}),
         ).await?;
         let hidden_handle = hidden_note["handle"].as_str().unwrap();
 
@@ -604,68 +583,61 @@ async fn publish_memory_rejects_unsupported_payloads_and_missing_grants() {
             full_authz.clone(),
             personal.clone(),
             "core_publish_memory",
-            serde_json::json!({"memory": utterance_handle, "from_space":"personal", "to_space":"shared", "confirm": true}),
+            serde_json::json!({"memory": utterance_handle, "from_space":"current", "to_space":shared_space.clone(), "confirm": true}),
         ).await.expect_err("non-AgentNote publish must fail");
         assert!(unsupported.to_string().contains("supports only core/agent-note-v1"));
 
-        let no_publish = explicit_space_authz(
-            personal.clone(),
-            vec![
-                MemorySpaceGrant { key: "personal".into(), label: "Personal".into(), owner: personal.clone(), actions: MemoryActionSet { search: true, read: true, write: true, publish: false, admin: false } },
-                MemorySpaceGrant { key: "shared".into(), label: "Shared".into(), owner: shared.clone(), actions: MemoryActionSet::read_write_publish_admin() },
-            ],
+        let no_publish_caller = Principal::User(UserId::new(Uuid::now_v7()));
+        seed_space_grant(&pg, &personal, Relation::Viewer, &no_publish_caller).await;
+        seed_space_grant(&pg, &shared, Relation::Editor, &no_publish_caller).await;
+        let no_publish = space_authz(
+            no_publish_caller,
+            vec![personal.clone(), shared.clone()],
+            AccessScope::Granted,
         );
         let publish_denied = call_test_model_tool(
             &tools,
             no_publish,
             personal.clone(),
             "core_publish_memory",
-            serde_json::json!({"memory": note_handle, "from_space":"personal", "to_space":"shared", "confirm": true}),
+            serde_json::json!({"memory": note_handle, "from_space":"current", "to_space":shared_space.clone(), "confirm": true}),
         ).await.expect_err("source publish grant required");
-        assert!(publish_denied.to_string().contains("requires memory.publish"));
+        assert!(publish_denied.to_string().contains("requires editor on this space"));
 
-        let target_read_only = explicit_space_authz(
-            personal.clone(),
-            vec![
-                MemorySpaceGrant { key: "personal".into(), label: "Personal".into(), owner: personal.clone(), actions: MemoryActionSet::read_write_publish_admin() },
-                MemorySpaceGrant { key: "shared".into(), label: "Shared".into(), owner: shared.clone(), actions: MemoryActionSet::read_only() },
-            ],
+        let target_read_only_caller = Principal::User(UserId::new(Uuid::now_v7()));
+        seed_space_grant(&pg, &personal, Relation::Editor, &target_read_only_caller).await;
+        seed_space_grant(&pg, &shared, Relation::Viewer, &target_read_only_caller).await;
+        let target_read_only = space_authz(
+            target_read_only_caller,
+            vec![personal.clone(), shared.clone()],
+            AccessScope::Granted,
         );
         let write_denied = call_test_model_tool(
             &tools,
             target_read_only,
             personal.clone(),
             "core_publish_memory",
-            serde_json::json!({"memory": note_handle, "from_space":"personal", "to_space":"shared", "confirm": true}),
+            serde_json::json!({"memory": note_handle, "from_space":"current", "to_space":shared_space.clone(), "confirm": true}),
         ).await.expect_err("target write grant required");
-        assert!(write_denied.to_string().contains("requires memory.write"));
+        assert!(write_denied.to_string().contains("requires editor on this space"));
 
-        let restricted_visibility = AuthzContext {
-            identity: Identity {
-                principal: personal.clone(),
-                accessible_principals: HashSet::from([personal.clone(), shared.clone()]),
-                expires_at: None,
-                auth_epoch: 0,
-            },
-            capabilities: CapabilitySet {
-                tool_scope: ToolScope::All,
-                roles: RoleSet::all(),
-                memory_spaces: MemorySpaceGrants::explicit(vec![
-                    MemorySpaceGrant { key: "hidden".into(), label: "Hidden".into(), owner: hidden.clone(), actions: MemoryActionSet::read_write_publish_admin() },
-                    MemorySpaceGrant { key: "shared".into(), label: "Shared".into(), owner: shared.clone(), actions: MemoryActionSet::read_write_publish_admin() },
-                ]),
-            },
-            auth_path: AuthPath::HostBearer,
-        };
+        let restricted_visibility = space_authz(
+            personal.clone(),
+            vec![personal.clone(), shared.clone()],
+            AccessScope::Unrestricted,
+        );
         let hidden_denied = call_test_model_tool(
             &tools,
             restricted_visibility,
             personal.clone(),
             "core_publish_memory",
-            serde_json::json!({"memory": hidden_handle, "from_space":"hidden", "to_space":"shared", "confirm": true}),
+            serde_json::json!({"memory": hidden_handle, "from_space":hidden_space.clone(), "to_space":shared_space, "confirm": true}),
         ).await.expect_err("hidden owner visibility required");
-        assert!(hidden_denied.to_string().contains("unknown memory space: hidden"));
+        assert!(hidden_denied
+            .to_string()
+            .contains(&format!("unknown memory space: {hidden_space}")));
 
+        drop(pg);
         built.shutdown();
         Ok(())
     }
@@ -723,8 +695,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         assert!(palette_names.contains("core_search_memories"));
         assert!(!palette_names.contains("core_personality"));
 
-        let mut admin_authz = host_authz(&owner, ToolScope::All);
-        admin_authz.capabilities.roles.admin = true;
+        let admin_authz = host_authz(&owner, ToolScope::All);
         let output = call_test_model_tool(
             &tools,
             admin_authz,
@@ -740,11 +711,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
 
         let denied = tools
             .call_core_tool(
-                {
-                    let mut authz = host_authz(&owner, ToolScope::Palette(Vec::new()));
-                    authz.capabilities.roles.admin = true;
-                    authz
-                },
+                host_authz(&owner, ToolScope::Palette(Vec::new())),
                 owner.clone(),
                 None,
                 "core_personality",
