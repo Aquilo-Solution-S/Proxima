@@ -132,17 +132,25 @@ async fn query_verb_returns_empty_for_configured_owner() {
 }
 
 #[tokio::test]
-async fn query_verb_rejects_foreign_owner_with_forbidden() {
+async fn query_scopes_reads_to_authz_context_not_client_principal() {
     let (principal, configured) = fresh_owner();
     let engine = boot_engine(principal, configured.clone());
     let authz = AuthzContext::single_owner(&configured, AuthPath::System);
     let (_, foreign) = fresh_owner();
 
-    let err = engine
+    // Group-ownership read model: reads are scoped to the authenticated
+    // context's access set (S_read), never to a client-supplied
+    // `QueryRequest::principal`. Unlike write/admin verbs — which reject a
+    // foreign owner — a foreign principal in a read request is not an access
+    // vector: it can never widen what the caller sees, so the verb returns the
+    // caller's accessible subset (empty here under NoopStorage) rather than
+    // Forbidden. Cross-principal no-leak against real data is proven in the PG
+    // integration suite (entity_owner_pg).
+    let resp = engine
         .query(&authz, &QueryRequest::for_principal(foreign.clone()))
         .await
-        .expect_err("foreign owner must be rejected");
-    assert_eq!(err.code, ErrorCode::Forbidden);
+        .expect("a foreign client principal is scoped away, not rejected");
+    assert!(resp.memories.is_empty() && resp.goals.is_empty() && resp.edges.is_empty());
 }
 
 #[tokio::test]
