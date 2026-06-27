@@ -10,8 +10,10 @@ use proxima_core::access::{
     AccessGrantRow, EntryAccessFacts, GrantResource, GrantSelector, NewAccessGrant, Relation,
     RemoveOwnerOutcome, Visibility,
 };
+use proxima_core::personality::{MemorySnapshot, WakeChainDepth};
 use proxima_core::{
-    MemoryId, Owner, OwnerPrincipalKind, PersonalityInstanceId, Principal, StorageError,
+    EntityKind, MemoryId, Owner, OwnerPrincipalKind, PersonalityInstanceId, Principal, SchemaId,
+    SchemaVersion, StorageError,
 };
 use sqlx::PgPool;
 
@@ -39,6 +41,16 @@ enum SubjectKind {
     Principal,
     Group,
 }
+
+type PublicMemoryRow = (
+    uuid::Uuid,
+    Option<EntityKind>,
+    String,
+    i32,
+    Option<String>,
+    i16,
+    Option<uuid::Uuid>,
+);
 
 fn split_resource(resource: GrantResource) -> (ResourceKind, Option<uuid::Uuid>) {
     match resource {
@@ -289,6 +301,50 @@ pub(crate) async fn set_memory_visibility(
         return Err(StorageError::NotFound);
     }
     Ok(())
+}
+
+pub(crate) async fn list_public_memories(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<MemorySnapshot>, StorageError> {
+    let rows: Vec<PublicMemoryRow> = sqlx::query_as(
+        "SELECT memory_id, kind, schema_id, schema_version, text,
+                wake_chain_depth, personality_instance_id
+           FROM proxima_core.memories
+          WHERE visibility = 'public'
+            AND tombstoned_at IS NULL
+          ORDER BY created_at DESC, memory_id DESC
+          LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                memory_id,
+                kind,
+                schema_id,
+                schema_version,
+                text,
+                wake_chain_depth,
+                personality_instance_id,
+            )| MemorySnapshot {
+                memory_id: MemoryId::new(memory_id),
+                kind: kind.unwrap_or(EntityKind::Fact).as_str().to_string(),
+                schema_id: SchemaId::new(schema_id),
+                schema_version: SchemaVersion::new(u32::try_from(schema_version).unwrap_or(1)),
+                authoring_personality_instance_id: personality_instance_id
+                    .map(PersonalityInstanceId::new),
+                text,
+                wake_chain_depth: WakeChainDepth::new(u16::try_from(wake_chain_depth).unwrap_or(0)),
+                payload: None,
+            },
+        )
+        .collect())
 }
 
 pub(crate) async fn count_active_entry_grants(

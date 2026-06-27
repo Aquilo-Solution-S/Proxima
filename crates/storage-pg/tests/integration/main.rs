@@ -1,5 +1,6 @@
 //! Consolidated storage-pg integration tests (single linked binary).
 
+mod access_admin_pg;
 mod access_grants_pg;
 mod change_event_invariants_pg;
 mod close_batch_pg;

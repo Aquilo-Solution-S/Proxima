@@ -1193,6 +1193,10 @@ impl Storage for PgStorage {
         verbs::access_grants::set_memory_visibility(&self.pool, owner, memory_id, visibility).await
     }
 
+    async fn list_public_memories(&self, limit: i64) -> Result<Vec<MemorySnapshot>, StorageError> {
+        verbs::access_grants::list_public_memories(&self.pool, limit).await
+    }
+
     async fn count_active_entry_grants(
         &self,
         owner: &Owner,
