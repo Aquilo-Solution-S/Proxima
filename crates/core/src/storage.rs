@@ -33,8 +33,8 @@ use crate::{
     GoalPayload, PerspectivePayload,
 };
 use crate::{
-    EdgeAuthorshipKind, EdgeId, EntityKind, FactEntityId, MemoryId, MemoryOperatorKind, Owner,
-    Principal, RegisteredRelation, SchemaId, SchemaVersion,
+    EdgeAuthorshipKind, EdgeId, EntityId, EntityKind, FactEntityId, MembershipRow, MemoryId,
+    MemoryOperatorKind, Owner, Principal, RegisteredRelation, SchemaId, SchemaVersion,
 };
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -662,6 +662,26 @@ pub trait Storage: Send + Sync {
         limit: usize,
     ) -> Result<Vec<ActiveGoalSummary>, StorageError>;
 
+    /// Storage-backed group memberships for one principal. User
+    /// principals resolve explicit group rows; group principals have no
+    /// recursive memberships in v0.0.1.
+    async fn resolve_membership(
+        &self,
+        member: &Principal,
+    ) -> Result<Vec<MembershipRow>, StorageError>;
+
+    /// Entity reachability predicate over the caller's resolved read-owner
+    /// set. Dead/tombstoned entities have no `entity_owner` rows.
+    async fn entity_is_readable(
+        &self,
+        entity: EntityId,
+        read_owners: &[Principal],
+    ) -> Result<bool, StorageError>;
+
+    /// Home owner lookup for a Memory or Goal entity. Dead/tombstoned
+    /// entities have no `entity_owner` rows and return `None`.
+    async fn entity_home_owner(&self, entity: EntityId) -> Result<Option<Principal>, StorageError>;
+
     /// Owner-scoped, idempotent batch close. See docs/01 §"The contract"
     /// and docs/04 §"Source-batch lifecycle". Flips
     /// `source_batches.closed_at` from NULL to `now()`. Re-close is a
@@ -866,7 +886,6 @@ pub trait Storage: Send + Sync {
     ) -> Result<Vec<MemoryDependency>, StorageError> {
         Ok(Vec::new())
     }
-
 }
 
 pub type StorageHandle = Arc<dyn Storage>;
@@ -1149,6 +1168,28 @@ impl Storage for NoopStorage {
         Ok(Vec::new())
     }
 
+    async fn resolve_membership(
+        &self,
+        _member: &Principal,
+    ) -> Result<Vec<MembershipRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn entity_is_readable(
+        &self,
+        _entity: EntityId,
+        _read_owners: &[Principal],
+    ) -> Result<bool, StorageError> {
+        Ok(false)
+    }
+
+    async fn entity_home_owner(
+        &self,
+        _entity: EntityId,
+    ) -> Result<Option<Principal>, StorageError> {
+        Ok(None)
+    }
+
     async fn close_batch(
         &self,
         _principal: &Principal,
@@ -1333,5 +1374,4 @@ impl Storage for NoopStorage {
     ) -> Result<Option<MemorySnapshot>, StorageError> {
         Ok(None)
     }
-
 }
