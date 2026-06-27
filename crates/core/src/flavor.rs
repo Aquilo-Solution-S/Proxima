@@ -1005,10 +1005,6 @@ mod tests {
             !names.contains("core/emit_budget_decision"),
             "retired tool name must not remain registered"
         );
-        assert!(
-            !names.contains("core_publish_memory"),
-            "copy-publish tool must not remain registered"
-        );
         assert_eq!(names.len(), 12, "exactly 12 substrate tools registered");
         for desc in frozen.list_mcp_tools() {
             assert!(

@@ -23,7 +23,7 @@ pub struct LinkArgs {
     pub confidence: u8,
     #[serde(default)]
     #[schemars(
-        description = "Memory space key from core_memory_spaces. All handles in this call must belong to this space."
+        description = "Memory space key from core_memory_spaces. The new edge is authored in this space; source and target handles may be in other readable spaces."
     )]
     pub space: Option<String>,
 }

@@ -1,4 +1,3 @@
-#![cfg(any())] // QUARANTINED pending group-ownership port (grant-era access setup); re-enable in Phase 6
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -7,12 +6,10 @@ use proxima::{
     CoreMcpTools, FlavorApp, FlavorBundle, Identity, NamedMigrator, PgSidecarRegistry, Proxima,
     StorageError, ToolScope, company_owner,
 };
-use proxima_core::access::GrantSubject;
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
-    CitationMappingPayload, CitedObjectPayload, FlavorRegistry, GrantResource, GroupId, MemoryId,
-    NewAccessGrant, Owner, PersonalityInstanceId, Principal, Relation, SchemaId, Storage, UserId,
-    all_core_resources,
+    CitationMappingPayload, CitedObjectPayload, FlavorRegistry, GroupId, MemoryId, Owner,
+    Principal, Relation, SchemaId, Storage, UserId, all_core_resources,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
@@ -189,21 +186,21 @@ fn space_authz(principal: Principal, owners: Vec<Owner>, access: AccessScope) ->
     }
 }
 
-async fn seed_space_grant(
+async fn seed_group_membership(
     pg: &PgStorage,
     space_owner: &Principal,
     relation: Relation,
     subject: &Principal,
 ) {
-    pg.insert_space_binding(&NewAccessGrant {
-        space_owner: space_owner.clone(),
-        resource: GrantResource::Space,
-        relation,
-        subject: GrantSubject::Principal(subject.clone()),
-        granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
-    })
-    .await
-    .expect("seed grant");
+    let Principal::Group(group) = space_owner else {
+        panic!("group membership can only seed group-owned spaces");
+    };
+    let Principal::User(user) = subject else {
+        panic!("group membership can only seed user members");
+    };
+    pg.add_group_member(*group, *user, relation, Uuid::now_v7())
+        .await
+        .expect("seed group membership");
 }
 
 fn space_key(current: &Owner, owner: &Owner) -> String {
@@ -255,7 +252,7 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
             .await?;
         let tools = built.core_mcp_tools();
         let pg = PgStorage::connect(&db_url).await?;
-        seed_space_grant(&pg, &shared, Relation::Viewer, &personal).await;
+        seed_group_membership(&pg, &shared, Relation::Viewer, &personal).await;
         let shared_space = space_key(&personal, &shared);
         let authz = space_authz(
             personal.clone(),
@@ -364,7 +361,7 @@ async fn shared_space_include_body_uses_shared_owner() {
 }
 
 #[tokio::test]
-async fn cross_space_derive_is_rejected_with_single_space_message() {
+async fn cross_space_derive_succeeds_when_sources_readable() {
     let db_name = unique_db_name("proxima_core_memory_spaces_derive");
     create_db(&db_name).await.expect("PG required for tests");
     let db_url = db_url(&db_name);
@@ -402,7 +399,7 @@ async fn cross_space_derive_is_rejected_with_single_space_message() {
         )
         .await?;
 
-        let err = call_test_model_tool(
+        let derived = call_test_model_tool(
             &tools,
             authz,
             personal.clone(),
@@ -411,18 +408,25 @@ async fn cross_space_derive_is_rejected_with_single_space_message() {
                 "space": "current",
                 "kind": "Abstraction",
                 "title": "cross-space pattern",
-                "body": "should be rejected",
+                "body": "personal and shared sources are readable",
                 "tags": [],
                 "source_handles": [personal_fact["handle"].as_str().unwrap(), shared_fact["handle"].as_str().unwrap()],
                 "model_id": "test-model"
             }),
         )
-        .await
-        .expect_err("cross-space derive must be rejected");
+        .await?;
         assert!(
-            err.to_string()
-                .contains("cross-space derive/link is not supported; choose one memory space"),
-            "unexpected error: {err}"
+            derived["handle"]
+                .as_str()
+                .is_some_and(|handle| handle.starts_with("A:")),
+            "cross-space derive must return an Abstraction handle, got {derived}"
+        );
+        assert_eq!(
+            derived["provenance_edge_handles"]
+                .as_array()
+                .expect("provenance edges")
+                .len(),
+            2
         );
 
         built.shutdown();
@@ -431,30 +435,28 @@ async fn cross_space_derive_is_rejected_with_single_space_message() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("cross-space derive test failed");
+    result.expect("cross-space derive success test failed");
 }
 
 #[tokio::test]
-async fn publish_agent_note_copies_to_target_owner_without_cross_owner_edge() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "single fixture covers publish, World read, and tombstone semantics"
+)]
+async fn publish_agent_note_adds_world_row_without_copying() {
     let db_name = unique_db_name("proxima_core_memory_publish");
     create_db(&db_name).await.expect("PG required for tests");
     let db_url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let personal = Principal::User(UserId::new(Uuid::now_v7()));
-        let shared = Principal::Group(GroupId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(db_url)
             .owner(personal.clone())
             .build()
             .await?;
         let tools = built.core_mcp_tools();
-        let shared_space = space_key(&personal, &shared);
-        let authz = space_authz(
-            personal.clone(),
-            vec![personal.clone(), shared.clone()],
-            AccessScope::Unrestricted,
-        );
+        let authz = space_authz(personal.clone(), vec![personal.clone()], AccessScope::Unrestricted);
 
         let remembered = call_test_model_tool(
             &tools,
@@ -465,21 +467,28 @@ async fn publish_agent_note_copies_to_target_owner_without_cross_owner_edge() {
         )
         .await?;
         let source = remembered["handle"].as_str().expect("source handle");
+        let memory_count_before: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM proxima_core.memories")
+                .fetch_one(&built.pool)
+                .await?;
+
         let published = call_test_model_tool(
             &tools,
             authz.clone(),
             personal.clone(),
-            "core_publish_memory",
+            "core_share",
             serde_json::json!({
-                "memory": source,
-                "from_space": "current",
-                "to_space": shared_space.clone(),
-                "confirm": true
+                "action": "publish",
+                "entity": source
             }),
         )
         .await?;
-        let published_handle = published["published"].as_str().expect("published handle");
-        assert_ne!(source, published_handle, "publish must copy, not move/mutate");
+        assert_eq!(published["ok"], true);
+        let memory_count_after: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM proxima_core.memories")
+                .fetch_one(&built.pool)
+                .await?;
+        assert_eq!(memory_count_after, memory_count_before, "publish must not copy");
 
         let personal_search = call_test_model_tool(
             &tools,
@@ -492,29 +501,74 @@ async fn publish_agent_note_copies_to_target_owner_without_cross_owner_edge() {
         assert_eq!(personal_search["memories"][0]["memory"], source);
         assert_eq!(personal_search["memories"][0]["space"], "current");
 
-        let shared_search = call_test_model_tool(
+        let shares = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            personal.clone(),
+            "core_share",
+            serde_json::json!({"action":"list_shares","entity":source}),
+        )
+        .await?;
+        let world_key = space_key(&personal, &proxima_core::access::world());
+        assert!(
+            shares
+                .as_array()
+                .expect("shares")
+                .iter()
+                .any(|share| share["owner"] == world_key && share["is_home"] == false),
+            "publish must add a non-home World owner row"
+        );
+
+        let world = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            personal.clone(),
+            "core_share",
+            serde_json::json!({"action":"list_world","limit":5}),
+        )
+        .await?;
+        assert_eq!(world.as_array().expect("world list")[0]["memory"], source);
+
+        let world_reader = Principal::User(UserId::new(Uuid::now_v7()));
+        let world_reader_authz = space_authz(
+            world_reader.clone(),
+            vec![world_reader.clone()],
+            AccessScope::Granted,
+        );
+        let world_read = read_test_model_resource(
+            &tools,
+            world_reader_authz,
+            world_reader,
+            &format!("proxima://memory/{source}"),
+        )
+        .await?;
+        assert_eq!(world_read["memory"], source);
+
+        let tombstone = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            personal.clone(),
+            "core_fact",
+            serde_json::json!({ "action": "tombstone", "fact": source, "confirm": true, "expect_handle": source }),
+        )
+        .await?;
+        assert_eq!(tombstone["fact_erased"], true);
+
+        let world_after_tombstone = call_test_model_tool(
             &tools,
             authz,
             personal.clone(),
-            "core_search_memories",
-            serde_json::json!({"spaces":[shared_space.clone()],"query":"publish unique needle","mode":"lexical","kind":"Fact","include_body":true}),
+            "core_share",
+            serde_json::json!({"action":"list_world","limit":5}),
         )
         .await?;
-        assert_eq!(shared_search["memories"][0]["memory"], published_handle);
-        assert_eq!(shared_search["memories"][0]["space"], shared_space);
-
-        let source_id = source.strip_prefix("F:").unwrap().parse::<Uuid>()?;
-        let published_id = published_handle.strip_prefix("F:").unwrap().parse::<Uuid>()?;
-        let edge_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_core.edges
-             WHERE (source_memory_id = $1 AND target_memory_id = $2)
-                OR (source_memory_id = $2 AND target_memory_id = $1)",
-        )
-        .bind(source_id)
-        .bind(published_id)
-        .fetch_one(&built.pool)
-        .await?;
-        assert_eq!(edge_count, 0, "publish must not create cross-owner edges");
+        assert!(
+            world_after_tombstone
+                .as_array()
+                .expect("world list after tombstone")
+                .is_empty(),
+            "tombstone must remove World listing"
+        );
 
         built.shutdown();
         Ok(())
@@ -522,121 +576,74 @@ async fn publish_agent_note_copies_to_target_owner_without_cross_owner_edge() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("publish memory test failed");
+    result.expect("publish share test failed");
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "single fixture covers the publish tool's independent negative authorization cases"
-)]
-async fn publish_memory_rejects_unsupported_payloads_and_missing_grants() {
+async fn core_share_publish_rejects_viewer_only_group_members() {
     let db_name = unique_db_name("proxima_core_memory_publish_negative");
     create_db(&db_name).await.expect("PG required for tests");
     let db_url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let personal = Principal::User(UserId::new(Uuid::now_v7()));
-        let shared = Principal::Group(GroupId::new(Uuid::now_v7()));
-        let hidden = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let group_owner = Principal::Group(GroupId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(db_url.clone())
-            .owner(personal.clone())
+            .owner(group_owner.clone())
             .build()
             .await?;
         let tools = built.core_mcp_tools();
         let pg = PgStorage::connect(&db_url).await?;
-        let shared_space = space_key(&personal, &shared);
-        let hidden_space = space_key(&personal, &hidden);
-        let full_authz = space_authz(
-            personal.clone(),
-            vec![personal.clone(), shared.clone(), hidden.clone()],
-            AccessScope::Unrestricted,
-        );
+        let admin_authz = AuthzContext::single_owner(&group_owner, AuthPath::System);
 
         let note = call_test_model_tool(
             &tools,
-            full_authz.clone(),
-            personal.clone(),
+            admin_authz.clone(),
+            group_owner.clone(),
             "core_remember",
             serde_json::json!({"space":"current","title":"publish negative","body":"negative note","tags":[]}),
-        ).await?;
+        )
+        .await?;
         let note_handle = note["handle"].as_str().unwrap();
-        let utterance = call_test_model_tool(
-            &tools,
-            full_authz.clone(),
-            personal.clone(),
-            "core_record_utterance",
-            serde_json::json!({"space":"current","speaker":"user","conversation_id":"publish-negative","text":"not an AgentNote"}),
-        ).await?;
-        let utterance_handle = utterance["handle"].as_str().unwrap();
-        let hidden_note = call_test_model_tool(
-            &tools,
-            full_authz.clone(),
-            personal.clone(),
-            "core_remember",
-            serde_json::json!({"space":hidden_space.clone(),"title":"hidden note","body":"hidden note","tags":[]}),
-        ).await?;
-        let hidden_handle = hidden_note["handle"].as_str().unwrap();
 
-        let unsupported = call_test_model_tool(
-            &tools,
-            full_authz.clone(),
-            personal.clone(),
-            "core_publish_memory",
-            serde_json::json!({"memory": utterance_handle, "from_space":"current", "to_space":shared_space.clone(), "confirm": true}),
-        ).await.expect_err("non-AgentNote publish must fail");
-        assert!(unsupported.to_string().contains("supports only core/agent-note-v1"));
-
-        let no_publish_caller = Principal::User(UserId::new(Uuid::now_v7()));
-        seed_space_grant(&pg, &personal, Relation::Viewer, &no_publish_caller).await;
-        seed_space_grant(&pg, &shared, Relation::Editor, &no_publish_caller).await;
-        let no_publish = space_authz(
-            no_publish_caller,
-            vec![personal.clone(), shared.clone()],
-            AccessScope::Granted,
-        );
+        let viewer = Principal::User(UserId::new(Uuid::now_v7()));
+        seed_group_membership(&pg, &group_owner, Relation::Viewer, &viewer).await;
+        let viewer_authz = space_authz(viewer.clone(), vec![viewer], AccessScope::Granted);
         let publish_denied = call_test_model_tool(
             &tools,
-            no_publish,
-            personal.clone(),
-            "core_publish_memory",
-            serde_json::json!({"memory": note_handle, "from_space":"current", "to_space":shared_space.clone(), "confirm": true}),
-        ).await.expect_err("source publish grant required");
-        assert!(publish_denied.to_string().contains("requires editor on this space"));
-
-        let target_read_only_caller = Principal::User(UserId::new(Uuid::now_v7()));
-        seed_space_grant(&pg, &personal, Relation::Editor, &target_read_only_caller).await;
-        seed_space_grant(&pg, &shared, Relation::Viewer, &target_read_only_caller).await;
-        let target_read_only = space_authz(
-            target_read_only_caller,
-            vec![personal.clone(), shared.clone()],
-            AccessScope::Granted,
-        );
-        let write_denied = call_test_model_tool(
-            &tools,
-            target_read_only,
-            personal.clone(),
-            "core_publish_memory",
-            serde_json::json!({"memory": note_handle, "from_space":"current", "to_space":shared_space.clone(), "confirm": true}),
-        ).await.expect_err("target write grant required");
-        assert!(write_denied.to_string().contains("requires editor on this space"));
-
-        let restricted_visibility = space_authz(
-            personal.clone(),
-            vec![personal.clone(), shared.clone()],
-            AccessScope::Unrestricted,
-        );
-        let hidden_denied = call_test_model_tool(
-            &tools,
-            restricted_visibility,
-            personal.clone(),
-            "core_publish_memory",
-            serde_json::json!({"memory": hidden_handle, "from_space":hidden_space.clone(), "to_space":shared_space, "confirm": true}),
-        ).await.expect_err("hidden owner visibility required");
-        assert!(hidden_denied
+            viewer_authz,
+            group_owner.clone(),
+            "core_share",
+            serde_json::json!({"action":"publish","entity": note_handle}),
+        )
+        .await
+        .expect_err("viewer membership must not publish");
+        assert!(publish_denied
             .to_string()
-            .contains(&format!("unknown memory space: {hidden_space}")));
+            .contains("requires editor on this owner"));
+
+        call_test_model_tool(
+            &tools,
+            admin_authz.clone(),
+            group_owner.clone(),
+            "core_share",
+            serde_json::json!({"action":"publish","entity": note_handle}),
+        )
+        .await?;
+
+        let outsider = Principal::User(UserId::new(Uuid::now_v7()));
+        let unpublish_denied = call_test_model_tool(
+            &tools,
+            space_authz(outsider.clone(), vec![outsider], AccessScope::Granted),
+            group_owner.clone(),
+            "core_share",
+            serde_json::json!({"action":"unpublish","entity": note_handle}),
+        )
+        .await
+        .expect_err("unrelated caller must not unpublish");
+        assert!(unpublish_denied
+            .to_string()
+            .contains("requires editor on this owner"));
 
         drop(pg);
         built.shutdown();
@@ -645,7 +652,7 @@ async fn publish_memory_rejects_unsupported_payloads_and_missing_grants() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("publish negative test failed");
+    result.expect("core_share publish negative test failed");
 }
 
 #[tokio::test]

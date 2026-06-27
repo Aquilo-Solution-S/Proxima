@@ -1,12 +1,10 @@
-#![cfg(any())] // QUARANTINED pending group-ownership port (grant-era access setup); re-enable in Phase 3/6
 //! End-to-end MCP Goal tools against transient PG storage.
 
 use std::{collections::HashSet, future::Future, pin::Pin, sync::Arc};
 
 mod common;
 
-use common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::access::GrantSubject;
+use common::{drop_db, fresh_pg};
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
 use proxima_core::goal::relations::CORE_MOTIVATED_BY_RELATION;
@@ -18,9 +16,9 @@ use proxima_core::mcp::core_tools::goal::{
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
     AccessScope, AuthPath, AuthzContext, CapabilitySet, EntityKind, FlavorRegistry,
-    FlavorRegistryFrozen, GoalId, GrantResource, Identity, McpTool, McpToolError, MemoryId,
-    MemoryOperatorKind, NewAccessGrant, Owner, OwnerPrincipalKind, PersonalityInstanceId,
-    PersonalityStatus, Principal, Relation, Storage, ToolScope, UserId,
+    FlavorRegistryFrozen, GoalId, GroupId, Identity, McpTool, McpToolError, MemoryId,
+    MemoryOperatorKind, Owner, OwnerPrincipalKind, PersonalityInstanceId, PersonalityStatus,
+    Principal, Relation, Storage, ToolScope, UserId,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -462,20 +460,21 @@ impl ToolHarness {
 
     async fn viewer_without_memory_write(&self) -> AuthzContext {
         let viewer = Principal::User(UserId::new(Uuid::now_v7()));
+        let Principal::Group(group) = &self.owner else {
+            panic!("test harness owner must be a group for membership setup");
+        };
+        let Principal::User(user) = viewer else {
+            unreachable!("viewer is a user");
+        };
         self.pg
-            .insert_space_binding(&NewAccessGrant {
-                space_owner: self.owner.clone(),
-                resource: GrantResource::Space,
-                relation: Relation::Viewer,
-                subject: GrantSubject::Principal(viewer.clone()),
-                granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
-            })
+            .add_group_member(*group, user, Relation::Viewer, Uuid::now_v7())
             .await
-            .expect("seed viewer grant");
+            .expect("seed viewer membership");
+        let viewer = Principal::User(user);
         AuthzContext {
             identity: Identity {
-                principal: viewer,
-                accessible_principals: HashSet::default(),
+                principal: viewer.clone(),
+                accessible_principals: HashSet::from([viewer]),
                 expires_at: None,
                 auth_epoch: 0,
             },
@@ -596,6 +595,16 @@ async fn seed_personality_self(
     .execute(pg.pool())
     .await?;
     sqlx::query(
+        "INSERT INTO proxima_core.entity_owner
+            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
+         VALUES ($1, $2, $3, true, NULL)",
+    )
+    .bind(root_memory_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .execute(pg.pool())
+    .await?;
+    sqlx::query(
         "INSERT INTO proxima_core.personality
             (owner_principal_kind, owner_principal_id,
              personality_instance_id, current_root_perspective_memory_id, status)
@@ -657,6 +666,16 @@ async fn seed_fact_memory(
     .bind(owner_principal_id)
     .bind(event_id)
     .bind(Uuid::nil())
+    .execute(pg.pool())
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.entity_owner
+            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
+         VALUES ($1, $2, $3, true, NULL)",
+    )
+    .bind(memory_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
     .execute(pg.pool())
     .await?;
     let _ = text;
@@ -854,7 +873,7 @@ async fn assert_structured_lifecycle_chain(
 }
 
 fn nil_owner() -> Owner {
-    owner_fixture()
+    Principal::Group(GroupId::new(Uuid::now_v7()))
 }
 
 fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {

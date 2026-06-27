@@ -4,16 +4,14 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::access::GrantSubject;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
     AccessScope, AuthPath, AuthzContext, CapabilitySet, Engine, ErrorCode, FactPayload,
-    FlavorRegistryFrozen, GrantResource, Identity, NewAccessGrant, Owner, PayloadKeyBuilder,
-    PersonalityInstanceId, Principal, Relation, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-    Storage, StorageError, ToolScope, UserId,
+    FlavorRegistryFrozen, GroupId, Identity, Owner, PayloadKeyBuilder, Principal, Relation,
+    SchemaId, SchemaVersion, SourceBatchId, SourceId, Storage, StorageError, ToolScope, UserId,
 };
 use proxima_storage_pg::verbs::event_ingest::{event_ingest_with_sidecar_atomic, ingest_fact};
 use uuid::Uuid;
@@ -100,11 +98,15 @@ fn bot_principal() -> Principal {
     Principal::User(UserId::new(Uuid::now_v7()))
 }
 
+fn group_owner() -> Owner {
+    Principal::Group(GroupId::new(Uuid::now_v7()))
+}
+
 fn granted_bot_authz(bot: &Principal) -> AuthzContext {
     AuthzContext {
         identity: Identity {
             principal: bot.clone(),
-            accessible_principals: HashSet::new(),
+            accessible_principals: HashSet::from([bot.clone()]),
             expires_at: None,
             auth_epoch: 0,
         },
@@ -116,21 +118,21 @@ fn granted_bot_authz(bot: &Principal) -> AuthzContext {
     }
 }
 
-async fn seed_space_grant(
+async fn seed_group_membership(
     pg: &proxima_storage_pg::PgStorage,
     space_owner: &Principal,
     relation: Relation,
     subject: &Principal,
 ) {
-    pg.insert_space_binding(&NewAccessGrant {
-        space_owner: space_owner.clone(),
-        resource: GrantResource::Space,
-        relation,
-        subject: GrantSubject::Principal(subject.clone()),
-        granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
-    })
-    .await
-    .expect("seed grant");
+    let Principal::Group(group) = space_owner else {
+        panic!("group membership can only seed group-owned spaces");
+    };
+    let Principal::User(user) = subject else {
+        panic!("group membership can only seed user members");
+    };
+    pg.add_group_member(*group, *user, relation, Uuid::now_v7())
+        .await
+        .expect("seed group membership");
 }
 
 fn engine_for(pg: &proxima_storage_pg::PgStorage) -> Engine {
@@ -168,7 +170,7 @@ async fn embedding_job_count(pool: &sqlx::PgPool) -> Result<i64, sqlx::Error> {
 async fn authz_rejection_writes_nothing() -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
-    let owner = owner_fixture();
+    let owner = group_owner();
     let engine = engine_for(&pg);
     let draft = fresh_draft(&owner);
     let event_id = draft.event_id();
@@ -180,7 +182,7 @@ async fn authz_rejection_writes_nothing() -> Result<(), Box<dyn std::error::Erro
         .expect_err("missing source_ingest role must reject before storage");
 
     assert_eq!(err.code, ErrorCode::Forbidden);
-    assert!(err.message.contains("requires ingest on this space"));
+    assert!(err.message.contains("requires ingest on this owner"));
     assert_eq!(event_row_counts(pg.pool(), event_id).await?, (0, 0));
 
     drop(engine);
@@ -194,7 +196,7 @@ async fn source_ingest_only_authorizes_event_ingest_with_write_grant()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
-    let owner = owner_fixture();
+    let owner = group_owner();
     let engine = engine_for(&pg);
     let bot = bot_principal();
     let authz = granted_bot_authz(&bot);
@@ -204,9 +206,9 @@ async fn source_ingest_only_authorizes_event_ingest_with_write_grant()
         .await
         .expect_err("missing ingest grant must reject");
     assert_eq!(err.code, ErrorCode::Forbidden);
-    assert!(err.message.contains("requires ingest on this space"));
+    assert!(err.message.contains("requires ingest on this owner"));
 
-    seed_space_grant(&pg, &owner, Relation::Ingest, &bot).await;
+    seed_group_membership(&pg, &owner, Relation::Ingest, &bot).await;
 
     let authorized = engine
         .authorize_event_ingest(&authz, Relation::Ingest, fresh_draft(&owner))
@@ -218,7 +220,7 @@ async fn source_ingest_only_authorizes_event_ingest_with_write_grant()
         .await
         .expect_err("ingest grant must not authorize editor writes");
     assert_eq!(err.code, ErrorCode::Forbidden);
-    assert!(err.message.contains("requires editor on this space"));
+    assert!(err.message.contains("requires editor on this owner"));
 
     drop(engine);
     drop(pg);
