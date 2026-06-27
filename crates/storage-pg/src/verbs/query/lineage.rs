@@ -129,34 +129,23 @@ async fn start_memory_visible(
     memory_id: MemoryId,
     reader_id: Option<uuid::Uuid>,
 ) -> Result<bool, StorageError> {
-    let present: Option<(uuid::Uuid,)> = sqlx::query_as(
-        r"SELECT memory_id
+    let mut sql = String::from(
+        "SELECT memory_id
              FROM proxima_core.memories
              WHERE owner_principal_kind = $1
                AND owner_principal_id = $2
                AND memory_id = $3
-               AND tombstoned_at IS NULL
-               AND (
-                   $4::uuid IS NULL
-                   OR kind IS NULL
-                   OR personality_instance_id = $4
-                   OR EXISTS (
-                       SELECT 1
-                         FROM proxima_core.read_scope_matrix r
-	                        WHERE r.owner_principal_kind = memories.owner_principal_kind
-	                          AND r.owner_principal_id = memories.owner_principal_id
-	                          AND r.reader_personality_instance_id = $4
-	                          AND r.readable_personality_instance_id = memories.personality_instance_id
-	                   )
-               )",
-    )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(memory_id.into_inner())
-    .bind(reader_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(internal)?;
+               AND tombstoned_at IS NULL",
+    );
+    push_reader_visibility_filter(&mut sql, "memories", reader_id.map(|_| 4));
+    let mut query = sqlx::query_as::<_, (uuid::Uuid,)>(&sql)
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .bind(memory_id.into_inner());
+    if let Some(reader_id) = reader_id {
+        query = query.bind(reader_id);
+    }
+    let present = query.fetch_optional(pool).await.map_err(internal)?;
     Ok(present.is_some())
 }
 
@@ -169,20 +158,24 @@ async fn walk_edges(
     limit: u32,
     reader_id: Option<uuid::Uuid>,
 ) -> Result<Vec<EdgeWalkRow>, StorageError> {
-    let sql = match req.direction {
+    let template = match req.direction {
         MemoryLineageDirection::Ancestors => ANCESTORS_SQL,
         MemoryLineageDirection::Descendants => DESCENDANTS_SQL,
     };
-    sqlx::query_as(sql)
+    let reader_filter = reader_id
+        .map(|_| reader_visibility_filter("m", 6))
+        .unwrap_or_default();
+    let sql = template.replace("{reader_filter}", &reader_filter);
+    let mut query = sqlx::query_as::<_, EdgeWalkRow>(&sql)
         .bind(owner_kind)
         .bind(owner_principal_id)
         .bind(req.start_memory_id.into_inner())
         .bind(i32::from(depth))
-        .bind(i64::from(limit))
-        .bind(reader_id)
-        .fetch_all(pool)
-        .await
-        .map_err(internal)
+        .bind(i64::from(limit));
+    if let Some(reader_id) = reader_id {
+        query = query.bind(reader_id);
+    }
+    query.fetch_all(pool).await.map_err(internal)
 }
 
 async fn load_nodes(
@@ -192,8 +185,8 @@ async fn load_nodes(
     memory_ids: &[uuid::Uuid],
     reader_id: Option<uuid::Uuid>,
 ) -> Result<Vec<NodeRow>, StorageError> {
-    let rows: Vec<NodeRow> = sqlx::query_as(
-        r"SELECT memory_id,
+    let mut sql = String::from(
+        "SELECT memory_id,
                   kind,
                   schema_id,
                   left(COALESCE(text, ''), 480) AS snippet,
@@ -202,28 +195,17 @@ async fn load_nodes(
              WHERE owner_principal_kind = $1
                AND owner_principal_id = $2
                AND memory_id = ANY($3::uuid[])
-               AND tombstoned_at IS NULL
-               AND (
-                   $4::uuid IS NULL
-                   OR kind IS NULL
-                   OR personality_instance_id = $4
-                   OR EXISTS (
-                       SELECT 1
-                         FROM proxima_core.read_scope_matrix r
-	                        WHERE r.owner_principal_kind = memories.owner_principal_kind
-	                          AND r.owner_principal_id = memories.owner_principal_id
-	                          AND r.reader_personality_instance_id = $4
-	                          AND r.readable_personality_instance_id = memories.personality_instance_id
-	                   )
-               )",
-    )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(memory_ids)
-    .bind(reader_id)
-    .fetch_all(pool)
-    .await
-    .map_err(internal)?;
+               AND tombstoned_at IS NULL",
+    );
+    push_reader_visibility_filter(&mut sql, "memories", reader_id.map(|_| 4));
+    let mut query = sqlx::query_as::<_, NodeRow>(&sql)
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .bind(memory_ids);
+    if let Some(reader_id) = reader_id {
+        query = query.bind(reader_id);
+    }
+    let rows = query.fetch_all(pool).await.map_err(internal)?;
 
     let expected: BTreeSet<_> = memory_ids.iter().copied().collect();
     let actual: BTreeSet<_> = rows.iter().map(|row: &NodeRow| row.memory_id).collect();
@@ -233,6 +215,29 @@ async fn load_nodes(
         ));
     }
     Ok(rows)
+}
+
+fn push_reader_visibility_filter(sql: &mut String, alias: &str, reader_param: Option<usize>) {
+    if let Some(param) = reader_param {
+        sql.push_str(&reader_visibility_filter(alias, param));
+    }
+}
+
+fn reader_visibility_filter(alias: &str, param: usize) -> String {
+    format!(
+        " AND (
+            {alias}.kind IS NULL
+            OR {alias}.personality_instance_id = ${param}
+            OR EXISTS (
+                SELECT 1
+                  FROM proxima_core.read_scope_matrix r
+                 WHERE r.owner_principal_kind = {alias}.owner_principal_kind
+                   AND r.owner_principal_id = {alias}.owner_principal_id
+                   AND r.reader_personality_instance_id = ${param}
+                   AND r.readable_personality_instance_id = {alias}.personality_instance_id
+            )
+        )",
+    )
 }
 
 const ANCESTORS_SQL: &str = r"
@@ -270,19 +275,7 @@ walk AS (
              AND m.owner_principal_kind = e.owner_principal_kind
              AND m.owner_principal_id = e.owner_principal_id
              AND m.tombstoned_at IS NULL
-             AND (
-                 $6::uuid IS NULL
-                 OR m.kind IS NULL
-                 OR m.personality_instance_id = $6
-                 OR EXISTS (
-                     SELECT 1
-                       FROM proxima_core.read_scope_matrix r
-	                      WHERE r.owner_principal_kind = m.owner_principal_kind
-	                        AND r.owner_principal_id = m.owner_principal_id
-	                        AND r.reader_personality_instance_id = $6
-	                        AND r.readable_personality_instance_id = m.personality_instance_id
-	                 )
-             )
+             {reader_filter}
       )
     UNION ALL
     SELECT w.distance + 1,
@@ -304,19 +297,7 @@ walk AS (
              AND m.owner_principal_kind = e.owner_principal_kind
              AND m.owner_principal_id = e.owner_principal_id
              AND m.tombstoned_at IS NULL
-             AND (
-                 $6::uuid IS NULL
-                 OR m.kind IS NULL
-                 OR m.personality_instance_id = $6
-                 OR EXISTS (
-                     SELECT 1
-                       FROM proxima_core.read_scope_matrix r
-	                      WHERE r.owner_principal_kind = m.owner_principal_kind
-	                        AND r.owner_principal_id = m.owner_principal_id
-	                        AND r.reader_personality_instance_id = $6
-	                        AND r.readable_personality_instance_id = m.personality_instance_id
-	                 )
-             )
+             {reader_filter}
       )
 )
 SELECT distance, edge_id, relation, relation_class,
@@ -361,19 +342,7 @@ walk AS (
              AND m.owner_principal_kind = e.owner_principal_kind
              AND m.owner_principal_id = e.owner_principal_id
              AND m.tombstoned_at IS NULL
-             AND (
-                 $6::uuid IS NULL
-                 OR m.kind IS NULL
-                 OR m.personality_instance_id = $6
-                 OR EXISTS (
-                     SELECT 1
-                       FROM proxima_core.read_scope_matrix r
-	                      WHERE r.owner_principal_kind = m.owner_principal_kind
-	                        AND r.owner_principal_id = m.owner_principal_id
-	                        AND r.reader_personality_instance_id = $6
-	                        AND r.readable_personality_instance_id = m.personality_instance_id
-	                 )
-             )
+             {reader_filter}
       )
     UNION ALL
     SELECT w.distance + 1,
@@ -395,19 +364,7 @@ walk AS (
              AND m.owner_principal_kind = e.owner_principal_kind
              AND m.owner_principal_id = e.owner_principal_id
              AND m.tombstoned_at IS NULL
-             AND (
-                 $6::uuid IS NULL
-                 OR m.kind IS NULL
-                 OR m.personality_instance_id = $6
-                 OR EXISTS (
-                     SELECT 1
-                       FROM proxima_core.read_scope_matrix r
-	                      WHERE r.owner_principal_kind = m.owner_principal_kind
-	                        AND r.owner_principal_id = m.owner_principal_id
-	                        AND r.reader_personality_instance_id = $6
-	                        AND r.readable_personality_instance_id = m.personality_instance_id
-	                 )
-             )
+             {reader_filter}
       )
 )
 SELECT distance, edge_id, relation, relation_class,

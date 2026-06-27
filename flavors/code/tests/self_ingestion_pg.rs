@@ -190,6 +190,7 @@ async fn self_ingestion_streams_proxima_main() {
                     goal_ids: Vec::new(),
                     edge_ids: Vec::new(),
                     stateful_heads: Vec::new(),
+                    reader_personality_instance_id: None,
                 },
             )
             .await?;
@@ -246,6 +247,7 @@ async fn self_ingestion_streams_proxima_main() {
                     goal_ids: Vec::new(),
                     edge_ids: Vec::new(),
                     stateful_heads: Vec::new(),
+                    reader_personality_instance_id: None,
                 },
             )
             .await?;

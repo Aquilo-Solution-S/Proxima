@@ -878,6 +878,7 @@ async fn query_filter_abstraction_returns_empty() {
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
+            reader_personality_instance_id: None,
         };
         let resp = engine
             .query(
@@ -941,6 +942,7 @@ async fn query_goals_filter_by_schema_id() {
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
+            reader_personality_instance_id: None,
         };
         let resp = engine.query(&authz, &req_fact_filter).await?;
         assert!(
@@ -963,6 +965,7 @@ async fn query_goals_filter_by_schema_id() {
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
+            reader_personality_instance_id: None,
         };
         let resp = engine.query(&authz, &req_goal_filter).await?;
         assert_eq!(resp.goals.len(), 1);
@@ -981,6 +984,7 @@ async fn query_goals_filter_by_schema_id() {
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
+            reader_personality_instance_id: None,
         };
         let resp = engine.query(&authz, &req_unknown).await?;
         assert!(resp.goals.is_empty());
@@ -1083,6 +1087,7 @@ async fn query_filter_nonexistent_schema_returns_empty() {
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
+            reader_personality_instance_id: None,
         };
         let resp = engine
             .query(

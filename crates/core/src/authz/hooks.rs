@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use crate::access::{GrantSubject, Relation, Visibility};
+use crate::access::{EntryVisibilityTarget, GrantSubject, Relation};
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::{MemoryId, Owner};
@@ -16,12 +16,15 @@ pub enum AuthzOutcome {
     DeniedGrant,
     DeniedVeto,
     DeniedResolution,
+    DeniedInternal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthzOperation {
     /// Ordinary relation-gated owner/space/entry access.
     Relation,
+    /// Resource-scoped entry read.
+    EntryRead { memory_id: MemoryId },
     /// Grant-management operations carry their target for flavor policy.
     ShareEntry {
         memory_id: MemoryId,
@@ -30,7 +33,7 @@ pub enum AuthzOperation {
     },
     SetEntryVisibility {
         memory_id: MemoryId,
-        target: Visibility,
+        target: EntryVisibilityTarget,
     },
     SetSpaceBinding {
         subject: GrantSubject,

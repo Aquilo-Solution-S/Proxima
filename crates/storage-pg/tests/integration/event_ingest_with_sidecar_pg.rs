@@ -122,7 +122,7 @@ async fn seed_space_grant(
     relation: Relation,
     subject: &Principal,
 ) {
-    pg.insert_access_grant(&NewAccessGrant {
+    pg.insert_space_binding(&NewAccessGrant {
         space_owner: space_owner.clone(),
         resource: GrantResource::Space,
         relation,

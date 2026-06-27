@@ -49,7 +49,7 @@ async fn space_grant_resolves_dominates_and_revokes() -> Result<(), Box<dyn std:
 
     let space = user();
     let alice = user();
-    pg.insert_access_grant(&space_grant(
+    pg.insert_space_binding(&space_grant(
         &space,
         Relation::Editor,
         GrantSubject::Principal(alice.clone()),
@@ -69,7 +69,7 @@ async fn space_grant_resolves_dominates_and_revokes() -> Result<(), Box<dyn std:
     );
 
     // Re-grant is idempotent (ON CONFLICT DO NOTHING).
-    pg.insert_access_grant(&space_grant(
+    pg.insert_space_binding(&space_grant(
         &space,
         Relation::Editor,
         GrantSubject::Principal(alice.clone()),
@@ -109,9 +109,9 @@ async fn member_inherits_group_space_binding() -> Result<(), Box<dyn std::error:
     let bob = user();
 
     // (space:X, editor, group:eng) and (space:eng, member, principal:bob)
-    pg.insert_access_grant(&space_grant(&space, Relation::Editor, group_subject(&eng)))
+    pg.insert_space_binding(&space_grant(&space, Relation::Editor, group_subject(&eng)))
         .await?;
-    pg.insert_access_grant(&space_grant(
+    pg.insert_space_binding(&space_grant(
         &eng,
         Relation::Member,
         GrantSubject::Principal(bob.clone()),
@@ -183,13 +183,16 @@ async fn entry_grant_visibility_and_existence() -> Result<(), Box<dyn std::error
     let entry = ingest_test_fact(&pg, &owner, "shared note").await;
     let friend = user();
 
-    pg.insert_access_grant(&NewAccessGrant {
-        space_owner: owner.clone(),
-        resource: GrantResource::Memory(entry),
-        relation: Relation::Viewer,
-        subject: GrantSubject::Principal(friend.clone()),
-        granted_by: pers(),
-    })
+    pg.share_entry_atomic(
+        &NewAccessGrant {
+            space_owner: owner.clone(),
+            resource: GrantResource::Memory(entry),
+            relation: Relation::Viewer,
+            subject: GrantSubject::Principal(friend.clone()),
+            granted_by: pers(),
+        },
+        false,
+    )
     .await?;
 
     let rels = pg.resolve_entry_relations(entry, &friend).await?;
@@ -221,19 +224,25 @@ async fn entry_grant_visibility_and_existence() -> Result<(), Box<dyn std::error
     assert_eq!(pg.count_active_entry_grants(&owner, entry).await?, 0);
     assert!(pg.resolve_entry_relations(entry, &friend).await?.is_empty());
 
-    // Existence trigger: a grant on a nonexistent memory is rejected.
+    // Existence trigger: a grant on a nonexistent memory is rejected, and the
+    // FK violation maps to a clean NotFound (not an internal 500).
     let bogus = MemoryId::new(Uuid::now_v7());
-    assert!(
-        pg.insert_access_grant(&NewAccessGrant {
-            space_owner: owner.clone(),
-            resource: GrantResource::Memory(bogus),
-            relation: Relation::Viewer,
-            subject: GrantSubject::Principal(friend.clone()),
-            granted_by: pers(),
-        })
+    let err = pg
+        .share_entry_atomic(
+            &NewAccessGrant {
+                space_owner: owner.clone(),
+                resource: GrantResource::Memory(bogus),
+                relation: Relation::Viewer,
+                subject: GrantSubject::Principal(friend.clone()),
+                granted_by: pers(),
+            },
+            false,
+        )
         .await
-        .is_err(),
-        "grant on absent memory rejected by existence trigger"
+        .expect_err("grant on absent memory rejected by existence trigger");
+    assert!(
+        matches!(err, proxima_core::StorageError::NotFound),
+        "absent-memory grant maps to NotFound, got {err:?}"
     );
 
     drop_db(&db).await?;
