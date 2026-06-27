@@ -35,10 +35,10 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `draft.principal`,
-    /// lacks the source-ingest role, or lacks a `memory.write` grant on the
-    /// owner space; `UnknownSchema` when the Fact schema or provided citation
-    /// schemas are not registered; or `Internal` when the atomic ingest fails.
+    /// Returns `Forbidden` when the context cannot access `draft.principal` or
+    /// lacks [`Relation::Ingest`] on the owner space; `UnknownSchema` when the
+    /// Fact schema or provided citation schemas are not registered; or
+    /// `Internal` when the atomic ingest fails.
     pub async fn event_ingest(
         &self,
         authz: &AuthzContext,
@@ -485,8 +485,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when `authz` cannot access the log Owner, lacks the
-    /// source-ingest role, or lacks a `memory.write` grant on the owner space;
+    /// Returns `Forbidden` when `authz` cannot access the log Owner or lacks
+    /// [`Relation::Ingest`] on the owner space;
     /// or `Internal` when the atomic write fails.
     pub async fn persist_mcp_call(
         &self,
@@ -512,9 +512,8 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `NotFound` when the batch doesn't exist or belongs to a
-    /// different owner; `Forbidden` when the context cannot access `owner`,
-    /// lacks the source-ingest role, or lacks a `memory.write` grant on the
-    /// owner space.
+    /// different owner; `Forbidden` when the context cannot access `owner` or
+    /// lacks [`Relation::Ingest`] on the owner space.
     pub async fn close_batch(
         &self,
         authz: &AuthzContext,

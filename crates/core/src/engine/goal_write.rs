@@ -81,8 +81,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when `authz` cannot access the request Owner,
-    /// lacks `graph_write`, or lacks a `memory.write` grant on the owner space;
+    /// Returns `Forbidden` when `authz` cannot access the request Owner or
+    /// lacks [`Relation::Editor`] on the owner space;
     /// `UnknownSchema` when the typed [`GoalPayload`] schema is not registered
     /// as a Goal; `InvalidArgument` for malformed title/text/evidence/parent
     /// references; or `Internal` for storage failures.
@@ -104,8 +104,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when `authz` cannot access the request Owner,
-    /// lacks `graph_write`, or lacks a `memory.write` grant on the owner space;
+    /// Returns `Forbidden` when `authz` cannot access the request Owner or
+    /// lacks [`Relation::Editor`] on the owner space;
     /// `UnknownSchema` when the payload schema is not registered as a Goal;
     /// `InvalidArgument` for malformed target/evidence/parent references; or
     /// `Internal` for storage failures.
@@ -146,8 +146,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when `authz` cannot access the request Owner,
-    /// lacks `graph_write`, or lacks a `memory.write` grant; `InvalidArgument`
+    /// Returns `Forbidden` when `authz` cannot access the request Owner or
+    /// lacks [`Relation::Editor`]; `InvalidArgument`
     /// or `NotFound` for rejected goal references; or `Internal` for storage
     /// failures.
     pub async fn transition_goal(
@@ -178,8 +178,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when `authz` cannot access the request Owner,
-    /// lacks `graph_write`, or lacks a `memory.write` grant; `InvalidArgument`
+    /// Returns `Forbidden` when `authz` cannot access the request Owner or
+    /// lacks [`Relation::Editor`]; `InvalidArgument`
     /// or `NotFound` for rejected references; or `Internal` for storage
     /// failures.
     pub async fn mark_goal_achieved(
@@ -210,8 +210,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when `authz` cannot access the request Owner,
-    /// lacks `graph_write`, or lacks a `memory.write` grant; `UnknownSchema`
+    /// Returns `Forbidden` when `authz` cannot access the request Owner or
+    /// lacks [`Relation::Editor`]; `UnknownSchema`
     /// when the replacement payload schema is not registered as a Goal;
     /// `InvalidArgument` or `NotFound` for rejected references; or `Internal`
     /// for storage failures.
@@ -244,8 +244,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when `authz` cannot access the request Owner,
-    /// lacks `graph_write`, or lacks a `memory.write` grant; `UnknownSchema`
+    /// Returns `Forbidden` when `authz` cannot access the request Owner or
+    /// lacks [`Relation::Editor`]; `UnknownSchema`
     /// when any child payload schema is not registered as a Goal;
     /// `InvalidArgument` or `NotFound` for rejected references; or `Internal`
     /// for storage failures.

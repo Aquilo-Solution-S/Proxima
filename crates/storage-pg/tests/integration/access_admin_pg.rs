@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use crate::common::personality::ingest_test_fact;
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 
-use proxima_core::access::{GrantResource, Relation, RemoveOwnerOutcome, Visibility};
+use proxima_core::access::{GrantResource, GrantSubject, Relation, RemoveOwnerOutcome, Visibility};
 use proxima_core::engine::GetMemoryReadRequest;
 use proxima_core::error::ErrorCode;
 use proxima_core::verbs::schema::FlavorRegistryFrozen;
@@ -76,8 +76,7 @@ async fn owner_shares_entry_then_unshares() -> Result<(), Box<dyn std::error::Er
         .share_entry(
             &owner_authz(&owner),
             entry,
-            friend.clone(),
-            false,
+            GrantSubject::Principal(friend.clone()),
             Relation::Viewer,
         )
         .await?;
@@ -91,7 +90,11 @@ async fn owner_shares_entry_then_unshares() -> Result<(), Box<dyn std::error::Er
 
     // Owner unshares; the friend is denied again.
     engine
-        .unshare_entry(&owner_authz(&owner), entry, friend.clone(), false)
+        .unshare_entry(
+            &owner_authz(&owner),
+            entry,
+            GrantSubject::Principal(friend.clone()),
+        )
         .await?;
     let err = engine
         .get_memory(&granted_authz(&friend), &read(entry))
@@ -118,8 +121,7 @@ async fn non_owner_cannot_manage_grants() -> Result<(), Box<dyn std::error::Erro
         .set_space_binding(
             &owner_authz(&owner),
             owner.clone(),
-            editor.clone(),
-            false,
+            GrantSubject::Principal(editor.clone()),
             Relation::Editor,
         )
         .await?;
@@ -129,8 +131,7 @@ async fn non_owner_cannot_manage_grants() -> Result<(), Box<dyn std::error::Erro
         .share_entry(
             &granted_authz(&editor),
             entry,
-            victim.clone(),
-            false,
+            GrantSubject::Principal(victim.clone()),
             Relation::Viewer,
         )
         .await
@@ -148,8 +149,7 @@ async fn non_owner_cannot_manage_grants() -> Result<(), Box<dyn std::error::Erro
         .set_space_binding(
             &granted_authz(&user()),
             owner.clone(),
-            victim,
-            false,
+            GrantSubject::Principal(victim),
             Relation::Editor,
         )
         .await
@@ -169,7 +169,12 @@ async fn share_rejects_owner_relation() -> Result<(), Box<dyn std::error::Error>
     let owner = owner_fixture();
     let entry = ingest_test_fact(&pg, &owner, "no owner grant").await;
     let err = engine
-        .share_entry(&owner_authz(&owner), entry, user(), false, Relation::Owner)
+        .share_entry(
+            &owner_authz(&owner),
+            entry,
+            GrantSubject::Principal(user()),
+            Relation::Owner,
+        )
         .await
         .expect_err("owner relation is not grantable");
     assert_eq!(err.code, ErrorCode::InvalidArgument);
@@ -241,8 +246,7 @@ async fn space_binding_grants_then_revokes_entry_access() -> Result<(), Box<dyn 
         .set_space_binding(
             &owner_authz(&owner),
             owner.clone(),
-            member.clone(),
-            false,
+            GrantSubject::Principal(member.clone()),
             Relation::Viewer,
         )
         .await?;
@@ -256,7 +260,11 @@ async fn space_binding_grants_then_revokes_entry_access() -> Result<(), Box<dyn 
 
     // Revoking the binding denies access.
     engine
-        .revoke_space_binding(&owner_authz(&owner), owner.clone(), member.clone(), false)
+        .revoke_space_binding(
+            &owner_authz(&owner),
+            owner.clone(),
+            GrantSubject::Principal(member.clone()),
+        )
         .await?;
     let err = engine
         .get_memory(&granted_authz(&member), &read(entry))
@@ -315,8 +323,73 @@ async fn group_owner_provisioning_and_orphan_guard() -> Result<(), Box<dyn std::
     assert!(
         grants
             .iter()
-            .any(|g| g.relation == Relation::Owner && g.subject == p2)
+            .any(|g| g.relation == Relation::Owner
+                && g.subject == GrantSubject::Principal(p2.clone()))
     );
+
+    drop_db(&db).await?;
+    Ok(())
+}
+
+/// Regression (security): the generic `revoke_space_binding` must NOT be able to
+/// strip an `owner` row — that would bypass the `remove_space_owner` last-owner
+/// orphan guard. Owner rows are managed solely by `add_owner`/`remove_owner`.
+#[tokio::test]
+async fn revoke_space_binding_cannot_remove_owner_rows() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db) = fresh_pg().await;
+    pg.run_migrations().await?;
+    let engine = engine_for(&pg);
+
+    let space = group();
+    let p1 = user();
+    let p2 = user();
+    engine
+        .init_space_owner(&owner_authz(&space), space.clone(), p1.clone())
+        .await?;
+    engine
+        .add_owner(&granted_authz(&p1), space.clone(), p2.clone())
+        .await?;
+
+    // Attempt to revoke p1 via the generic binding verb — it must leave the owner
+    // row intact (the verb only manages grantable relations).
+    engine
+        .revoke_space_binding(
+            &granted_authz(&p2),
+            space.clone(),
+            GrantSubject::Principal(p1.clone()),
+        )
+        .await?;
+    let grants = engine
+        .list_grants(&granted_authz(&p2), space.clone(), GrantResource::Space)
+        .await?;
+    assert_eq!(
+        grants
+            .iter()
+            .filter(|g| g.relation == Relation::Owner)
+            .count(),
+        2,
+        "revoke_space_binding must not remove owner rows"
+    );
+    assert!(
+        grants
+            .iter()
+            .any(|g| g.relation == Relation::Owner
+                && g.subject == GrantSubject::Principal(p1.clone())),
+        "p1 is still an owner after revoke_space_binding"
+    );
+
+    // The proper path still works and still guards the last owner.
+    assert_eq!(
+        engine
+            .remove_owner(&granted_authz(&p2), space.clone(), p1.clone())
+            .await?,
+        RemoveOwnerOutcome::Removed
+    );
+    let err = engine
+        .remove_owner(&granted_authz(&p2), space.clone(), p2.clone())
+        .await
+        .expect_err("last owner still guarded");
+    assert_eq!(err.code, ErrorCode::InvalidArgument);
 
     drop_db(&db).await?;
     Ok(())

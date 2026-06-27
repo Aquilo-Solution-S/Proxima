@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::common::{drop_db, fresh_pg, owner_fixture};
+use proxima_core::access::GrantSubject;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
@@ -125,8 +126,7 @@ async fn seed_space_grant(
         space_owner: space_owner.clone(),
         resource: GrantResource::Space,
         relation,
-        subject: subject.clone(),
-        subject_is_group: false,
+        subject: GrantSubject::Principal(subject.clone()),
         granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
     })
     .await

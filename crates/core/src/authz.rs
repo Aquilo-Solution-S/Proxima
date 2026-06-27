@@ -22,7 +22,9 @@ use crate::access::AccessScope;
 use crate::auth::{AuthError, Credentials};
 use crate::{Owner, Principal};
 
-pub use hooks::{AuthorizationHook, AuthzInput, AuthzOutcome, AuthzVeto, OwnerResolver};
+pub use hooks::{
+    AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, OwnerResolver,
+};
 
 /// WHO: the authorization currency for owner scoping.
 #[derive(Debug, Clone, PartialEq)]

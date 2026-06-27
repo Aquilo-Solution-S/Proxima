@@ -1,9 +1,9 @@
 use std::fmt::Debug;
 
-use crate::Owner;
-use crate::access::Relation;
+use crate::access::{Relation, Visibility};
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
+use crate::{MemoryId, Owner};
 
 /// Reason a hook denied an otherwise-allowed request.
 #[derive(Debug)]
@@ -13,10 +13,27 @@ pub struct AuthzVeto(pub String);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthzOutcome {
     Allowed,
-    DeniedRole,
     DeniedGrant,
     DeniedVeto,
     DeniedResolution,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthzOperation {
+    /// Ordinary relation-gated owner/space/entry access.
+    Relation,
+    /// Grant-management operations carry their target for flavor policy.
+    ShareEntry {
+        memory_id: MemoryId,
+        relation: Relation,
+    },
+    SetEntryVisibility {
+        memory_id: MemoryId,
+        target: Visibility,
+    },
+    SetSpaceBinding {
+        relation: Relation,
+    },
 }
 
 #[derive(Debug)]
@@ -25,6 +42,7 @@ pub struct AuthzInput<'a> {
     pub requested: &'a Owner,
     pub resolved: &'a Owner,
     pub relation: Relation,
+    pub operation: AuthzOperation,
 }
 
 /// At most one per composed app. Remap requested -> target owner; MAY deny.

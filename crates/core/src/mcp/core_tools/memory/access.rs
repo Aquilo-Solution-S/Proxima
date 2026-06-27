@@ -7,7 +7,7 @@ use crate::access::GrantResource;
 use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 
 use super::super::access_common::{
-    GrantOutput, RelationArg, StatusOutput, VisibilityArg, format_grant, parse_principal,
+    GrantOutput, RelationArg, StatusOutput, VisibilityArg, format_grant, parse_grant_subject,
 };
 use super::super::{DESTRUCTIVE_IDEMPOTENT, READ_ONLY, WRITE_IDEMPOTENT};
 
@@ -85,7 +85,7 @@ pub struct MemorySetVisibilityArgs {
         description = "Memory reference: F:<uuid>, A:<uuid>, P:<uuid>, raw uuid, or handle."
     )]
     pub memory: String,
-    #[schemars(description = "New visibility: private, shared, or public.")]
+    #[schemars(description = "New visibility: private or public.")]
     pub visibility: VisibilityArg,
 }
 
@@ -184,8 +184,7 @@ async fn share(ctx: McpToolCtx, args: MemoryShareArgs) -> Result<StatusOutput, M
         .share_entry(
             &ctx.authz,
             resolve_memory_reference(&ctx, &args.memory)?,
-            parse_principal(&args.subject)?,
-            args.subject_is_group,
+            parse_grant_subject(&args.subject, args.subject_is_group)?,
             args.relation.into(),
         )
         .await?;
@@ -200,8 +199,7 @@ async fn unshare(ctx: McpToolCtx, args: MemoryUnshareArgs) -> Result<StatusOutpu
         .unshare_entry(
             &ctx.authz,
             resolve_memory_reference(&ctx, &args.memory)?,
-            parse_principal(&args.subject)?,
-            args.subject_is_group,
+            parse_grant_subject(&args.subject, args.subject_is_group)?,
         )
         .await?;
     Ok(StatusOutput { ok: true })

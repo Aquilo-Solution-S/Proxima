@@ -112,6 +112,9 @@ impl Engine {
 
         let mut effective = req.search.clone();
         effective.principal = search_permit.owner().clone();
+        if let Some(subject_personality) = search_permit.subject_personality() {
+            effective.reader_personality_instance_id = Some(subject_personality);
+        }
         let memories = self
             .storage
             .search_memories(&effective, self.registry.search_projections())
@@ -191,7 +194,12 @@ impl Engine {
             });
         }
         let (memory_id, reader_personality_instance_id) = match permit.mode() {
-            PermitMode::OwnerScoped => (req.memory_id, req.reader_personality_instance_id),
+            PermitMode::OwnerScoped {
+                subject_personality,
+            } => (
+                req.memory_id,
+                (*subject_personality).or(req.reader_personality_instance_id),
+            ),
             PermitMode::EntryScoped {
                 resource,
                 subject_personality,

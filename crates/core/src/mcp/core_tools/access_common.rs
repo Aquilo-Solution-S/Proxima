@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::access::{AccessGrantRow, Relation, Visibility};
+use crate::access::{AccessGrantRow, GrantSubject, Relation, Visibility};
 use crate::mcp::McpToolError;
 use crate::{GroupId, OwnerPrincipalKind, Principal, UserId};
 
@@ -33,7 +33,6 @@ impl From<RelationArg> for Relation {
 #[serde(rename_all = "snake_case")]
 pub enum VisibilityArg {
     Private,
-    Shared,
     Public,
 }
 
@@ -41,7 +40,6 @@ impl From<VisibilityArg> for Visibility {
     fn from(value: VisibilityArg) -> Self {
         match value {
             VisibilityArg::Private => Self::Private,
-            VisibilityArg::Shared => Self::Shared,
             VisibilityArg::Public => Self::Public,
         }
     }
@@ -90,6 +88,26 @@ pub(super) fn format_principal(principal: &Principal) -> String {
     }
 }
 
+pub(super) fn parse_grant_subject(
+    raw: &str,
+    subject_is_group: bool,
+) -> Result<GrantSubject, McpToolError> {
+    let principal = parse_principal(raw)?;
+    if !subject_is_group {
+        return Ok(GrantSubject::Principal(principal));
+    }
+    match principal {
+        Principal::Group(group) => Ok(GrantSubject::Group(group)),
+        Principal::User(_) => Err(McpToolError::InvalidInput(
+            "group-inheriting subjects must be group:<uuid>".into(),
+        )),
+    }
+}
+
+pub(super) fn format_grant_subject(subject: &GrantSubject) -> String {
+    format_principal(&subject.principal())
+}
+
 pub(super) fn format_relation(relation: Relation) -> String {
     match relation {
         Relation::Owner => "owner",
@@ -105,7 +123,7 @@ pub(super) fn format_relation(relation: Relation) -> String {
 pub(super) fn format_grant(row: &AccessGrantRow) -> GrantOutput {
     GrantOutput {
         relation: format_relation(row.relation),
-        subject: format_principal(&row.subject),
-        subject_is_group: row.subject_is_group,
+        subject: format_grant_subject(&row.subject),
+        subject_is_group: row.subject.is_group(),
     }
 }

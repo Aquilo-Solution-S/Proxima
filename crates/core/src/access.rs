@@ -10,7 +10,7 @@
 //!
 //! See `docs/superpowers/specs/2026-06-27-entry-access-model-design.md`.
 
-use crate::{MemoryId, Owner, PersonalityInstanceId, Principal};
+use crate::{GroupId, MemoryId, Owner, PersonalityInstanceId, Principal};
 
 /// The relation a grant confers, forming a partial domination lattice.
 ///
@@ -26,7 +26,8 @@ pub enum Relation {
     /// Space/personality **config** only (wake entries, personality config,
     /// read-scope) — NOT memory read/write, NOT grant-management.
     Admin,
-    /// Read + search + write + publish. Dominates [`Relation::Viewer`].
+    /// Read + search + write authoring. Publishing an entry to the marketplace
+    /// is an owner act through `set_entry_visibility`.
     Editor,
     /// Read + search.
     Viewer,
@@ -113,14 +114,38 @@ pub enum GrantResource {
     Memory(MemoryId),
 }
 
+/// Grant subject. A group can be granted as an exact principal, or as a group
+/// whose direct members inherit the grant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GrantSubject {
+    /// The exact principal (a User, or a Group acting as itself — no member
+    /// expansion).
+    Principal(Principal),
+    /// A Group whose members inherit (one-level member expansion).
+    Group(GroupId),
+}
+
+impl GrantSubject {
+    #[must_use]
+    pub const fn is_group(&self) -> bool {
+        matches!(self, Self::Group(_))
+    }
+
+    #[must_use]
+    pub fn principal(&self) -> Principal {
+        match self {
+            Self::Principal(principal) => principal.clone(),
+            Self::Group(group) => Principal::Group(*group),
+        }
+    }
+}
+
 /// One active grant row resolved for an access decision or a "who can access"
-/// listing. `subject_is_group` distinguishes a collective `group` subject
-/// (members inherit) from a `principal` subject (the exact principal).
+/// listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessGrantRow {
     pub relation: Relation,
-    pub subject: Principal,
-    pub subject_is_group: bool,
+    pub subject: GrantSubject,
 }
 
 /// The owner-space + visibility of a live entry, resolved inside the storage
@@ -139,8 +164,7 @@ pub struct NewAccessGrant {
     pub space_owner: Owner,
     pub resource: GrantResource,
     pub relation: Relation,
-    pub subject: Principal,
-    pub subject_is_group: bool,
+    pub subject: GrantSubject,
     pub granted_by: PersonalityInstanceId,
 }
 
@@ -151,8 +175,7 @@ pub struct GrantSelector {
     pub space_owner: Owner,
     pub resource: GrantResource,
     pub relation: Option<Relation>,
-    pub subject: Principal,
-    pub subject_is_group: bool,
+    pub subject: GrantSubject,
 }
 
 /// Result of `remove_space_owner` — the last-owner orphan guard makes this a
