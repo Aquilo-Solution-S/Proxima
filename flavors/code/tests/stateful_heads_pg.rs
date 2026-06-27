@@ -232,6 +232,7 @@ async fn heads_only_returns_latest_per_natural_key() {
         // registered NK columns on FileRevisionV1.
         let req = QueryRequest {
             principal: owner.clone(),
+            read_owners: vec![owner.clone()],
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -270,6 +271,7 @@ async fn heads_only_returns_latest_per_natural_key() {
         // IncludeSuperseded — all 4 rows visible.
         let req_all = QueryRequest {
             principal: owner.clone(),
+            read_owners: vec![owner.clone()],
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
@@ -332,6 +334,7 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
 
         let req = QueryRequest {
             principal: owner.clone(),
+            read_owners: vec![owner.clone()],
             entity_kind: None,
             schema_id: Some(SchemaId::new(CommitV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -400,6 +403,7 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
 
         let req = QueryRequest {
             principal: Principal::User(user),
+            read_owners: vec![owner.clone()],
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,

@@ -5,9 +5,9 @@ use crate::error::ProtocolError;
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, StorageError};
 use crate::verbs::event_ingest::EventDraft;
 use crate::{
-    AgentNoteV1, CORE_SUPERSEDES_RELATION, EdgeAuthorshipKind, EdgeId, EndpointBinding, EntityKind,
-    FactPayload, MemoryId, MemoryOperatorKind, Owner, PersonalityInstanceId, RegisteredRelation,
-    SchemaId, SchemaVersion, SidecarPayload, SourceBatchId,
+    AgentNoteV1, CORE_SUPERSEDES_RELATION, EdgeAuthorshipKind, EdgeId, EndpointBinding, EntityId,
+    EntityKind, FactPayload, MemoryId, MemoryOperatorKind, Owner, PersonalityInstanceId,
+    RegisteredRelation, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId,
 };
 
 #[derive(Debug, Clone)]
@@ -224,11 +224,20 @@ impl Engine {
                 "source read and publish permits resolved to different owners",
             ));
         }
+        let entry_read = self
+            .authorize_entry_read(authz, EntityId::Memory(req.memory_id))
+            .await?;
+        if entry_read.owner() != source_read.owner() {
+            return Err(ProtocolError::invalid_argument(
+                "memory_id",
+                "memory not found",
+            ));
+        }
 
         let sidecars = self.sidecar_specs();
         let snapshot = self
             .storage()
-            .load_memory_by_id(source_read.owner(), req.memory_id, None, &sidecars)
+            .load_memory_by_id(req.memory_id, None, &sidecars)
             .await
             .map_err(|err| ProtocolError::internal(err.to_string()))?
             .ok_or_else(|| ProtocolError::invalid_argument("memory_id", "memory not found"))?;

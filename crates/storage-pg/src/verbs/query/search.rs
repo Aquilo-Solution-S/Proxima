@@ -10,8 +10,8 @@ use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
 };
 use proxima_core::{
-    MemoryId, PersonalityInstanceId, SchemaId, SearchProjectionColumnKind, StorageError,
-    WakeChainDepth,
+    MemoryId, OwnerPrincipalKind, PersonalityInstanceId, Principal, SchemaId,
+    SearchProjectionColumnKind, StorageError, WakeChainDepth,
 };
 use sqlx::PgPool;
 
@@ -422,8 +422,14 @@ fn push_base_memory_filters(
     filters: CandidateFilterParams,
 ) {
     sql.push_str(
-        " WHERE m.owner_principal_kind = $1
-           AND m.owner_principal_id = $2
+        " WHERE EXISTS (
+              SELECT 1
+                FROM proxima_core.entity_owner eo
+                JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
+                  ON eo.owner_principal_kind = s.kind
+                 AND eo.owner_principal_id = s.id
+               WHERE eo.entity_id = m.memory_id
+           )
            AND m.tombstoned_at IS NULL",
     );
     match req.kind {
@@ -453,8 +459,14 @@ fn push_sidecar_memory_filters(
 ) {
     write!(
         sql,
-        " WHERE m.owner_principal_kind = $1
-           AND m.owner_principal_id = $2
+        " WHERE EXISTS (
+              SELECT 1
+                FROM proxima_core.entity_owner eo
+                JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
+                  ON eo.owner_principal_kind = s.kind
+                 AND eo.owner_principal_id = s.id
+               WHERE eo.entity_id = m.memory_id
+           )
            AND m.tombstoned_at IS NULL
            AND m.schema_id = ${schema_param}
            AND m.schema_version = ${version_param}"
@@ -559,10 +571,22 @@ fn bind_common<'q>(
     mut q: sqlx::query::QueryAs<'q, sqlx::Postgres, SearchRow, sqlx::postgres::PgArguments>,
     req: &'q MemorySearchRequest,
 ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, SearchRow, sqlx::postgres::PgArguments> {
-    let (owner_kind, owner_principal_id) = req.principal.columns();
-    q = q.bind(owner_kind);
-    q = q.bind(owner_principal_id);
+    let (read_owner_kinds, read_owner_ids) = read_owner_columns(&req.read_owners);
+    q = q.bind(read_owner_kinds);
+    q = q.bind(read_owner_ids);
     q
+}
+
+fn read_owner_columns(read_owners: &[Principal]) -> (Vec<OwnerPrincipalKind>, Vec<uuid::Uuid>) {
+    let kinds = read_owners
+        .iter()
+        .map(|principal| principal.columns().0)
+        .collect();
+    let ids = read_owners
+        .iter()
+        .map(|principal| principal.columns().1)
+        .collect();
+    (kinds, ids)
 }
 
 fn bind_filter_params<'q>(

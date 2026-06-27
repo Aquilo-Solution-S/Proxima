@@ -8,16 +8,14 @@ use proxima_core::verbs::query::{
     TombstoneFilter,
 };
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
-use proxima_core::{
-    MemoryId, OwnerPrincipalKind, SchemaId, SchemaVersion, SidecarPayload, StorageError,
-};
+use proxima_core::{MemoryId, SchemaId, SchemaVersion, SidecarPayload, StorageError};
 use sqlx::PgPool;
 
 use crate::error::internal;
 use crate::sidecars::{PgSidecarKey, PgSidecarRegistryFrozen};
 
 use super::edges::query_edges;
-use super::goals::query_goals;
+use super::goals::{query_goals, read_owner_columns};
 use super::rows::{MemoryRowDb, memory_row_from_db, read_seq_high_water, validate_stateful_filter};
 
 #[derive(Debug, Clone)]
@@ -34,7 +32,8 @@ pub(crate) async fn query_memories(
     req: &QueryRequest,
     schemas: &[SchemaInfo],
 ) -> Result<QueryResponse, StorageError> {
-    let (owner_kind, owner_principal_id) = req.principal.columns();
+    let (seq_owner_kind, seq_owner_principal_id) = req.principal.columns();
+    let (read_owner_kinds, read_owner_ids) = read_owner_columns(&req.read_owners);
     let id_hydration =
         !req.memory_ids.is_empty() || !req.goal_ids.is_empty() || !req.edge_ids.is_empty();
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
@@ -44,13 +43,14 @@ pub(crate) async fn query_memories(
             goals: query_goals(
                 pool,
                 req,
-                owner_kind,
-                owner_principal_id,
+                &read_owner_kinds,
+                &read_owner_ids,
                 schema_id_filter.as_deref(),
             )
             .await?,
             edges: Vec::new(),
-            seq_high_water: read_seq_high_water(pool, owner_kind, owner_principal_id).await?,
+            seq_high_water: read_seq_high_water(pool, seq_owner_kind, seq_owner_principal_id)
+                .await?,
         });
     }
 
@@ -63,7 +63,7 @@ pub(crate) async fn query_memories(
          FROM proxima_core.memories m",
     );
 
-    // Bindings: $1=owner_kind, $2=owner_principal_id.
+    // Bindings: $1=read_owner_kinds, $2=read_owner_ids.
     let mut next_param = 3;
     let schema = schema_id_filter.as_ref().map(|_| {
         let param = next_param;
@@ -102,8 +102,14 @@ pub(crate) async fn query_memories(
     }
 
     sql.push_str(
-        " WHERE m.owner_principal_kind = $1 \
-          AND m.owner_principal_id = $2 \
+        " WHERE EXISTS (
+            SELECT 1
+              FROM proxima_core.entity_owner eo
+              JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
+                ON eo.owner_principal_kind = s.kind
+               AND eo.owner_principal_id = s.id
+             WHERE eo.entity_id = m.memory_id
+          ) \
           AND m.tombstoned_at IS NULL",
     );
 
@@ -127,8 +133,8 @@ pub(crate) async fn query_memories(
     sql.push_str(&u64::from(req.limit).to_string());
 
     let mut q = sqlx::query_as::<_, MemoryRowDb>(&sql)
-        .bind(owner_kind)
-        .bind(owner_principal_id);
+        .bind(&read_owner_kinds)
+        .bind(&read_owner_ids);
     if let Some(sid) = &schema_id_filter {
         q = q.bind(sid.clone());
     }
@@ -160,8 +166,8 @@ pub(crate) async fn query_memories(
         query_goals(
             pool,
             req,
-            owner_kind,
-            owner_principal_id,
+            &read_owner_kinds,
+            &read_owner_ids,
             schema_id_filter.as_deref(),
         )
         .await?
@@ -174,14 +180,14 @@ pub(crate) async fn query_memories(
     let edges = query_edges(
         pool,
         req,
-        owner_kind,
-        owner_principal_id,
+        &read_owner_kinds,
+        &read_owner_ids,
         &visible_memory_ids,
         &visible_goal_ids,
         schemas,
     )
     .await?;
-    let seq_high_water = read_seq_high_water(pool, owner_kind, owner_principal_id).await?;
+    let seq_high_water = read_seq_high_water(pool, seq_owner_kind, seq_owner_principal_id).await?;
 
     Ok(QueryResponse {
         memories,
@@ -229,11 +235,12 @@ async fn load_row_payloads_batch(
     Ok(rows.into_iter().flatten().collect())
 }
 
+#[allow(dead_code)]
 pub(super) async fn visible_ids_for(
     pool: &PgPool,
     req: &QueryRequest,
-    owner_kind: OwnerPrincipalKind,
-    owner_principal_id: uuid::Uuid,
+    read_owner_kinds: &[proxima_core::OwnerPrincipalKind],
+    read_owner_ids: &[uuid::Uuid],
     candidate_memory_ids: &[uuid::Uuid],
     candidate_goal_ids: &[uuid::Uuid],
     schemas: &[SchemaInfo],
@@ -241,8 +248,8 @@ pub(super) async fn visible_ids_for(
     let memory_ids = query_visible_memory_ids(
         pool,
         req,
-        owner_kind,
-        owner_principal_id,
+        read_owner_kinds,
+        read_owner_ids,
         candidate_memory_ids,
         schemas,
     )
@@ -250,19 +257,20 @@ pub(super) async fn visible_ids_for(
     let goal_ids = query_visible_goal_ids(
         pool,
         req,
-        owner_kind,
-        owner_principal_id,
+        read_owner_kinds,
+        read_owner_ids,
         candidate_goal_ids,
     )
     .await?;
     Ok((memory_ids, goal_ids))
 }
 
+#[allow(dead_code)]
 async fn query_visible_memory_ids(
     pool: &PgPool,
     req: &QueryRequest,
-    owner_kind: OwnerPrincipalKind,
-    owner_principal_id: uuid::Uuid,
+    read_owner_kinds: &[proxima_core::OwnerPrincipalKind],
+    read_owner_ids: &[uuid::Uuid],
     candidate_memory_ids: &[uuid::Uuid],
     schemas: &[SchemaInfo],
 ) -> Result<HashSet<uuid::Uuid>, StorageError> {
@@ -286,8 +294,14 @@ async fn query_visible_memory_ids(
     }
 
     sql.push_str(
-        " WHERE m.owner_principal_kind = $1 \
-          AND m.owner_principal_id = $2 \
+        " WHERE EXISTS (
+            SELECT 1
+              FROM proxima_core.entity_owner eo
+              JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
+                ON eo.owner_principal_kind = s.kind
+               AND eo.owner_principal_id = s.id
+             WHERE eo.entity_id = m.memory_id
+          ) \
           AND m.tombstoned_at IS NULL",
     );
     sql.push_str(" AND m.memory_id = ANY($3::uuid[])");
@@ -320,8 +334,8 @@ async fn query_visible_memory_ids(
     push_reader_visibility_filter(&mut sql, "m", reader_param);
 
     let mut q = sqlx::query_as::<_, (uuid::Uuid,)>(&sql)
-        .bind(owner_kind)
-        .bind(owner_principal_id)
+        .bind(read_owner_kinds)
+        .bind(read_owner_ids)
         .bind(candidate_memory_ids);
     if let Some(sid) = &schema_id_filter {
         q = q.bind(sid.clone());
@@ -337,11 +351,12 @@ async fn query_visible_memory_ids(
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
+#[allow(dead_code)]
 async fn query_visible_goal_ids(
     pool: &PgPool,
     req: &QueryRequest,
-    owner_kind: OwnerPrincipalKind,
-    owner_principal_id: uuid::Uuid,
+    read_owner_kinds: &[proxima_core::OwnerPrincipalKind],
+    read_owner_ids: &[uuid::Uuid],
     candidate_goal_ids: &[uuid::Uuid],
 ) -> Result<HashSet<uuid::Uuid>, StorageError> {
     if candidate_goal_ids.is_empty()
@@ -354,8 +369,14 @@ async fn query_visible_goal_ids(
     }
     let mut sql = String::from(
         "SELECT g.goal_id FROM proxima_core.goals g \
-         WHERE g.owner_principal_kind = $1 \
-           AND g.owner_principal_id = $2 \
+         WHERE EXISTS (
+             SELECT 1
+               FROM proxima_core.entity_owner eo
+               JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
+                 ON eo.owner_principal_kind = s.kind
+                AND eo.owner_principal_id = s.id
+              WHERE eo.entity_id = g.goal_id
+         ) \
            AND g.goal_id = ANY($3::uuid[])",
     );
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
@@ -369,8 +390,8 @@ async fn query_visible_goal_ids(
         );
     }
     let mut q = sqlx::query_as::<_, (uuid::Uuid,)>(&sql)
-        .bind(owner_kind)
-        .bind(owner_principal_id)
+        .bind(read_owner_kinds)
+        .bind(read_owner_ids)
         .bind(candidate_goal_ids);
     if let Some(sid) = schema_id_filter {
         q = q.bind(sid);

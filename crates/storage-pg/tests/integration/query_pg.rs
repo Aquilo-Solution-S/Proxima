@@ -32,6 +32,7 @@ async fn seed_goal(
     text: &str,
     payload: &[u8],
 ) -> Result<(), sqlx::Error> {
+    let goal_id = Uuid::now_v7();
     let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.goals
@@ -40,7 +41,7 @@ async fn seed_goal(
              authorship_kind, request_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
-    .bind(Uuid::now_v7())
+    .bind(goal_id)
     .bind(schema_id)
     .bind(schema_version)
     .bind(owner_kind)
@@ -51,6 +52,27 @@ async fn seed_goal(
     .bind(GoalState::Active)
     .bind(GoalAuthorshipKind::User)
     .bind(format!("seed-{}", Uuid::now_v7()))
+    .execute(pg.pool())
+    .await?;
+    insert_entity_owner_home(pg, goal_id, owner).await
+}
+
+async fn insert_entity_owner_home(
+    pg: &PgStorage,
+    entity_id: Uuid,
+    owner: &Owner,
+) -> Result<(), sqlx::Error> {
+    let (owner_kind, owner_principal_id) = owner.columns();
+    sqlx::query(
+        "INSERT INTO proxima_core.entity_owner
+            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
+         VALUES ($1, $2, $3, true, $4)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(entity_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(Uuid::nil())
     .execute(pg.pool())
     .await
     .map(|_| ())
@@ -303,6 +325,7 @@ async fn insert_perspective_memory(
         .await?;
     }
 
+    insert_entity_owner_home(pg, memory_id, owner).await?;
     Ok(memory_id)
 }
 
@@ -867,6 +890,7 @@ async fn query_filter_abstraction_returns_empty() {
         // Query with entity_kind = Abstraction filter.
         let req = QueryRequest {
             principal: owner.clone(),
+            read_owners: vec![owner.clone()],
             entity_kind: Some(EntityKind::Abstraction),
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,
@@ -931,6 +955,7 @@ async fn query_goals_filter_by_schema_id() {
         // Filtering by a Fact schema_id must return zero goals.
         let req_fact_filter = QueryRequest {
             principal: owner.clone(),
+            read_owners: vec![owner.clone()],
             entity_kind: Some(EntityKind::Goal),
             schema_id: Some(SchemaId::new("test/fact_blob".into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -954,6 +979,7 @@ async fn query_goals_filter_by_schema_id() {
         // Filtering by the matching goal schema_id returns the goal.
         let req_goal_filter = QueryRequest {
             principal: owner.clone(),
+            read_owners: vec![owner.clone()],
             entity_kind: Some(EntityKind::Goal),
             schema_id: Some(SchemaId::new("test/goal_blob".into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -973,6 +999,7 @@ async fn query_goals_filter_by_schema_id() {
         // Filtering by a non-existent schema_id returns zero goals.
         let req_unknown = QueryRequest {
             principal: owner.clone(),
+            read_owners: vec![owner.clone()],
             entity_kind: None,
             schema_id: Some(SchemaId::new("test/never_registered".into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -1076,6 +1103,7 @@ async fn query_filter_nonexistent_schema_returns_empty() {
         // Query with non-existent schema_id filter.
         let req = QueryRequest {
             principal: owner.clone(),
+            read_owners: vec![owner.clone()],
             entity_kind: None,
             schema_id: Some(SchemaId::new("test/non_existent".into())),
             supersession: SupersessionStatus::HeadsOnly,

@@ -1115,7 +1115,6 @@ impl Storage for PgStorage {
 
     async fn load_memory_by_id(
         &self,
-        owner: &Owner,
         memory_id: proxima_core::MemoryId,
         reader_personality_instance_id: Option<PersonalityInstanceId>,
         sidecars: &[SidecarSpec],
@@ -1123,7 +1122,6 @@ impl Storage for PgStorage {
         verbs::consolidate::load_memory_by_id(
             &self.pool,
             &self.sidecars,
-            owner,
             memory_id,
             reader_personality_instance_id,
             sidecars,

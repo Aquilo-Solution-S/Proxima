@@ -43,23 +43,20 @@ impl Engine {
         authz: &AuthzContext,
         req: &QueryRequest,
     ) -> Result<QueryResponse, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, &req.principal, Relation::Viewer)
-            .await?;
-        self.query_authorized(&permit, req).await
+        let read_owners = self.authorize_read(authz).await?;
+        self.query_authorized(&read_owners, req).await
     }
 
     async fn query_authorized(
         &self,
-        permit: &MemoryPermit,
+        read_owners: &[crate::Principal],
         req: &QueryRequest,
     ) -> Result<QueryResponse, ProtocolError> {
         if req.limit == 0 {
             return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
         }
         let mut effective = req.clone();
-        effective.principal = permit.owner().clone();
-        effective.reader_personality_instance_id = permit.subject_personality();
+        effective.read_owners = read_owners.to_vec();
         if effective.stateful_heads.is_empty() {
             effective.stateful_heads = match effective.schema_id.as_ref() {
                 Some(sid) => self.registry.stateful_filters_for_schema(sid),

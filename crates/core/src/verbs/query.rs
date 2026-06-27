@@ -77,6 +77,8 @@ pub enum SearchOrder {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemorySearchRequest {
     pub principal: Principal,
+    #[serde(skip)]
+    pub read_owners: Vec<Principal>,
     pub query: String,
     #[serde(default = "default_search_mode")]
     pub mode: SearchMode,
@@ -224,6 +226,8 @@ pub struct StatefulHeadsFilter {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueryRequest {
     pub principal: Principal,
+    #[serde(skip)]
+    pub read_owners: Vec<Principal>,
     pub entity_kind: Option<EntityKind>,
     pub schema_id: Option<SchemaId>,
     pub supersession: SupersessionStatus,
@@ -261,7 +265,8 @@ impl QueryRequest {
     #[must_use]
     pub fn for_principal(principal: Principal) -> Self {
         Self {
-            principal,
+            principal: principal.clone(),
+            read_owners: vec![principal],
             entity_kind: None,
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,

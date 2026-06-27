@@ -8,9 +8,9 @@ use crate::personality::{
 use crate::storage::{EdgeEndpointKindRow, MemoryGraphPayloadRow, NeighborEdgeRow, StorageError};
 use crate::verbs::query::{FactCitationReadback, MemorySearchRequest, MemorySearchResult};
 use crate::verbs::schema::PayloadKind;
-use crate::{EdgeId, FactEntityId, MemoryId, Principal, SchemaId, SchemaVersion};
+use crate::{EdgeId, EntityId, FactEntityId, MemoryId, Principal, SchemaId, SchemaVersion};
 
-use super::{Engine, PermitMode};
+use super::Engine;
 
 const NEIGHBOR_EDGE_LIMIT: usize = 200;
 
@@ -97,15 +97,18 @@ impl Engine {
         authz: &AuthzContext,
         req: &SearchReadRequest,
     ) -> Result<SearchReadResponse, ProtocolError> {
-        let search_permit = self
-            .authorize_request(authz, &req.search.principal, Relation::Viewer)
-            .await?;
+        let read_owners = self.authorize_read(authz).await?;
+        let hydration_permit = if req.include_body || req.include_neighbor_edges {
+            Some(
+                self.authorize_request(authz, &req.search.principal, Relation::Viewer)
+                    .await?,
+            )
+        } else {
+            None
+        };
 
         let mut effective = req.search.clone();
-        effective.principal = search_permit.owner().clone();
-        if let Some(subject_personality) = search_permit.subject_personality() {
-            effective.reader_personality_instance_id = Some(subject_personality);
-        }
+        effective.read_owners = read_owners;
         let memories = self
             .storage
             .search_memories(&effective, self.registry.search_projections())
@@ -116,8 +119,11 @@ impl Engine {
         let payloads = if memory_ids.is_empty() {
             Vec::new()
         } else {
+            let owner = hydration_permit
+                .as_ref()
+                .map_or(&req.search.principal, |permit| permit.owner());
             self.storage
-                .load_memory_graph_payloads(search_permit.owner(), &memory_ids, req.include_body)
+                .load_memory_graph_payloads(owner, &memory_ids, req.include_body)
                 .await
                 .map_err(|err| storage_error("load_memory_graph_payloads", &err))?
         };
@@ -125,12 +131,11 @@ impl Engine {
             if memory_ids.is_empty() {
                 Vec::new()
             } else {
+                let owner = hydration_permit
+                    .as_ref()
+                    .map_or(&req.search.principal, |permit| permit.owner());
                 self.storage
-                    .load_neighbor_memory_edges(
-                        search_permit.owner(),
-                        &memory_ids,
-                        NEIGHBOR_EDGE_LIMIT,
-                    )
+                    .load_neighbor_memory_edges(owner, &memory_ids, NEIGHBOR_EDGE_LIMIT)
                     .await
                     .map_err(|err| storage_error("load_neighbor_memory_edges", &err))?
             }
@@ -157,48 +162,19 @@ impl Engine {
         req: &GetMemoryReadRequest,
     ) -> Result<GetMemoryReadResponse, ProtocolError> {
         let permit = self
-            .authorize_entry_request(authz, req.memory_id, Relation::Viewer)
+            .authorize_entry_read(authz, EntityId::Memory(req.memory_id))
             .await?;
         let sidecars = self.sidecar_specs();
-        if let PermitMode::PublicRead { resource } = permit.mode() {
-            let memory = self
-                .storage
-                .load_memory_by_id(permit.owner(), *resource, None, &sidecars)
-                .await
-                .map_err(|err| storage_error("load_memory_by_id", &err))?;
-            return Ok(GetMemoryReadResponse {
-                memory,
-                neighbor_edges: Vec::new(),
-            });
-        }
-        let (memory_id, reader_personality_instance_id) = match permit.mode() {
-            PermitMode::OwnerScoped {
-                subject_personality,
-            } => (
-                req.memory_id,
-                (*subject_personality).or(req.reader_personality_instance_id),
-            ),
-            PermitMode::EntryScoped {
-                resource,
-                subject_personality,
-            } => (*resource, Some(*subject_personality)),
-            PermitMode::PublicRead { .. } => unreachable!("PublicRead returned above"),
-        };
         let memory = self
             .storage
-            .load_memory_by_id(
-                permit.owner(),
-                memory_id,
-                reader_personality_instance_id,
-                &sidecars,
-            )
+            .load_memory_by_id(req.memory_id, req.reader_personality_instance_id, &sidecars)
             .await
             .map_err(|err| storage_error("load_memory_by_id", &err))?;
         let neighbor_edges = if req.include_neighbor_edges
-            && matches!(permit.mode(), PermitMode::OwnerScoped { .. })
+            && permit.owner() == &authz.identity.principal
         {
             self.storage
-                .load_neighbor_memory_edges(permit.owner(), &[memory_id], NEIGHBOR_EDGE_LIMIT)
+                .load_neighbor_memory_edges(permit.owner(), &[req.memory_id], NEIGHBOR_EDGE_LIMIT)
                 .await
                 .map_err(|err| storage_error("load_neighbor_memory_edges", &err))?
         } else {
@@ -431,6 +407,7 @@ mod tests {
         SearchReadRequest {
             search: MemorySearchRequest {
                 principal: owner.clone(),
+                read_owners: vec![owner.clone()],
                 query: "needle".into(),
                 mode: SearchMode::Lexical,
                 supersession: SupersessionStatus::HeadsOnly,
