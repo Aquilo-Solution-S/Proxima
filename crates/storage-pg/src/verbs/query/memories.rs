@@ -555,7 +555,7 @@ fn push_heads_predicate(
                                   WHERE m2.supersedes = m.memory_id \
                                     AND m2.tombstoned_at IS NULL",
             );
-            push_same_home_owner_successor_predicate(sql, "m2", "m");
+            super::push_same_home_owner_successor_predicate(sql, "m2", "m");
             sql.push(')');
         } else {
             sql.push_str(" AND (");
@@ -572,7 +572,7 @@ fn push_heads_predicate(
                                   WHERE m2.supersedes = m.memory_id \
                                     AND m2.tombstoned_at IS NULL",
             );
-            push_same_home_owner_successor_predicate(sql, "m2", "m");
+            super::push_same_home_owner_successor_predicate(sql, "m2", "m");
             sql.push(')');
             sql.push(')');
             sql.push(')');
@@ -580,27 +580,6 @@ fn push_heads_predicate(
     }
     push_active_root_filter(sql, root_schema_ids_param);
     push_tombstone_exclusion(sql, req, stateful, stateful_params);
-}
-
-fn push_same_home_owner_successor_predicate(
-    sql: &mut String,
-    successor_alias: &str,
-    head_alias: &str,
-) {
-    write!(
-        sql,
-        " AND EXISTS ( \
-            SELECT 1 FROM proxima_core.entity_owner eo_s \
-             WHERE eo_s.entity_id = {successor_alias}.memory_id AND eo_s.is_home \
-               AND EXISTS ( \
-                   SELECT 1 FROM proxima_core.entity_owner eo_h \
-                    WHERE eo_h.entity_id = {head_alias}.memory_id AND eo_h.is_home \
-                      AND eo_h.owner_principal_kind = eo_s.owner_principal_kind \
-                      AND eo_h.owner_principal_id = eo_s.owner_principal_id \
-               ) \
-        )",
-    )
-    .expect("write to String is infallible");
 }
 
 fn stateful_alias(idx: usize) -> String {
