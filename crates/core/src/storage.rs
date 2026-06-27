@@ -33,8 +33,9 @@ use crate::{
     GoalPayload, PerspectivePayload,
 };
 use crate::{
-    EdgeAuthorshipKind, EdgeId, EntityId, EntityKind, FactEntityId, MembershipRow, MemoryId,
-    MemoryOperatorKind, Owner, Principal, RegisteredRelation, SchemaId, SchemaVersion,
+    EdgeAuthorshipKind, EdgeId, EntityId, EntityKind, EntityOwnerRow, FactEntityId, GroupId,
+    MembershipRow, MemoryId, MemoryOperatorKind, Owner, Principal, RegisteredRelation, Relation,
+    RemoveOwnerOutcome, SchemaId, SchemaVersion, UserId,
 };
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -686,6 +687,58 @@ pub trait Storage: Send + Sync {
     /// entities have no `entity_owner` rows and return `None`.
     async fn entity_home_owner(&self, entity: EntityId) -> Result<Option<Principal>, StorageError>;
 
+    /// Add a read-only `entity_owner` share row. Idempotent.
+    async fn add_entity_owner_share(
+        &self,
+        entity: EntityId,
+        owner: &Principal,
+        granted_by: Option<uuid::Uuid>,
+    ) -> Result<(), StorageError>;
+
+    /// Remove a read-only `entity_owner` share row. Home rows are never
+    /// removed through this path.
+    async fn remove_entity_owner_share(
+        &self,
+        entity: EntityId,
+        owner: &Principal,
+    ) -> Result<RemoveOwnerOutcome, StorageError>;
+
+    /// List all reachability rows for one entity.
+    async fn list_entity_owners(
+        &self,
+        entity: EntityId,
+    ) -> Result<Vec<EntityOwnerRow>, StorageError>;
+
+    /// Public marketplace view: memories carrying a World `entity_owner`
+    /// row, newest first.
+    async fn list_world_entities(
+        &self,
+        limit: usize,
+        sidecars: &[SidecarSpec],
+    ) -> Result<Vec<MemorySnapshot>, StorageError>;
+
+    /// Add one group membership relation. Idempotent.
+    async fn add_group_member(
+        &self,
+        group_id: GroupId,
+        member_user_id: UserId,
+        relation: Relation,
+        granted_by: uuid::Uuid,
+    ) -> Result<(), StorageError>;
+
+    /// Remove all membership relations for one user in one group.
+    async fn remove_group_member(
+        &self,
+        group_id: GroupId,
+        member_user_id: UserId,
+    ) -> Result<(), StorageError>;
+
+    /// List group members and their relations.
+    async fn list_group_members(
+        &self,
+        group_id: GroupId,
+    ) -> Result<Vec<(UserId, Relation)>, StorageError>;
+
     /// Owner-scoped, idempotent batch close. See docs/01 §"The contract"
     /// and docs/04 §"Source-batch lifecycle". Flips
     /// `source_batches.closed_at` from NULL to `now()`. Re-close is a
@@ -1193,6 +1246,63 @@ impl Storage for NoopStorage {
         _entity: EntityId,
     ) -> Result<Option<Principal>, StorageError> {
         Ok(None)
+    }
+
+    async fn add_entity_owner_share(
+        &self,
+        _entity: EntityId,
+        _owner: &Principal,
+        _granted_by: Option<uuid::Uuid>,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn remove_entity_owner_share(
+        &self,
+        _entity: EntityId,
+        _owner: &Principal,
+    ) -> Result<RemoveOwnerOutcome, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn list_entity_owners(
+        &self,
+        _entity: EntityId,
+    ) -> Result<Vec<EntityOwnerRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn list_world_entities(
+        &self,
+        _limit: usize,
+        _sidecars: &[SidecarSpec],
+    ) -> Result<Vec<MemorySnapshot>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn add_group_member(
+        &self,
+        _group_id: GroupId,
+        _member_user_id: UserId,
+        _relation: Relation,
+        _granted_by: uuid::Uuid,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn remove_group_member(
+        &self,
+        _group_id: GroupId,
+        _member_user_id: UserId,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn list_group_members(
+        &self,
+        _group_id: GroupId,
+    ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+        Ok(Vec::new())
     }
 
     async fn close_batch(

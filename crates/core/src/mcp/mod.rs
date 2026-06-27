@@ -874,11 +874,9 @@ pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations>
 
         "core_derive" => base.read_only(false).destructive(false).idempotent(true),
 
-        "core_remember"
-        | "core_record_utterance"
-        | "core_goal"
-        | "core_link"
-        | "core_publish_memory" => base.read_only(false).destructive(false).idempotent(false),
+        "core_remember" | "core_record_utterance" | "core_goal" | "core_link" => {
+            base.read_only(false).destructive(false).idempotent(false)
+        }
 
         "core_wake" | "core_personality" => {
             base.read_only(false).destructive(true).idempotent(false)

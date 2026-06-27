@@ -40,9 +40,10 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EdgeEndpointKindRow, EdgeId,
-    EmbeddingJobClaim, EntityId, FactEntityId, MasterTokenPersonality, MembershipRow,
-    MemoryDependency, MemoryGraphPayloadRow, MemoryId, MemoryKindRow, NeighborEdgeRow, Owner,
-    Principal, SchemaId, SchemaVersion, SourceBatchId, Storage, StorageError, StorageHandle,
+    EmbeddingJobClaim, EntityId, EntityOwnerRow, FactEntityId, GroupId, MasterTokenPersonality,
+    MembershipRow, MemoryDependency, MemoryGraphPayloadRow, MemoryId, MemoryKindRow,
+    NeighborEdgeRow, Owner, Principal, Relation, RemoveOwnerOutcome, SchemaId, SchemaVersion,
+    SourceBatchId, Storage, StorageError, StorageHandle, UserId,
 };
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -1207,5 +1208,70 @@ impl Storage for PgStorage {
 
     async fn entity_home_owner(&self, entity: EntityId) -> Result<Option<Principal>, StorageError> {
         verbs::entity_owner::entity_home_owner(&self.pool, entity).await
+    }
+
+    async fn add_entity_owner_share(
+        &self,
+        entity: EntityId,
+        owner: &Principal,
+        granted_by: Option<uuid::Uuid>,
+    ) -> Result<(), StorageError> {
+        verbs::entity_owner::add_entity_owner_share(&self.pool, entity.uuid(), owner, granted_by)
+            .await
+    }
+
+    async fn remove_entity_owner_share(
+        &self,
+        entity: EntityId,
+        owner: &Principal,
+    ) -> Result<RemoveOwnerOutcome, StorageError> {
+        verbs::entity_owner::remove_entity_owner_share(&self.pool, entity.uuid(), owner).await
+    }
+
+    async fn list_entity_owners(
+        &self,
+        entity: EntityId,
+    ) -> Result<Vec<EntityOwnerRow>, StorageError> {
+        verbs::entity_owner::list_entity_owners(&self.pool, entity.uuid()).await
+    }
+
+    async fn list_world_entities(
+        &self,
+        limit: usize,
+        sidecars: &[SidecarSpec],
+    ) -> Result<Vec<MemorySnapshot>, StorageError> {
+        verbs::entity_owner::list_world_entities(&self.pool, &self.sidecars, limit, sidecars).await
+    }
+
+    async fn add_group_member(
+        &self,
+        group_id: GroupId,
+        member_user_id: UserId,
+        relation: Relation,
+        granted_by: uuid::Uuid,
+    ) -> Result<(), StorageError> {
+        verbs::entity_owner::add_group_member(
+            &self.pool,
+            group_id,
+            member_user_id,
+            relation,
+            granted_by,
+        )
+        .await
+    }
+
+    async fn remove_group_member(
+        &self,
+        group_id: GroupId,
+        member_user_id: UserId,
+    ) -> Result<(), StorageError> {
+        verbs::entity_owner::remove_group_member(&self.pool, group_id, member_user_id).await
+    }
+
+    async fn list_group_members(
+        &self,
+        group_id: GroupId,
+    ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+        verbs::entity_owner::list_group_members(&self.pool, group_id).await
     }
 }

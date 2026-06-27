@@ -7,11 +7,14 @@ use proxima_core::verbs::query::{
     MemorySearchRequest, QueryRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
 use proxima_core::{
-    EntityId, EntityKind, FlavorRegistry, GroupId, MemoryId, MemoryOperatorKind, Owner,
-    OwnerPrincipalKind, Principal, Relation, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-    Storage, UserId,
+    AccessScope, AuthPath, AuthzContext, CapabilitySet, Engine, EntityId, EntityKind, ErrorCode,
+    FlavorRegistry, GroupId, Identity, MemoryId, MemoryOperatorKind, Owner, OwnerPrincipalKind,
+    Principal, Relation, RemoveOwnerOutcome, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    Storage, ToolScope, UserId,
 };
 use proxima_storage_pg::PgStorage;
+use std::collections::HashSet;
+use std::sync::Arc;
 use uuid::Uuid;
 
 fn fresh_event_draft(owner: Owner) -> EventDraft {
@@ -184,6 +187,196 @@ async fn entity_is_readable_respects_membership() {
         !pg.entity_is_readable(a, &s_q).await.unwrap(),
         "A is personal to P"
     );
+
+    common::drop_db(&db).await.unwrap();
+}
+
+#[tokio::test]
+async fn entity_owner_share_verbs_manage_reachability_and_refuse_home() {
+    let (pg, db) = common::fresh_pg().await;
+    let home = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+    let shared = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+    let entity = seed_memory_owned(&pg, home.clone()).await;
+
+    assert!(
+        !pg.entity_is_readable(entity, std::slice::from_ref(&shared))
+            .await
+            .unwrap()
+    );
+
+    pg.add_entity_owner_share(entity, &shared, Some(Uuid::now_v7()))
+        .await
+        .unwrap();
+    assert!(
+        pg.entity_is_readable(entity, std::slice::from_ref(&shared))
+            .await
+            .unwrap(),
+        "share row makes entity readable to shared principal"
+    );
+    let owners = pg.list_entity_owners(entity).await.unwrap();
+    assert_eq!(owners.len(), 2);
+    assert!(owners.iter().any(|row| row.owner == home && row.is_home));
+    assert!(owners.iter().any(|row| row.owner == shared && !row.is_home));
+
+    assert_eq!(
+        pg.remove_entity_owner_share(entity, &shared).await.unwrap(),
+        RemoveOwnerOutcome::Removed
+    );
+    assert!(
+        !pg.entity_is_readable(entity, std::slice::from_ref(&shared))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        pg.remove_entity_owner_share(entity, &home).await.unwrap(),
+        RemoveOwnerOutcome::RefusedLastOwner
+    );
+    let owners = pg.list_entity_owners(entity).await.unwrap();
+    assert_eq!(owners.len(), 1);
+    assert!(owners.iter().any(|row| row.owner == home && row.is_home));
+
+    common::drop_db(&db).await.unwrap();
+}
+
+#[tokio::test]
+async fn publish_entry_adds_world_row_and_world_listing_tracks_tombstone() {
+    let (pg, db) = common::fresh_pg().await;
+    let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+    let entity = EntityId::Memory(
+        seed_abstraction_memory(&pg, &owner, owner.clone(), "worldlisted abstraction").await,
+    );
+    let engine = Engine::new(FlavorRegistry::new().freeze()).with_storage(Arc::new(pg.clone()));
+
+    engine
+        .publish_entry(
+            &AuthzContext::single_owner(&owner, AuthPath::System),
+            entity,
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        pg.entity_is_readable(entity, &[proxima_core::access::world()])
+            .await
+            .unwrap(),
+        "World-only read set reaches the published entity"
+    );
+    let world_entities = engine
+        .list_world_entities(&AuthzContext::single_owner(&owner, AuthPath::System), 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        world_entities
+            .iter()
+            .map(|snapshot| snapshot.memory_id)
+            .collect::<Vec<_>>(),
+        vec![MemoryId::new(entity.uuid())]
+    );
+
+    sqlx::query(
+        "UPDATE proxima_core.memories
+            SET tombstoned_at = now()
+          WHERE memory_id = $1",
+    )
+    .bind(entity.uuid())
+    .execute(pg.pool())
+    .await
+    .unwrap();
+
+    assert!(
+        !pg.entity_is_readable(entity, &[proxima_core::access::world()])
+            .await
+            .unwrap(),
+        "tombstone trigger removes World reachability"
+    );
+    let world_entities = engine
+        .list_world_entities(&AuthzContext::single_owner(&owner, AuthPath::System), 10)
+        .await
+        .unwrap();
+    assert!(world_entities.is_empty());
+
+    common::drop_db(&db).await.unwrap();
+}
+
+#[tokio::test]
+async fn group_membership_verbs_round_trip_and_engine_gates_admin_editor() {
+    let (pg, db) = common::fresh_pg().await;
+    let admin = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+    let viewer = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+    let outsider = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+    let group = GroupId::new(uuid::Uuid::now_v7());
+    let Principal::User(admin_id) = admin.clone() else {
+        unreachable!("admin is user")
+    };
+    let Principal::User(viewer_id) = viewer.clone() else {
+        unreachable!("viewer is user")
+    };
+    let Principal::User(outsider_id) = outsider.clone() else {
+        unreachable!("outsider is user")
+    };
+
+    pg.add_group_member(group, viewer_id, Relation::Viewer, Uuid::now_v7())
+        .await
+        .unwrap();
+    assert_eq!(
+        pg.list_group_members(group).await.unwrap(),
+        vec![(viewer_id, Relation::Viewer)]
+    );
+
+    let group_entity = seed_memory_owned(&pg, Principal::Group(group)).await;
+    let viewer_read_owners = read_owners(&pg, &viewer).await;
+    assert!(
+        pg.entity_is_readable(group_entity, &viewer_read_owners)
+            .await
+            .unwrap(),
+        "viewer membership enters S_read and reaches group-owned entity"
+    );
+
+    pg.remove_group_member(group, viewer_id).await.unwrap();
+    assert!(pg.list_group_members(group).await.unwrap().is_empty());
+
+    pg.add_group_member(group, admin_id, Relation::Admin, Uuid::now_v7())
+        .await
+        .unwrap();
+    pg.add_group_member(group, viewer_id, Relation::Viewer, Uuid::now_v7())
+        .await
+        .unwrap();
+    let engine = Engine::new(FlavorRegistry::new().freeze()).with_storage(Arc::new(pg.clone()));
+    let outsider_err = engine
+        .add_member(&granted_authz(&outsider), group, admin_id, Relation::Viewer)
+        .await
+        .expect_err("non-admin add_member must be forbidden");
+    assert_eq!(outsider_err.code, ErrorCode::Forbidden);
+
+    engine
+        .add_member(&granted_authz(&admin), group, outsider_id, Relation::Viewer)
+        .await
+        .unwrap();
+    assert!(
+        engine
+            .list_members(&granted_authz(&admin), group)
+            .await
+            .unwrap()
+            .contains(&(outsider_id, Relation::Viewer))
+    );
+    engine
+        .remove_member(&granted_authz(&admin), group, outsider_id)
+        .await
+        .unwrap();
+    assert!(
+        !engine
+            .list_members(&granted_authz(&admin), group)
+            .await
+            .unwrap()
+            .iter()
+            .any(|(member, _)| *member == outsider_id)
+    );
+
+    let share_err = engine
+        .share_entry(&granted_authz(&viewer), group_entity, outsider.clone())
+        .await
+        .expect_err("viewer membership must not authorize share_entry");
+    assert_eq!(share_err.code, ErrorCode::Forbidden);
 
     common::drop_db(&db).await.unwrap();
 }
@@ -518,4 +711,20 @@ async fn read_owners(pg: &proxima_storage_pg::PgStorage, principal: &Principal) 
     );
     owners.push(proxima_core::access::world());
     owners
+}
+
+fn granted_authz(principal: &Principal) -> AuthzContext {
+    AuthzContext {
+        identity: Identity {
+            principal: principal.clone(),
+            accessible_principals: HashSet::from([principal.clone()]),
+            expires_at: None,
+            auth_epoch: 0,
+        },
+        capabilities: CapabilitySet {
+            tool_scope: ToolScope::All,
+            access: AccessScope::Granted,
+        },
+        auth_path: AuthPath::HostBearer,
+    }
 }

@@ -10,7 +10,6 @@ pub mod citation_of_fact;
 pub mod fact;
 pub mod facts_citing_object;
 pub mod payload;
-pub mod publish_memory;
 pub mod remove_wake_entry;
 pub mod search_memories;
 pub mod set_wake_entries;
@@ -48,7 +47,6 @@ pub use payload::{
     PersonalityConfigChangedVerb,
 };
 pub use personality::CorePersonalityTool;
-pub use publish_memory::PublishMemoryTool;
 pub use search_memories::SearchMemoriesTool;
 pub use update_wake_entry::WakeEntryPatch;
 pub use wake::CoreWakeTool;
@@ -83,7 +81,6 @@ const DESTRUCTIVE_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
 pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<SearchMemoriesTool>();
     registry.add_substrate_mcp_tool::<MemorySpacesTool>();
-    registry.add_substrate_mcp_tool::<PublishMemoryTool>();
     registry.add_substrate_mcp_tool::<RememberTool>();
     registry.add_substrate_mcp_tool::<RecordUtteranceTool>();
     registry.add_substrate_mcp_tool::<DeriveTool>();
