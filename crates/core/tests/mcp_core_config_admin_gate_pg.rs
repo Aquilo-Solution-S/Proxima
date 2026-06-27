@@ -1,11 +1,9 @@
-#![cfg(any())] // QUARANTINED pending group-ownership port (grant-era access setup); re-enable in Phase 3/6
 mod common;
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::access::GrantSubject;
+use common::{drop_db, fresh_pg};
 use proxima_core::authz::{AuthPath, AuthzContext, CapabilitySet, Identity, ToolScope};
 use proxima_core::mcp::core_tools::add_wake_entry::AddWakeEntryArgs;
 use proxima_core::mcp::core_tools::personality::{CorePersonalityArgs, CorePersonalityTool};
@@ -20,36 +18,35 @@ use proxima_core::personality::{
 };
 use proxima_core::storage::Storage;
 use proxima_core::{
-    AccessScope, Engine, FlavorRegistry, GrantResource, NewAccessGrant, Owner,
-    PersonalityInstanceId, Principal, Relation, UserId, WakeEntryAuthoredBy, WakeEntryDraft,
-    WakeEntryTriggerKind,
+    AccessScope, Engine, FlavorRegistry, GroupId, Owner, PersonalityInstanceId, Principal,
+    Relation, UserId, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
 };
 use uuid::Uuid;
 
-async fn seed_space_grant(
+async fn seed_group_membership(
     pg: &proxima_storage_pg::PgStorage,
     space_owner: &Principal,
     relation: Relation,
     subject: &Principal,
 ) {
-    pg.insert_space_binding(&NewAccessGrant {
-        space_owner: space_owner.clone(),
-        resource: GrantResource::Space,
-        relation,
-        subject: GrantSubject::Principal(subject.clone()),
-        granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
-    })
-    .await
-    .expect("seed grant");
+    let Principal::Group(group) = space_owner else {
+        panic!("group membership can only seed group-owned spaces");
+    };
+    let Principal::User(user) = subject else {
+        panic!("group membership can only seed user members");
+    };
+    pg.add_group_member(*group, *user, relation, Uuid::now_v7())
+        .await
+        .expect("seed group membership");
 }
 
 async fn non_admin_authz(pg: &proxima_storage_pg::PgStorage, owner: &Owner) -> AuthzContext {
     let editor_user = Principal::User(UserId::new(Uuid::now_v7()));
-    seed_space_grant(pg, owner, Relation::Editor, &editor_user).await;
+    seed_group_membership(pg, owner, Relation::Editor, &editor_user).await;
     AuthzContext {
         identity: Identity {
-            principal: editor_user,
-            accessible_principals: HashSet::new(),
+            principal: editor_user.clone(),
+            accessible_principals: HashSet::from([editor_user]),
             expires_at: None,
             auth_epoch: 0,
         },
@@ -59,6 +56,10 @@ async fn non_admin_authz(pg: &proxima_storage_pg::PgStorage, owner: &Owner) -> A
         },
         auth_path: AuthPath::HostBearer,
     }
+}
+
+fn test_owner() -> Owner {
+    Principal::Group(GroupId::new(Uuid::now_v7()))
 }
 
 fn ctx(owner: &Owner, pg: &proxima_storage_pg::PgStorage, authz: AuthzContext) -> McpToolCtx {
@@ -141,7 +142,7 @@ async fn add_wake_entry_requires_admin_and_preserves_storage_on_denial()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
-    let owner = owner_fixture();
+    let owner = test_owner();
     let pid = instantiate(&pg, &owner, "add gate").await?;
 
     let args = AddWakeEntryArgs {
@@ -203,7 +204,7 @@ async fn update_wake_entry_requires_admin_and_preserves_storage_on_denial()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
-    let owner = owner_fixture();
+    let owner = test_owner();
     let pid = instantiate(&pg, &owner, "update gate").await?;
     let wid = Uuid::now_v7();
     pg.set_wake_entries(&SetWakeEntriesRequest {
@@ -257,7 +258,7 @@ async fn remove_wake_entry_requires_admin_and_preserves_storage_on_denial()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
-    let owner = owner_fixture();
+    let owner = test_owner();
     let pid = instantiate(&pg, &owner, "remove gate").await?;
     let wid = Uuid::now_v7();
     pg.set_wake_entries(&SetWakeEntriesRequest {
@@ -306,7 +307,7 @@ async fn set_read_scope_requires_admin_and_preserves_storage_on_denial()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
-    let owner = owner_fixture();
+    let owner = test_owner();
     let reader = instantiate(&pg, &owner, "reader").await?;
     let readable = instantiate(&pg, &owner, "readable").await?;
 
