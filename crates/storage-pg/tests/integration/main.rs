@@ -7,6 +7,7 @@ mod common;
 mod connect;
 mod derive_append_pg;
 mod edge_invariants_pg;
+mod entry_access_pg;
 mod event_history_pg;
 mod event_ingest_pg;
 mod event_ingest_with_sidecar_pg;

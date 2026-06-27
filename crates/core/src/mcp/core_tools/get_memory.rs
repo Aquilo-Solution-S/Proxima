@@ -17,7 +17,7 @@ pub struct GetMemoryArgs {
     /// Include edges touching the memory. Default: false.
     #[serde(default)]
     pub expand_neighbors: bool,
-    /// Memory space key from `core_memory_spaces`. Omit for current owner.
+    /// Optional display space key. Authorization resolves the entry owner.
     #[serde(default)]
     pub space: Option<String>,
 }
@@ -50,11 +50,7 @@ pub async fn get_memory(
     args: GetMemoryArgs,
 ) -> Result<GetMemoryOutput, McpToolError> {
     let memory_id = resolve_memory_reference(&ctx, &args.memory)?;
-    let space = super::memory_spaces::resolve_space_owner(
-        &ctx,
-        args.space.as_deref(),
-        super::memory_spaces::SpaceDefault::Current,
-    )?;
+    let output_space = args.space.unwrap_or_else(|| "entry".into());
     let engine = ctx
         .engine()
         .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
@@ -62,7 +58,6 @@ pub async fn get_memory(
         .get_memory(
             &ctx.authz,
             &GetMemoryReadRequest {
-                principal: space.owner.clone(),
                 memory_id,
                 reader_personality_instance_id: None,
                 include_neighbor_edges: args.expand_neighbors,
@@ -89,7 +84,7 @@ pub async fn get_memory(
     Ok(GetMemoryOutput {
         handle: handle.clone(),
         memory: handle,
-        space: space.key,
+        space: output_space,
         kind: snapshot.kind,
         schema_id: snapshot.schema_id.as_str().to_string(),
         schema_version: snapshot.schema_version.into_inner(),
@@ -109,9 +104,7 @@ pub async fn get_memory(
 
 /// Resolve a memory reference accepting a prefixed id (`F:…`), a handle, or a
 /// bare uuid. The bare-uuid fallback serves the prefixed-id / raw-id wire
-/// surfaces; in `Handles` mode it would bypass the per-wake handle table, but
-/// `get_memory` has no live `Handles`-mode surface and the subsequent
-/// `load_memory_by_id` is owner-scoped, so no cross-owner read is possible.
+/// surfaces; the engine resolves the entry owner from storage before reading.
 fn resolve_memory_reference(ctx: &McpToolCtx, raw: &str) -> Result<MemoryId, McpToolError> {
     match ctx.resolve_memory(raw) {
         Ok(memory_id) => Ok(memory_id),
