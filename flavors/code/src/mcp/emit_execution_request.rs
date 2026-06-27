@@ -1067,8 +1067,14 @@ pub(super) async fn load_execution_request(
          FROM proxima_core.memories m
          LEFT JOIN proxima_code.work_requested_v1 r USING (memory_id)
          WHERE m.memory_id = $1
-           AND m.owner_principal_kind = $2
-           AND m.owner_principal_id = $3",
+           AND EXISTS (
+                SELECT 1
+                  FROM proxima_core.entity_owner eo
+                 WHERE eo.entity_id = m.memory_id
+                   AND eo.owner_principal_kind = $2
+                   AND eo.owner_principal_id = $3
+                   AND eo.is_home
+           )",
     )
     .bind(memory_id.into_inner())
     .bind(owner_kind)
@@ -1112,8 +1118,14 @@ pub(super) async fn find_execution_request_by_key(
          JOIN proxima_core.memories m USING (memory_id)
          WHERE r.repo_id = $1
            AND r.request_key = $2
-           AND m.owner_principal_kind = $3
-           AND m.owner_principal_id = $4",
+           AND EXISTS (
+                SELECT 1
+                  FROM proxima_core.entity_owner eo
+                 WHERE eo.entity_id = m.memory_id
+                   AND eo.owner_principal_kind = $3
+                   AND eo.owner_principal_id = $4
+                   AND eo.is_home
+           )",
     )
     .bind(repo_id)
     .bind(request_key)
@@ -1203,13 +1215,12 @@ pub(super) async fn load_prior_derived_targets(
     let rows: Vec<Uuid> = sqlx::query_scalar(
         "SELECT e.target_memory_id
          FROM proxima_core.edges e
-         JOIN proxima_core.memories m
-           ON m.memory_id = e.target_memory_id
-          AND m.owner_principal_kind = e.owner_principal_kind
-          AND m.owner_principal_id = e.owner_principal_id
-         WHERE e.owner_principal_kind = $1
-           AND e.owner_principal_id = $2
-           AND e.relation = $3
+         JOIN proxima_core.entity_owner target_owner
+           ON target_owner.entity_id = e.target_memory_id
+          AND target_owner.owner_principal_kind = $1
+          AND target_owner.owner_principal_id = $2
+          AND target_owner.is_home
+         WHERE e.relation = $3
            AND e.source_kind = 'Fact'
            AND e.source_memory_id = $4
            AND e.target_memory_id IS NOT NULL
@@ -1277,8 +1288,14 @@ async fn validate_goal_activated_fact(
          FROM proxima_core.memories m
          JOIN proxima_core.goal_activated_v1 g USING (memory_id)
          WHERE m.memory_id = $1
-           AND m.owner_principal_kind = $2
-           AND m.owner_principal_id = $3",
+           AND EXISTS (
+                SELECT 1
+                  FROM proxima_core.entity_owner eo
+                 WHERE eo.entity_id = m.memory_id
+                   AND eo.owner_principal_kind = $2
+                   AND eo.owner_principal_id = $3
+                   AND eo.is_home
+           )",
     )
     .bind(memory_id.into_inner())
     .bind(owner_kind)
@@ -1312,8 +1329,14 @@ async fn validate_active_goal_context(
              SELECT 1
              FROM proxima_core.goals g
              WHERE g.goal_id = $3
-               AND g.owner_principal_kind = $1
-               AND g.owner_principal_id = $2
+               AND EXISTS (
+                    SELECT 1
+                      FROM proxima_core.entity_owner eo
+                     WHERE eo.entity_id = g.goal_id
+                       AND eo.owner_principal_kind = $1
+                       AND eo.owner_principal_id = $2
+                       AND eo.is_home
+               )
                AND g.state = 'Active'
          )",
     )
@@ -1337,16 +1360,20 @@ async fn validate_active_goal_context(
                FROM proxima_core.goals g
                JOIN lineage l ON g.goal_id = l.goal_id
               WHERE g.supersedes IS NOT NULL
-                AND g.owner_principal_kind = $1
-                AND g.owner_principal_id = $2
+                AND EXISTS (
+                     SELECT 1
+                       FROM proxima_core.entity_owner eo
+                      WHERE eo.entity_id = g.goal_id
+                        AND eo.owner_principal_kind = $1
+                        AND eo.owner_principal_id = $2
+                        AND eo.is_home
+                )
          )
          SELECT EXISTS(
              SELECT 1
              FROM proxima_core.edges e
              JOIN lineage l ON l.goal_id = e.source_goal_id
-             WHERE e.owner_principal_kind = $1
-               AND e.owner_principal_id = $2
-               AND e.relation = 'core/inspires'
+             WHERE e.relation = 'core/inspires'
                AND e.source_kind = 'Goal'
                AND e.target_kind = 'Perspective'
                AND e.target_memory_id = $4
@@ -1375,11 +1402,17 @@ async fn validate_evidence_in_owner(
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
     for memory_id in evidence {
         let row: Option<EntityKind> = sqlx::query_scalar(
-            "SELECT COALESCE(kind, 'Fact'::proxima_core.entity_kind) AS kind
-             FROM proxima_core.memories
-             WHERE memory_id = $1
-               AND owner_principal_kind = $2
-               AND owner_principal_id = $3",
+            "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind
+             FROM proxima_core.memories m
+             WHERE m.memory_id = $1
+               AND EXISTS (
+                    SELECT 1
+                      FROM proxima_core.entity_owner eo
+                     WHERE eo.entity_id = m.memory_id
+                       AND eo.owner_principal_kind = $2
+                       AND eo.owner_principal_id = $3
+                       AND eo.is_home
+               )",
         )
         .bind(memory_id.into_inner())
         .bind(owner_kind)

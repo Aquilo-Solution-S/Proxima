@@ -150,8 +150,14 @@ SELECT c.memory_id, c.repo_id, c.sha, c.author_name, c.committer_time,
        ts_rank_cd(to_tsvector('pg_catalog.simple'::regconfig, c.sha || ' ' || c.message), q.tsq) AS score
 FROM q, proxima_core.memories m
 JOIN proxima_code.commit_v1 c USING (memory_id)
-WHERE m.owner_principal_kind = $1
-  AND m.owner_principal_id = $2
+WHERE EXISTS (
+          SELECT 1
+            FROM proxima_core.entity_owner eo
+           WHERE eo.entity_id = m.memory_id
+             AND eo.owner_principal_kind = $1
+             AND eo.owner_principal_id = $2
+             AND eo.is_home
+      )
   AND ($4::uuid IS NULL OR c.repo_id = $4)
   AND to_tsvector('pg_catalog.simple'::regconfig, c.sha || ' ' || c.message) @@ q.tsq
 ORDER BY score DESC, c.committer_time DESC
@@ -168,8 +174,14 @@ SELECT s.memory_id, s.repo_id, s.commit_sha, s.summary,
        ), q.tsq) AS score
 FROM q, proxima_core.memories m
 JOIN proxima_code.commit_summary_v1 s USING (memory_id)
-WHERE m.owner_principal_kind = $1
-  AND m.owner_principal_id = $2
+WHERE EXISTS (
+          SELECT 1
+            FROM proxima_core.entity_owner eo
+           WHERE eo.entity_id = m.memory_id
+             AND eo.owner_principal_kind = $1
+             AND eo.owner_principal_id = $2
+             AND eo.is_home
+      )
   AND ($4::uuid IS NULL OR s.repo_id = $4)
   AND ($5::text IS NULL OR s.change_kind = $5)
   AND to_tsvector(

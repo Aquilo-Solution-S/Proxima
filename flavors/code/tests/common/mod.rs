@@ -60,6 +60,27 @@ pub fn git(repo: &Path, args: &[&str]) {
     );
 }
 
+pub async fn insert_entity_owner_home(
+    pool: &sqlx::PgPool,
+    entity_id: Uuid,
+    owner: &Owner,
+) -> Result<(), sqlx::Error> {
+    let (owner_kind, owner_principal_id) = owner.columns();
+    sqlx::query(
+        "INSERT INTO proxima_core.entity_owner
+            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
+         VALUES ($1, $2, $3, true, $4)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(entity_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(Uuid::nil())
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
 pub fn write_file(repo: &Path, path: &str, contents: &str) {
     let full = repo.join(path);
     if let Some(parent) = full.parent() {

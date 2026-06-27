@@ -1,6 +1,6 @@
 mod common;
 
-use common::{migrated_db, test_owner};
+use common::{insert_entity_owner_home, migrated_db, test_owner};
 use proxima_code::{CommitV1, TestRequestV1, erase_repo, register_repo};
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{FactPayload, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion};
@@ -78,6 +78,7 @@ async fn insert_repo_commit_with_test_request(
     .bind(&event_id)
     .execute(pool)
     .await?;
+    insert_entity_owner_home(pool, memory_id, owner).await?;
 
     sqlx::query(
         "INSERT INTO proxima_code.commit_v1

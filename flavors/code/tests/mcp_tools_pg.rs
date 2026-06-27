@@ -3,7 +3,7 @@ use std::time::Duration;
 
 mod common;
 
-use common::{TestDb, test_owner as owner_fixture};
+use common::{TestDb, insert_entity_owner_home, test_owner as owner_fixture};
 use proxima_code::mcp::{
     CodeIngestHeadSnapshotTool, CodeListReposTool, CodeOpenFileRevisionTool, CodeRegisterRepoTool,
     CodeRetryExecutionRequestTool, CodeSearchChunksTool, CodeSearchCommitsTool,
@@ -960,6 +960,7 @@ async fn abstraction_memory(
     .bind(payload)
     .execute(pool)
     .await?;
+    insert_entity_owner_home(pool, memory_id, owner).await?;
     Ok(memory_id)
 }
 
@@ -1150,6 +1151,7 @@ async fn ingest_commit_summary(
     .bind(Uuid::nil())
     .execute(pool)
     .await?;
+    insert_entity_owner_home(pool, memory_id, owner).await?;
 
     let files: Vec<String> = key_files.iter().map(|file| (*file).to_string()).collect();
     sqlx::query(
