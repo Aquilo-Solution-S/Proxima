@@ -63,6 +63,88 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
 }
 
 #[tokio::test]
+async fn search_heads_only_ignores_cross_owner_supersedes_successor()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let victim = owner_fixture();
+    let attacker = Principal::User(UserId::new(Uuid::now_v7()));
+    let foreign_shadowed = insert_search_abstraction(
+        &pg,
+        &victim,
+        "headscope victim with foreign successor",
+        None,
+    )
+    .await?;
+    let foreign_successor = insert_search_abstraction(
+        &pg,
+        &attacker,
+        "headscope attacker corrupt successor",
+        Some(foreign_shadowed),
+    )
+    .await?;
+    let same_owner_shadowed =
+        insert_search_abstraction(&pg, &victim, "headscope victim superseded", None).await?;
+    let same_owner_successor = insert_search_abstraction(
+        &pg,
+        &victim,
+        "headscope victim same-owner successor",
+        Some(same_owner_shadowed),
+    )
+    .await?;
+
+    let rows = pg
+        .search_memories(
+            &MemorySearchRequest {
+                principal: victim.clone(),
+                read_owners: vec![victim.clone()],
+                query: "headscope".into(),
+                mode: SearchMode::Lexical,
+                supersession: SupersessionStatus::HeadsOnly,
+                limit: 10,
+                kind: Some(EntityKind::Abstraction),
+                schema_id: Some(SchemaId::new("test/search-abstraction-v1".into())),
+                tags: Vec::new(),
+                tag_match: TagMatch::Any,
+                since: None,
+                until: None,
+                order: SearchOrder::Relevance,
+                query_embedding: None,
+                embedding_model_id: None,
+                reader_personality_instance_id: None,
+            },
+            &[],
+        )
+        .await?;
+    let ids = rows
+        .iter()
+        .map(|row| row.memory_id.into_inner())
+        .collect::<Vec<_>>();
+
+    assert!(
+        ids.contains(&foreign_shadowed),
+        "foreign successor must not suppress victim search head: {ids:#?}"
+    );
+    assert!(
+        !ids.contains(&foreign_successor),
+        "attacker successor must remain unreadable in search: {ids:#?}"
+    );
+    assert!(
+        !ids.contains(&same_owner_shadowed),
+        "same-owner successor must suppress prior search head: {ids:#?}"
+    );
+    assert!(
+        ids.contains(&same_owner_successor),
+        "same-owner successor remains searchable head: {ids:#?}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn semantic_search_matches_pgvector_cosine_and_clamps_zero_query()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
@@ -668,6 +750,30 @@ async fn insert_text_memory(
     .bind(memory_id)
     .bind(text)
     .bind(personality_instance_id)
+    .execute(pg.pool())
+    .await?;
+    insert_entity_owner_home(pg, memory_id, owner).await?;
+    Ok(memory_id)
+}
+
+async fn insert_search_abstraction(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    text: &str,
+    supersedes: Option<Uuid>,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let memory_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
+             prompt_version, personality_instance_id, wake_chain_depth, supersedes)
+         VALUES ($1, 'test/search-abstraction-v1', 1,
+                 'Abstraction', $2, 'Wake', 'test-model', 'test-v1',
+                 '00000000-0000-0000-0000-000000000000'::uuid, 2, $3)",
+    )
+    .bind(memory_id)
+    .bind(text)
+    .bind(supersedes)
     .execute(pg.pool())
     .await?;
     insert_entity_owner_home(pg, memory_id, owner).await?;

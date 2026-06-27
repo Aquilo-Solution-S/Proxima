@@ -7,9 +7,10 @@ use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::{
     AbstractionPayload, AgentDerivationV1, AgentNoteV1, AuthPath, AuthorshipKindMask, AuthzContext,
-    EdgeAuthorshipKind, EntityKind, EntityKindMask, FlavorRegistry, MemoryId, MemoryOperatorKind,
-    Owner, OwnerPrincipalKind, PersonalityInstanceId, Principal, Relation, RelationClass,
-    RelationDescriptor, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, Storage,
+    EdgeAuthorshipKind, EntityKind, EntityKindMask, ErrorCode, FlavorRegistry, MemoryId,
+    MemoryOperatorKind, Owner, OwnerPrincipalKind, PersonalityInstanceId, Principal, Relation,
+    RelationClass, RelationDescriptor, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId,
+    Storage, UserId,
 };
 use uuid::Uuid;
 
@@ -304,6 +305,128 @@ async fn engine_author_derived_supersedes_in_same_transaction()
     Ok(())
 }
 
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn author_derived_authorized_enforces_intra_owner_same_kind_supersedes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let result = async {
+        let attacker = owner_fixture();
+        let victim = Principal::User(UserId::new(Uuid::now_v7()));
+        let victim_prior = insert_source_memory(
+            &pg,
+            &victim,
+            EntityKind::Abstraction,
+            "victim private abstraction",
+        )
+        .await?;
+        let attacker_prior = insert_source_memory(
+            &pg,
+            &attacker,
+            EntityKind::Abstraction,
+            "attacker abstraction",
+        )
+        .await?;
+        let attacker_perspective = insert_source_memory(
+            &pg,
+            &attacker,
+            EntityKind::Perspective,
+            "attacker perspective",
+        )
+        .await?;
+
+        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze())
+            .with_storage(pg.clone().into_handle());
+        let authz = AuthzContext::single_owner(&attacker, AuthPath::System);
+
+        let foreign_new_id = MemoryId::new(Uuid::now_v7());
+        let foreign_err = engine
+            .author_derived_authorized(
+                &authz,
+                derived_authorized_request(
+                    foreign_new_id,
+                    attacker.clone(),
+                    EntityKind::Abstraction,
+                    "foreign successor",
+                    Some(victim_prior),
+                ),
+            )
+            .await
+            .expect_err("foreign supersedes target must be forbidden");
+        assert_eq!(foreign_err.code, ErrorCode::Forbidden);
+        assert_eq!(
+            foreign_err.message,
+            "supersedes target is not an owned entity of the same owner"
+        );
+        assert_eq!(memory_count(&pg, foreign_new_id).await?, 0);
+        assert_eq!(supersedes_pointer_count(&pg, victim_prior).await?, 0);
+        assert_eq!(
+            supersedes_edge_count(&pg, foreign_new_id, victim_prior).await?,
+            0
+        );
+
+        let same_owner_new_id = MemoryId::new(Uuid::now_v7());
+        let same_owner = engine
+            .author_derived_authorized(
+                &authz,
+                derived_authorized_request(
+                    same_owner_new_id,
+                    attacker.clone(),
+                    EntityKind::Abstraction,
+                    "same-owner successor",
+                    Some(attacker_prior),
+                ),
+            )
+            .await?;
+        assert_eq!(same_owner.memory_id, same_owner_new_id);
+        assert_eq!(
+            stored_supersedes(&pg, same_owner_new_id).await?,
+            Some(attacker_prior.into_inner())
+        );
+        assert_eq!(
+            supersedes_edge_count(&pg, same_owner_new_id, attacker_prior).await?,
+            1
+        );
+
+        let wrong_kind_new_id = MemoryId::new(Uuid::now_v7());
+        let wrong_kind_err = engine
+            .author_derived_authorized(
+                &authz,
+                derived_authorized_request(
+                    wrong_kind_new_id,
+                    attacker.clone(),
+                    EntityKind::Abstraction,
+                    "wrong-kind successor",
+                    Some(attacker_perspective),
+                ),
+            )
+            .await
+            .expect_err("same-owner wrong-kind supersedes target must be rejected");
+        assert_eq!(wrong_kind_err.code, ErrorCode::InvalidArgument);
+        assert_eq!(
+            wrong_kind_err.message,
+            "invalid argument supersedes: must supersede a memory of the same kind"
+        );
+        assert_eq!(memory_count(&pg, wrong_kind_new_id).await?, 0);
+        assert_eq!(
+            supersedes_pointer_count(&pg, attacker_perspective).await?,
+            0
+        );
+        assert_eq!(
+            supersedes_edge_count(&pg, wrong_kind_new_id, attacker_perspective).await?,
+            0
+        );
+
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
+}
+
 async fn assert_embedding_row(
     pool: &sqlx::PgPool,
     memory_id: Uuid,
@@ -392,6 +515,15 @@ async fn insert_source_abstraction(
     pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,
 ) -> Result<MemoryId, sqlx::Error> {
+    insert_source_memory(pg, owner, EntityKind::Abstraction, "source abstraction").await
+}
+
+async fn insert_source_memory(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    kind: EntityKind,
+    text: &str,
+) -> Result<MemoryId, sqlx::Error> {
     let memory_id = Uuid::now_v7();
     let owner_kind = OwnerPrincipalKind::of(owner);
     let owner_principal_id = match owner {
@@ -402,12 +534,14 @@ async fn insert_source_abstraction(
         "INSERT INTO proxima_core.memories
             (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, 1, 'Abstraction',
-                 'source abstraction', 'ExternalAgent', 'source-model',
-                 'source-prompt', $3, 0)",
+         VALUES ($1, $2, 1, $3,
+                 $4, 'ExternalAgent', 'source-model',
+                 'source-prompt', $5, 0)",
     )
     .bind(memory_id)
     .bind(AgentDerivationV1::SCHEMA_ID)
+    .bind(kind)
+    .bind(text)
     .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
@@ -423,4 +557,96 @@ async fn insert_source_abstraction(
     .execute(pg.pool())
     .await?;
     Ok(MemoryId::new(memory_id))
+}
+
+fn derived_authorized_request(
+    memory_id: MemoryId,
+    owner: Owner,
+    kind: EntityKind,
+    title: &str,
+    supersedes: Option<MemoryId>,
+) -> proxima_core::AuthorDerivedRequestInput<'static> {
+    proxima_core::AuthorDerivedRequestInput {
+        memory_id,
+        owner,
+        kind,
+        text: title.to_string(),
+        schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
+        schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+        operator_kind: MemoryOperatorKind::ExternalAgent,
+        model_id: "agent-model",
+        prompt_version: "test-prompt",
+        author_personality_instance_id: None,
+        sidecar_payload: derivation_sidecar(kind, title),
+        supersedes,
+        edges: &[],
+    }
+}
+
+fn derivation_sidecar(kind: EntityKind, title: &str) -> SidecarPayload {
+    let payload = AgentDerivationV1 {
+        title: title.into(),
+        body: title.into(),
+        tags: Vec::new(),
+        idempotency_key: None,
+        source_memory_ids: Vec::new(),
+        model_id: "agent-model".into(),
+        client_name: "test-client".into(),
+        client_version: "1".into(),
+    };
+    match kind {
+        EntityKind::Abstraction => SidecarPayload::abstraction(payload),
+        EntityKind::Perspective => SidecarPayload::perspective(payload),
+        other => panic!("unexpected derived kind in test: {other:?}"),
+    }
+}
+
+async fn memory_count(
+    pg: &proxima_storage_pg::PgStorage,
+    memory_id: MemoryId,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT count(*) FROM proxima_core.memories WHERE memory_id = $1")
+        .bind(memory_id.into_inner())
+        .fetch_one(pg.pool())
+        .await
+}
+
+async fn stored_supersedes(
+    pg: &proxima_storage_pg::PgStorage,
+    memory_id: MemoryId,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    sqlx::query_scalar("SELECT supersedes FROM proxima_core.memories WHERE memory_id = $1")
+        .bind(memory_id.into_inner())
+        .fetch_one(pg.pool())
+        .await
+}
+
+async fn supersedes_pointer_count(
+    pg: &proxima_storage_pg::PgStorage,
+    prior: MemoryId,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT count(*) FROM proxima_core.memories WHERE supersedes = $1")
+        .bind(prior.into_inner())
+        .fetch_one(pg.pool())
+        .await
+}
+
+async fn supersedes_edge_count(
+    pg: &proxima_storage_pg::PgStorage,
+    source: MemoryId,
+    target: MemoryId,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*)
+           FROM proxima_core.edges
+          WHERE relation = $1
+            AND source_memory_id = $2
+            AND target_memory_id = $3
+            AND relation_class = 'Supersession'",
+    )
+    .bind(proxima_core::CORE_SUPERSEDES_RELATION)
+    .bind(source.into_inner())
+    .bind(target.into_inner())
+    .fetch_one(pg.pool())
+    .await
 }

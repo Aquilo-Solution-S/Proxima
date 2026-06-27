@@ -51,6 +51,9 @@ pub async fn append_derived_in_tx(
     let author_personality_instance_id = draft
         .author_personality_instance_id
         .map_or_else(uuid::Uuid::nil, PersonalityInstanceId::into_inner);
+    if let Some(prior) = draft.supersedes {
+        validate_supersedes_in_owner(tx, &draft.owner, prior, draft.kind).await?;
+    }
 
     let inserted: Option<(uuid::Uuid,)> = sqlx::query_as(
         "INSERT INTO proxima_core.memories
@@ -118,6 +121,46 @@ pub async fn append_derived_in_tx(
     .map_err(map_err)?;
 
     Ok(outcome)
+}
+
+async fn validate_supersedes_in_owner(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    prior: MemoryId,
+    kind: EntityKind,
+) -> Result<(), StorageError> {
+    let (owner_kind, owner_principal_id) = owner.columns();
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM proxima_core.memories m
+              WHERE m.memory_id = $1
+                AND m.tombstoned_at IS NULL
+                AND m.kind = $4
+                AND EXISTS (
+                    SELECT 1
+                      FROM proxima_core.entity_owner eo
+                     WHERE eo.entity_id = m.memory_id
+                       AND eo.owner_principal_kind = $2
+                       AND eo.owner_principal_id = $3
+                       AND eo.is_home
+                )
+         )",
+    )
+    .bind(prior.into_inner())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(kind)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    if exists {
+        Ok(())
+    } else {
+        Err(StorageError::ConstraintViolation(
+            "supersedes crosses Owner boundary or does not exist".into(),
+        ))
+    }
 }
 
 async fn insert_embedding_in_tx(
