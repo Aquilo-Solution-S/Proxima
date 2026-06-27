@@ -4,19 +4,16 @@
 //!
 //! See docs/superpowers/specs/2026-05-10-personality-mcp-crud-design.md.
 
-pub mod access_common;
 pub mod add_wake_entry;
 pub mod audit;
 pub mod citation_of_fact;
 pub mod fact;
 pub mod facts_citing_object;
-pub mod marketplace;
 pub mod payload;
 pub mod publish_memory;
 pub mod remove_wake_entry;
 pub mod search_memories;
 pub mod set_wake_entries;
-pub mod space;
 pub mod update_wake_entry;
 pub mod wake_entry_input;
 
@@ -44,8 +41,7 @@ pub mod walk_memory_lineage;
 pub use audit::AuditEmit;
 pub use fact::CoreFactTool;
 pub use goal::CoreGoalTool;
-pub use marketplace::CoreMarketplaceTool;
-pub use memory::{CoreMemoryTool, DeriveTool, LinkTool, RecordUtteranceTool, RememberTool};
+pub use memory::{DeriveTool, LinkTool, RecordUtteranceTool, RememberTool};
 pub use memory_spaces::MemorySpacesTool;
 pub use payload::{
     PersonalityConfigChangedCaller, PersonalityConfigChangedSubject, PersonalityConfigChangedV1,
@@ -54,7 +50,6 @@ pub use payload::{
 pub use personality::CorePersonalityTool;
 pub use publish_memory::PublishMemoryTool;
 pub use search_memories::SearchMemoriesTool;
-pub use space::CoreSpaceTool;
 pub use update_wake_entry::WakeEntryPatch;
 pub use wake::CoreWakeTool;
 pub use wake_entry_input::WakeEntryDraftInput;
@@ -93,9 +88,6 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<RecordUtteranceTool>();
     registry.add_substrate_mcp_tool::<DeriveTool>();
     registry.add_substrate_mcp_tool::<LinkTool>();
-    registry.add_substrate_mcp_tool::<CoreMemoryTool>();
-    registry.add_substrate_mcp_tool::<CoreSpaceTool>();
-    registry.add_substrate_mcp_tool::<CoreMarketplaceTool>();
     registry.add_substrate_mcp_tool::<CoreGoalTool>();
     registry.add_substrate_mcp_tool::<CoreWakeTool>();
     registry.add_substrate_mcp_tool::<CorePersonalityTool>();

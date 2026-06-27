@@ -850,9 +850,6 @@ pub fn all_core_resources() -> impl Iterator<Item = &'static CoreResourceMeta> {
 pub fn all_core_actions() -> impl Iterator<Item = &'static CoreActionMeta> {
     core_tools::goal::CORE_GOAL_ACTIONS
         .iter()
-        .chain(core_tools::memory::access::CORE_MEMORY_ACTIONS.iter())
-        .chain(core_tools::space::CORE_SPACE_ACTIONS.iter())
-        .chain(core_tools::marketplace::CORE_MARKETPLACE_ACTIONS.iter())
         .chain(core_tools::wake::CORE_WAKE_ACTIONS.iter())
         .chain(core_tools::personality::CORE_PERSONALITY_ACTIONS.iter())
         .chain(core_tools::fact::CORE_FACT_ACTIONS.iter())
@@ -873,15 +870,13 @@ pub fn core_tool_has_actions(tool: &str) -> bool {
 pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations> {
     let base = McpToolAnnotations::new().open_world(false);
     let annotations = match canonical_name {
-        "core_search_memories" | "core_memory_spaces" | "core_marketplace" => base.read_only(true),
+        "core_search_memories" | "core_memory_spaces" => base.read_only(true),
 
         "core_derive" => base.read_only(false).destructive(false).idempotent(true),
 
         "core_remember"
         | "core_record_utterance"
         | "core_goal"
-        | "core_memory"
-        | "core_space"
         | "core_link"
         | "core_publish_memory" => base.read_only(false).destructive(false).idempotent(false),
 
@@ -980,18 +975,12 @@ mod tests {
     fn core_actions_manifest_is_internally_consistent() {
         let allowed_tools = BTreeSet::from([
             "core_goal",
-            "core_memory",
-            "core_space",
-            "core_marketplace",
             "core_wake",
             "core_personality",
             "core_fact",
         ]);
         let expected_counts = BTreeMap::from([
             ("core_goal", 5_usize),
-            ("core_memory", 4),
-            ("core_space", 2),
-            ("core_marketplace", 1),
             ("core_wake", 5),
             ("core_personality", 6),
             ("core_fact", 4),
