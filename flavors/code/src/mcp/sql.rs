@@ -19,8 +19,14 @@ chunk_heads AS (
             c.state
         FROM proxima_code.code_chunk_v1 c
         JOIN proxima_core.memories m USING (memory_id)
-        WHERE m.owner_principal_kind = $1
-          AND m.owner_principal_id   = $2
+        WHERE EXISTS (
+                  SELECT 1
+                    FROM proxima_core.entity_owner eo
+                   WHERE eo.entity_id = m.memory_id
+                     AND eo.owner_principal_kind = $1
+                     AND eo.owner_principal_id = $2
+                     AND eo.is_home
+              )
         ORDER BY c.repo_id, c.file_path, c.chunk_index, m.created_at DESC
     ) latest
     WHERE state = 'Present'
@@ -35,8 +41,14 @@ file_revision_heads AS (
         f.state, m.created_at
     FROM proxima_code.file_revision_v1 f
     JOIN proxima_core.memories m USING (memory_id)
-    WHERE m.owner_principal_kind = $1
-      AND m.owner_principal_id   = $2
+    WHERE EXISTS (
+              SELECT 1
+                FROM proxima_core.entity_owner eo
+               WHERE eo.entity_id = m.memory_id
+                 AND eo.owner_principal_kind = $1
+                 AND eo.owner_principal_id = $2
+                 AND eo.is_home
+          )
     ORDER BY f.repo_id, f.file_path, m.created_at DESC
 )
 ";

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 mod common;
 
-use common::{migrated_db, test_owner};
+use common::{insert_entity_owner_home, migrated_db, test_owner};
 use proxima_code::{build_engine_with, register_repo};
 use proxima_core::personality::{InstantiatePersonalityRequest, PersonalityInstanceId};
 use proxima_core::test_fixtures::ConstantEmbedding;
@@ -97,6 +97,7 @@ async fn seed_active_goal(
     .bind(owner_principal_id)
     .execute(pg.pool())
     .await?;
+    insert_entity_owner_home(pg.pool(), goal_id, owner).await?;
     Ok(goal_id)
 }
 

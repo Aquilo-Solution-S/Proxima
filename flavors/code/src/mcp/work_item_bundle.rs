@@ -241,8 +241,14 @@ async fn load_work_item(
            LEFT JOIN proxima_code.work_requested_v1 w USING (memory_id)
            LEFT JOIN proxima_code.test_requested_v1 t USING (memory_id)
           WHERE m.memory_id = $1
-            AND m.owner_principal_kind = $2
-            AND m.owner_principal_id = $3
+            AND EXISTS (
+                SELECT 1
+                  FROM proxima_core.entity_owner eo
+                 WHERE eo.entity_id = m.memory_id
+                   AND eo.owner_principal_kind = $2
+                   AND eo.owner_principal_id = $3
+                   AND eo.is_home
+            )
             AND m.tombstoned_at IS NULL",
     )
     .bind(memory_id.into_inner())
@@ -438,7 +444,6 @@ async fn load_memory_edge_targets(
     relation: &str,
     direction: EdgeDirection,
 ) -> Result<Vec<MemoryId>, McpToolError> {
-    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
     let pool = pg_pool(ctx)?;
     let (source_predicate, target_column) = match direction {
         EdgeDirection::Outgoing => ("source_memory_id = $1", "target_memory_id"),
@@ -449,16 +454,12 @@ async fn load_memory_edge_targets(
            FROM proxima_core.edges
           WHERE {source_predicate}
             AND relation = $2
-            AND owner_principal_kind = $3
-            AND owner_principal_id = $4
             AND {target_column} IS NOT NULL
           ORDER BY created_at ASC"
     );
     let rows: Vec<Uuid> = sqlx::query_scalar(&sql)
         .bind(memory_id.into_inner())
         .bind(relation)
-        .bind(owner_kind)
-        .bind(owner_principal_id)
         .fetch_all(pool.as_ref())
         .await
         .map_err(map_storage)?;

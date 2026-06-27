@@ -217,21 +217,16 @@ async fn load_call_edges(
     chunk_ids: &[uuid::Uuid],
 ) -> Result<Vec<CallEdge>, McpToolError> {
     let pool = pg_pool(ctx)?;
-    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
     let rows: Vec<CallEdgeRow> = sqlx::query_as(
         "SELECT e.edge_id, e.source_memory_id, e.target_memory_id,
                 c.callee_name, c.is_dynamic
          FROM proxima_core.edges e
          JOIN proxima_code.code_calls_v1 c USING (edge_id)
-         WHERE e.owner_principal_kind = $1
-           AND e.owner_principal_id   = $2
-           AND e.relation = 'proxima-code/calls'
-           AND (e.source_memory_id = ANY($3) OR e.target_memory_id = ANY($3))
+         WHERE e.relation = 'proxima-code/calls'
+           AND (e.source_memory_id = ANY($1::uuid[]) OR e.target_memory_id = ANY($1::uuid[]))
          ORDER BY e.edge_id DESC
          LIMIT 200",
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(chunk_ids)
     .fetch_all(pool.as_ref())
     .await
