@@ -1,13 +1,13 @@
 //! Consolidated storage-pg integration tests (single linked binary).
 
 mod access_admin_pg;
-mod access_grants_pg;
 mod change_event_invariants_pg;
 mod close_batch_pg;
 mod common;
 mod connect;
 mod derive_append_pg;
 mod edge_invariants_pg;
+mod entity_owner_pg;
 mod entry_access_pg;
 mod event_history_pg;
 mod event_ingest_pg;
