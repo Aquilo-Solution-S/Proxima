@@ -44,7 +44,7 @@ pub struct DeriveArgs {
     pub idempotency_key: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Memory space key from core_memory_spaces. All handles in this call must belong to this space."
+        description = "Memory space key from core_memory_spaces. The new memory is authored in this space; source handles may be in other readable spaces."
     )]
     pub space: Option<String>,
 }

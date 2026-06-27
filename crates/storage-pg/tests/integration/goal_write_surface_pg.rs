@@ -5,13 +5,12 @@ use std::sync::Arc;
 
 use crate::common::{create_db, db_url, drop_db};
 
-use proxima_core::access::GrantSubject;
 use proxima_core::authz::{AuthPath, CapabilitySet, Identity, ToolScope};
 use proxima_core::error::ErrorCode;
 use proxima_core::verbs::goal_write::{GoalCreateRequest, GoalEvidenceRef, IdempotencyKey};
 use proxima_core::{
-    AccessScope, AuthzContext, Engine, GoalPayload, GrantResource, MemoryId, NewAccessGrant, Owner,
-    PayloadKeyBuilder, PersonalityInstanceId, Principal, Relation, Storage, UserId,
+    AccessScope, AuthzContext, Engine, GoalPayload, GroupId, MemoryId, Owner, PayloadKeyBuilder,
+    Principal, Relation, Storage, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -81,6 +80,16 @@ async fn insert_memory(
     .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.entity_owner
+            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
+         VALUES ($1, $2, $3, true, NULL)",
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .execute(pg.pool())
+    .await?;
     Ok(MemoryId::new(memory_id))
 }
 
@@ -105,30 +114,30 @@ fn assert_idempotency_conflict(err: &proxima_core::error::ProtocolError) {
     assert_eq!(err.code, ErrorCode::IdempotencyConflict);
 }
 
-async fn seed_space_grant(
+async fn seed_group_membership(
     pg: &PgStorage,
     space_owner: &Principal,
     relation: Relation,
     subject: &Principal,
 ) {
-    pg.insert_space_binding(&NewAccessGrant {
-        space_owner: space_owner.clone(),
-        resource: GrantResource::Space,
-        relation,
-        subject: GrantSubject::Principal(subject.clone()),
-        granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
-    })
-    .await
-    .expect("seed grant");
+    let Principal::Group(group) = space_owner else {
+        panic!("group membership can only seed group-owned spaces");
+    };
+    let Principal::User(user) = subject else {
+        panic!("group membership can only seed user members");
+    };
+    pg.add_group_member(*group, *user, relation, Uuid::now_v7())
+        .await
+        .expect("seed group membership");
 }
 
 async fn viewer_without_memory_write(pg: &PgStorage, owner: &Owner) -> AuthzContext {
     let viewer = Principal::User(UserId::new(Uuid::now_v7()));
-    seed_space_grant(pg, owner, Relation::Viewer, &viewer).await;
+    seed_group_membership(pg, owner, Relation::Viewer, &viewer).await;
     AuthzContext {
         identity: Identity {
-            principal: viewer,
-            accessible_principals: HashSet::default(),
+            principal: viewer.clone(),
+            accessible_principals: HashSet::from([viewer]),
             expires_at: None,
             auth_epoch: 0,
         },
@@ -145,7 +154,7 @@ async fn boot_registered(
 ) -> Result<(PgStorage, Owner, MemoryId, Engine, AuthzContext), Box<dyn std::error::Error>> {
     let pg = PgStorage::connect(url).await?;
     pg.run_migrations().await?;
-    let owner = Principal::User(UserId::new(Uuid::now_v7()));
+    let owner = Principal::Group(GroupId::new(Uuid::now_v7()));
     let target_self = insert_self(&pg, &owner).await?;
     let engine = Engine::compose(Arc::new(pg.clone()), |registry| {
         registry.add_goal_schema::<ProductInitialGoal>();

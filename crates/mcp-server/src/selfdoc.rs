@@ -128,7 +128,7 @@ pub fn build_instructions(
 
     if s.remember || s.derive {
         if s.memory_spaces {
-            out.push_str("In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_search_memories`, `core_get_memory`, and `core_publish_memory`. Omitted `space` preserves the current owner behavior for single-owner deployments. `core_publish_memory` v1 copies only `core/agent-note-v1`; flavor-specific publish is a host/flavor concern until typed replay is designed. ");
+            out.push_str("In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_search_memories`, `core_get_memory`, `core_derive`, and `core_link`. Omitted `space` preserves the current owner behavior for single-owner deployments. Cross-space derive/link may ground in readable handles outside the selected write space. Use `core_share` for same-entity sharing and World publish/unpublish. ");
         }
         if s.remember {
             out.push_str("`core_remember` appends a Fact (an observation). ");
@@ -224,7 +224,7 @@ pub fn how_to_markdown(
 
     push_law(&mut out, s);
     if s.memory_spaces {
-        out.push_str("## Memory spaces\n\nIn multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_search_memories`, `core_get_memory`, and `core_publish_memory`. Omitted `space` preserves the current owner behavior for single-owner deployments. Space keys are selectors only; every write/read is re-authorized by the server. `core_publish_memory` v1 copies only `core/agent-note-v1`; flavor-specific publish is a host/flavor concern until typed replay is designed.\n\n");
+        out.push_str("## Memory spaces\n\nIn multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_search_memories`, `core_get_memory`, `core_derive`, and `core_link`. Omitted `space` preserves the current owner behavior for single-owner deployments. Space keys are selectors only; every write/read is re-authorized by the server. Cross-space derive/link may ground in readable handles outside the selected write space. Use `core_share` for same-entity sharing and World publish/unpublish.\n\n");
     }
     push_capture_table(&mut out, s);
     push_edges(&mut out, s);
