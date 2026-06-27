@@ -3,11 +3,10 @@ use crate::access::Relation;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, StorageError};
-use crate::verbs::event_ingest::EventDraft;
 use crate::{
-    AgentNoteV1, CORE_SUPERSEDES_RELATION, EdgeAuthorshipKind, EdgeId, EndpointBinding, EntityId,
-    EntityKind, FactPayload, MemoryId, MemoryOperatorKind, Owner, PersonalityInstanceId,
-    RegisteredRelation, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId,
+    CORE_SUPERSEDES_RELATION, EdgeAuthorshipKind, EdgeId, EndpointBinding, EntityId, EntityKind,
+    MemoryId, MemoryOperatorKind, Owner, PersonalityInstanceId, RegisteredRelation, SchemaId,
+    SchemaVersion, SidecarPayload,
 };
 
 #[derive(Debug, Clone)]
@@ -57,23 +56,6 @@ pub struct AppendMemoryEdgeRequestInput<'a> {
     pub authorship_kind: EdgeAuthorshipKind,
     pub authorship_owner_memory_id: Option<MemoryId>,
     pub sidecar_payload: Option<&'a SidecarPayload>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PublishMemoryRequestInput {
-    pub source_owner: Owner,
-    pub target_owner: Owner,
-    pub memory_id: MemoryId,
-    pub title_override: Option<String>,
-    pub body_override: Option<String>,
-    pub tags: Vec<String>,
-    pub author_personality_instance_id: Option<PersonalityInstanceId>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PublishMemoryOutcome {
-    pub source_memory_id: MemoryId,
-    pub published_memory_id: MemoryId,
 }
 
 impl Engine {
@@ -192,93 +174,6 @@ impl Engine {
             .append_memory_edge(&edge)
             .await
             .map_err(|err| ProtocolError::internal(err.to_string()))
-    }
-
-    /// Authorized owner-to-owner publication of a core agent-note Fact.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Forbidden` when the caller lacks source read, source publish,
-    /// or target write; `InvalidArgument` for unsupported source memory payloads;
-    /// and `Internal` for storage failures.
-    pub async fn publish_memory(
-        &self,
-        authz: &AuthzContext,
-        req: PublishMemoryRequestInput,
-    ) -> Result<PublishMemoryOutcome, ProtocolError> {
-        let source_publish = self
-            .authorize_write(authz, &req.source_owner, Relation::Editor)
-            .await?;
-        let entry_read = self
-            .authorize_entry_read(authz, EntityId::Memory(req.memory_id))
-            .await?;
-        if entry_read.owner() != source_publish.owner() {
-            return Err(ProtocolError::invalid_argument(
-                "memory_id",
-                "memory not found",
-            ));
-        }
-
-        let sidecars = self.sidecar_specs();
-        let snapshot = self
-            .storage()
-            .load_memory_by_id(req.memory_id, None, &sidecars)
-            .await
-            .map_err(|err| ProtocolError::internal(err.to_string()))?
-            .ok_or_else(|| ProtocolError::invalid_argument("memory_id", "memory not found"))?;
-        if snapshot.schema_id != AgentNoteV1::schema_id() {
-            return Err(ProtocolError::invalid_argument(
-                "memory_id",
-                "core_publish_memory v1 supports only core/agent-note-v1",
-            ));
-        }
-        let Some(payload) = snapshot
-            .payload
-            .as_ref()
-            .and_then(SidecarPayload::downcast_ref::<AgentNoteV1>)
-        else {
-            return Err(ProtocolError::internal("agent note payload missing"));
-        };
-
-        let copied = AgentNoteV1 {
-            note_id: uuid::Uuid::now_v7(),
-            title: req.title_override.unwrap_or_else(|| payload.title.clone()),
-            body: req.body_override.unwrap_or_else(|| payload.body.clone()),
-            tags: if req.tags.is_empty() {
-                payload.tags.clone()
-            } else {
-                req.tags
-            },
-            idempotency_key: None,
-        };
-        let observed_at = time::OffsetDateTime::now_utc();
-        let mut draft = EventDraft::from_payload(
-            &req.target_owner,
-            "core/agent-publish",
-            SourceBatchId::new(uuid::Uuid::now_v7()),
-            &copied,
-            observed_at,
-        );
-        if let Some(author) = req.author_personality_instance_id {
-            draft = draft.author_personality(author);
-        }
-        let authorized = self
-            .authorize_event_ingest(authz, Relation::Editor, draft)
-            .await?;
-        let embedding_client = self.embed_client();
-        let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
-        let outcome = self
-            .ingest_event_with_typed_sidecar(
-                &authorized,
-                &SidecarPayload::fact(copied),
-                embedding_model_id,
-            )
-            .await?;
-
-        Ok(PublishMemoryOutcome {
-            source_memory_id: snapshot.memory_id,
-            published_memory_id: outcome.memory_id,
-        })
     }
 
     /// Author one derived Memory and its already-resolved edges. When an
@@ -496,22 +391,17 @@ fn validate_relation_shape(
 
 #[cfg(test)]
 mod tests {
-    use crate::access::AccessScope;
-    use crate::authz::{AuthPath, AuthzContext, CapabilitySet, Identity, ToolScope};
+    use crate::authz::AuthzContext;
     use crate::error::ErrorCode;
     use crate::{
         AbstractionPayload, AgentDerivationV1, CORE_DERIVED_FROM_RELATION, EntityKind,
-        FlavorRegistry, GroupId, Principal, UserId,
+        FlavorRegistry, Principal, UserId,
     };
 
     use super::*;
 
     fn owner() -> Owner {
         Principal::User(UserId::new(uuid::Uuid::now_v7()))
-    }
-
-    fn group_owner() -> Owner {
-        Principal::Group(GroupId::new(uuid::Uuid::now_v7()))
     }
 
     fn engine() -> Engine {
@@ -529,24 +419,6 @@ mod tests {
             client_name: "test".into(),
             client_version: "1".into(),
         })
-    }
-
-    fn granted_authz(owner: &Owner) -> AuthzContext {
-        let mut accessible_principals = std::collections::HashSet::new();
-        accessible_principals.insert(owner.clone());
-        AuthzContext {
-            identity: Identity {
-                principal: owner.clone(),
-                accessible_principals,
-                expires_at: None,
-                auth_epoch: 0,
-            },
-            capabilities: CapabilitySet {
-                tool_scope: ToolScope::All,
-                access: AccessScope::Granted,
-            },
-            auth_path: AuthPath::HostBearer,
-        }
     }
 
     #[tokio::test]
@@ -601,54 +473,6 @@ mod tests {
             )
             .await
             .expect_err("denied context must fail before storage");
-
-        assert_eq!(err.code, ErrorCode::Forbidden);
-    }
-
-    #[tokio::test]
-    async fn publish_memory_denies_denied_context() {
-        let engine = engine();
-        let owner = owner();
-        let err = engine
-            .publish_memory(
-                &AuthzContext::denied(&owner),
-                PublishMemoryRequestInput {
-                    source_owner: owner.clone(),
-                    target_owner: owner.clone(),
-                    memory_id: MemoryId::new(uuid::Uuid::now_v7()),
-                    title_override: None,
-                    body_override: None,
-                    tags: Vec::new(),
-                    author_personality_instance_id: None,
-                },
-            )
-            .await
-            .expect_err("denied context must fail before storage");
-
-        assert_eq!(err.code, ErrorCode::Forbidden);
-    }
-
-    #[tokio::test]
-    async fn publish_memory_denies_without_persisted_editor_grant() {
-        let engine = engine();
-        let caller = owner();
-        let space = group_owner();
-
-        let err = engine
-            .publish_memory(
-                &granted_authz(&caller),
-                PublishMemoryRequestInput {
-                    source_owner: space.clone(),
-                    target_owner: space,
-                    memory_id: MemoryId::new(uuid::Uuid::now_v7()),
-                    title_override: None,
-                    body_override: None,
-                    tags: Vec::new(),
-                    author_personality_instance_id: None,
-                },
-            )
-            .await
-            .expect_err("missing persisted grant must fail before storage");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
     }

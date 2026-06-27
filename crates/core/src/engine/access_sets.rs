@@ -456,6 +456,71 @@ pub(in crate::engine) mod tests {
             Ok(self.home_owner.clone())
         }
 
+        async fn add_entity_owner_share(
+            &self,
+            _entity: EntityId,
+            _owner: &Principal,
+            _granted_by: Option<uuid::Uuid>,
+        ) -> Result<(), StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+
+        async fn remove_entity_owner_share(
+            &self,
+            _entity: EntityId,
+            _owner: &Principal,
+        ) -> Result<RemoveOwnerOutcome, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+
+        async fn list_entity_owners(
+            &self,
+            _entity: EntityId,
+        ) -> Result<Vec<EntityOwnerRow>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn list_world_entities(
+            &self,
+            _limit: usize,
+            _sidecars: &[SidecarSpec],
+        ) -> Result<Vec<MemorySnapshot>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn add_group_member(
+            &self,
+            _group_id: GroupId,
+            _member_user_id: UserId,
+            _relation: Relation,
+            _granted_by: uuid::Uuid,
+        ) -> Result<(), StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+
+        async fn remove_group_member(
+            &self,
+            _group_id: GroupId,
+            _member_user_id: UserId,
+        ) -> Result<(), StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+
+        async fn list_group_members(
+            &self,
+            _group_id: GroupId,
+        ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+            Ok(Vec::new())
+        }
+
         async fn close_batch(
             &self,
             _principal: &Principal,

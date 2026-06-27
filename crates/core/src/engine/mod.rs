@@ -2,6 +2,7 @@
 //! verb surfaces of docs/14-protocol-surface.md.
 
 #[allow(dead_code)]
+mod access_admin;
 mod access_sets;
 mod builder;
 mod fact_retention;
@@ -39,7 +40,7 @@ pub use ingest::EmbeddingDrainOutcome;
 pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
 pub use memory_authoring::{
     AppendMemoryEdgeRequestInput, AuthorDerivedAuthorizedOutcome, AuthorDerivedEdgeInput,
-    AuthorDerivedRequestInput, PublishMemoryOutcome, PublishMemoryRequestInput,
+    AuthorDerivedRequestInput,
 };
 pub use personality::{
     AddWakeEntryRequest, AddWakeEntryResponse, InstantiatePersonalityAdminResponse,
