@@ -243,6 +243,7 @@ async fn heads_only_returns_latest_per_natural_key() {
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
+            reader_personality_instance_id: None,
         };
         let resp = engine
             .query(
@@ -280,6 +281,7 @@ async fn heads_only_returns_latest_per_natural_key() {
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
+            reader_personality_instance_id: None,
         };
         let resp_all = engine
             .query(
@@ -341,6 +343,7 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
+            reader_personality_instance_id: None,
         };
         let resp = engine
             .query(
@@ -408,6 +411,7 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
+            reader_personality_instance_id: None,
         };
         let resp = engine
             .query(

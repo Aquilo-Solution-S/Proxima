@@ -59,6 +59,7 @@ impl Engine {
         }
         let mut effective = req.clone();
         effective.principal = permit.owner().clone();
+        effective.reader_personality_instance_id = permit.subject_personality();
         if effective.stateful_heads.is_empty() {
             effective.stateful_heads = match effective.schema_id.as_ref() {
                 Some(sid) => self.registry.stateful_filters_for_schema(sid),
@@ -161,6 +162,7 @@ impl Engine {
     ) -> Result<MemoryLineageResponse, ProtocolError> {
         let mut effective = req.clone();
         effective.principal = permit.owner().clone();
+        effective.reader_personality_instance_id = permit.subject_personality();
         self.storage
             .walk_memory_lineage(&effective)
             .await

@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use crate::common::personality::ingest_test_fact;
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 
-use proxima_core::access::{GrantResource, GrantSubject, Relation, Visibility};
+use proxima_core::access::{EntryVisibilityTarget, GrantResource, GrantSubject, Relation};
 use proxima_core::engine::GetMemoryReadRequest;
 use proxima_core::error::ErrorCode;
 use proxima_core::verbs::schema::FlavorRegistryFrozen;
@@ -139,7 +139,11 @@ async fn non_owner_cannot_manage_grants() -> Result<(), Box<dyn std::error::Erro
     assert_eq!(err.code, ErrorCode::Forbidden);
 
     let err = engine
-        .set_entry_visibility(&granted_authz(&editor), entry, Visibility::Public)
+        .set_entry_visibility(
+            &granted_authz(&editor),
+            entry,
+            EntryVisibilityTarget::Public,
+        )
         .await
         .expect_err("editor cannot publish");
     assert_eq!(err.code, ErrorCode::Forbidden);
@@ -204,7 +208,7 @@ async fn publish_lists_in_browse_then_unpublish_removes() -> Result<(), Box<dyn 
 
     // Publish via the owner-gated verb; browse now lists it.
     engine
-        .set_entry_visibility(&owner_authz(&owner), entry, Visibility::Public)
+        .set_entry_visibility(&owner_authz(&owner), entry, EntryVisibilityTarget::Public)
         .await?;
     let listed = engine
         .browse_marketplace(&granted_authz(&browser), 50)
@@ -216,7 +220,7 @@ async fn publish_lists_in_browse_then_unpublish_removes() -> Result<(), Box<dyn 
 
     // Unpublish; browse no longer lists it.
     engine
-        .set_entry_visibility(&owner_authz(&owner), entry, Visibility::Private)
+        .set_entry_visibility(&owner_authz(&owner), entry, EntryVisibilityTarget::Private)
         .await?;
     assert!(
         engine

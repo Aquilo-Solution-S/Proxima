@@ -82,6 +82,11 @@ pub(crate) async fn query_memories(
         next_param += 1;
         param
     });
+    let reader_param = req.reader_personality_instance_id.map(|_| {
+        let param = next_param;
+        next_param += 1;
+        param
+    });
     // The stateful JOINs (for head-by-natural-key filtering) use
     // explicit `ON sf_i.memory_id = m.memory_id` so generated aliases
     // stay unambiguous.
@@ -116,6 +121,7 @@ pub(crate) async fn query_memories(
         &stateful_params,
         root_schema_ids_param,
     );
+    push_reader_visibility_filter(&mut sql, "m", reader_param);
 
     sql.push_str(" ORDER BY m.created_at DESC LIMIT ");
     sql.push_str(&u64::from(req.limit).to_string());
@@ -132,6 +138,9 @@ pub(crate) async fn query_memories(
     q = bind_stateful_filters(q, &stateful);
     if !root_schema_ids.is_empty() {
         q = q.bind(root_schema_ids);
+    }
+    if let Some(reader) = req.reader_personality_instance_id {
+        q = q.bind(reader.into_inner());
     }
 
     let rows: Vec<MemoryRowDb> = q.fetch_all(pool).await.map_err(internal)?;
@@ -294,6 +303,11 @@ async fn query_visible_memory_ids(
         next_param += 1;
         param
     });
+    let reader_param = req.reader_personality_instance_id.map(|_| {
+        let param = next_param;
+        next_param += 1;
+        param
+    });
 
     push_heads_predicate(
         &mut sql,
@@ -303,6 +317,7 @@ async fn query_visible_memory_ids(
         &stateful_params,
         root_schema_ids_param,
     );
+    push_reader_visibility_filter(&mut sql, "m", reader_param);
 
     let mut q = sqlx::query_as::<_, (uuid::Uuid,)>(&sql)
         .bind(owner_kind)
@@ -314,6 +329,9 @@ async fn query_visible_memory_ids(
     q = bind_stateful_filters(q, &stateful);
     if !root_schema_ids.is_empty() {
         q = q.bind(root_schema_ids);
+    }
+    if let Some(reader) = req.reader_personality_instance_id {
+        q = q.bind(reader.into_inner());
     }
     let rows = q.fetch_all(pool).await.map_err(internal)?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
@@ -451,6 +469,27 @@ fn push_active_root_filter(sql: &mut String, root_schema_ids_param: Option<usize
           ))",
     )
     .expect("write to String is infallible");
+}
+
+fn push_reader_visibility_filter(sql: &mut String, alias: &str, reader_param: Option<usize>) {
+    if let Some(param) = reader_param {
+        write!(
+            sql,
+            " AND (
+                {alias}.kind IS NULL
+                OR {alias}.personality_instance_id = ${param}
+                OR EXISTS (
+                    SELECT 1
+                      FROM proxima_core.read_scope_matrix r
+                     WHERE r.owner_principal_kind = {alias}.owner_principal_kind
+                       AND r.owner_principal_id = {alias}.owner_principal_id
+                       AND r.reader_personality_instance_id = ${param}
+                       AND r.readable_personality_instance_id = {alias}.personality_instance_id
+                )
+            )",
+        )
+        .expect("write to String is infallible");
+    }
 }
 
 fn push_heads_predicate(

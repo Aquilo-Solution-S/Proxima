@@ -194,7 +194,9 @@ impl Engine {
             )
             .await
             .map_err(|err| storage_error("load_memory_by_id", &err))?;
-        let neighbor_edges = if req.include_neighbor_edges {
+        let neighbor_edges = if req.include_neighbor_edges
+            && matches!(permit.mode(), PermitMode::OwnerScoped { .. })
+        {
             self.storage
                 .load_neighbor_memory_edges(permit.owner(), &[memory_id], NEIGHBOR_EDGE_LIMIT)
                 .await

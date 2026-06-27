@@ -63,13 +63,16 @@ async fn seed_entry_grant(
     memory_id: MemoryId,
     subject: &Principal,
 ) {
-    pg.insert_access_grant(&NewAccessGrant {
-        space_owner: owner.clone(),
-        resource: GrantResource::Memory(memory_id),
-        relation: Relation::Viewer,
-        subject: GrantSubject::Principal(subject.clone()),
-        granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
-    })
+    pg.share_entry_atomic(
+        &NewAccessGrant {
+            space_owner: owner.clone(),
+            resource: GrantResource::Memory(memory_id),
+            relation: Relation::Viewer,
+            subject: GrantSubject::Principal(subject.clone()),
+            granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
+        },
+        false,
+    )
     .await
     .expect("seed entry grant");
 }
@@ -92,14 +95,21 @@ async fn friend_with_viewer_grant_reads_shared_entry() -> Result<(), Box<dyn std
         .expect_err("ungranted friend denied");
     assert_eq!(err.code, ErrorCode::Forbidden);
 
-    // Grant the friend a viewer entry-grant — now the friend reads it.
+    // Grant the friend a viewer entry-grant — now the friend reads it. Even when
+    // the friend requests neighbor edges, an EntryScoped (single-entry) grant is
+    // body-only: it must NOT hydrate neighbors and leak the entry's graph
+    // neighborhood (adjacent memory ids) the friend has no grant for.
     seed_entry_grant(&pg, &owner, entry, &friend).await;
     let resp = engine
-        .get_memory(&granted_authz(&friend), &read_req(entry, false))
+        .get_memory(&granted_authz(&friend), &read_req(entry, true))
         .await?;
     assert!(
         resp.memory.is_some(),
         "friend with viewer grant reads the entry"
+    );
+    assert!(
+        resp.neighbor_edges.is_empty(),
+        "EntryScoped read must not hydrate neighbor edges"
     );
 
     // A stranger (no grant) is still denied.

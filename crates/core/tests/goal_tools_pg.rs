@@ -462,7 +462,7 @@ impl ToolHarness {
     async fn viewer_without_memory_write(&self) -> AuthzContext {
         let viewer = Principal::User(UserId::new(Uuid::now_v7()));
         self.pg
-            .insert_access_grant(&NewAccessGrant {
+            .insert_space_binding(&NewAccessGrant {
                 space_owner: self.owner.clone(),
                 resource: GrantResource::Space,
                 relation: Relation::Viewer,

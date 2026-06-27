@@ -192,10 +192,7 @@ pub(crate) async fn resolve_entry_owner(
     }))
 }
 
-pub(crate) async fn insert_access_grant(
-    pool: &PgPool,
-    grant: &NewAccessGrant,
-) -> Result<(), StorageError> {
+async fn insert_access_grant(pool: &PgPool, grant: &NewAccessGrant) -> Result<(), StorageError> {
     let (owner_kind, owner_id) = grant.space_owner.columns();
     let (resource_kind, resource_id) = split_resource(grant.resource);
     let (subject_kind, subject_principal_kind, subject_principal_id) =
@@ -219,9 +216,26 @@ pub(crate) async fn insert_access_grant(
     .bind(grant.granted_by.into_inner())
     .execute(pool)
     .await
-    .map_err(map_err)?;
+    .map_err(map_access_grant_insert_err)?;
     let _ = result; // ON CONFLICT DO NOTHING makes re-grant idempotent.
     Ok(())
+}
+
+pub(crate) async fn insert_space_binding(
+    pool: &PgPool,
+    grant: &NewAccessGrant,
+) -> Result<(), StorageError> {
+    if !matches!(grant.resource, GrantResource::Space) {
+        return Err(StorageError::ConstraintViolation(
+            "space bindings require a space resource".into(),
+        ));
+    }
+    if grant.relation == Relation::Owner {
+        return Err(StorageError::ConstraintViolation(
+            "owner relation is reserved for owner bootstrap/transfer verbs".into(),
+        ));
+    }
+    insert_access_grant(pool, grant).await
 }
 
 pub(crate) async fn revoke_access_grants(
@@ -301,7 +315,7 @@ pub(crate) async fn share_entry_atomic(
     .bind(grant.granted_by.into_inner())
     .execute(&mut *tx)
     .await
-    .map_err(map_err)?;
+    .map_err(map_access_grant_insert_err)?;
     let _ = result; // ON CONFLICT DO NOTHING makes re-grant idempotent.
 
     if set_shared_if_private && let GrantResource::Memory(memory_id) = grant.resource {
@@ -323,6 +337,14 @@ pub(crate) async fn share_entry_atomic(
 
     tx.commit().await.map_err(map_err)?;
     Ok(())
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn map_access_grant_insert_err(err: sqlx::Error) -> StorageError {
+    match &err {
+        sqlx::Error::Database(db) if db.is_foreign_key_violation() => StorageError::NotFound,
+        _ => map_err(err),
+    }
 }
 
 pub(crate) async fn unshare_entry_atomic(
