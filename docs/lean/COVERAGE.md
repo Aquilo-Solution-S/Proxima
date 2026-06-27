@@ -28,7 +28,7 @@ with before/after counts.
 | ID | Invariant | Carrier |
 |---|---|---|
 | ES-1 | Group org → no kernel face | excluded: org has no kernel face and (Track B / S0) is absent from Core storage and identity — `Owner := Group` (a `Set User`); tenancy is a flavor/app concern. Decisions `2026-06-11-org-out-of-kernel.md`, S0 collapse, owner-ontology realign 2026-06-28 (was THEOREM `owner_org_denormalized` when Owner carried org) |
-| ES-2 | Visibility rule (group membership) | def `visible` (`requester ∈ o`) + theorem `visible_personal` |
+| ES-2 | Visibility rule (group membership) | def `visible` (`o r ≠ none`, i.e. holds any `Role`) + theorem `visible_personal` |
 | ES-3 | org never enters access or identity | structural: org absent from the kernel entirely (`Owner := Group`, a `Set User`) — decisions `2026-06-11-org-out-of-kernel.md`, owner realign 2026-06-28 |
 | ES-4 | source-ingest dedup key deterministic over source/owner/payload | excluded: source/flavor ingest metadata after D1; no core `EventId` entity |
 | ES-5 | Batch id unique within (source, owner) | excluded: per-scope engine validation with no kernel-observable face; F→A gate carries owner dimension (`ftoa_batch_exclusive`); wake context dimension deferred after D4 |
@@ -42,9 +42,15 @@ with before/after counts.
 | ES-13 | Per-memory ACL (AccessGrant) is v2+, not v1 | structural absence + Owner.lean header comment |
 | ES-14 | Push vs pull is source-side implementation detail | excluded: engine |
 | ES-15 | Bootstrap/founding-goal is flavor onboarding | excluded: app-layer |
-| AUTH-1 | Owner-space grant predicate | `Authorization.lean` `MemoryAction`, `owner_space_grant`, `may_memory_action` |
-| AUTH-2 | Grants do not replace Owner visibility (all principal subjects) | def `principal_can_access` + axiom `owner_space_grant_owner_visible` |
-| AUTH-3 | Per-memory ACL absent in v1 | excluded: doc 01 keeps `AccessGrant` as v2+ extension layered above Owner |
+| AUTH-READ | Read = role read-ceiling over the kind, via a reachable Owner | def `may_read` (`∃ o, reaches home o ∧ ∃ x, o r = some x ∧ x.mayRead k`); role model `Role` (read/write ceilings over `AccessKind` F<A<P<G), `Role.mayRead` |
+| AUTH-WRITE | Write = role write-ceiling at the single home Owner | def `may_write` (`∃ x, home r = some x ∧ x.mayWrite k`); `Role.mayWrite` |
+| AUTH-MANAGE | Meta-management = managing a group's membership/role map | def `may_manage` (`¬ Owner.isPersonal o ∧ ∃ x, o r = some x ∧ x.manages`); `Role.manage` flag + `Role.admin` preset |
+| AUTH-MANAGE-P | Personal groups forbid meta-management | THEOREM `personal_forbids_manage`; structural — `may_manage` requires `¬ Owner.isPersonal`, and `personal.manage = false` |
+| AUTH-MANAGE-W | World group forbids meta-management | THEOREM `world_forbids_manage`; structural — every World member is `viewer` (`manage = false`), independent of the personal-group rule |
+| AUTH-1 | Write ⊆ read (whoever may write may read) | THEOREM `may_write_implies_read`, from structural field `Role.write_le_read` + `reaches_home` |
+| AUTH-2 | World is read-only (never a write target) | THEOREM `world_read_only`, from `world := fun _ => some Role.viewer` (write ceiling 0) |
+| AUTH-3 | World is universally readable | THEOREM `world_universally_readable`, from World's `viewer` read ceiling covering every kind |
+| AUTH-4 | Per-memory ACL / owner-space grants absent — access is role-graded group membership | structural: no `AccessGrant`/`MemoryAction`; `Group := User → Option Role`; realign 2026-06-28 |
 
 ## 02 — Memory (ME)
 
@@ -161,7 +167,7 @@ CF-A/B/C/D above.
 | ST-1..4 | Fresh ids; immutable identity; supersession = new row | `Memory.id` + `MemoryIdUnique`, `goal_id_injective`, classes `Immutable`/`AppendOnly`; memory supersession is `memorySupersedes` over Supersession-class edges |
 | ST-5 | Edges insert-only | `Immutable Edge`, `AppendOnly Edge` |
 | ST-6 | source-ingest dedup key deterministic; duplicate = replay | excluded: source/flavor ingest metadata after D1; no core `EventId` entity |
-| ST-7/8 | CitedObject/CitationMapping ids, insert-only, one mapping per Fact | structural ids + scoped defs `CitedObjectIdUnique`/`CitationMappingIdUnique`, `Immutable`/`AppendOnly` instances + theorem `citation_unique_per_fact` |
+| ST-7/8 | CitedObject/CitationMapping ids, insert-only, one mapping per Fact | structural ids + scoped defs `CitedObjectIdUnique`/`CitationMappingIdUnique`/`CitationMappingUniqueByFact`, `Immutable`/`AppendOnly` instances + theorem `citation_unique_per_fact` |
 | ST-9 | Owner identity columns (principal kind + id) | `Owner := Group` (`Set User`) — the kernel models owner as group membership over the atom `User`; a personal owner is `Owner.ofUser u`. The (kind+id) column shape is engine storage. org has no kernel face — decisions `2026-06-11-org-out-of-kernel.md`, S0 collapse, owner realign 2026-06-28 |
 | ST-10 | Cross-owner edges/evidence rejected | axiom `edge_scope_single_owner` |
 | ST-11 | INSERT-only cognitive lifecycle | class `AppendOnly` + instances |
@@ -179,8 +185,8 @@ storage-layout mechanics.
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| CI-1 | Fact-only citation (citation ⇒ Fact; OPTIONAL on Facts since 2026-06-13) | structural `CitationMapping.fact : Fact`; THEOREMs `citation_fact_is_fact`, `citation_implies_fact` over the choice-def `memory_citation` |
-| CI-2 | Exactly one mapping per Fact; target is Fact; no orphans | axiom `citation_fact_injective`; THEOREMs `citation_points_back`, `citation_reverse_total`, `citation_unique_per_fact` |
+| CI-1 | Fact-only citation (citation ⇒ Fact; OPTIONAL on Facts since 2026-06-13) | structural `CitationMapping.fact : Fact`; THEOREMs `citation_fact_is_fact`, `citation_implies_fact` over table-scoped choice-def `memory_citation` |
+| CI-2 | At most one mapping per Fact in a valid mapping table; target is Fact; no orphans | validity predicate `CitationMappingUniqueByFact`; THEOREMs `citation_points_back`, `citation_points_to_row`, `citation_reverse_total`, `citation_unique_per_fact` |
 | CI-3 | A/P cite transitively via provenance | comment + CN-6 axioms |
 | CI-7/8 | Owner scoping; Fact owner = object owner | structural field `CitationMapping.owner_match`; THEOREM `citation_owner_match` |
 | CI-9 | One object ↔ N mappings | structural absence of object-side restriction |
@@ -244,10 +250,11 @@ Implemented reductions:
   to `derived_has_provenance`; per-kind shapes PROVED. Net −5.
 - Citations: CitedObject/CitationMapping are structural thin evidence
   anchors; blob storage/hash/range payload stays flavor/engine-side.
-  Fact-side pointer `memory_citation` is a choice-based DEF; primitive
-  uniqueness is `citation_fact_injective`; CI-1 (citation ⇒ Fact;
-  `fact_has_citation` retired 2026-06-13 — citations optional on Facts),
-  CI-2a, CI-2c, and owner match are PROVED.
+  Fact-side pointer `memory_citation` is a table-scoped choice-based DEF;
+  uniqueness is the table-validity predicate `CitationMappingUniqueByFact`,
+  not a global axiom; CI-1 (citation ⇒ Fact; `fact_has_citation` retired
+  2026-06-13 — citations optional on Facts), CI-2a, CI-2c, and owner match
+  are PROVED.
 - Goals: GO-1+GO-2 merged into `goal_supersession_constraints`; projections
   PROVED. −1.
 - Compliance: `suppression_owner` REMOVED (doc 13 retains the opaque key
