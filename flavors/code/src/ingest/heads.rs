@@ -37,9 +37,15 @@ pub async fn file_revision_heads(
                  m.memory_id, s.file_path, s.content_sha256, s.state \
              FROM proxima_core.memories m \
              JOIN proxima_code.file_revision_v1 s USING (memory_id) \
-             WHERE m.owner_principal_kind = $1 \
-               AND m.owner_principal_id = $2 \
-               AND s.repo_id = $3 \
+            WHERE EXISTS ( \
+                      SELECT 1 \
+                        FROM proxima_core.entity_owner eo \
+                       WHERE eo.entity_id = m.memory_id \
+                         AND eo.owner_principal_kind = $1 \
+                         AND eo.owner_principal_id = $2 \
+                         AND eo.is_home \
+                  ) \
+              AND s.repo_id = $3 \
              ORDER BY s.file_path, m.created_at DESC \
          ) latest",
     )
@@ -89,9 +95,15 @@ pub async fn present_chunk_indexes(
                  s.chunk_index, s.state \
              FROM proxima_core.memories m \
              JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
-             WHERE m.owner_principal_kind = $1 \
-               AND m.owner_principal_id = $2 \
-               AND s.repo_id = $3 \
+            WHERE EXISTS ( \
+                      SELECT 1 \
+                        FROM proxima_core.entity_owner eo \
+                       WHERE eo.entity_id = m.memory_id \
+                         AND eo.owner_principal_kind = $1 \
+                         AND eo.owner_principal_id = $2 \
+                         AND eo.is_home \
+                  ) \
+              AND s.repo_id = $3 \
                AND s.file_path = $4 \
              ORDER BY s.chunk_index, m.created_at DESC \
          ) latest \
