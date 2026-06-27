@@ -147,7 +147,7 @@ pub(crate) async fn instantiate_personality_on_conn(
     .execute(&mut *tx)
     .await
     .map_err(map_err)?;
-    insert_entity_owner_home(&mut *tx, memory_id, &owner, Some(instance_id)).await?;
+    insert_entity_owner_home(&mut tx, memory_id, &owner, Some(instance_id)).await?;
 
     let change_seq = uuid::Uuid::now_v7();
     sqlx::query!(

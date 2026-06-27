@@ -1,4 +1,4 @@
-use super::{Engine, MemoryPermit};
+use super::{Engine, pipeline::WritePermit};
 use crate::access::Relation;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
@@ -130,7 +130,7 @@ impl Engine {
         include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, ProtocolError> {
         let permit = self
-            .authorize_request(authz, principal, Relation::Admin)
+            .authorize_write(authz, principal, Relation::Admin)
             .await?;
         self.list_personality_instances_authorized(&permit, principal, include_tombstoned)
             .await
@@ -138,7 +138,7 @@ impl Engine {
 
     async fn list_personality_instances_authorized(
         &self,
-        permit: &MemoryPermit,
+        permit: &WritePermit,
         _principal: &Principal,
         include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, ProtocolError> {
@@ -159,7 +159,7 @@ impl Engine {
         req: TombstonePersonalityRequest,
     ) -> Result<TombstonePersonalityResponse, ProtocolError> {
         let permit = self
-            .authorize_request(authz, &req.principal, Relation::Admin)
+            .authorize_write(authz, &req.principal, Relation::Admin)
             .await?;
         self.tombstone_personality_authorized(&permit, req).await
     }
@@ -179,7 +179,7 @@ impl Engine {
         audit: Option<PersonalityConfigChangedInput>,
     ) -> Result<TombstonePersonalityAdminResponse, ProtocolError> {
         let permit = self
-            .authorize_request(authz, &req.principal, Relation::Admin)
+            .authorize_write(authz, &req.principal, Relation::Admin)
             .await?;
         let mut effective = req;
         effective.principal = permit.owner().clone();
@@ -211,7 +211,7 @@ impl Engine {
 
     async fn tombstone_personality_authorized(
         &self,
-        permit: &MemoryPermit,
+        permit: &WritePermit,
         req: TombstonePersonalityRequest,
     ) -> Result<TombstonePersonalityResponse, ProtocolError> {
         let mut effective = req;
@@ -238,7 +238,7 @@ impl Engine {
         req: InstantiatePersonalityRequest,
     ) -> Result<InstantiatePersonalityResponse, ProtocolError> {
         let permit = self
-            .authorize_request(authz, &req.principal, Relation::Admin)
+            .authorize_write(authz, &req.principal, Relation::Admin)
             .await?;
         self.instantiate_personality_authorized(&permit, req).await
     }
@@ -259,7 +259,7 @@ impl Engine {
     ) -> Result<InstantiatePersonalityAdminResponse, ProtocolError> {
         let display_name = req.display_name.trim().to_string();
         let permit = self
-            .authorize_request(authz, &req.principal, Relation::Admin)
+            .authorize_write(authz, &req.principal, Relation::Admin)
             .await?;
         let response = self
             .instantiate_personality_authorized(&permit, req)
@@ -286,7 +286,7 @@ impl Engine {
 
     async fn instantiate_personality_authorized(
         &self,
-        permit: &MemoryPermit,
+        permit: &WritePermit,
         req: InstantiatePersonalityRequest,
     ) -> Result<InstantiatePersonalityResponse, ProtocolError> {
         if req.display_name.trim().is_empty() {
@@ -318,12 +318,19 @@ impl Engine {
         audit: Option<PersonalityConfigChangedInput>,
     ) -> Result<SetWakeEntriesAdminResponse, ProtocolError> {
         let permit = self
-            .authorize_request(authz, &req.principal, Relation::Admin)
+            .authorize_write(authz, &req.principal, Relation::Admin)
             .await?;
         let before = self
             .wake_entries_snapshot(permit.owner(), req.personality_instance_id)
             .await?;
-        let response = self.set_wake_entries_authorized(&permit, req).await?;
+        let mut effective = req.clone();
+        effective.principal = permit.owner().clone();
+        crate::personality::validate_wake_entries_detect_config(&effective.entries)?;
+        let response = self
+            .storage
+            .set_wake_entries(&effective)
+            .await
+            .map_err(|err| map_granular_wake_storage_err(err, &effective.entries))?;
         let after = Some(PersonalityConfigChangeSnapshot::WakeEntries {
             wake_entry_count: req.entries.len(),
             wake_entry_ids: req
@@ -358,7 +365,7 @@ impl Engine {
         req: &AddWakeEntryRequest,
     ) -> Result<AddWakeEntryResponse, ProtocolError> {
         let permit = self
-            .authorize_request(authz, &req.principal, Relation::Admin)
+            .authorize_write(authz, &req.principal, Relation::Admin)
             .await?;
         let new_id = req.entry.wake_entry_id;
         let new_draft = req.entry.clone();
@@ -403,7 +410,7 @@ impl Engine {
         req: &UpdateWakeEntryRequest,
     ) -> Result<UpdateWakeEntryResponse, ProtocolError> {
         let permit = self
-            .authorize_request(authz, &req.principal, Relation::Admin)
+            .authorize_write(authz, &req.principal, Relation::Admin)
             .await?;
         let pid = self
             .personality_for_wake_entry(permit.owner(), req.wake_entry_id)
@@ -445,7 +452,7 @@ impl Engine {
         req: &RemoveWakeEntryRequest,
     ) -> Result<RemoveWakeEntryResponse, ProtocolError> {
         let permit = self
-            .authorize_request(authz, &req.principal, Relation::Admin)
+            .authorize_write(authz, &req.principal, Relation::Admin)
             .await?;
         let Some(pid) = self
             .find_personality_for_wake_entry(permit.owner(), req.wake_entry_id)
@@ -488,7 +495,7 @@ impl Engine {
         req: &SetReadScopeAdminRequest,
     ) -> Result<SetReadScopeAdminResponse, ProtocolError> {
         let permit = self
-            .authorize_request(authz, &req.principal, Relation::Admin)
+            .authorize_write(authz, &req.principal, Relation::Admin)
             .await?;
         let before = self
             .storage
@@ -538,7 +545,7 @@ impl Engine {
 
     async fn emit_audit_status(
         &self,
-        permit: &MemoryPermit,
+        permit: &WritePermit,
         audit: Option<PersonalityConfigChangedInput>,
     ) -> PersonalityConfigAuditEmit {
         let Some(audit) = audit else {
@@ -554,7 +561,7 @@ impl Engine {
 
     async fn emit_personality_config_changed(
         &self,
-        permit: &MemoryPermit,
+        permit: &WritePermit,
         audit: PersonalityConfigChangedInput,
     ) -> Result<(), ProtocolError> {
         let caller = self

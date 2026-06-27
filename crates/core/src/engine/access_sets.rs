@@ -114,6 +114,7 @@ pub(in crate::engine) mod tests {
     pub(in crate::engine) struct MembershipStorage {
         pub(in crate::engine) member: Principal,
         pub(in crate::engine) group: GroupId,
+        pub(in crate::engine) membership_relation: Relation,
         pub(in crate::engine) home_owner: Option<Principal>,
         pub(in crate::engine) entity_readable: bool,
     }
@@ -431,7 +432,7 @@ pub(in crate::engine) mod tests {
             if member == &self.member {
                 Ok(vec![MembershipRow {
                     group: self.group,
-                    relation: Relation::Viewer,
+                    relation: self.membership_relation,
                 }])
             } else {
                 Ok(Vec::new())
@@ -673,6 +674,7 @@ pub(in crate::engine) mod tests {
             Arc::new(MembershipStorage {
                 member: p.clone(),
                 group: g1,
+                membership_relation: Relation::Viewer,
                 home_owner: None,
                 entity_readable: false,
             }),

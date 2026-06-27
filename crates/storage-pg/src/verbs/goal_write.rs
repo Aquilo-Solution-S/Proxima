@@ -860,7 +860,7 @@ async fn insert_goal_row(
     .await
     .map_err(map_goal_insert_err)?;
     insert_entity_owner_home(
-        &mut **tx,
+        tx,
         goal_id,
         &owner,
         authorship.personality_instance_id,
