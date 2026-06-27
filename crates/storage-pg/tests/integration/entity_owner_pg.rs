@@ -281,9 +281,15 @@ async fn discovery_reads_filter_by_read_owners_not_legacy_memory_owner() {
         )
         .await
         .unwrap();
+    assert_eq!(
+        edge_by_id.edges.len(),
+        1,
+        "edge-id hydration is source-owned and keeps a target stub"
+    );
+    assert_eq!(edge_by_id.edges[0].id, leaky_edge);
     assert!(
-        edge_by_id.edges.is_empty(),
-        "edge-id hydration must require both endpoints to be readable"
+        !edge_by_id.edges[0].target_readable,
+        "unreadable edge target is redacted"
     );
 
     let search = pg

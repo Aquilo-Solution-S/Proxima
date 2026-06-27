@@ -158,7 +158,9 @@ pub struct MemoryLineageEdge {
     pub edge_id: uuid::Uuid,
     pub relation: String,
     pub relation_class: String,
+    pub source_kind: EntityKind,
     pub source_memory_id: MemoryId,
+    pub target_kind: EntityKind,
     pub target_memory_id: MemoryId,
     pub distance: u8,
 }
@@ -318,7 +320,8 @@ pub struct EdgeRow {
     pub relation_class: String,
     pub source: EntityRef,
     pub target: EntityRef,
-    pub owner: Owner,
+    pub target_readable: bool,
+    pub source_world_readable: bool,
     pub payload: Vec<u8>,
 }
 

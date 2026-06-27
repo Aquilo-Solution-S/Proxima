@@ -1097,14 +1097,17 @@ async fn assert_tombstoned_derivative_filtered(
     assert!(query.memories.is_empty());
 
     let lineage = pg
-        .walk_memory_lineage(&MemoryLineageRequest {
-            principal: owner.clone(),
-            start_memory_id: MemoryId::new(derivative_id),
-            direction: MemoryLineageDirection::Ancestors,
-            depth: 2,
-            limit: 10,
-            reader_personality_instance_id: None,
-        })
+        .walk_memory_lineage(
+            std::slice::from_ref(owner),
+            &MemoryLineageRequest {
+                principal: owner.clone(),
+                start_memory_id: MemoryId::new(derivative_id),
+                direction: MemoryLineageDirection::Ancestors,
+                depth: 2,
+                limit: 10,
+                reader_personality_instance_id: None,
+            },
+        )
         .await?;
     assert!(lineage.nodes.is_empty());
     Ok(())

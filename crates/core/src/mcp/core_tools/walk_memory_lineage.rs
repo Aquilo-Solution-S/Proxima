@@ -132,8 +132,8 @@ pub async fn walk_memory_lineage(
             edge: ctx.format_edge(EdgeId::new(edge.edge_id)),
             relation: edge.relation,
             relation_class: edge.relation_class,
-            source: format_lineage_memory(&ctx, &classes, edge.source_memory_id),
-            target: format_lineage_memory(&ctx, &classes, edge.target_memory_id),
+            source: format_lineage_memory(&ctx, &classes, edge.source_memory_id, edge.source_kind),
+            target: format_lineage_memory(&ctx, &classes, edge.target_memory_id, edge.target_kind),
             distance: edge.distance,
         })
         .collect();
@@ -151,10 +151,11 @@ fn format_lineage_memory(
     ctx: &McpToolCtx,
     classes: &HashMap<MemoryId, MemoryHandleClass>,
     memory_id: MemoryId,
+    kind: crate::EntityKind,
 ) -> String {
     let class = classes
         .get(&memory_id)
         .copied()
-        .unwrap_or(MemoryHandleClass::Fact);
+        .unwrap_or_else(|| memory_class(&format!("{kind:?}")).unwrap_or(MemoryHandleClass::Fact));
     ctx.format_memory_with_class(memory_id, class)
 }

@@ -82,24 +82,20 @@ impl Engine {
         authz: &AuthzContext,
         req: &EdgeReadRequest,
     ) -> Result<EdgeReadResponse, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, &req.principal, Relation::Viewer)
-            .await?;
-        self.read_edges_authorized(&permit, req).await
+        let read_owners = self.authorize_read(authz).await?;
+        self.read_edges_authorized(&read_owners, req).await
     }
 
     async fn read_edges_authorized(
         &self,
-        permit: &MemoryPermit,
+        read_owners: &[crate::Principal],
         req: &EdgeReadRequest,
     ) -> Result<EdgeReadResponse, ProtocolError> {
         if req.limit == 0 {
             return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
         }
-        let mut effective = req.clone();
-        effective.principal = permit.owner().clone();
         self.storage
-            .read_edges(&effective)
+            .read_edges(read_owners, req)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
@@ -115,21 +111,17 @@ impl Engine {
         authz: &AuthzContext,
         req: &EdgeExistsRequest,
     ) -> Result<EdgeExistsResponse, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, &req.principal, Relation::Viewer)
-            .await?;
-        self.edge_exists_authorized(&permit, req).await
+        let read_owners = self.authorize_read(authz).await?;
+        self.edge_exists_authorized(&read_owners, req).await
     }
 
     async fn edge_exists_authorized(
         &self,
-        permit: &MemoryPermit,
+        read_owners: &[crate::Principal],
         req: &EdgeExistsRequest,
     ) -> Result<EdgeExistsResponse, ProtocolError> {
-        let mut effective = req.clone();
-        effective.principal = permit.owner().clone();
         self.storage
-            .edge_exists(&effective)
+            .edge_exists(read_owners, req)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
@@ -146,22 +138,17 @@ impl Engine {
         authz: &AuthzContext,
         req: &MemoryLineageRequest,
     ) -> Result<MemoryLineageResponse, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, &req.principal, Relation::Viewer)
-            .await?;
-        self.walk_memory_lineage_authorized(&permit, req).await
+        let read_owners = self.authorize_read(authz).await?;
+        self.walk_memory_lineage_authorized(&read_owners, req).await
     }
 
     async fn walk_memory_lineage_authorized(
         &self,
-        permit: &MemoryPermit,
+        read_owners: &[crate::Principal],
         req: &MemoryLineageRequest,
     ) -> Result<MemoryLineageResponse, ProtocolError> {
-        let mut effective = req.clone();
-        effective.principal = permit.owner().clone();
-        effective.reader_personality_instance_id = permit.subject_personality();
         self.storage
-            .walk_memory_lineage(&effective)
+            .walk_memory_lineage(read_owners, req)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }

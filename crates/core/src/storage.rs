@@ -89,6 +89,8 @@ pub struct NeighborEdgeRow {
     pub source_memory_id: Option<MemoryId>,
     pub target_kind: EntityKind,
     pub target_memory_id: Option<MemoryId>,
+    pub target_readable: bool,
+    pub source_world_readable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -488,10 +490,10 @@ pub trait Storage: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// Owner-scoped memory-neighbor edges for graph MCP projections.
+    /// Read-set-scoped memory-neighbor edges for graph MCP projections.
     async fn load_neighbor_memory_edges(
         &self,
-        _owner: &Owner,
+        _read_owners: &[Principal],
         _memory_ids: &[MemoryId],
         _limit: usize,
     ) -> Result<Vec<NeighborEdgeRow>, StorageError> {
@@ -588,15 +590,17 @@ pub trait Storage: Send + Sync {
         schemas: &[crate::verbs::schema::SchemaInfo],
     ) -> Result<crate::verbs::query::QueryResponse, StorageError>;
 
-    /// Owner-scoped edge read by edge id and/or endpoint filter.
+    /// Read-set-scoped edge read by edge id and/or endpoint filter.
     async fn read_edges(
         &self,
+        read_owners: &[Principal],
         req: &crate::verbs::query::EdgeReadRequest,
     ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError>;
 
-    /// Owner-scoped existence probe for an edge id and/or endpoint filter.
+    /// Read-set-scoped existence probe for an edge id and/or endpoint filter.
     async fn edge_exists(
         &self,
+        read_owners: &[Principal],
         req: &crate::verbs::query::EdgeExistsRequest,
     ) -> Result<crate::verbs::query::EdgeExistsResponse, StorageError>;
 
@@ -643,10 +647,11 @@ pub trait Storage: Send + Sync {
         fact_entity_id: FactEntityId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError>;
 
-    /// Owner-scoped bounded walk over memory-only Provenance and
+    /// Read-set-scoped bounded walk over memory-only Provenance and
     /// Supersession edges. Does not traverse Goals or write edges.
     async fn walk_memory_lineage(
         &self,
+        read_owners: &[Principal],
         req: &crate::verbs::query::MemoryLineageRequest,
     ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError>;
 
@@ -1101,6 +1106,7 @@ impl Storage for NoopStorage {
 
     async fn read_edges(
         &self,
+        _read_owners: &[Principal],
         _req: &crate::verbs::query::EdgeReadRequest,
     ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError> {
         Ok(crate::verbs::query::EdgeReadResponse { edges: Vec::new() })
@@ -1108,6 +1114,7 @@ impl Storage for NoopStorage {
 
     async fn edge_exists(
         &self,
+        _read_owners: &[Principal],
         _req: &crate::verbs::query::EdgeExistsRequest,
     ) -> Result<crate::verbs::query::EdgeExistsResponse, StorageError> {
         Ok(crate::verbs::query::EdgeExistsResponse { exists: false })
@@ -1147,6 +1154,7 @@ impl Storage for NoopStorage {
 
     async fn walk_memory_lineage(
         &self,
+        _read_owners: &[Principal],
         _req: &crate::verbs::query::MemoryLineageRequest,
     ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError> {
         Ok(crate::verbs::query::MemoryLineageResponse {

@@ -47,15 +47,19 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
     )
     .await?;
 
+    let owner_read = vec![owner.clone()];
     let ancestors = pg
-        .walk_memory_lineage(&MemoryLineageRequest {
-            principal: owner.clone(),
-            start_memory_id: MemoryId::new(perspective),
-            direction: MemoryLineageDirection::Ancestors,
-            depth: 3,
-            limit: 10,
-            reader_personality_instance_id: None,
-        })
+        .walk_memory_lineage(
+            &owner_read,
+            &MemoryLineageRequest {
+                principal: owner.clone(),
+                start_memory_id: MemoryId::new(perspective),
+                direction: MemoryLineageDirection::Ancestors,
+                depth: 3,
+                limit: 10,
+                reader_personality_instance_id: None,
+            },
+        )
         .await?;
     assert_eq!(ancestors.nodes.len(), 3);
     assert_eq!(ancestors.edges.len(), 2);
@@ -73,14 +77,17 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
     );
 
     let descendants = pg
-        .walk_memory_lineage(&MemoryLineageRequest {
-            principal: owner,
-            start_memory_id: MemoryId::new(old),
-            direction: MemoryLineageDirection::Descendants,
-            depth: 3,
-            limit: 10,
-            reader_personality_instance_id: None,
-        })
+        .walk_memory_lineage(
+            &owner_read,
+            &MemoryLineageRequest {
+                principal: owner,
+                start_memory_id: MemoryId::new(old),
+                direction: MemoryLineageDirection::Descendants,
+                depth: 3,
+                limit: 10,
+                reader_personality_instance_id: None,
+            },
+        )
         .await?;
     assert_eq!(descendants.nodes.len(), 3);
     assert!(
@@ -119,7 +126,29 @@ async fn insert_memory(
     .bind(wake_chain_depth)
     .execute(pg.pool())
     .await?;
+    insert_entity_owner_home(pg, memory_id, owner).await?;
     Ok(memory_id)
+}
+
+async fn insert_entity_owner_home(
+    pg: &proxima_storage_pg::PgStorage,
+    entity_id: Uuid,
+    owner: &Owner,
+) -> Result<(), sqlx::Error> {
+    let (owner_kind, owner_principal_id) = owner.columns();
+    sqlx::query(
+        "INSERT INTO proxima_core.entity_owner
+            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
+         VALUES ($1, $2, $3, true, $4)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(entity_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(Uuid::nil())
+    .execute(pg.pool())
+    .await
+    .map(|_| ())
 }
 
 async fn insert_edge(
