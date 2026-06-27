@@ -95,6 +95,24 @@ def Role.editor   : Role := ⟨4, 3, false, by omega⟩
 def Role.admin    : Role := ⟨4, 4, true, by omega⟩
 
 -- ============================================================
+-- Role lattice — combine roles across membership paths
+-- ============================================================
+
+/-- Meet (cap): the WEAKER of two roles per capability. Used to cap a mounted
+    sub-group's inherited authority. `write_le_read` is preserved (min is
+    monotone). -/
+def Role.meet (x y : Role) : Role :=
+  ⟨min x.read y.read, min x.write y.write, x.manage && y.manage, by
+    have hx := x.write_le_read; have hy := y.write_le_read; omega⟩
+
+/-- Join: the STRONGER of two roles per capability. Used when a user is a member
+    via two paths — the higher capability wins. `write_le_read` is preserved
+    (max is monotone). -/
+def Role.join (x y : Role) : Role :=
+  ⟨max x.read y.read, max x.write y.write, x.manage || y.manage, by
+    have hx := x.write_le_read; have hy := y.write_le_read; omega⟩
+
+-- ============================================================
 -- Group and Owner
 -- ============================================================
 
@@ -131,5 +149,32 @@ theorem visible_personal (u requester : User) :
     visible (Owner.ofUser u) requester ↔ requester = u := by
   simp only [visible, Owner.ofUser]
   split <;> simp_all
+
+-- ============================================================
+-- Group composition (nesting) — Level 2
+-- ============================================================
+
+/- Nesting needs NO new kernel primitive: a nested group RESOLVES to an ordinary
+   `Owner` (`User → Option Role`), and the gates are total over it. The
+   combinators below are how the host composes that resolution; the kernel never
+   sees the nesting tree (materializing it — e.g. a Leopard view — is the host's
+   expensive job). Group-as-member is not a kernel notion, and a recursive
+   `Group → Option Role` field would be non-strictly-positive anyway. -/
+
+/-- Mount sub-group `g` into a parent at role `cap`: every member of `g` joins at
+    their g-role capped by `cap` (lattice meet). Produces an ordinary `Owner`;
+    the no-escalation guarantee is `mount_cannot_escalate` (Authorization). -/
+def Group.mount (g : Group) (cap : Role) : Group :=
+  fun u => (g u).map (fun x => Role.meet x cap)
+
+/-- Union of two groups: a user's role is the join of their roles in each (the
+    higher capability when a member of both). -/
+def Group.union (a b : Group) : Group :=
+  fun u =>
+    match a u, b u with
+    | some x, some y => some (Role.join x y)
+    | some x, none   => some x
+    | none,   some y => some y
+    | none,   none   => none
 
 end Causa

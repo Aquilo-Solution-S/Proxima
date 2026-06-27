@@ -42,15 +42,19 @@ with before/after counts.
 | ES-13 | Per-memory ACL (AccessGrant) is v2+, not v1 | structural absence + Owner.lean header comment |
 | ES-14 | Push vs pull is source-side implementation detail | excluded: engine |
 | ES-15 | Bootstrap/founding-goal is flavor onboarding | excluded: app-layer |
-| AUTH-READ | Read = role read-ceiling over the kind, via a reachable Owner | def `may_read` (`∃ o, reaches home o ∧ ∃ x, o r = some x ∧ x.mayRead k`); role model `Role` (read/write ceilings over `AccessKind` F<A<P<G), `Role.mayRead` |
-| AUTH-WRITE | Write = role write-ceiling at the single home Owner | def `may_write` (`∃ x, home r = some x ∧ x.mayWrite k`); `Role.mayWrite` |
+| AUTH-SHARE | One owner per entity; sharing IS group membership (no share set above the owner) | structural: an entity has a single `owner : Owner` (a Group); read-only share = viewer-role membership, publish = transfer to World. No `Scope`/`reaches`/`entity_owner` multi-owner table — realign 2026-06-28 |
+| AUTH-READ | Read = role read-ceiling over the kind, in the entity's owning group | def `may_read` (`∃ x, o r = some x ∧ x.mayRead k`); role model `Role` (read/write ceilings over `AccessKind` F<A<P<G), `Role.mayRead` |
+| AUTH-WRITE | Write = role write-ceiling in the single owning group | def `may_write` (`∃ x, o r = some x ∧ x.mayWrite k`); `Role.mayWrite` |
 | AUTH-MANAGE | Meta-management = managing a group's membership/role map | def `may_manage` (`¬ Owner.isPersonal o ∧ ∃ x, o r = some x ∧ x.manages`); `Role.manage` flag + `Role.admin` preset |
 | AUTH-MANAGE-P | Personal groups forbid meta-management | THEOREM `personal_forbids_manage`; structural — `may_manage` requires `¬ Owner.isPersonal`, and `personal.manage = false` |
 | AUTH-MANAGE-W | World group forbids meta-management | THEOREM `world_forbids_manage`; structural — every World member is `viewer` (`manage = false`), independent of the personal-group rule |
-| AUTH-1 | Write ⊆ read (whoever may write may read) | THEOREM `may_write_implies_read`, from structural field `Role.write_le_read` + `reaches_home` |
+| AUTH-1 | Write ⊆ read (whoever may write may read) | THEOREM `may_write_implies_read`, from structural field `Role.write_le_read` (same owning group) |
 | AUTH-2 | World is read-only (never a write target) | THEOREM `world_read_only`, from `world := fun _ => some Role.viewer` (write ceiling 0) |
 | AUTH-3 | World is universally readable | THEOREM `world_universally_readable`, from World's `viewer` read ceiling covering every kind |
 | AUTH-4 | Per-memory ACL / owner-space grants absent — access is role-graded group membership | structural: no `AccessGrant`/`MemoryAction`; `Group := User → Option Role`; realign 2026-06-28 |
+| NEST-1 | Group nesting needs no new primitive — a nested group resolves to an ordinary `Owner` | def `Role.meet`/`Role.join` (role lattice) + `Group.mount`/`Group.union`; the kernel sees only the resolved `Owner`, nesting is host composition (Level 2, 2026-06-28) |
+| NEST-2 | Capped mounting cannot escalate write authority | THEOREM `mount_cannot_escalate` — if the cap may not write kind `k`, no member of the mounted group gains write `k` (meet caps the write ceiling) |
+| NEST-3 | Union grants at least each side's access | THEOREM `union_grants_each` — read via either group ⇒ read via the union (join never lowers a member's capability); write case analogous |
 
 ## 02 — Memory (ME)
 
@@ -99,20 +103,20 @@ with before/after counts.
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| GO-1 | Supersession same owner | axiom `goal_supersession_constraints` (merged); projection THEOREM `goal_supersession_same_owner` |
-| GO-2 | Valid lifecycle transition | def `goalTransitionAdmitted` + merged axiom; projection THEOREM `goal_supersession_admitted` |
-| GO-3 | Goal DAG acyclic | inductive `goalAncestor` + axiom `goal_parents_acyclic` |
-| GO-4 | Parents same owner | axiom `goal_parents_same_owner` |
-| GO-5 | Every transition new row; no in-place mutation | `AppendOnly Goal` + `Supersedable Goal` |
+| GO-1 | Supersession same owner | table validity `GoalSupersessionResolved` + `GoalSupersessionValid`; projection THEOREM `goal_supersession_same_owner` |
+| GO-2 | Valid lifecycle transition | def `goalTransitionAdmitted` + table validity `GoalSupersessionResolved` + `GoalSupersessionValid`; projection THEOREM `goal_supersession_admitted` |
+| GO-3 | Goal DAG acyclic | retired from Goal row: no `goal_parents`; Goal↔Goal topology is Edge topology/relation validation |
+| GO-4 | Parents same owner | retired with Goal-local parents; Edge ownership + descriptor masks govern Goal↔Goal relation legality |
+| GO-5 | Every transition new row; no in-place mutation | `AppendOnly Goal`; supersession stores prior `GoalId` and current state is a table query |
 | GO-6 | Goal is not Memory | structural: distinct Types |
 | GO-7 | Self is a query, never an entity/cache | structural absence + Goals.lean header |
-| GO-8 | Active set definition (heads, state=Active) | defs `goalIsHead`, `activeGoals` |
-| GO-9 | Goal id is identity | axiom `goal_id_injective` |
+| GO-8 | Active set definition (heads, state=Active) | table-scoped defs `goalIsHead`, `activeGoals` |
+| GO-9 | Goal id is identity | table validity `GoalIdUnique`; projection THEOREM `goal_id_injective` |
 | GO-10 | Authorship vocabulary | inductive `GoalAuthorship` |
 | GO-11 | GoalWrite protocol (request_id idempotency, conflict detection, stream visibility) | excluded: protocol surface (doc 14 out of scope per spec) |
 | GO-12 | Assignment = core/inspires edge Goal→Self-Perspective; instance-scoped active_goals query | shape via descriptor masks (ME-14); traversal query engine-level per decision `2026-06-11-active-goals-two-queries.md` |
 | GO-13 | Goal-scoped wake policy; planner-first | excluded: engine runtime |
-| GO-14 | Cross-owner assignment/evidence rejected | axioms `edge_scope_single_owner` + `goal_parents_same_owner` |
+| GO-14 | Cross-owner assignment/evidence rejected | Goal rows carry Owner; Goal↔Goal assignment/evidence is Edge topology governed by edge ownership + descriptor masks |
 
 ## 03 — Schema Registry (SR) — in-kernel rows
 
@@ -164,7 +168,7 @@ CF-A/B/C/D above.
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| ST-1..4 | Fresh ids; immutable identity; supersession = new row | `Memory.id` + `MemoryIdUnique`, `goal_id_injective`, classes `Immutable`/`AppendOnly`; memory supersession is `memorySupersedes` over Supersession-class edges |
+| ST-1..4 | Fresh ids; immutable identity; supersession = new row | `Memory.id` + `MemoryIdUnique`, `Goal.id` + `GoalIdUnique`, classes `Immutable`/`AppendOnly`; memory supersession is `memorySupersedes` over Supersession-class edges; Goal supersession stores prior `GoalId` |
 | ST-5 | Edges insert-only | `Immutable Edge`, `AppendOnly Edge` |
 | ST-6 | source-ingest dedup key deterministic; duplicate = replay | excluded: source/flavor ingest metadata after D1; no core `EventId` entity |
 | ST-7/8 | CitedObject/CitationMapping ids, insert-only, one mapping per Fact | structural ids + scoped defs `CitedObjectIdUnique`/`CitationMappingIdUnique`/`CitationMappingUniqueByFact`, `Immutable`/`AppendOnly` instances + theorem `citation_unique_per_fact` |
@@ -175,7 +179,7 @@ CF-A/B/C/D above.
 | ST-14 | Stateful current-state = head query, never replacement | comment + SR-43 row |
 | ST-15..17 | Vector-store independence (targets F/A/P AND Goals) | `EmbeddingTarget` sum + `embedding_target` + `Immutable Embedding`; absence of entity→Embedding accessor |
 | ST-22/23 | Content hash/dedup key not Fact identity; collision semantics | `Memory.id` remains Fact identity; source/flavor ingest dedup key excluded after D1 |
-| ST-26 | Supersession logical; current state = query | defs `memorySupersedes`/`memoryIsHead`, `goalIsHead`/`activeGoals` pattern + comment |
+| ST-26 | Supersession logical; current state = query | defs `memorySupersedes`/`memoryIsHead`, table-scoped `goalIsHead`/`activeGoals` pattern + comment |
 
 **ST exclusions:** ST-12 (sidecar migration), ST-18..21 (core/flavor SQL
 ownership — spirit in CF-A), ST-24/25 (partitioning physical). Reason:
@@ -216,8 +220,8 @@ storage-layout mechanics.
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| GO-2b | Stale prior cannot be lifecycle head | axiom `goal_supersession_prior_is_head` |
-| GO-15 | Goal title/text core retrieval text | axioms `goal_title`, `goal_text` |
+| GO-2b | Stale prior cannot be lifecycle head / one successor per prior id | table validity `GoalSuccessorUnique`; THEOREMs `goal_supersession_prior_is_head`, `goal_superseded_not_head` |
+| GO-15 | Goal title/text core retrieval text | structure fields + accessors `goal_title`, `goal_text` |
 | GO-16 | Operator-authored Goals do not carry materialized authoring personality | structural absence: no `goal_authoring_personality`; evidence carried by A→Goal edges |
 | CI-17 | Cited objects / mappings schema-registered | `entities_use_registered_vocabulary` arms 4+5 |
 | ST-EdgeId | source-ingest edges content-hash id vs UUIDv7 (AGENTS.md inv. 17) | inductive `EdgeId` sum + axiom `edge_id_authorship_split` (Edges.lean) — exclusion reversed after both reviewers + AGENTS.md elevated it |
@@ -255,8 +259,10 @@ Implemented reductions:
   not a global axiom; CI-1 (citation ⇒ Fact; `fact_has_citation` retired
   2026-06-13 — citations optional on Facts), CI-2a, CI-2c, and owner match
   are PROVED.
-- Goals: GO-1+GO-2 merged into `goal_supersession_constraints`; projections
-  PROVED. −1.
+- Goals: `Goal` is now a structural row; opaque accessor axioms removed.
+  Supersession/id/head laws are table-scoped (`GoalIdUnique`,
+  `GoalSupersessionResolved`, `GoalSupersessionValid`,
+  `GoalSuccessorUnique`); Goal-local DAG removed in favor of Edge topology.
 - Compliance: `suppression_owner` REMOVED (doc 13 retains the opaque key
   only — entry carries no Owner; ES-4 makes key-matching scope-matching);
   erasure Edge conjunct PROVED (`erasure_removes_edges`). −2.
@@ -272,8 +278,8 @@ Over-strength corrections (doc-fidelity, flagged in decisions/):
   docs' scoped uniqueness); `ftoa_batch_exclusive` owner-conditioned →
   `decisions/2026-06-11-batch-id-scope.md`.
 - `read_scope_diagonal` later removed with materialized `PersonalityInstance`; wake context/read semantics deferred.
-- `goal_parents_same_owner` KEPT, re-cited to doc 04 §Isolation →
-  `decisions/2026-06-11-goal-parents-owner-scope.md`.
+- `goal_parents_same_owner` later retired with Goal-local DAG; Goal↔Goal
+  topology is Edge topology/relation validation, not a Goal row field.
 
 Additions forced by review (both reviewers + AGENTS.md invariant 17):
 - `EdgeId` is now the ContentHash/UUIDv7 SUM with `edge_id_authorship_split`
