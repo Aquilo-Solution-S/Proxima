@@ -79,6 +79,30 @@ async fn insert_entity_owner_home(
     .map(|_| ())
 }
 
+async fn insert_abstraction_memory(
+    pg: &PgStorage,
+    owner: &Owner,
+    text: &str,
+    supersedes: Option<Uuid>,
+) -> Result<Uuid, sqlx::Error> {
+    let memory_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
+             prompt_version, personality_instance_id, wake_chain_depth, supersedes)
+         VALUES ($1, 'test/head-abstraction-v1', 1, 'Abstraction', $2, 'Wake',
+                 'test-model', 'query-heads-v1',
+                 '00000000-0000-0000-0000-000000000000'::uuid, 0, $3)",
+    )
+    .bind(memory_id)
+    .bind(text)
+    .bind(supersedes)
+    .execute(pg.pool())
+    .await?;
+    insert_entity_owner_home(pg, memory_id, owner).await?;
+    Ok(memory_id)
+}
+
 fn schemas_for_test() -> Vec<SchemaInfo> {
     vec![
         SchemaInfo {
@@ -909,6 +933,94 @@ async fn query_filter_abstraction_returns_empty() {
 
     let _ = drop_db(&db_name).await;
     result.expect("query_filter_abstraction_returns_empty test failed");
+}
+
+#[tokio::test]
+async fn query_heads_only_ignores_cross_owner_supersedes_successor() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+
+        let victim = Principal::User(UserId::new(Uuid::now_v7()));
+        let attacker = Principal::User(UserId::new(Uuid::now_v7()));
+        let foreign_shadowed =
+            insert_abstraction_memory(&pg, &victim, "victim head with foreign successor", None)
+                .await?;
+        let foreign_successor = insert_abstraction_memory(
+            &pg,
+            &attacker,
+            "attacker corrupt successor",
+            Some(foreign_shadowed),
+        )
+        .await?;
+        let same_owner_shadowed =
+            insert_abstraction_memory(&pg, &victim, "victim superseded head", None).await?;
+        let same_owner_successor = insert_abstraction_memory(
+            &pg,
+            &victim,
+            "victim same-owner successor",
+            Some(same_owner_shadowed),
+        )
+        .await?;
+
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let engine = Engine::new(registry).with_storage(storage);
+        let req = QueryRequest {
+            principal: victim.clone(),
+            read_owners: vec![victim.clone()],
+            entity_kind: Some(EntityKind::Abstraction),
+            schema_id: Some(SchemaId::new("test/head-abstraction-v1".into())),
+            supersession: SupersessionStatus::HeadsOnly,
+            tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
+            personality_roots: PersonalityRootFilter::IncludeInactive,
+            limit: 100,
+            include_payloads: false,
+            memory_ids: Vec::new(),
+            goal_ids: Vec::new(),
+            edge_ids: Vec::new(),
+            stateful_heads: Vec::new(),
+            reader_personality_instance_id: None,
+        };
+        let resp = engine
+            .query(
+                &proxima_core::AuthzContext::single_owner(&victim, proxima_core::AuthPath::System),
+                &req,
+            )
+            .await?;
+        let ids = resp
+            .memories
+            .iter()
+            .map(|row| row.id.into_inner())
+            .collect::<Vec<_>>();
+
+        assert!(
+            ids.contains(&foreign_shadowed),
+            "foreign successor must not suppress victim head: {ids:#?}"
+        );
+        assert!(
+            !ids.contains(&foreign_successor),
+            "attacker successor must remain unreadable: {ids:#?}"
+        );
+        assert!(
+            !ids.contains(&same_owner_shadowed),
+            "same-owner successor must suppress prior head: {ids:#?}"
+        );
+        assert!(
+            ids.contains(&same_owner_successor),
+            "same-owner successor remains the victim head: {ids:#?}"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("query_heads_only_ignores_cross_owner_supersedes_successor test failed");
 }
 
 #[tokio::test]
