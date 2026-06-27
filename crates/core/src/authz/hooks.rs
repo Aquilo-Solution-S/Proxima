@@ -1,7 +1,8 @@
 use std::fmt::Debug;
 
 use crate::Owner;
-use crate::authz::{AuthzContext, MemoryAction, Role};
+use crate::access::Relation;
+use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 
 /// Reason a hook denied an otherwise-allowed request.
@@ -23,8 +24,7 @@ pub struct AuthzInput<'a> {
     pub authz: &'a AuthzContext,
     pub requested: &'a Owner,
     pub resolved: &'a Owner,
-    pub role: Role,
-    pub action: MemoryAction,
+    pub relation: Relation,
 }
 
 /// At most one per composed app. Remap requested -> target owner; MAY deny.

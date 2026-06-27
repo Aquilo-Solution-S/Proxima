@@ -7,7 +7,7 @@ use proxima_core::verbs::event_ingest::{
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, Engine, FactPayload,
     FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner, PayloadKeyBuilder,
-    PersonalityInstanceId, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId, Storage,
+    PersonalityInstanceId, Relation, SchemaId, SchemaVersion, SourceBatchId, SourceId, Storage,
     StorageError, canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{
@@ -281,7 +281,7 @@ async fn ingest_plain_fact_for_attach(
         &mut tx,
         engine,
         authz,
-        Role::SourceIngest,
+        Relation::Ingest,
         &fact,
         move |tx, outcome| {
             Box::pin(async move {
@@ -330,20 +330,24 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
         let owner = owner_fixture();
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
         let personality = PersonalityInstanceId::new(Uuid::now_v7());
-        let first = engine.authorize_fact_with_citation(
-            &authz,
-            Role::SourceIngest,
-            draft(&owner, "first fact", None),
-            cited_object(),
-            citation_mapping(0, 4),
-        )?;
-        let second = engine.authorize_fact_with_citation(
-            &authz,
-            Role::SourceIngest,
-            draft(&owner, "second fact", Some(personality)),
-            cited_object(),
-            citation_mapping(5, 9),
-        )?;
+        let first = engine
+            .authorize_fact_with_citation(
+                &authz,
+                Relation::Ingest,
+                draft(&owner, "first fact", None),
+                cited_object(),
+                citation_mapping(0, 4),
+            )
+            .await?;
+        let second = engine
+            .authorize_fact_with_citation(
+                &authz,
+                Relation::Ingest,
+                draft(&owner, "second fact", Some(personality)),
+                cited_object(),
+                citation_mapping(5, 9),
+            )
+            .await?;
         let expected_content_hash = TestCitedObject {
             body: "same cited body".to_string(),
         }
@@ -430,14 +434,16 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
             "plain Fact starts uncited"
         );
 
-        let authorized = engine.authorize_citation_attachment(
-            &authz,
-            Role::SourceIngest,
-            owner.clone(),
-            fact_outcome.memory_id,
-            cited_object(),
-            citation_mapping(1, 5),
-        )?;
+        let authorized = engine
+            .authorize_citation_attachment(
+                &authz,
+                Relation::Ingest,
+                owner.clone(),
+                fact_outcome.memory_id,
+                cited_object(),
+                citation_mapping(1, 5),
+            )
+            .await?;
 
         let mut tx = pg.pool().begin().await?;
         let first_attach = attach_citation_in_tx(&mut tx, pg.sidecars(), &authorized).await?;
@@ -481,14 +487,16 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
             1
         );
 
-        let missing = engine.authorize_citation_attachment(
-            &authz,
-            Role::SourceIngest,
-            owner.clone(),
-            MemoryId::new(Uuid::now_v7()),
-            cited_object(),
-            citation_mapping(1, 5),
-        )?;
+        let missing = engine
+            .authorize_citation_attachment(
+                &authz,
+                Relation::Ingest,
+                owner.clone(),
+                MemoryId::new(Uuid::now_v7()),
+                cited_object(),
+                citation_mapping(1, 5),
+            )
+            .await?;
         let mut tx = pg.pool().begin().await?;
         let err = attach_citation_in_tx(&mut tx, pg.sidecars(), &missing)
             .await
@@ -516,13 +524,15 @@ async fn fact_sidecar_failure_rolls_back_whole_inline_citation_ingest()
         let engine = engine();
         let owner = owner_fixture();
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
-        let authorized = engine.authorize_fact_with_citation(
-            &authz,
-            Role::SourceIngest,
-            draft(&owner, "rollback fact", None),
-            cited_object(),
-            citation_mapping(0, 4),
-        )?;
+        let authorized = engine
+            .authorize_fact_with_citation(
+                &authz,
+                Relation::Ingest,
+                draft(&owner, "rollback fact", None),
+                cited_object(),
+                citation_mapping(0, 4),
+            )
+            .await?;
         let event_id = authorized.draft().event_id();
 
         let mut tx = pg.pool().begin().await?;

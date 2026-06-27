@@ -8,8 +8,8 @@ use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::{
     AbstractionPayload, AgentDerivationV1, AgentNoteV1, AuthPath, AuthorshipKindMask, AuthzContext,
     EdgeAuthorshipKind, EntityKind, EntityKindMask, FlavorRegistry, MemoryId, MemoryOperatorKind,
-    Owner, OwnerPrincipalKind, PersonalityInstanceId, Principal, RelationClass, RelationDescriptor,
-    Role, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, Storage,
+    Owner, OwnerPrincipalKind, PersonalityInstanceId, Principal, Relation, RelationClass,
+    RelationDescriptor, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, Storage,
 };
 use uuid::Uuid;
 
@@ -349,7 +349,9 @@ async fn ingest_event_with_sidecar_writes_fact_and_note_sidecar()
         &note,
         time::OffsetDateTime::now_utc(),
     );
-    let authorized = engine.authorize_event_ingest(&authz, Role::SourceIngest, draft)?;
+    let authorized = engine
+        .authorize_event_ingest(&authz, Relation::Ingest, draft)
+        .await?;
     let outcome = pg
         .ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
         .await?;

@@ -67,10 +67,10 @@ pub use proxima_core::verbs::query::{
 };
 pub use proxima_core::verbs::schema::PayloadKind;
 pub use proxima_core::{
-    AbstractionPayload, AuthPath, AuthzContext, CapabilitySet, CitationMappingPayload,
+    AbstractionPayload, AccessScope, AuthPath, AuthzContext, CapabilitySet, CitationMappingPayload,
     CitedObjectPayload, Engine, EngineHandle, FactPayload, FlavorRegistry, GoalPayload, GroupId,
     Identity, McpCallLogInput, McpCallLogOutcome, MemoryId, ModelId, OperatorId, Owner,
-    PersonalityInstanceId, PerspectivePayload, Principal, PromptVersion, Role, RoleSet, SchemaId,
+    PersonalityInstanceId, PerspectivePayload, Principal, PromptVersion, Relation, SchemaId,
     SchemaVersion, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
     SidecarPayload, SourceBatchId, SourceId, StorageError, ToolId, ToolScope, UserId,
     canonical_json_bytes, provider_safe_tool_name, proxima_flavor,

@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
-use crate::{MemoryActionSet, MemorySpaceGrants, Owner};
+use crate::{AccessScope, Owner, OwnerPrincipalKind};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MemorySpacesArgs {}
@@ -32,14 +32,24 @@ pub struct MemoryActionSetOutput {
     pub admin: bool,
 }
 
-impl From<MemoryActionSet> for MemoryActionSetOutput {
-    fn from(actions: MemoryActionSet) -> Self {
+impl MemoryActionSetOutput {
+    const fn full() -> Self {
         Self {
-            search: actions.search,
-            read: actions.read,
-            write: actions.write,
-            publish: actions.publish,
-            admin: actions.admin,
+            search: true,
+            read: true,
+            write: true,
+            publish: true,
+            admin: true,
+        }
+    }
+
+    const fn deferred_to_grants() -> Self {
+        Self {
+            search: false,
+            read: false,
+            write: false,
+            publish: false,
+            admin: false,
         }
     }
 }
@@ -67,32 +77,30 @@ impl McpTool for MemorySpacesTool {
 
 #[must_use]
 pub fn list_memory_spaces(ctx: &McpToolCtx) -> Vec<MemorySpaceOutput> {
-    match &ctx.authz.capabilities.memory_spaces {
-        MemorySpaceGrants::Unrestricted => vec![MemorySpaceOutput {
-            key: "current".into(),
-            label: "Current owner".into(),
-            actions: MemoryActionSet::all().into(),
-        }],
-        MemorySpaceGrants::Explicit(grants) => grants
-            .iter()
-            .filter(|grant| ctx.authz.identity.can_access_principal(&grant.owner))
-            .map(|grant| MemorySpaceOutput {
-                key: grant.key.clone(),
-                label: grant.label.clone(),
-                actions: effective_actions(grant.actions, ctx.authz.capabilities.roles).into(),
-            })
-            .collect(),
-    }
-}
-
-fn effective_actions(actions: MemoryActionSet, roles: crate::RoleSet) -> MemoryActionSet {
-    MemoryActionSet {
-        search: actions.search && roles.graph_read,
-        read: actions.read && roles.graph_read,
-        write: actions.write && roles.graph_write,
-        publish: actions.publish && roles.graph_write,
-        admin: actions.admin && roles.admin,
-    }
+    let actions = if ctx.authz.capabilities.access == AccessScope::Unrestricted {
+        MemoryActionSetOutput::full()
+    } else {
+        MemoryActionSetOutput::deferred_to_grants()
+    };
+    sorted_accessible_principals(ctx)
+        .into_iter()
+        .map(|owner| {
+            let current = owner == ctx.owner;
+            MemorySpaceOutput {
+                key: if current {
+                    "current".into()
+                } else {
+                    space_key(&owner)
+                },
+                label: if current {
+                    "Current owner".into()
+                } else {
+                    space_label(&owner)
+                },
+                actions: actions.clone(),
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -110,12 +118,12 @@ pub enum SpaceDefault {
 
 /// Resolve a public space key to a server-issued Owner. The key is a selector
 /// only: callers must still check the returned Owner with the concrete verb's
-/// role gate plus `AuthzContext::allows_memory_grant`.
+/// relation gate.
 ///
 /// # Errors
 ///
 /// Returns `InvalidInput` when a provided key is unknown, or when omitted
-/// default resolution has no explicit grant matching the default Owner.
+/// default resolution has no accessible default Owner.
 pub fn resolve_space_owner(
     ctx: &McpToolCtx,
     raw: Option<&str>,
@@ -125,40 +133,81 @@ pub fn resolve_space_owner(
         SpaceDefault::Current => ctx.owner.clone(),
         SpaceDefault::Identity => ctx.authz.identity.principal.clone(),
     };
-    match &ctx.authz.capabilities.memory_spaces {
-        MemorySpaceGrants::Unrestricted => {
-            if let Some(key) = raw
-                && key != "current"
-            {
-                return Err(McpToolError::InvalidInput(format!(
-                    "unknown memory space: {key}"
-                )));
+    let owner = match raw {
+        Some("current") => ctx
+            .authz
+            .identity
+            .can_access_principal(&ctx.owner)
+            .then_some(ctx.owner.clone()),
+        Some(key) => sorted_accessible_principals(ctx)
+            .into_iter()
+            .find(|owner| space_key(owner) == key),
+        None => ctx
+            .authz
+            .identity
+            .can_access_principal(&default_owner)
+            .then_some(default_owner),
+    };
+    owner
+        .map(|owner| {
+            let current = owner == ctx.owner;
+            ResolvedMemorySpace {
+                key: if current {
+                    "current".into()
+                } else {
+                    space_key(&owner)
+                },
+                label: if current {
+                    "Current owner".into()
+                } else {
+                    space_label(&owner)
+                },
+                owner,
             }
-            Ok(ResolvedMemorySpace {
-                key: "current".into(),
-                label: "Current owner".into(),
-                owner: default_owner,
-            })
-        }
-        MemorySpaceGrants::Explicit(grants) => {
-            let grant = match raw {
-                Some(key) => grants.iter().find(|grant| grant.key == key),
-                None => grants.iter().find(|grant| grant.owner == default_owner),
-            }
-            .filter(|grant| ctx.authz.identity.can_access_principal(&grant.owner));
-            grant
-                .map(|grant| ResolvedMemorySpace {
-                    key: grant.key.clone(),
-                    label: grant.label.clone(),
-                    owner: grant.owner.clone(),
-                })
-                .ok_or_else(|| {
-                    McpToolError::InvalidInput(raw.map_or_else(
-                        || "current memory space is not granted".to_string(),
-                        |key| format!("unknown memory space: {key}"),
-                    ))
-                })
-        }
+        })
+        .ok_or_else(|| {
+            McpToolError::InvalidInput(raw.map_or_else(
+                || "current memory space is not accessible".to_string(),
+                |key| format!("unknown memory space: {key}"),
+            ))
+        })
+}
+
+fn sorted_accessible_principals(ctx: &McpToolCtx) -> Vec<Owner> {
+    let mut owners = ctx
+        .authz
+        .identity
+        .accessible_principals
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    owners.sort_by_key(|owner| {
+        let (kind, id) = owner.columns();
+        (owner_kind_sort_key(kind), id)
+    });
+    owners
+}
+
+const fn owner_kind_sort_key(kind: OwnerPrincipalKind) -> u8 {
+    match kind {
+        OwnerPrincipalKind::User => 0,
+        OwnerPrincipalKind::Group => 1,
+    }
+}
+
+fn space_key(owner: &Owner) -> String {
+    let (kind, id) = owner.columns();
+    match kind {
+        OwnerPrincipalKind::User => format!("user:{id}"),
+        OwnerPrincipalKind::Group => format!("group:{id}"),
+    }
+}
+
+fn space_label(owner: &Owner) -> String {
+    let (kind, id) = owner.columns();
+    match kind {
+        OwnerPrincipalKind::User => format!("User {id}"),
+        OwnerPrincipalKind::Group => format!("Group {id}"),
     }
 }
 
@@ -169,34 +218,26 @@ mod tests {
 
     use crate::mcp::{McpAuthorContext, McpTool, McpToolExtensions, OutputMode};
     use crate::{
-        AuthPath, AuthzContext, CapabilitySet, FlavorRegistry, GroupId, Identity, MemoryActionSet,
-        MemorySpaceGrant, MemorySpaceGrants, Principal, RoleSet, ToolScope, UserId,
+        AccessScope, AuthPath, AuthzContext, CapabilitySet, FlavorRegistry, GroupId, Identity,
+        Principal, ToolScope, UserId,
     };
 
     use super::*;
 
-    fn make_ctx_with_spaces(grants: Vec<MemorySpaceGrant>) -> McpToolCtx {
-        let principal = grants.first().map_or_else(
-            || Principal::User(UserId::new(uuid::Uuid::now_v7())),
-            |grant| grant.owner.clone(),
-        );
-        let accessible_principals = grants
-            .iter()
-            .map(|grant| grant.owner.clone())
-            .collect::<HashSet<_>>();
-        make_ctx(
-            principal.clone(),
-            principal,
-            accessible_principals,
-            MemorySpaceGrants::explicit(grants),
-        )
+    fn make_ctx_with_accessible(owners: Vec<Principal>, access: AccessScope) -> McpToolCtx {
+        let principal = owners
+            .first()
+            .cloned()
+            .unwrap_or_else(|| Principal::User(UserId::new(uuid::Uuid::now_v7())));
+        let accessible_principals = owners.into_iter().collect::<HashSet<_>>();
+        make_ctx(principal.clone(), principal, accessible_principals, access)
     }
 
     fn make_ctx(
         owner: Principal,
         principal: Principal,
         accessible_principals: HashSet<Principal>,
-        memory_spaces: MemorySpaceGrants,
+        access: AccessScope,
     ) -> McpToolCtx {
         McpToolCtx {
             owner,
@@ -209,8 +250,7 @@ mod tests {
                 },
                 capabilities: CapabilitySet {
                     tool_scope: ToolScope::All,
-                    roles: RoleSet::all(),
-                    memory_spaces,
+                    access,
                 },
                 auth_path: AuthPath::HostBearer,
             },
@@ -232,60 +272,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_spaces_lists_explicit_grants_without_raw_authority() {
+    async fn memory_spaces_lists_accessible_principals_without_raw_authority() {
         let personal = Principal::User(UserId::new(uuid::Uuid::now_v7()));
         let shared = Principal::Group(GroupId::new(uuid::Uuid::now_v7()));
-        let ctx = make_ctx_with_spaces(vec![
-            MemorySpaceGrant {
-                key: "personal".into(),
-                label: "Personal".into(),
-                owner: personal,
-                actions: MemoryActionSet::read_write_publish_admin(),
-            },
-            MemorySpaceGrant {
-                key: "shared".into(),
-                label: "Shared".into(),
-                owner: shared,
-                actions: MemoryActionSet::read_only(),
-            },
-        ]);
+        let shared_key = space_key(&shared);
+        let ctx =
+            make_ctx_with_accessible(vec![personal.clone(), shared], AccessScope::Unrestricted);
 
         let out = MemorySpacesTool::call(ctx, MemorySpacesArgs {})
             .await
             .unwrap();
         assert_eq!(out.spaces.len(), 2);
-        assert_eq!(out.spaces[0].key, "personal");
+        assert_eq!(out.spaces[0].key, "current");
         assert!(out.spaces[0].actions.write);
-        assert_eq!(out.spaces[1].key, "shared");
-        assert!(!out.spaces[1].actions.write);
+        assert_eq!(out.spaces[1].key, shared_key);
+        assert!(out.spaces[1].actions.admin);
+    }
+
+    #[tokio::test]
+    async fn memory_spaces_granted_scope_defers_actions_to_persisted_grants() {
+        let personal = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let ctx = make_ctx_with_accessible(vec![personal], AccessScope::Granted);
+
+        let out = MemorySpacesTool::call(ctx, MemorySpacesArgs {})
+            .await
+            .unwrap();
+        assert_eq!(out.spaces.len(), 1);
+        assert_eq!(out.spaces[0].key, "current");
+        assert!(!out.spaces[0].actions.read);
+        assert!(!out.spaces[0].actions.write);
     }
 
     #[test]
-    fn explicit_resolution_omitted_space_matches_current_owner_grant() {
+    fn resolution_omitted_space_matches_current_owner() {
         let personal = Principal::User(UserId::new(uuid::Uuid::now_v7()));
         let shared = Principal::Group(GroupId::new(uuid::Uuid::now_v7()));
-        let ctx = make_ctx_with_spaces(vec![
-            MemorySpaceGrant {
-                key: "personal".into(),
-                label: "Personal".into(),
-                owner: personal.clone(),
-                actions: MemoryActionSet::all(),
-            },
-            MemorySpaceGrant {
-                key: "shared".into(),
-                label: "Shared".into(),
-                owner: shared,
-                actions: MemoryActionSet::read_only(),
-            },
-        ]);
+        let ctx =
+            make_ctx_with_accessible(vec![personal.clone(), shared], AccessScope::Unrestricted);
 
         let resolved = resolve_space_owner(&ctx, None, SpaceDefault::Current).unwrap();
-        assert_eq!(resolved.key, "personal");
+        assert_eq!(resolved.key, "current");
         assert_eq!(resolved.owner, personal);
     }
 
     #[test]
-    fn explicit_resolution_rejects_grant_without_owner_visibility() {
+    fn resolution_rejects_owner_without_visibility() {
         let user = Principal::User(UserId::new(uuid::Uuid::now_v7()));
         let hidden = Principal::Group(GroupId::new(uuid::Uuid::now_v7()));
         let mut accessible_principals = HashSet::new();
@@ -294,16 +325,15 @@ mod tests {
             user.clone(),
             user,
             accessible_principals,
-            MemorySpaceGrants::explicit(vec![MemorySpaceGrant {
-                key: "hidden".into(),
-                label: "Hidden".into(),
-                owner: hidden,
-                actions: MemoryActionSet::all(),
-            }]),
+            AccessScope::Unrestricted,
         );
+        let hidden_key = space_key(&hidden);
 
-        let err = resolve_space_owner(&ctx, Some("hidden"), SpaceDefault::Current).unwrap_err();
-        assert!(err.to_string().contains("unknown memory space: hidden"));
-        assert!(list_memory_spaces(&ctx).is_empty());
+        let err = resolve_space_owner(&ctx, Some(&hidden_key), SpaceDefault::Current).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains(&format!("unknown memory space: {hidden_key}"))
+        );
+        assert_eq!(list_memory_spaces(&ctx).len(), 1);
     }
 }

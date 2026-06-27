@@ -10,8 +10,8 @@ use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::{
     AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner,
-    PayloadKeyBuilder, Role, SchemaVersion, SidecarPayload, SourceBatchId, SourceId, StorageError,
-    canonical_json_bytes,
+    PayloadKeyBuilder, Relation, SchemaVersion, SidecarPayload, SourceBatchId, SourceId,
+    StorageError, canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemoryPayloadFuture};
 use proxima_storage_pg::verbs::event_ingest::{EventIngestSidecarFuture, PgFactSidecar};
@@ -440,7 +440,8 @@ where
     let draft = draft_for::<P>(owner, &payload_value);
     let authz = AuthzContext::single_owner(owner, AuthPath::System);
     let authorized = engine
-        .authorize_event_ingest(&authz, Role::SourceIngest, draft)
+        .authorize_event_ingest(&authz, Relation::Ingest, draft)
+        .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let sidecar_payload = SidecarPayload::fact(payload.clone());
     pg.ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
@@ -724,11 +725,13 @@ async fn replay_is_idempotent_and_does_not_mint_or_move_entity() {
         let payload = file_revision(repo_id, "src/lib.rs", "v1");
         let payload_value = serde_json::to_value(&payload)?;
         let draft = draft_for::<FileRevisionV1>(&owner, &payload_value);
-        let authorized = engine.authorize_event_ingest(
-            &AuthzContext::single_owner(&owner, AuthPath::System),
-            Role::SourceIngest,
-            draft,
-        )?;
+        let authorized = engine
+            .authorize_event_ingest(
+                &AuthzContext::single_owner(&owner, AuthPath::System),
+                Relation::Ingest,
+                draft,
+            )
+            .await?;
 
         let sidecar_payload = SidecarPayload::fact(payload.clone());
         let first = pg

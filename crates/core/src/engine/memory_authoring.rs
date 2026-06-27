@@ -1,5 +1,6 @@
 use super::Engine;
-use crate::authz::{AuthzContext, MemoryAction, Role};
+use crate::access::Relation;
+use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, StorageError};
 use crate::verbs::event_ingest::EventDraft;
@@ -89,10 +90,12 @@ impl Engine {
         authz: &AuthzContext,
         req: AuthorDerivedRequestInput<'_>,
     ) -> Result<AuthorDerivedAuthorizedOutcome, ProtocolError> {
-        let read_permit =
-            self.authorize_request(authz, &req.owner, Role::GraphRead, MemoryAction::Read)?;
-        let write_permit =
-            self.authorize_request(authz, &req.owner, Role::GraphWrite, MemoryAction::Write)?;
+        let read_permit = self
+            .authorize_request(authz, &req.owner, Relation::Viewer)
+            .await?;
+        let write_permit = self
+            .authorize_request(authz, &req.owner, Relation::Editor)
+            .await?;
         if read_permit.owner() != write_permit.owner() {
             return Err(ProtocolError::forbidden(
                 "read and write permits resolved to different owners",
@@ -161,10 +164,12 @@ impl Engine {
         authz: &AuthzContext,
         req: AppendMemoryEdgeRequestInput<'_>,
     ) -> Result<EdgeId, ProtocolError> {
-        let read_permit =
-            self.authorize_request(authz, &req.owner, Role::GraphRead, MemoryAction::Read)?;
-        let write_permit =
-            self.authorize_request(authz, &req.owner, Role::GraphWrite, MemoryAction::Write)?;
+        let read_permit = self
+            .authorize_request(authz, &req.owner, Relation::Viewer)
+            .await?;
+        let write_permit = self
+            .authorize_request(authz, &req.owner, Relation::Editor)
+            .await?;
         if read_permit.owner() != write_permit.owner() {
             return Err(ProtocolError::forbidden(
                 "read and write permits resolved to different owners",
@@ -213,24 +218,15 @@ impl Engine {
         authz: &AuthzContext,
         req: PublishMemoryRequestInput,
     ) -> Result<PublishMemoryOutcome, ProtocolError> {
-        let source_read = self.authorize_request(
-            authz,
-            &req.source_owner,
-            Role::GraphRead,
-            MemoryAction::Read,
-        )?;
-        let source_publish = self.authorize_request(
-            authz,
-            &req.source_owner,
-            Role::GraphWrite,
-            MemoryAction::Publish,
-        )?;
-        let target_write = self.authorize_request(
-            authz,
-            &req.target_owner,
-            Role::GraphWrite,
-            MemoryAction::Write,
-        )?;
+        let source_read = self
+            .authorize_request(authz, &req.source_owner, Relation::Viewer)
+            .await?;
+        let source_publish = self
+            .authorize_request(authz, &req.source_owner, Relation::Editor)
+            .await?;
+        let target_write = self
+            .authorize_request(authz, &req.target_owner, Relation::Editor)
+            .await?;
         if source_read.owner() != source_publish.owner() {
             return Err(ProtocolError::forbidden(
                 "source read and publish permits resolved to different owners",
@@ -280,7 +276,9 @@ impl Engine {
         if let Some(author) = req.author_personality_instance_id {
             draft = draft.author_personality(author);
         }
-        let authorized = self.authorize_event_ingest(authz, Role::GraphWrite, draft)?;
+        let authorized = self
+            .authorize_event_ingest(authz, Relation::Editor, draft)
+            .await?;
         let embedding_client = self.embed_client();
         let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
         let outcome = self
@@ -517,20 +515,22 @@ fn validate_relation_shape(
 
 #[cfg(test)]
 mod tests {
-    use crate::authz::{
-        AuthPath, AuthzContext, CapabilitySet, Identity, MemoryActionSet, MemorySpaceGrant,
-        MemorySpaceGrants, RoleSet, ToolScope,
-    };
+    use crate::access::AccessScope;
+    use crate::authz::{AuthPath, AuthzContext, CapabilitySet, Identity, ToolScope};
     use crate::error::ErrorCode;
     use crate::{
         AbstractionPayload, AgentDerivationV1, CORE_DERIVED_FROM_RELATION, EntityKind,
-        FlavorRegistry, Principal, UserId,
+        FlavorRegistry, GroupId, Principal, UserId,
     };
 
     use super::*;
 
     fn owner() -> Owner {
         Principal::User(UserId::new(uuid::Uuid::now_v7()))
+    }
+
+    fn group_owner() -> Owner {
+        Principal::Group(GroupId::new(uuid::Uuid::now_v7()))
     }
 
     fn engine() -> Engine {
@@ -550,7 +550,7 @@ mod tests {
         })
     }
 
-    fn publish_authz(owner: &Owner, read: bool, publish: bool, write: bool) -> AuthzContext {
+    fn granted_authz(owner: &Owner) -> AuthzContext {
         let mut accessible_principals = std::collections::HashSet::new();
         accessible_principals.insert(owner.clone());
         AuthzContext {
@@ -562,24 +562,7 @@ mod tests {
             },
             capabilities: CapabilitySet {
                 tool_scope: ToolScope::All,
-                roles: RoleSet {
-                    graph_read: true,
-                    graph_write: true,
-                    source_ingest: false,
-                    admin: false,
-                },
-                memory_spaces: MemorySpaceGrants::explicit(vec![MemorySpaceGrant {
-                    key: "test".into(),
-                    label: "Test".into(),
-                    owner: owner.clone(),
-                    actions: MemoryActionSet {
-                        search: false,
-                        read,
-                        write,
-                        publish,
-                        admin: false,
-                    },
-                }]),
+                access: AccessScope::Granted,
             },
             auth_path: AuthPath::HostBearer,
         }
@@ -665,32 +648,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_memory_denies_when_any_required_grant_is_missing() {
+    async fn publish_memory_denies_without_persisted_editor_grant() {
         let engine = engine();
-        let owner = owner();
+        let caller = owner();
+        let space = group_owner();
 
-        for (read, publish, write) in [
-            (false, true, true),
-            (true, false, true),
-            (true, true, false),
-        ] {
-            let err = engine
-                .publish_memory(
-                    &publish_authz(&owner, read, publish, write),
-                    PublishMemoryRequestInput {
-                        source_owner: owner.clone(),
-                        target_owner: owner.clone(),
-                        memory_id: MemoryId::new(uuid::Uuid::now_v7()),
-                        title_override: None,
-                        body_override: None,
-                        tags: Vec::new(),
-                        author_personality_instance_id: None,
-                    },
-                )
-                .await
-                .expect_err("missing required grant must fail before storage");
+        let err = engine
+            .publish_memory(
+                &granted_authz(&caller),
+                PublishMemoryRequestInput {
+                    source_owner: space.clone(),
+                    target_owner: space,
+                    memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+                    title_override: None,
+                    body_override: None,
+                    tags: Vec::new(),
+                    author_personality_instance_id: None,
+                },
+            )
+            .await
+            .expect_err("missing persisted grant must fail before storage");
 
-            assert_eq!(err.code, ErrorCode::Forbidden);
-        }
+        assert_eq!(err.code, ErrorCode::Forbidden);
     }
 }

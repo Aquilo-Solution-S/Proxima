@@ -9,9 +9,10 @@ use proxima_core::verbs::event_ingest::{
 };
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
-    AuthPath, AuthzContext, CapabilitySet, Engine, ErrorCode, FactPayload, FlavorRegistryFrozen,
-    Identity, MemoryActionSet, MemorySpaceGrant, MemorySpaceGrants, Owner, PayloadKeyBuilder, Role,
-    RoleSet, SchemaId, SchemaVersion, SourceBatchId, SourceId, Storage, StorageError, ToolScope,
+    AccessScope, AuthPath, AuthzContext, CapabilitySet, Engine, ErrorCode, FactPayload,
+    FlavorRegistryFrozen, GrantResource, Identity, NewAccessGrant, Owner, PayloadKeyBuilder,
+    PersonalityInstanceId, Principal, Relation, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    Storage, StorageError, ToolScope, UserId,
 };
 use proxima_storage_pg::verbs::event_ingest::{event_ingest_with_sidecar_atomic, ingest_fact};
 use uuid::Uuid;
@@ -94,70 +95,42 @@ fn fresh_draft(owner: &Owner) -> EventDraft {
     }
 }
 
-fn reduced_authz(owner: &Owner) -> AuthzContext {
-    let mut accessible_principals = HashSet::with_capacity(1);
-    accessible_principals.insert(owner.clone());
-    AuthzContext {
-        identity: Identity {
-            principal: owner.clone(),
-            accessible_principals,
-            expires_at: None,
-            auth_epoch: 0,
-        },
-        capabilities: CapabilitySet {
-            tool_scope: ToolScope::All,
-            roles: RoleSet {
-                graph_read: true,
-                graph_write: true,
-                source_ingest: false,
-                admin: false,
-            },
-            memory_spaces: MemorySpaceGrants::unrestricted(),
-        },
-        auth_path: AuthPath::System,
-    }
+fn bot_principal() -> Principal {
+    Principal::User(UserId::new(Uuid::now_v7()))
 }
 
-/// A pure source-ingest identity: `source_ingest` only, no `graph_write`.
-/// `write_grant` toggles the owner-space `memory.write` grant.
-fn source_ingest_only_authz(owner: &Owner, write_grant: bool) -> AuthzContext {
-    let mut accessible_principals = HashSet::with_capacity(1);
-    accessible_principals.insert(owner.clone());
-    let actions = if write_grant {
-        MemoryActionSet {
-            search: false,
-            read: false,
-            write: true,
-            publish: false,
-            admin: false,
-        }
-    } else {
-        MemoryActionSet::read_only()
-    };
+fn granted_bot_authz(bot: &Principal) -> AuthzContext {
     AuthzContext {
         identity: Identity {
-            principal: owner.clone(),
-            accessible_principals,
+            principal: bot.clone(),
+            accessible_principals: HashSet::new(),
             expires_at: None,
             auth_epoch: 0,
         },
         capabilities: CapabilitySet {
             tool_scope: ToolScope::All,
-            roles: RoleSet {
-                graph_read: false,
-                graph_write: false,
-                source_ingest: true,
-                admin: false,
-            },
-            memory_spaces: MemorySpaceGrants::explicit(vec![MemorySpaceGrant {
-                key: "personal".into(),
-                label: "Personal".into(),
-                owner: owner.clone(),
-                actions,
-            }]),
+            access: AccessScope::Granted,
         },
         auth_path: AuthPath::HostBearer,
     }
+}
+
+async fn seed_space_grant(
+    pg: &proxima_storage_pg::PgStorage,
+    space_owner: &Principal,
+    relation: Relation,
+    subject: &Principal,
+) {
+    pg.insert_access_grant(&NewAccessGrant {
+        space_owner: space_owner.clone(),
+        resource: GrantResource::Space,
+        relation,
+        subject: subject.clone(),
+        subject_is_group: false,
+        granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
+    })
+    .await
+    .expect("seed grant");
 }
 
 fn engine_for(pg: &proxima_storage_pg::PgStorage) -> Engine {
@@ -199,12 +172,15 @@ async fn authz_rejection_writes_nothing() -> Result<(), Box<dyn std::error::Erro
     let engine = engine_for(&pg);
     let draft = fresh_draft(&owner);
     let event_id = draft.event_id();
+    let bot = bot_principal();
+    let authz = granted_bot_authz(&bot);
     let err = engine
-        .authorize_event_ingest(&reduced_authz(&owner), Role::SourceIngest, draft)
+        .authorize_event_ingest(&authz, Relation::Ingest, draft)
+        .await
         .expect_err("missing source_ingest role must reject before storage");
 
     assert_eq!(err.code, ErrorCode::Forbidden);
-    assert!(err.message.contains("requires source_ingest role"));
+    assert!(err.message.contains("requires ingest on this space"));
     assert_eq!(event_row_counts(pg.pool(), event_id).await?, (0, 0));
 
     drop(engine);
@@ -220,28 +196,29 @@ async fn source_ingest_only_authorizes_event_ingest_with_write_grant()
     pg.run_migrations().await?;
     let owner = owner_fixture();
     let engine = engine_for(&pg);
+    let bot = bot_principal();
+    let authz = granted_bot_authz(&bot);
 
-    // A pure source-ingest identity (no graph_write) WITH a memory.write grant
-    // authorizes: source ingestion gates on its SourceIngest role plus the
-    // owner-space write grant, and must NOT additionally require graph_write.
-    let authorized = engine.authorize_event_ingest(
-        &source_ingest_only_authz(&owner, true),
-        Role::SourceIngest,
-        fresh_draft(&owner),
-    )?;
+    let err = engine
+        .authorize_event_ingest(&authz, Relation::Ingest, fresh_draft(&owner))
+        .await
+        .expect_err("missing ingest grant must reject");
+    assert_eq!(err.code, ErrorCode::Forbidden);
+    assert!(err.message.contains("requires ingest on this space"));
+
+    seed_space_grant(&pg, &owner, Relation::Ingest, &bot).await;
+
+    let authorized = engine
+        .authorize_event_ingest(&authz, Relation::Ingest, fresh_draft(&owner))
+        .await?;
     assert_eq!(authorized.draft().principal, owner);
 
-    // The same identity WITHOUT a write grant is rejected at the owner-space
-    // grant gate (read-only grant), not the role gate.
     let err = engine
-        .authorize_event_ingest(
-            &source_ingest_only_authz(&owner, false),
-            Role::SourceIngest,
-            fresh_draft(&owner),
-        )
-        .expect_err("missing memory.write grant must reject");
+        .authorize_event_ingest(&authz, Relation::Editor, fresh_draft(&owner))
+        .await
+        .expect_err("ingest grant must not authorize editor writes");
     assert_eq!(err.code, ErrorCode::Forbidden);
-    assert!(err.message.contains("requires memory.write on owner"));
+    assert!(err.message.contains("requires editor on this space"));
 
     drop(engine);
     drop(pg);
@@ -256,11 +233,13 @@ async fn sidecar_failure_rolls_back_fact() -> Result<(), Box<dyn std::error::Err
     let owner = owner_fixture();
     let engine = engine_for(&pg);
     let draft = fresh_draft(&owner);
-    let authorized = engine.authorize_event_ingest(
-        &AuthzContext::single_owner(&owner, AuthPath::System),
-        Role::SourceIngest,
-        draft,
-    )?;
+    let authorized = engine
+        .authorize_event_ingest(
+            &AuthzContext::single_owner(&owner, AuthPath::System),
+            Relation::Ingest,
+            draft,
+        )
+        .await?;
     let event_id = authorized.draft().event_id();
 
     let err = event_ingest_with_sidecar_atomic(
@@ -307,7 +286,7 @@ async fn ingest_fact_writes_uncited_fact_and_sidecar() -> Result<(), Box<dyn std
         pg.pool(),
         &engine,
         &authz,
-        Role::SourceIngest,
+        Relation::Ingest,
         &payload,
         move |tx, outcome| {
             Box::pin(async move {

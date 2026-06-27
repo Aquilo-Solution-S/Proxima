@@ -6,7 +6,7 @@ use proxima::{
     EdgeReadRequest, Endpoint, EndpointBinding, EntityKind, EntityKindMask, EntityRef, FactPayload,
     FlavorApp, FlavorBundle, FlavorRegistry, MemoryId, MemoryLineageDirection,
     MemoryLineageRequest, MemoryOperatorKind, PayloadKeyBuilder, PgMemoryPayload,
-    PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarRegistry, Proxima, Role,
+    PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarRegistry, Proxima, Relation,
     SchemaId, SchemaVersion, SidecarPayload, StorageError, company_owner, fact_entity_id_for,
     ingest_fact,
 };
@@ -294,7 +294,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             &built.pool,
             built.engine.as_ref(),
             &authz,
-            Role::SourceIngest,
+            Relation::Ingest,
             &fact,
             move |tx, outcome| {
                 Box::pin(async move {

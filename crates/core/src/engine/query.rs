@@ -1,5 +1,6 @@
 use super::{Engine, MemoryPermit};
-use crate::authz::{AuthzContext, MemoryAction, Role};
+use crate::access::Relation;
+use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::verbs::event_history::{
     EventHistoryRequest, EventHistoryResponse, MAX_EVENT_HISTORY_LIMIT,
@@ -42,8 +43,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &QueryRequest,
     ) -> Result<QueryResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Viewer)
+            .await?;
         self.query_authorized(&permit, req).await
     }
 
@@ -82,8 +84,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &EdgeReadRequest,
     ) -> Result<EdgeReadResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Viewer)
+            .await?;
         self.read_edges_authorized(&permit, req).await
     }
 
@@ -114,8 +117,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &EdgeExistsRequest,
     ) -> Result<EdgeExistsResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Viewer)
+            .await?;
         self.edge_exists_authorized(&permit, req).await
     }
 
@@ -144,8 +148,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &MemoryLineageRequest,
     ) -> Result<MemoryLineageResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Viewer)
+            .await?;
         self.walk_memory_lineage_authorized(&permit, req).await
     }
 
@@ -176,8 +181,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &EventHistoryRequest,
     ) -> Result<EventHistoryResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Viewer)
+            .await?;
         self.event_history_authorized(&permit, req).await
     }
 
@@ -214,8 +220,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &McpCallHistoryRequest,
     ) -> Result<McpCallHistoryResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::GraphRead, MemoryAction::Read)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Viewer)
+            .await?;
         self.read_mcp_call_history_authorized(&permit, req).await
     }
 

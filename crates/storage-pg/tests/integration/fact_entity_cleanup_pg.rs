@@ -14,7 +14,7 @@ use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthPath, AuthorshipKindMask, AuthzContext, EdgeAuthorshipKind, EdgeId, EdgePayload,
     EndpointBinding, EntityKind, EntityKindMask, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
-    MemoryId, Owner, PayloadKeyBuilder, Principal, RelationClass, RelationDescriptor, Role,
+    MemoryId, Owner, PayloadKeyBuilder, Principal, Relation, RelationClass, RelationDescriptor,
     SchemaId, SchemaRef, SchemaVersion, SidecarPayload, SourceBatchId, SourceId, StorageError,
     UserId, canonical_json_bytes,
 };
@@ -262,7 +262,8 @@ async fn ingest_fact(
     let draft = draft_for(owner, &payload_value, cited);
     let authz = AuthzContext::single_owner(owner, AuthPath::System);
     let authorized = engine
-        .authorize_event_ingest(&authz, Role::SourceIngest, draft)
+        .authorize_event_ingest(&authz, Relation::Ingest, draft)
+        .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let sidecar_payload = SidecarPayload::fact(payload.clone());
     pg.ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)

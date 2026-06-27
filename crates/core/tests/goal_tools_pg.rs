@@ -15,10 +15,10 @@ use proxima_core::mcp::core_tools::goal::{
 };
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
-    AuthPath, AuthzContext, CapabilitySet, EntityKind, FlavorRegistry, FlavorRegistryFrozen,
-    GoalId, Identity, McpTool, McpToolError, MemoryActionSet, MemoryId, MemoryOperatorKind,
-    MemorySpaceGrant, MemorySpaceGrants, Owner, OwnerPrincipalKind, PersonalityInstanceId,
-    PersonalityStatus, Principal, RoleSet, ToolScope,
+    AccessScope, AuthPath, AuthzContext, CapabilitySet, EntityKind, FlavorRegistry,
+    FlavorRegistryFrozen, GoalId, GrantResource, Identity, McpTool, McpToolError, MemoryId,
+    MemoryOperatorKind, NewAccessGrant, Owner, OwnerPrincipalKind, PersonalityInstanceId,
+    PersonalityStatus, Principal, Relation, Storage, ToolScope, UserId,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -248,7 +248,7 @@ async fn goal_set_tool_requires_memory_write() -> TestResult {
     with_harness(|harness| {
         Box::pin(async move {
             let err = CoreGoalTool::call(
-                harness.ctx_with_authz(harness.explicit_without_memory_write()),
+                harness.ctx_with_authz(harness.viewer_without_memory_write().await),
                 CoreGoalArgs::Set(goal_set_args(
                     "Denied goal",
                     "This goal write must be rejected before storage.",
@@ -458,30 +458,31 @@ impl ToolHarness {
         self.handles.resolve_goal(handle)
     }
 
-    fn explicit_without_memory_write(&self) -> AuthzContext {
+    async fn viewer_without_memory_write(&self) -> AuthzContext {
+        let viewer = Principal::User(UserId::new(Uuid::now_v7()));
+        self.pg
+            .insert_access_grant(&NewAccessGrant {
+                space_owner: self.owner.clone(),
+                resource: GrantResource::Space,
+                relation: Relation::Viewer,
+                subject: viewer.clone(),
+                subject_is_group: false,
+                granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
+            })
+            .await
+            .expect("seed viewer grant");
         AuthzContext {
             identity: Identity {
-                principal: self.owner.clone(),
-                accessible_principals: HashSet::from([self.owner.clone()]),
+                principal: viewer,
+                accessible_principals: HashSet::default(),
                 expires_at: None,
                 auth_epoch: 0,
             },
             capabilities: CapabilitySet {
                 tool_scope: ToolScope::All,
-                roles: RoleSet {
-                    graph_read: true,
-                    graph_write: true,
-                    source_ingest: true,
-                    admin: false,
-                },
-                memory_spaces: MemorySpaceGrants::explicit(vec![MemorySpaceGrant {
-                    key: "personal".into(),
-                    label: "Personal".into(),
-                    owner: self.owner.clone(),
-                    actions: MemoryActionSet::read_only(),
-                }]),
+                access: AccessScope::Granted,
             },
-            auth_path: AuthPath::System,
+            auth_path: AuthPath::HostBearer,
         }
     }
 
