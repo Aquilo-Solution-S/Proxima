@@ -7,21 +7,14 @@ existing axioms/theorems from Memory, Edges, and Operators.
 -/
 
 import Causa.Operators
-import Causa.Personality
 import Causa.Provenance
 
 namespace Causa
 
-/-- P1 — Facts sit below Perspective/read-scope: within one Owner, a
-    Fact is readable unconditionally. -/
+/-- P1 — Facts sit below Perspectives in the F/A/P layer order. -/
 theorem principle_1_facts_below_perspective :
-    ∀ (p : PersonalityInstance) (m : Memory),
-      personality_owner p = memory_owner m →
-      memory_kind m = .Fact →
-      personality_may_read p m := by
-  intro p m ho hk
-  unfold personality_may_read
-  exact ⟨ho, Or.inl hk⟩
+    MemoryKind.layer .Fact < MemoryKind.layer .Perspective := by
+  simp [MemoryKind.layer]
 
 /-- P2 (weakened) — operator-derived Goals carry evidence by an
     A→Goal Structural edge from the Goal to a non-Perspective Memory.
@@ -38,13 +31,16 @@ theorem principle_2_operator_goals_carry_evidence :
   rw [ha] at h
   exact h
 
-/-- P3 — Goals/operators never author Facts: Facts have no authoring
-    personality. Discharged by CN-5 `facts_only_from_sources`. -/
-theorem principle_3_goals_never_author_facts :
-    ∀ m : Memory,
-      memory_kind m = .Fact →
-      memory_authoring_personality m = none :=
-  facts_only_from_sources
+/-- P3 — operator memory outputs are never Facts. Discharged by
+    CN-5 `operator_memory_output_not_fact`. -/
+theorem principle_3_operators_never_output_facts :
+    ∀ (e : Edge) (m : Memory),
+      (edge_authorship e = .OperatorFtoA ∨
+       edge_authorship e = .OperatorAtoA ∨
+       edge_authorship e = .OperatorAtoP) →
+      edge_source e = .memory m →
+      memory_kind m ≠ .Fact :=
+  operator_memory_output_not_fact
 
 /-- P3b — closing a Goal is an act, and the close-act emits a Fact. -/
 theorem principle_3b_goal_close_is_an_act :
@@ -54,7 +50,7 @@ theorem principle_3b_goal_close_is_an_act :
 
 /-- P3c — the loop's causal closure is perspectival: a goal and a
     fact may be related causally ONLY by a perspective-authored
-    claim, never a structural/EventSource/user edge. -/
+    claim, never a structural/source-ingest/user edge. -/
 theorem principle_3c_causal_closure_is_perspectival :
     ∀ e : Edge, relation_class (edge_relation e) = .Causal →
       ((∃ g : Goal, edge_source e = .goal g) ∨
@@ -87,32 +83,16 @@ theorem principle_6a_derivation_provenance_strictly_upward :
       (memory_kind mt).layer ≤ (memory_kind ms).layer :=
   edge_layer_rule
 
-/-- P6b — for authored non-Fact memories, `personality_may_read` is
-    governed by the read-scope matrix entry for the authoring
-    personality. -/
-theorem principle_6b_read_scope_governs_authored_derived_reads :
-    ∀ (p author : PersonalityInstance) (m : Memory),
-      personality_owner p = memory_owner m →
-      memory_kind m ≠ .Fact →
-      memory_authoring_personality m = some author →
-      (personality_may_read p m ↔ read_scope (memory_owner m) p author) := by
-  intro p author m ho hk ha
-  unfold personality_may_read
-  rw [ho, ha]
-  simp [hk]
+/-- P6b — materialized personality read-scope was removed: there is no
+    kernel `PersonalityInstance`, `read_scope`, or authored-personality
+    accessor. Wake/read context will be modeled from facts and
+    perspectives in a later slice. -/
+def principle_6b_personality_read_scope_removed : String :=
+  "no kernel PersonalityInstance/read_scope; wake context is not materialized"
 
-/-- P6b append-only compatibility note: the stronger claim "matrix
-    changes affect future reads only" has no separate theorem-shaped
-    statement in the current kernel because there is no matrix-version
-    or matrix-event state accessor. -/
-def principle_6b_append_only_compatibility_note : String :=
-  "read_scope has no matrix-version/event state accessor"
-
-/-- P7 — personality character supervenes on the active Perspective
-    head set. The aggregation semantics stay opaque in `character_of`. -/
-theorem principle_7_personality_is_aggregate_of_perspectives :
-    ∀ p q : PersonalityInstance, activePerspectiveHeads p = activePerspectiveHeads q →
-      personality_character p = personality_character q :=
-  fun _ _ h => congrArg character_of h
+/-- P7 — personality is not an entity. It emerges from Perspective and
+    wake context; the kernel carries this by structural absence. -/
+def principle_7_personality_is_not_entity : String :=
+  "personality has no kernel row/type/instance; it emerges from Perspective context"
 
 end Causa

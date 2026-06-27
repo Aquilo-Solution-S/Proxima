@@ -32,19 +32,18 @@ instance {α : Type} : Membership α (Set α) := ⟨fun s a => s a⟩
 -- Opaque value Types
 -- ============================================================
 
-/-- Time-point identity. Kept opaque; only `≤` is exposed. Two
-    distinct time accessors exist on Event (`observed_at`,
-    `occurred_at` — doc 01 §Properties of an Event); the kernel
-    commits to the distinction, not to clock structure. -/
+/-- Time-point identity. Kept opaque; only `≤` is exposed. Source,
+    memory, goal, audit, and runtime layers may attach distinct time
+    meanings; the kernel commits to time comparability, not clock
+    structure. -/
 axiom Instant : Type
 axiom Instant.le : Instant → Instant → Prop
 instance : LE Instant := ⟨Instant.le⟩
 
-/-- Authored cognitive text on Abstractions and Perspectives
-    (doc 02 §The Core Entity). Opaque: the kernel commits to its
-    existence and immutability, not its encoding. Facts have no
-    stored text — they render from typed payload on demand
-    (doc 03 §Renderer), which is engine behavior, not kernel. -/
+/-- Free text attached to a memory row. Opaque: the kernel commits
+    to the type slot, not its encoding or kind-based presence. Facts,
+    Abstractions, and Perspectives may all carry optional text;
+    flavor sidecars may carry additional opaque typed payload. -/
 axiom Text : Type
 
 end Causa

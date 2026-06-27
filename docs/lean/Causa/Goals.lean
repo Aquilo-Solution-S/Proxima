@@ -9,10 +9,10 @@ distinct Lean Types carry GO-6 structurally.
 GO-7 — there is no Self primitive in this kernel, BY DESIGN:
 "There is no Self row" (doc 06 §Self). Self(instance) is a query —
 current root Perspective + active perspective heads + active goals.
-Self must never be cached as a Memory row, a Goal row, or a
-materialized causal chain ("cache would become authority"). The
-absence of a `Self` axiom here is the invariant; COVERAGE.md records
-it explicitly.
+Self must never be cached as a Memory row, a Goal row, Personality
+instance, or materialized causal chain ("cache would become
+authority"). The absence of a `Self` axiom here is the invariant;
+COVERAGE.md records it explicitly.
 -/
 
 import Causa.Prelude
@@ -83,18 +83,6 @@ axiom goal_authorship : Goal → GoalAuthorship
     both; payload stays opaque. -/
 axiom goal_title : Goal → Text
 axiom goal_text  : Goal → Text
-
-/-- The personality instance whose A→Goal operator authored this Goal
-    row, if operator-authored (doc 04: A→Goal runs under Π). `none`
-    for direct User/External writes. Needed because the read-scope
-    matrix gates GOALS too (doc 02 §Read-scope Matrix: "self may read
-    other's A/P/Goals"). -/
-axiom goal_authoring_personality : Goal → Option PersonalityInstance
-
-axiom goal_authoring_personality_owner :
-  ∀ (g : Goal) (p : PersonalityInstance),
-    goal_authoring_personality g = some p →
-    personality_owner p = goal_owner g
 
 axiom goal_id_injective :
   ∀ g1 g2 : Goal, goal_id g1 = goal_id g2 → g1 = g2
@@ -184,24 +172,13 @@ def goalIsHead (g : Goal) : Prop :=
 
     NOTE the deliberate duality (decision
     `docs/domain/decisions/2026-06-11-active-goals-two-queries.md`):
-    doc 06 also defines an INSTANCE-scoped `active_goals(instance)`
-    (§Goal Assignment) that filters by `core/inspires` assignment to
-    the current Self-Perspective. That query needs the named
+    doc 06 also sketches context-scoped active-goal queries. Those
+    depend on wake context/Perspective selection and the named
     `core/inspires` relation constant; the kernel models relation
-    CLASSES and shapes, not named relation ids, so the instance query
-    stays engine-level. The two queries are different scopes of the
-    same head/Active filter — not a contradiction. -/
+    CLASSES and shapes, not named relation ids, so the context query
+    stays engine-level. The Owner query below is the substrate head/
+    Active filter. -/
 def activeGoals (o : Owner) : Set Goal :=
   fun g => goal_owner g = o ∧ goal_state g = .Active ∧ goalIsHead g
-
-/-- ME-7 for Goals — the read-scope matrix gates Goal retrieval
-    exactly as it gates A/P (doc 02 §Read-scope Matrix). Facts have
-    no Goal analogue; operator-authored Goals are gated against their
-    authoring instance, direct writes are substrate-visible. -/
-def personality_may_read_goal (p : PersonalityInstance) (g : Goal) : Prop :=
-  personality_owner p = goal_owner g ∧
-  (match goal_authoring_personality g with
-   | some author => read_scope (goal_owner g) p author
-   | none        => True)
 
 end Causa

@@ -1,23 +1,29 @@
 /-
 Causa — Citations
 
-Bibliographic provenance is artefact-only and Fact-only (doc 11).
-The three-layer model: only Facts may cite (OPTIONAL as of 2026-06-13);
-Abstractions and Perspectives NEVER cite directly — their bibliography
-is the transitive closure
-through provenance edges down to Facts (CI-3, and CN-6 supplies the
-edges).
+Citation is the thin core evidence anchor, not blob storage. A
+`CitedObject` is an Owner-scoped external Reality artefact identity;
+all storage coordinates, hashes, byte ranges, pages, message ids,
+rendering, fetching, and idempotency mechanics live in flavor sidecars
+or engine code.
 
-Minimized trusted core (2026-06-11): the Fact↔mapping relation is
-stored ONCE — `citation_fact` (the mapping-side FK) is primitive;
-the Fact-side pointer `memory_citation` is a noncomputable DEF via
-choice, and CI-1/CI-2a/CI-2c are PROVED. Doc 11 treats the pointer
-and the FK as one relation kept consistent by the engine; the kernel
-now encodes exactly one.
+The three-layer model remains Fact-only: only Facts may cite
+(OPTIONAL as of 2026-06-13). Here "Fact" means lossless observed source
+atom/transcription, not interpretation. Abstractions and Perspectives
+NEVER cite directly — their bibliography is the transitive closure
+through provenance edges down to cited Facts (CI-3, and CN-6 supplies
+the edges).
+
+Minimized trusted core (D5): the Fact↔mapping relation is stored ONCE —
+`CitationMapping.fact` is primitive; the Fact-side pointer
+`memory_citation` is a noncomputable DEF via choice, and
+CI-1/CI-2a/CI-2c are PROVED. Doc 11 treats the pointer and the FK as
+one relation kept consistent by the engine; the kernel now encodes
+exactly one.
 
 CI-12/13 — edges do not cite (no citation accessor on Edge; see
 Causa.Edges). CI-14 — operator reproducibility (model id,
-prompt version, personality) is inline row metadata, not citation.
+prompt version, wake context) is inline row metadata, not citation.
 S3 storage coordinates (CI-15/16) are engine concerns — excluded.
 -/
 
@@ -32,33 +38,69 @@ namespace Causa
 -- Entities (doc 11 §Trait families)
 -- ============================================================
 
-/-- A bibliographic artefact: blob, image, chat session, … Owner-
-    scoped, content-hash idempotent within Owner (CI-4: UNIQUE
-    (owner, schema_id, content_hash) — hash stays engine-level; the
-    kernel keeps identity + owner + schema). Insert-only (ST-7). -/
-axiom CitedObject : Type
-axiom cited_object_id     : CitedObject → CitedObjectId
-axiom cited_object_owner  : CitedObject → Owner
-axiom cited_object_schema : CitedObject → SchemaRef
+/-- A bibliographic artefact identity: blob, image, chat session, …
+    Owner-scoped, insert-only (ST-7). Content hash/idempotency and storage
+    location stay outside the kernel; core keeps only identity + owner +
+    schema. -/
+structure CitedObject where
+  id     : CitedObjectId
+  owner  : Owner
+  schema : SchemaRef
 
-axiom cited_object_id_injective :
-  ∀ c1 c2 : CitedObject, cited_object_id c1 = cited_object_id c2 → c1 = c2
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def cited_object_id : CitedObject → CitedObjectId := CitedObject.id
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def cited_object_owner : CitedObject → Owner := CitedObject.owner
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def cited_object_schema : CitedObject → SchemaRef := CitedObject.schema
+
+/-- Cited-object id uniqueness is a table/store invariant, not a global
+    property of raw structure values. -/
+def CitedObjectIdUnique (objects : Set CitedObject) : Prop :=
+  ∀ c1 c2 : CitedObject,
+    c1 ∈ objects →
+    c2 ∈ objects →
+    cited_object_id c1 = cited_object_id c2 →
+    c1 = c2
 
 instance : Immutable CitedObject := ⟨⟩
 instance : AppendOnly CitedObject := ⟨⟩
 
-/-- One annotation pointing one Fact at one CitedObject, with
-    location/range metadata (page, paragraph, bbox, …) typed by the
-    flavor — payload opaque here. Insert-only (ST-8). -/
-axiom CitationMapping : Type
-axiom citation_mapping_id     : CitationMapping → CitationMappingId
-axiom citation_mapping_schema : CitationMapping → SchemaRef
-axiom citation_fact   : CitationMapping → Memory
-axiom citation_object : CitationMapping → CitedObject
+/-- One thin evidence link from one lossless observed Fact to one
+    CitedObject. Location/range metadata (page, paragraph, bbox, …) is
+    flavor sidecar data, not a kernel field. Insert-only (ST-8). -/
+structure CitationMapping where
+  id          : CitationMappingId
+  schema      : SchemaRef
+  fact        : Fact
+  object      : CitedObject
+  owner_match : memory_owner fact.memory = object.owner
 
-axiom citation_mapping_id_injective :
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def citation_mapping_id : CitationMapping → CitationMappingId := CitationMapping.id
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def citation_mapping_schema : CitationMapping → SchemaRef := CitationMapping.schema
+
+/-- The Fact-side target as the Fact subtype. -/
+def citation_fact_ref : CitationMapping → Fact := CitationMapping.fact
+
+/-- Compatibility accessor: the cited Fact projected as its Memory row. -/
+def citation_fact (c : CitationMapping) : Memory := c.fact.memory
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def citation_object : CitationMapping → CitedObject := CitationMapping.object
+
+/-- Citation-mapping id uniqueness is a table/store invariant, not a global
+    property of raw structure values. -/
+def CitationMappingIdUnique (mappings : Set CitationMapping) : Prop :=
   ∀ c1 c2 : CitationMapping,
-    citation_mapping_id c1 = citation_mapping_id c2 → c1 = c2
+    c1 ∈ mappings →
+    c2 ∈ mappings →
+    citation_mapping_id c1 = citation_mapping_id c2 →
+    c1 = c2
 
 instance : Immutable CitationMapping := ⟨⟩
 instance : AppendOnly CitationMapping := ⟨⟩
@@ -67,10 +109,12 @@ instance : AppendOnly CitationMapping := ⟨⟩
 -- The Fact-only rule (doc 11 §Three-layer model) — trusted core
 -- ============================================================
 
-/-- CI-1b — a mapping's target IS a Fact: no mapping may point at an
-    Abstraction or Perspective (doc 11 §Three-layer model). -/
-axiom citation_fact_is_fact :
-  ∀ c : CitationMapping, memory_kind (citation_fact c) = .Fact
+/-- CI-1b — a mapping's target IS a Fact by structure: no mapping may
+    point at an Abstraction or Perspective (doc 11 §Three-layer model). -/
+theorem citation_fact_is_fact :
+  ∀ c : CitationMapping, memory_kind (citation_fact c) = .Fact := by
+  intro c
+  exact fact_memory_kind c.fact
 
 -- CI-1a RETIRED 2026-06-13 — citations are OPTIONAL on Facts. A Fact may
 -- carry no citation (Facts are the event stream; citations are optional
@@ -147,12 +191,13 @@ theorem citation_unique_per_fact :
 -- Owner scoping (doc 11 §Owner scoping)
 -- ============================================================
 
-/-- CI-7/CI-8 — a mapping inherits its Fact's owner and the engine
-    checks Fact owner = CitedObject owner. Same artefact for a
-    different Owner is a separate CitedObject row (no cross-owner
-    citation reuse). -/
-axiom citation_owner_match :
+/-- CI-7/CI-8 — a mapping inherits its Fact's owner. Same artefact for
+    a different Owner is a separate CitedObject row (no cross-owner
+    citation reuse). The match is structural, not an extra axiom. -/
+theorem citation_owner_match :
   ∀ c : CitationMapping,
-    memory_owner (citation_fact c) = cited_object_owner (citation_object c)
+    memory_owner (citation_fact c) = cited_object_owner (citation_object c) := by
+  intro c
+  exact c.owner_match
 
 end Causa

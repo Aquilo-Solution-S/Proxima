@@ -1,31 +1,29 @@
 /-
 Causa — Owner
 
-The scoping primitive (doc 01 §Owner). Every Event, Memory, and Goal
-carries an Owner: the access scope. Ontologically, Owner IS the
-principal — personal (User) or group-shared (Group). The closed
-two-constructor shape of `Principal` is itself the axiom.
+The scoping primitive (doc 01 §Owner). Every Memory and Goal carries
+an Owner: its access scope.
 
-**Org is not a kernel concept** (renegotiated 2026-06-11, decision
-`2026-06-11-org-out-of-kernel.md`). Billing/quota attribution
-(`org_id`) is engine metadata annotated on storage rows. Previously
-`Owner` was `Principal × OrgId`: while org never entered the access
-rule, it DID enter Owner equality — and Owner equality is the premise
-of every structural gate (F→A batch gate, single-owner edge scope,
-goal parents, citations owner-match), so a billing label silently
-shaped graph topology. With Owner = Principal, gate premises compare
-principal only: the same user under two orgs is one identity.
+Ontology (realign 2026-06-28): **an Owner is always a Group**, and a
+Group IS the set of users permitted to join it. A "user" is the special
+case — the singleton group only that user can join. There is no
+User/Group sum and no group-handle primitive: the one irreducible atom
+is `User` (a person); groups, owners, and World are all structural over
+it. Owner equality is therefore extensional — an owner *is* its
+membership — which is exactly the identity-collapse the access layer
+wants (the same person under two billing labels is one identity).
 
-**No `Principal.Org` variant.** Org-wide visibility is expressed as a
-default `<org>-everyone` group whose membership auto-syncs with org
-membership (doc 01 v1 constraints).
+**Org is not a kernel concept** (decision `2026-06-11-org-out-of-kernel.md`).
+Billing/quota attribution is engine metadata, never a kernel face;
+org-wide visibility is expressed as a default `<org>-everyone` group
+whose membership auto-syncs with org membership (doc 01 v1 constraints).
 
-Owner here is the single `is_home` WRITE owner. Read-only sharing — the
-former "v2+ `AccessGrant`" — is now realized as `entity_owner` reachability
-rows and modeled in `Causa.Authorization` (`reaches` / `may_read`), never as
-a flag on the entity. So an entity carries one Owner (this home) yet is
-reachable by many; `visible` below is the per-Owner reachability primitive
-those read/write sets are built from, not the whole access rule.
+Owner here is the single `is_home` WRITE owner. Read-only sharing is
+realized as `entity_owner` reachability rows in `Causa.Authorization`
+(`reaches` / `may_read`), never as a flag on the entity: an entity
+carries one home Owner yet is reachable by many. `visible` below is the
+per-Owner reachability primitive those read/write sets are built from,
+not the whole access rule.
 -/
 
 import Causa.Prelude
@@ -33,59 +31,66 @@ import Causa.Prelude
 namespace Causa
 
 -- ============================================================
--- Identity slots
+-- The one irreducible atom
 -- ============================================================
 
-axiom UserId  : Type
-axiom GroupId : Type
+/-- A person — the single identity primitive of the kernel. The kernel
+    cannot define the set of persons structurally; their existence is
+    its one input from the world. Identity is the whole content of
+    `User`: two users differ because they are different inhabitants.
+    Attributes (name, preferences, …) are flavor sidecar data over this
+    atom, never kernel fields — a field no proof reads is dead trusted
+    weight, so properties arrive only when a theorem consumes them. -/
+axiom User : Type
 
 -- ============================================================
--- Principal — access scope
+-- Group — a set of users
 -- ============================================================
 
-/-- Access scope: personal (only that user) or group-shared (group
-    members). Closed sum — doc 01 §Owner. -/
-inductive Principal where
-  | user  (u : UserId)
-  | group (g : GroupId)
-
-/-- Group membership. Lives in usermanager app-side; the kernel
-    commits only to the membership predicate the access rule needs. -/
-axiom group_members : GroupId → Set UserId
+/-- A Group IS the set of users permitted to join it. No separate
+    group-handle primitive: a group's identity is exactly its
+    membership (extensional). `abbrev` keeps it reducible so the `Set`
+    membership instance resolves through `Group` / `Owner`. -/
+abbrev Group : Type := Set User
 
 -- ============================================================
--- Owner
+-- Owner — always a Group
 -- ============================================================
 
-/-- Owner IS the principal (doc 01 §Owner, renegotiated 2026-06-11 —
-    decision `2026-06-11-org-out-of-kernel.md`). The former engine
-    `owner_org_id` billing annotation was dropped from Core storage
-    entirely in S0 (Track B, 2026-06); tenancy is now a flavor/app
-    concern, with no kernel face. -/
-def Owner : Type := Principal
+/-- An Owner is always a Group (doc 01 §Owner). The access scope of
+    every Memory and Goal. -/
+abbrev Owner : Type := Group
 
-def owner_principal (o : Owner) : Principal := o
+/-- A user as an Owner: the personal group only that user can join — the
+    singleton `{u}` (written explicitly, the minimal `Set` carries no
+    singleton notation). This is what "a User" denotes at the access
+    layer; a User is the special case of a Group. -/
+def Owner.ofUser (u : User) : Owner := fun x => x = u
+
+/-- An Owner is personal iff it is some user's singleton group. -/
+def Owner.isPersonal (o : Owner) : Prop := ∃ u : User, o = Owner.ofUser u
 
 -- ============================================================
 -- Visibility — per-Owner reachability (the read-set primitive)
 -- ============================================================
 
-/-- ES-2 — when a requester reaches a single Owner principal, verbatim from
-    doc 01 §Owner:
+/-- ES-2 — a requester reaches an Owner iff they are a member of its
+    group:
 
-      visible(o, requester) iff
-          o.principal == User(requester)
-        ∨ ( o.principal == Group(g) ∧ requester ∈ members(g) )
+      visible(o, requester) iff requester ∈ o
 
-    A definition, not an axiom: the kernel fixes the rule's content. Under
-    group-ownership this is no longer the WHOLE entity access rule — an
-    entity is reachable through any of its `entity_owner` Owners — but the
-    per-Owner test `S_read` is assembled from (self ∪ groups ∪ World); see
-    `Causa.Authorization.may_read` for the set-reachability gate. ES-3: org
-    does not exist at this layer — never an access predicate, never identity. -/
-def visible (o : Owner) (requester : UserId) : Prop :=
-  match owner_principal o with
-  | .user u  => u = requester
-  | .group g => requester ∈ group_members g
+    For a personal owner this reduces to identity
+    (`requester ∈ Owner.ofUser u ↔ requester = u`) — "only the user can
+    join it". A definition, not an axiom: the kernel fixes the rule's
+    content. Under group-ownership this is the per-Owner test; an entity
+    is reachable through any of its `entity_owner` Owners, assembled into
+    `S_read` (see `Causa.Authorization.may_read`). ES-3: org does not
+    exist at this layer — never an access predicate, never identity. -/
+def visible (o : Owner) (requester : User) : Prop := requester ∈ o
+
+/-- The personal-owner reduction, made explicit: reaching a user's own
+    group is exactly being that user. -/
+theorem visible_personal (u requester : User) :
+    visible (Owner.ofUser u) requester ↔ requester = u := Iff.rfl
 
 end Causa
