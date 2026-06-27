@@ -230,19 +230,19 @@ async fn citation_of_entity_head_follows_updates_while_fact_citation_pins()
         let v1 = ingest_fact(&pg, &engine, &owner, &fact("entity", "v1")).await?;
         let fact_entity_id = memory_fact_entity_id(&pg, v1.memory_id.into_inner()).await?;
         let v1_citation = pg
-            .citation_of_fact(&owner, v1.memory_id)
+            .citation_of_fact(v1.memory_id)
             .await?
             .expect("v1 citation");
 
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let v2 = ingest_fact(&pg, &engine, &owner, &fact("entity", "v2")).await?;
         let v2_citation = pg
-            .citation_of_fact(&owner, v2.memory_id)
+            .citation_of_fact(v2.memory_id)
             .await?
             .expect("v2 citation");
 
         let pinned_v1 = pg
-            .citation_of_fact(&owner, v1.memory_id)
+            .citation_of_fact(v1.memory_id)
             .await?
             .expect("v1 citation remains pinned");
         assert_eq!(
@@ -251,7 +251,10 @@ async fn citation_of_entity_head_follows_updates_while_fact_citation_pins()
         );
 
         let head = pg
-            .citation_of_entity_head(&owner, FactEntityId::new(fact_entity_id))
+            .citation_of_entity_head(
+                std::slice::from_ref(&owner),
+                FactEntityId::new(fact_entity_id),
+            )
             .await?
             .expect("entity head citation");
         assert_eq!(head.citation_mapping_id, v2_citation.citation_mapping_id);

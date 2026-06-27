@@ -618,29 +618,28 @@ pub trait Storage: Send + Sync {
         natural_key: &[String],
     ) -> Result<Option<FactEntityId>, StorageError>;
 
-    /// Owner-scoped read-back of Fact rows whose citation mapping points at
+    /// Read-set-scoped discovery of Fact rows whose citation mapping points at
     /// one cited object.
     async fn facts_citing_object(
         &self,
-        owner: &Owner,
+        read_owners: &[Principal],
         cited_object_id: uuid::Uuid,
         sidecars: &[SidecarSpec],
     ) -> Result<Vec<crate::personality::MemorySnapshot>, StorageError>;
 
-    /// Owner-scoped inverse read-back from one Fact to its citation mapping
-    /// and cited object, if present.
+    /// Plain inverse read-back from one already-authorized Fact to its citation
+    /// mapping and cited object, if present.
     async fn citation_of_fact(
         &self,
-        owner: &Owner,
         fact_memory_id: crate::MemoryId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError>;
 
-    /// Owner-scoped inverse read-back from a stateful Fact entity's
-    /// current head to that head version's citation mapping and cited
-    /// object, if present.
+    /// Read-set-scoped inverse read-back from a stateful Fact entity's current
+    /// readable head to that head version's citation mapping and cited object,
+    /// if present.
     async fn citation_of_entity_head(
         &self,
-        owner: &Owner,
+        read_owners: &[Principal],
         fact_entity_id: FactEntityId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError>;
 
@@ -651,13 +650,13 @@ pub trait Storage: Send + Sync {
         req: &crate::verbs::query::MemoryLineageRequest,
     ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError>;
 
-    /// Owner-scoped active Goal query for one personality Self-Perspective.
+    /// Read-set-scoped active Goal query for one personality Self-Perspective.
     /// Traverses `core/inspires` edges authored at proposal/attachment time,
     /// follows Goal supersession forward, and returns only current Active
     /// heads. No `GoalConnection` sidecar is modeled.
     async fn list_active_goals(
         &self,
-        principal: &Principal,
+        read_owners: &[Principal],
         self_perspective_memory_id: crate::MemoryId,
         limit: usize,
     ) -> Result<Vec<ActiveGoalSummary>, StorageError>;
@@ -813,7 +812,7 @@ pub trait Storage: Send + Sync {
 
     async fn list_change_events_after(
         &self,
-        owner: &Owner,
+        read_owners: &[Principal],
         after: uuid::Uuid,
         limit: usize,
     ) -> Result<Vec<ChangeEventForWake>, StorageError>;
@@ -825,7 +824,9 @@ pub trait Storage: Send + Sync {
         until: Option<uuid::Uuid>,
         limit: usize,
     ) -> Result<Vec<ChangeEventForWake>, StorageError> {
-        let rows = self.list_change_events_after(owner, after, limit).await?;
+        let rows = self
+            .list_change_events_after(std::slice::from_ref(owner), after, limit)
+            .await?;
         Ok(rows
             .into_iter()
             .filter(|row| until.is_none_or(|until| row.event.seq <= until))
@@ -1122,7 +1123,7 @@ impl Storage for NoopStorage {
 
     async fn facts_citing_object(
         &self,
-        _owner: &Owner,
+        _read_owners: &[Principal],
         _cited_object_id: uuid::Uuid,
         _sidecars: &[SidecarSpec],
     ) -> Result<Vec<crate::personality::MemorySnapshot>, StorageError> {
@@ -1131,7 +1132,6 @@ impl Storage for NoopStorage {
 
     async fn citation_of_fact(
         &self,
-        _owner: &Owner,
         _fact_memory_id: crate::MemoryId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
         Ok(None)
@@ -1139,7 +1139,7 @@ impl Storage for NoopStorage {
 
     async fn citation_of_entity_head(
         &self,
-        _owner: &Owner,
+        _read_owners: &[Principal],
         _fact_entity_id: FactEntityId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
         Ok(None)
@@ -1158,7 +1158,7 @@ impl Storage for NoopStorage {
 
     async fn list_active_goals(
         &self,
-        _principal: &Principal,
+        _read_owners: &[Principal],
         _self_perspective_memory_id: crate::MemoryId,
         _limit: usize,
     ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
@@ -1310,7 +1310,7 @@ impl Storage for NoopStorage {
 
     async fn list_change_events_after(
         &self,
-        _owner: &Owner,
+        _read_owners: &[Principal],
         _after: uuid::Uuid,
         _limit: usize,
     ) -> Result<Vec<ChangeEventForWake>, StorageError> {

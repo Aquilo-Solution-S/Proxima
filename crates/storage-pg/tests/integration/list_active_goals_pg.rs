@@ -4,8 +4,8 @@ use proxima_core::relation::CORE_INSPIRES_RELATION;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
-    EdgeAuthorshipKind, EntityKind, FlavorRegistry, GoalId, MemoryId, Owner, OwnerPrincipalKind,
-    Principal, UserId,
+    EdgeAuthorshipKind, EntityKind, FlavorRegistry, GoalId, GroupId, MemoryId, Owner,
+    OwnerPrincipalKind, Principal, Relation, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
@@ -41,6 +41,7 @@ async fn insert_self(
     .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
+    insert_entity_owner_home(pg, memory_id, owner).await?;
     Ok(MemoryId::new(memory_id))
 }
 
@@ -73,6 +74,7 @@ async fn insert_goal(
     .bind(request_id)
     .execute(pg.pool())
     .await?;
+    insert_entity_owner_home(pg, goal_id.into_inner(), owner).await?;
     if state == GoalState::Active {
         insert_goal_activated_fact(pg, owner, goal_id).await?;
     }
@@ -150,13 +152,17 @@ async fn list_active_goals_follows_inspires_and_goal_supersession()
         let active_b = insert_goal(&pg, &other, GoalState::Active, None, "b-active").await?;
         link_goal_to_self(&pg, &other, active_b, self_b).await?;
 
-        let goals_a = pg.list_active_goals(&owner, self_a, 100).await?;
+        let goals_a = pg
+            .list_active_goals(std::slice::from_ref(&owner), self_a, 100)
+            .await?;
         assert_eq!(goals_a.len(), 1);
         assert_eq!(goals_a[0].goal_id, active_a);
         assert_eq!(goals_a[0].title, "a-active");
         assert!(goals_a[0].goal_activated_memory_id.is_some());
 
-        let goals_b = pg.list_active_goals(&other, self_b, 100).await?;
+        let goals_b = pg
+            .list_active_goals(std::slice::from_ref(&other), self_b, 100)
+            .await?;
         assert_eq!(goals_b.len(), 1);
         assert_eq!(goals_b[0].goal_id, active_b);
         Ok::<(), Box<dyn std::error::Error>>(())
@@ -269,6 +275,7 @@ async fn insert_goal_activated_fact(
     .bind(citation_mapping_id)
     .execute(&mut *tx)
     .await?;
+    insert_entity_owner_home_in_tx(&mut tx, memory_id, owner).await?;
 
     sqlx::query(
         "INSERT INTO proxima_core.goal_activated_v1
@@ -298,7 +305,9 @@ async fn list_active_goals_surfaces_goal_activated_memory_when_present()
         let active = insert_goal(&pg, &owner, GoalState::Active, None, "p-active").await?;
         link_goal_to_self(&pg, &owner, active, self_a).await?;
 
-        let goals = pg.list_active_goals(&owner, self_a, 100).await?;
+        let goals = pg
+            .list_active_goals(std::slice::from_ref(&owner), self_a, 100)
+            .await?;
         assert_eq!(goals.len(), 1);
         assert_eq!(goals[0].goal_id, active);
         assert!(goals[0].goal_activated_memory_id.is_some());
@@ -308,4 +317,105 @@ async fn list_active_goals_surfaces_goal_activated_memory_when_present()
 
     let _ = drop_db(&db_name).await;
     result
+}
+
+#[tokio::test]
+async fn list_active_goals_filters_by_read_owners() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let result = async {
+        pg.run_migrations().await?;
+        let p = Principal::User(UserId::new(Uuid::now_v7()));
+        let q = Principal::User(UserId::new(Uuid::now_v7()));
+        let g1 = Principal::Group(GroupId::new(Uuid::now_v7()));
+
+        seed_membership(&pg, &g1, &q, Relation::Viewer).await?;
+
+        let self_g1 = insert_self(&pg, &g1).await?;
+        let group_goal = insert_goal(&pg, &g1, GoalState::Active, None, "g1-active").await?;
+        link_goal_to_self(&pg, &g1, group_goal, self_g1).await?;
+
+        let self_p = insert_self(&pg, &p).await?;
+        let p_goal = insert_goal(&pg, &p, GoalState::Active, None, "p-active").await?;
+        link_goal_to_self(&pg, &p, p_goal, self_p).await?;
+
+        let q_read_owners = vec![q, g1];
+        let group_goals = pg.list_active_goals(&q_read_owners, self_g1, 100).await?;
+        assert_eq!(group_goals.len(), 1);
+        assert_eq!(group_goals[0].goal_id, group_goal);
+
+        let p_goals = pg.list_active_goals(&q_read_owners, self_p, 100).await?;
+        assert!(p_goals.is_empty(), "Q must not see P's personal goal");
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+async fn insert_entity_owner_home(
+    pg: &PgStorage,
+    entity_id: Uuid,
+    owner: &Principal,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (owner_kind, owner_principal_id) = owner.columns();
+    sqlx::query(
+        "INSERT INTO proxima_core.entity_owner
+            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
+         VALUES ($1, $2, $3, true, $4)",
+    )
+    .bind(entity_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(Uuid::nil())
+    .execute(pg.pool())
+    .await?;
+    Ok(())
+}
+
+async fn insert_entity_owner_home_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    entity_id: Uuid,
+    owner: &Principal,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (owner_kind, owner_principal_id) = owner.columns();
+    sqlx::query(
+        "INSERT INTO proxima_core.entity_owner
+            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
+         VALUES ($1, $2, $3, true, $4)",
+    )
+    .bind(entity_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(Uuid::nil())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn seed_membership(
+    pg: &PgStorage,
+    group: &Principal,
+    member: &Principal,
+    relation: Relation,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Principal::Group(group_id) = group else {
+        panic!("seed_membership group must be a group principal");
+    };
+    let Principal::User(member_id) = member else {
+        panic!("seed_membership member must be a user principal");
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.group_membership
+            (group_id, member_user_id, relation, granted_by)
+         VALUES ($1, $2, $3::proxima_core.membership_relation, $4)",
+    )
+    .bind(group_id.into_inner())
+    .bind(member_id.into_inner())
+    .bind(relation)
+    .bind(Uuid::nil())
+    .execute(pg.pool())
+    .await?;
+    Ok(())
 }

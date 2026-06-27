@@ -693,7 +693,7 @@ async fn follow_head_edge_writes_log_and_graph_resolves_to_latest_head()
         assert_eq!(raw, (None, Some(source_entity), None, Some(target_entity)));
 
         let events = pg
-            .list_change_events_after(&owner, Uuid::nil(), 100)
+            .list_change_events_after(std::slice::from_ref(&owner), Uuid::nil(), 100)
             .await?;
         let edge_event = events
             .iter()
