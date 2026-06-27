@@ -1,10 +1,10 @@
 //! Owner-gated entry-access grant management and public marketplace browse.
 
 use crate::access::{
-    AccessGrantRow, AccessScope, GrantResource, GrantSelector, NewAccessGrant, Relation,
-    RemoveOwnerOutcome, Visibility,
+    AccessGrantRow, AccessScope, GrantResource, GrantSelector, GrantSubject, NewAccessGrant,
+    Relation, RemoveOwnerOutcome, Visibility,
 };
-use crate::authz::{AuthPath, AuthzContext};
+use crate::authz::{AuthPath, AuthzContext, AuthzInput, AuthzOperation};
 use crate::error::ProtocolError;
 use crate::personality::{MemorySnapshot, PersonalityInstanceId};
 use crate::storage::StorageError;
@@ -15,8 +15,7 @@ use super::{Engine, MemoryPermit};
 struct ShareEntryGrant {
     memory_id: MemoryId,
     current_visibility: Visibility,
-    subject: Principal,
-    subject_is_group: bool,
+    subject: GrantSubject,
     relation: Relation,
 }
 
@@ -33,8 +32,7 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         memory_id: MemoryId,
-        subject: Principal,
-        subject_is_group: bool,
+        subject: GrantSubject,
         relation: Relation,
     ) -> Result<(), ProtocolError> {
         let facts = self.resolve_entry_access_facts(memory_id).await?;
@@ -48,7 +46,6 @@ impl Engine {
                 memory_id,
                 current_visibility: facts.visibility,
                 subject,
-                subject_is_group,
                 relation,
             },
         )
@@ -62,25 +59,28 @@ impl Engine {
         grant: ShareEntryGrant,
     ) -> Result<(), ProtocolError> {
         reject_ungrantable_relation(grant.relation)?;
+        self.run_access_admin_hooks(
+            authz,
+            permit.owner(),
+            AuthzOperation::ShareEntry {
+                memory_id: grant.memory_id,
+                relation: grant.relation,
+            },
+        )?;
         let granted_by = self.grant_author_personality(permit.owner(), authz).await?;
         self.storage
-            .insert_access_grant(&NewAccessGrant {
-                space_owner: permit.owner().clone(),
-                resource: GrantResource::Memory(grant.memory_id),
-                relation: grant.relation,
-                subject: grant.subject,
-                subject_is_group: grant.subject_is_group,
-                granted_by,
-            })
+            .share_entry_atomic(
+                &NewAccessGrant {
+                    space_owner: permit.owner().clone(),
+                    resource: GrantResource::Memory(grant.memory_id),
+                    relation: grant.relation,
+                    subject: grant.subject,
+                    granted_by,
+                },
+                grant.current_visibility == Visibility::Private,
+            )
             .await
-            .map_err(|err| storage_error("insert_access_grant", &err))?;
-        if grant.current_visibility == Visibility::Private {
-            self.storage
-                .set_memory_visibility(permit.owner(), grant.memory_id, Visibility::Shared)
-                .await
-                .map_err(|err| storage_error("set_memory_visibility", &err))?;
-        }
-        Ok(())
+            .map_err(|err| storage_error("share_entry_atomic", &err))
     }
 
     /// Revoke all entry-level grants for one subject on one entry.
@@ -94,52 +94,31 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         memory_id: MemoryId,
-        subject: Principal,
-        subject_is_group: bool,
+        subject: GrantSubject,
     ) -> Result<(), ProtocolError> {
         let facts = self.resolve_entry_access_facts(memory_id).await?;
         let permit = self
             .authorize_request(authz, &facts.owner, Relation::Owner)
             .await?;
-        self.unshare_entry_authorized(
-            &permit,
-            memory_id,
-            facts.visibility,
-            subject,
-            subject_is_group,
-        )
-        .await
+        self.unshare_entry_authorized(&permit, memory_id, subject)
+            .await
     }
 
     async fn unshare_entry_authorized(
         &self,
         permit: &MemoryPermit,
         memory_id: MemoryId,
-        current_visibility: Visibility,
-        subject: Principal,
-        subject_is_group: bool,
+        subject: GrantSubject,
     ) -> Result<(), ProtocolError> {
         self.storage
-            .revoke_access_grants(&GrantSelector {
+            .unshare_entry_atomic(&GrantSelector {
                 space_owner: permit.owner().clone(),
                 resource: GrantResource::Memory(memory_id),
                 relation: None,
                 subject,
-                subject_is_group,
             })
             .await
-            .map_err(|err| storage_error("revoke_access_grants", &err))?;
-        let remaining = self
-            .storage
-            .count_active_entry_grants(permit.owner(), memory_id)
-            .await
-            .map_err(|err| storage_error("count_active_entry_grants", &err))?;
-        if remaining == 0 && current_visibility == Visibility::Shared {
-            self.storage
-                .set_memory_visibility(permit.owner(), memory_id, Visibility::Private)
-                .await
-                .map_err(|err| storage_error("set_memory_visibility", &err))?;
-        }
+            .map_err(|err| storage_error("unshare_entry_atomic", &err))?;
         Ok(())
     }
 
@@ -161,16 +140,25 @@ impl Engine {
         let permit = self
             .authorize_request(authz, &facts.owner, Relation::Owner)
             .await?;
-        self.set_entry_visibility_authorized(&permit, memory_id, visibility)
+        self.set_entry_visibility_authorized(authz, &permit, memory_id, visibility)
             .await
     }
 
     async fn set_entry_visibility_authorized(
         &self,
+        authz: &AuthzContext,
         permit: &MemoryPermit,
         memory_id: MemoryId,
         visibility: Visibility,
     ) -> Result<(), ProtocolError> {
+        self.run_access_admin_hooks(
+            authz,
+            permit.owner(),
+            AuthzOperation::SetEntryVisibility {
+                memory_id,
+                target: visibility,
+            },
+        )?;
         self.storage
             .set_memory_visibility(permit.owner(), memory_id, visibility)
             .await
@@ -188,14 +176,13 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         space: Owner,
-        subject: Principal,
-        subject_is_group: bool,
+        subject: GrantSubject,
         relation: Relation,
     ) -> Result<(), ProtocolError> {
         let permit = self
             .authorize_request(authz, &space, Relation::Owner)
             .await?;
-        self.set_space_binding_authorized(authz, &permit, subject, subject_is_group, relation)
+        self.set_space_binding_authorized(authz, &permit, subject, relation)
             .await
     }
 
@@ -203,11 +190,15 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         permit: &MemoryPermit,
-        subject: Principal,
-        subject_is_group: bool,
+        subject: GrantSubject,
         relation: Relation,
     ) -> Result<(), ProtocolError> {
         reject_ungrantable_relation(relation)?;
+        self.run_access_admin_hooks(
+            authz,
+            permit.owner(),
+            AuthzOperation::SetSpaceBinding { relation },
+        )?;
         let granted_by = self.grant_author_personality(permit.owner(), authz).await?;
         self.storage
             .insert_access_grant(&NewAccessGrant {
@@ -215,7 +206,6 @@ impl Engine {
                 resource: GrantResource::Space,
                 relation,
                 subject,
-                subject_is_group,
                 granted_by,
             })
             .await
@@ -232,21 +222,18 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         space: Owner,
-        subject: Principal,
-        subject_is_group: bool,
+        subject: GrantSubject,
     ) -> Result<(), ProtocolError> {
         let permit = self
             .authorize_request(authz, &space, Relation::Owner)
             .await?;
-        self.revoke_space_binding_authorized(&permit, subject, subject_is_group)
-            .await
+        self.revoke_space_binding_authorized(&permit, subject).await
     }
 
     async fn revoke_space_binding_authorized(
         &self,
         permit: &MemoryPermit,
-        subject: Principal,
-        subject_is_group: bool,
+        subject: GrantSubject,
     ) -> Result<(), ProtocolError> {
         self.storage
             .revoke_access_grants(&GrantSelector {
@@ -254,7 +241,6 @@ impl Engine {
                 resource: GrantResource::Space,
                 relation: None,
                 subject,
-                subject_is_group,
             })
             .await
             .map_err(|err| storage_error("revoke_access_grants", &err))?;
@@ -446,6 +432,27 @@ impl Engine {
             .await
             .map(|personality| personality.instance_id)
             .map_err(|err| storage_error("ensure_subject_personality", &err))
+    }
+
+    fn run_access_admin_hooks(
+        &self,
+        authz: &AuthzContext,
+        owner: &Owner,
+        operation: AuthzOperation,
+    ) -> Result<(), ProtocolError> {
+        let input = AuthzInput {
+            authz,
+            requested: owner,
+            resolved: owner,
+            relation: Relation::Owner,
+            operation,
+        };
+        let (result, outcome) = match self.registry.run_authorization_vetoes(&input) {
+            Ok(()) => (Ok(()), crate::authz::AuthzOutcome::Allowed),
+            Err(err) => (Err(err), crate::authz::AuthzOutcome::DeniedVeto),
+        };
+        self.registry.run_authorization_observers(&input, outcome);
+        result
     }
 }
 

@@ -9,7 +9,9 @@ use std::collections::HashSet;
 use crate::common::personality::ingest_test_fact;
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 
-use proxima_core::access::{GrantResource, GrantSelector, NewAccessGrant, Relation, Visibility};
+use proxima_core::access::{
+    GrantResource, GrantSelector, GrantSubject, NewAccessGrant, Relation, Visibility,
+};
 use proxima_core::engine::GetMemoryReadRequest;
 use proxima_core::error::ErrorCode;
 use proxima_core::verbs::schema::FlavorRegistryFrozen;
@@ -64,8 +66,7 @@ async fn seed_entry_grant(
         space_owner: owner.clone(),
         resource: GrantResource::Memory(memory_id),
         relation: Relation::Viewer,
-        subject: subject.clone(),
-        subject_is_group: false,
+        subject: GrantSubject::Principal(subject.clone()),
         granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
     })
     .await
@@ -112,8 +113,7 @@ async fn friend_with_viewer_grant_reads_shared_entry() -> Result<(), Box<dyn std
         space_owner: owner.clone(),
         resource: GrantResource::Memory(entry),
         relation: None,
-        subject: friend.clone(),
-        subject_is_group: false,
+        subject: GrantSubject::Principal(friend.clone()),
     })
     .await?;
     let err = engine

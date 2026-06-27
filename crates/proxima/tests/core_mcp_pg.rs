@@ -6,6 +6,7 @@ use proxima::{
     CoreMcpTools, FlavorApp, FlavorBundle, Identity, NamedMigrator, PgSidecarRegistry, Proxima,
     StorageError, ToolScope, company_owner,
 };
+use proxima_core::access::GrantSubject;
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
     CitationMappingPayload, CitedObjectPayload, FlavorRegistry, GrantResource, GroupId, MemoryId,
@@ -197,8 +198,7 @@ async fn seed_space_grant(
         space_owner: space_owner.clone(),
         resource: GrantResource::Space,
         relation,
-        subject: subject.clone(),
-        subject_is_group: false,
+        subject: GrantSubject::Principal(subject.clone()),
         granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
     })
     .await

@@ -1,5 +1,5 @@
 use crate::access::{AccessScope, Relation, Visibility};
-use crate::authz::{AuthPath, AuthzContext, AuthzInput, AuthzOutcome};
+use crate::authz::{AuthPath, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome};
 use crate::error::ProtocolError;
 use crate::{MemoryId, Owner, PersonalityInstanceId, Principal};
 
@@ -19,7 +19,9 @@ pub struct MemoryPermit {
 #[derive(Debug, Clone)]
 pub enum PermitMode {
     /// Caller operates within the owner-space.
-    OwnerScoped,
+    OwnerScoped {
+        subject_personality: Option<PersonalityInstanceId>,
+    },
     /// Cross-principal accessor reaching one entry via an entry-level grant.
     EntryScoped {
         resource: MemoryId,
@@ -29,10 +31,23 @@ pub enum PermitMode {
     PublicRead { resource: MemoryId },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccessBasis {
+    ActingAsOwner,
+    SpaceBound,
+}
+
 impl MemoryPermit {
-    fn owner_scoped(owner: Owner, requested: Owner, relation: Relation) -> Self {
+    fn owner_scoped(
+        owner: Owner,
+        requested: Owner,
+        relation: Relation,
+        subject_personality: Option<PersonalityInstanceId>,
+    ) -> Self {
         Self {
-            mode: PermitMode::OwnerScoped,
+            mode: PermitMode::OwnerScoped {
+                subject_personality,
+            },
             owner,
             requested,
             relation,
@@ -65,6 +80,20 @@ impl MemoryPermit {
     pub fn relation(&self) -> Relation {
         self.relation
     }
+
+    #[must_use]
+    pub fn subject_personality(&self) -> Option<PersonalityInstanceId> {
+        match &self.mode {
+            PermitMode::OwnerScoped {
+                subject_personality,
+            } => *subject_personality,
+            PermitMode::EntryScoped {
+                subject_personality,
+                ..
+            } => Some(*subject_personality),
+            PermitMode::PublicRead { .. } => None,
+        }
+    }
 }
 
 impl Engine {
@@ -90,6 +119,7 @@ impl Engine {
                     requested,
                     resolved: requested,
                     relation,
+                    operation: AuthzOperation::Relation,
                 };
                 self.registry
                     .run_authorization_observers(&input, AuthzOutcome::DeniedResolution);
@@ -101,17 +131,28 @@ impl Engine {
             requested,
             resolved: &resolved,
             relation,
+            operation: AuthzOperation::Relation,
         };
         let (result, outcome) = match self.gate_and_veto(authz, &resolved, relation, &input).await {
-            Ok(()) => (Ok(()), AuthzOutcome::Allowed),
+            Ok(basis) => (Ok(basis), AuthzOutcome::Allowed),
             Err((err, outcome)) => (Err(err), outcome),
         };
         self.registry.run_authorization_observers(&input, outcome);
-        result?;
+        let basis = result?;
+        let subject_personality = match basis {
+            AccessBasis::ActingAsOwner => None,
+            AccessBasis::SpaceBound => Some(
+                self.ensure_subject_personality(&resolved, &authz.identity.principal)
+                    .await
+                    .map_err(|err| ProtocolError::internal(err.to_string()))?
+                    .instance_id,
+            ),
+        };
         Ok(MemoryPermit::owner_scoped(
             resolved,
             requested.clone(),
             relation,
+            subject_personality,
         ))
     }
 
@@ -145,6 +186,7 @@ impl Engine {
             requested: &owner,
             resolved: &owner,
             relation,
+            operation: AuthzOperation::Relation,
         };
         if relation == Relation::Viewer && facts.visibility == Visibility::Public {
             self.veto_and_observe(&input)?;
@@ -164,6 +206,18 @@ impl Engine {
             && authz.identity.can_access_principal(&owner);
         let unrestricted = authz.capabilities.access == AccessScope::Unrestricted
             && authz.identity.can_access_principal(&owner);
+        if identity_owner || unrestricted {
+            self.veto_and_observe(&input)?;
+            return Ok(MemoryPermit::entry(
+                PermitMode::OwnerScoped {
+                    subject_personality: None,
+                },
+                owner.clone(),
+                owner,
+                relation,
+            ));
+        }
+
         let space_ok = self
             .storage()
             .resolve_space_relations(&owner, principal)
@@ -171,6 +225,22 @@ impl Engine {
             .map_err(|err| ProtocolError::internal(err.to_string()))?
             .iter()
             .any(|grant| grant.relation.dominates(relation));
+        if space_ok {
+            self.veto_and_observe(&input)?;
+            let personality = self
+                .ensure_subject_personality(&owner, principal)
+                .await
+                .map_err(|err| ProtocolError::internal(err.to_string()))?;
+            return Ok(MemoryPermit::entry(
+                PermitMode::OwnerScoped {
+                    subject_personality: Some(personality.instance_id),
+                },
+                owner.clone(),
+                owner,
+                relation,
+            ));
+        }
+
         let entry_ok = self
             .storage()
             .resolve_entry_relations(memory_id, principal)
@@ -178,24 +248,19 @@ impl Engine {
             .map_err(|err| ProtocolError::internal(err.to_string()))?
             .iter()
             .any(|grant| grant.relation.dominates(relation));
-        let space_participant = identity_owner || unrestricted || space_ok;
-        if !(space_participant || entry_ok) {
+        if !entry_ok {
             self.registry
                 .run_authorization_observers(&input, AuthzOutcome::DeniedGrant);
             return Err(ProtocolError::forbidden(relation.denied_message()));
         }
         self.veto_and_observe(&input)?;
-        let mode = if space_participant {
-            PermitMode::OwnerScoped
-        } else {
-            let personality = self
-                .ensure_subject_personality(&owner, principal)
-                .await
-                .map_err(|err| ProtocolError::internal(err.to_string()))?;
-            PermitMode::EntryScoped {
-                resource: memory_id,
-                subject_personality: personality.instance_id,
-            }
+        let personality = self
+            .ensure_subject_personality(&owner, principal)
+            .await
+            .map_err(|err| ProtocolError::internal(err.to_string()))?;
+        let mode = PermitMode::EntryScoped {
+            resource: memory_id,
+            subject_personality: personality.instance_id,
         };
         Ok(MemoryPermit::entry(mode, owner.clone(), owner, relation))
     }
@@ -206,13 +271,15 @@ impl Engine {
         owner: &Owner,
         relation: Relation,
         input: &AuthzInput<'_>,
-    ) -> Result<(), (ProtocolError, AuthzOutcome)> {
-        self.resolve_relation(authz, owner, relation)
+    ) -> Result<AccessBasis, (ProtocolError, AuthzOutcome)> {
+        let basis = self
+            .resolve_relation(authz, owner, relation)
             .await
             .map_err(|err| (err, AuthzOutcome::DeniedGrant))?;
         self.registry
             .run_authorization_vetoes(input)
-            .map_err(|err| (err, AuthzOutcome::DeniedVeto))
+            .map_err(|err| (err, AuthzOutcome::DeniedVeto))?;
+        Ok(basis)
     }
 
     fn veto_and_observe(&self, input: &AuthzInput<'_>) -> Result<(), ProtocolError> {
@@ -231,6 +298,7 @@ impl Engine {
             requested: &unresolved,
             resolved: &unresolved,
             relation,
+            operation: AuthzOperation::Relation,
         };
         self.registry
             .run_authorization_observers(&input, AuthzOutcome::DeniedResolution);
@@ -245,7 +313,7 @@ impl Engine {
         authz: &AuthzContext,
         owner: &Owner,
         relation: Relation,
-    ) -> Result<(), ProtocolError> {
+    ) -> Result<AccessBasis, ProtocolError> {
         let principal = &authz.identity.principal;
         let identity_owner = matches!(owner, Principal::User(_))
             && principal == owner
@@ -253,7 +321,7 @@ impl Engine {
         let unrestricted = authz.capabilities.access == AccessScope::Unrestricted
             && authz.identity.can_access_principal(owner);
         if identity_owner || unrestricted {
-            return Ok(());
+            return Ok(AccessBasis::ActingAsOwner);
         }
         let granted = self
             .storage()
@@ -263,7 +331,7 @@ impl Engine {
             .iter()
             .any(|g| g.relation.dominates(relation));
         if granted {
-            Ok(())
+            Ok(AccessBasis::SpaceBound)
         } else {
             Err(ProtocolError::forbidden(relation.denied_message()))
         }
@@ -277,14 +345,14 @@ mod tests {
 
     use crate::access::{AccessScope, Relation};
     use crate::authz::{
-        AuthPath, AuthorizationHook, AuthzContext, AuthzInput, AuthzOutcome, AuthzVeto,
-        CapabilitySet, Identity, OwnerResolver, ToolScope,
+        AuthPath, AuthorizationHook, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome,
+        AuthzVeto, CapabilitySet, Identity, OwnerResolver, ToolScope,
     };
     use crate::error::ErrorCode;
     use crate::error::ProtocolError;
     use crate::{FlavorRegistry, GroupId, MemoryId, Owner, Principal, UserId};
 
-    use super::{Engine, PermitMode};
+    use super::{AccessBasis, Engine, PermitMode};
 
     fn engine() -> Engine {
         Engine::new(FlavorRegistry::new().freeze())
@@ -357,6 +425,7 @@ mod tests {
                 AuthPath::System | AuthPath::HostBearer
             ));
             assert_eq!(input.relation, Relation::Viewer);
+            assert_eq!(input.operation, AuthzOperation::Relation);
             self.outcomes.lock().expect("recorder lock").push(outcome);
         }
     }
@@ -375,7 +444,27 @@ mod tests {
         assert_eq!(permit.owner(), &owner);
         assert_eq!(permit.requested(), &owner);
         assert_eq!(permit.relation(), Relation::Viewer);
-        assert!(matches!(permit.mode(), PermitMode::OwnerScoped));
+        assert!(matches!(
+            permit.mode(),
+            PermitMode::OwnerScoped {
+                subject_personality: None
+            }
+        ));
+        assert_eq!(permit.subject_personality(), None);
+    }
+
+    #[tokio::test]
+    async fn resolve_relation_reports_acting_as_owner_for_single_owner_context() {
+        let engine = engine();
+        let owner = owner();
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+
+        let basis = engine
+            .resolve_relation(&authz, &owner, Relation::Viewer)
+            .await
+            .expect("single-owner context should authorize");
+
+        assert_eq!(basis, AccessBasis::ActingAsOwner);
     }
 
     #[tokio::test]

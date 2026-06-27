@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::common::{create_db, db_url, drop_db};
 
+use proxima_core::access::GrantSubject;
 use proxima_core::authz::{AuthPath, CapabilitySet, Identity, ToolScope};
 use proxima_core::error::ErrorCode;
 use proxima_core::verbs::goal_write::{GoalCreateRequest, GoalEvidenceRef, IdempotencyKey};
@@ -114,8 +115,7 @@ async fn seed_space_grant(
         space_owner: space_owner.clone(),
         resource: GrantResource::Space,
         relation,
-        subject: subject.clone(),
-        subject_is_group: false,
+        subject: GrantSubject::Principal(subject.clone()),
         granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
     })
     .await

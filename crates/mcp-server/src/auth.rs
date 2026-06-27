@@ -10,8 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use proxima_core::{
-    AccessScope, AuthPath, Authenticator, AuthzContext, CapabilitySet, Credentials, Identity,
-    Owner, ToolScope,
+    AuthPath, Authenticator, AuthzContext, CapabilitySet, Credentials, Identity, Owner, ToolScope,
 };
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -175,7 +174,6 @@ impl McpEdgeAuth {
         }
         let mut authz = authz;
         authz.identity.accessible_principals = HashSet::from([owner.clone()]);
-        authz.capabilities.access = AccessScope::Unrestricted;
         authz.capabilities.tool_scope = authz.capabilities.tool_scope.intersect(&self.tool_scope);
         Some(McpAuthContext {
             owner: authz.scoped_owner(owner.clone()),
@@ -190,7 +188,10 @@ impl McpEdgeAuth {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use proxima_core::{AuthError, Principal, UserId};
+    use proxima_core::{
+        AccessScope, AuthError, Engine, ErrorCode, FlavorRegistry, GetGraphReadRequest, Principal,
+        UserId,
+    };
 
     fn fake_owner() -> Owner {
         Principal::User(UserId::new(uuid::Uuid::now_v7()))
@@ -313,7 +314,45 @@ mod tests {
 
         let ctx = auth.resolve("host-token").await.expect("host resolves");
         assert_eq!(ctx.owner, owner);
-        assert_eq!(ctx.authz.capabilities.access, AccessScope::Unrestricted);
+        assert_eq!(ctx.authz.capabilities.access, AccessScope::Granted);
+    }
+
+    #[tokio::test]
+    async fn granted_host_context_without_persisted_grant_is_denied_by_owner_scoped_ops() {
+        let owner = fake_owner();
+        let subject = fake_owner();
+        let mut accessible = HashSet::new();
+        accessible.insert(owner.clone());
+        let authz = AuthzContext {
+            identity: Identity {
+                principal: subject,
+                accessible_principals: accessible,
+                expires_at: None,
+                auth_epoch: 0,
+            },
+            capabilities: CapabilitySet {
+                tool_scope: ToolScope::All,
+                access: AccessScope::Granted,
+            },
+            auth_path: AuthPath::HostBearer,
+        };
+        let auth = McpEdgeAuth::headless()
+            .with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner.clone());
+        let ctx = auth.resolve("host-token").await.expect("host resolves");
+        let engine = Engine::new(FlavorRegistry::new().freeze());
+
+        let err = engine
+            .get_graph(
+                &ctx.authz,
+                &GetGraphReadRequest {
+                    principal: owner,
+                    include_tombstoned: false,
+                },
+            )
+            .await
+            .expect_err("granted host context needs a persisted grant");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
     }
 
     #[tokio::test]

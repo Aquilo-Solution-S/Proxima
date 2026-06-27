@@ -7,8 +7,8 @@
 //! crate builds offline; correctness is pinned by the PG integration tests.
 
 use proxima_core::access::{
-    AccessGrantRow, EntryAccessFacts, GrantResource, GrantSelector, NewAccessGrant, Relation,
-    RemoveOwnerOutcome, Visibility,
+    AccessGrantRow, EntryAccessFacts, GrantResource, GrantSelector, GrantSubject, NewAccessGrant,
+    Relation, RemoveOwnerOutcome, Visibility,
 };
 use proxima_core::personality::{MemorySnapshot, WakeChainDepth};
 use proxima_core::{
@@ -59,34 +59,44 @@ fn split_resource(resource: GrantResource) -> (ResourceKind, Option<uuid::Uuid>)
     }
 }
 
-fn subject_columns(
-    subject: &Principal,
-    is_group: bool,
-) -> (SubjectKind, OwnerPrincipalKind, uuid::Uuid) {
-    let (kind, id) = subject.columns();
-    let subject_kind = if is_group {
-        SubjectKind::Group
-    } else {
-        SubjectKind::Principal
-    };
-    (subject_kind, kind, id)
+fn subject_columns(subject: &GrantSubject) -> (SubjectKind, OwnerPrincipalKind, uuid::Uuid) {
+    match subject {
+        GrantSubject::Principal(principal) => {
+            let (kind, id) = principal.columns();
+            (SubjectKind::Principal, kind, id)
+        }
+        GrantSubject::Group(group) => (
+            SubjectKind::Group,
+            OwnerPrincipalKind::Group,
+            group.into_inner(),
+        ),
+    }
 }
 
-/// Decode a `(relation, is_group, subject_kind, subject_id)` row into the
-/// engine's [`AccessGrantRow`].
+/// Decode a `(relation, subject_kind, subject_principal_kind, subject_id)` row
+/// into the engine's [`AccessGrantRow`].
 fn to_grant_row(
-    (relation, is_group, subject_kind, subject_id): (
+    (relation, subject_kind, subject_principal_kind, subject_principal_id): (
         Relation,
-        bool,
+        SubjectKind,
         OwnerPrincipalKind,
         uuid::Uuid,
     ),
-) -> AccessGrantRow {
-    AccessGrantRow {
-        relation,
-        subject: subject_kind.with_uuid(subject_id),
-        subject_is_group: is_group,
-    }
+) -> Result<AccessGrantRow, StorageError> {
+    let subject = match subject_kind {
+        SubjectKind::Principal => {
+            GrantSubject::Principal(subject_principal_kind.with_uuid(subject_principal_id))
+        }
+        SubjectKind::Group => {
+            if subject_principal_kind != OwnerPrincipalKind::Group {
+                return Err(StorageError::Internal(
+                    "access grant group subject has non-group principal kind".into(),
+                ));
+            }
+            GrantSubject::Group(proxima_core::GroupId::new(subject_principal_id))
+        }
+    };
+    Ok(AccessGrantRow { relation, subject })
 }
 
 // The subject-match predicate shared by space + entry resolution: the grant's
@@ -114,7 +124,7 @@ pub(crate) async fn resolve_space_relations(
     let (p_kind, p_id) = principal.columns();
     let sql = format!(
         "SELECT g.relation,
-                (g.subject_kind = 'group') AS is_group,
+                g.subject_kind,
                 g.subject_principal_kind,
                 g.subject_principal_id
            FROM proxima_core.access_grants g
@@ -124,7 +134,7 @@ pub(crate) async fn resolve_space_relations(
             AND {match}",
         match = SUBJECT_MATCH.replace("$P_KIND", "$3").replace("$P_ID", "$4"),
     );
-    let rows: Vec<(Relation, bool, OwnerPrincipalKind, uuid::Uuid)> = sqlx::query_as(&sql)
+    let rows: Vec<(Relation, SubjectKind, OwnerPrincipalKind, uuid::Uuid)> = sqlx::query_as(&sql)
         .bind(owner_kind)
         .bind(owner_id)
         .bind(p_kind)
@@ -132,7 +142,7 @@ pub(crate) async fn resolve_space_relations(
         .fetch_all(pool)
         .await
         .map_err(map_err)?;
-    Ok(rows.into_iter().map(to_grant_row).collect())
+    rows.into_iter().map(to_grant_row).collect()
 }
 
 pub(crate) async fn resolve_entry_relations(
@@ -143,7 +153,7 @@ pub(crate) async fn resolve_entry_relations(
     let (p_kind, p_id) = principal.columns();
     let sql = format!(
         "SELECT g.relation,
-                (g.subject_kind = 'group') AS is_group,
+                g.subject_kind,
                 g.subject_principal_kind,
                 g.subject_principal_id
            FROM proxima_core.access_grants g
@@ -153,14 +163,14 @@ pub(crate) async fn resolve_entry_relations(
             AND {match}",
         match = SUBJECT_MATCH.replace("$P_KIND", "$2").replace("$P_ID", "$3"),
     );
-    let rows: Vec<(Relation, bool, OwnerPrincipalKind, uuid::Uuid)> = sqlx::query_as(&sql)
+    let rows: Vec<(Relation, SubjectKind, OwnerPrincipalKind, uuid::Uuid)> = sqlx::query_as(&sql)
         .bind(memory_id.into_inner())
         .bind(p_kind)
         .bind(p_id)
         .fetch_all(pool)
         .await
         .map_err(map_err)?;
-    Ok(rows.into_iter().map(to_grant_row).collect())
+    rows.into_iter().map(to_grant_row).collect()
 }
 
 pub(crate) async fn resolve_entry_owner(
@@ -189,7 +199,7 @@ pub(crate) async fn insert_access_grant(
     let (owner_kind, owner_id) = grant.space_owner.columns();
     let (resource_kind, resource_id) = split_resource(grant.resource);
     let (subject_kind, subject_principal_kind, subject_principal_id) =
-        subject_columns(&grant.subject, grant.subject_is_group);
+        subject_columns(&grant.subject);
     let result = sqlx::query(
         "INSERT INTO proxima_core.access_grants
              (grant_id, owner_principal_kind, owner_principal_id, resource_kind,
@@ -221,7 +231,7 @@ pub(crate) async fn revoke_access_grants(
     let (owner_kind, owner_id) = selector.space_owner.columns();
     let (resource_kind, resource_id) = split_resource(selector.resource);
     let (subject_kind, subject_principal_kind, subject_principal_id) =
-        subject_columns(&selector.subject, selector.subject_is_group);
+        subject_columns(&selector.subject);
     let result = sqlx::query(
         "UPDATE proxima_core.access_grants
             SET grant_state = 'revoked', revoked_at = now()
@@ -231,7 +241,8 @@ pub(crate) async fn revoke_access_grants(
             AND resource_id IS NOT DISTINCT FROM $4
             AND subject_kind = $5
             AND subject_principal_kind = $6 AND subject_principal_id = $7
-            AND ($8::proxima_core.grant_relation IS NULL OR relation = $8)",
+            AND (($8::proxima_core.grant_relation IS NULL AND relation <> 'owner')
+                 OR relation = $8)",
     )
     .bind(owner_kind)
     .bind(owner_id)
@@ -247,6 +258,125 @@ pub(crate) async fn revoke_access_grants(
     Ok(result.rows_affected())
 }
 
+pub(crate) async fn share_entry_atomic(
+    pool: &PgPool,
+    grant: &NewAccessGrant,
+    set_shared_if_private: bool,
+) -> Result<(), StorageError> {
+    let (owner_kind, owner_id) = grant.space_owner.columns();
+    let (resource_kind, resource_id) = split_resource(grant.resource);
+    let (subject_kind, subject_principal_kind, subject_principal_id) =
+        subject_columns(&grant.subject);
+    let mut tx = pool.begin().await.map_err(map_err)?;
+
+    let result = sqlx::query(
+        "INSERT INTO proxima_core.access_grants
+             (grant_id, owner_principal_kind, owner_principal_id, resource_kind,
+              resource_id, relation, subject_kind, subject_principal_kind,
+              subject_principal_id, granted_by_personality_instance_id)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(resource_kind)
+    .bind(resource_id)
+    .bind(grant.relation)
+    .bind(subject_kind)
+    .bind(subject_principal_kind)
+    .bind(subject_principal_id)
+    .bind(grant.granted_by.into_inner())
+    .execute(&mut *tx)
+    .await
+    .map_err(map_err)?;
+    let _ = result; // ON CONFLICT DO NOTHING makes re-grant idempotent.
+
+    if set_shared_if_private && let GrantResource::Memory(memory_id) = grant.resource {
+        sqlx::query(
+            "UPDATE proxima_core.memories
+                    SET visibility = 'shared'
+                  WHERE memory_id = $1
+                    AND owner_principal_kind = $2 AND owner_principal_id = $3
+                    AND tombstoned_at IS NULL
+                    AND visibility = 'private'",
+        )
+        .bind(memory_id.into_inner())
+        .bind(owner_kind)
+        .bind(owner_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
+    }
+
+    tx.commit().await.map_err(map_err)?;
+    Ok(())
+}
+
+pub(crate) async fn unshare_entry_atomic(
+    pool: &PgPool,
+    selector: &GrantSelector,
+) -> Result<u64, StorageError> {
+    let (owner_kind, owner_id) = selector.space_owner.columns();
+    let (resource_kind, resource_id) = split_resource(selector.resource);
+    let (subject_kind, subject_principal_kind, subject_principal_id) =
+        subject_columns(&selector.subject);
+    let mut tx = pool.begin().await.map_err(map_err)?;
+
+    let result = sqlx::query(
+        "UPDATE proxima_core.access_grants
+            SET grant_state = 'revoked', revoked_at = now()
+          WHERE grant_state = 'active'
+            AND owner_principal_kind = $1 AND owner_principal_id = $2
+            AND resource_kind = $3
+            AND resource_id IS NOT DISTINCT FROM $4
+            AND subject_kind = $5
+            AND subject_principal_kind = $6 AND subject_principal_id = $7
+            AND (($8::proxima_core.grant_relation IS NULL AND relation <> 'owner')
+                 OR relation = $8)",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(resource_kind)
+    .bind(resource_id)
+    .bind(subject_kind)
+    .bind(subject_principal_kind)
+    .bind(subject_principal_id)
+    .bind(selector.relation)
+    .execute(&mut *tx)
+    .await
+    .map_err(map_err)?;
+    let revoked = result.rows_affected();
+
+    if let GrantResource::Memory(memory_id) = selector.resource {
+        sqlx::query(
+            "UPDATE proxima_core.memories m
+                SET visibility = 'private'
+              WHERE m.memory_id = $1
+                AND m.owner_principal_kind = $2 AND m.owner_principal_id = $3
+                AND m.tombstoned_at IS NULL
+                AND m.visibility = 'shared'
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM proxima_core.access_grants g
+                     WHERE g.resource_kind = 'memory'
+                       AND g.resource_id = $1
+                       AND g.owner_principal_kind = $2
+                       AND g.owner_principal_id = $3
+                       AND g.grant_state = 'active'
+                )",
+        )
+        .bind(memory_id.into_inner())
+        .bind(owner_kind)
+        .bind(owner_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
+    }
+
+    tx.commit().await.map_err(map_err)?;
+    Ok(revoked)
+}
+
 pub(crate) async fn list_access_grants(
     pool: &PgPool,
     space_owner: &Owner,
@@ -254,9 +384,9 @@ pub(crate) async fn list_access_grants(
 ) -> Result<Vec<AccessGrantRow>, StorageError> {
     let (owner_kind, owner_id) = space_owner.columns();
     let (resource_kind, resource_id) = split_resource(resource);
-    let rows: Vec<(Relation, bool, OwnerPrincipalKind, uuid::Uuid)> = sqlx::query_as(
+    let rows: Vec<(Relation, SubjectKind, OwnerPrincipalKind, uuid::Uuid)> = sqlx::query_as(
         "SELECT relation,
-                (subject_kind = 'group') AS is_group,
+                subject_kind,
                 subject_principal_kind,
                 subject_principal_id
            FROM proxima_core.access_grants
@@ -273,7 +403,7 @@ pub(crate) async fn list_access_grants(
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
-    Ok(rows.into_iter().map(to_grant_row).collect())
+    rows.into_iter().map(to_grant_row).collect()
 }
 
 pub(crate) async fn set_memory_visibility(
@@ -321,8 +451,7 @@ pub(crate) async fn list_public_memories(
     .await
     .map_err(map_err)?;
 
-    Ok(rows
-        .into_iter()
+    rows.into_iter()
         .map(
             |(
                 memory_id,
@@ -332,19 +461,31 @@ pub(crate) async fn list_public_memories(
                 text,
                 wake_chain_depth,
                 personality_instance_id,
-            )| MemorySnapshot {
-                memory_id: MemoryId::new(memory_id),
-                kind: kind.unwrap_or(EntityKind::Fact).as_str().to_string(),
-                schema_id: SchemaId::new(schema_id),
-                schema_version: SchemaVersion::new(u32::try_from(schema_version).unwrap_or(1)),
-                authoring_personality_instance_id: personality_instance_id
-                    .map(PersonalityInstanceId::new),
-                text,
-                wake_chain_depth: WakeChainDepth::new(u16::try_from(wake_chain_depth).unwrap_or(0)),
-                payload: None,
+            )| {
+                let schema_version = u32::try_from(schema_version).map_err(|_| {
+                    StorageError::Internal(format!(
+                        "public memory schema_version does not fit u32: {schema_version}"
+                    ))
+                })?;
+                let wake_chain_depth = u16::try_from(wake_chain_depth).map_err(|_| {
+                    StorageError::Internal(format!(
+                        "public memory wake_chain_depth does not fit u16: {wake_chain_depth}"
+                    ))
+                })?;
+                Ok(MemorySnapshot {
+                    memory_id: MemoryId::new(memory_id),
+                    kind: kind.unwrap_or(EntityKind::Fact).as_str().to_string(),
+                    schema_id: SchemaId::new(schema_id),
+                    schema_version: SchemaVersion::new(schema_version),
+                    authoring_personality_instance_id: personality_instance_id
+                        .map(PersonalityInstanceId::new),
+                    text,
+                    wake_chain_depth: WakeChainDepth::new(wake_chain_depth),
+                    payload: None,
+                })
             },
         )
-        .collect())
+        .collect()
 }
 
 pub(crate) async fn count_active_entry_grants(
@@ -384,8 +525,7 @@ async fn insert_owner_grant(
             space_owner: space.clone(),
             resource: GrantResource::Space,
             relation: Relation::Owner,
-            subject: owner_principal.clone(),
-            subject_is_group: false,
+            subject: GrantSubject::Principal(owner_principal.clone()),
             granted_by,
         },
     )
