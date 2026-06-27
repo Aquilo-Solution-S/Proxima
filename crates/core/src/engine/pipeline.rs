@@ -133,27 +133,36 @@ impl Engine {
             relation,
             operation: AuthzOperation::Relation,
         };
-        let (result, outcome) = match self.gate_and_veto(authz, &resolved, relation, &input).await {
-            Ok(basis) => (Ok(basis), AuthzOutcome::Allowed),
-            Err((err, outcome)) => (Err(err), outcome),
+        let basis = match self.gate_and_veto(authz, &resolved, relation, &input).await {
+            Ok(basis) => basis,
+            Err((err, outcome)) => {
+                self.registry.run_authorization_observers(&input, outcome);
+                return Err(err);
+            }
         };
-        self.registry.run_authorization_observers(&input, outcome);
-        let basis = result?;
         let subject_personality = match basis {
             AccessBasis::ActingAsOwner => None,
-            AccessBasis::SpaceBound => Some(
-                self.ensure_subject_personality(&resolved, &authz.identity.principal)
-                    .await
-                    .map_err(|err| ProtocolError::internal(err.to_string()))?
-                    .instance_id,
-            ),
+            AccessBasis::SpaceBound => match self
+                .ensure_subject_personality(&resolved, &authz.identity.principal)
+                .await
+            {
+                Ok(personality) => Some(personality.instance_id),
+                Err(err) => {
+                    self.registry
+                        .run_authorization_observers(&input, AuthzOutcome::DeniedInternal);
+                    return Err(ProtocolError::internal(err.to_string()));
+                }
+            },
         };
-        Ok(MemoryPermit::owner_scoped(
-            resolved,
+        let permit = MemoryPermit::owner_scoped(
+            resolved.clone(),
             requested.clone(),
             relation,
             subject_personality,
-        ))
+        );
+        self.registry
+            .run_authorization_observers(&input, AuthzOutcome::Allowed);
+        Ok(permit)
     }
 
     /// Resource-scoped single-entry gate. Entry owner is resolved inside
@@ -172,11 +181,11 @@ impl Engine {
         let facts = match self.storage().resolve_entry_owner(memory_id).await {
             Ok(Some(facts)) => facts,
             Ok(None) => {
-                self.observe_unresolved_entry(authz, relation);
+                self.observe_unresolved_entry(authz, memory_id, relation);
                 return Err(ProtocolError::forbidden("entry not found"));
             }
             Err(err) => {
-                self.observe_unresolved_entry(authz, relation);
+                self.observe_unresolved_entry(authz, memory_id, relation);
                 return Err(ProtocolError::internal(err.to_string()));
             }
         };
@@ -186,7 +195,7 @@ impl Engine {
             requested: &owner,
             resolved: &owner,
             relation,
-            operation: AuthzOperation::Relation,
+            operation: AuthzOperation::EntryRead { memory_id },
         };
         if relation == Relation::Viewer && facts.visibility == Visibility::Public {
             self.veto_and_observe(&input)?;
@@ -291,14 +300,19 @@ impl Engine {
         result
     }
 
-    fn observe_unresolved_entry(&self, authz: &AuthzContext, relation: Relation) {
+    fn observe_unresolved_entry(
+        &self,
+        authz: &AuthzContext,
+        memory_id: MemoryId,
+        relation: Relation,
+    ) {
         let unresolved = authz.identity.principal.clone();
         let input = AuthzInput {
             authz,
             requested: &unresolved,
             resolved: &unresolved,
             relation,
-            operation: AuthzOperation::Relation,
+            operation: AuthzOperation::EntryRead { memory_id },
         };
         self.registry
             .run_authorization_observers(&input, AuthzOutcome::DeniedResolution);

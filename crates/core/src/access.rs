@@ -119,6 +119,22 @@ pub enum Visibility {
     Public,
 }
 
+/// Publish target accepted by owner-facing entry visibility verbs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryVisibilityTarget {
+    Private,
+    Public,
+}
+
+impl From<EntryVisibilityTarget> for Visibility {
+    fn from(value: EntryVisibilityTarget) -> Self {
+        match value {
+            EntryVisibilityTarget::Private => Self::Private,
+            EntryVisibilityTarget::Public => Self::Public,
+        }
+    }
+}
+
 /// Which core resource a grant targets. `Space` rows carry no `resource_id`;
 /// `Memory` rows carry the memory id and are existence/owner/liveness checked.
 ///

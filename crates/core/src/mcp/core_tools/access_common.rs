@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::access::{AccessGrantRow, GrantSubject, Relation, Visibility};
+use crate::access::{AccessGrantRow, EntryVisibilityTarget, GrantSubject, Relation};
 use crate::mcp::McpToolError;
 use crate::{GroupId, OwnerPrincipalKind, Principal, UserId};
 
@@ -36,7 +36,7 @@ pub enum VisibilityArg {
     Public,
 }
 
-impl From<VisibilityArg> for Visibility {
+impl From<VisibilityArg> for EntryVisibilityTarget {
     fn from(value: VisibilityArg) -> Self {
         match value {
             VisibilityArg::Private => Self::Private,

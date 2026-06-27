@@ -1168,8 +1168,8 @@ impl Storage for PgStorage {
         verbs::access_grants::resolve_entry_owner(&self.pool, memory_id).await
     }
 
-    async fn insert_access_grant(&self, grant: &NewAccessGrant) -> Result<(), StorageError> {
-        verbs::access_grants::insert_access_grant(&self.pool, grant).await
+    async fn insert_space_binding(&self, grant: &NewAccessGrant) -> Result<(), StorageError> {
+        verbs::access_grants::insert_space_binding(&self.pool, grant).await
     }
 
     async fn revoke_access_grants(&self, selector: &GrantSelector) -> Result<u64, StorageError> {

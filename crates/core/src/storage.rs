@@ -897,9 +897,9 @@ pub trait Storage: Send + Sync {
         memory_id: crate::MemoryId,
     ) -> Result<Option<EntryAccessFacts>, StorageError>;
 
-    /// Insert one active grant. The DB existence trigger rejects a memory grant
-    /// on an absent/tombstoned/wrong-owner target.
-    async fn insert_access_grant(&self, grant: &NewAccessGrant) -> Result<(), StorageError>;
+    /// Insert one active space binding. Implementations reject non-space
+    /// resources and the reserved owner relation.
+    async fn insert_space_binding(&self, grant: &NewAccessGrant) -> Result<(), StorageError>;
 
     /// Revoke (`grant_state='revoked'`) matching active grants; returns the
     /// number of rows revoked.
@@ -1458,7 +1458,7 @@ impl Storage for NoopStorage {
         Ok(None)
     }
 
-    async fn insert_access_grant(&self, _grant: &NewAccessGrant) -> Result<(), StorageError> {
+    async fn insert_space_binding(&self, _grant: &NewAccessGrant) -> Result<(), StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 

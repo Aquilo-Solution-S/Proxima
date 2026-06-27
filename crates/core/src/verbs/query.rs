@@ -248,6 +248,10 @@ pub struct QueryRequest {
     /// populates it from the schema registry before dispatch.
     #[serde(skip)]
     pub stateful_heads: Vec<StatefulHeadsFilter>,
+    /// Engine-resolved reader personality for cross-principal space-bound reads.
+    /// Skipped over the wire — owner/unrestricted requests keep this `None`.
+    #[serde(skip)]
+    pub reader_personality_instance_id: Option<PersonalityInstanceId>,
 }
 
 impl QueryRequest {
@@ -269,6 +273,7 @@ impl QueryRequest {
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
+            reader_personality_instance_id: None,
         }
     }
 }

@@ -9,8 +9,8 @@
 //! would reopen the escalation surface this model closes.
 
 use crate::access::{
-    AccessGrantRow, AccessScope, GrantResource, GrantSelector, GrantSubject, NewAccessGrant,
-    Relation, RelationSelector, RemoveOwnerOutcome, Visibility,
+    AccessGrantRow, AccessScope, EntryVisibilityTarget, GrantResource, GrantSelector, GrantSubject,
+    NewAccessGrant, Relation, RelationSelector, RemoveOwnerOutcome, Visibility,
 };
 use crate::authz::{AuthPath, AuthzContext, AuthzInput, AuthzOperation};
 use crate::error::ProtocolError;
@@ -143,13 +143,13 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         memory_id: MemoryId,
-        visibility: Visibility,
+        target: EntryVisibilityTarget,
     ) -> Result<(), ProtocolError> {
         let facts = self.resolve_entry_access_facts(memory_id).await?;
         let permit = self
             .authorize_request(authz, &facts.owner, Relation::Owner)
             .await?;
-        self.set_entry_visibility_authorized(authz, &permit, memory_id, visibility)
+        self.set_entry_visibility_authorized(authz, &permit, memory_id, target)
             .await
     }
 
@@ -158,18 +158,15 @@ impl Engine {
         authz: &AuthzContext,
         permit: &MemoryPermit,
         memory_id: MemoryId,
-        visibility: Visibility,
+        target: EntryVisibilityTarget,
     ) -> Result<(), ProtocolError> {
         self.run_access_admin_hooks(
             authz,
             permit.owner(),
-            AuthzOperation::SetEntryVisibility {
-                memory_id,
-                target: visibility,
-            },
+            AuthzOperation::SetEntryVisibility { memory_id, target },
         )?;
         self.storage
-            .set_memory_visibility(permit.owner(), memory_id, visibility)
+            .set_memory_visibility(permit.owner(), memory_id, target.into())
             .await
             .map_err(|err| storage_error("set_memory_visibility", &err))
     }
@@ -213,7 +210,7 @@ impl Engine {
         )?;
         let granted_by = self.grant_author_personality(permit.owner(), authz).await?;
         self.storage
-            .insert_access_grant(&NewAccessGrant {
+            .insert_space_binding(&NewAccessGrant {
                 space_owner: permit.owner().clone(),
                 resource: GrantResource::Space,
                 relation,
@@ -221,7 +218,7 @@ impl Engine {
                 granted_by,
             })
             .await
-            .map_err(|err| storage_error("insert_access_grant", &err))
+            .map_err(|err| storage_error("insert_space_binding", &err))
     }
 
     /// Revoke all space-level grants for one subject.

@@ -201,6 +201,7 @@ async fn local_git_source_full_cycle() {
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
+            reader_personality_instance_id: None,
         };
         let resp = engine
             .query(
@@ -273,6 +274,7 @@ async fn local_git_source_full_cycle() {
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
+            reader_personality_instance_id: None,
         };
         let resp_all = engine
             .query(
