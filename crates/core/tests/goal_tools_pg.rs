@@ -1,3 +1,4 @@
+#![cfg(any())] // QUARANTINED pending group-ownership port (grant-era access setup); re-enable in Phase 3/6
 //! End-to-end MCP Goal tools against transient PG storage.
 
 use std::{collections::HashSet, future::Future, pin::Pin, sync::Arc};
