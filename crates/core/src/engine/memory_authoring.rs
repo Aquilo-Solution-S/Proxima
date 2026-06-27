@@ -81,8 +81,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context lacks graph-read/read or
-    /// graph-write/write on the owner; `InvalidArgument` when referenced
+    /// Returns `Forbidden` when the context lacks [`Relation::Viewer`] or
+    /// [`Relation::Editor`] on the owner; `InvalidArgument` when referenced
     /// memories are not present in that owner space or edge shape validation
     /// fails; and `Internal` for storage failures.
     pub async fn author_derived_authorized(
@@ -155,8 +155,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context lacks graph-read/read or
-    /// graph-write/write on the owner; `InvalidArgument` when endpoints are
+    /// Returns `Forbidden` when the context lacks [`Relation::Viewer`] or
+    /// [`Relation::Editor`] on the owner; `InvalidArgument` when endpoints are
     /// absent from the owner space or the relation rejects the shape; and
     /// `Internal` for storage failures.
     pub async fn append_memory_edge_authorized(

@@ -7,8 +7,8 @@ use crate::common::{drop_db, fresh_pg, owner_fixture};
 
 use proxima_core::Storage;
 use proxima_core::access::{
-    GrantResource, GrantSelector, GrantSubject, NewAccessGrant, Relation, RemoveOwnerOutcome,
-    Visibility,
+    GrantResource, GrantSelector, GrantSubject, NewAccessGrant, Relation, RelationSelector,
+    RemoveOwnerOutcome, Visibility,
 };
 use proxima_core::{GroupId, MemoryId, PersonalityInstanceId, Principal, UserId};
 use uuid::Uuid;
@@ -88,7 +88,7 @@ async fn space_grant_resolves_dominates_and_revokes() -> Result<(), Box<dyn std:
         .revoke_access_grants(&GrantSelector {
             space_owner: space.clone(),
             resource: GrantResource::Space,
-            relation: None,
+            relation: RelationSelector::AllGrantable,
             subject: GrantSubject::Principal(alice.clone()),
         })
         .await?;
@@ -214,7 +214,7 @@ async fn entry_grant_visibility_and_existence() -> Result<(), Box<dyn std::error
     pg.revoke_access_grants(&GrantSelector {
         space_owner: owner.clone(),
         resource: GrantResource::Memory(entry),
-        relation: None,
+        relation: RelationSelector::AllGrantable,
         subject: GrantSubject::Principal(friend.clone()),
     })
     .await?;

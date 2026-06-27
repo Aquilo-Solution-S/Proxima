@@ -6,7 +6,8 @@ use crate::access::GrantResource;
 use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 
 use super::access_common::{
-    GrantOutput, RelationArg, StatusOutput, format_grant, format_principal, parse_grant_subject,
+    GrantOutput, GrantSubjectArg, RelationArg, StatusOutput, format_grant, format_principal,
+    parse_grant_subject,
 };
 use super::{READ_ONLY, WRITE_IDEMPOTENT};
 
@@ -37,11 +38,8 @@ pub struct SpaceSetMemberArgs {
     #[serde(default)]
     #[schemars(description = "Owner space key from core_memory_spaces. Omit for current owner.")]
     pub space: Option<String>,
-    #[schemars(description = "Grant subject as user:<uuid>, group:<uuid>, or bare user uuid.")]
-    pub subject: String,
-    #[serde(default)]
-    #[schemars(description = "Whether the subject is a group whose members inherit the grant.")]
-    pub subject_is_group: bool,
+    #[schemars(description = "Grant subject: {subject_kind, subject_id}.")]
+    pub subject: GrantSubjectArg,
     #[schemars(description = "Grant relation. owner is rejected by the engine.")]
     pub relation: RelationArg,
 }
@@ -83,7 +81,7 @@ impl McpTool for CoreSpaceTool {
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
             action: "set_member",
-            allowed_fields: &["space", "subject", "subject_is_group", "relation"],
+            allowed_fields: &["space", "subject", "relation"],
             required_fields: &["subject", "relation"],
         },
         McpActionArgSpec {
@@ -128,7 +126,7 @@ async fn set_member(
         .set_space_binding(
             &ctx.authz,
             space.owner,
-            parse_grant_subject(&args.subject, args.subject_is_group)?,
+            parse_grant_subject(args.subject)?,
             args.relation.into(),
         )
         .await?;

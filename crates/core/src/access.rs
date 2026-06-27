@@ -14,9 +14,8 @@ use crate::{GroupId, MemoryId, Owner, PersonalityInstanceId, Principal};
 
 /// The relation a grant confers, forming a partial domination lattice.
 ///
-/// `owner` dominates the read/write chain (`editor`, `viewer`) but **not**
-/// `admin`/`ingest`/`member` — least privilege is enforceable because the
-/// chain is partial, not a single total order.
+/// `owner` dominates everything in the read/write chain (`editor`/`viewer`)
+/// plus grant-management/transfer — NOT `admin`, `ingest`, or `member`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, sqlx::Type)]
 #[sqlx(type_name = "proxima_core.grant_relation", rename_all = "lowercase")]
 pub enum Relation {
@@ -78,6 +77,20 @@ impl Relation {
     pub const fn is_grantable(self) -> bool {
         !matches!(self, Self::Owner)
     }
+
+    /// Relations a flavor/owner may grant on a single ENTRY (memory):
+    /// read/write only.
+    #[must_use]
+    pub const fn is_entry_grantable(self) -> bool {
+        matches!(self, Self::Editor | Self::Viewer)
+    }
+
+    /// Relations grantable on a SPACE binding (everything grantable except
+    /// owner; member ok).
+    #[must_use]
+    pub const fn is_space_grantable(self) -> bool {
+        self.is_grantable()
+    }
 }
 
 /// The sole surviving per-token memory capability after the `RoleSet`/grant
@@ -106,8 +119,13 @@ pub enum Visibility {
     Public,
 }
 
-/// Which resource a grant targets. `Space` rows carry no `resource_id`;
+/// Which core resource a grant targets. `Space` rows carry no `resource_id`;
 /// `Memory` rows carry the memory id and are existence/owner/liveness checked.
+///
+/// Core grants govern core resources only (`Space`, `Memory`). A flavor needing
+/// access control over its own resource kind owns its own policy. A
+/// build-time-registered resource vocabulary is a deliberate future extension,
+/// not Phase 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GrantResource {
     Space,
@@ -168,13 +186,19 @@ pub struct NewAccessGrant {
     pub granted_by: PersonalityInstanceId,
 }
 
-/// Selects active grants to revoke. `relation = None` revokes every relation
-/// the subject holds on the resource (used by `unshare_entry`).
+/// Which relation subset to revoke for a grant selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationSelector {
+    Exact(Relation),
+    AllGrantable,
+}
+
+/// Selects active grants to revoke.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrantSelector {
     pub space_owner: Owner,
     pub resource: GrantResource,
-    pub relation: Option<Relation>,
+    pub relation: RelationSelector,
     pub subject: GrantSubject,
 }
 
@@ -258,6 +282,22 @@ mod tests {
         assert!(!Owner.is_grantable());
         for &r in &[Admin, Editor, Viewer, Ingest, Member] {
             assert!(r.is_grantable(), "{r:?} must be grantable");
+        }
+    }
+
+    #[test]
+    fn entry_grantable_is_readwrite_only() {
+        assert!(Editor.is_entry_grantable());
+        assert!(Viewer.is_entry_grantable());
+        for &r in &[Owner, Admin, Ingest, Member] {
+            assert!(!r.is_entry_grantable(), "{r:?} is not entry-grantable");
+        }
+    }
+
+    #[test]
+    fn space_grantable_matches_grantable() {
+        for r in ALL {
+            assert_eq!(r.is_space_grantable(), r.is_grantable());
         }
     }
 }
