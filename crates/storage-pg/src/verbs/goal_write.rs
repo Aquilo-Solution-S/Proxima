@@ -825,6 +825,11 @@ async fn insert_goal_row(
     let owner = draft.owner();
     let (owner_kind, owner_principal_id) = owner.columns();
     let authorship = authorship_columns(&draft.authorship);
+    // NOTE: $4 (owner_kind) and $5 (owner_id) are bound but intentionally absent
+    // from the column list — the goal row no longer stores its owner. They feed
+    // ONLY the computed idempotency_key, whose formula MUST stay byte-identical
+    // to the replay lookup and the 0007 backfill: md5(owner_kind || ':' ||
+    // owner_id || ':' || request_id). Do not renumber without updating both.
     sqlx::query(
         "INSERT INTO proxima_core.goals
             (goal_id, schema_id, schema_version, title, text, payload, state, supersedes,
