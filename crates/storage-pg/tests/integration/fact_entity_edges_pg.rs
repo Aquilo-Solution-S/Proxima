@@ -1187,9 +1187,9 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
         let other_source =
             ingest_fact(&pg, &engine, &other, &fact("other", "v1", "Present")).await?;
         let other_entity = memory_fact_entity_id(&pg, other_source.memory_id).await?;
-        let err = raw_insert_follow_edge(&pg, &owner, source_entity, other_entity)
+        let err = raw_insert_follow_edge(&pg, &other, source_entity, other_entity)
             .await
-            .expect_err("cross-owner fact entity must be rejected");
+            .expect_err("cross-owner source fact entity stamp must be rejected");
         assert!(err.to_string().contains("crosses Owner boundary"));
 
         Ok(())
