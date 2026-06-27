@@ -54,6 +54,12 @@ impl WritePermit {
     }
 }
 
+impl From<WritePermit> for MemoryPermit {
+    fn from(permit: WritePermit) -> Self {
+        Self::owner_scoped(permit.owner.clone(), permit.owner, permit.relation, None)
+    }
+}
+
 /// Proof that one entry passed the read-scope predicate. Sealed: only this
 /// module's authorization gates can mint it.
 #[derive(Debug)]
@@ -499,9 +505,18 @@ mod tests {
     }
 
     fn storage(member: Principal, group: GroupId) -> MembershipStorage {
+        storage_with_relation(member, group, Relation::Viewer)
+    }
+
+    fn storage_with_relation(
+        member: Principal,
+        group: GroupId,
+        membership_relation: Relation,
+    ) -> MembershipStorage {
         MembershipStorage {
             member,
             group,
+            membership_relation,
             home_owner: None,
             entity_readable: false,
         }
@@ -516,6 +531,7 @@ mod tests {
         MembershipStorage {
             member,
             group,
+            membership_relation: Relation::Viewer,
             home_owner,
             entity_readable,
         }
@@ -650,6 +666,23 @@ mod tests {
             .expect_err("viewer membership should not authorize editor writes");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn authorize_write_allows_editor_member_for_group() {
+        let p = owner();
+        let g1 = GroupId::new(uuid::Uuid::now_v7());
+        let g1_owner = Principal::Group(g1);
+        let engine = engine_with_storage(storage_with_relation(p.clone(), g1, Relation::Editor));
+        let authz = granted_context(&p);
+
+        let permit = engine
+            .authorize_write(&authz, &g1_owner, Relation::Editor)
+            .await
+            .expect("editor membership should authorize editor writes");
+
+        assert_eq!(permit.owner(), &g1_owner);
+        assert_eq!(permit.relation(), Relation::Editor);
     }
 
     #[tokio::test]

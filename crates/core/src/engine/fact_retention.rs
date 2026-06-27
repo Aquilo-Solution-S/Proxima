@@ -1,4 +1,4 @@
-use super::{Engine, MemoryPermit};
+use super::{Engine, pipeline::WritePermit};
 use crate::MemoryId;
 use crate::access::Relation;
 use crate::authz::AuthzContext;
@@ -34,16 +34,14 @@ impl Engine {
         owner: &Owner,
         seconds: u64,
     ) -> Result<(), ProtocolError> {
-        let permit = self
-            .authorize_request(authz, owner, Relation::Admin)
-            .await?;
+        let permit = self.authorize_write(authz, owner, Relation::Admin).await?;
         self.set_fact_retention_authorized(&permit, owner, seconds)
             .await
     }
 
     async fn set_fact_retention_authorized(
         &self,
-        permit: &MemoryPermit,
+        permit: &WritePermit,
         _owner: &Owner,
         seconds: u64,
     ) -> Result<(), ProtocolError> {
@@ -65,15 +63,13 @@ impl Engine {
         authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<Option<i64>, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, owner, Relation::Admin)
-            .await?;
+        let permit = self.authorize_write(authz, owner, Relation::Admin).await?;
         self.get_fact_retention_authorized(&permit, owner).await
     }
 
     async fn get_fact_retention_authorized(
         &self,
-        permit: &MemoryPermit,
+        permit: &WritePermit,
         _owner: &Owner,
     ) -> Result<Option<i64>, ProtocolError> {
         self.storage
@@ -93,15 +89,13 @@ impl Engine {
         authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<bool, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, owner, Relation::Admin)
-            .await?;
+        let permit = self.authorize_write(authz, owner, Relation::Admin).await?;
         self.clear_fact_retention_authorized(&permit, owner).await
     }
 
     async fn clear_fact_retention_authorized(
         &self,
-        permit: &MemoryPermit,
+        permit: &WritePermit,
         _owner: &Owner,
     ) -> Result<bool, ProtocolError> {
         self.storage
@@ -122,15 +116,13 @@ impl Engine {
         authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<CleanupDueFactsOutcome, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, owner, Relation::Admin)
-            .await?;
+        let permit = self.authorize_write(authz, owner, Relation::Admin).await?;
         self.cleanup_due_facts_authorized(&permit, owner).await
     }
 
     async fn cleanup_due_facts_authorized(
         &self,
-        permit: &MemoryPermit,
+        permit: &WritePermit,
         _owner: &Owner,
     ) -> Result<CleanupDueFactsOutcome, ProtocolError> {
         let fact_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Fact);
@@ -167,9 +159,7 @@ impl Engine {
         owner: &Owner,
         fact_id: MemoryId,
     ) -> Result<TombstoneFactOutcome, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, owner, Relation::Ingest)
-            .await?;
+        let permit = self.authorize_write(authz, owner, Relation::Ingest).await?;
         let fact_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Fact);
         let edge_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Edge);
         let citation_mapping_sidecar_tables =

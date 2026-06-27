@@ -75,7 +75,7 @@ impl Engine {
         mut draft: EventDraft,
     ) -> Result<AuthorizedEventIngest, ProtocolError> {
         let permit = self
-            .authorize_request(authz, &draft.principal, relation)
+            .authorize_write(authz, &draft.principal, relation)
             .await?;
         draft.principal = permit.owner().clone();
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
@@ -92,7 +92,7 @@ impl Engine {
             )?;
         }
         Ok(AuthorizedEventIngest::new(
-            permit,
+            permit.into(),
             draft,
             fact_sidecar_table,
             fact_natural_key_columns,
@@ -119,7 +119,7 @@ impl Engine {
         mapping: InlineCitationMappingDraft,
     ) -> Result<AuthorizedFactWithCitation, ProtocolError> {
         let permit = self
-            .authorize_request(authz, &draft.principal, relation)
+            .authorize_write(authz, &draft.principal, relation)
             .await?;
         draft.principal = permit.owner().clone();
 
@@ -133,7 +133,7 @@ impl Engine {
         let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
 
         Ok(AuthorizedFactWithCitation::new(
-            permit,
+            permit.into(),
             draft,
             cited_object,
             mapping,
@@ -197,11 +197,11 @@ impl Engine {
         mapping: InlineCitationMappingDraft,
     ) -> Result<AuthorizedCitationAttachment, ProtocolError> {
         let requested = principal;
-        let permit = self.authorize_request(authz, &requested, relation).await?;
+        let permit = self.authorize_write(authz, &requested, relation).await?;
         let owner = permit.owner().clone();
         let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
         Ok(AuthorizedCitationAttachment::new(
-            permit,
+            permit.into(),
             memory_id,
             owner,
             cited_object,
@@ -495,7 +495,7 @@ impl Engine {
     ) -> Result<McpCallLogOutcome, ProtocolError> {
         let owner = authz.scoped_owner(input.owner.clone());
         let permit = self
-            .authorize_request(authz, &owner, Relation::Ingest)
+            .authorize_write(authz, &owner, Relation::Ingest)
             .await?;
         input.owner = permit.owner().clone();
         self.storage
@@ -522,7 +522,7 @@ impl Engine {
     ) -> Result<CloseBatchOutcome, ProtocolError> {
         let requested = principal;
         let permit = self
-            .authorize_request(authz, &requested, Relation::Ingest)
+            .authorize_write(authz, &requested, Relation::Ingest)
             .await?;
         let outcome = self
             .storage
