@@ -181,14 +181,15 @@ pub(super) async fn query_edges(
     read_owner_ids: &[uuid::Uuid],
     visible_memory_ids: &[uuid::Uuid],
     visible_goal_ids: &[uuid::Uuid],
-    _schemas: &[SchemaInfo],
+    schemas: &[SchemaInfo],
 ) -> Result<Vec<EdgeRow>, StorageError> {
     let edge_ids = req.edge_ids.clone();
     let id_hydration =
         !req.memory_ids.is_empty() || !req.goal_ids.is_empty() || !req.edge_ids.is_empty();
 
     if !edge_ids.is_empty() {
-        return query_edges_by_id(pool, req, &edge_ids, read_owner_kinds, read_owner_ids).await;
+        return query_edges_by_id(pool, req, &edge_ids, read_owner_kinds, read_owner_ids, schemas)
+            .await;
     }
     // Focused identity and entity-kind queries should not return graph
     // closure as a side effect. Atlas uses entity_kind = None to opt in.
@@ -207,6 +208,7 @@ async fn query_edges_by_id(
     edge_ids: &[uuid::Uuid],
     read_owner_kinds: &[OwnerPrincipalKind],
     read_owner_ids: &[uuid::Uuid],
+    schemas: &[SchemaInfo],
 ) -> Result<Vec<EdgeRow>, StorageError> {
     let read_owners = read_owner_kinds
         .iter()
@@ -214,6 +216,7 @@ async fn query_edges_by_id(
         .map(|(kind, id)| kind.with_uuid(*id))
         .collect::<Vec<_>>();
     let edge_ids = edge_ids.iter().copied().map(EdgeId::new).collect();
+    // Access dimension: source-owned visibility with target redaction.
     let response = read_edges(
         pool,
         &read_owners,
@@ -225,7 +228,48 @@ async fn query_edges_by_id(
         },
     )
     .await?;
-    Ok(response.edges)
+    // Presence dimension: window readable endpoints against the request's
+    // present-only / stateful-head visibility (the same machinery the node
+    // query uses), so an edge to a tombstoned head is excluded in present-only
+    // mode. Access-unreadable targets are already stubbed and stay as-is.
+    let mut candidate_memory_ids = Vec::new();
+    let mut candidate_goal_ids = Vec::new();
+    let mut push_endpoint = |endpoint: &EntityRef| match endpoint {
+        EntityRef::Memory(id) => candidate_memory_ids.push(id.into_inner()),
+        EntityRef::Goal(id) => candidate_goal_ids.push(id.into_inner()),
+        EntityRef::FactEntity(_) => {}
+    };
+    for edge in &response.edges {
+        push_endpoint(&edge.source);
+        if edge.target_readable {
+            push_endpoint(&edge.target);
+        }
+    }
+    let (visible_memory_ids, visible_goal_ids) = super::memories::visible_ids_for(
+        pool,
+        req,
+        read_owner_kinds,
+        read_owner_ids,
+        &candidate_memory_ids,
+        &candidate_goal_ids,
+        schemas,
+    )
+    .await?;
+    let endpoint_present = |endpoint: &EntityRef| match endpoint {
+        EntityRef::Memory(id) => visible_memory_ids.contains(&id.into_inner()),
+        EntityRef::Goal(id) => visible_goal_ids.contains(&id.into_inner()),
+        // Fact-entity endpoints resolve to a current head during hydration; the
+        // edge's own presence is governed by its memory/goal endpoints.
+        EntityRef::FactEntity(_) => true,
+    };
+    let edges = response
+        .edges
+        .into_iter()
+        .filter(|edge| {
+            endpoint_present(&edge.source) && (!edge.target_readable || endpoint_present(&edge.target))
+        })
+        .collect();
+    Ok(edges)
 }
 
 async fn query_edges_between_visible_nodes(
