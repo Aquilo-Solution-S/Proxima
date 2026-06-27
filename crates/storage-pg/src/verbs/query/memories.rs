@@ -239,7 +239,6 @@ async fn load_row_payloads_batch(
     Ok(rows.into_iter().flatten().collect())
 }
 
-#[allow(dead_code)]
 pub(super) async fn visible_ids_for(
     pool: &PgPool,
     req: &QueryRequest,
@@ -285,7 +284,11 @@ async fn query_visible_memory_ids(
     let root_schema_ids = active_root_schema_ids(req, schemas);
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
 
-    let mut sql = String::from("SELECT m.memory_id FROM proxima_core.memories m");
+    let mut sql = String::from(
+        "SELECT m.memory_id FROM proxima_core.memories m \
+         LEFT JOIN proxima_core.entity_owner home_owner \
+           ON home_owner.entity_id = m.memory_id AND home_owner.is_home",
+    );
     for (idx, sf) in stateful.iter().enumerate() {
         let alias = stateful_alias(idx);
         write!(
