@@ -59,9 +59,12 @@ pub(crate) async fn query_memories(
     let root_schema_ids = active_root_schema_ids(req, schemas);
 
     let mut sql = String::from(
-        "SELECT m.memory_id, m.owner_principal_kind, m.owner_principal_id, \
+        "SELECT m.memory_id, home_owner.owner_principal_kind, home_owner.owner_principal_id, \
                 m.schema_id, m.schema_version, m.kind \
-         FROM proxima_core.memories m",
+         FROM proxima_core.memories m \
+         LEFT JOIN proxima_core.entity_owner home_owner \
+           ON home_owner.entity_id = m.memory_id \
+          AND home_owner.is_home",
     );
 
     // Bindings: $1=read_owner_kinds, $2=read_owner_ids.
@@ -485,8 +488,8 @@ fn push_active_root_filter(sql: &mut String, root_schema_ids_param: Option<usize
           OR EXISTS ( \
             SELECT 1 FROM proxima_core.personality p \
             WHERE p.current_root_perspective_memory_id = m.memory_id \
-              AND p.owner_principal_kind = m.owner_principal_kind \
-              AND p.owner_principal_id = m.owner_principal_id \
+              AND p.owner_principal_kind = home_owner.owner_principal_kind \
+              AND p.owner_principal_id = home_owner.owner_principal_id \
               AND p.status = 'active' \
           ))",
     )
@@ -500,13 +503,19 @@ fn push_reader_visibility_filter(sql: &mut String, alias: &str, reader_param: Op
             " AND (
                 {alias}.kind IS NULL
                 OR {alias}.personality_instance_id = ${param}
-                OR EXISTS (
+                 OR EXISTS (
                     SELECT 1
                       FROM proxima_core.read_scope_matrix r
-                     WHERE r.owner_principal_kind = {alias}.owner_principal_kind
-                       AND r.owner_principal_id = {alias}.owner_principal_id
-                       AND r.reader_personality_instance_id = ${param}
+                     WHERE r.reader_personality_instance_id = ${param}
                        AND r.readable_personality_instance_id = {alias}.personality_instance_id
+                       AND EXISTS (
+                            SELECT 1
+                              FROM proxima_core.entity_owner reader_owner
+                             WHERE reader_owner.entity_id = {alias}.memory_id
+                               AND reader_owner.is_home
+                               AND reader_owner.owner_principal_kind = r.owner_principal_kind
+                               AND reader_owner.owner_principal_id = r.owner_principal_id
+                       )
                 )
             )",
         )
@@ -598,10 +607,13 @@ fn push_stateful_head_branch(
           AND NOT EXISTS ( \
             SELECT 1 FROM proxima_core.memories m2 \
             JOIN {sidecar} {newer_alias} USING (memory_id) \
+            JOIN proxima_core.entity_owner newer_owner \
+              ON newer_owner.entity_id = m2.memory_id \
+             AND newer_owner.is_home \
             WHERE m2.schema_id = m.schema_id \
               AND m2.schema_version = m.schema_version \
-              AND m2.owner_principal_kind = m.owner_principal_kind \
-              AND m2.owner_principal_id = m.owner_principal_id \
+              AND newer_owner.owner_principal_kind = home_owner.owner_principal_kind \
+              AND newer_owner.owner_principal_id = home_owner.owner_principal_id \
               AND m2.tombstoned_at IS NULL \
               AND {nk_pairs} \
               AND m2.created_at > m.created_at \

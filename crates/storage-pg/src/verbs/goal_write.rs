@@ -146,8 +146,8 @@ struct AuthorshipRow {
 #[derive(Debug, sqlx::FromRow)]
 struct EvidenceRow {
     kind: Option<EntityKind>,
-    owner_principal_kind: OwnerPrincipalKind,
-    owner_principal_id: uuid::Uuid,
+    owner_principal_kind: Option<OwnerPrincipalKind>,
+    owner_principal_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -933,8 +933,14 @@ async fn load_prior_goal(
         "SELECT schema_id, schema_version, title, text, payload, state
            FROM proxima_core.goals
           WHERE goal_id = $1
-            AND owner_principal_kind = $2
-            AND owner_principal_id = $3",
+            AND EXISTS (
+                SELECT 1
+                  FROM proxima_core.entity_owner eo
+                 WHERE eo.entity_id = goal_id
+                   AND eo.owner_principal_kind = $2
+                   AND eo.owner_principal_id = $3
+                   AND eo.is_home
+            )",
     )
     .bind(goal_id.into_inner())
     .bind(owner_kind)
@@ -984,8 +990,14 @@ async fn validate_parent_owner(
              SELECT 1
                FROM proxima_core.goals
               WHERE goal_id = $1
-                AND owner_principal_kind = $2
-                AND owner_principal_id = $3
+                AND EXISTS (
+                    SELECT 1
+                      FROM proxima_core.entity_owner eo
+                     WHERE eo.entity_id = goal_id
+                       AND eo.owner_principal_kind = $2
+                       AND eo.owner_principal_id = $3
+                       AND eo.is_home
+                )
          )",
     )
     .bind(parent_id.into_inner())
@@ -1020,8 +1032,14 @@ async fn validate_active_head(
              SELECT 1
                FROM proxima_core.goals
               WHERE supersedes = $1
-                AND owner_principal_kind = $2
-                AND owner_principal_id = $3
+                AND EXISTS (
+                    SELECT 1
+                      FROM proxima_core.entity_owner eo
+                     WHERE eo.entity_id = goal_id
+                       AND eo.owner_principal_kind = $2
+                       AND eo.owner_principal_id = $3
+                       AND eo.is_home
+                )
          )",
     )
     .bind(goal_id.into_inner())
@@ -1120,9 +1138,12 @@ async fn validate_evidence_in_owner(
             ));
         }
         let row: Option<EvidenceRow> = sqlx::query_as(
-            "SELECT kind, owner_principal_kind, owner_principal_id
-               FROM proxima_core.memories
-              WHERE memory_id = $1",
+            "SELECT m.kind, home_owner.owner_principal_kind, home_owner.owner_principal_id
+               FROM proxima_core.memories m
+               LEFT JOIN proxima_core.entity_owner home_owner
+                 ON home_owner.entity_id = m.memory_id
+                AND home_owner.is_home
+              WHERE m.memory_id = $1",
         )
         .bind(item.memory_id.into_inner())
         .fetch_optional(&mut **tx)
@@ -1131,7 +1152,10 @@ async fn validate_evidence_in_owner(
         let Some(row) = row else {
             return Err(StorageError::NotFound);
         };
-        if row.owner_principal_kind != owner_kind || row.owner_principal_id != owner_principal_id {
+        if let (Some(row_owner_kind), Some(row_owner_principal_id)) =
+            (row.owner_principal_kind, row.owner_principal_id)
+            && (row_owner_kind != owner_kind || row_owner_principal_id != owner_principal_id)
+        {
             return Err(StorageError::ConstraintViolation(
                 "evidence crosses Owner boundary".into(),
             ));
@@ -1160,11 +1184,17 @@ async fn outgoing_motivated_by_evidence(
     let (owner_kind, owner_principal_id) = owner.columns();
     let rows: Vec<(EntityKind, uuid::Uuid)> = sqlx::query_as(
         "SELECT target_kind, target_memory_id
-           FROM proxima_core.edges
+           FROM proxima_core.edges e
           WHERE relation = $1
             AND source_goal_id = $2
-            AND owner_principal_kind = $3
-            AND owner_principal_id = $4
+            AND EXISTS (
+                SELECT 1
+                  FROM proxima_core.entity_owner eo
+                 WHERE eo.entity_id = e.source_goal_id
+                   AND eo.owner_principal_kind = $3
+                   AND eo.owner_principal_id = $4
+                   AND eo.is_home
+            )
             AND target_memory_id IS NOT NULL
           ORDER BY created_at ASC",
     )

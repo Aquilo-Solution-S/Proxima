@@ -467,12 +467,18 @@ pub async fn attach_citation_in_tx(
 
     let existing_mapping_id = sqlx::query_scalar::<_, Option<uuid::Uuid>>(
         r"SELECT citation_mapping_id
-            FROM proxima_core.memories
-           WHERE memory_id = $1
-             AND owner_principal_kind = $2
-             AND owner_principal_id = $3
-             AND kind IS NULL
-             AND tombstoned_at IS NULL",
+            FROM proxima_core.memories m
+           WHERE m.memory_id = $1
+             AND EXISTS (
+                SELECT 1
+                  FROM proxima_core.entity_owner eo
+                 WHERE eo.entity_id = m.memory_id
+                   AND eo.owner_principal_kind = $2
+                   AND eo.owner_principal_id = $3
+                   AND eo.is_home
+             )
+             AND m.kind IS NULL
+             AND m.tombstoned_at IS NULL",
     )
     .bind(memory_uuid)
     .bind(owner_kind)
@@ -508,12 +514,18 @@ pub async fn attach_citation_in_tx(
     .await?;
 
     let updated = sqlx::query(
-        r"UPDATE proxima_core.memories
+        r"UPDATE proxima_core.memories m
              SET citation_mapping_id = $2
-           WHERE memory_id = $1
-             AND owner_principal_kind = $3
-             AND owner_principal_id = $4
-             AND citation_mapping_id IS NULL",
+           WHERE m.memory_id = $1
+             AND EXISTS (
+                SELECT 1
+                  FROM proxima_core.entity_owner eo
+                 WHERE eo.entity_id = m.memory_id
+                   AND eo.owner_principal_kind = $3
+                   AND eo.owner_principal_id = $4
+                   AND eo.is_home
+             )
+             AND m.citation_mapping_id IS NULL",
     )
     .bind(memory_uuid)
     .bind(citation_mapping_id)

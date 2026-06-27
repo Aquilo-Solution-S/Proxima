@@ -16,11 +16,15 @@ pub async fn list_memory_dependencies(
          FROM proxima_core.edges e
          JOIN proxima_core.memories m
 	           ON m.memory_id = e.target_memory_id
-	          AND m.owner_principal_kind = e.owner_principal_kind
-	          AND m.owner_principal_id = e.owner_principal_id
 	          AND m.tombstoned_at IS NULL
-         WHERE e.owner_principal_kind = $1
-           AND e.owner_principal_id = $2
+         WHERE EXISTS (
+                    SELECT 1
+                      FROM proxima_core.entity_owner eo
+                     WHERE eo.entity_id = e.source_memory_id
+                       AND eo.owner_principal_kind = $1
+                       AND eo.owner_principal_id = $2
+                       AND eo.is_home
+               )
            AND e.relation = $3
            AND e.source_kind IN ('Fact', 'Abstraction', 'Perspective')
            AND e.source_memory_id = $4

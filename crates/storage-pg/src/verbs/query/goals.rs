@@ -27,12 +27,16 @@ pub(super) async fn query_goals(
         "''::bytea"
     };
     let mut sql = format!(
-        "SELECT g.goal_id, g.schema_id, g.schema_version, g.owner_principal_kind, \
-                g.owner_principal_id, g.title, g.text, g.state, \
+        "SELECT g.goal_id, g.schema_id, g.schema_version, \
+                home_owner.owner_principal_kind, home_owner.owner_principal_id, \
+                g.title, g.text, g.state, \
                 g.supersedes, {payload_projection} AS payload, \
                 COALESCE(array_agg(gp.parent_goal_id) FILTER \
                     (WHERE gp.parent_goal_id IS NOT NULL), '{{}}'::uuid[]) AS parent_goal_ids \
          FROM proxima_core.goals g \
+         LEFT JOIN proxima_core.entity_owner home_owner \
+           ON home_owner.entity_id = g.goal_id \
+          AND home_owner.is_home \
          LEFT JOIN proxima_core.goal_parents gp ON gp.goal_id = g.goal_id \
          WHERE EXISTS (
              SELECT 1
@@ -60,7 +64,10 @@ pub(super) async fn query_goals(
                               WHERE g2.supersedes = g.goal_id)",
         );
     }
-    sql.push_str(" GROUP BY g.goal_id ORDER BY g.created_at DESC LIMIT ");
+    sql.push_str(
+        " GROUP BY g.goal_id, home_owner.owner_principal_kind, home_owner.owner_principal_id \
+          ORDER BY g.created_at DESC LIMIT ",
+    );
     sql.push_str(&u64::from(req.limit).to_string());
 
     let mut q = sqlx::query_as::<_, GoalRowDb>(&sql)

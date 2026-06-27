@@ -45,7 +45,7 @@ visible AS (
            EXISTS (
                SELECT 1
                  FROM proxima_core.entity_owner seo
-                 JOIN unnest($1::proxima_core . owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
+                 JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
                    ON seo.owner_principal_kind = rs.kind
                   AND seo.owner_principal_id = rs.id
                 WHERE seo.entity_id = edge_heads.source_entity_id
@@ -53,7 +53,7 @@ visible AS (
            EXISTS (
                SELECT 1
                  FROM proxima_core.entity_owner teo
-                 JOIN unnest($1::proxima_core . owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
+                 JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
                    ON teo.owner_principal_kind = rs.kind
                   AND teo.owner_principal_id = rs.id
                 WHERE teo.entity_id = edge_heads.target_entity_id
