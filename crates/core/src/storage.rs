@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::SourceBatchId;
 use crate::access::{
     AccessGrantRow, EntryAccessFacts, GrantResource, GrantSelector, NewAccessGrant,
-    RemoveOwnerOutcome, Visibility,
+    RemoveOwnerOutcome, ShareVisibilityUpdate, Visibility,
 };
 use crate::dependency::MemoryDependency;
 use crate::personality::WakeEntryDraft;
@@ -905,12 +905,12 @@ pub trait Storage: Send + Sync {
     /// number of rows revoked.
     async fn revoke_access_grants(&self, selector: &GrantSelector) -> Result<u64, StorageError>;
 
-    /// Insert an entry grant and optionally promote private visibility to
-    /// shared in one transaction.
+    /// Insert an entry grant and apply the requested private-to-shared
+    /// visibility update in one transaction.
     async fn share_entry_atomic(
         &self,
         grant: &NewAccessGrant,
-        set_shared_if_private: bool,
+        visibility_update: ShareVisibilityUpdate,
     ) -> Result<(), StorageError>;
 
     /// Revoke matching entry grants and demote shared visibility to private
@@ -1469,7 +1469,7 @@ impl Storage for NoopStorage {
     async fn share_entry_atomic(
         &self,
         _grant: &NewAccessGrant,
-        _set_shared_if_private: bool,
+        _visibility_update: ShareVisibilityUpdate,
     ) -> Result<(), StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }

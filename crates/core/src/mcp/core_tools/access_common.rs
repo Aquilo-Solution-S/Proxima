@@ -7,8 +7,23 @@ use crate::{GroupId, OwnerPrincipalKind, Principal, UserId};
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum RelationArg {
-    Owner,
+pub enum EntryGrantRelationArg {
+    Editor,
+    Viewer,
+}
+
+impl From<EntryGrantRelationArg> for Relation {
+    fn from(value: EntryGrantRelationArg) -> Self {
+        match value {
+            EntryGrantRelationArg::Editor => Self::Editor,
+            EntryGrantRelationArg::Viewer => Self::Viewer,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SpaceGrantRelationArg {
     Admin,
     Editor,
     Viewer,
@@ -16,15 +31,14 @@ pub enum RelationArg {
     Member,
 }
 
-impl From<RelationArg> for Relation {
-    fn from(value: RelationArg) -> Self {
+impl From<SpaceGrantRelationArg> for Relation {
+    fn from(value: SpaceGrantRelationArg) -> Self {
         match value {
-            RelationArg::Owner => Self::Owner,
-            RelationArg::Admin => Self::Admin,
-            RelationArg::Editor => Self::Editor,
-            RelationArg::Viewer => Self::Viewer,
-            RelationArg::Ingest => Self::Ingest,
-            RelationArg::Member => Self::Member,
+            SpaceGrantRelationArg::Admin => Self::Admin,
+            SpaceGrantRelationArg::Editor => Self::Editor,
+            SpaceGrantRelationArg::Viewer => Self::Viewer,
+            SpaceGrantRelationArg::Ingest => Self::Ingest,
+            SpaceGrantRelationArg::Member => Self::Member,
         }
     }
 }

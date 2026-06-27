@@ -10,7 +10,7 @@
 
 use crate::access::{
     AccessGrantRow, AccessScope, EntryVisibilityTarget, GrantResource, GrantSelector, GrantSubject,
-    NewAccessGrant, Relation, RelationSelector, RemoveOwnerOutcome, Visibility,
+    NewAccessGrant, Relation, RelationSelector, RemoveOwnerOutcome, ShareVisibilityUpdate,
 };
 use crate::authz::{AuthPath, AuthzContext, AuthzInput, AuthzOperation};
 use crate::error::ProtocolError;
@@ -22,7 +22,6 @@ use super::{Engine, MemoryPermit};
 
 struct ShareEntryGrant {
     memory_id: MemoryId,
-    current_visibility: Visibility,
     subject: GrantSubject,
     relation: Relation,
 }
@@ -52,7 +51,6 @@ impl Engine {
             &permit,
             ShareEntryGrant {
                 memory_id,
-                current_visibility: facts.visibility,
                 subject,
                 relation,
             },
@@ -86,7 +84,7 @@ impl Engine {
                     subject: grant.subject,
                     granted_by,
                 },
-                grant.current_visibility == Visibility::Private,
+                ShareVisibilityUpdate::PromotePrivateToShared,
             )
             .await
             .map_err(|err| storage_error("share_entry_atomic", &err))

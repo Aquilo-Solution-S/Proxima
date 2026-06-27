@@ -11,7 +11,7 @@ use crate::common::{drop_db, fresh_pg, owner_fixture};
 
 use proxima_core::access::{
     GrantResource, GrantSelector, GrantSubject, NewAccessGrant, Relation, RelationSelector,
-    Visibility,
+    ShareVisibilityUpdate, Visibility,
 };
 use proxima_core::engine::GetMemoryReadRequest;
 use proxima_core::error::ErrorCode;
@@ -71,7 +71,7 @@ async fn seed_entry_grant(
             subject: GrantSubject::Principal(subject.clone()),
             granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
         },
-        false,
+        ShareVisibilityUpdate::LeaveVisibility,
     )
     .await
     .expect("seed entry grant");

@@ -7,7 +7,7 @@ use crate::access::GrantResource;
 use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 
 use super::super::access_common::{
-    GrantOutput, GrantSubjectArg, RelationArg, StatusOutput, VisibilityArg, format_grant,
+    EntryGrantRelationArg, GrantOutput, GrantSubjectArg, StatusOutput, VisibilityArg, format_grant,
     parse_grant_subject,
 };
 use super::super::{DESTRUCTIVE_IDEMPOTENT, READ_ONLY, WRITE_IDEMPOTENT};
@@ -60,8 +60,8 @@ pub struct MemoryShareArgs {
     pub memory: String,
     #[schemars(description = "Grant subject: {subject_kind, subject_id}.")]
     pub subject: GrantSubjectArg,
-    #[schemars(description = "Grant relation. owner is rejected by the engine.")]
-    pub relation: RelationArg,
+    #[schemars(description = "Grant relation: editor or viewer.")]
+    pub relation: EntryGrantRelationArg,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

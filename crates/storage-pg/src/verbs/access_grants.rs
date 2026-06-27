@@ -8,14 +8,14 @@
 
 use proxima_core::access::{
     AccessGrantRow, EntryAccessFacts, GrantResource, GrantSelector, GrantSubject, NewAccessGrant,
-    Relation, RelationSelector, RemoveOwnerOutcome, Visibility,
+    Relation, RelationSelector, RemoveOwnerOutcome, ShareVisibilityUpdate, Visibility,
 };
 use proxima_core::personality::{MemorySnapshot, WakeChainDepth};
 use proxima_core::{
     EntityKind, MemoryId, Owner, OwnerPrincipalKind, PersonalityInstanceId, Principal, SchemaId,
     SchemaVersion, StorageError,
 };
-use sqlx::PgPool;
+use sqlx::{PgExecutor, PgPool};
 
 use crate::error::map_err;
 
@@ -192,7 +192,10 @@ pub(crate) async fn resolve_entry_owner(
     }))
 }
 
-async fn insert_access_grant(pool: &PgPool, grant: &NewAccessGrant) -> Result<(), StorageError> {
+async fn insert_grant_row<'e, E>(executor: E, grant: &NewAccessGrant) -> Result<(), StorageError>
+where
+    E: PgExecutor<'e>,
+{
     let (owner_kind, owner_id) = grant.space_owner.columns();
     let (resource_kind, resource_id) = split_resource(grant.resource);
     let (subject_kind, subject_principal_kind, subject_principal_id) =
@@ -214,11 +217,15 @@ async fn insert_access_grant(pool: &PgPool, grant: &NewAccessGrant) -> Result<()
     .bind(subject_principal_kind)
     .bind(subject_principal_id)
     .bind(grant.granted_by.into_inner())
-    .execute(pool)
+    .execute(executor)
     .await
     .map_err(map_access_grant_insert_err)?;
     let _ = result; // ON CONFLICT DO NOTHING makes re-grant idempotent.
     Ok(())
+}
+
+async fn insert_access_grant(pool: &PgPool, grant: &NewAccessGrant) -> Result<(), StorageError> {
+    insert_grant_row(pool, grant).await
 }
 
 pub(crate) async fn insert_space_binding(
@@ -288,37 +295,16 @@ pub(crate) async fn revoke_access_grants(
 pub(crate) async fn share_entry_atomic(
     pool: &PgPool,
     grant: &NewAccessGrant,
-    set_shared_if_private: bool,
+    visibility_update: ShareVisibilityUpdate,
 ) -> Result<(), StorageError> {
     let (owner_kind, owner_id) = grant.space_owner.columns();
-    let (resource_kind, resource_id) = split_resource(grant.resource);
-    let (subject_kind, subject_principal_kind, subject_principal_id) =
-        subject_columns(&grant.subject);
     let mut tx = pool.begin().await.map_err(map_err)?;
 
-    let result = sqlx::query(
-        "INSERT INTO proxima_core.access_grants
-             (grant_id, owner_principal_kind, owner_principal_id, resource_kind,
-              resource_id, relation, subject_kind, subject_principal_kind,
-              subject_principal_id, granted_by_personality_instance_id)
-         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9)
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(resource_kind)
-    .bind(resource_id)
-    .bind(grant.relation)
-    .bind(subject_kind)
-    .bind(subject_principal_kind)
-    .bind(subject_principal_id)
-    .bind(grant.granted_by.into_inner())
-    .execute(&mut *tx)
-    .await
-    .map_err(map_access_grant_insert_err)?;
-    let _ = result; // ON CONFLICT DO NOTHING makes re-grant idempotent.
+    insert_grant_row(&mut *tx, grant).await?;
 
-    if set_shared_if_private && let GrantResource::Memory(memory_id) = grant.resource {
+    if visibility_update == ShareVisibilityUpdate::PromotePrivateToShared
+        && let GrantResource::Memory(memory_id) = grant.resource
+    {
         sqlx::query(
             "UPDATE proxima_core.memories
                     SET visibility = 'shared'
