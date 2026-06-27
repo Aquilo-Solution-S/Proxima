@@ -16,8 +16,8 @@ use proxima_core::verbs::goal_write::{
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    EdgeAuthorshipKind, EntityKind, FactPayload, GoalId, MemoryId, Owner, OwnerPrincipalKind,
-    RegisteredRelation, SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError,
+    EdgeAuthorshipKind, EntityKind, FactPayload, GoalId, MemoryId, Owner, RegisteredRelation,
+    SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -146,8 +146,6 @@ struct AuthorshipRow {
 #[derive(Debug, sqlx::FromRow)]
 struct EvidenceRow {
     kind: Option<EntityKind>,
-    owner_principal_kind: Option<OwnerPrincipalKind>,
-    owner_principal_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1141,28 +1139,30 @@ async fn validate_evidence_in_owner(
             ));
         }
         let row: Option<EvidenceRow> = sqlx::query_as(
-            "SELECT m.kind, home_owner.owner_principal_kind, home_owner.owner_principal_id
+            "SELECT m.kind
                FROM proxima_core.memories m
-               LEFT JOIN proxima_core.entity_owner home_owner
-                 ON home_owner.entity_id = m.memory_id
-                AND home_owner.is_home
-              WHERE m.memory_id = $1",
+              WHERE m.memory_id = $1
+                AND m.tombstoned_at IS NULL
+                AND EXISTS (
+                    SELECT 1
+                      FROM proxima_core.entity_owner eo
+                     WHERE eo.entity_id = m.memory_id
+                       AND eo.owner_principal_kind = $2
+                       AND eo.owner_principal_id = $3
+                       AND eo.is_home
+                )",
         )
         .bind(item.memory_id.into_inner())
+        .bind(owner_kind)
+        .bind(owner_principal_id)
         .fetch_optional(&mut **tx)
         .await
         .map_err(map_err)?;
         let Some(row) = row else {
-            return Err(StorageError::NotFound);
-        };
-        if let (Some(row_owner_kind), Some(row_owner_principal_id)) =
-            (row.owner_principal_kind, row.owner_principal_id)
-            && (row_owner_kind != owner_kind || row_owner_principal_id != owner_principal_id)
-        {
             return Err(StorageError::ConstraintViolation(
-                "evidence crosses Owner boundary".into(),
+                "evidence crosses Owner boundary or does not exist".into(),
             ));
-        }
+        };
         let kind = row.kind.unwrap_or(EntityKind::Fact);
         match kind {
             EntityKind::Fact | EntityKind::Abstraction => out.push(EvidenceTarget {

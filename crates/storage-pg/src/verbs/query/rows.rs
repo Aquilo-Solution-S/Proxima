@@ -10,6 +10,7 @@ use sqlx::PgPool;
 
 use crate::error::internal;
 use crate::pg_ident::PgIdent;
+use crate::verbs::consolidate::edge_event_visibility_predicate;
 
 pub(super) fn memory_row_from_db(
     r: MemoryRowDb,
@@ -148,21 +149,27 @@ pub(super) async fn read_seq_high_water(
     read_owner_kinds: &[OwnerPrincipalKind],
     read_owner_ids: &[uuid::Uuid],
 ) -> Result<Option<uuid::Uuid>, StorageError> {
-    let row: Option<(uuid::Uuid,)> = sqlx::query_as(
-        "SELECT seq FROM proxima_core.change_event \
-         WHERE EXISTS ( \
-             SELECT 1 \
-               FROM unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id) \
-              WHERE owner_principal_kind = s.kind \
-                AND owner_principal_id = s.id \
-         ) \
-         ORDER BY seq DESC LIMIT 1",
-    )
-    .bind(read_owner_kinds)
-    .bind(read_owner_ids)
-    .fetch_optional(pool)
-    .await
-    .map_err(internal)?;
+    let (world_kind, world_id) = proxima_core::access::world().columns();
+    let edge_visibility = edge_event_visibility_predicate(1, 2, 3, 4);
+    let sql = format!(
+        r"SELECT ce.seq FROM proxima_core.change_event ce
+         WHERE EXISTS (
+             SELECT 1
+               FROM unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
+              WHERE ce.owner_principal_kind = s.kind
+                AND ce.owner_principal_id = s.id
+         )
+           AND {edge_visibility}
+         ORDER BY ce.seq DESC LIMIT 1"
+    );
+    let row: Option<(uuid::Uuid,)> = sqlx::query_as(&sql)
+        .bind(read_owner_kinds)
+        .bind(read_owner_ids)
+        .bind(world_kind)
+        .bind(world_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(internal)?;
     Ok(row.map(|(v,)| v))
 }
 
