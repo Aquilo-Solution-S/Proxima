@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 
 use proxima_core::verbs::query::{GoalRow, QueryRequest, SupersessionStatus};
-use proxima_core::{OwnerPrincipalKind, Principal, StorageError};
+use proxima_core::{OwnerPrincipalKind, StorageError};
 use sqlx::PgPool;
 
 use crate::error::internal;
@@ -74,18 +74,4 @@ pub(super) async fn query_goals(
     }
     let rows = q.fetch_all(pool).await.map_err(internal)?;
     rows.into_iter().map(goal_row_from_db).collect()
-}
-
-pub(super) fn read_owner_columns(
-    read_owners: &[Principal],
-) -> (Vec<OwnerPrincipalKind>, Vec<uuid::Uuid>) {
-    let kinds = read_owners
-        .iter()
-        .map(|principal| principal.columns().0)
-        .collect();
-    let ids = read_owners
-        .iter()
-        .map(|principal| principal.columns().1)
-        .collect();
-    (kinds, ids)
 }

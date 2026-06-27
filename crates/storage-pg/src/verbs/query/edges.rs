@@ -1,20 +1,82 @@
 use proxima_core::change_event::EntityRef;
 use proxima_core::verbs::query::{
-    EdgeExistsRequest, EdgeExistsResponse, EdgeReadRequest, EdgeReadResponse, EdgeRow, QueryRequest,
+    EdgeExistsRequest, EdgeExistsResponse, EdgeFilter, EdgeReadRequest, EdgeReadResponse, EdgeRow,
+    QueryRequest,
 };
 use proxima_core::verbs::schema::SchemaInfo;
-use proxima_core::{EdgeId, OwnerPrincipalKind, StorageError};
+use proxima_core::{EdgeId, OwnerPrincipalKind, Principal, StorageError};
 use sqlx::PgPool;
 
 use crate::error::internal;
 
-use super::memories::visible_ids_for;
-use super::resolve_head;
 use super::rows::{EdgeRowDb, edge_row_from_db};
+use super::{read_owner_columns, resolve_heads_by_fact_entity_id};
 
 /// Hard upper bound on edges returned by snapshot-edge mode.
 /// Decoupled from `QueryRequest::limit`, which sizes the node window.
 pub const MAX_SNAPSHOT_EDGES: usize = 50_000;
+
+const READ_EDGES_SQL: &str = r"
+WITH edge_heads AS (
+    SELECT e.edge_id, e.relation, e.relation_class,
+           COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
+           e.source_goal_id, e.source_fact_entity_id,
+           COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id,
+           e.target_goal_id, e.target_fact_entity_id,
+           e.created_at,
+           COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id) AS source_entity_id,
+           COALESCE(e.target_memory_id, e.target_goal_id, tfe.current_memory_id) AS target_entity_id
+      FROM proxima_core.edges e
+      LEFT JOIN proxima_core.fact_entities sfe
+        ON sfe.fact_entity_id = e.source_fact_entity_id
+      LEFT JOIN proxima_core.fact_entities tfe
+        ON tfe.fact_entity_id = e.target_fact_entity_id
+     WHERE ($5::boolean = false OR e.edge_id = ANY($6::uuid[]))
+       AND ($7::text IS NULL OR e.relation = $7)
+       AND ($8::uuid IS NULL OR e.source_memory_id = $8)
+       AND ($9::uuid IS NULL OR e.source_goal_id = $9)
+       AND ($10::uuid IS NULL OR e.source_fact_entity_id = $10)
+       AND ($11::uuid IS NULL OR e.target_memory_id = $11)
+       AND ($12::uuid IS NULL OR e.target_goal_id = $12)
+       AND ($13::uuid IS NULL OR e.target_fact_entity_id = $13)
+),
+visible AS (
+    SELECT edge_heads.*,
+           EXISTS (
+               SELECT 1
+                 FROM proxima_core.entity_owner seo
+                 JOIN unnest($1::proxima_core . owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
+                   ON seo.owner_principal_kind = rs.kind
+                  AND seo.owner_principal_id = rs.id
+                WHERE seo.entity_id = edge_heads.source_entity_id
+           ) AS source_readable,
+           EXISTS (
+               SELECT 1
+                 FROM proxima_core.entity_owner teo
+                 JOIN unnest($1::proxima_core . owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
+                   ON teo.owner_principal_kind = rs.kind
+                  AND teo.owner_principal_id = rs.id
+                WHERE teo.entity_id = edge_heads.target_entity_id
+           ) AS target_readable,
+           EXISTS (
+               SELECT 1
+                 FROM proxima_core.entity_owner weo
+                WHERE weo.entity_id = edge_heads.source_entity_id
+                  AND weo.owner_principal_kind = $3
+                  AND weo.owner_principal_id = $4
+           ) AS source_world_readable
+      FROM edge_heads
+)
+SELECT edge_id, relation, relation_class,
+       source_memory_id, source_goal_id, source_fact_entity_id,
+       target_memory_id, target_goal_id, target_fact_entity_id,
+       target_readable, source_world_readable
+  FROM visible
+ WHERE source_readable
+   AND NOT (source_world_readable AND NOT target_readable)
+ ORDER BY created_at DESC
+ LIMIT $14
+";
 
 #[derive(Debug, Clone, Copy, Default)]
 struct EndpointSql {
@@ -48,9 +110,14 @@ impl From<Option<EntityRef>> for EndpointSql {
 
 pub(crate) async fn read_edges(
     pool: &PgPool,
+    read_owners: &[Principal],
     req: &EdgeReadRequest,
 ) -> Result<EdgeReadResponse, StorageError> {
-    let (owner_kind, owner_principal_id) = req.principal.columns();
+    if read_owners.is_empty() {
+        return Ok(EdgeReadResponse { edges: Vec::new() });
+    }
+    let (read_owner_kinds, read_owner_ids) = read_owner_columns(read_owners);
+    let (world_kind, world_id) = proxima_core::access::world().columns();
     let edge_ids = req
         .edge_ids
         .iter()
@@ -64,41 +131,24 @@ pub(crate) async fn read_edges(
         req.limit
             .min(u32::try_from(MAX_SNAPSHOT_EDGES).expect("MAX_SNAPSHOT_EDGES fits in u32")),
     );
-    let mut rows = sqlx::query_as::<_, EdgeRowDb>(
-        "SELECT edge_id, relation, relation_class, \
-                source_memory_id, source_goal_id, source_fact_entity_id, \
-                target_memory_id, target_goal_id, target_fact_entity_id, \
-                owner_principal_kind, \
-                owner_principal_id \
-         FROM proxima_core.edges \
-         WHERE owner_principal_kind = $1 \
-           AND owner_principal_id = $2 \
-           AND ($3::boolean = false OR edge_id = ANY($4::uuid[])) \
-           AND ($5::text IS NULL OR relation = $5) \
-           AND ($6::uuid IS NULL OR source_memory_id = $6) \
-           AND ($7::uuid IS NULL OR source_goal_id = $7) \
-           AND ($8::uuid IS NULL OR source_fact_entity_id = $8) \
-           AND ($9::uuid IS NULL OR target_memory_id = $9) \
-           AND ($10::uuid IS NULL OR target_goal_id = $10) \
-           AND ($11::uuid IS NULL OR target_fact_entity_id = $11) \
-         ORDER BY created_at DESC \
-         LIMIT $12",
-    )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(edge_ids_filter)
-    .bind(&edge_ids)
-    .bind(req.filter.relation.as_deref())
-    .bind(source.memory)
-    .bind(source.goal)
-    .bind(source.fact_entity)
-    .bind(target.memory)
-    .bind(target.goal)
-    .bind(target.fact_entity)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
-    .map_err(internal)?;
+    let mut rows = sqlx::query_as::<_, EdgeRowDb>(READ_EDGES_SQL)
+        .bind(&read_owner_kinds)
+        .bind(&read_owner_ids)
+        .bind(world_kind)
+        .bind(world_id)
+        .bind(edge_ids_filter)
+        .bind(&edge_ids)
+        .bind(req.filter.relation.as_deref())
+        .bind(source.memory)
+        .bind(source.goal)
+        .bind(source.fact_entity)
+        .bind(target.memory)
+        .bind(target.goal)
+        .bind(target.fact_entity)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(internal)?;
     hydrate_fact_entity_heads(pool, &mut rows).await?;
     let edges = rows
         .into_iter()
@@ -109,6 +159,7 @@ pub(crate) async fn read_edges(
 
 pub(crate) async fn edge_exists(
     pool: &PgPool,
+    read_owners: &[Principal],
     req: &EdgeExistsRequest,
 ) -> Result<EdgeExistsResponse, StorageError> {
     let read = EdgeReadRequest {
@@ -117,7 +168,7 @@ pub(crate) async fn edge_exists(
         filter: req.filter.clone(),
         limit: 1,
     };
-    let response = read_edges(pool, &read).await?;
+    let response = read_edges(pool, read_owners, &read).await?;
     Ok(EdgeExistsResponse {
         exists: !response.edges.is_empty(),
     })
@@ -130,22 +181,14 @@ pub(super) async fn query_edges(
     read_owner_ids: &[uuid::Uuid],
     visible_memory_ids: &[uuid::Uuid],
     visible_goal_ids: &[uuid::Uuid],
-    schemas: &[SchemaInfo],
+    _schemas: &[SchemaInfo],
 ) -> Result<Vec<EdgeRow>, StorageError> {
     let edge_ids = req.edge_ids.clone();
     let id_hydration =
         !req.memory_ids.is_empty() || !req.goal_ids.is_empty() || !req.edge_ids.is_empty();
 
     if !edge_ids.is_empty() {
-        return query_edges_by_id(
-            pool,
-            req,
-            &edge_ids,
-            read_owner_kinds,
-            read_owner_ids,
-            schemas,
-        )
-        .await;
+        return query_edges_by_id(pool, req, &edge_ids, read_owner_kinds, read_owner_ids).await;
     }
     // Focused identity and entity-kind queries should not return graph
     // closure as a side effect. Atlas uses entity_kind = None to opt in.
@@ -164,74 +207,25 @@ async fn query_edges_by_id(
     edge_ids: &[uuid::Uuid],
     read_owner_kinds: &[OwnerPrincipalKind],
     read_owner_ids: &[uuid::Uuid],
-    schemas: &[SchemaInfo],
 ) -> Result<Vec<EdgeRow>, StorageError> {
-    let mut rows = sqlx::query_as::<_, EdgeRowDb>(
-        "SELECT edge_id, relation, relation_class, \
-                source_memory_id, source_goal_id, source_fact_entity_id, \
-                target_memory_id, target_goal_id, target_fact_entity_id, \
-                owner_principal_kind, \
-                owner_principal_id \
-         FROM proxima_core.edges e \
-         WHERE edge_id = ANY($1::uuid[]) \
-         ORDER BY e.created_at DESC \
-         LIMIT $2",
-    )
-    .bind(edge_ids)
-    .bind(i64::from(req.limit))
-    .fetch_all(pool)
-    .await
-    .map_err(internal)?;
-    hydrate_fact_entity_heads(pool, &mut rows).await?;
-    let endpoint_memory_ids = rows
+    let read_owners = read_owner_kinds
         .iter()
-        .flat_map(|row| [row.source_memory_id, row.target_memory_id])
-        .flatten()
+        .zip(read_owner_ids.iter())
+        .map(|(kind, id)| kind.with_uuid(*id))
         .collect::<Vec<_>>();
-    let endpoint_goal_ids = rows
-        .iter()
-        .flat_map(|row| [row.source_goal_id, row.target_goal_id])
-        .flatten()
-        .collect::<Vec<_>>();
-    let (visible_memory_ids, visible_goal_ids) = visible_ids_for(
+    let edge_ids = edge_ids.iter().copied().map(EdgeId::new).collect();
+    let response = read_edges(
         pool,
-        req,
-        read_owner_kinds,
-        read_owner_ids,
-        &endpoint_memory_ids,
-        &endpoint_goal_ids,
-        schemas,
+        &read_owners,
+        &EdgeReadRequest {
+            principal: req.principal.clone(),
+            edge_ids,
+            filter: EdgeFilter::default(),
+            limit: req.limit,
+        },
     )
     .await?;
-    rows.into_iter()
-        .filter(|row| {
-            endpoint_visible(
-                row.source_memory_id,
-                row.source_goal_id,
-                &visible_memory_ids,
-                &visible_goal_ids,
-            ) && endpoint_visible(
-                row.target_memory_id,
-                row.target_goal_id,
-                &visible_memory_ids,
-                &visible_goal_ids,
-            )
-        })
-        .map(edge_row_from_db)
-        .collect()
-}
-
-fn endpoint_visible(
-    memory_id: Option<uuid::Uuid>,
-    goal_id: Option<uuid::Uuid>,
-    visible_memory_ids: &std::collections::HashSet<uuid::Uuid>,
-    visible_goal_ids: &std::collections::HashSet<uuid::Uuid>,
-) -> bool {
-    match (memory_id, goal_id) {
-        (Some(id), None) => visible_memory_ids.contains(&id),
-        (None, Some(id)) => visible_goal_ids.contains(&id),
-        _ => false,
-    }
+    Ok(response.edges)
 }
 
 async fn query_edges_between_visible_nodes(
@@ -239,34 +233,39 @@ async fn query_edges_between_visible_nodes(
     visible_memory_ids: &[uuid::Uuid],
     visible_goal_ids: &[uuid::Uuid],
 ) -> Result<Vec<EdgeRow>, StorageError> {
+    let (world_kind, world_id) = proxima_core::access::world().columns();
     let rows = sqlx::query_as::<_, EdgeRowDb>(
-        "SELECT e.edge_id, e.relation, e.relation_class, \
-                COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id, \
-                e.source_goal_id, e.source_fact_entity_id, \
-                COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id, \
-                e.target_goal_id, e.target_fact_entity_id, \
-                e.owner_principal_kind, \
-                e.owner_principal_id \
-         FROM proxima_core.edges e \
-         LEFT JOIN proxima_core.fact_entities sfe \
-           ON sfe.fact_entity_id = e.source_fact_entity_id \
-          AND sfe.owner_principal_kind = e.owner_principal_kind \
-          AND sfe.owner_principal_id = e.owner_principal_id \
-         LEFT JOIN proxima_core.fact_entities tfe \
-           ON tfe.fact_entity_id = e.target_fact_entity_id \
-          AND tfe.owner_principal_kind = e.owner_principal_kind \
-          AND tfe.owner_principal_id = e.owner_principal_id \
-         WHERE (e.source_memory_id = ANY($1::uuid[]) \
-                OR e.source_goal_id = ANY($2::uuid[]) \
-                OR sfe.current_memory_id = ANY($1::uuid[])) \
-           AND (e.target_memory_id = ANY($1::uuid[]) \
-                OR e.target_goal_id = ANY($2::uuid[]) \
-                OR tfe.current_memory_id = ANY($1::uuid[])) \
-         ORDER BY e.created_at DESC \
-         LIMIT $3",
+        "SELECT e.edge_id, e.relation, e.relation_class,
+                COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
+                e.source_goal_id, e.source_fact_entity_id,
+                COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id,
+                e.target_goal_id, e.target_fact_entity_id,
+                true AS target_readable,
+                EXISTS (
+                    SELECT 1
+                      FROM proxima_core.entity_owner weo
+                     WHERE weo.entity_id = COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id)
+                       AND weo.owner_principal_kind = $3
+                       AND weo.owner_principal_id = $4
+                ) AS source_world_readable
+         FROM proxima_core.edges e
+         LEFT JOIN proxima_core.fact_entities sfe
+           ON sfe.fact_entity_id = e.source_fact_entity_id
+         LEFT JOIN proxima_core.fact_entities tfe
+           ON tfe.fact_entity_id = e.target_fact_entity_id
+         WHERE (e.source_memory_id = ANY($1::uuid[])
+                OR e.source_goal_id = ANY($2::uuid[])
+                OR sfe.current_memory_id = ANY($1::uuid[]))
+           AND (e.target_memory_id = ANY($1::uuid[])
+                OR e.target_goal_id = ANY($2::uuid[])
+                OR tfe.current_memory_id = ANY($1::uuid[]))
+         ORDER BY e.created_at DESC
+         LIMIT $5",
     )
     .bind(visible_memory_ids)
     .bind(visible_goal_ids)
+    .bind(world_kind)
+    .bind(world_id)
     .bind(i64::try_from(MAX_SNAPSHOT_EDGES).expect("MAX_SNAPSHOT_EDGES fits in i64"))
     .fetch_all(pool)
     .await
@@ -278,39 +277,32 @@ async fn hydrate_fact_entity_heads(
     pool: &PgPool,
     rows: &mut [EdgeRowDb],
 ) -> Result<(), StorageError> {
-    let mut groups =
-        std::collections::HashMap::<(OwnerPrincipalKind, uuid::Uuid), Vec<uuid::Uuid>>::new();
-    for row in rows.iter() {
-        let key = (row.owner_principal_kind, row.owner_principal_id);
-        if let Some(id) = row.source_fact_entity_id {
-            groups.entry(key).or_default().push(id);
-        }
-        if let Some(id) = row.target_fact_entity_id {
-            groups.entry(key).or_default().push(id);
-        }
-    }
-    if groups.is_empty() {
+    let mut ids = rows
+        .iter()
+        .flat_map(|row| [row.source_fact_entity_id, row.target_fact_entity_id])
+        .flatten()
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
         return Ok(());
     }
+    ids.sort_unstable();
+    ids.dedup();
 
-    let mut resolved = std::collections::HashMap::new();
-    for ((owner_kind, owner_principal_id), mut ids) in groups {
-        ids.sort_unstable();
-        ids.dedup();
-        resolved.extend(resolve_head(pool, owner_kind, owner_principal_id, &ids).await?);
-    }
+    let resolved = resolve_heads_by_fact_entity_id(pool, &ids).await?;
 
     for row in rows {
         if let Some(id) = row.source_fact_entity_id {
-            let head = resolved.get(&id).copied().ok_or_else(|| {
-                StorageError::Internal(format!("fact entity {id} has no owner-scoped head"))
-            })?;
+            let head = resolved
+                .get(&id)
+                .copied()
+                .ok_or_else(|| StorageError::Internal(format!("fact entity {id} has no head")))?;
             row.source_memory_id = Some(head);
         }
         if let Some(id) = row.target_fact_entity_id {
-            let head = resolved.get(&id).copied().ok_or_else(|| {
-                StorageError::Internal(format!("fact entity {id} has no owner-scoped head"))
-            })?;
+            let head = resolved
+                .get(&id)
+                .copied()
+                .ok_or_else(|| StorageError::Internal(format!("fact entity {id} has no head")))?;
             row.target_memory_id = Some(head);
         }
     }

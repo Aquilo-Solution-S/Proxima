@@ -15,6 +15,7 @@ pub(crate) fn neighbor_edges_from_rows(
     rows: Vec<crate::storage::NeighborEdgeRow>,
 ) -> Vec<NeighborEdge> {
     rows.into_iter()
+        .filter(|row| !row.source_world_readable || row.target_readable)
         .map(|row| NeighborEdge {
             handle: ctx.format_edge(row.edge_id),
             relation: row.relation,

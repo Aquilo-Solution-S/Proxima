@@ -74,7 +74,8 @@ pub(super) fn edge_row_from_db(r: EdgeRowDb) -> Result<EdgeRow, StorageError> {
         relation_class: r.relation_class.as_str().to_string(),
         source,
         target,
-        owner: owner_from_parts(r.owner_principal_kind, r.owner_principal_id),
+        target_readable: r.target_readable,
+        source_world_readable: r.source_world_readable,
         payload: Vec::new(),
     })
 }
@@ -123,8 +124,8 @@ pub(super) struct EdgeRowDb {
     pub(super) target_memory_id: Option<uuid::Uuid>,
     pub(super) target_goal_id: Option<uuid::Uuid>,
     pub(super) target_fact_entity_id: Option<uuid::Uuid>,
-    pub(super) owner_principal_kind: OwnerPrincipalKind,
-    pub(super) owner_principal_id: uuid::Uuid,
+    pub(super) target_readable: bool,
+    pub(super) source_world_readable: bool,
 }
 
 #[derive(Debug, sqlx::FromRow)]

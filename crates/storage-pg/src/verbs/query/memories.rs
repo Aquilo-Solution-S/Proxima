@@ -15,7 +15,8 @@ use crate::error::internal;
 use crate::sidecars::{PgSidecarKey, PgSidecarRegistryFrozen};
 
 use super::edges::query_edges;
-use super::goals::{query_goals, read_owner_columns};
+use super::goals::query_goals;
+use super::read_owner_columns;
 use super::rows::{MemoryRowDb, memory_row_from_db, read_seq_high_water, validate_stateful_filter};
 
 #[derive(Debug, Clone)]

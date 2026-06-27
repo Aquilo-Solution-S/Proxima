@@ -360,6 +360,7 @@ pub(in crate::engine) mod tests {
 
         async fn read_edges(
             &self,
+            _read_owners: &[Principal],
             _req: &verbs::query::EdgeReadRequest,
         ) -> Result<verbs::query::EdgeReadResponse, StorageError> {
             Ok(verbs::query::EdgeReadResponse { edges: Vec::new() })
@@ -367,6 +368,7 @@ pub(in crate::engine) mod tests {
 
         async fn edge_exists(
             &self,
+            _read_owners: &[Principal],
             _req: &verbs::query::EdgeExistsRequest,
         ) -> Result<verbs::query::EdgeExistsResponse, StorageError> {
             Ok(verbs::query::EdgeExistsResponse { exists: false })
@@ -406,6 +408,7 @@ pub(in crate::engine) mod tests {
 
         async fn walk_memory_lineage(
             &self,
+            _read_owners: &[Principal],
             _req: &verbs::query::MemoryLineageRequest,
         ) -> Result<verbs::query::MemoryLineageResponse, StorageError> {
             Ok(verbs::query::MemoryLineageResponse {

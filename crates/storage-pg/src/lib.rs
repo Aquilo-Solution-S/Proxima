@@ -74,6 +74,65 @@ pub use sidecars::{
 /// dev DB created locally via `createdb proxima_dev`.
 pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_dev";
 
+const NEIGHBOR_MEMORY_EDGES_SQL: &str = r"
+SELECT e.edge_id, e.relation,
+       e.source_kind,
+       COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
+       e.target_kind,
+       COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id,
+       EXISTS (
+           SELECT 1
+             FROM proxima_core.entity_owner teo
+             JOIN unnest($1::proxima_core . owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
+               ON teo.owner_principal_kind = rs.kind
+              AND teo.owner_principal_id = rs.id
+            WHERE teo.entity_id = COALESCE(e.target_memory_id, e.target_goal_id, tfe.current_memory_id)
+       ) AS target_readable,
+       EXISTS (
+           SELECT 1
+             FROM proxima_core.entity_owner weo
+            WHERE weo.entity_id = COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id)
+              AND weo.owner_principal_kind = $3
+              AND weo.owner_principal_id = $4
+       ) AS source_world_readable
+  FROM proxima_core.edges e
+  LEFT JOIN proxima_core.fact_entities sfe
+    ON sfe.fact_entity_id = e.source_fact_entity_id
+  LEFT JOIN proxima_core.fact_entities tfe
+    ON tfe.fact_entity_id = e.target_fact_entity_id
+ WHERE EXISTS (
+           SELECT 1
+             FROM proxima_core.entity_owner seo
+             JOIN unnest($1::proxima_core . owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
+               ON seo.owner_principal_kind = rs.kind
+              AND seo.owner_principal_id = rs.id
+            WHERE seo.entity_id = COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id)
+       )
+   AND (e.source_memory_id = ANY($5::uuid[])
+        OR e.target_memory_id = ANY($5::uuid[])
+        OR sfe.current_memory_id = ANY($5::uuid[])
+        OR tfe.current_memory_id = ANY($5::uuid[]))
+   AND NOT (
+        EXISTS (
+            SELECT 1
+              FROM proxima_core.entity_owner weo
+             WHERE weo.entity_id = COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id)
+               AND weo.owner_principal_kind = $3
+               AND weo.owner_principal_id = $4
+        )
+        AND NOT EXISTS (
+            SELECT 1
+              FROM proxima_core.entity_owner teo
+              JOIN unnest($1::proxima_core . owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
+                ON teo.owner_principal_kind = rs.kind
+               AND teo.owner_principal_id = rs.id
+             WHERE teo.entity_id = COALESCE(e.target_memory_id, e.target_goal_id, tfe.current_memory_id)
+        )
+   )
+ ORDER BY e.edge_id DESC
+ LIMIT $6
+";
+
 /// Embedded core migration set under `crates/storage-pg/migrations/`.
 ///
 /// `ignore_missing = true` is load-bearing when the same database also
@@ -567,11 +626,14 @@ impl Storage for PgStorage {
 
     async fn load_neighbor_memory_edges(
         &self,
-        owner: &Owner,
+        read_owners: &[Principal],
         memory_ids: &[MemoryId],
         limit: usize,
     ) -> Result<Vec<NeighborEdgeRow>, StorageError> {
         if memory_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if read_owners.is_empty() {
             return Ok(Vec::new());
         }
         let ids = memory_ids
@@ -580,7 +642,8 @@ impl Storage for PgStorage {
             .map(MemoryId::into_inner)
             .collect::<Vec<_>>();
         let limit = i64::try_from(limit).map_err(|err| StorageError::Internal(err.to_string()))?;
-        let (owner_kind, owner_principal_id) = owner.columns();
+        let (read_owner_kinds, read_owner_ids) = verbs::query::read_owner_columns(read_owners);
+        let (world_kind, world_id) = proxima_core::access::world().columns();
         let rows: Vec<(
             uuid::Uuid,
             String,
@@ -588,37 +651,18 @@ impl Storage for PgStorage {
             Option<uuid::Uuid>,
             proxima_core::EntityKind,
             Option<uuid::Uuid>,
-        )> = sqlx::query_as(
-            "SELECT e.edge_id, e.relation,
-                    e.source_kind,
-                    COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
-                    e.target_kind,
-                    COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id
-             FROM proxima_core.edges e
-             LEFT JOIN proxima_core.fact_entities sfe
-               ON sfe.fact_entity_id = e.source_fact_entity_id
-              AND sfe.owner_principal_kind = e.owner_principal_kind
-              AND sfe.owner_principal_id = e.owner_principal_id
-             LEFT JOIN proxima_core.fact_entities tfe
-               ON tfe.fact_entity_id = e.target_fact_entity_id
-              AND tfe.owner_principal_kind = e.owner_principal_kind
-              AND tfe.owner_principal_id = e.owner_principal_id
-             WHERE e.owner_principal_kind = $1
-               AND e.owner_principal_id = $2
-               AND (e.source_memory_id = ANY($3::uuid[])
-                    OR e.target_memory_id = ANY($3::uuid[])
-                    OR sfe.current_memory_id = ANY($3::uuid[])
-                    OR tfe.current_memory_id = ANY($3::uuid[]))
-             ORDER BY e.edge_id DESC
-             LIMIT $4",
-        )
-        .bind(owner_kind)
-        .bind(owner_principal_id)
-        .bind(&ids)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
+            bool,
+            bool,
+        )> = sqlx::query_as(NEIGHBOR_MEMORY_EDGES_SQL)
+            .bind(&read_owner_kinds)
+            .bind(&read_owner_ids)
+            .bind(world_kind)
+            .bind(world_id)
+            .bind(&ids)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(internal)?;
         Ok(rows
             .into_iter()
             .map(
@@ -629,6 +673,8 @@ impl Storage for PgStorage {
                     source_memory_id,
                     target_kind,
                     target_memory_id,
+                    target_readable,
+                    source_world_readable,
                 )| {
                     NeighborEdgeRow {
                         edge_id: EdgeId::new(edge_id),
@@ -637,6 +683,8 @@ impl Storage for PgStorage {
                         source_memory_id: source_memory_id.map(MemoryId::new),
                         target_kind,
                         target_memory_id: target_memory_id.map(MemoryId::new),
+                        target_readable,
+                        source_world_readable,
                     }
                 },
             )
@@ -795,15 +843,20 @@ impl Storage for PgStorage {
         verbs::query::query_memories(&self.pool, &self.sidecars, req, schemas).await
     }
 
-    async fn read_edges(&self, req: &EdgeReadRequest) -> Result<EdgeReadResponse, StorageError> {
-        verbs::query::read_edges(&self.pool, req).await
+    async fn read_edges(
+        &self,
+        read_owners: &[Principal],
+        req: &EdgeReadRequest,
+    ) -> Result<EdgeReadResponse, StorageError> {
+        verbs::query::read_edges(&self.pool, read_owners, req).await
     }
 
     async fn edge_exists(
         &self,
+        read_owners: &[Principal],
         req: &EdgeExistsRequest,
     ) -> Result<EdgeExistsResponse, StorageError> {
-        verbs::query::edge_exists(&self.pool, req).await
+        verbs::query::edge_exists(&self.pool, read_owners, req).await
     }
 
     async fn search_memories(
@@ -864,9 +917,10 @@ impl Storage for PgStorage {
 
     async fn walk_memory_lineage(
         &self,
+        read_owners: &[Principal],
         req: &MemoryLineageRequest,
     ) -> Result<MemoryLineageResponse, StorageError> {
-        verbs::query::walk_memory_lineage(&self.pool, req).await
+        verbs::query::walk_memory_lineage(&self.pool, read_owners, req).await
     }
 
     async fn list_active_goals(

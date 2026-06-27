@@ -5,11 +5,13 @@ use proxima_core::verbs::query::{
     MemoryLineageResponse,
 };
 use proxima_core::{
-    MemoryId, OwnerPrincipalKind, RelationClass, SchemaId, StorageError, WakeChainDepth,
+    MemoryId, OwnerPrincipalKind, Principal, RelationClass, SchemaId, StorageError, WakeChainDepth,
 };
 use sqlx::PgPool;
 
 use crate::error::internal;
+
+use super::read_owner_columns;
 
 #[derive(Debug, sqlx::FromRow)]
 struct EdgeWalkRow {
@@ -17,9 +19,12 @@ struct EdgeWalkRow {
     edge_id: uuid::Uuid,
     relation: String,
     relation_class: RelationClass,
+    source_kind: EntityKind,
     source_memory_id: uuid::Uuid,
+    target_kind: EntityKind,
     target_memory_id: uuid::Uuid,
     next_memory_id: uuid::Uuid,
+    next_readable: bool,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -33,11 +38,19 @@ struct NodeRow {
 
 pub(crate) async fn walk_memory_lineage(
     pool: &PgPool,
+    read_owners: &[Principal],
     req: &MemoryLineageRequest,
 ) -> Result<MemoryLineageResponse, StorageError> {
+    if read_owners.is_empty() {
+        return Ok(MemoryLineageResponse {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            truncated: false,
+        });
+    }
     let limit = req.limit.min(200);
     let depth = req.depth.min(8);
-    let (owner_kind, owner_principal_id) = req.principal.columns();
+    let (read_owner_kinds, read_owner_ids) = read_owner_columns(read_owners);
 
     let reader_id = req
         .reader_personality_instance_id
@@ -45,8 +58,8 @@ pub(crate) async fn walk_memory_lineage(
 
     if !start_memory_visible(
         pool,
-        owner_kind,
-        owner_principal_id,
+        &read_owner_kinds,
+        &read_owner_ids,
         req.start_memory_id,
         reader_id,
     )
@@ -62,8 +75,8 @@ pub(crate) async fn walk_memory_lineage(
     let edge_rows = walk_edges(
         pool,
         req,
-        owner_kind,
-        owner_principal_id,
+        &read_owner_kinds,
+        &read_owner_ids,
         depth,
         limit.saturating_add(1),
         reader_id,
@@ -78,14 +91,22 @@ pub(crate) async fn walk_memory_lineage(
     let mut distances = BTreeMap::from([(req.start_memory_id.into_inner(), 0_u8)]);
     for row in &edge_rows {
         let distance = u8::try_from(row.distance).unwrap_or(u8::MAX);
-        distances
-            .entry(row.next_memory_id)
-            .and_modify(|prior| *prior = (*prior).min(distance))
-            .or_insert(distance);
+        if row.next_readable {
+            distances
+                .entry(row.next_memory_id)
+                .and_modify(|prior| *prior = (*prior).min(distance))
+                .or_insert(distance);
+        }
     }
     let memory_ids: Vec<_> = distances.keys().copied().collect();
-    let node_rows =
-        load_nodes(pool, owner_kind, owner_principal_id, &memory_ids, reader_id).await?;
+    let node_rows = load_nodes(
+        pool,
+        &read_owner_kinds,
+        &read_owner_ids,
+        &memory_ids,
+        reader_id,
+    )
+    .await?;
     let visible_ids: BTreeSet<_> = node_rows.iter().map(|row| row.memory_id).collect();
     let nodes = node_rows
         .into_iter()
@@ -101,15 +122,14 @@ pub(crate) async fn walk_memory_lineage(
 
     let edges = edge_rows
         .into_iter()
-        .filter(|row| {
-            visible_ids.contains(&row.source_memory_id)
-                && visible_ids.contains(&row.target_memory_id)
-        })
+        .filter(|row| visible_ids.contains(&row.source_memory_id))
         .map(|row| MemoryLineageEdge {
             edge_id: row.edge_id,
             relation: row.relation,
             relation_class: row.relation_class.as_str().to_string(),
+            source_kind: row.source_kind,
             source_memory_id: MemoryId::new(row.source_memory_id),
+            target_kind: row.target_kind,
             target_memory_id: MemoryId::new(row.target_memory_id),
             distance: u8::try_from(row.distance).unwrap_or(u8::MAX),
         })
@@ -124,23 +144,29 @@ pub(crate) async fn walk_memory_lineage(
 
 async fn start_memory_visible(
     pool: &PgPool,
-    owner_kind: OwnerPrincipalKind,
-    owner_principal_id: uuid::Uuid,
+    read_owner_kinds: &[OwnerPrincipalKind],
+    read_owner_ids: &[uuid::Uuid],
     memory_id: MemoryId,
     reader_id: Option<uuid::Uuid>,
 ) -> Result<bool, StorageError> {
     let mut sql = String::from(
-        "SELECT memory_id
-             FROM proxima_core.memories
-             WHERE owner_principal_kind = $1
-               AND owner_principal_id = $2
-               AND memory_id = $3
-               AND tombstoned_at IS NULL",
+        "SELECT m.memory_id
+             FROM proxima_core.memories m
+             WHERE EXISTS (
+                       SELECT 1
+                         FROM proxima_core.entity_owner eo
+                         JOIN unnest($1::proxima_core . owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
+                           ON eo.owner_principal_kind = rs.kind
+                          AND eo.owner_principal_id = rs.id
+                        WHERE eo.entity_id = m.memory_id
+                   )
+               AND m.memory_id = $3
+               AND m.tombstoned_at IS NULL",
     );
-    push_reader_visibility_filter(&mut sql, "memories", reader_id.map(|_| 4));
+    push_reader_visibility_filter(&mut sql, "m", reader_id.map(|_| 4));
     let mut query = sqlx::query_as::<_, (uuid::Uuid,)>(&sql)
-        .bind(owner_kind)
-        .bind(owner_principal_id)
+        .bind(read_owner_kinds)
+        .bind(read_owner_ids)
         .bind(memory_id.into_inner());
     if let Some(reader_id) = reader_id {
         query = query.bind(reader_id);
@@ -152,8 +178,8 @@ async fn start_memory_visible(
 async fn walk_edges(
     pool: &PgPool,
     req: &MemoryLineageRequest,
-    owner_kind: OwnerPrincipalKind,
-    owner_principal_id: uuid::Uuid,
+    read_owner_kinds: &[OwnerPrincipalKind],
+    read_owner_ids: &[uuid::Uuid],
     depth: u8,
     limit: u32,
     reader_id: Option<uuid::Uuid>,
@@ -163,12 +189,15 @@ async fn walk_edges(
         MemoryLineageDirection::Descendants => DESCENDANTS_SQL,
     };
     let reader_filter = reader_id
-        .map(|_| reader_visibility_filter("m", 6))
+        .map(|_| reader_visibility_filter("m", 8))
         .unwrap_or_default();
     let sql = template.replace("{reader_filter}", &reader_filter);
+    let (world_kind, world_id) = proxima_core::access::world().columns();
     let mut query = sqlx::query_as::<_, EdgeWalkRow>(&sql)
-        .bind(owner_kind)
-        .bind(owner_principal_id)
+        .bind(read_owner_kinds)
+        .bind(read_owner_ids)
+        .bind(world_kind)
+        .bind(world_id)
         .bind(req.start_memory_id.into_inner())
         .bind(i32::from(depth))
         .bind(i64::from(limit));
@@ -180,40 +209,39 @@ async fn walk_edges(
 
 async fn load_nodes(
     pool: &PgPool,
-    owner_kind: OwnerPrincipalKind,
-    owner_principal_id: uuid::Uuid,
+    read_owner_kinds: &[OwnerPrincipalKind],
+    read_owner_ids: &[uuid::Uuid],
     memory_ids: &[uuid::Uuid],
     reader_id: Option<uuid::Uuid>,
 ) -> Result<Vec<NodeRow>, StorageError> {
     let mut sql = String::from(
-        "SELECT memory_id,
-                  kind,
-                  schema_id,
-                  left(COALESCE(text, ''), 480) AS snippet,
-                  wake_chain_depth
-             FROM proxima_core.memories
-             WHERE owner_principal_kind = $1
-               AND owner_principal_id = $2
-               AND memory_id = ANY($3::uuid[])
-               AND tombstoned_at IS NULL",
+        "SELECT m.memory_id,
+                  m.kind,
+                  m.schema_id,
+                  left(COALESCE(m.text, ''), 480) AS snippet,
+                  m.wake_chain_depth
+             FROM proxima_core.memories m
+             WHERE EXISTS (
+                       SELECT 1
+                         FROM proxima_core.entity_owner eo
+                         JOIN unnest($1::proxima_core . owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
+                           ON eo.owner_principal_kind = rs.kind
+                          AND eo.owner_principal_id = rs.id
+                        WHERE eo.entity_id = m.memory_id
+                   )
+               AND m.memory_id = ANY($3::uuid[])
+               AND m.tombstoned_at IS NULL",
     );
-    push_reader_visibility_filter(&mut sql, "memories", reader_id.map(|_| 4));
+    push_reader_visibility_filter(&mut sql, "m", reader_id.map(|_| 4));
     let mut query = sqlx::query_as::<_, NodeRow>(&sql)
-        .bind(owner_kind)
-        .bind(owner_principal_id)
+        .bind(read_owner_kinds)
+        .bind(read_owner_ids)
         .bind(memory_ids);
     if let Some(reader_id) = reader_id {
         query = query.bind(reader_id);
     }
     let rows = query.fetch_all(pool).await.map_err(internal)?;
 
-    let expected: BTreeSet<_> = memory_ids.iter().copied().collect();
-    let actual: BTreeSet<_> = rows.iter().map(|row: &NodeRow| row.memory_id).collect();
-    if expected != actual {
-        return Err(StorageError::Internal(
-            "lineage node visibility mismatch".into(),
-        ));
-    }
     Ok(rows)
 }
 
@@ -241,135 +269,183 @@ fn reader_visibility_filter(alias: &str, param: usize) -> String {
 }
 
 const ANCESTORS_SQL: &str = r"
-WITH RECURSIVE edge_heads AS (
+WITH RECURSIVE read_set(kind, id) AS (
+    SELECT * FROM unnest($1::proxima_core . owner_principal_kind[], $2::uuid[])
+),
+readable_memories AS (
+    SELECT m.memory_id
+      FROM proxima_core.memories m
+     WHERE EXISTS (
+               SELECT 1
+                 FROM proxima_core.entity_owner eo
+                 JOIN read_set rs
+                   ON eo.owner_principal_kind = rs.kind
+                  AND eo.owner_principal_id = rs.id
+                WHERE eo.entity_id = m.memory_id
+           )
+       AND m.tombstoned_at IS NULL
+       {reader_filter}
+),
+edge_endpoints AS (
     SELECT e.edge_id, e.relation, e.relation_class,
+           e.source_kind, e.target_kind,
            COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
            COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id,
-           e.owner_principal_kind, e.owner_principal_id
+           COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id) AS source_entity_id,
+           COALESCE(e.target_memory_id, e.target_goal_id, tfe.current_memory_id) AS target_entity_id
       FROM proxima_core.edges e
       LEFT JOIN proxima_core.fact_entities sfe
         ON sfe.fact_entity_id = e.source_fact_entity_id
-       AND sfe.owner_principal_kind = e.owner_principal_kind
-       AND sfe.owner_principal_id = e.owner_principal_id
       LEFT JOIN proxima_core.fact_entities tfe
         ON tfe.fact_entity_id = e.target_fact_entity_id
-       AND tfe.owner_principal_kind = e.owner_principal_kind
-       AND tfe.owner_principal_id = e.owner_principal_id
-     WHERE e.owner_principal_kind = $1
-       AND e.owner_principal_id = $2
+),
+edge_heads AS (
+    SELECT edge_endpoints.*,
+           EXISTS (
+               SELECT 1 FROM readable_memories rm
+                WHERE rm.memory_id = edge_endpoints.source_memory_id
+           ) AS source_readable,
+           EXISTS (
+               SELECT 1 FROM readable_memories rm
+                WHERE rm.memory_id = edge_endpoints.target_memory_id
+           ) AS target_readable,
+           EXISTS (
+               SELECT 1
+                 FROM proxima_core.entity_owner weo
+                WHERE weo.entity_id = edge_endpoints.source_entity_id
+                  AND weo.owner_principal_kind = $3
+                  AND weo.owner_principal_id = $4
+           ) AS source_world_readable
+      FROM edge_endpoints
 ),
 walk AS (
     SELECT 1 AS distance,
-           ARRAY[$3::uuid, e.target_memory_id] AS path,
+           ARRAY[$5::uuid, e.target_memory_id] AS path,
            e.edge_id, e.relation, e.relation_class,
-           e.source_memory_id, e.target_memory_id,
-           e.target_memory_id AS next_memory_id
+           e.source_kind, e.source_memory_id,
+           e.target_kind, e.target_memory_id,
+           e.target_memory_id AS next_memory_id,
+           e.target_readable AS next_readable
     FROM edge_heads e
-    WHERE e.source_memory_id = $3
+    WHERE e.source_memory_id = $5
+      AND e.source_readable
       AND e.target_memory_id IS NOT NULL
       AND e.relation_class IN ('Provenance', 'Supersession')
-      AND EXISTS (
-          SELECT 1
-            FROM proxima_core.memories m
-           WHERE m.memory_id = e.target_memory_id
-             AND m.owner_principal_kind = e.owner_principal_kind
-             AND m.owner_principal_id = e.owner_principal_id
-             AND m.tombstoned_at IS NULL
-             {reader_filter}
-      )
+      AND NOT (e.source_world_readable AND NOT e.target_readable)
     UNION ALL
     SELECT w.distance + 1,
            w.path || e.target_memory_id,
            e.edge_id, e.relation, e.relation_class,
-           e.source_memory_id, e.target_memory_id,
-           e.target_memory_id
+           e.source_kind, e.source_memory_id,
+           e.target_kind, e.target_memory_id,
+           e.target_memory_id,
+           e.target_readable
     FROM walk w
     JOIN edge_heads e
       ON e.source_memory_id = w.next_memory_id
      AND e.target_memory_id IS NOT NULL
      AND e.relation_class IN ('Provenance', 'Supersession')
-    WHERE w.distance < $4
+    WHERE w.distance < $6
+      AND w.next_readable
+      AND e.source_readable
       AND NOT e.target_memory_id = ANY(w.path)
-      AND EXISTS (
-          SELECT 1
-            FROM proxima_core.memories m
-           WHERE m.memory_id = e.target_memory_id
-             AND m.owner_principal_kind = e.owner_principal_kind
-             AND m.owner_principal_id = e.owner_principal_id
-             AND m.tombstoned_at IS NULL
-             {reader_filter}
-      )
+      AND NOT (e.source_world_readable AND NOT e.target_readable)
 )
 SELECT distance, edge_id, relation, relation_class,
-       source_memory_id, target_memory_id, next_memory_id
+       source_kind, source_memory_id, target_kind, target_memory_id,
+       next_memory_id, next_readable
 FROM walk
 ORDER BY distance ASC, edge_id DESC
-LIMIT $5
+LIMIT $7
 ";
 
 const DESCENDANTS_SQL: &str = r"
-WITH RECURSIVE edge_heads AS (
+WITH RECURSIVE read_set(kind, id) AS (
+    SELECT * FROM unnest($1::proxima_core . owner_principal_kind[], $2::uuid[])
+),
+readable_memories AS (
+    SELECT m.memory_id
+      FROM proxima_core.memories m
+     WHERE EXISTS (
+               SELECT 1
+                 FROM proxima_core.entity_owner eo
+                 JOIN read_set rs
+                   ON eo.owner_principal_kind = rs.kind
+                  AND eo.owner_principal_id = rs.id
+                WHERE eo.entity_id = m.memory_id
+           )
+       AND m.tombstoned_at IS NULL
+       {reader_filter}
+),
+edge_endpoints AS (
     SELECT e.edge_id, e.relation, e.relation_class,
+           e.source_kind, e.target_kind,
            COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
            COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id,
-           e.owner_principal_kind, e.owner_principal_id
+           COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id) AS source_entity_id,
+           COALESCE(e.target_memory_id, e.target_goal_id, tfe.current_memory_id) AS target_entity_id
       FROM proxima_core.edges e
       LEFT JOIN proxima_core.fact_entities sfe
         ON sfe.fact_entity_id = e.source_fact_entity_id
-       AND sfe.owner_principal_kind = e.owner_principal_kind
-       AND sfe.owner_principal_id = e.owner_principal_id
       LEFT JOIN proxima_core.fact_entities tfe
         ON tfe.fact_entity_id = e.target_fact_entity_id
-       AND tfe.owner_principal_kind = e.owner_principal_kind
-       AND tfe.owner_principal_id = e.owner_principal_id
-     WHERE e.owner_principal_kind = $1
-       AND e.owner_principal_id = $2
+),
+edge_heads AS (
+    SELECT edge_endpoints.*,
+           EXISTS (
+               SELECT 1 FROM readable_memories rm
+                WHERE rm.memory_id = edge_endpoints.source_memory_id
+           ) AS source_readable,
+           EXISTS (
+               SELECT 1 FROM readable_memories rm
+                WHERE rm.memory_id = edge_endpoints.target_memory_id
+           ) AS target_readable,
+           EXISTS (
+               SELECT 1
+                 FROM proxima_core.entity_owner weo
+                WHERE weo.entity_id = edge_endpoints.source_entity_id
+                  AND weo.owner_principal_kind = $3
+                  AND weo.owner_principal_id = $4
+           ) AS source_world_readable
+      FROM edge_endpoints
 ),
 walk AS (
     SELECT 1 AS distance,
-           ARRAY[$3::uuid, e.source_memory_id] AS path,
+           ARRAY[$5::uuid, e.source_memory_id] AS path,
            e.edge_id, e.relation, e.relation_class,
-           e.source_memory_id, e.target_memory_id,
-           e.source_memory_id AS next_memory_id
+           e.source_kind, e.source_memory_id,
+           e.target_kind, e.target_memory_id,
+           e.source_memory_id AS next_memory_id,
+           e.source_readable AS next_readable
     FROM edge_heads e
-    WHERE e.target_memory_id = $3
+    WHERE e.target_memory_id = $5
+      AND e.source_readable
       AND e.source_memory_id IS NOT NULL
       AND e.relation_class IN ('Provenance', 'Supersession')
-      AND EXISTS (
-          SELECT 1
-            FROM proxima_core.memories m
-           WHERE m.memory_id = e.source_memory_id
-             AND m.owner_principal_kind = e.owner_principal_kind
-             AND m.owner_principal_id = e.owner_principal_id
-             AND m.tombstoned_at IS NULL
-             {reader_filter}
-      )
+      AND NOT (e.source_world_readable AND NOT e.target_readable)
     UNION ALL
     SELECT w.distance + 1,
            w.path || e.source_memory_id,
            e.edge_id, e.relation, e.relation_class,
-           e.source_memory_id, e.target_memory_id,
-           e.source_memory_id
+           e.source_kind, e.source_memory_id,
+           e.target_kind, e.target_memory_id,
+           e.source_memory_id,
+           e.source_readable
     FROM walk w
     JOIN edge_heads e
       ON e.target_memory_id = w.next_memory_id
      AND e.source_memory_id IS NOT NULL
      AND e.relation_class IN ('Provenance', 'Supersession')
-    WHERE w.distance < $4
+    WHERE w.distance < $6
+      AND w.next_readable
+      AND e.source_readable
       AND NOT e.source_memory_id = ANY(w.path)
-      AND EXISTS (
-          SELECT 1
-            FROM proxima_core.memories m
-           WHERE m.memory_id = e.source_memory_id
-             AND m.owner_principal_kind = e.owner_principal_kind
-             AND m.owner_principal_id = e.owner_principal_id
-             AND m.tombstoned_at IS NULL
-             {reader_filter}
-      )
+      AND NOT (e.source_world_readable AND NOT e.target_readable)
 )
 SELECT distance, edge_id, relation, relation_class,
-       source_memory_id, target_memory_id, next_memory_id
+       source_kind, source_memory_id, target_kind, target_memory_id,
+       next_memory_id, next_readable
 FROM walk
 ORDER BY distance ASC, edge_id DESC
-LIMIT $5
+LIMIT $7
 ";

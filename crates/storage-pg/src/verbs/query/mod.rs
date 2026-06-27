@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 
 use proxima_core::{
-    FactEntityId, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion, StorageError,
+    FactEntityId, Owner, OwnerPrincipalKind, Principal, SchemaId, SchemaVersion, StorageError,
 };
 use sqlx::{Executor, PgConnection, PgPool, Postgres};
 
@@ -34,6 +34,20 @@ pub(crate) use edges::{edge_exists, read_edges};
 pub(crate) use lineage::walk_memory_lineage;
 pub(crate) use memories::query_memories;
 pub(crate) use search::search_memories;
+
+pub(crate) fn read_owner_columns(
+    read_owners: &[Principal],
+) -> (Vec<OwnerPrincipalKind>, Vec<uuid::Uuid>) {
+    let kinds = read_owners
+        .iter()
+        .map(|principal| principal.columns().0)
+        .collect();
+    let ids = read_owners
+        .iter()
+        .map(|principal| principal.columns().1)
+        .collect();
+    (kinds, ids)
+}
 
 /// Resolve the aggregate `fact_entity_id` for an owner-scoped Fact
 /// natural key inside an existing transaction.
@@ -92,10 +106,8 @@ where
     Ok(id.map(FactEntityId::new))
 }
 
-pub(crate) async fn resolve_head(
+pub(crate) async fn resolve_heads_by_fact_entity_id(
     pool: &PgPool,
-    owner_kind: OwnerPrincipalKind,
-    owner_principal_id: uuid::Uuid,
     fact_entity_ids: &[uuid::Uuid],
 ) -> Result<HashMap<uuid::Uuid, uuid::Uuid>, StorageError> {
     if fact_entity_ids.is_empty() {
@@ -104,12 +116,8 @@ pub(crate) async fn resolve_head(
     let rows = sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid)>(
         "SELECT fact_entity_id, current_memory_id
            FROM proxima_core.fact_entities
-          WHERE owner_principal_kind = $1
-            AND owner_principal_id = $2
-            AND fact_entity_id = ANY($3::uuid[])",
+          WHERE fact_entity_id = ANY($1::uuid[])",
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(fact_entity_ids)
     .fetch_all(pool)
     .await
