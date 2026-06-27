@@ -905,6 +905,18 @@ pub trait Storage: Send + Sync {
     /// number of rows revoked.
     async fn revoke_access_grants(&self, selector: &GrantSelector) -> Result<u64, StorageError>;
 
+    /// Insert an entry grant and optionally promote private visibility to
+    /// shared in one transaction.
+    async fn share_entry_atomic(
+        &self,
+        grant: &NewAccessGrant,
+        set_shared_if_private: bool,
+    ) -> Result<(), StorageError>;
+
+    /// Revoke matching entry grants and demote shared visibility to private
+    /// when no active entry grants remain, in one transaction.
+    async fn unshare_entry_atomic(&self, selector: &GrantSelector) -> Result<u64, StorageError>;
+
     /// "Who can access this" — active grants on a space or memory resource.
     async fn list_access_grants(
         &self,
@@ -1451,6 +1463,18 @@ impl Storage for NoopStorage {
     }
 
     async fn revoke_access_grants(&self, _selector: &GrantSelector) -> Result<u64, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn share_entry_atomic(
+        &self,
+        _grant: &NewAccessGrant,
+        _set_shared_if_private: bool,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn unshare_entry_atomic(&self, _selector: &GrantSelector) -> Result<u64, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 

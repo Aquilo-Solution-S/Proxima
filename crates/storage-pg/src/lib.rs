@@ -1176,6 +1176,18 @@ impl Storage for PgStorage {
         verbs::access_grants::revoke_access_grants(&self.pool, selector).await
     }
 
+    async fn share_entry_atomic(
+        &self,
+        grant: &NewAccessGrant,
+        set_shared_if_private: bool,
+    ) -> Result<(), StorageError> {
+        verbs::access_grants::share_entry_atomic(&self.pool, grant, set_shared_if_private).await
+    }
+
+    async fn unshare_entry_atomic(&self, selector: &GrantSelector) -> Result<u64, StorageError> {
+        verbs::access_grants::unshare_entry_atomic(&self.pool, selector).await
+    }
+
     async fn list_access_grants(
         &self,
         space_owner: &Owner,

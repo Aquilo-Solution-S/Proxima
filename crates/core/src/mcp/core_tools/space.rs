@@ -6,7 +6,7 @@ use crate::access::GrantResource;
 use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 
 use super::access_common::{
-    GrantOutput, RelationArg, StatusOutput, format_grant, format_principal, parse_principal,
+    GrantOutput, RelationArg, StatusOutput, format_grant, format_principal, parse_grant_subject,
 };
 use super::{READ_ONLY, WRITE_IDEMPOTENT};
 
@@ -128,8 +128,7 @@ async fn set_member(
         .set_space_binding(
             &ctx.authz,
             space.owner,
-            parse_principal(&args.subject)?,
-            args.subject_is_group,
+            parse_grant_subject(&args.subject, args.subject_is_group)?,
             args.relation.into(),
         )
         .await?;

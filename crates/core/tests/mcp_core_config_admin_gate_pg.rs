@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use common::{drop_db, fresh_pg, owner_fixture};
+use proxima_core::access::GrantSubject;
 use proxima_core::authz::{AuthPath, AuthzContext, CapabilitySet, Identity, ToolScope};
 use proxima_core::mcp::core_tools::add_wake_entry::AddWakeEntryArgs;
 use proxima_core::mcp::core_tools::personality::{CorePersonalityArgs, CorePersonalityTool};
@@ -34,8 +35,7 @@ async fn seed_space_grant(
         space_owner: space_owner.clone(),
         resource: GrantResource::Space,
         relation,
-        subject: subject.clone(),
-        subject_is_group: false,
+        subject: GrantSubject::Principal(subject.clone()),
         granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
     })
     .await

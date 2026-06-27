@@ -158,9 +158,9 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `owner`, lacks
-    /// `SourceIngest`, or lacks a `memory.write` grant on the owner space, and
-    /// `Internal` for storage failures.
+    /// Returns `Forbidden` when the context cannot access `owner` or lacks
+    /// [`Relation::Ingest`] on the owner space, and `Internal` for storage
+    /// failures.
     pub async fn tombstone_fact(
         &self,
         authz: &AuthzContext,

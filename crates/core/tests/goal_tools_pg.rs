@@ -5,6 +5,7 @@ use std::{collections::HashSet, future::Future, pin::Pin, sync::Arc};
 mod common;
 
 use common::{drop_db, fresh_pg, owner_fixture};
+use proxima_core::access::GrantSubject;
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
 use proxima_core::goal::relations::CORE_MOTIVATED_BY_RELATION;
@@ -465,8 +466,7 @@ impl ToolHarness {
                 space_owner: self.owner.clone(),
                 resource: GrantResource::Space,
                 relation: Relation::Viewer,
-                subject: viewer.clone(),
-                subject_is_group: false,
+                subject: GrantSubject::Principal(viewer.clone()),
                 granted_by: PersonalityInstanceId::new(Uuid::now_v7()),
             })
             .await

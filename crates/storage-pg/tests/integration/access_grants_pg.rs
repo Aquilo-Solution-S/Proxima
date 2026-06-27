@@ -7,7 +7,8 @@ use crate::common::{drop_db, fresh_pg, owner_fixture};
 
 use proxima_core::Storage;
 use proxima_core::access::{
-    GrantResource, GrantSelector, NewAccessGrant, Relation, RemoveOwnerOutcome, Visibility,
+    GrantResource, GrantSelector, GrantSubject, NewAccessGrant, Relation, RemoveOwnerOutcome,
+    Visibility,
 };
 use proxima_core::{GroupId, MemoryId, PersonalityInstanceId, Principal, UserId};
 use uuid::Uuid;
@@ -24,19 +25,20 @@ fn pers() -> PersonalityInstanceId {
     PersonalityInstanceId::new(Uuid::now_v7())
 }
 
-fn space_grant(
-    space: &Principal,
-    relation: Relation,
-    subject: &Principal,
-    subject_is_group: bool,
-) -> NewAccessGrant {
+fn space_grant(space: &Principal, relation: Relation, subject: GrantSubject) -> NewAccessGrant {
     NewAccessGrant {
         space_owner: space.clone(),
         resource: GrantResource::Space,
         relation,
-        subject: subject.clone(),
-        subject_is_group,
+        subject,
         granted_by: pers(),
+    }
+}
+
+fn group_subject(principal: &Principal) -> GrantSubject {
+    match principal {
+        Principal::Group(group) => GrantSubject::Group(*group),
+        Principal::User(_) => unreachable!("test helper expects a group principal"),
     }
 }
 
@@ -47,8 +49,12 @@ async fn space_grant_resolves_dominates_and_revokes() -> Result<(), Box<dyn std:
 
     let space = user();
     let alice = user();
-    pg.insert_access_grant(&space_grant(&space, Relation::Editor, &alice, false))
-        .await?;
+    pg.insert_access_grant(&space_grant(
+        &space,
+        Relation::Editor,
+        GrantSubject::Principal(alice.clone()),
+    ))
+    .await?;
 
     let rels = pg.resolve_space_relations(&space, &alice).await?;
     assert_eq!(rels.len(), 1, "one active grant");
@@ -63,8 +69,12 @@ async fn space_grant_resolves_dominates_and_revokes() -> Result<(), Box<dyn std:
     );
 
     // Re-grant is idempotent (ON CONFLICT DO NOTHING).
-    pg.insert_access_grant(&space_grant(&space, Relation::Editor, &alice, false))
-        .await?;
+    pg.insert_access_grant(&space_grant(
+        &space,
+        Relation::Editor,
+        GrantSubject::Principal(alice.clone()),
+    ))
+    .await?;
     assert_eq!(pg.resolve_space_relations(&space, &alice).await?.len(), 1);
 
     // A stranger sees nothing.
@@ -79,8 +89,7 @@ async fn space_grant_resolves_dominates_and_revokes() -> Result<(), Box<dyn std:
             space_owner: space.clone(),
             resource: GrantResource::Space,
             relation: None,
-            subject: alice.clone(),
-            subject_is_group: false,
+            subject: GrantSubject::Principal(alice.clone()),
         })
         .await?;
     assert_eq!(revoked, 1);
@@ -100,10 +109,14 @@ async fn member_inherits_group_space_binding() -> Result<(), Box<dyn std::error:
     let bob = user();
 
     // (space:X, editor, group:eng) and (space:eng, member, principal:bob)
-    pg.insert_access_grant(&space_grant(&space, Relation::Editor, &eng, true))
+    pg.insert_access_grant(&space_grant(&space, Relation::Editor, group_subject(&eng)))
         .await?;
-    pg.insert_access_grant(&space_grant(&eng, Relation::Member, &bob, false))
-        .await?;
+    pg.insert_access_grant(&space_grant(
+        &eng,
+        Relation::Member,
+        GrantSubject::Principal(bob.clone()),
+    ))
+    .await?;
 
     let rels = pg.resolve_space_relations(&space, &bob).await?;
     assert!(
@@ -174,8 +187,7 @@ async fn entry_grant_visibility_and_existence() -> Result<(), Box<dyn std::error
         space_owner: owner.clone(),
         resource: GrantResource::Memory(entry),
         relation: Relation::Viewer,
-        subject: friend.clone(),
-        subject_is_group: false,
+        subject: GrantSubject::Principal(friend.clone()),
         granted_by: pers(),
     })
     .await?;
@@ -203,8 +215,7 @@ async fn entry_grant_visibility_and_existence() -> Result<(), Box<dyn std::error
         space_owner: owner.clone(),
         resource: GrantResource::Memory(entry),
         relation: None,
-        subject: friend.clone(),
-        subject_is_group: false,
+        subject: GrantSubject::Principal(friend.clone()),
     })
     .await?;
     assert_eq!(pg.count_active_entry_grants(&owner, entry).await?, 0);
@@ -217,8 +228,7 @@ async fn entry_grant_visibility_and_existence() -> Result<(), Box<dyn std::error
             space_owner: owner.clone(),
             resource: GrantResource::Memory(bogus),
             relation: Relation::Viewer,
-            subject: friend.clone(),
-            subject_is_group: false,
+            subject: GrantSubject::Principal(friend.clone()),
             granted_by: pers(),
         })
         .await
