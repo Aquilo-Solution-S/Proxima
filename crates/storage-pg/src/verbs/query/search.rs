@@ -524,6 +524,16 @@ fn push_search_head_filter(sql: &mut String, req: &MemorySearchRequest) {
                 SELECT 1 FROM proxima_core.memories m2 \
                  WHERE m2.supersedes = m.memory_id \
                    AND m2.tombstoned_at IS NULL \
+                   AND EXISTS ( \
+                       SELECT 1 FROM proxima_core.entity_owner eo_s \
+                        WHERE eo_s.entity_id = m2.memory_id AND eo_s.is_home \
+                          AND EXISTS ( \
+                              SELECT 1 FROM proxima_core.entity_owner eo_h \
+                               WHERE eo_h.entity_id = m.memory_id AND eo_h.is_home \
+                                 AND eo_h.owner_principal_kind = eo_s.owner_principal_kind \
+                                 AND eo_h.owner_principal_id = eo_s.owner_principal_id \
+                          ) \
+                   ) \
             )) \
         )",
     );

@@ -77,6 +77,25 @@ impl Engine {
             .await?;
 
         let owner = write_permit.owner().clone();
+        if let Some(prior) = req.supersedes {
+            let prior_home = self
+                .storage()
+                .entity_home_owner(EntityId::Memory(prior))
+                .await
+                .map_err(|err| ProtocolError::internal(err.to_string()))?;
+            if prior_home.as_ref() != Some(&owner) {
+                return Err(ProtocolError::forbidden(
+                    "supersedes target is not an owned entity of the same owner",
+                ));
+            }
+            let prior_kind = self.load_required_memory_kind(&owner, prior).await?;
+            if prior_kind != req.kind {
+                return Err(ProtocolError::invalid_argument(
+                    "supersedes",
+                    "must supersede a memory of the same kind",
+                ));
+            }
+        }
         let edges = self.validated_author_derived_edges(authz, &req).await?;
         let target_ids = req
             .edges
