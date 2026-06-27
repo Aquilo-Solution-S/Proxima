@@ -44,7 +44,7 @@ pub use personality::{
     SetWakeEntriesAdminResponse, TombstonePersonalityAdminResponse, UpdateWakeEntryRequest,
     UpdateWakeEntryResponse, WakeEntryPatchInput,
 };
-pub use pipeline::MemoryPermit;
+pub use pipeline::{MemoryPermit, PermitMode};
 pub use read_verbs::{
     EntityHeadCitationReadRequest, FactCitationReadRequest, FactsCitingObjectReadRequest,
     GetGraphReadRequest, GetGraphReadResponse, GetMemoryReadRequest, GetMemoryReadResponse,

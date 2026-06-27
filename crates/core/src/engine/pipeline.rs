@@ -1,28 +1,58 @@
-use crate::access::{AccessScope, Relation};
+use crate::access::{AccessScope, Relation, Visibility};
 use crate::authz::{AuthPath, AuthzContext, AuthzInput, AuthzOutcome};
 use crate::error::ProtocolError;
-use crate::{Owner, Principal};
+use crate::{MemoryId, Owner, PersonalityInstanceId, Principal};
 
 use super::Engine;
 
 /// Proof that one `(owner, relation)` authorization passed the pipeline. Carries
 /// the RESOLVED owner so check-site and use-site cannot diverge. Sealed: only
-/// `authorize_request` (this module) can mint it.
+/// this module's authorization gates can mint it.
 #[derive(Debug)]
 pub struct MemoryPermit {
+    mode: PermitMode,
     owner: Owner,
     requested: Owner,
     relation: Relation,
 }
 
+#[derive(Debug, Clone)]
+pub enum PermitMode {
+    /// Caller operates within the owner-space.
+    OwnerScoped,
+    /// Cross-principal accessor reaching one entry via an entry-level grant.
+    EntryScoped {
+        resource: MemoryId,
+        subject_personality: PersonalityInstanceId,
+    },
+    /// World-readable published entry. Resource-only.
+    PublicRead { resource: MemoryId },
+}
+
 impl MemoryPermit {
-    fn new(owner: Owner, requested: Owner, relation: Relation) -> Self {
+    fn owner_scoped(owner: Owner, requested: Owner, relation: Relation) -> Self {
         Self {
+            mode: PermitMode::OwnerScoped,
             owner,
             requested,
             relation,
         }
     }
+
+    fn entry(mode: PermitMode, owner: Owner, requested: Owner, relation: Relation) -> Self {
+        Self {
+            mode,
+            owner,
+            requested,
+            relation,
+        }
+    }
+
+    #[must_use]
+    pub fn mode(&self) -> &PermitMode {
+        &self.mode
+    }
+
     #[must_use]
     pub fn owner(&self) -> &Owner {
         &self.owner
@@ -78,7 +108,96 @@ impl Engine {
         };
         self.registry.run_authorization_observers(&input, outcome);
         result?;
-        Ok(MemoryPermit::new(resolved, requested.clone(), relation))
+        Ok(MemoryPermit::owner_scoped(
+            resolved,
+            requested.clone(),
+            relation,
+        ))
+    }
+
+    /// Resource-scoped single-entry gate. Entry owner is resolved inside
+    /// storage, so callers cannot select the owner-space used for the read.
+    pub(in crate::engine) async fn authorize_entry_request(
+        &self,
+        authz: &AuthzContext,
+        memory_id: MemoryId,
+        relation: Relation,
+    ) -> Result<MemoryPermit, ProtocolError> {
+        if authz.auth_path == AuthPath::Denied {
+            return Err(ProtocolError::forbidden(
+                "denied context authorizes nothing",
+            ));
+        }
+        let facts = match self.storage().resolve_entry_owner(memory_id).await {
+            Ok(Some(facts)) => facts,
+            Ok(None) => {
+                self.observe_unresolved_entry(authz, relation);
+                return Err(ProtocolError::forbidden("entry not found"));
+            }
+            Err(err) => {
+                self.observe_unresolved_entry(authz, relation);
+                return Err(ProtocolError::internal(err.to_string()));
+            }
+        };
+        let owner = facts.owner;
+        let input = AuthzInput {
+            authz,
+            requested: &owner,
+            resolved: &owner,
+            relation,
+        };
+        if relation == Relation::Viewer && facts.visibility == Visibility::Public {
+            self.veto_and_observe(&input)?;
+            return Ok(MemoryPermit::entry(
+                PermitMode::PublicRead {
+                    resource: memory_id,
+                },
+                owner.clone(),
+                owner,
+                relation,
+            ));
+        }
+
+        let principal = &authz.identity.principal;
+        let identity_owner = matches!(owner, Principal::User(_))
+            && principal == &owner
+            && authz.identity.can_access_principal(&owner);
+        let unrestricted = authz.capabilities.access == AccessScope::Unrestricted
+            && authz.identity.can_access_principal(&owner);
+        let space_ok = self
+            .storage()
+            .resolve_space_relations(&owner, principal)
+            .await
+            .map_err(|err| ProtocolError::internal(err.to_string()))?
+            .iter()
+            .any(|grant| grant.relation.dominates(relation));
+        let entry_ok = self
+            .storage()
+            .resolve_entry_relations(memory_id, principal)
+            .await
+            .map_err(|err| ProtocolError::internal(err.to_string()))?
+            .iter()
+            .any(|grant| grant.relation.dominates(relation));
+        let space_participant = identity_owner || unrestricted || space_ok;
+        if !(space_participant || entry_ok) {
+            self.registry
+                .run_authorization_observers(&input, AuthzOutcome::DeniedGrant);
+            return Err(ProtocolError::forbidden(relation.denied_message()));
+        }
+        self.veto_and_observe(&input)?;
+        let mode = if space_participant {
+            PermitMode::OwnerScoped
+        } else {
+            let personality = self
+                .ensure_subject_personality(&owner, principal)
+                .await
+                .map_err(|err| ProtocolError::internal(err.to_string()))?;
+            PermitMode::EntryScoped {
+                resource: memory_id,
+                subject_personality: personality.instance_id,
+            }
+        };
+        Ok(MemoryPermit::entry(mode, owner.clone(), owner, relation))
     }
 
     async fn gate_and_veto(
@@ -94,6 +213,27 @@ impl Engine {
         self.registry
             .run_authorization_vetoes(input)
             .map_err(|err| (err, AuthzOutcome::DeniedVeto))
+    }
+
+    fn veto_and_observe(&self, input: &AuthzInput<'_>) -> Result<(), ProtocolError> {
+        let (result, outcome) = match self.registry.run_authorization_vetoes(input) {
+            Ok(()) => (Ok(()), AuthzOutcome::Allowed),
+            Err(err) => (Err(err), AuthzOutcome::DeniedVeto),
+        };
+        self.registry.run_authorization_observers(input, outcome);
+        result
+    }
+
+    fn observe_unresolved_entry(&self, authz: &AuthzContext, relation: Relation) {
+        let unresolved = authz.identity.principal.clone();
+        let input = AuthzInput {
+            authz,
+            requested: &unresolved,
+            resolved: &unresolved,
+            relation,
+        };
+        self.registry
+            .run_authorization_observers(&input, AuthzOutcome::DeniedResolution);
     }
 
     /// Steps 0/2/3 of the spec algorithm. `can_access` gates ONLY identity-owner +
@@ -142,9 +282,9 @@ mod tests {
     };
     use crate::error::ErrorCode;
     use crate::error::ProtocolError;
-    use crate::{FlavorRegistry, GroupId, Owner, Principal, UserId};
+    use crate::{FlavorRegistry, GroupId, MemoryId, Owner, Principal, UserId};
 
-    use super::Engine;
+    use super::{Engine, PermitMode};
 
     fn engine() -> Engine {
         Engine::new(FlavorRegistry::new().freeze())
@@ -235,6 +375,7 @@ mod tests {
         assert_eq!(permit.owner(), &owner);
         assert_eq!(permit.requested(), &owner);
         assert_eq!(permit.relation(), Relation::Viewer);
+        assert!(matches!(permit.mode(), PermitMode::OwnerScoped));
     }
 
     #[tokio::test]
@@ -249,6 +390,43 @@ mod tests {
             .expect_err("denied context should reject authorization");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn entry_request_denies_denied_context() {
+        let engine = engine();
+        let owner = owner();
+        let authz = AuthzContext::denied(&owner);
+
+        let err = engine
+            .authorize_entry_request(
+                &authz,
+                MemoryId::new(uuid::Uuid::now_v7()),
+                Relation::Viewer,
+            )
+            .await
+            .expect_err("denied context should reject entry authorization");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn entry_request_absent_entry_returns_forbidden() {
+        let engine = engine();
+        let owner = owner();
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+
+        let err = engine
+            .authorize_entry_request(
+                &authz,
+                MemoryId::new(uuid::Uuid::now_v7()),
+                Relation::Viewer,
+            )
+            .await
+            .expect_err("absent entry should fail closed");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
+        assert_eq!(err.message, "entry not found");
     }
 
     #[tokio::test]
