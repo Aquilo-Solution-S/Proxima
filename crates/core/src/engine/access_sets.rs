@@ -78,6 +78,9 @@ impl Engine {
 }
 
 fn push_full_authority(write: &mut Vec<(Principal, Relation)>, principal: Principal) {
+    if is_world(&principal) {
+        return;
+    }
     write.push((principal.clone(), Relation::Admin));
     write.push((principal.clone(), Relation::Editor));
     write.push((principal, Relation::Ingest));
@@ -87,10 +90,14 @@ fn push_memberships(access: &mut AccessSets, memberships: Vec<MembershipRow>) {
     for MembershipRow { group, relation } in memberships {
         let owner = Principal::Group(group);
         access.read.push(owner.clone());
-        if relation != Relation::Viewer {
+        if relation != Relation::Viewer && !is_world(&owner) {
             access.write.push((owner, relation));
         }
     }
+}
+
+fn is_world(principal: &Principal) -> bool {
+    principal == &world()
 }
 
 #[cfg(test)]
@@ -117,6 +124,7 @@ pub(in crate::engine) mod tests {
         pub(in crate::engine) membership_relation: Relation,
         pub(in crate::engine) home_owner: Option<Principal>,
         pub(in crate::engine) entity_readable: bool,
+        pub(in crate::engine) memory_kind: Option<EntityKind>,
     }
 
     #[async_trait::async_trait]
@@ -188,6 +196,25 @@ pub(in crate::engine) mod tests {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
+        }
+
+        async fn load_memory_kinds(
+            &self,
+            _owner: &Owner,
+            memory_ids: &[MemoryId],
+        ) -> Result<Vec<MemoryKindRow>, StorageError> {
+            Ok(self
+                .memory_kind
+                .map(|kind| {
+                    memory_ids
+                        .iter()
+                        .map(|memory_id| MemoryKindRow {
+                            memory_id: *memory_id,
+                            kind: Some(kind),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default())
         }
 
         async fn load_fact_text(
@@ -744,6 +771,7 @@ pub(in crate::engine) mod tests {
                 membership_relation: Relation::Viewer,
                 home_owner: None,
                 entity_readable: false,
+                memory_kind: None,
             }),
             |_| {},
         );
@@ -773,5 +801,85 @@ pub(in crate::engine) mod tests {
         assert!(!access.can_write(&g1_owner, Relation::Editor));
         assert!(!access.can_write(&g1_owner, Relation::Viewer));
         assert!(!access.can_write(&world_owner, Relation::Viewer));
+    }
+
+    #[tokio::test]
+    async fn unrestricted_context_keeps_world_readable_but_never_writable() {
+        let p = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let g1 = GroupId::new(uuid::Uuid::now_v7());
+        let world_owner = world();
+        let engine = Engine::compose(
+            Arc::new(MembershipStorage {
+                member: p.clone(),
+                group: g1,
+                membership_relation: Relation::Viewer,
+                home_owner: None,
+                entity_readable: false,
+                memory_kind: None,
+            }),
+            |_| {},
+        );
+        let authz = AuthzContext {
+            identity: Identity {
+                principal: p.clone(),
+                accessible_principals: HashSet::from([p.clone(), world_owner.clone()]),
+                expires_at: None,
+                auth_epoch: 0,
+            },
+            capabilities: CapabilitySet {
+                tool_scope: ToolScope::All,
+                access: AccessScope::Unrestricted,
+            },
+            auth_path: AuthPath::HostBearer,
+        };
+
+        let access = engine
+            .resolve_access(&authz)
+            .await
+            .expect("unrestricted access should resolve");
+
+        assert!(access.read_owners().contains(&world_owner));
+        assert!(access.can_write(&p, Relation::Editor));
+        assert!(!access.can_write(&world_owner, Relation::Admin));
+        assert!(!access.can_write(&world_owner, Relation::Editor));
+        assert!(!access.can_write(&world_owner, Relation::Ingest));
+    }
+
+    #[tokio::test]
+    async fn granted_world_membership_is_read_only() {
+        let p = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let world_owner = world();
+        let engine = Engine::compose(
+            Arc::new(MembershipStorage {
+                member: p.clone(),
+                group: crate::access::WORLD_GROUP_ID,
+                membership_relation: Relation::Editor,
+                home_owner: None,
+                entity_readable: false,
+                memory_kind: None,
+            }),
+            |_| {},
+        );
+        let authz = AuthzContext {
+            identity: Identity {
+                principal: p.clone(),
+                accessible_principals: HashSet::from([p.clone()]),
+                expires_at: None,
+                auth_epoch: 0,
+            },
+            capabilities: CapabilitySet {
+                tool_scope: ToolScope::All,
+                access: AccessScope::Granted,
+            },
+            auth_path: AuthPath::HostBearer,
+        };
+
+        let access = engine
+            .resolve_access(&authz)
+            .await
+            .expect("granted access should resolve");
+
+        assert!(access.read_owners().contains(&world_owner));
+        assert!(!access.can_write(&world_owner, Relation::Editor));
     }
 }
