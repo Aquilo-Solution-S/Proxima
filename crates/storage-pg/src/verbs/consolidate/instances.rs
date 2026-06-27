@@ -7,6 +7,7 @@ use proxima_core::{MemoryId, Owner, OwnerPrincipalKind, StorageError};
 use sqlx::{Connection, PgConnection, PgPool};
 
 use crate::error::map_err;
+use crate::verbs::entity_owner::insert_entity_owner_home;
 
 pub async fn list_personality_instances(
     pool: &PgPool,
@@ -146,6 +147,7 @@ pub(crate) async fn instantiate_personality_on_conn(
     .execute(&mut *tx)
     .await
     .map_err(map_err)?;
+    insert_entity_owner_home(&mut *tx, memory_id, &owner, Some(instance_id)).await?;
 
     let change_seq = uuid::Uuid::now_v7();
     sqlx::query!(

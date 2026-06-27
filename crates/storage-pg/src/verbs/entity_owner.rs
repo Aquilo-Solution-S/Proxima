@@ -4,9 +4,34 @@
 use proxima_core::{
     EntityId, GroupId, MembershipRow, OwnerPrincipalKind, Principal, Relation, StorageError,
 };
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use crate::error::map_err;
+
+/// # Errors
+///
+/// Returns `Internal` on sqlx failure.
+pub(crate) async fn insert_entity_owner_home(
+    conn: &mut PgConnection,
+    entity_id: uuid::Uuid,
+    owner: &Principal,
+    granted_by: Option<uuid::Uuid>,
+) -> Result<(), StorageError> {
+    let (owner_kind, owner_principal_id) = owner.columns();
+    sqlx::query(
+        "INSERT INTO proxima_core.entity_owner
+            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
+         VALUES ($1, $2, $3, true, $4)",
+    )
+    .bind(entity_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(granted_by)
+    .execute(conn)
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}
 
 /// # Errors
 ///

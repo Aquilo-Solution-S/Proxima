@@ -25,6 +25,7 @@ use crate::authorship::{AuthorshipColumns, authorship_columns};
 use crate::error::{internal, map_err};
 use crate::sidecars::{PgSidecarKey, PgSidecarRegistryFrozen};
 use crate::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
+use crate::verbs::entity_owner::insert_entity_owner_home;
 use crate::verbs::event_ingest::ingest_event_in_tx;
 
 const LIFECYCLE_SOURCE_ID: &str = "core/goal-lifecycle";
@@ -858,6 +859,13 @@ async fn insert_goal_row(
     .execute(&mut **tx)
     .await
     .map_err(map_goal_insert_err)?;
+    insert_entity_owner_home(
+        &mut **tx,
+        goal_id,
+        &owner,
+        authorship.personality_instance_id,
+    )
+    .await?;
     Ok(())
 }
 

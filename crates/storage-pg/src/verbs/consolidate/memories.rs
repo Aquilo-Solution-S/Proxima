@@ -16,6 +16,7 @@ use sqlx::PgPool;
 use crate::error::map_err;
 use crate::sidecars::{PgSidecarKey, PgSidecarRegistryFrozen};
 use crate::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
+use crate::verbs::entity_owner::insert_entity_owner_home;
 
 const PERSONALITY_APPEND_LOCK_KEY_DOMAIN: &[u8] = b"personality_append_lock_v1";
 
@@ -540,6 +541,13 @@ pub async fn append_personality_memories(
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
+        insert_entity_owner_home(
+            &mut *tx,
+            memory_id,
+            &req.owner,
+            Some(req.instance.personality_instance_id.into_inner()),
+        )
+        .await?;
 
         sidecars
             .insert_memory_sidecar(&mut tx, MemoryId::new(memory_id), &memory.sidecar_payload)
