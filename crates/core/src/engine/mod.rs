@@ -1,6 +1,8 @@
 //! Engine composite — wires `FlavorRegistryFrozen` behind the typed
 //! verb surfaces of docs/14-protocol-surface.md.
 
+#[allow(dead_code)]
+mod access_sets;
 mod builder;
 mod fact_retention;
 mod goal_write;
@@ -27,6 +29,8 @@ use crate::storage::{StorageError, StorageHandle};
 use crate::verbs::schema::FlavorRegistryFrozen;
 use crate::{Owner, Principal, SetWakeEntriesRequest, SetWakeEntriesResponse, WakeEntryDraft};
 
+#[allow(unused_imports)]
+pub(in crate::engine) use access_sets::AccessSets;
 pub use goal_write::{
     GoalCreatePayloadWriteRequest, GoalDecomposeRequest, GoalMarkAchievedRequest,
     GoalModifyRequest, GoalTargetSelf, GoalTransitionRequest,

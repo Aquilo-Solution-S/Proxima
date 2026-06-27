@@ -164,6 +164,9 @@ impl Engine {
 
     /// Resource-scoped single-entry gate. Entry owner is resolved inside
     /// storage, so callers cannot select the owner-space used for the read.
+    // TEMP: grant resolution was gutted in the vocab swap; the .await returns in
+    // Task 5.3/Phase 4 when this is replaced by `authorize_entry_read`. Remove then.
+    #[allow(clippy::unused_async)]
     pub(in crate::engine) async fn authorize_entry_request(
         &self,
         authz: &AuthzContext,
@@ -257,6 +260,9 @@ impl Engine {
     /// unrestricted; persisted space bindings (incl. owner rows + group member
     /// inheritance) are NOT can_access-gated — that is how cross-principal access
     /// works. Resolution is short-circuited for Unrestricted/identity before any DB read.
+    // TEMP: grant-DB resolution removed in the vocab swap; deleted in Phase 4 with the
+    // old gate (replaced by AccessSets::can_write). Remove the allow then.
+    #[allow(clippy::unused_async)]
     async fn resolve_relation(
         &self,
         authz: &AuthzContext,
