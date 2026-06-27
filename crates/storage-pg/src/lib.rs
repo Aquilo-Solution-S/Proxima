@@ -16,7 +16,7 @@ use std::time::Duration;
 use proxima_core::SidecarPayload;
 use proxima_core::access::{
     AccessGrantRow, EntryAccessFacts, GrantResource, GrantSelector, NewAccessGrant,
-    RemoveOwnerOutcome, Visibility,
+    RemoveOwnerOutcome, ShareVisibilityUpdate, Visibility,
 };
 use proxima_core::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
@@ -1179,9 +1179,9 @@ impl Storage for PgStorage {
     async fn share_entry_atomic(
         &self,
         grant: &NewAccessGrant,
-        set_shared_if_private: bool,
+        visibility_update: ShareVisibilityUpdate,
     ) -> Result<(), StorageError> {
-        verbs::access_grants::share_entry_atomic(&self.pool, grant, set_shared_if_private).await
+        verbs::access_grants::share_entry_atomic(&self.pool, grant, visibility_update).await
     }
 
     async fn unshare_entry_atomic(&self, selector: &GrantSelector) -> Result<u64, StorageError> {
