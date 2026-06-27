@@ -197,14 +197,14 @@ theorem registry_determined :
     hosts (CF-54/55). -/
 axiom active_registry : Registry
 
-/-- CF-E — every schema-typed entity (Memory, Goal, Event,
+/-- CF-E — every schema-typed core entity (Memory, Goal,
     CitedObject, CitationMapping) is typed by a registered schema,
-    and every Edge's relation is registered. One axiom, six arms —
-    the merged registration discipline (minimization pass). -/
+    and every Edge's relation is registered. One axiom, five arms —
+    the merged registration discipline (minimization pass). Source/
+    flavor ingest events are not core entities. -/
 axiom entities_use_registered_vocabulary :
   (∀ m : Memory, schema_ref_id (memory_schema m) ∈ registry_schemas active_registry) ∧
   (∀ g : Goal, schema_ref_id (goal_schema g) ∈ registry_schemas active_registry) ∧
-  (∀ e : Event, schema_ref_id (event_schema e) ∈ registry_schemas active_registry) ∧
   (∀ c : CitedObject, schema_ref_id (cited_object_schema c) ∈ registry_schemas active_registry) ∧
   (∀ c : CitationMapping, schema_ref_id (citation_mapping_schema c) ∈ registry_schemas active_registry) ∧
   (∀ e : Edge, edge_relation e ∈ registry_relations active_registry)
@@ -212,7 +212,7 @@ axiom entities_use_registered_vocabulary :
 /-- ME-19 in its original shape — projection theorem. -/
 theorem edges_use_registered_relations :
     ∀ e : Edge, edge_relation e ∈ registry_relations active_registry :=
-  entities_use_registered_vocabulary.2.2.2.2.2
+  entities_use_registered_vocabulary.2.2.2.2
 
 -- ============================================================
 -- Special-category flag (doc 03 §Special-category declaration)

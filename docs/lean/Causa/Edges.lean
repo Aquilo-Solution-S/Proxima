@@ -16,8 +16,8 @@ Minimized trusted core (2026-06-11): the PRIMITIVE axioms are the
 descriptor-mask pair (`edge_respects_mask`,
 `descriptor_masks_tighten_only`) and the scope/shape axioms; the
 class-legality matrix (ME-11), the layer rule (ME-10), and the
-memory-supersession laws (ME-4/5a/5b, via the pointer↔edge bridge)
-are PROVED. A failing proof is drift.
+memory-supersession laws (ME-4/5a/5b, directly from Supersession-class
+edges) are PROVED. A failing proof is drift.
 
 ME-15 — causal chains are queries, not entities: chain(f, P_active)
 = structural Fact backbone + Causal/Interpretive edges authored by
@@ -57,7 +57,7 @@ inductive RelationClass where
 
 /-- Edge authorship vocabulary (doc 02 §Edge Scope Invariant). -/
 inductive EdgeAuthorship where
-  | EventSource     -- payload-derived structural edges
+  | SourceIngest    -- payload-derived structural edges from typed Fact ingest
   | OperatorFtoA    -- F→A provenance
   | OperatorAtoA    -- A→A provenance
   | OperatorAtoP    -- A→P provenance
@@ -100,26 +100,44 @@ noncomputable def NodeRef.schema : NodeRef → SchemaRef
 axiom RelationId : Type
 axiom relation_class : RelationId → RelationClass
 
-axiom Edge : Type
-axiom edge_id         : Edge → EdgeId
-axiom edge_source     : Edge → NodeRef
-axiom edge_target     : Edge → NodeRef
-axiom edge_relation   : Edge → RelationId
-axiom edge_owner      : Edge → Owner
-axiom edge_authorship : Edge → EdgeAuthorship
+structure Edge where
+  id         : EdgeId
+  source     : NodeRef
+  target     : NodeRef
+  relation   : RelationId
+  owner      : Owner
+  authorship : EdgeAuthorship
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def edge_id : Edge → EdgeId := Edge.id
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def edge_source : Edge → NodeRef := Edge.source
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def edge_target : Edge → NodeRef := Edge.target
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def edge_relation : Edge → RelationId := Edge.relation
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def edge_owner : Edge → Owner := Edge.owner
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def edge_authorship : Edge → EdgeAuthorship := Edge.authorship
 
 /-- AGENTS.md invariant 17 / doc 07 §ID Types — the id-representation
-    split is coupled to authorship: EventSource-authored edges carry
+    split is coupled to authorship: source-ingest-authored edges carry
     the deterministic content hash (deduplicable payload-derived
     structure); every other authorship carries a fresh UUIDv7. -/
 axiom edge_id_authorship_split :
   ∀ e : Edge,
     (∃ h : ContentHash, edge_id e = .sourceAuthored h) ↔
-    edge_authorship e = .EventSource
+    edge_authorship e = .SourceIngest
 
 /-- N4 — any Causal edge touching a Goal endpoint is perspectival:
     a Goal and a Fact may be related causally only by a
-    perspective-authored claim, never a structural/EventSource/user edge. -/
+    perspective-authored claim, never a structural/source-ingest/user edge. -/
 axiom causal_goal_edge_perspectival :
   ∀ e : Edge, relation_class (edge_relation e) = .Causal →
     ((∃ g : Goal, edge_source e = .goal g) ∨
@@ -240,27 +258,27 @@ theorem edge_layer_rule :
       | simp [MemoryKind.layer]
 
 -- ============================================================
--- Memory supersession — bridge + PROVED laws (doc 02
--- §Re-derivation and Supersession)
+-- Memory supersession — PROVED from Supersession-class edges
+-- (doc 02 §Re-derivation and Supersession)
 -- ============================================================
 
-/-- The pointer↔edge bridge: a supersession pointer IS a
-    Supersession-class edge (doc 02, verbatim: "new_entity
-    --core/supersedes--> old_entity"). The pointer accessor lives in
-    Causa.Memory; this axiom identifies it with its edge. -/
-axiom supersession_pointer_is_edge :
-  ∀ m m' : Memory, memory_supersedes m = some m' →
-    ∃ e : Edge,
-      edge_source e = .memory m ∧ edge_target e = .memory m' ∧
-      relation_class (edge_relation e) = .Supersession
+/-- Memory supersession is not a Memory row field. It is the existence
+    of a Supersession-class edge from the new row to the old row. -/
+def memorySupersedes (new old : Memory) : Prop :=
+  ∃ e : Edge,
+    edge_source e = .memory new ∧
+    edge_target e = .memory old ∧
+    relation_class (edge_relation e) = .Supersession
 
 /-- ME-5a — supersession endpoint kind must match (doc 02). THEOREM:
     only the A→A and P→P matrix cells admit Supersession. -/
 theorem supersession_same_kind :
-    ∀ m m' : Memory, memory_supersedes m = some m' →
+    ∀ (e : Edge) (m m' : Memory),
+      relation_class (edge_relation e) = .Supersession →
+      edge_source e = .memory m →
+      edge_target e = .memory m' →
       memory_kind m = memory_kind m' := by
-  intro m m' h
-  obtain ⟨e, hs, ht, hc⟩ := supersession_pointer_is_edge m m' h
+  intro e m m' hc hs ht
   have hleg := edge_class_legal e m m' hs ht
   rw [hc] at hleg
   revert hleg
@@ -273,13 +291,15 @@ theorem supersession_same_kind :
 /-- ME-4 — "Facts never supersede and are never superseded"
     (doc 02, verbatim). THEOREM: no Fact cell admits Supersession. -/
 theorem facts_never_supersede :
-    ∀ m m' : Memory, memory_supersedes m = some m' →
+    ∀ (e : Edge) (m m' : Memory),
+      relation_class (edge_relation e) = .Supersession →
+      edge_source e = .memory m →
+      edge_target e = .memory m' →
       memory_kind m ≠ .Fact ∧ memory_kind m' ≠ .Fact := by
-  intro m m' h
-  obtain ⟨e, hs, ht, hc⟩ := supersession_pointer_is_edge m m' h
+  intro e m m' hc hs ht
   have hleg := edge_class_legal e m m' hs ht
   rw [hc] at hleg
-  have hk := supersession_same_kind m m' h
+  have hk := supersession_same_kind e m m' hc hs ht
   constructor
   · intro hf
     rw [hf, ← hk, hf] at hleg
@@ -290,12 +310,14 @@ theorem facts_never_supersede :
     rcases hleg with h' | h' <;> exact (nomatch h')
 
 /-- ME-5b — supersession stays within one Owner. THEOREM: from the
-    bridge edge and the Supersession intra-Owner scope. -/
+    Supersession-class edge and the Supersession intra-Owner scope. -/
 theorem supersession_same_owner :
-    ∀ m m' : Memory, memory_supersedes m = some m' →
+    ∀ (e : Edge) (m m' : Memory),
+      relation_class (edge_relation e) = .Supersession →
+      edge_source e = .memory m →
+      edge_target e = .memory m' →
       memory_owner m = memory_owner m' := by
-  intro m m' h
-  obtain ⟨e, hs, ht, hc⟩ := supersession_pointer_is_edge m m' h
+  intro e m m' hc hs ht
   have htgt := supersession_intra_owner e hc
   rw [hs, ht] at htgt
   -- htgt : NodeRef.owner (.memory m') = NodeRef.owner (.memory m)
