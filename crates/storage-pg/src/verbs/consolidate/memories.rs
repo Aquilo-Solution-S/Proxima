@@ -59,8 +59,14 @@ async fn load_batch_facts_by_id(
              FROM proxima_core.memories m
              JOIN proxima_core.events e ON m.event_id = e.event_id
              WHERE e.source_batch_id = $1
-               AND m.owner_principal_kind = $2
-               AND m.owner_principal_id = $3
+               AND EXISTS (
+                    SELECT 1
+                      FROM proxima_core.entity_owner eo
+                     WHERE eo.entity_id = m.memory_id
+                       AND eo.owner_principal_kind = $2
+                       AND eo.owner_principal_id = $3
+                       AND eo.is_home
+               )
                AND m.schema_id = $4
                AND e.schema_version = $5
                AND m.tombstoned_at IS NULL";
@@ -121,8 +127,14 @@ pub async fn load_abstraction_heads(
         let sql = "SELECT m.memory_id, m.schema_version, m.text,
                     m.created_at, m.wake_chain_depth
              FROM proxima_core.memories m
-             WHERE m.owner_principal_kind = $1
-               AND m.owner_principal_id = $2
+             WHERE EXISTS (
+                    SELECT 1
+                      FROM proxima_core.entity_owner eo
+                     WHERE eo.entity_id = m.memory_id
+                       AND eo.owner_principal_kind = $1
+                       AND eo.owner_principal_id = $2
+                       AND eo.is_home
+               )
                AND m.kind = 'Abstraction'
                AND m.schema_id = $3
                AND m.schema_version = $4
@@ -199,8 +211,14 @@ pub async fn load_perspective_heads(
         let sql = "SELECT m.memory_id, m.schema_version, m.text,
                     m.created_at, m.wake_chain_depth
              FROM proxima_core.memories m
-             WHERE m.owner_principal_kind = $1
-               AND m.owner_principal_id = $2
+             WHERE EXISTS (
+                    SELECT 1
+                      FROM proxima_core.entity_owner eo
+                     WHERE eo.entity_id = m.memory_id
+                       AND eo.owner_principal_kind = $1
+                       AND eo.owner_principal_id = $2
+                       AND eo.is_home
+               )
                AND m.kind = 'Perspective'
                AND m.schema_id = $3
                AND m.schema_version = $4
@@ -286,11 +304,14 @@ pub async fn load_memory_by_id(
         OwnerPrincipalKind,
         uuid::Uuid,
     )> = sqlx::query_as(
-        "SELECT kind, schema_id, schema_version, text, wake_chain_depth,
-                personality_instance_id, owner_principal_kind, owner_principal_id
-         FROM proxima_core.memories
-         WHERE memory_id = $1
-           AND tombstoned_at IS NULL",
+        "SELECT m.kind, m.schema_id, m.schema_version, m.text, m.wake_chain_depth,
+                m.personality_instance_id, home_owner.owner_principal_kind, home_owner.owner_principal_id
+         FROM proxima_core.memories m
+         LEFT JOIN proxima_core.entity_owner home_owner
+           ON home_owner.entity_id = m.memory_id
+          AND home_owner.is_home
+         WHERE m.memory_id = $1
+           AND m.tombstoned_at IS NULL",
     )
     .bind(memory_id.into_inner())
     .fetch_optional(pool)
@@ -426,11 +447,14 @@ async fn memory_visible_to_reader(
     let allowed: Option<(i32,)> = sqlx::query_as(
         "SELECT 1
            FROM proxima_core.read_scope_matrix r
-		          JOIN proxima_core.memories m
-		            ON m.owner_principal_kind = r.owner_principal_kind
-		           AND m.owner_principal_id = r.owner_principal_id
-		           AND m.memory_id = $5
-		           AND m.tombstoned_at IS NULL
+           JOIN proxima_core.entity_owner home_owner
+             ON home_owner.entity_id = $5
+            AND home_owner.is_home
+            AND home_owner.owner_principal_kind = r.owner_principal_kind
+            AND home_owner.owner_principal_id = r.owner_principal_id
+		   JOIN proxima_core.memories m
+		     ON m.memory_id = $5
+		    AND m.tombstoned_at IS NULL
 	         WHERE r.owner_principal_kind = $1
             AND r.owner_principal_id = $2
             AND r.reader_personality_instance_id = $3
@@ -458,20 +482,26 @@ where
 {
     let (owner_kind, owner_principal_id) = owner.columns();
     let row: Option<(uuid::Uuid,)> = sqlx::query_as(
-        "SELECT memory_id
-         FROM proxima_core.memories
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND schema_id = $3
-           AND personality_instance_id = $4
-           AND kind = 'Perspective'
-           AND tombstoned_at IS NULL
+        "SELECT m.memory_id
+         FROM proxima_core.memories m
+         WHERE EXISTS (
+                SELECT 1
+                  FROM proxima_core.entity_owner eo
+                 WHERE eo.entity_id = m.memory_id
+                   AND eo.owner_principal_kind = $1
+                   AND eo.owner_principal_id = $2
+                   AND eo.is_home
+           )
+           AND m.schema_id = $3
+           AND m.personality_instance_id = $4
+           AND m.kind = 'Perspective'
+           AND m.tombstoned_at IS NULL
            AND NOT EXISTS (
                 SELECT 1 FROM proxima_core.memories newer
-                WHERE newer.supersedes = memories.memory_id
+                WHERE newer.supersedes = m.memory_id
                   AND newer.tombstoned_at IS NULL
            )
-         ORDER BY created_at DESC
+         ORDER BY m.created_at DESC
          LIMIT 1",
     )
     .bind(owner_kind)

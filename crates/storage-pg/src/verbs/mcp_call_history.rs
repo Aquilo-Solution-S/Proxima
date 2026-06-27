@@ -36,8 +36,14 @@ pub(crate) async fn read_mcp_call_history(
              JOIN proxima_core.memories memories USING (memory_id)
              LEFT JOIN proxima_core.citation_mappings cm USING (memory_id)
              LEFT JOIN proxima_core.cited_mcp_call_io_v1 io USING (cited_object_id)
-            WHERE memories.owner_principal_kind = $1
-              AND memories.owner_principal_id = $2
+            WHERE EXISTS (
+                    SELECT 1
+                      FROM proxima_core.entity_owner eo
+                     WHERE eo.entity_id = memories.memory_id
+                       AND eo.owner_principal_kind = $1
+                       AND eo.owner_principal_id = $2
+                       AND eo.is_home
+                  )
               AND ($3::text IS NULL OR fact.actor_oid = $3)
             ORDER BY memories.created_at DESC
             LIMIT $4",

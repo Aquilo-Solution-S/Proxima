@@ -155,7 +155,7 @@ async fn start_memory_visible(
              WHERE EXISTS (
                        SELECT 1
                          FROM proxima_core.entity_owner eo
-                         JOIN unnest($1::proxima_core . owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
+                         JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
                            ON eo.owner_principal_kind = rs.kind
                           AND eo.owner_principal_id = rs.id
                         WHERE eo.entity_id = m.memory_id
@@ -224,7 +224,7 @@ async fn load_nodes(
              WHERE EXISTS (
                        SELECT 1
                          FROM proxima_core.entity_owner eo
-                         JOIN unnest($1::proxima_core . owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
+                         JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
                            ON eo.owner_principal_kind = rs.kind
                           AND eo.owner_principal_id = rs.id
                         WHERE eo.entity_id = m.memory_id
@@ -259,10 +259,16 @@ fn reader_visibility_filter(alias: &str, param: usize) -> String {
             OR EXISTS (
                 SELECT 1
                   FROM proxima_core.read_scope_matrix r
-                 WHERE r.owner_principal_kind = {alias}.owner_principal_kind
-                   AND r.owner_principal_id = {alias}.owner_principal_id
-                   AND r.reader_personality_instance_id = ${param}
+                 WHERE r.reader_personality_instance_id = ${param}
                    AND r.readable_personality_instance_id = {alias}.personality_instance_id
+                   AND EXISTS (
+                        SELECT 1
+                          FROM proxima_core.entity_owner reader_owner
+                         WHERE reader_owner.entity_id = {alias}.memory_id
+                           AND reader_owner.is_home
+                           AND reader_owner.owner_principal_kind = r.owner_principal_kind
+                           AND reader_owner.owner_principal_id = r.owner_principal_id
+                   )
             )
         )",
     )
@@ -270,7 +276,7 @@ fn reader_visibility_filter(alias: &str, param: usize) -> String {
 
 const ANCESTORS_SQL: &str = r"
 WITH RECURSIVE read_set(kind, id) AS (
-    SELECT * FROM unnest($1::proxima_core . owner_principal_kind[], $2::uuid[])
+    SELECT * FROM unnest($1::proxima_core.owner_principal_kind[], $2::uuid[])
 ),
 readable_memories AS (
     SELECT m.memory_id
@@ -361,7 +367,7 @@ LIMIT $7
 
 const DESCENDANTS_SQL: &str = r"
 WITH RECURSIVE read_set(kind, id) AS (
-    SELECT * FROM unnest($1::proxima_core . owner_principal_kind[], $2::uuid[])
+    SELECT * FROM unnest($1::proxima_core.owner_principal_kind[], $2::uuid[])
 ),
 readable_memories AS (
     SELECT m.memory_id

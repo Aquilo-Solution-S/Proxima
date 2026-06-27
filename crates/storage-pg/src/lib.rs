@@ -84,7 +84,7 @@ SELECT e.edge_id, e.relation,
        EXISTS (
            SELECT 1
              FROM proxima_core.entity_owner teo
-             JOIN unnest($1::proxima_core . owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
+             JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
                ON teo.owner_principal_kind = rs.kind
               AND teo.owner_principal_id = rs.id
             WHERE teo.entity_id = COALESCE(e.target_memory_id, e.target_goal_id, tfe.current_memory_id)
@@ -104,7 +104,7 @@ SELECT e.edge_id, e.relation,
  WHERE EXISTS (
            SELECT 1
              FROM proxima_core.entity_owner seo
-             JOIN unnest($1::proxima_core . owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
+             JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
                ON seo.owner_principal_kind = rs.kind
               AND seo.owner_principal_id = rs.id
             WHERE seo.entity_id = COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id)
@@ -124,7 +124,7 @@ SELECT e.edge_id, e.relation,
         AND NOT EXISTS (
             SELECT 1
               FROM proxima_core.entity_owner teo
-              JOIN unnest($1::proxima_core . owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
+              JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
                 ON teo.owner_principal_kind = rs.kind
                AND teo.owner_principal_id = rs.id
              WHERE teo.entity_id = COALESCE(e.target_memory_id, e.target_goal_id, tfe.current_memory_id)
@@ -558,11 +558,17 @@ impl Storage for PgStorage {
             .collect::<Vec<_>>();
         let (owner_kind, owner_principal_id) = owner.columns();
         let rows: Vec<(uuid::Uuid, Option<proxima_core::EntityKind>)> = sqlx::query_as(
-            "SELECT memory_id, kind
-             FROM proxima_core.memories
-             WHERE owner_principal_kind = $1
-               AND owner_principal_id = $2
-               AND memory_id = ANY($3::uuid[])",
+            "SELECT m.memory_id, m.kind
+             FROM proxima_core.memories m
+             WHERE EXISTS (
+                    SELECT 1
+                      FROM proxima_core.entity_owner eo
+                     WHERE eo.entity_id = m.memory_id
+                       AND eo.owner_principal_kind = $1
+                       AND eo.owner_principal_id = $2
+                       AND eo.is_home
+             )
+               AND m.memory_id = ANY($3::uuid[])",
         )
         .bind(owner_kind)
         .bind(owner_principal_id)
@@ -604,8 +610,14 @@ impl Storage for PgStorage {
              FROM proxima_core.memories m
              LEFT JOIN proxima_core.agent_note_v1 n USING (memory_id)
              LEFT JOIN proxima_core.agent_derivation_v1 d USING (memory_id)
-             WHERE m.owner_principal_kind = $1
-               AND m.owner_principal_id = $2
+             WHERE EXISTS (
+                    SELECT 1
+                      FROM proxima_core.entity_owner eo
+                     WHERE eo.entity_id = m.memory_id
+                       AND eo.owner_principal_kind = $1
+                       AND eo.owner_principal_id = $2
+                       AND eo.is_home
+             )
                AND m.memory_id = ANY($3::uuid[])",
         )
         .bind(owner_kind)
@@ -694,7 +706,7 @@ impl Storage for PgStorage {
 
     async fn load_memory_edge_ids(
         &self,
-        owner: &Owner,
+        _owner: &Owner,
         relation: &str,
         source_memory_id: MemoryId,
         target_memory_ids: &[MemoryId],
@@ -707,19 +719,14 @@ impl Storage for PgStorage {
             .copied()
             .map(MemoryId::into_inner)
             .collect::<Vec<_>>();
-        let (owner_kind, owner_principal_id) = owner.columns();
         let rows: Vec<uuid::Uuid> = sqlx::query_scalar(
             "SELECT edge_id
              FROM proxima_core.edges
-             WHERE owner_principal_kind = $1
-               AND owner_principal_id = $2
-               AND relation = $3
-               AND source_memory_id = $4
-               AND target_memory_id = ANY($5::uuid[])
+             WHERE relation = $1
+               AND source_memory_id = $2
+               AND target_memory_id = ANY($3::uuid[])
              ORDER BY edge_id DESC",
         )
-        .bind(owner_kind)
-        .bind(owner_principal_id)
         .bind(relation)
         .bind(source_memory_id.into_inner())
         .bind(&target_ids)
