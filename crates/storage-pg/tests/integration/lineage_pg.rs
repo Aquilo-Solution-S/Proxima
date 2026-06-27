@@ -109,19 +109,15 @@ async fn insert_memory(
     wake_chain_depth: i16,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, 'test/lineage-v1', 1, 'Abstraction',
-                 $4, 'Wake', 'test-model', 'test-v1',
-                 '00000000-0000-0000-0000-000000000000'::uuid, $5)",
+         VALUES ($1, 'test/lineage-v1', 1, 'Abstraction',
+                 $2, 'Wake', 'test-model', 'test-v1',
+                 '00000000-0000-0000-0000-000000000000'::uuid, $3)",
     )
     .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(text)
     .bind(wake_chain_depth)
     .execute(pg.pool())
@@ -153,34 +149,29 @@ async fn insert_entity_owner_home(
 
 async fn insert_edge(
     pg: &proxima_storage_pg::PgStorage,
-    owner: &Owner,
+    _owner: &Owner,
     source: Uuid,
     target: Uuid,
     relation: &str,
     relation_class: RelationClass,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let edge_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.edges
             (edge_id, relation, relation_class,
              source_kind, source_memory_id, source_goal_id,
              target_kind, target_memory_id, target_goal_id,
-             authorship_kind, authorship_owner_memory_id,
-             owner_principal_kind, owner_principal_id)
+             authorship_kind, authorship_owner_memory_id)
          VALUES ($1, $2, $3,
                  'Abstraction', $4, NULL,
                  'Abstraction', $5, NULL,
-                 'Engine', NULL,
-                 $6, $7)",
+                 'Engine', NULL)",
     )
     .bind(edge_id)
     .bind(relation)
     .bind(relation_class)
     .bind(source)
     .bind(target)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .execute(pg.pool())
     .await?;
     Ok(edge_id)

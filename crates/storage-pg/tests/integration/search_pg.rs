@@ -564,16 +564,13 @@ async fn insert_tagged_abstraction(
     let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, created_at, kind, text, operator_kind,
+            (memory_id, schema_id, schema_version, created_at, kind, text, operator_kind,
              model_id, prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, 'proxima-test/tagged-abstraction-v1', 1,
-                 $4, 'Abstraction', $5, 'Wake', 'test-model', 'test-v1',
+         VALUES ($1, 'proxima-test/tagged-abstraction-v1', 1,
+                 $2, 'Abstraction', $3, 'Wake', 'test-model', 'test-v1',
                  '00000000-0000-0000-0000-000000000000'::uuid, 2)",
     )
     .bind(input.memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(input.created_at)
     .bind(input.body)
     .execute(pg.pool())
@@ -627,16 +624,13 @@ async fn insert_embedded_memory_with_vec(
     let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, 'test/search-abstraction-v1', 1,
-                 'Abstraction', $4, 'Wake', 'test-model', 'test-v1',
+         VALUES ($1, 'test/search-abstraction-v1', 1,
+                 'Abstraction', $2, 'Wake', 'test-model', 'test-v1',
                  '00000000-0000-0000-0000-000000000000'::uuid, 2)",
     )
     .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(text)
     .execute(pg.pool())
     .await?;
@@ -663,19 +657,15 @@ async fn insert_text_memory(
     personality_instance_id: Option<Uuid>,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, 'test/search-attribution-v1', 1,
-                 'Abstraction', $4, 'Wake', 'test-model', 'test-v1',
-                 COALESCE($5, '00000000-0000-0000-0000-000000000000'::uuid), 2)",
+         VALUES ($1, 'test/search-attribution-v1', 1,
+                 'Abstraction', $2, 'Wake', 'test-model', 'test-v1',
+                 COALESCE($3, '00000000-0000-0000-0000-000000000000'::uuid), 2)",
     )
     .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(text)
     .bind(personality_instance_id)
     .execute(pg.pool())

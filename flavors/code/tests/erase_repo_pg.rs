@@ -66,14 +66,11 @@ async fn insert_repo_commit_with_test_request(
 
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, event_id, personality_instance_id)
-         VALUES ($1, $2, $3, $4, 1, $5,
+            (memory_id, schema_id, schema_version, event_id, personality_instance_id)
+         VALUES ($1, $2, 1, $3,
              '00000000-0000-0000-0000-000000000000'::uuid)",
     )
     .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_id)
     .bind(CommitV1::SCHEMA_ID)
     .bind(&event_id)
     .execute(pool)

@@ -130,20 +130,17 @@ pub(crate) async fn instantiate_personality_on_conn(
     let memory_id = uuid::Uuid::now_v7();
     let mut tx = conn.begin().await.map_err(map_err)?;
 
-    sqlx::query!(
-        r#"INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+    sqlx::query(
+        r"INSERT INTO proxima_core.memories
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 1, 'Perspective', $5, 'Wake', 'substrate',
-                 'self-v1', $6, 0)"#,
-        memory_id,
-        owner_kind as OwnerPrincipalKind,
-        owner_principal_id,
-        ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
-        &req.display_name,
-        instance_id,
+         VALUES ($1, $2, 1, 'Perspective', $3, 'Wake', 'substrate',
+                 'self-v1', $4, 0)",
     )
+    .bind(memory_id)
+    .bind(ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID)
+    .bind(&req.display_name)
+    .bind(instance_id)
     .execute(&mut *tx)
     .await
     .map_err(map_err)?;

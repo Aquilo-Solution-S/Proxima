@@ -34,24 +34,25 @@ async fn seed_goal(
 ) -> Result<(), sqlx::Error> {
     let goal_id = Uuid::now_v7();
     let (owner_kind, owner_principal_id) = owner.columns();
+    let request_id = format!("seed-{}", Uuid::now_v7());
     sqlx::query(
         "INSERT INTO proxima_core.goals
-            (goal_id, schema_id, schema_version, owner_principal_kind,
-             owner_principal_id, title, text, payload, state,
-             authorship_kind, request_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+            (goal_id, schema_id, schema_version, title, text, payload, state,
+             authorship_kind, request_id, idempotency_key)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                 md5($10::text || ':' || $11::text || ':' || $9))",
     )
     .bind(goal_id)
     .bind(schema_id)
     .bind(schema_version)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(title)
     .bind(text)
     .bind(payload)
     .bind(GoalState::Active)
     .bind(GoalAuthorshipKind::User)
-    .bind(format!("seed-{}", Uuid::now_v7()))
+    .bind(request_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
     .execute(pg.pool())
     .await?;
     insert_entity_owner_home(pg, goal_id, owner).await
@@ -193,32 +194,28 @@ fn fresh_draft(owner: Owner) -> EventDraft {
 
 async fn insert_test_edge(
     pg: &PgStorage,
-    owner: &Owner,
+    _owner: &Owner,
     source: Uuid,
     target: Uuid,
     created_offset_seconds: i64,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let edge_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.edges
            (edge_id, relation, relation_class,
             source_kind, source_memory_id, source_goal_id,
             target_kind, target_memory_id, target_goal_id,
-            authorship_kind, authorship_owner_memory_id,
-            owner_principal_kind, owner_principal_id, created_at)
+            authorship_kind, authorship_owner_memory_id, created_at)
          VALUES
            ($1, 'test/structural', 'Structural',
             'Fact', $2, NULL,
             'Fact', $3, NULL,
             'EventSource', NULL,
-            $4, $5, now() + ($6 * interval '1 second'))",
+            now() + ($4 * interval '1 second'))",
     )
     .bind(edge_id)
     .bind(source)
     .bind(target)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(created_offset_seconds)
     .execute(pg.pool())
     .await?;
@@ -227,31 +224,27 @@ async fn insert_test_edge(
 
 async fn insert_n_test_edges_bulk(
     pg: &PgStorage,
-    owner: &Owner,
+    _owner: &Owner,
     source: Uuid,
     target: Uuid,
     count: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id) = owner.columns();
     let edge_ids: Vec<Uuid> = (0..count).map(|_| Uuid::now_v7()).collect();
     sqlx::query(
         "INSERT INTO proxima_core.edges
            (edge_id, relation, relation_class,
             source_kind, source_memory_id, source_goal_id,
             target_kind, target_memory_id, target_goal_id,
-            authorship_kind, authorship_owner_memory_id,
-            owner_principal_kind, owner_principal_id, created_at)
+            authorship_kind, authorship_owner_memory_id, created_at)
          SELECT ids.edge_id, 'test/structural', 'Structural',
                 'Fact', $1, NULL,
                 'Fact', $2, NULL,
                 'EventSource', NULL,
-                $3, $4, now() + (ids.ord * interval '1 microsecond')
-         FROM unnest($5::uuid[]) WITH ORDINALITY AS ids(edge_id, ord)",
+                now() + (ids.ord * interval '1 microsecond')
+         FROM unnest($3::uuid[]) WITH ORDINALITY AS ids(edge_id, ord)",
     )
     .bind(source)
     .bind(target)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(edge_ids)
     .execute(pg.pool())
     .await?;
@@ -287,15 +280,12 @@ async fn insert_perspective_memory(
     let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 1, 'Perspective', $5, 'Wake',
-                 'substrate', 'test-v1', $6, 0)",
+         VALUES ($1, $2, 1, 'Perspective', $3, 'Wake',
+                 'substrate', 'test-v1', $4, 0)",
     )
     .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(schema_id)
     .bind(text)
     .bind(instance_id)

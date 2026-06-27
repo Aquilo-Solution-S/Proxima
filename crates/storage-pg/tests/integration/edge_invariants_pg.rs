@@ -3,15 +3,10 @@ use crate::common::personality::{
     ingest_test_fact,
 };
 use proxima_core::{
-    EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerPrincipalKind, Principal, RelationClass,
-    UserId,
+    EntityKind, MemoryId, MemoryOperatorKind, Owner, Principal, RelationClass, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
-
-fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
-    owner.columns()
-}
 
 fn other_owner() -> Owner {
     Principal::User(UserId::new(Uuid::now_v7()))
@@ -22,7 +17,6 @@ async fn insert_derived_memory(
     owner: &Owner,
     kind: EntityKind,
 ) -> Result<MemoryId, sqlx::Error> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
     let memory_id = Uuid::now_v7();
     let schema_id = match kind {
         EntityKind::Perspective => TEST_PERSPECTIVE_SCHEMA,
@@ -34,47 +28,42 @@ async fn insert_derived_memory(
     };
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id)
-         VALUES ($1, $2, $3, $4, 1, $5, 'derived', $6, 'test-model',
-                 'v1', $7)",
+         VALUES ($1, $2, 1, $3, 'derived', $4, 'test-model',
+                 'v1', $5)",
     )
     .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(schema_id)
     .bind(kind)
     .bind(operator_kind)
     .bind(Uuid::now_v7())
     .execute(pg.pool())
     .await?;
+    crate::common::insert_entity_owner_home(pg, memory_id, owner).await?;
     Ok(MemoryId::new(memory_id))
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn insert_memory_edge(
     pg: &PgStorage,
-    owner: &Owner,
+    _owner: &Owner,
     relation_class: RelationClass,
     source_kind: EntityKind,
     source_memory_id: MemoryId,
     target_kind: EntityKind,
     target_memory_id: MemoryId,
 ) -> Result<(), sqlx::Error> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
     sqlx::query(
         "INSERT INTO proxima_core.edges
             (edge_id, relation, relation_class,
              source_kind, source_memory_id, source_goal_id,
              target_kind, target_memory_id, target_goal_id,
-             authorship_kind, authorship_owner_memory_id,
-             owner_principal_kind, owner_principal_id)
+             authorship_kind, authorship_owner_memory_id)
          VALUES ($1, 'test/relation', $2,
                  $3, $4, NULL,
                  $5, $6, NULL,
-                 'Engine', NULL,
-                 $7, $8)",
+                 'Engine', NULL)",
     )
     .bind(Uuid::now_v7())
     .bind(relation_class)
@@ -82,8 +71,6 @@ async fn insert_memory_edge(
     .bind(source_memory_id.into_inner())
     .bind(target_kind)
     .bind(target_memory_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .execute(pg.pool())
     .await?;
     Ok(())
@@ -147,7 +134,7 @@ async fn trigger_rejects_upward_edges_and_semantic_fact_to_fact() {
 }
 
 #[tokio::test]
-async fn trigger_rejects_endpoint_kind_and_owner_mismatch() {
+async fn trigger_rejects_endpoint_kind_and_allows_cross_owner_edges() {
     let (pg, db_name) = crate::common::fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -172,7 +159,7 @@ async fn trigger_rejects_endpoint_kind_and_owner_mismatch() {
         .expect_err("stored Fact endpoint cannot be declared Abstraction");
         assert!(err.to_string().contains("source kind"));
 
-        let err = insert_memory_edge(
+        insert_memory_edge(
             &pg,
             &other,
             RelationClass::Structural,
@@ -181,15 +168,13 @@ async fn trigger_rejects_endpoint_kind_and_owner_mismatch() {
             EntityKind::Fact,
             other_fact,
         )
-        .await
-        .expect_err("cross-owner source stamp must be rejected");
-        assert!(err.to_string().contains("Owner boundary"));
+        .await?;
         Ok(())
     }
     .await;
 
     let _ = crate::common::drop_db(&db_name).await;
-    result.expect("edge invariant trigger rejects endpoint lies and cross-owner edges");
+    result.expect("edge invariant trigger rejects endpoint lies and allows cross-owner edges");
 }
 
 #[tokio::test]

@@ -696,41 +696,55 @@ async fn insert_direct_derivative(
     fact_id: Uuid,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let derivative_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, 'test/cleanup-abstraction-v1', 1,
+         VALUES ($1, 'test/cleanup-abstraction-v1', 1,
                  'Abstraction', 'derivative', 'FtoA', 'test-model',
                  'test-prompt', '00000000-0000-0000-0000-000000000000'::uuid, 0)",
     )
     .bind(derivative_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .execute(pg.pool())
     .await?;
+    insert_entity_owner_home(pg, derivative_id, owner).await?;
 
     sqlx::query(
         "INSERT INTO proxima_core.edges
             (edge_id, relation, relation_class,
              source_kind, source_memory_id,
              target_kind, target_memory_id,
-             authorship_kind, authorship_owner_memory_id,
-             owner_principal_kind, owner_principal_id)
+             authorship_kind, authorship_owner_memory_id)
          VALUES ($1, 'core/derived-from', 'Provenance',
                  'Abstraction', $2,
                  'Fact', $3,
-                 'OperatorFtoA', $2,
-                 $4, $5)",
+                 'OperatorFtoA', $2)",
     )
     .bind(Uuid::now_v7())
     .bind(derivative_id)
     .bind(fact_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .execute(pg.pool())
     .await?;
     Ok(derivative_id)
+}
+
+async fn insert_entity_owner_home(
+    pg: &PgStorage,
+    entity_id: Uuid,
+    owner: &Owner,
+) -> Result<(), sqlx::Error> {
+    let (owner_kind, owner_principal_id) = owner.columns();
+    sqlx::query(
+        "INSERT INTO proxima_core.entity_owner
+            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
+         VALUES ($1, $2, $3, true, $4)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(entity_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(Uuid::nil())
+    .execute(pg.pool())
+    .await
+    .map(|_| ())
 }

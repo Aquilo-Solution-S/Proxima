@@ -65,14 +65,11 @@ async fn insert_memory(
     };
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id)
-         VALUES ($1, $2, $3, $4, 1, $5, $6, $7, 'test-model', 'v1', $8)",
+         VALUES ($1, $2, 1, $3, $4, $5, 'test-model', 'v1', $6)",
     )
     .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(schema_id)
     .bind(kind)
     .bind(text)

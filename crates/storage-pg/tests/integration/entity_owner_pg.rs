@@ -98,15 +98,12 @@ async fn insert_self(pg: &PgStorage, owner: &Owner) -> MemoryId {
     let memory_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id)
-         VALUES ($1, $2, $3, 'test/self', 1, $4,
-                 'self', $5, 'test-model', 'v1', $6)",
+         VALUES ($1, 'test/self', 1, $2,
+                 'self', $3, 'test-model', 'v1', $4)",
     )
     .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(EntityKind::Perspective)
     .bind(MemoryOperatorKind::AtoP)
     .bind(Uuid::nil())
@@ -383,7 +380,7 @@ async fn group_membership_verbs_round_trip_and_engine_gates_admin_editor() {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn discovery_reads_filter_by_read_owners_not_legacy_memory_owner() {
+async fn discovery_reads_filter_by_entity_owner_read_owners() {
     let (pg, db) = common::fresh_pg().await;
     let p = Principal::User(UserId::new(uuid::Uuid::now_v7()));
     let q = Principal::User(UserId::new(uuid::Uuid::now_v7()));
@@ -610,23 +607,19 @@ async fn seed_memory_owned(pg: &proxima_storage_pg::PgStorage, owner: Principal)
 async fn seed_abstraction_memory(
     pg: &proxima_storage_pg::PgStorage,
     owner: &Principal,
-    legacy_owner: Principal,
+    _ignored_owner_stamp: Principal,
     text: &str,
 ) -> MemoryId {
     let memory_id = uuid::Uuid::now_v7();
-    let (legacy_owner_kind, legacy_owner_id) = legacy_owner.columns();
     let (owner_kind, owner_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id)
-         VALUES ($1, $2, $3, 'test/entity-owner-abstraction-v1', 1,
-                 'Abstraction', $4, 'FtoA', 'test-model', 'v1', $5)",
+         VALUES ($1, 'test/entity-owner-abstraction-v1', 1,
+                 'Abstraction', $2, 'FtoA', 'test-model', 'v1', $3)",
     )
     .bind(memory_id)
-    .bind(legacy_owner_kind)
-    .bind(legacy_owner_id)
     .bind(text)
     .bind(uuid::Uuid::nil())
     .execute(pg.pool())
@@ -669,31 +662,26 @@ async fn move_entity_owner_home(
 
 async fn seed_edge_between_memories(
     pg: &proxima_storage_pg::PgStorage,
-    owner: Principal,
+    _owner: Principal,
     source: MemoryId,
     target: MemoryId,
 ) -> uuid::Uuid {
     let edge_id = uuid::Uuid::now_v7();
-    let (owner_kind, owner_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.edges
            (edge_id, relation, relation_class,
             source_kind, source_memory_id, source_goal_id,
             target_kind, target_memory_id, target_goal_id,
-            authorship_kind, authorship_owner_memory_id,
-            owner_principal_kind, owner_principal_id)
+            authorship_kind, authorship_owner_memory_id)
          VALUES
            ($1, 'test/leaky-edge', 'Structural',
             'Fact', $2, NULL,
             'Fact', $3, NULL,
-            'EventSource', NULL,
-            $4, $5)",
+            'EventSource', NULL)",
     )
     .bind(edge_id)
     .bind(source.into_inner())
     .bind(target.into_inner())
-    .bind(owner_kind)
-    .bind(owner_id)
     .execute(pg.pool())
     .await
     .unwrap();

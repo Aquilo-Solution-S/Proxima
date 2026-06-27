@@ -61,16 +61,22 @@ async fn count_present_chunks(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid)
         "SELECT COUNT(*)::bigint AS c \
          FROM proxima_core.memories m \
          JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
-         WHERE m.owner_principal_kind = $1 \
-           AND m.owner_principal_id = $2 \
+         JOIN proxima_core.entity_owner eo \
+           ON eo.entity_id = m.memory_id \
+          AND eo.is_home \
+         WHERE eo.owner_principal_kind = $1 \
+           AND eo.owner_principal_id = $2 \
            AND s.repo_id = $3 \
            AND s.state = 'Present' \
            AND NOT EXISTS ( \
                  SELECT 1 FROM proxima_core.memories m2 \
                  JOIN proxima_code.code_chunk_v1 s2 USING (memory_id) \
+                 JOIN proxima_core.entity_owner eo2 \
+                   ON eo2.entity_id = m2.memory_id \
+                  AND eo2.is_home \
                  WHERE m2.schema_id = m.schema_id \
-                   AND m2.owner_principal_kind = m.owner_principal_kind \
-                   AND m2.owner_principal_id = m.owner_principal_id \
+                   AND eo2.owner_principal_kind = eo.owner_principal_kind \
+                   AND eo2.owner_principal_id = eo.owner_principal_id \
                    AND s2.repo_id = s.repo_id \
                    AND s2.file_path = s.file_path \
                    AND s2.chunk_index = s.chunk_index \
@@ -101,16 +107,22 @@ async fn fetch_file_revision_state(
         "SELECT s.state \
          FROM proxima_core.memories m \
          JOIN proxima_code.file_revision_v1 s USING (memory_id) \
-         WHERE m.owner_principal_kind = $1 \
-           AND m.owner_principal_id = $2 \
+         JOIN proxima_core.entity_owner eo \
+           ON eo.entity_id = m.memory_id \
+          AND eo.is_home \
+         WHERE eo.owner_principal_kind = $1 \
+           AND eo.owner_principal_id = $2 \
            AND s.repo_id = $3 \
            AND s.file_path = $4 \
            AND NOT EXISTS ( \
                  SELECT 1 FROM proxima_core.memories m2 \
                  JOIN proxima_code.file_revision_v1 s2 USING (memory_id) \
+                 JOIN proxima_core.entity_owner eo2 \
+                   ON eo2.entity_id = m2.memory_id \
+                  AND eo2.is_home \
                  WHERE m2.schema_id = m.schema_id \
-                   AND m2.owner_principal_kind = m.owner_principal_kind \
-                   AND m2.owner_principal_id = m.owner_principal_id \
+                   AND eo2.owner_principal_kind = eo.owner_principal_kind \
+                   AND eo2.owner_principal_id = eo.owner_principal_id \
                    AND s2.repo_id = s.repo_id \
                    AND s2.file_path = s.file_path \
                    AND m2.created_at > m.created_at \

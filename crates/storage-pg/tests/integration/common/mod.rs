@@ -97,19 +97,15 @@ pub async fn seed_memory(
     }
 
     let memory_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, 'test/edge-access-v1', 1, $4, $5, 'Wake',
+         VALUES ($1, 'test/edge-access-v1', 1, $2, $3, 'Wake',
                  'test-model', 'edge-access-v1',
                  '00000000-0000-0000-0000-000000000000'::uuid, 0)",
     )
     .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(kind)
     .bind(text)
     .execute(pg.pool())
@@ -120,14 +116,13 @@ pub async fn seed_memory(
 
 pub async fn seed_memory_edge(
     pg: &PgStorage,
-    owner: &Owner,
+    _owner: &Owner,
     source: (EntityKind, MemoryId),
     target: (EntityKind, MemoryId),
     relation: &str,
     relation_class: RelationClass,
 ) -> Result<EdgeId, sqlx::Error> {
     let edge_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = owner.columns();
     let (source_kind, source_memory_id) = source;
     let (target_kind, target_memory_id) = target;
     sqlx::query(
@@ -135,10 +130,9 @@ pub async fn seed_memory_edge(
             (edge_id, relation, relation_class,
              source_kind, source_memory_id, source_goal_id,
              target_kind, target_memory_id, target_goal_id,
-             authorship_kind, authorship_owner_memory_id,
-             owner_principal_kind, owner_principal_id)
+             authorship_kind, authorship_owner_memory_id)
          VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, NULL,
-                 'Engine', NULL, $8, $9)",
+                 'Engine', NULL)",
     )
     .bind(edge_id)
     .bind(relation)
@@ -147,8 +141,6 @@ pub async fn seed_memory_edge(
     .bind(source_memory_id.into_inner())
     .bind(target_kind)
     .bind(target_memory_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .execute(pg.pool())
     .await?;
     Ok(EdgeId::new(edge_id))

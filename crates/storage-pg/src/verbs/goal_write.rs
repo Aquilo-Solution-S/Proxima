@@ -549,9 +549,7 @@ async fn insert_or_replay_goal(
         "SELECT g.goal_id, ce.seq
            FROM proxima_core.goals g
            JOIN proxima_core.change_event ce ON ce.entity_goal_id = g.goal_id
-          WHERE g.owner_principal_kind = $1
-            AND g.owner_principal_id = $2
-            AND g.request_id = $3
+          WHERE g.idempotency_key = md5($1::text || ':' || $2::text || ':' || $3)
           ORDER BY ce.seq ASC
           LIMIT 1",
     )
@@ -829,13 +827,13 @@ async fn insert_goal_row(
     let authorship = authorship_columns(&draft.authorship);
     sqlx::query(
         "INSERT INTO proxima_core.goals
-            (goal_id, schema_id, schema_version, owner_principal_kind,
-             owner_principal_id, title, text, payload, state, supersedes,
+            (goal_id, schema_id, schema_version, title, text, payload, state, supersedes,
              authorship_kind, authorship_origin, authorship_operator_id,
              authorship_tool_id, operator_kind, model_id, prompt_version,
-             personality_instance_id, request_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                 $11, $12, $13, $14, $15, $16, $17, $18, $19)",
+             personality_instance_id, request_id, idempotency_key)
+         VALUES ($1, $2, $3, $6, $7, $8, $9, $10,
+                 $11, $12, $13, $14, $15, $16, $17, $18, $19,
+                 md5($4::text || ':' || $5::text || ':' || $19))",
     )
     .bind(goal_id)
     .bind(draft.schema_id.as_str())
