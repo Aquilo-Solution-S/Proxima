@@ -176,7 +176,7 @@ async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
     assert!(
         ingest_err
             .to_string()
-            .contains("requires ingest on this space")
+            .contains("requires ingest on this owner")
     );
 
     let admin_err = engine
@@ -186,7 +186,7 @@ async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
     assert!(
         admin_err
             .to_string()
-            .contains("requires admin on this space")
+            .contains("requires admin on this owner")
     );
 }
 
@@ -207,7 +207,7 @@ async fn cross_owner_context_is_forbidden_on_graph_read() {
         )
         .await
         .expect_err("cross-owner access must be forbidden");
-    assert!(err.to_string().contains("requires viewer on this space"));
+    assert!(err.to_string().contains("requires viewer on this owner"));
 }
 
 fn sample_mcp_input(owner: &Owner) -> McpCallLogInput {
@@ -237,7 +237,7 @@ async fn persist_mcp_call_rejects_context_without_ingest_grant() {
         .persist_mcp_call(&authz, sample_mcp_input(&owner))
         .await
         .expect_err("ingest grant required");
-    assert!(err.to_string().contains("requires ingest on this space"));
+    assert!(err.to_string().contains("requires ingest on this owner"));
 }
 
 #[tokio::test]
@@ -257,7 +257,7 @@ async fn read_mcp_call_history_rejects_context_without_read_grant() {
         )
         .await
         .expect_err("read grant required");
-    assert!(err.to_string().contains("requires viewer on this space"));
+    assert!(err.to_string().contains("requires viewer on this owner"));
 }
 
 #[tokio::test]

@@ -133,7 +133,7 @@ async fn wake_labels(
 }
 
 fn assert_admin_denied(err: &proxima_core::mcp::McpToolError) {
-    assert!(err.to_string().contains("requires admin on this space"));
+    assert!(err.to_string().contains("requires admin on this owner"));
 }
 
 #[tokio::test]
