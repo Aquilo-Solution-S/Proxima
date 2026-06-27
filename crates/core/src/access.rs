@@ -11,7 +11,10 @@ pub fn world() -> Principal {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, sqlx::Type)]
-#[sqlx(type_name = "proxima_core.membership_relation", rename_all = "lowercase")]
+#[sqlx(
+    type_name = "proxima_core.membership_relation",
+    rename_all = "lowercase"
+)]
 pub enum Relation {
     Admin,
     Editor,
@@ -25,10 +28,7 @@ impl Relation {
         use Relation::{Admin, Editor, Ingest, Viewer};
         matches!(
             (self, required),
-            (Editor, Editor | Viewer)
-                | (Viewer, Viewer)
-                | (Admin, Admin)
-                | (Ingest, Ingest)
+            (Editor, Editor | Viewer) | (Viewer, Viewer) | (Admin, Admin) | (Ingest, Ingest)
         )
     }
 
