@@ -76,7 +76,9 @@ impl Engine {
     /// Edge read scoped to the context's read access set (`S_read`). Same auth
     /// shape as `Query`; callers can hydrate by edge id or by
     /// relation/source/target filter. Edges are source-owned: an edge is
-    /// visible iff its source is readable, with unreadable targets redacted.
+    /// visible iff its source is readable; an unreadable target is stubbed (its
+    /// id is retained with `target_readable = false`, never dereferenced), and
+    /// a World-readable source with an unreadable target is omitted entirely.
     ///
     /// # Errors
     ///
@@ -159,9 +161,12 @@ impl Engine {
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
 
-    /// docs/14 §"`EventHistory`" — Owner-scoped bounded change-event
-    /// read. Same auth shape as `Query` / `Subscribe`. Server clamps
-    /// `limit` to `MAX_EVENT_HISTORY_LIMIT`.
+    /// docs/14 §"`EventHistory`" — bounded change-event read for ONE owner the
+    /// caller selects via `req.principal` and the context can access (gated by
+    /// `authorize_request`, unlike `Query`/`read_edges` which span `S_read`).
+    /// Multi-owner event polling across `S_read` is the deferred spec-Q4 path
+    /// (`list_events`); this verb stays single-owner. Server clamps `limit` to
+    /// `MAX_EVENT_HISTORY_LIMIT`.
     ///
     /// # Errors
     ///
@@ -198,9 +203,10 @@ impl Engine {
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
 
-    /// docs/14 §protocol surface — Owner-scoped bounded MCP-call
-    /// activity read. Same auth shape as `Query`; server clamps
-    /// `limit` to `MAX_MCP_CALL_HISTORY_LIMIT`.
+    /// docs/14 §protocol surface — bounded MCP-call activity read for ONE owner
+    /// the caller selects via `req.principal` and the context can access (gated
+    /// by `authorize_request`; single-owner, not `S_read`-spanning like
+    /// `Query`). Server clamps `limit` to `MAX_MCP_CALL_HISTORY_LIMIT`.
     ///
     /// # Errors
     ///

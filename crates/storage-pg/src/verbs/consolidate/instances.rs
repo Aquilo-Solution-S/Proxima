@@ -21,12 +21,12 @@ pub async fn list_personality_instances(
                 m.text AS display_name,
                 p.status
          FROM proxima_core.personality p
-	         JOIN proxima_core.memories m
-	           ON m.memory_id = p.current_root_perspective_memory_id
-	         WHERE p.owner_principal_kind = $1
-	           AND p.owner_principal_id = $2
-	           AND m.tombstoned_at IS NULL
-	           AND ($3::bool OR p.status <> 'tombstoned'::proxima_core.personality_status)
+         JOIN proxima_core.memories m
+           ON m.memory_id = p.current_root_perspective_memory_id
+         WHERE p.owner_principal_kind = $1
+           AND p.owner_principal_id = $2
+           AND m.tombstoned_at IS NULL
+           AND ($3::bool OR p.status <> 'tombstoned'::proxima_core.personality_status)
          ORDER BY p.created_at, p.personality_instance_id",
     )
     .bind(owner_kind as OwnerPrincipalKind)
