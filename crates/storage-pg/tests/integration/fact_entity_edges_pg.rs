@@ -16,9 +16,9 @@ use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthPath, AuthorshipKindMask, AuthzContext, ChangeEventKind, EdgeAuthorshipKind,
     EndpointBinding, EntityKind, EntityKindMask, EntityRef, FactPayload, FactTombstone,
-    FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner, OwnerPrincipalKind, PayloadKeyBuilder,
-    Principal, Relation, RelationClass, RelationDescriptor, SchemaVersion, SidecarPayload,
-    SourceBatchId, SourceId, StorageError, UserId, canonical_json_bytes,
+    FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner, PayloadKeyBuilder, Principal, Relation,
+    RelationClass, RelationDescriptor, SchemaVersion, SidecarPayload, SourceBatchId, SourceId,
+    StorageError, UserId, canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemoryPayloadFuture};
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
@@ -628,35 +628,26 @@ async fn append_pinned_edge_for_relation(
     Ok(edge_id)
 }
 
-fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
-    owner.columns()
-}
-
 async fn raw_insert_follow_edge(
     pg: &PgStorage,
-    owner: &Owner,
+    _owner: &Owner,
     source_fact_entity_id: Uuid,
     target_fact_entity_id: Uuid,
 ) -> Result<(), sqlx::Error> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
     sqlx::query(
         "INSERT INTO proxima_core.edges
             (edge_id, relation, relation_class,
              source_kind, source_fact_entity_id,
              target_kind, target_fact_entity_id,
-             authorship_kind, authorship_owner_memory_id,
-             owner_principal_kind, owner_principal_id)
+             authorship_kind, authorship_owner_memory_id)
          VALUES ($1, 'test/raw-follow', 'Structural',
                  'Fact', $2,
                  'Fact', $3,
-                 'ExternalAgent', NULL,
-                 $4, $5)",
+                 'ExternalAgent', NULL)",
     )
     .bind(Uuid::now_v7())
     .bind(source_fact_entity_id)
     .bind(target_fact_entity_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .execute(pg.pool())
     .await?;
     Ok(())
@@ -1122,26 +1113,21 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
         assert!(matches!(err, StorageError::ConstraintViolation(_)));
         tx.rollback().await?;
 
-        let (owner_kind, owner_principal_id) = owner_parts(&owner);
         let err = sqlx::query(
             "INSERT INTO proxima_core.edges
                 (edge_id, relation, relation_class,
                  source_kind, source_memory_id, source_fact_entity_id,
                  target_kind, target_fact_entity_id,
-                 authorship_kind, authorship_owner_memory_id,
-                 owner_principal_kind, owner_principal_id)
+                 authorship_kind, authorship_owner_memory_id)
              VALUES ($1, 'test/bad-three-way', 'Structural',
                      'Fact', $2, $3,
                      'Fact', $4,
-                     'ExternalAgent', NULL,
-                     $5, $6)",
+                     'ExternalAgent', NULL)",
         )
         .bind(Uuid::now_v7())
         .bind(source.memory_id.into_inner())
         .bind(source_entity)
         .bind(target_entity)
-        .bind(owner_kind)
-        .bind(owner_principal_id)
         .execute(pg.pool())
         .await
         .expect_err("SQL exactly-one CHECK rejects memory + fact entity");
@@ -1152,19 +1138,15 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
                 (edge_id, relation, relation_class,
                  source_kind, source_fact_entity_id,
                  target_kind, target_fact_entity_id,
-                 authorship_kind, authorship_owner_memory_id,
-                 owner_principal_kind, owner_principal_id)
+                 authorship_kind, authorship_owner_memory_id)
              VALUES ($1, 'test/bad-kind', 'Structural',
                      'Abstraction', $2,
                      'Fact', $3,
-                     'ExternalAgent', NULL,
-                     $4, $5)",
+                     'ExternalAgent', NULL)",
         )
         .bind(Uuid::now_v7())
         .bind(source_entity)
         .bind(target_entity)
-        .bind(owner_kind)
-        .bind(owner_principal_id)
         .execute(pg.pool())
         .await
         .expect_err("fact_entity endpoint must declare Fact kind");
@@ -1187,10 +1169,7 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
         let other_source =
             ingest_fact(&pg, &engine, &other, &fact("other", "v1", "Present")).await?;
         let other_entity = memory_fact_entity_id(&pg, other_source.memory_id).await?;
-        let err = raw_insert_follow_edge(&pg, &other, source_entity, other_entity)
-            .await
-            .expect_err("cross-owner source fact entity stamp must be rejected");
-        assert!(err.to_string().contains("crosses Owner boundary"));
+        raw_insert_follow_edge(&pg, &other, source_entity, other_entity).await?;
 
         Ok(())
     }

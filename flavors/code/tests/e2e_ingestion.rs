@@ -212,7 +212,10 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
             "SELECT COUNT(*)::bigint \
              FROM proxima_core.citation_mappings cm \
              JOIN proxima_core.memories m ON m.memory_id = cm.memory_id \
-             WHERE m.owner_principal_kind = $1 AND m.owner_principal_id = $2",
+             JOIN proxima_core.entity_owner eo \
+               ON eo.entity_id = m.memory_id \
+              AND eo.is_home \
+             WHERE eo.owner_principal_kind = $1 AND eo.owner_principal_id = $2",
         )
         .bind(kind)
         .bind(principal_id)
@@ -227,7 +230,10 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
             "SELECT COUNT(DISTINCT cm.cited_object_id)::bigint \
              FROM proxima_core.citation_mappings cm \
              JOIN proxima_core.memories m ON m.memory_id = cm.memory_id \
-             WHERE m.owner_principal_kind = $1 AND m.owner_principal_id = $2",
+             JOIN proxima_core.entity_owner eo \
+               ON eo.entity_id = m.memory_id \
+              AND eo.is_home \
+             WHERE eo.owner_principal_kind = $1 AND eo.owner_principal_id = $2",
         )
         .bind(kind)
         .bind(principal_id)

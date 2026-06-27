@@ -80,20 +80,18 @@ async fn insert_self(
     let memory_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id)
-         VALUES ($1, $2, $3, 'test/self', 1, $4,
-                 'self', $5, 'test-model', 'v1', $6)",
+         VALUES ($1, 'test/self', 1, $2,
+                 'self', $3, 'test-model', 'v1', $4)",
     )
     .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(proxima_core::EntityKind::Perspective)
     .bind(proxima_core::MemoryOperatorKind::AtoP)
     .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
+    insert_entity_owner_home(pg, memory_id, owner, owner_kind, owner_principal_id).await?;
     Ok(MemoryId::new(memory_id))
 }
 
@@ -105,21 +103,41 @@ async fn insert_evidence_abstraction(
     let memory_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id)
-         VALUES ($1, $2, $3, 'test/evidence-abstraction', 1, $4,
-                 'evidence', $5, 'test-model', 'v1', $6)",
+         VALUES ($1, 'test/evidence-abstraction', 1, $2,
+                 'evidence', $3, 'test-model', 'v1', $4)",
     )
     .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(proxima_core::EntityKind::Abstraction)
     .bind(proxima_core::MemoryOperatorKind::FtoA)
     .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
+    insert_entity_owner_home(pg, memory_id, owner, owner_kind, owner_principal_id).await?;
     Ok(MemoryId::new(memory_id))
+}
+
+async fn insert_entity_owner_home(
+    pg: &PgStorage,
+    entity_id: Uuid,
+    _owner: &Owner,
+    owner_kind: OwnerPrincipalKind,
+    owner_principal_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO proxima_core.entity_owner
+            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
+         VALUES ($1, $2, $3, true, $4)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(entity_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(Uuid::nil())
+    .execute(pg.pool())
+    .await
+    .map(|_| ())
 }
 
 async fn create_goal(
@@ -404,16 +422,16 @@ async fn goal_create_atom_rejects_empty_payload_bytes() {
         let raw = sqlx::query(
             "INSERT INTO proxima_core.goals
                 (goal_id, schema_id, schema_version,
-                 owner_principal_kind, owner_principal_id,
-                 title, text, payload, state, authorship_kind, request_id)
+                 title, text, payload, state, authorship_kind, request_id,
+                 idempotency_key)
              VALUES ($1, 'core/simple-text-v1', 1,
-                     $2, $3,
-                     'raw', 'raw', $4, 'Active', 'User', 'req-raw')",
+                     'raw', 'raw', $2, 'Active', 'User', 'req-raw',
+                     md5($3::text || ':' || $4::text || ':' || 'req-raw'))",
         )
         .bind(Uuid::now_v7())
+        .bind(Vec::<u8>::new())
         .bind(owner_kind)
         .bind(owner_principal_id)
-        .bind(Vec::<u8>::new())
         .execute(pg.pool())
         .await;
         assert!(

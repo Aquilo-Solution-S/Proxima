@@ -110,18 +110,26 @@ async fn insert_memory(
     };
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, 'test/core-read-v1', 1, 'Abstraction',
-                 $4, 'Wake', 'test-model', 'test-v1',
-                 COALESCE($5, '00000000-0000-0000-0000-000000000000'::uuid), 0)",
+         VALUES ($1, 'test/core-read-v1', 1, 'Abstraction',
+                 $2, 'Wake', 'test-model', 'test-v1',
+                 COALESCE($3, '00000000-0000-0000-0000-000000000000'::uuid), 0)",
+    )
+    .bind(memory_id)
+    .bind(text)
+    .bind(personality_instance_id)
+    .execute(pg.pool())
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.entity_owner
+            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
+         VALUES ($1, $2, $3, true, $4)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(text)
-    .bind(personality_instance_id)
+    .bind(personality_instance_id.unwrap_or_else(uuid::Uuid::nil))
     .execute(pg.pool())
     .await?;
     Ok(memory_id)
@@ -129,35 +137,26 @@ async fn insert_memory(
 
 async fn insert_edge(
     pg: &PgStorage,
-    owner: &Owner,
+    _owner: &Owner,
     source: uuid::Uuid,
     target: uuid::Uuid,
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     let edge_id = uuid::Uuid::now_v7();
-    let owner_kind = OwnerPrincipalKind::of(owner);
-    let owner_principal_id = match owner {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
     sqlx::query(
         "INSERT INTO proxima_core.edges
             (edge_id, relation, relation_class,
              source_kind, source_memory_id, source_goal_id,
              target_kind, target_memory_id, target_goal_id,
-             authorship_kind, authorship_owner_memory_id,
-             owner_principal_kind, owner_principal_id)
+             authorship_kind, authorship_owner_memory_id)
          VALUES ($1, 'core/derived-from', $2,
                  'Abstraction', $3, NULL,
                  'Abstraction', $4, NULL,
-                 'Engine', NULL,
-                 $5, $6)",
+                 'Engine', NULL)",
     )
     .bind(edge_id)
     .bind(RelationClass::Provenance)
     .bind(source)
     .bind(target)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .execute(pg.pool())
     .await?;
     Ok(edge_id)

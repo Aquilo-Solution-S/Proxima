@@ -156,15 +156,12 @@ pub async fn persist_mcp_call_in_tx(
 
     sqlx::query(
         r"INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, event_id, citation_mapping_id,
+            (memory_id, schema_id, schema_version, event_id, citation_mapping_id,
              personality_instance_id)
-         VALUES ($1, $2, $3, $4, 1, $5, $6,
+         VALUES ($1, $2, 1, $3, $4,
                  '00000000-0000-0000-0000-000000000000'::uuid)",
     )
     .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(MCP_CALL_FACT_SCHEMA)
     .bind(&event_id_bytes[..])
     .bind(citation_mapping_id)

@@ -35,17 +35,14 @@ async fn author_inspires_edge(
             (edge_id, relation, relation_class,
              source_kind, source_memory_id, source_goal_id,
              target_kind, target_memory_id, target_goal_id,
-             authorship_kind,
-             owner_principal_kind, owner_principal_id)
+             authorship_kind)
          VALUES ($1, $2, 'Causal', 'Goal', NULL, $3, 'Perspective', $4, NULL,
-                 'User', $5, $6)",
+                 'User')",
     )
     .bind(edge_id)
     .bind(CORE_INSPIRES_RELATION)
     .bind(source_goal_id)
     .bind(target_memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .execute(&mut *tx)
     .await?;
 
@@ -85,12 +82,12 @@ async fn seed_active_goal(
     sqlx::query(
         "INSERT INTO proxima_core.goals
             (goal_id, schema_id, schema_version,
-             owner_principal_kind, owner_principal_id,
-             title, text, state, authorship_kind, request_id, payload)
+             title, text, state, authorship_kind, request_id, payload,
+             idempotency_key)
          VALUES ($1, 'core/simple-text-v1', 1,
-                 $2, $3,
                  'goal targeting', 'target Alice only', 'Active', 'User',
-                 'goal-targeting-e2e', convert_to('{}', 'UTF8'))",
+                 'goal-targeting-e2e', convert_to('{}', 'UTF8'),
+                 md5($2::text || ':' || $3::text || ':' || 'goal-targeting-e2e'))",
     )
     .bind(goal_id)
     .bind(owner_kind)

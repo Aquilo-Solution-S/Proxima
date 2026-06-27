@@ -556,16 +556,13 @@ pub async fn append_personality_memories(
         memory_ids.push(MemoryId::new(memory_id));
         sqlx::query(
             "INSERT INTO proxima_core.memories
-                (memory_id, owner_principal_kind, owner_principal_id,
-                 schema_id, schema_version, kind, text, operator_kind, model_id,
+                (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
                  prompt_version, personality_instance_id,
                  wake_chain_depth, supersedes)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, 'Wake',
-                     $8, $9, $10, $11, $12)",
+             VALUES ($1, $2, $3, $4, $5, 'Wake',
+                     $6, $7, $8, $9, $10)",
         )
         .bind(memory_id)
-        .bind(owner_kind)
-        .bind(owner_principal_id)
         .bind(memory.schema_id.as_str())
         .bind(i32::try_from(memory.schema_version.into_inner()).unwrap_or(1))
         .bind(memory.kind.entity_kind())

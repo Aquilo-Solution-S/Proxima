@@ -248,8 +248,11 @@ async fn engine_author_derived_supersedes_in_same_transaction()
     let head_ids: Vec<Uuid> = sqlx::query_scalar(
         "SELECT m.memory_id
            FROM proxima_core.memories m
-          WHERE m.owner_principal_kind = $1
-            AND m.owner_principal_id = $2
+           JOIN proxima_core.entity_owner eo
+             ON eo.entity_id = m.memory_id
+            AND eo.is_home
+          WHERE eo.owner_principal_kind = $1
+            AND eo.owner_principal_id = $2
             AND m.schema_id = $3
             AND m.kind = 'Abstraction'
             AND m.tombstoned_at IS NULL
@@ -397,17 +400,25 @@ async fn insert_source_abstraction(
     };
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 1, 'Abstraction',
+         VALUES ($1, $2, 1, 'Abstraction',
                  'source abstraction', 'ExternalAgent', 'source-model',
-                 'source-prompt', $5, 0)",
+                 'source-prompt', $3, 0)",
+    )
+    .bind(memory_id)
+    .bind(AgentDerivationV1::SCHEMA_ID)
+    .bind(Uuid::nil())
+    .execute(pg.pool())
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.entity_owner
+            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
+         VALUES ($1, $2, $3, true, $4)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(AgentDerivationV1::SCHEMA_ID)
     .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;

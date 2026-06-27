@@ -21,13 +21,12 @@ async fn insert_external_seed(
     sqlx::query(
         "INSERT INTO proxima_core.goals
             (goal_id, schema_id, schema_version,
-             owner_principal_kind, owner_principal_id,
              title, text, payload, state,
-             authorship_kind, request_id)
+             authorship_kind, request_id, idempotency_key)
          VALUES ($1, 'core/simple-text-v1', 1,
-                 $2, $3,
                  $4, $4, convert_to('{}', 'UTF8'), $5,
-                 'External', $6)",
+                 'External', $6,
+                 md5($2::text || ':' || $3::text || ':' || $6))",
     )
     .bind(Uuid::now_v7())
     .bind(owner_kind)

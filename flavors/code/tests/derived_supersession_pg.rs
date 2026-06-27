@@ -3,7 +3,7 @@ mod common;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use common::{TestDb, test_owner};
+use common::{TestDb, insert_entity_owner_home, test_owner};
 use proxima_code::{
     CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1, build_engine,
 };
@@ -46,19 +46,19 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, 'test/goal-activation', 1, 'Abstraction',
-                 'goal activation evidence', 'ExternalAgent', 'test', 'test', $4, 0)",
+         VALUES ($1, 'test/goal-activation', 1, 'Abstraction',
+                 'goal activation evidence', 'ExternalAgent', 'test', 'test', $2, 0)",
     )
     .bind(goal_activated_memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(Uuid::nil())
     .execute(db.pg.pool())
     .await
     .expect("insert goal activation evidence");
+    insert_entity_owner_home(db.pg.pool(), goal_activated_memory_id, &owner)
+        .await
+        .expect("insert goal activation home owner");
 
     let old_memory_id = MemoryId::new(Uuid::now_v7());
     let new_memory_id = MemoryId::new(Uuid::now_v7());
@@ -134,8 +134,11 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
         "SELECT m.memory_id
            FROM proxima_core.memories m
            JOIN proxima_code.execution_plan_v1 p USING (memory_id)
-          WHERE m.owner_principal_kind = $1
-            AND m.owner_principal_id = $2
+           JOIN proxima_core.entity_owner eo
+             ON eo.entity_id = m.memory_id
+            AND eo.is_home
+          WHERE eo.owner_principal_kind = $1
+            AND eo.owner_principal_id = $2
             AND m.schema_id = $3
             AND p.plan_key = $4
             AND NOT EXISTS (

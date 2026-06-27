@@ -7,22 +7,29 @@ async fn external_agent_operator_kind_is_admitted() -> Result<(), Box<dyn std::e
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
         let owner = owner_fixture();
+        let (owner_kind, owner_principal_id) = owner.columns();
         let memory_id = uuid::Uuid::now_v7();
         sqlx::query(
             "INSERT INTO proxima_core.memories
-                (memory_id, owner_principal_kind, owner_principal_id,
-                 schema_id, schema_version, kind, text, operator_kind, model_id,
+                (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
                  prompt_version, personality_instance_id)
-             VALUES ($1, 'User', $2, 'core/agent-derivation-v1', 1,
+             VALUES ($1, 'core/agent-derivation-v1', 1,
                      'Abstraction', 'body', 'ExternalAgent', 'claude-opus-4.7',
                      'mcp-agent-v1',
                      '00000000-0000-0000-0000-000000000000'::uuid)",
         )
         .bind(memory_id)
-        .bind(match owner {
-            proxima_core::Principal::User(u) => u.into_inner(),
-            proxima_core::Principal::Group(g) => g.into_inner(),
-        })
+        .execute(pg.pool())
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.entity_owner
+                (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
+             VALUES ($1, $2, $3, true, $4)",
+        )
+        .bind(memory_id)
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .bind(uuid::Uuid::nil())
         .execute(pg.pool())
         .await?;
         Ok(())

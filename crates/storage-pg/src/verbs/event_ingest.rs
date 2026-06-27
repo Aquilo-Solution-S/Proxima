@@ -826,15 +826,11 @@ where
 
     sqlx::query(
         r"INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id,
-             schema_id, schema_version, event_id, citation_mapping_id,
+            (memory_id, schema_id, schema_version, event_id, citation_mapping_id,
              text, personality_instance_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7,
-                 $8, $9)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(draft.schema_id.as_str())
     .bind(draft.schema_version.into_inner().cast_signed())
     .bind(&event_id_bytes[..])
