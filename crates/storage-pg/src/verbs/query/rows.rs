@@ -138,18 +138,28 @@ pub(super) struct MemoryRowDb {
     pub(super) kind: Option<EntityKind>,
 }
 
+/// Cursor high-water over the requester's READ set — never a client-supplied
+/// principal. Computed across `read_owners` so it spans exactly the change
+/// events the requester may see (the same set `list_change_events_after`
+/// filters by); using `req.principal` here would leak whether/when a foreign
+/// owner has events.
 pub(super) async fn read_seq_high_water(
     pool: &PgPool,
-    owner_kind: OwnerPrincipalKind,
-    owner_principal_id: uuid::Uuid,
+    read_owner_kinds: &[OwnerPrincipalKind],
+    read_owner_ids: &[uuid::Uuid],
 ) -> Result<Option<uuid::Uuid>, StorageError> {
     let row: Option<(uuid::Uuid,)> = sqlx::query_as(
         "SELECT seq FROM proxima_core.change_event \
-         WHERE owner_principal_kind = $1 AND owner_principal_id = $2 \
+         WHERE EXISTS ( \
+             SELECT 1 \
+               FROM unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id) \
+              WHERE owner_principal_kind = s.kind \
+                AND owner_principal_id = s.id \
+         ) \
          ORDER BY seq DESC LIMIT 1",
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(read_owner_kinds)
+    .bind(read_owner_ids)
     .fetch_optional(pool)
     .await
     .map_err(internal)?;

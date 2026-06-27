@@ -26,10 +26,10 @@ pub async fn list_read_scope(
     let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
         "SELECT readable_personality_instance_id
            FROM proxima_core.read_scope_matrix
-	          WHERE owner_principal_kind = $1
-	            AND owner_principal_id = $2
-	            AND reader_personality_instance_id = $3
-	          ORDER BY created_at, readable_personality_instance_id",
+          WHERE owner_principal_kind = $1
+            AND owner_principal_id = $2
+            AND reader_personality_instance_id = $3
+          ORDER BY created_at, readable_personality_instance_id",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -66,11 +66,11 @@ pub async fn set_read_scope(
     let reader_exists: Option<(uuid::Uuid,)> = sqlx::query_as(
         "SELECT personality_instance_id
            FROM proxima_core.personality
-	          WHERE owner_principal_kind = $1
-	            AND owner_principal_id = $2
-	            AND personality_instance_id = $3
-	            AND status <> 'tombstoned'::proxima_core.personality_status
-	          FOR UPDATE",
+          WHERE owner_principal_kind = $1
+            AND owner_principal_id = $2
+            AND personality_instance_id = $3
+            AND status <> 'tombstoned'::proxima_core.personality_status
+          FOR UPDATE",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -86,10 +86,10 @@ pub async fn set_read_scope(
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*)
                FROM proxima_core.personality
-	              WHERE owner_principal_kind = $1
-	                AND owner_principal_id = $2
-	                AND status <> 'tombstoned'::proxima_core.personality_status
-	                AND personality_instance_id = ANY($3::uuid[])",
+              WHERE owner_principal_kind = $1
+                AND owner_principal_id = $2
+                AND status <> 'tombstoned'::proxima_core.personality_status
+                AND personality_instance_id = ANY($3::uuid[])",
         )
         .bind(owner_kind)
         .bind(owner_principal_id)
@@ -106,9 +106,9 @@ pub async fn set_read_scope(
 
     sqlx::query(
         "DELETE FROM proxima_core.read_scope_matrix
-	          WHERE owner_principal_kind = $1
-	            AND owner_principal_id = $2
-	            AND reader_personality_instance_id = $3",
+          WHERE owner_principal_kind = $1
+            AND owner_principal_id = $2
+            AND reader_personality_instance_id = $3",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -148,10 +148,10 @@ async fn ensure_active_personality(
     let row: Option<(uuid::Uuid,)> = sqlx::query_as(
         "SELECT personality_instance_id
            FROM proxima_core.personality
-	          WHERE owner_principal_kind = $1
-	            AND owner_principal_id = $2
-	            AND personality_instance_id = $3
-	            AND status <> 'tombstoned'::proxima_core.personality_status",
+          WHERE owner_principal_kind = $1
+            AND owner_principal_id = $2
+            AND personality_instance_id = $3
+            AND status <> 'tombstoned'::proxima_core.personality_status",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)

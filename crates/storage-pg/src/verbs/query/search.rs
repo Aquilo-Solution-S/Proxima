@@ -555,11 +555,11 @@ fn push_reader_visibility_filter(sql: &mut String, reader_param: Option<usize>) 
                 OR EXISTS (
                     SELECT 1
                   FROM proxima_core.read_scope_matrix r
-	                     WHERE r.owner_principal_kind = home_owner.owner_principal_kind
-	                       AND r.owner_principal_id = home_owner.owner_principal_id
-	                       AND r.reader_personality_instance_id = ${param}
-	                       AND r.readable_personality_instance_id = m.personality_instance_id
-	                )
+                     WHERE r.owner_principal_kind = home_owner.owner_principal_kind
+                       AND r.owner_principal_id = home_owner.owner_principal_id
+                       AND r.reader_personality_instance_id = ${param}
+                       AND r.readable_personality_instance_id = m.personality_instance_id
+                )
             )"
         )
         .expect("write to String is infallible");

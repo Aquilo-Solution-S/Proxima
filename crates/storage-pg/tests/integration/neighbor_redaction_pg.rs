@@ -1,8 +1,8 @@
 use crate::common::{drop_db, fresh_pg, seed_memory, seed_memory_edge, share_entity};
 use proxima_core::access::world;
 use proxima_core::{
-    CORE_DERIVED_FROM_RELATION, EdgeId, EntityKind, GroupId, MemoryId, Principal, RelationClass,
-    Storage, UserId,
+    CORE_DERIVED_FROM_RELATION, ChangeEventKind, EdgeId, EntityKind, GroupId, MemoryId, Principal,
+    RelationClass, Storage, UserId,
 };
 use uuid::Uuid;
 
@@ -86,6 +86,101 @@ async fn neighbor_edges_are_source_owned_and_targets_redact()
     drop(pg);
     let _ = drop_db(&db_name).await;
     result
+}
+
+/// H1 regression: `proxima://events` / `list_change_events_after` must apply
+/// the same source-owned visibility + public-source guard as `read_edges`,
+/// or it leaks a private edge target the redacted edge-read surface hides.
+#[tokio::test]
+async fn list_change_events_applies_public_source_guard_to_edge_events()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let result = async {
+        let gp = Principal::Group(GroupId::new(Uuid::now_v7())); // source (edge) owner
+        let private = Principal::Group(GroupId::new(Uuid::now_v7())); // target owner
+        let p = Principal::User(UserId::new(Uuid::now_v7())); // reads gp, not private
+        let world = world();
+
+        let a_public = seed_memory(&pg, &gp, EntityKind::Abstraction, "A public").await?;
+        let f_private = seed_memory(&pg, &private, EntityKind::Fact, "private").await?;
+        share_entity(&pg, a_public.into_inner(), &world).await?; // publish the source
+
+        let edge = seed_memory_edge(
+            &pg,
+            &gp,
+            (EntityKind::Abstraction, a_public),
+            (EntityKind::Fact, f_private),
+            CORE_DERIVED_FROM_RELATION,
+            RelationClass::Provenance,
+        )
+        .await?;
+        // The edge's change-event is owned by the source/edge owner (gp).
+        insert_edge_append_event(&pg, &gp, edge, a_public, f_private).await?;
+
+        // P reaches gp (passes the owner filter + reads the World-published
+        // source) but cannot read the `private` target. `read_edges` omits this
+        // edge via the public-source guard, so the event surface must too.
+        let p_read = vec![p.clone(), gp.clone(), world.clone()];
+        let p_events = pg
+            .list_change_events_after(&p_read, uuid::Uuid::nil(), 100)
+            .await?;
+        assert!(
+            !p_events.iter().any(|e| matches!(
+                &e.event.kind,
+                ChangeEventKind::EdgeAppend { edge_id, .. } if *edge_id == edge.into_inner()
+            )),
+            "public-source/private-target edge event must be omitted (public-source guard)"
+        );
+
+        // A reader of BOTH owners sees the event (target readable → guard off).
+        let both_read = vec![gp.clone(), private.clone(), world.clone()];
+        let both_events = pg
+            .list_change_events_after(&both_read, uuid::Uuid::nil(), 100)
+            .await?;
+        assert!(
+            both_events.iter().any(|e| matches!(
+                &e.event.kind,
+                ChangeEventKind::EdgeAppend { edge_id, .. } if *edge_id == edge.into_inner()
+            )),
+            "reader of both endpoints sees the edge event"
+        );
+
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+async fn insert_edge_append_event(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Principal,
+    edge_id: EdgeId,
+    source_memory_id: MemoryId,
+    target_memory_id: MemoryId,
+) -> Result<(), sqlx::Error> {
+    let (owner_kind, owner_principal_id) = owner.columns();
+    sqlx::query(
+        "INSERT INTO proxima_core.change_event \
+            (seq, owner_principal_kind, owner_principal_id, kind, \
+             edge_id, edge_relation, \
+             edge_source_memory_id, edge_source_goal_id, edge_source_fact_entity_id, \
+             edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id) \
+         VALUES ($1, $2, $3, 'EdgeAppend', $4, $5, $6, NULL, NULL, $7, NULL, NULL)",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(edge_id.into_inner())
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(source_memory_id.into_inner())
+    .bind(target_memory_id.into_inner())
+    .execute(pg.pool())
+    .await
+    .map(|_| ())
 }
 
 async fn seed_edge_access_fixture(

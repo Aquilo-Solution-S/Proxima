@@ -16,23 +16,71 @@ pub async fn list_change_events_after(
         return Ok(Vec::new());
     }
     let (read_owner_kinds, read_owner_ids) = read_owner_columns(read_owners);
+    let (world_kind, world_id) = proxima_core::access::world().columns();
+    // Edge change-events MUST obey the same source-owned visibility as
+    // `read_edges`: an edge is listed iff its source is readable AND the
+    // public-source guard holds (NOT (source World-readable AND target not
+    // readable)). Otherwise `proxima://events` would disclose a private edge
+    // target that the redacted edge-read surface correctly hides. Endpoints
+    // resolve fact-entity ids to their current head, exactly as in edges.rs.
     let rows = sqlx::query(
-        r"SELECT seq, entity_personality_instance_id, wake_chain_depth
-             FROM proxima_core.change_event
+        r"SELECT ce.seq, ce.entity_personality_instance_id, ce.wake_chain_depth
+             FROM proxima_core.change_event ce
              WHERE EXISTS (
                 SELECT 1
                   FROM unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
-                 WHERE owner_principal_kind = s.kind
-                   AND owner_principal_id = s.id
+                 WHERE ce.owner_principal_kind = s.kind
+                   AND ce.owner_principal_id = s.id
              )
-               AND seq > $3
-             ORDER BY seq ASC
+               AND ce.seq > $3
+               AND (
+                    ce.edge_id IS NULL
+                    OR (
+                        EXISTS (
+                            SELECT 1
+                              FROM proxima_core.entity_owner seo
+                              JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
+                                ON seo.owner_principal_kind = rs.kind
+                               AND seo.owner_principal_id = rs.id
+                             WHERE seo.entity_id = COALESCE(
+                                       ce.edge_source_memory_id, ce.edge_source_goal_id,
+                                       (SELECT fe.current_memory_id FROM proxima_core.fact_entities fe
+                                         WHERE fe.fact_entity_id = ce.edge_source_fact_entity_id))
+                        )
+                        AND NOT (
+                            EXISTS (
+                                SELECT 1
+                                  FROM proxima_core.entity_owner weo
+                                 WHERE weo.entity_id = COALESCE(
+                                           ce.edge_source_memory_id, ce.edge_source_goal_id,
+                                           (SELECT fe.current_memory_id FROM proxima_core.fact_entities fe
+                                             WHERE fe.fact_entity_id = ce.edge_source_fact_entity_id))
+                                   AND weo.owner_principal_kind = $5
+                                   AND weo.owner_principal_id = $6
+                            )
+                            AND NOT EXISTS (
+                                SELECT 1
+                                  FROM proxima_core.entity_owner teo
+                                  JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rt(kind, id)
+                                    ON teo.owner_principal_kind = rt.kind
+                                   AND teo.owner_principal_id = rt.id
+                                 WHERE teo.entity_id = COALESCE(
+                                           ce.edge_target_memory_id, ce.edge_target_goal_id,
+                                           (SELECT fe.current_memory_id FROM proxima_core.fact_entities fe
+                                             WHERE fe.fact_entity_id = ce.edge_target_fact_entity_id))
+                            )
+                        )
+                    )
+               )
+             ORDER BY ce.seq ASC
              LIMIT $4",
     )
     .bind(&read_owner_kinds)
     .bind(&read_owner_ids)
     .bind(after)
     .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+    .bind(world_kind)
+    .bind(world_id)
     .fetch_all(pool)
     .await
     .map_err(map_err)?;

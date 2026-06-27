@@ -33,7 +33,6 @@ pub(crate) async fn query_memories(
     req: &QueryRequest,
     schemas: &[SchemaInfo],
 ) -> Result<QueryResponse, StorageError> {
-    let (seq_owner_kind, seq_owner_principal_id) = req.principal.columns();
     let (read_owner_kinds, read_owner_ids) = read_owner_columns(&req.read_owners);
     let id_hydration =
         !req.memory_ids.is_empty() || !req.goal_ids.is_empty() || !req.edge_ids.is_empty();
@@ -50,8 +49,7 @@ pub(crate) async fn query_memories(
             )
             .await?,
             edges: Vec::new(),
-            seq_high_water: read_seq_high_water(pool, seq_owner_kind, seq_owner_principal_id)
-                .await?,
+            seq_high_water: read_seq_high_water(pool, &read_owner_kinds, &read_owner_ids).await?,
         });
     }
 
@@ -191,7 +189,7 @@ pub(crate) async fn query_memories(
         schemas,
     )
     .await?;
-    let seq_high_water = read_seq_high_water(pool, seq_owner_kind, seq_owner_principal_id).await?;
+    let seq_high_water = read_seq_high_water(pool, &read_owner_kinds, &read_owner_ids).await?;
 
     Ok(QueryResponse {
         memories,
@@ -268,7 +266,6 @@ pub(super) async fn visible_ids_for(
     Ok((memory_ids, goal_ids))
 }
 
-#[allow(dead_code)]
 async fn query_visible_memory_ids(
     pool: &PgPool,
     req: &QueryRequest,
@@ -358,7 +355,6 @@ async fn query_visible_memory_ids(
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
-#[allow(dead_code)]
 async fn query_visible_goal_ids(
     pool: &PgPool,
     req: &QueryRequest,
