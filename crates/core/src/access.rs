@@ -14,13 +14,15 @@ use crate::{GroupId, MemoryId, Owner, PersonalityInstanceId, Principal};
 
 /// The relation a grant confers, forming a partial domination lattice.
 ///
-/// `owner` dominates everything in the read/write chain (`editor`/`viewer`)
-/// plus grant-management/transfer — NOT `admin`, `ingest`, or `member`.
+/// `owner` confers grant-management and transfer, and dominates the
+/// read/write chain (`editor`/`viewer`) only — NOT `admin`, `ingest`, or
+/// `member`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, sqlx::Type)]
 #[sqlx(type_name = "proxima_core.grant_relation", rename_all = "lowercase")]
 pub enum Relation {
-    /// Everything on the space + grant-management + transfer. Not set by the
-    /// ordinary grant verbs (identity-or-`init_space_owner` only).
+    /// Grant-management + transfer + dominance of `editor`/`viewer`. Does NOT
+    /// confer config (`admin`), ingest, or membership. Not set by ordinary
+    /// grant verbs (identity-or-`init_space_owner` only).
     Owner,
     /// Space/personality **config** only (wake entries, personality config,
     /// read-scope) — NOT memory read/write, NOT grant-management.
@@ -117,6 +119,15 @@ pub enum Visibility {
     Shared,
     /// World-readable marketplace entry — a read source-of-truth.
     Public,
+}
+
+/// Visibility side effect applied when sharing an entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShareVisibilityUpdate {
+    /// Promote `private` entries to `shared`; leave `shared`/`public` as-is.
+    PromotePrivateToShared,
+    /// Insert the grant without changing memory visibility.
+    LeaveVisibility,
 }
 
 /// Publish target accepted by owner-facing entry visibility verbs.

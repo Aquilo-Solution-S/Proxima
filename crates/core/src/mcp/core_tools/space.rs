@@ -6,8 +6,8 @@ use crate::access::GrantResource;
 use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 
 use super::access_common::{
-    GrantOutput, GrantSubjectArg, RelationArg, StatusOutput, format_grant, format_principal,
-    parse_grant_subject,
+    GrantOutput, GrantSubjectArg, SpaceGrantRelationArg, StatusOutput, format_grant,
+    format_principal, parse_grant_subject,
 };
 use super::{READ_ONLY, WRITE_IDEMPOTENT};
 
@@ -40,8 +40,8 @@ pub struct SpaceSetMemberArgs {
     pub space: Option<String>,
     #[schemars(description = "Grant subject: {subject_kind, subject_id}.")]
     pub subject: GrantSubjectArg,
-    #[schemars(description = "Grant relation. owner is rejected by the engine.")]
-    pub relation: RelationArg,
+    #[schemars(description = "Grant relation: admin, editor, viewer, ingest, or member.")]
+    pub relation: SpaceGrantRelationArg,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

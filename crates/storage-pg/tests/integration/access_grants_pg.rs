@@ -8,7 +8,7 @@ use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::Storage;
 use proxima_core::access::{
     GrantResource, GrantSelector, GrantSubject, NewAccessGrant, Relation, RelationSelector,
-    RemoveOwnerOutcome, Visibility,
+    RemoveOwnerOutcome, ShareVisibilityUpdate, Visibility,
 };
 use proxima_core::{GroupId, MemoryId, PersonalityInstanceId, Principal, UserId};
 use uuid::Uuid;
@@ -191,7 +191,7 @@ async fn entry_grant_visibility_and_existence() -> Result<(), Box<dyn std::error
             subject: GrantSubject::Principal(friend.clone()),
             granted_by: pers(),
         },
-        false,
+        ShareVisibilityUpdate::LeaveVisibility,
     )
     .await?;
 
@@ -236,7 +236,7 @@ async fn entry_grant_visibility_and_existence() -> Result<(), Box<dyn std::error
                 subject: GrantSubject::Principal(friend.clone()),
                 granted_by: pers(),
             },
-            false,
+            ShareVisibilityUpdate::LeaveVisibility,
         )
         .await
         .expect_err("grant on absent memory rejected by existence trigger");
