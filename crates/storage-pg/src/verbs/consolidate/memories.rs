@@ -452,10 +452,10 @@ async fn memory_visible_to_reader(
             AND home_owner.is_home
             AND home_owner.owner_principal_kind = r.owner_principal_kind
             AND home_owner.owner_principal_id = r.owner_principal_id
-		   JOIN proxima_core.memories m
-		     ON m.memory_id = $5
-		    AND m.tombstoned_at IS NULL
-	         WHERE r.owner_principal_kind = $1
+   JOIN proxima_core.memories m
+     ON m.memory_id = $5
+    AND m.tombstoned_at IS NULL
+         WHERE r.owner_principal_kind = $1
             AND r.owner_principal_id = $2
             AND r.reader_personality_instance_id = $3
             AND r.readable_personality_instance_id = $4",

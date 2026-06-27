@@ -15,8 +15,8 @@ pub async fn list_memory_dependencies(
         "SELECT e.target_memory_id, m.schema_id
          FROM proxima_core.edges e
          JOIN proxima_core.memories m
-	           ON m.memory_id = e.target_memory_id
-	          AND m.tombstoned_at IS NULL
+           ON m.memory_id = e.target_memory_id
+          AND m.tombstoned_at IS NULL
          WHERE EXISTS (
                     SELECT 1
                       FROM proxima_core.entity_owner eo
