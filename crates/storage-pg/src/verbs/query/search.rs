@@ -263,18 +263,18 @@ async fn run_semantic(
                  left(c.search_text, 480) AS snippet,
                  0.0::real AS lexical_score,
                  CASE
-                     WHEN (1 - (e.vec <=> ${vec_param}::vector)) = 'NaN'::float8 THEN 0.0
-                     ELSE GREATEST(0.0, (1 - (e.vec <=> ${vec_param}::vector)))
+                     WHEN (1 - (emb.vec <=> ${vec_param}::vector)) = 'NaN'::float8 THEN 0.0
+                     ELSE GREATEST(0.0, (1 - (emb.vec <=> ${vec_param}::vector)))
                  END::real AS similarity_score,
                  c.wake_chain_depth
           FROM candidates c
-          JOIN proxima_core.embeddings e
-            ON e.entity_kind = c.kind
-           AND e.entity_id = c.memory_id
-           AND e.owner_principal_kind = c.owner_principal_kind
-           AND e.owner_principal_id = c.owner_principal_id
-           AND e.embedding_version = 1
-           AND e.model_id = ${model_param}
+          JOIN proxima_core.embeddings emb
+            ON emb.entity_kind = c.kind
+           AND emb.entity_id = c.memory_id
+           AND emb.owner_principal_kind = c.owner_principal_kind
+           AND emb.owner_principal_id = c.owner_principal_id
+           AND emb.embedding_version = 1
+           AND emb.model_id = ${model_param}
           ORDER BY {order_by}
           LIMIT {}",
         u64::from(limit),
@@ -337,7 +337,10 @@ fn common_candidates_sql(
     push_candidate_branch_prefix(&mut sql);
     sql.push_str(
         "NULL::text[] AS tags, COALESCE(m.text, '') AS search_text \
-         FROM proxima_core.memories m",
+         FROM proxima_core.memories m \
+         LEFT JOIN proxima_core.entity_owner home_owner \
+           ON home_owner.entity_id = m.memory_id \
+          AND home_owner.is_home",
     );
     push_base_memory_filters(&mut sql, req, filters);
     sql.push_str(" AND NULLIF(m.text, '') IS NOT NULL");
@@ -355,6 +358,9 @@ fn common_candidates_sql(
             "{tag_expr} AS tags,
              NULLIF(concat_ws(' ', {projection_expr}), '') AS search_text
              FROM proxima_core.memories m
+             LEFT JOIN proxima_core.entity_owner home_owner
+               ON home_owner.entity_id = m.memory_id
+              AND home_owner.is_home
              JOIN {table} s ON s.memory_id = m.memory_id",
             tag_expr = tag_expr.as_str(),
             projection_expr = projection_expr,
@@ -403,7 +409,7 @@ fn projection_tag_expr(projection: &MemorySearchProjection) -> Result<String, St
 
 fn push_candidate_branch_prefix(sql: &mut String) {
     sql.push_str(
-        "SELECT m.memory_id, m.owner_principal_kind, m.owner_principal_id, \
+        "SELECT m.memory_id, home_owner.owner_principal_kind, home_owner.owner_principal_id, \
          COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, \
          m.schema_id, m.personality_instance_id AS authoring_personality_instance_id, \
          m.wake_chain_depth, m.created_at, ",
@@ -548,9 +554,9 @@ fn push_reader_visibility_filter(sql: &mut String, reader_param: Option<usize>) 
                 OR m.personality_instance_id = ${param}
                 OR EXISTS (
                     SELECT 1
-                      FROM proxima_core.read_scope_matrix r
-	                     WHERE r.owner_principal_kind = m.owner_principal_kind
-	                       AND r.owner_principal_id = m.owner_principal_id
+                  FROM proxima_core.read_scope_matrix r
+	                     WHERE r.owner_principal_kind = home_owner.owner_principal_kind
+	                       AND r.owner_principal_id = home_owner.owner_principal_id
 	                       AND r.reader_personality_instance_id = ${param}
 	                       AND r.readable_personality_instance_id = m.personality_instance_id
 	                )

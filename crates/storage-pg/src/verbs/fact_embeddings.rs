@@ -75,9 +75,12 @@ const RECONCILE_EMBEDDINGS_SQL: &str = "
 WITH scoped AS MATERIALIZED (
      SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS entity_kind,
             m.memory_id,
-            m.owner_principal_kind,
-            m.owner_principal_id
+            home_owner.owner_principal_kind,
+            home_owner.owner_principal_id
        FROM proxima_core.memories m
+       LEFT JOIN proxima_core.entity_owner home_owner
+         ON home_owner.entity_id = m.memory_id
+        AND home_owner.is_home
       WHERE m.text IS NOT NULL
         AND m.tombstoned_at IS NULL
         AND (
@@ -155,8 +158,14 @@ pub async fn load_fact_text(
         "SELECT text
            FROM proxima_core.memories
           WHERE memory_id = $1
-            AND owner_principal_kind = $2
-            AND owner_principal_id = $3
+            AND EXISTS (
+                SELECT 1
+                  FROM proxima_core.entity_owner eo
+                 WHERE eo.entity_id = memory_id
+                   AND eo.owner_principal_kind = $2
+                   AND eo.owner_principal_id = $3
+                   AND eo.is_home
+            )
             AND event_id IS NOT NULL
             AND tombstoned_at IS NULL",
     )
@@ -187,8 +196,14 @@ pub async fn load_embedding_text(
         "SELECT text
            FROM proxima_core.memories
           WHERE memory_id = $1
-            AND owner_principal_kind = $2
-            AND owner_principal_id = $3
+            AND EXISTS (
+                SELECT 1
+                  FROM proxima_core.entity_owner eo
+                 WHERE eo.entity_id = memory_id
+                   AND eo.owner_principal_kind = $2
+                   AND eo.owner_principal_id = $3
+                   AND eo.is_home
+            )
             AND text IS NOT NULL
             AND tombstoned_at IS NULL
             AND (
@@ -222,8 +237,14 @@ pub async fn load_fact_text_in_tx(
         "SELECT text
            FROM proxima_core.memories
           WHERE memory_id = $1
-            AND owner_principal_kind = $2
-            AND owner_principal_id = $3
+            AND EXISTS (
+                SELECT 1
+                  FROM proxima_core.entity_owner eo
+                 WHERE eo.entity_id = memory_id
+                   AND eo.owner_principal_kind = $2
+                   AND eo.owner_principal_id = $3
+                   AND eo.is_home
+            )
             AND event_id IS NOT NULL
             AND tombstoned_at IS NULL",
     )
@@ -285,8 +306,14 @@ pub async fn upsert_memory_embedding(
                 SELECT 1
                   FROM proxima_core.memories m
                  WHERE m.memory_id = $2
-                   AND m.owner_principal_kind = $5
-                   AND m.owner_principal_id = $6
+                   AND EXISTS (
+                        SELECT 1
+                          FROM proxima_core.entity_owner eo
+                         WHERE eo.entity_id = m.memory_id
+                           AND eo.owner_principal_kind = $5
+                           AND eo.owner_principal_id = $6
+                           AND eo.is_home
+                   )
                    AND m.text IS NOT NULL
                    AND m.tombstoned_at IS NULL
                    AND (
@@ -334,8 +361,14 @@ pub async fn list_facts_missing_embedding(
     let rows = sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT m.memory_id
            FROM proxima_core.memories m
-          WHERE m.owner_principal_kind = $1
-            AND m.owner_principal_id = $2
+          WHERE EXISTS (
+                    SELECT 1
+                      FROM proxima_core.entity_owner eo
+                     WHERE eo.entity_id = m.memory_id
+                       AND eo.owner_principal_kind = $1
+                       AND eo.owner_principal_id = $2
+                       AND eo.is_home
+                )
             AND m.event_id IS NOT NULL
             AND m.text IS NOT NULL
             AND m.tombstoned_at IS NULL
@@ -533,8 +566,14 @@ pub async fn enqueue_missing_embedding_jobs(
         "WITH missing AS (
              SELECT m.memory_id
                FROM proxima_core.memories m
-              WHERE m.owner_principal_kind = $1
-                AND m.owner_principal_id = $2
+              WHERE EXISTS (
+                        SELECT 1
+                          FROM proxima_core.entity_owner eo
+                         WHERE eo.entity_id = m.memory_id
+                           AND eo.owner_principal_kind = $1
+                           AND eo.owner_principal_id = $2
+                           AND eo.is_home
+                    )
                 AND m.event_id IS NOT NULL
                 AND m.text IS NOT NULL
                 AND m.tombstoned_at IS NULL
