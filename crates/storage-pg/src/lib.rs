@@ -833,14 +833,14 @@ impl Storage for PgStorage {
 
     async fn facts_citing_object(
         &self,
-        owner: &Owner,
+        read_owners: &[Principal],
         cited_object_id: uuid::Uuid,
         sidecars: &[SidecarSpec],
     ) -> Result<Vec<MemorySnapshot>, StorageError> {
         verbs::query::facts_citing_object(
             &self.pool,
             &self.sidecars,
-            owner,
+            read_owners,
             cited_object_id,
             sidecars,
         )
@@ -849,18 +849,17 @@ impl Storage for PgStorage {
 
     async fn citation_of_fact(
         &self,
-        owner: &Owner,
         fact_memory_id: MemoryId,
     ) -> Result<Option<FactCitationReadback>, StorageError> {
-        verbs::query::citation_of_fact(&self.pool, owner, fact_memory_id).await
+        verbs::query::citation_of_fact(&self.pool, fact_memory_id).await
     }
 
     async fn citation_of_entity_head(
         &self,
-        owner: &Owner,
+        read_owners: &[Principal],
         fact_entity_id: FactEntityId,
     ) -> Result<Option<FactCitationReadback>, StorageError> {
-        verbs::query::citation_of_entity_head(&self.pool, owner, fact_entity_id).await
+        verbs::query::citation_of_entity_head(&self.pool, read_owners, fact_entity_id).await
     }
 
     async fn walk_memory_lineage(
@@ -872,13 +871,13 @@ impl Storage for PgStorage {
 
     async fn list_active_goals(
         &self,
-        principal: &Principal,
+        read_owners: &[Principal],
         self_perspective_memory_id: MemoryId,
         limit: usize,
     ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
         verbs::active_goals::list_active_goals(
             &self.pool,
-            principal,
+            read_owners,
             self_perspective_memory_id,
             limit,
         )
@@ -1026,11 +1025,11 @@ impl Storage for PgStorage {
 
     async fn list_change_events_after(
         &self,
-        owner: &Owner,
+        read_owners: &[Principal],
         after: uuid::Uuid,
         limit: usize,
     ) -> Result<Vec<ChangeEventForWake>, StorageError> {
-        verbs::consolidate::list_change_events_after(&self.pool, owner, after, limit).await
+        verbs::consolidate::list_change_events_after(&self.pool, read_owners, after, limit).await
     }
 
     async fn list_change_events_for_replay(

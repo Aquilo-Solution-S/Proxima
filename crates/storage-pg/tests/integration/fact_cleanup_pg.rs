@@ -1031,7 +1031,9 @@ async fn assert_motivated_by_edge_delete_emitted(
     goal_id: Uuid,
     fact_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let delete_events = pg.list_change_events_after(owner, Uuid::nil(), 100).await?;
+    let delete_events = pg
+        .list_change_events_after(std::slice::from_ref(owner), Uuid::nil(), 100)
+        .await?;
     let found = delete_events.iter().any(|event| {
         matches!(
             &event.event.kind,

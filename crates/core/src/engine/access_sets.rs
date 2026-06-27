@@ -382,7 +382,7 @@ pub(in crate::engine) mod tests {
 
         async fn facts_citing_object(
             &self,
-            _owner: &Owner,
+            _read_owners: &[Principal],
             _cited_object_id: uuid::Uuid,
             _sidecars: &[SidecarSpec],
         ) -> Result<Vec<MemorySnapshot>, StorageError> {
@@ -391,7 +391,6 @@ pub(in crate::engine) mod tests {
 
         async fn citation_of_fact(
             &self,
-            _owner: &Owner,
             _fact_memory_id: MemoryId,
         ) -> Result<Option<verbs::query::FactCitationReadback>, StorageError> {
             Ok(None)
@@ -399,7 +398,7 @@ pub(in crate::engine) mod tests {
 
         async fn citation_of_entity_head(
             &self,
-            _owner: &Owner,
+            _read_owners: &[Principal],
             _fact_entity_id: FactEntityId,
         ) -> Result<Option<verbs::query::FactCitationReadback>, StorageError> {
             Ok(None)
@@ -418,7 +417,7 @@ pub(in crate::engine) mod tests {
 
         async fn list_active_goals(
             &self,
-            _principal: &Principal,
+            _read_owners: &[Principal],
             _self_perspective_memory_id: MemoryId,
             _limit: usize,
         ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
@@ -599,7 +598,7 @@ pub(in crate::engine) mod tests {
 
         async fn list_change_events_after(
             &self,
-            _owner: &Owner,
+            _read_owners: &[Principal],
             _after: uuid::Uuid,
             _limit: usize,
         ) -> Result<Vec<ChangeEventForWake>, StorageError> {
