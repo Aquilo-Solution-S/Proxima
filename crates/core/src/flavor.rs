@@ -980,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_includes_all_14_substrate_mcp_tools() {
+    fn default_registry_includes_all_11_substrate_mcp_tools() {
         let frozen = FlavorRegistry::new().freeze();
         let names: std::collections::HashSet<_> =
             frozen.list_mcp_tools().iter().map(|d| d.name).collect();
@@ -992,9 +992,6 @@ mod tests {
             "core_record_utterance",
             "core_derive",
             "core_link",
-            "core_memory",
-            "core_space",
-            "core_marketplace",
             "core_goal",
             "core_wake",
             "core_personality",
@@ -1007,7 +1004,7 @@ mod tests {
             !names.contains("core/emit_budget_decision"),
             "retired tool name must not remain registered"
         );
-        assert_eq!(names.len(), 14, "exactly 14 substrate tools registered");
+        assert_eq!(names.len(), 11, "exactly 11 substrate tools registered");
         for desc in frozen.list_mcp_tools() {
             assert!(
                 matches!(desc.origin, McpToolOrigin::Substrate),

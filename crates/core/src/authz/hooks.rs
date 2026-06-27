@@ -1,9 +1,9 @@
 use std::fmt::Debug;
 
-use crate::access::{EntryVisibilityTarget, GrantSubject, Relation};
+use crate::access::{EntityId, Relation};
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
-use crate::{MemoryId, Owner};
+use crate::{GroupId, Owner, Principal};
 
 /// Reason a hook denied an otherwise-allowed request.
 #[derive(Debug)]
@@ -22,23 +22,15 @@ pub enum AuthzOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthzOperation {
     /// Ordinary relation-gated owner/space/entry access.
-    Relation,
-    /// Resource-scoped entry read.
-    EntryRead { memory_id: MemoryId },
-    /// Grant-management operations carry their target for flavor policy.
-    ShareEntry {
-        memory_id: MemoryId,
-        subject: GrantSubject,
+    Relation { relation: Relation },
+    /// Membership mutation audited by group, member, and relation.
+    Membership {
+        group: GroupId,
+        member: Principal,
         relation: Relation,
     },
-    SetEntryVisibility {
-        memory_id: MemoryId,
-        target: EntryVisibilityTarget,
-    },
-    SetSpaceBinding {
-        subject: GrantSubject,
-        relation: Relation,
-    },
+    /// Entity ownership/share mutation audited by entity and owner.
+    EntityShare { entity: EntityId, owner: Principal },
 }
 
 #[derive(Debug)]
