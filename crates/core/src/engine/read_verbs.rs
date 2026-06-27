@@ -10,7 +10,7 @@ use crate::verbs::query::{FactCitationReadback, MemorySearchRequest, MemorySearc
 use crate::verbs::schema::PayloadKind;
 use crate::{EdgeId, FactEntityId, MemoryId, Principal, SchemaId, SchemaVersion};
 
-use super::Engine;
+use super::{Engine, PermitMode};
 
 const NEIGHBOR_EDGE_LIMIT: usize = 200;
 
@@ -30,7 +30,6 @@ pub struct SearchReadResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetMemoryReadRequest {
-    pub principal: Principal,
     pub memory_id: MemoryId,
     pub reader_personality_instance_id: Option<PersonalityInstanceId>,
     pub include_neighbor_edges: bool,
@@ -165,34 +164,53 @@ impl Engine {
         })
     }
 
-    /// Owner-scoped single-memory read plus optional neighbor-edge domain rows.
+    /// Single-memory read plus optional neighbor-edge domain rows.
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks graph-read/read, and `Internal` when storage reads fail.
+    /// Returns `Forbidden` when the context cannot access `req.memory_id`, and
+    /// `Internal` when storage reads fail.
     pub async fn get_memory(
         &self,
         authz: &AuthzContext,
         req: &GetMemoryReadRequest,
     ) -> Result<GetMemoryReadResponse, ProtocolError> {
         let permit = self
-            .authorize_request(authz, &req.principal, Relation::Viewer)
+            .authorize_entry_request(authz, req.memory_id, Relation::Viewer)
             .await?;
         let sidecars = self.sidecar_specs();
+        if let PermitMode::PublicRead { resource } = permit.mode() {
+            let memory = self
+                .storage
+                .load_memory_by_id(permit.owner(), *resource, None, &sidecars)
+                .await
+                .map_err(|err| storage_error("load_memory_by_id", &err))?;
+            return Ok(GetMemoryReadResponse {
+                memory,
+                neighbor_edges: Vec::new(),
+            });
+        }
+        let (memory_id, reader_personality_instance_id) = match permit.mode() {
+            PermitMode::OwnerScoped => (req.memory_id, req.reader_personality_instance_id),
+            PermitMode::EntryScoped {
+                resource,
+                subject_personality,
+            } => (*resource, Some(*subject_personality)),
+            PermitMode::PublicRead { .. } => unreachable!("PublicRead returned above"),
+        };
         let memory = self
             .storage
             .load_memory_by_id(
                 permit.owner(),
-                req.memory_id,
-                req.reader_personality_instance_id,
+                memory_id,
+                reader_personality_instance_id,
                 &sidecars,
             )
             .await
             .map_err(|err| storage_error("load_memory_by_id", &err))?;
         let neighbor_edges = if req.include_neighbor_edges {
             self.storage
-                .load_neighbor_memory_edges(permit.owner(), &[req.memory_id], NEIGHBOR_EDGE_LIMIT)
+                .load_neighbor_memory_edges(permit.owner(), &[memory_id], NEIGHBOR_EDGE_LIMIT)
                 .await
                 .map_err(|err| storage_error("load_neighbor_memory_edges", &err))?
         } else {
@@ -494,7 +512,6 @@ mod tests {
     async fn get_memory_denies_denied_context() {
         let owner = owner();
         let req = GetMemoryReadRequest {
-            principal: owner.clone(),
             memory_id: MemoryId::new(uuid::Uuid::now_v7()),
             reader_personality_instance_id: None,
             include_neighbor_edges: false,
