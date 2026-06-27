@@ -10,8 +10,9 @@ use proxima_core::verbs::goal_write::{
     TransitionGoalAtomicRequest,
 };
 use proxima_core::{
-    FlavorRegistry, FlavorRegistryFrozen, GoalPayload, MemoryId, Owner, OwnerPrincipalKind,
-    PayloadKeyBuilder, Principal, SchemaId, SchemaVersion, UserId,
+    CORE_MOTIVATED_BY_RELATION, FlavorRegistry, FlavorRegistryFrozen, GoalPayload, MemoryId, Owner,
+    OwnerPrincipalKind, PayloadKeyBuilder, Principal, SchemaId, SchemaVersion, StorageError,
+    UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -581,6 +582,75 @@ async fn goal_achieve_atom_rejects_empty_evidence() {
 
     let _ = drop_db(&db_name).await;
     result.expect("empty achievement evidence test failed");
+}
+
+#[tokio::test]
+async fn goal_achieve_atom_rejects_evidence_without_home_owner() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = Principal::User(UserId::new(Uuid::now_v7()));
+        let self_id = insert_self(&pg, &owner).await?;
+        let evidence_id = insert_evidence_abstraction(&pg, &owner).await?;
+        sqlx::query("DELETE FROM proxima_core.entity_owner WHERE entity_id = $1")
+            .bind(evidence_id.into_inner())
+            .execute(pg.pool())
+            .await?;
+
+        let registry = FlavorRegistry::new().freeze();
+        let prior = create_goal(
+            &pg,
+            &registry,
+            self_id,
+            fresh_draft(&owner, "req-no-owner-evidence-prior".to_string()),
+        )
+        .await?;
+        let evidence = vec![proxima_core::verbs::goal_write::GoalEvidenceRef {
+            memory_id: evidence_id,
+        }];
+
+        let err = achieve_goal(
+            &pg,
+            &registry,
+            self_id,
+            owner,
+            prior.goal_id,
+            "req-no-owner-evidence",
+            evidence,
+        )
+        .await
+        .expect_err("no-home evidence must be rejected before edge append");
+        assert!(matches!(err, StorageError::ConstraintViolation(_)));
+        assert!(
+            err.to_string()
+                .contains("evidence crosses Owner boundary or does not exist")
+        );
+
+        let motivated_edges: (i64,) = sqlx::query_as(
+            "SELECT count(*)::bigint
+               FROM proxima_core.edges
+              WHERE relation = $1
+                AND target_memory_id = $2",
+        )
+        .bind(CORE_MOTIVATED_BY_RELATION)
+        .bind(evidence_id.into_inner())
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(
+            motivated_edges.0, 0,
+            "rejected no-home evidence must not receive a motivated-by edge"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("no-home evidence rejection test failed");
 }
 
 #[tokio::test]
