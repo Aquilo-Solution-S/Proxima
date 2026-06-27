@@ -107,12 +107,13 @@ axiom erasure_removes_cognitive :
     (∀ m : Memory, memory_owner m ≠ o) ∧
     (∀ g : Goal,   goal_owner g   ≠ o)
 
-/-- CO-7'a, Edge face — THEOREM from single-owner edge scope. -/
+/-- CO-7'a, Edge face — THEOREM from source-owned edge scope: an edge's
+    Owner is its source endpoint's Owner, and no endpoint survives erasure. -/
 theorem erasure_removes_edges :
     ∀ o : Owner, erased o → ∀ e : Edge, edge_owner e ≠ o := by
   intro o ho e he
   obtain ⟨hm, hg⟩ := erasure_removes_cognitive o ho
-  have hscope := (edge_scope_single_owner e).1
+  have hscope := edge_source_owned e
   cases hsrc : edge_source e with
   | memory ms =>
       rw [hsrc] at hscope

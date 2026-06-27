@@ -135,14 +135,25 @@ instance : AppendOnly Edge := ⟨⟩
 -- Edge scope (doc 02 §Edge Scope Invariant)
 -- ============================================================
 
-/-- ME-9 — all edges are single-Owner:
-    `source.owner == target.owner == edge.owner` (verbatim).
-    Cross-owner sharing is a query/access concern, never an edge
-    write (also ST-10, doc 06 §Scoping). -/
-axiom edge_scope_single_owner :
-  ∀ e : Edge,
-    (edge_source e).owner = edge_owner e ∧
-    (edge_target e).owner = edge_owner e
+/-- ME-9 (group-ownership realign) — edges are SOURCE-owned: an edge's
+    Owner is its source endpoint's Owner. Edge visibility follows the
+    source alone (spec §5.2 / §10 invariant #3, "claims are owned by their
+    source"); the target may belong to a DIFFERENT Owner. Retiring the old
+    both-endpoints single-Owner scope is exactly what makes cross-group
+    provenance expressible — an Abstraction grounded in another group's Fact
+    stays the abstraction-author's, the inbound edge owned by its source. -/
+axiom edge_source_owned :
+  ∀ e : Edge, (edge_source e).owner = edge_owner e
+
+/-- SUP-scope — Supersession-class edges remain intra-Owner: a new entity
+    supersedes its OWN prior entity, never another Owner's (you do not
+    rewrite another group's head). This is the residue of the retired
+    single-Owner edge scope that survives the source-owned realign, and the
+    sole basis ME-5b now needs — provenance/causal edges may cross Owners,
+    supersession may not. -/
+axiom supersession_intra_owner :
+  ∀ e : Edge, relation_class (edge_relation e) = .Supersession →
+    (edge_target e).owner = (edge_source e).owner
 
 -- ============================================================
 -- The class-legality matrix (doc 02 §The Directionality Rule)
@@ -279,20 +290,17 @@ theorem facts_never_supersede :
     rcases hleg with h' | h' <;> exact (nomatch h')
 
 /-- ME-5b — supersession stays within one Owner. THEOREM: from the
-    bridge edge and single-owner edge scope. -/
+    bridge edge and the Supersession intra-Owner scope. -/
 theorem supersession_same_owner :
     ∀ m m' : Memory, memory_supersedes m = some m' →
       memory_owner m = memory_owner m' := by
   intro m m' h
-  obtain ⟨e, hs, ht, _⟩ := supersession_pointer_is_edge m m' h
-  have hscope := edge_scope_single_owner e
-  have h1 : NodeRef.owner (edge_source e) = edge_owner e := hscope.1
-  have h2 : NodeRef.owner (edge_target e) = edge_owner e := hscope.2
-  rw [hs] at h1
-  rw [ht] at h2
-  show memory_owner m = memory_owner m'
-  calc memory_owner m = edge_owner e := h1
-    _ = memory_owner m' := h2.symm
+  obtain ⟨e, hs, ht, hc⟩ := supersession_pointer_is_edge m m' h
+  have htgt := supersession_intra_owner e hc
+  rw [hs, ht] at htgt
+  -- htgt : NodeRef.owner (.memory m') = NodeRef.owner (.memory m)
+  --      ≡ memory_owner m' = memory_owner m
+  exact htgt.symm
 
 /-- ME-12 — Supersession-class edges connect same-shaped endpoints:
     memory→memory (same kind — that part PROVABLE from the matrix) or

@@ -20,8 +20,12 @@ principal only: the same user under two orgs is one identity.
 default `<org>-everyone` group whose membership auto-syncs with org
 membership (doc 01 v1 constraints).
 
-Per-memory ACL (`AccessGrant`) is a v2+ extension layered above
-Owner — deliberately absent here.
+Owner here is the single `is_home` WRITE owner. Read-only sharing — the
+former "v2+ `AccessGrant`" — is now realized as `entity_owner` reachability
+rows and modeled in `Causa.Authorization` (`reaches` / `may_read`), never as
+a flag on the entity. So an entity carries one Owner (this home) yet is
+reachable by many; `visible` below is the per-Owner reachability primitive
+those read/write sets are built from, not the whole access rule.
 -/
 
 import Causa.Prelude
@@ -63,19 +67,22 @@ def Owner : Type := Principal
 def owner_principal (o : Owner) : Principal := o
 
 -- ============================================================
--- Visibility — THE access rule
+-- Visibility — per-Owner reachability (the read-set primitive)
 -- ============================================================
 
-/-- ES-2 — the access rule, verbatim from doc 01 §Owner:
+/-- ES-2 — when a requester reaches a single Owner principal, verbatim from
+    doc 01 §Owner:
 
-      visible(m, requester) iff
-          m.principal == User(requester.user_id)
-        ∨ ( m.principal == Group(g) ∧ requester ∈ members(g) )
+      visible(o, requester) iff
+          o.principal == User(requester)
+        ∨ ( o.principal == Group(g) ∧ requester ∈ members(g) )
 
-    A definition, not an axiom: the kernel fixes the rule's content.
-    ES-3: org does not exist at this layer — it is a billing
-    dimension on engine storage rows, never an access predicate and
-    never part of identity. -/
+    A definition, not an axiom: the kernel fixes the rule's content. Under
+    group-ownership this is no longer the WHOLE entity access rule — an
+    entity is reachable through any of its `entity_owner` Owners — but the
+    per-Owner test `S_read` is assembled from (self ∪ groups ∪ World); see
+    `Causa.Authorization.may_read` for the set-reachability gate. ES-3: org
+    does not exist at this layer — never an access predicate, never identity. -/
 def visible (o : Owner) (requester : UserId) : Prop :=
   match owner_principal o with
   | .user u  => u = requester
