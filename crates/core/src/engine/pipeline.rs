@@ -1,67 +1,57 @@
-//! The single Tier-2 authorization chokepoint. `MemoryPermit` is sealed: its
-//! only constructor is `Engine::authorize_request` in this module, so a verb
-//! body that requires a permit cannot run without one and cannot forge one.
-
-use crate::Owner;
-use crate::authz::{AuthzContext, AuthzInput, AuthzOutcome, MemoryAction, Role};
+use crate::access::{AccessScope, Relation};
+use crate::authz::{AuthPath, AuthzContext, AuthzInput, AuthzOutcome};
 use crate::error::ProtocolError;
+use crate::{Owner, Principal};
 
-use super::{Engine, authorize, authorize_memory_grant};
+use super::Engine;
 
-/// Proof that one `(owner, role, action)` authorization passed the pipeline.
-/// Carries the RESOLVED owner so check-site and use-site cannot diverge.
+/// Proof that one `(owner, relation)` authorization passed the pipeline. Carries
+/// the RESOLVED owner so check-site and use-site cannot diverge. Sealed: only
+/// `authorize_request` (this module) can mint it.
 #[derive(Debug)]
 pub struct MemoryPermit {
     owner: Owner,
     requested: Owner,
-    role: Role,
-    action: MemoryAction,
+    relation: Relation,
 }
 
 impl MemoryPermit {
-    // PRIVATE: only `authorize_request` (same module) can mint.
-    fn new(owner: Owner, requested: Owner, role: Role, action: MemoryAction) -> Self {
+    fn new(owner: Owner, requested: Owner, relation: Relation) -> Self {
         Self {
             owner,
             requested,
-            role,
-            action,
+            relation,
         }
     }
-
     #[must_use]
     pub fn owner(&self) -> &Owner {
         &self.owner
     }
-
     #[must_use]
     pub fn requested(&self) -> &Owner {
         &self.requested
     }
-
     #[must_use]
-    pub fn role(&self) -> Role {
-        self.role
-    }
-
-    #[must_use]
-    pub fn action(&self) -> MemoryAction {
-        self.action
+    pub fn relation(&self) -> Relation {
+        self.relation
     }
 }
 
 impl Engine {
-    /// The one Tier-2 gate. Resolves owner, runs the existing decoupled
-    /// primitives (role check AND owner-space grant, no coupling), runs
-    /// deny-only veto hooks, then mints the permit. The `(role, action)` pair
-    /// stays explicit at the caller.
-    pub(in crate::engine) fn authorize_request(
+    /// The one Tier-2 owner/space-scoped gate. Async because relation resolution
+    /// reads persisted grants (skipped for Unrestricted). `denied` contexts are
+    /// rejected before any resolution (replaces the old `RoleSet::none` gate).
+    pub(in crate::engine) async fn authorize_request(
         &self,
         authz: &AuthzContext,
         requested: &Owner,
-        role: Role,
-        action: MemoryAction,
+        relation: Relation,
     ) -> Result<MemoryPermit, ProtocolError> {
+        if authz.auth_path == AuthPath::Denied {
+            return Err(ProtocolError::forbidden(
+                "denied context authorizes nothing",
+            ));
+        }
         let resolved = match self.registry.resolve_owner(authz, requested) {
             Ok(owner) => owner,
             Err(err) => {
@@ -69,8 +59,7 @@ impl Engine {
                     authz,
                     requested,
                     resolved: requested,
-                    role,
-                    action,
+                    relation,
                 };
                 self.registry
                     .run_authorization_observers(&input, AuthzOutcome::DeniedResolution);
@@ -81,46 +70,79 @@ impl Engine {
             authz,
             requested,
             resolved: &resolved,
-            role,
-            action,
+            relation,
         };
-        let (result, outcome) = match self.gate_and_veto(authz, &resolved, role, action, &input) {
+        let (result, outcome) = match self.gate_and_veto(authz, &resolved, relation, &input).await {
             Ok(()) => (Ok(()), AuthzOutcome::Allowed),
             Err((err, outcome)) => (Err(err), outcome),
         };
         self.registry.run_authorization_observers(&input, outcome);
         result?;
-        Ok(MemoryPermit::new(resolved, requested.clone(), role, action))
+        Ok(MemoryPermit::new(resolved, requested.clone(), relation))
     }
 
-    fn gate_and_veto(
+    async fn gate_and_veto(
         &self,
         authz: &AuthzContext,
         owner: &Owner,
-        role: Role,
-        action: MemoryAction,
+        relation: Relation,
         input: &AuthzInput<'_>,
     ) -> Result<(), (ProtocolError, AuthzOutcome)> {
-        authorize(authz, owner, role).map_err(|err| (err, AuthzOutcome::DeniedRole))?;
-        authorize_memory_grant(authz, owner, action)
+        self.resolve_relation(authz, owner, relation)
+            .await
             .map_err(|err| (err, AuthzOutcome::DeniedGrant))?;
         self.registry
             .run_authorization_vetoes(input)
             .map_err(|err| (err, AuthzOutcome::DeniedVeto))
     }
+
+    /// Steps 0/2/3 of the spec algorithm. `can_access` gates ONLY identity-owner +
+    /// unrestricted; persisted space bindings (incl. owner rows + group member
+    /// inheritance) are NOT can_access-gated — that is how cross-principal access
+    /// works. Resolution is short-circuited for Unrestricted/identity before any DB read.
+    async fn resolve_relation(
+        &self,
+        authz: &AuthzContext,
+        owner: &Owner,
+        relation: Relation,
+    ) -> Result<(), ProtocolError> {
+        let principal = &authz.identity.principal;
+        let identity_owner = matches!(owner, Principal::User(_))
+            && principal == owner
+            && authz.identity.can_access_principal(owner);
+        let unrestricted = authz.capabilities.access == AccessScope::Unrestricted
+            && authz.identity.can_access_principal(owner);
+        if identity_owner || unrestricted {
+            return Ok(());
+        }
+        let granted = self
+            .storage()
+            .resolve_space_relations(owner, principal)
+            .await
+            .map_err(|e| ProtocolError::internal(e.to_string()))?
+            .iter()
+            .any(|g| g.relation.dominates(relation));
+        if granted {
+            Ok(())
+        } else {
+            Err(ProtocolError::forbidden(relation.denied_message()))
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::sync::{Arc, Mutex};
 
+    use crate::access::{AccessScope, Relation};
     use crate::authz::{
         AuthPath, AuthorizationHook, AuthzContext, AuthzInput, AuthzOutcome, AuthzVeto,
-        MemoryAction, OwnerResolver, Role,
+        CapabilitySet, Identity, OwnerResolver, ToolScope,
     };
     use crate::error::ErrorCode;
     use crate::error::ProtocolError;
-    use crate::{FlavorRegistry, Owner, Principal, UserId};
+    use crate::{FlavorRegistry, GroupId, Owner, Principal, UserId};
 
     use super::Engine;
 
@@ -134,6 +156,28 @@ mod tests {
 
     fn owner() -> Owner {
         Principal::User(UserId::new(uuid::Uuid::now_v7()))
+    }
+
+    fn group_owner() -> Owner {
+        Principal::Group(GroupId::new(uuid::Uuid::now_v7()))
+    }
+
+    fn granted_context(owner: &Owner) -> AuthzContext {
+        let mut accessible_principals = HashSet::new();
+        accessible_principals.insert(owner.clone());
+        AuthzContext {
+            identity: Identity {
+                principal: owner.clone(),
+                accessible_principals,
+                expires_at: None,
+                auth_epoch: 0,
+            },
+            capabilities: CapabilitySet {
+                tool_scope: ToolScope::All,
+                access: AccessScope::Granted,
+            },
+            auth_path: AuthPath::HostBearer,
+        }
     }
 
     #[derive(Debug)]
@@ -170,45 +214,45 @@ mod tests {
         fn observe(&self, input: &AuthzInput<'_>, outcome: AuthzOutcome) {
             assert!(matches!(
                 input.authz.auth_path,
-                AuthPath::System | AuthPath::Denied
+                AuthPath::System | AuthPath::HostBearer
             ));
-            assert_eq!(input.role, Role::GraphRead);
-            assert_eq!(input.action, MemoryAction::Read);
+            assert_eq!(input.relation, Relation::Viewer);
             self.outcomes.lock().expect("recorder lock").push(outcome);
         }
     }
 
-    #[test]
-    fn single_owner_context_mints_matching_permit() {
+    #[tokio::test]
+    async fn single_owner_context_mints_matching_permit() {
         let engine = engine();
         let owner = owner();
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
 
         let permit = engine
-            .authorize_request(&authz, &owner, Role::GraphRead, MemoryAction::Read)
+            .authorize_request(&authz, &owner, Relation::Viewer)
+            .await
             .expect("single-owner context should authorize");
 
         assert_eq!(permit.owner(), &owner);
         assert_eq!(permit.requested(), &owner);
-        assert_eq!(permit.role(), Role::GraphRead);
-        assert_eq!(permit.action(), MemoryAction::Read);
+        assert_eq!(permit.relation(), Relation::Viewer);
     }
 
-    #[test]
-    fn denied_context_returns_forbidden() {
+    #[tokio::test]
+    async fn denied_context_returns_forbidden() {
         let engine = engine();
         let owner = owner();
         let authz = AuthzContext::denied(&owner);
 
         let err = engine
-            .authorize_request(&authz, &owner, Role::GraphRead, MemoryAction::Read)
+            .authorize_request(&authz, &owner, Relation::Viewer)
+            .await
             .expect_err("denied context should reject authorization");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
     }
 
-    #[test]
-    fn resolver_remap_still_gates_resolved_owner() {
+    #[tokio::test]
+    async fn resolver_remap_still_gates_resolved_owner() {
         let requested = owner();
         let hidden = owner();
         let mut registry = FlavorRegistry::new();
@@ -219,14 +263,15 @@ mod tests {
         let authz = AuthzContext::single_owner(&requested, AuthPath::System);
 
         let err = engine
-            .authorize_request(&authz, &requested, Role::GraphRead, MemoryAction::Read)
+            .authorize_request(&authz, &requested, Relation::Viewer)
+            .await
             .expect_err("resolved hidden owner should be denied");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
     }
 
-    #[test]
-    fn veto_hook_denies_otherwise_allowed_request() {
+    #[tokio::test]
+    async fn veto_hook_denies_otherwise_allowed_request() {
         let owner = owner();
         let mut registry = FlavorRegistry::new();
         registry.add_authorization_hook(Arc::new(VetoHook));
@@ -234,16 +279,18 @@ mod tests {
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
 
         let err = engine
-            .authorize_request(&authz, &owner, Role::GraphRead, MemoryAction::Read)
+            .authorize_request(&authz, &owner, Relation::Viewer)
+            .await
             .expect_err("veto should deny otherwise-allowed request");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
         assert_eq!(err.message, "test veto");
     }
 
-    #[test]
-    fn observer_records_allowed_and_denied_outcomes() {
+    #[tokio::test]
+    async fn observer_records_allowed_and_denied_outcomes() {
         let owner = owner();
+        let denied_owner = group_owner();
         let outcomes = Arc::new(Mutex::new(Vec::new()));
         let mut registry = FlavorRegistry::new();
         registry.add_authorization_hook(Arc::new(RecordingHook {
@@ -251,19 +298,21 @@ mod tests {
         }));
         let engine = engine_from_registry(registry);
         let allowed = AuthzContext::single_owner(&owner, AuthPath::System);
-        let denied = AuthzContext::denied(&owner);
+        let denied = granted_context(&owner);
 
         engine
-            .authorize_request(&allowed, &owner, Role::GraphRead, MemoryAction::Read)
+            .authorize_request(&allowed, &owner, Relation::Viewer)
+            .await
             .expect("allowed request should pass");
         let err = engine
-            .authorize_request(&denied, &owner, Role::GraphRead, MemoryAction::Read)
+            .authorize_request(&denied, &denied_owner, Relation::Viewer)
+            .await
             .expect_err("denied context should reject authorization");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
         assert_eq!(
             *outcomes.lock().expect("recorder lock"),
-            vec![AuthzOutcome::Allowed, AuthzOutcome::DeniedRole],
+            vec![AuthzOutcome::Allowed, AuthzOutcome::DeniedGrant],
         );
     }
 }

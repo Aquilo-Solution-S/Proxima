@@ -290,7 +290,7 @@ fn resolve_search_spaces(
         return Ok(vec![super::memory_spaces::resolve_space_owner(
             ctx,
             None,
-            super::memory_spaces::SpaceDefault::Current,
+            super::memory_spaces::SpaceDefault::Identity,
         )?]);
     }
     let mut seen = std::collections::HashSet::with_capacity(raw_spaces.len());

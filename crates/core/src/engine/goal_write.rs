@@ -1,5 +1,6 @@
 use super::{Engine, MemoryPermit};
-use crate::authz::{AuthzContext, MemoryAction, Role};
+use crate::access::Relation;
+use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
 use crate::verbs::goal_write::{
@@ -93,12 +94,9 @@ impl Engine {
     where
         P: GoalPayload,
     {
-        let permit = self.authorize_request(
-            authz,
-            &request.principal,
-            Role::GraphWrite,
-            MemoryAction::Write,
-        )?;
+        let permit = self
+            .authorize_request(authz, &request.principal, Relation::Editor)
+            .await?;
         self.create_goal_authorized(&permit, request).await
     }
 
@@ -116,8 +114,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &GoalCreatePayloadWriteRequest,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::GraphWrite, MemoryAction::Write)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Editor)
+            .await?;
         let payload = self.normalize_payload_write(req.payload.clone())?;
         let target_self = self
             .target_self_perspective_authorized(&permit, req.target_self)
@@ -156,8 +155,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &GoalTransitionRequest,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::GraphWrite, MemoryAction::Write)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Editor)
+            .await?;
         let embedding_client = self.embed_client();
         let context =
             self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
@@ -187,8 +187,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &GoalMarkAchievedRequest,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::GraphWrite, MemoryAction::Write)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Editor)
+            .await?;
         let embedding_client = self.embed_client();
         let context =
             self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
@@ -219,8 +220,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &GoalModifyRequest,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::GraphWrite, MemoryAction::Write)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Editor)
+            .await?;
         let embedding_client = self.embed_client();
         let context =
             self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
@@ -252,8 +254,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &GoalDecomposeRequest,
     ) -> Result<DecomposeGoalOutcome, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::GraphWrite, MemoryAction::Write)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Editor)
+            .await?;
         let target_self = self
             .target_self_perspective_authorized(&permit, req.target_self)
             .await?;

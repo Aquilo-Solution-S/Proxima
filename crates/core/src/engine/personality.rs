@@ -1,5 +1,6 @@
 use super::{Engine, MemoryPermit};
-use crate::authz::{AuthzContext, MemoryAction, Role};
+use crate::access::Relation;
+use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::mcp::core_tools::payload::{
     PersonalityConfigChangeSnapshot, PersonalityConfigChangedCaller,
@@ -128,7 +129,9 @@ impl Engine {
         principal: &Principal,
         include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, ProtocolError> {
-        let permit = self.authorize_request(authz, principal, Role::Admin, MemoryAction::Admin)?;
+        let permit = self
+            .authorize_request(authz, principal, Relation::Admin)
+            .await?;
         self.list_personality_instances_authorized(&permit, principal, include_tombstoned)
             .await
     }
@@ -155,8 +158,9 @@ impl Engine {
         authz: &AuthzContext,
         req: TombstonePersonalityRequest,
     ) -> Result<TombstonePersonalityResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Admin)
+            .await?;
         self.tombstone_personality_authorized(&permit, req).await
     }
 
@@ -174,8 +178,9 @@ impl Engine {
         req: TombstonePersonalityRequest,
         audit: Option<PersonalityConfigChangedInput>,
     ) -> Result<TombstonePersonalityAdminResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Admin)
+            .await?;
         let mut effective = req;
         effective.principal = permit.owner().clone();
         let before = self
@@ -232,8 +237,9 @@ impl Engine {
         authz: &AuthzContext,
         req: InstantiatePersonalityRequest,
     ) -> Result<InstantiatePersonalityResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Admin)
+            .await?;
         self.instantiate_personality_authorized(&permit, req).await
     }
 
@@ -252,8 +258,9 @@ impl Engine {
         audit: Option<PersonalityConfigChangedInput>,
     ) -> Result<InstantiatePersonalityAdminResponse, ProtocolError> {
         let display_name = req.display_name.trim().to_string();
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Admin)
+            .await?;
         let response = self
             .instantiate_personality_authorized(&permit, req)
             .await?;
@@ -310,8 +317,9 @@ impl Engine {
         req: &SetWakeEntriesRequest,
         audit: Option<PersonalityConfigChangedInput>,
     ) -> Result<SetWakeEntriesAdminResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Admin)
+            .await?;
         let before = self
             .wake_entries_snapshot(permit.owner(), req.personality_instance_id)
             .await?;
@@ -349,8 +357,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &AddWakeEntryRequest,
     ) -> Result<AddWakeEntryResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Admin)
+            .await?;
         let new_id = req.entry.wake_entry_id;
         let new_draft = req.entry.clone();
         let new_trigger_kind = new_draft.trigger_kind;
@@ -393,8 +402,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &UpdateWakeEntryRequest,
     ) -> Result<UpdateWakeEntryResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Admin)
+            .await?;
         let pid = self
             .personality_for_wake_entry(permit.owner(), req.wake_entry_id)
             .await?;
@@ -434,8 +444,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &RemoveWakeEntryRequest,
     ) -> Result<RemoveWakeEntryResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Admin)
+            .await?;
         let Some(pid) = self
             .find_personality_for_wake_entry(permit.owner(), req.wake_entry_id)
             .await?
@@ -476,8 +487,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &SetReadScopeAdminRequest,
     ) -> Result<SetReadScopeAdminResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Admin)
+            .await?;
         let before = self
             .storage
             .list_read_scope(&ListReadScopeRequest {

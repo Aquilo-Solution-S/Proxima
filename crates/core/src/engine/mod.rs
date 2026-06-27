@@ -19,7 +19,8 @@ use futures::future::BoxFuture;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
-use crate::authz::{AuthzContext, MemoryAction, Role};
+use crate::access::Relation;
+use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage::{StorageError, StorageHandle};
@@ -163,8 +164,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &SetWakeEntriesRequest,
     ) -> Result<SetWakeEntriesResponse, ProtocolError> {
-        let permit =
-            self.authorize_request(authz, &req.principal, Role::Admin, MemoryAction::Admin)?;
+        let permit = self
+            .authorize_request(authz, &req.principal, Relation::Admin)
+            .await?;
         self.set_wake_entries_authorized(&permit, req).await
     }
 
@@ -270,48 +272,4 @@ impl std::fmt::Debug for Engine {
             .field("storage", &"<dyn Storage>")
             .finish_non_exhaustive()
     }
-}
-
-pub(crate) fn authorize(
-    authz: &AuthzContext,
-    principal: &Principal,
-    role: Role,
-) -> Result<(), ProtocolError> {
-    if !authz.identity.can_access_principal(principal) {
-        return Err(ProtocolError::forbidden(
-            "principal cannot access requested principal",
-        ));
-    }
-    if !authz.capabilities.roles.has(role) {
-        return Err(ProtocolError::forbidden(role.denied_message()));
-    }
-    Ok(())
-}
-
-/// Owner-space GRANT primitive (owner visibility + the space grant) WITHOUT any
-/// role check. Composed with [`authorize`] by the `authorize_request` pipeline
-/// (`engine::pipeline`); verbs gate through `authorize_request`, not this
-/// directly. Keeping the grant check separate from role checks lets
-/// source-ingest writes carry `SourceIngest` without silently requiring
-/// `GraphWrite` on top of it.
-pub(crate) fn authorize_memory_grant(
-    authz: &AuthzContext,
-    principal: &Principal,
-    action: MemoryAction,
-) -> Result<(), ProtocolError> {
-    if !authz.identity.can_access_principal(principal) {
-        return Err(ProtocolError::forbidden(
-            "principal cannot access requested principal",
-        ));
-    }
-    if !authz.allows_memory_grant(principal, action) {
-        return Err(ProtocolError::forbidden(match action {
-            MemoryAction::Search => "requires memory.search on owner",
-            MemoryAction::Read => "requires memory.read on owner",
-            MemoryAction::Write => "requires memory.write on owner",
-            MemoryAction::Publish => "requires memory.publish on owner",
-            MemoryAction::Admin => "requires memory.admin on owner",
-        }));
-    }
-    Ok(())
 }

@@ -11,7 +11,7 @@ use proxima_core::verbs::query::{MemoryLineageDirection, MemoryLineageRequest, Q
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     AuthPath, AuthzContext, CORE_MOTIVATED_BY_RELATION, ChangeEventKind, EntityKind, EntityRef,
-    FactPayload, FlavorRegistry, GoalId, MemoryId, Owner, PayloadKeyBuilder, Role, SchemaId,
+    FactPayload, FlavorRegistry, GoalId, MemoryId, Owner, PayloadKeyBuilder, Relation, SchemaId,
     SchemaVersion, SidecarPayload, SourceBatchId, SourceId, Storage, StorageError,
     canonical_json_bytes,
 };
@@ -212,7 +212,9 @@ async fn ingest_stateful_fact(
     let payload_value = serde_json::to_value(payload)?;
     let draft = stateful_draft_for(owner, &payload_value);
     let authz = AuthzContext::single_owner(owner, AuthPath::System);
-    let authorized = engine.authorize_event_ingest(&authz, Role::SourceIngest, draft)?;
+    let authorized = engine
+        .authorize_event_ingest(&authz, Relation::Ingest, draft)
+        .await?;
     let sidecar_payload = SidecarPayload::fact(payload.clone());
     Ok(pg
         .ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)

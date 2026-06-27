@@ -10,8 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use proxima_core::{
-    AuthPath, Authenticator, AuthzContext, CapabilitySet, Credentials, Identity, MemoryAction,
-    Owner, Role, ToolScope,
+    AccessScope, AuthPath, Authenticator, AuthzContext, CapabilitySet, Credentials, Identity,
+    Owner, ToolScope,
 };
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -169,14 +169,13 @@ impl McpEdgeAuth {
         if authz.auth_path != AuthPath::HostBearer {
             return None;
         }
-        let can_access_configured_owner = authz.identity.can_access_principal(owner)
-            && authz.capabilities.roles.has(Role::GraphRead)
-            && (authz.allows_memory_grant(owner, MemoryAction::Search)
-                || authz.allows_memory_grant(owner, MemoryAction::Read));
+        let can_access_configured_owner = authz.identity.can_access_principal(owner);
         if !can_access_configured_owner {
             return None;
         }
         let mut authz = authz;
+        authz.identity.accessible_principals = HashSet::from([owner.clone()]);
+        authz.capabilities.access = AccessScope::Unrestricted;
         authz.capabilities.tool_scope = authz.capabilities.tool_scope.intersect(&self.tool_scope);
         Some(McpAuthContext {
             owner: authz.scoped_owner(owner.clone()),
@@ -191,9 +190,7 @@ impl McpEdgeAuth {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use proxima_core::{
-        AuthError, MemoryActionSet, MemorySpaceGrant, MemorySpaceGrants, Principal, UserId,
-    };
+    use proxima_core::{AuthError, Principal, UserId};
 
     fn fake_owner() -> Owner {
         Principal::User(UserId::new(uuid::Uuid::now_v7()))
@@ -242,7 +239,7 @@ mod tests {
             .expect("master resolves");
         assert_eq!(ctx.authz.auth_path, AuthPath::MasterDev);
         assert_eq!(ctx.master_token_id, Some(token));
-        assert!(ctx.authz.capabilities.roles.admin);
+        assert_eq!(ctx.authz.capabilities.access, AccessScope::Unrestricted);
         assert!(ctx.authz.capabilities.tool_scope.allows("anything"));
 
         assert!(
@@ -294,7 +291,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_path_accepts_explicit_read_grant_for_configured_owner() {
+    async fn host_path_accepts_granted_host_context_for_configured_owner() {
         let owner = fake_owner();
         let mut accessible = HashSet::new();
         accessible.insert(owner.clone());
@@ -307,13 +304,7 @@ mod tests {
             },
             capabilities: CapabilitySet {
                 tool_scope: ToolScope::All,
-                roles: proxima_core::RoleSet::all(),
-                memory_spaces: MemorySpaceGrants::explicit(vec![MemorySpaceGrant {
-                    key: "current".into(),
-                    label: "Current".into(),
-                    owner: owner.clone(),
-                    actions: MemoryActionSet::read_only(),
-                }]),
+                access: AccessScope::Granted,
             },
             auth_path: AuthPath::HostBearer,
         };
@@ -322,10 +313,11 @@ mod tests {
 
         let ctx = auth.resolve("host-token").await.expect("host resolves");
         assert_eq!(ctx.owner, owner);
+        assert_eq!(ctx.authz.capabilities.access, AccessScope::Unrestricted);
     }
 
     #[tokio::test]
-    async fn host_path_rejects_explicit_grants_without_configured_owner_read_or_search() {
+    async fn host_path_restricts_host_context_to_configured_owner() {
         let owner = fake_owner();
         let other = fake_owner();
         let mut accessible = HashSet::new();
@@ -340,20 +332,19 @@ mod tests {
             },
             capabilities: CapabilitySet {
                 tool_scope: ToolScope::All,
-                roles: proxima_core::RoleSet::all(),
-                memory_spaces: MemorySpaceGrants::explicit(vec![MemorySpaceGrant {
-                    key: "other".into(),
-                    label: "Other".into(),
-                    owner: other,
-                    actions: MemoryActionSet::read_only(),
-                }]),
+                access: AccessScope::Granted,
             },
             auth_path: AuthPath::HostBearer,
         };
-        let auth =
-            McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
+        let auth = McpEdgeAuth::headless()
+            .with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner.clone());
 
-        assert!(auth.resolve("host-token").await.is_none());
+        let ctx = auth.resolve("host-token").await.expect("host resolves");
+        assert_eq!(
+            ctx.authz.identity.accessible_principals,
+            HashSet::from([owner])
+        );
+        assert!(!ctx.authz.identity.can_access_principal(&other));
     }
 
     #[tokio::test]

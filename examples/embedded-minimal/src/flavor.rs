@@ -103,7 +103,7 @@ impl FlavorApp for EmbeddedMinimalFlavor {
 mod tests {
     use proxima::Proxima;
     use proxima_core::verbs::schema::PayloadKind;
-    use proxima_core::{Principal, Role, UserId};
+    use proxima_core::{Principal, Relation, UserId};
     use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
     use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemorySidecar};
     use proxima_storage_pg::verbs::event_ingest::ingest_fact;
@@ -136,7 +136,7 @@ mod tests {
                 &booted.pool,
                 &booted.engine,
                 &authz,
-                Role::SourceIngest,
+                Relation::Ingest,
                 &payload,
                 move |tx, outcome| {
                     Box::pin(async move {

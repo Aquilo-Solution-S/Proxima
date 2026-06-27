@@ -6,7 +6,7 @@ use proxima_core::verbs::event_ingest::{
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FactPayload,
-    FlavorRegistry, Owner, PayloadKeyBuilder, Principal, Role, SchemaId, SchemaVersion,
+    FlavorRegistry, Owner, PayloadKeyBuilder, Principal, Relation, SchemaId, SchemaVersion,
     SourceBatchId, SourceId, UserId, canonical_json_bytes,
 };
 use serde::{Deserialize, Serialize};
@@ -151,8 +151,8 @@ fn mapping(schema_id: SchemaId) -> InlineCitationMappingDraft {
     }
 }
 
-#[test]
-fn authorize_fact_with_citation_rejects_kind_mismatch() {
+#[tokio::test]
+async fn authorize_fact_with_citation_rejects_kind_mismatch() {
     let owner = owner();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let mut cited_object = cited_object();
@@ -162,18 +162,19 @@ fn authorize_fact_with_citation_rejects_kind_mismatch() {
     let err = engine()
         .authorize_fact_with_citation(
             &authz,
-            Role::SourceIngest,
+            Relation::Ingest,
             draft(&owner),
             cited_object,
             mapping(TestCitationMapping::schema_id()),
         )
+        .await
         .expect_err("Fact schema must not authorize as a CitedObject schema");
 
     assert_eq!(err.code, ErrorCode::UnknownSchema);
 }
 
-#[test]
-fn authorize_fact_with_citation_derives_cited_object_content_hash() {
+#[tokio::test]
+async fn authorize_fact_with_citation_derives_cited_object_content_hash() {
     let owner = owner();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let expected = TestCitedObject {
@@ -184,36 +185,38 @@ fn authorize_fact_with_citation_derives_cited_object_content_hash() {
     let authorized = engine()
         .authorize_fact_with_citation(
             &authz,
-            Role::SourceIngest,
+            Relation::Ingest,
             draft(&owner),
             cited_object(),
             mapping(TestCitationMapping::schema_id()),
         )
+        .await
         .expect("registered cited object payload must authorize");
 
     assert_eq!(authorized.cited_object().content_hash(), &expected);
 }
 
-#[test]
-fn authorize_fact_with_citation_rejects_mapping_target_mismatch() {
+#[tokio::test]
+async fn authorize_fact_with_citation_rejects_mapping_target_mismatch() {
     let owner = owner();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
 
     let err = engine()
         .authorize_fact_with_citation(
             &authz,
-            Role::SourceIngest,
+            Relation::Ingest,
             draft(&owner),
             cited_object(),
             mapping(MismatchedCitationMapping::schema_id()),
         )
+        .await
         .expect_err("mapping target schema must match cited object schema");
 
     assert_eq!(err.code, ErrorCode::Forbidden);
 }
 
-#[test]
-fn authorize_citation_attachment_accepts_valid_pair() {
+#[tokio::test]
+async fn authorize_citation_attachment_accepts_valid_pair() {
     let owner = owner();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let memory_id = proxima_core::MemoryId::new(Uuid::now_v7());
@@ -225,12 +228,13 @@ fn authorize_citation_attachment_accepts_valid_pair() {
     let authorized = engine()
         .authorize_citation_attachment(
             &authz,
-            Role::SourceIngest,
+            Relation::Ingest,
             owner.clone(),
             memory_id,
             cited_object(),
             mapping(TestCitationMapping::schema_id()),
         )
+        .await
         .expect("registered citation attachment payloads must authorize");
 
     assert_eq!(authorized.memory_id(), memory_id);
@@ -242,27 +246,28 @@ fn authorize_citation_attachment_accepts_valid_pair() {
     );
 }
 
-#[test]
-fn authorize_citation_attachment_rejects_mapping_target_mismatch() {
+#[tokio::test]
+async fn authorize_citation_attachment_rejects_mapping_target_mismatch() {
     let owner = owner();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
 
     let err = engine()
         .authorize_citation_attachment(
             &authz,
-            Role::SourceIngest,
+            Relation::Ingest,
             owner.clone(),
             proxima_core::MemoryId::new(Uuid::now_v7()),
             cited_object(),
             mapping(MismatchedCitationMapping::schema_id()),
         )
+        .await
         .expect_err("mapping target schema must match cited object schema");
 
     assert_eq!(err.code, ErrorCode::Forbidden);
 }
 
-#[test]
-fn authorize_fact_with_citation_rejects_unknown_schema_ids() {
+#[tokio::test]
+async fn authorize_fact_with_citation_rejects_unknown_schema_ids() {
     let owner = owner();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let mut cited_object = cited_object();
@@ -271,11 +276,12 @@ fn authorize_fact_with_citation_rejects_unknown_schema_ids() {
     let err = engine()
         .authorize_fact_with_citation(
             &authz,
-            Role::SourceIngest,
+            Relation::Ingest,
             draft(&owner),
             cited_object,
             mapping(TestCitationMapping::schema_id()),
         )
+        .await
         .expect_err("unknown cited object schema must be rejected");
 
     assert_eq!(err.code, ErrorCode::UnknownSchema);

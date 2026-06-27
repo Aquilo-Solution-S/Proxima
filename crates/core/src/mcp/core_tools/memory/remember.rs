@@ -1,6 +1,6 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::verbs::event_ingest::{EventDraft, InlineCitationMappingDraft, InlineCitedObjectDraft};
-use crate::{Role, SchemaId, SchemaVersion, SourceBatchId, canonical_json_bytes};
+use crate::{Relation, SchemaId, SchemaVersion, SourceBatchId, canonical_json_bytes};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -136,24 +136,16 @@ impl McpTool for RememberTool {
             let embedding_client = engine.embed_client();
             let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
             let outcome = if let Some(citation) = args.citation {
-                let cited_object = InlineCitedObjectDraft {
-                    schema_id: SchemaId::new(citation.object_schema_id),
-                    schema_version: SchemaVersion::new(citation.object_schema_version),
-                    payload_bytes: encode_json_payload(&citation.object_payload),
-                };
-                let mapping = InlineCitationMappingDraft {
-                    schema_id: SchemaId::new(citation.mapping_schema_id),
-                    schema_version: SchemaVersion::new(citation.mapping_schema_version),
-                    payload_bytes: encode_json_payload(&citation.mapping_payload),
-                };
+                let (cited_object, mapping) = remember_citation_drafts(citation);
                 let authorized = engine
                     .authorize_fact_with_citation(
                         &ctx.authz,
-                        Role::GraphWrite,
+                        Relation::Editor,
                         draft,
                         cited_object,
                         mapping,
                     )
+                    .await
                     .map_err(|err| McpToolError::Other(err.to_string()))?;
                 engine
                     .ingest_fact_with_citation_and_typed_sidecar(
@@ -164,7 +156,8 @@ impl McpTool for RememberTool {
                     .await?
             } else {
                 let authorized = engine
-                    .authorize_event_ingest(&ctx.authz, Role::GraphWrite, draft)
+                    .authorize_event_ingest(&ctx.authz, Relation::Editor, draft)
+                    .await
                     .map_err(|err| McpToolError::Other(err.to_string()))?;
                 engine
                     .ingest_event_with_typed_sidecar(
@@ -181,6 +174,23 @@ impl McpTool for RememberTool {
             })
         })
     }
+}
+
+fn remember_citation_drafts(
+    citation: RememberCitation,
+) -> (InlineCitedObjectDraft, InlineCitationMappingDraft) {
+    (
+        InlineCitedObjectDraft {
+            schema_id: SchemaId::new(citation.object_schema_id),
+            schema_version: SchemaVersion::new(citation.object_schema_version),
+            payload_bytes: encode_json_payload(&citation.object_payload),
+        },
+        InlineCitationMappingDraft {
+            schema_id: SchemaId::new(citation.mapping_schema_id),
+            schema_version: SchemaVersion::new(citation.mapping_schema_version),
+            payload_bytes: encode_json_payload(&citation.mapping_payload),
+        },
+    )
 }
 
 fn encode_json_payload(value: &serde_json::Value) -> Vec<u8> {
