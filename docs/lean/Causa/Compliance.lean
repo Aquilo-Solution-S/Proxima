@@ -22,13 +22,16 @@ suppression/dedup keys (CO-15..20), pause/resume dispatch gates (CO-9/10),
 export serialization (CO-11), the admin op/outcome protocol (CO-2..14),
 audit-row content (CO-21..29), external side effects (CO-30..33), owner-policy
 defaults and GDPR article mappings (CO-46..58). The kernel fixes only the RULE:
-abandoned ⇔ wipeable, plus the cascade from a node to its edges.
+abandoned ⇔ wipeable, source abandonment cascades to source-owned edges, and
+target abandonment redacts/suppresses target projection rather than changing edge
+ownership.
 -/
 
 import Causa.Prelude
 import Causa.Owner
 import Causa.Edges
 import Causa.Authorization
+import Causa.EdgeAuthorization
 
 namespace Causa
 
@@ -64,6 +67,58 @@ theorem source_abandoned_cascades_to_edge
   intro h
   rw [← edge_source_owned registry e hv]
   exact h
+
+/-- Target-side erasure state for source-owned edges: the target endpoint's
+    owner is abandoned. This is NOT the edge owner's erasure state. -/
+def edge_target_abandoned (e : Edge) : Prop := abandoned (edge_target e).owner
+
+/-- A target projection is available exactly when the requester may read the
+    target endpoint and that target has not been abandoned. -/
+def edge_target_available (requester : User) (e : Edge) : Prop :=
+  edge_target_readable requester e ∧ ¬ edge_target_abandoned e
+
+/-- Redaction state for a readable source-owned edge: the edge row can be shown
+    from its source side, but the target projection cannot be rendered because the
+    target is unreadable or erased. -/
+def edge_target_redacted (requester : User) (e : Edge) : Prop :=
+  edge_read_admitted requester e ∧ ¬ edge_target_available requester e
+
+/-- If the source-owned edge row is visible but the requester cannot read the
+    target, the target projection is redacted. -/
+theorem target_unreadable_redacts_edge_target
+    (requester : User) (e : Edge)
+    (hread : edge_read_admitted requester e)
+    (hunreadable : ¬ edge_target_readable requester e) :
+    edge_target_redacted requester e := by
+  exact ⟨hread, by
+    rintro ⟨htarget, _⟩
+    exact hunreadable htarget⟩
+
+/-- If the source-owned edge row is visible but the target owner is abandoned,
+    the target projection is redacted. Target erasure affects projection, not
+    source-owned edge ownership. -/
+theorem target_abandoned_redacts_edge_target
+    (requester : User) (e : Edge)
+    (hread : edge_read_admitted requester e)
+    (htarget : edge_target_abandoned e) :
+    edge_target_redacted requester e := by
+  exact ⟨hread, by
+    rintro ⟨_, hnotAbandoned⟩
+    exact hnotAbandoned htarget⟩
+
+/-- Target abandonment alone is not a delete license for a source-owned edge: if
+    the source owner remains live, a valid edge's owner remains live even when
+    the target owner is abandoned. The target consequence is redaction/suppression
+    (`target_abandoned_redacts_edge_target`), not source cascade. -/
+theorem target_abandoned_does_not_abandon_source_owned_edge
+    (registry : RelationRegistry) (e : Edge) (hv : EdgeCoreValid registry e)
+    (hsourceLive : ¬ abandoned (edge_source e).owner)
+    (_htarget : edge_target_abandoned e) :
+    ¬ abandoned (edge_owner e) := by
+  intro hedge
+  apply hsourceLive
+  rw [edge_source_owned registry e hv]
+  exact hedge
 
 /-- The retention boundary: World is never abandoned — every user is a member at
     `viewer` — so published/public data is never auto-wiped by the abandonment

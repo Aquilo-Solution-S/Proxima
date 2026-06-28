@@ -1,9 +1,9 @@
 /-
 Causa — Edges
 
-Edges connect Memories and Goals (doc 02 §Edges). Every relation
-resolves to a build-time RelationDescriptor; unregistered relations are
-invalid.
+Edges connect pinned Memories, Goals, and FollowHead FactEntity handles
+(doc 02 §Edges plus FactEntity endpoint design). Every relation resolves to a
+build-time RelationDescriptor; unregistered relations are invalid.
 
 The philosophical load (universe §Perspectivist constructivism):
 causal claims are perspective-relative, so **Perspective is the locus
@@ -15,8 +15,8 @@ matrix below is where that commitment becomes structural.
 Minimized trusted core (D14/D16): `Edge` is a raw row shape;
 row-admission laws are predicates over valid rows, not global axioms
 over every constructible Lean value. Relation-specific policy lives on
-`RelationDescriptor` rows: endpoint masks, ownership policy, target
-access policy, and mask-tightening proofs travel together.
+`RelationDescriptor` rows: endpoint binding, endpoint masks, ownership
+policy, target access policy, and mask-tightening proofs travel together.
 
 ME-15 — causal chains are queries, not entities: chain(f, P_active)
 = structural Fact backbone + Causal/Interpretive edges authored by
@@ -72,6 +72,14 @@ inductive RelationTargetAccessPolicy where
   | Write
   deriving DecidableEq, Repr
 
+/-- Durable endpoint binding for one relation side. `Pin` means the edge names
+    an exact Memory/Goal row. `FollowHead` means the edge names a FactEntity
+    aggregate and resolves through its current Fact head. -/
+inductive EndpointBinding where
+  | Pin
+  | FollowHead
+  deriving DecidableEq, Repr
+
 /-- Edge authorship vocabulary (doc 02 §Edge Scope Invariant). -/
 inductive EdgeAuthorship where
   | SourceIngest    -- payload-derived structural edges from typed Fact ingest
@@ -93,20 +101,65 @@ inductive EdgeAuthorship where
 -- Endpoints
 -- ============================================================
 
-/-- An edge endpoint: Memory or Goal (doc 02 §Edges; doc 03 EdgePayload:
-    "source endpoint | Memory or Goal"). Goals sit outside the F/A/P
-    layer comparison (ME-14); descriptor masks govern their shapes. -/
+/-- An edge endpoint: a pinned Memory/Goal row or a FollowHead stateful-Fact
+    aggregate. `FactEntity` is not a fifth semantic node kind: it resolves to
+    its current Fact memory and is treated as Fact for layer/class checks. -/
 inductive NodeRef where
-  | memory (m : Memory)
-  | goal   (g : Goal)
+  | memory     (m : Memory)
+  | goal       (g : Goal)
+  | factEntity (e : FactEntity)
 
 noncomputable def NodeRef.owner : NodeRef → Owner
-  | .memory m => memory_owner m
-  | .goal g   => goal_owner g
+  | .memory m     => memory_owner m
+  | .goal g       => goal_owner g
+  | .factEntity e => fact_entity_owner e
 
 noncomputable def NodeRef.schema : NodeRef → SchemaRef
-  | .memory m => memory_schema m
-  | .goal g   => goal_schema g
+  | .memory m     => memory_schema m
+  | .goal g       => goal_schema g
+  | .factEntity e => fact_entity_schema e
+
+/-- Memory-kind view for endpoints that participate in F/A/P layer rules.
+    FactEntity endpoints are Fact-like; Goal endpoints sit outside the F/A/P
+    comparison. -/
+def NodeRef.memoryKind? : NodeRef → Option MemoryKind
+  | .memory m     => some (memory_kind m)
+  | .goal _       => none
+  | .factEntity _ => some .Fact
+
+/-- FollowHead endpoints resolve to the current Fact version. -/
+def NodeRef.resolvedFact? : NodeRef → Option Fact
+  | .factEntity e => some (fact_entity_current e)
+  | .memory m =>
+      if h : memory_kind m = .Fact then some ⟨m, h⟩ else none
+  | .goal _ => none
+
+/-- Binding alignment between a relation side and the concrete endpoint ref. -/
+def endpointBindingAligned : EndpointBinding → NodeRef → Prop
+  | .Pin, .memory _ => True
+  | .Pin, .goal _ => True
+  | .Pin, .factEntity _ => False
+  | .FollowHead, .factEntity _ => True
+  | .FollowHead, .memory _ => False
+  | .FollowHead, .goal _ => False
+
+/-- A FollowHead endpoint is always Fact-like. -/
+theorem followHeadEndpointIsFact :
+    ∀ ref : NodeRef,
+      endpointBindingAligned .FollowHead ref → ref.memoryKind? = some .Fact := by
+  intro ref h
+  cases ref <;> simp [endpointBindingAligned, NodeRef.memoryKind?] at h ⊢
+
+/-- Pin endpoints never use the FactEntity aggregate handle. -/
+theorem pinEndpointIsPinnedRow :
+    ∀ ref : NodeRef,
+      endpointBindingAligned .Pin ref →
+        (∃ m : Memory, ref = .memory m) ∨ (∃ g : Goal, ref = .goal g) := by
+  intro ref h
+  cases ref with
+  | memory m => exact Or.inl ⟨m, rfl⟩
+  | goal g => exact Or.inr ⟨g, rfl⟩
+  | factEntity _ => cases h
 
 -- ============================================================
 -- Relations and edges
@@ -213,19 +266,24 @@ def legalClasses : MemoryKind → MemoryKind → Set RelationClass
 -- ============================================================
 
 /-- ME-14/D16 — one build-time relation descriptor row. The descriptor is
-    the matrix row: class, endpoint mask, source/target ownership policy,
-    write-admission target policy, and the proof that memory→memory masks
-    only tighten the closed F/A/P class matrix. -/
+    the matrix row: class, endpoint binding mode, endpoint mask, source/target
+    ownership policy, write-admission target policy, and the proof that every
+    memory-like endpoint pair (including FollowHead FactEntity refs) only
+    tightens the closed F/A/P class matrix. -/
 structure RelationDescriptor where
   id : RelationId
   relClass : RelationClass
+  sourceBinding : EndpointBinding
+  targetBinding : EndpointBinding
   ownerPolicy : RelationOwnerPolicy
   targetAccessPolicy : RelationTargetAccessPolicy
   endpointAdmitted : NodeRef → NodeRef → Prop
   masksTightenOnly :
-    ∀ (ms mt : Memory),
-      endpointAdmitted (.memory ms) (.memory mt) →
-      relClass ∈ legalClasses (memory_kind ms) (memory_kind mt)
+    ∀ (s t : NodeRef) (ks kt : MemoryKind),
+      endpointAdmitted s t →
+      s.memoryKind? = some ks →
+      t.memoryKind? = some kt →
+      relClass ∈ legalClasses ks kt
   supersessionSameOwner : relClass = .Supersession → ownerPolicy = .SameOwner
 
 /-- Minimal build-time relation registry. This is deliberately narrower than
@@ -253,6 +311,12 @@ def ownerPolicySatisfied (p : RelationOwnerPolicy) (e : Edge) : Prop :=
 def EdgeMaskValidWith (d : RelationDescriptor) (e : Edge) : Prop :=
   d.endpointAdmitted (edge_source e) (edge_target e)
 
+/-- A valid edge's concrete endpoint refs match the descriptor's durable binding
+    mode: Pin uses Memory/Goal rows; FollowHead uses FactEntity refs. -/
+def EdgeEndpointBindingValidWith (d : RelationDescriptor) (e : Edge) : Prop :=
+  endpointBindingAligned d.sourceBinding (edge_source e) ∧
+  endpointBindingAligned d.targetBinding (edge_target e)
+
 /-- A valid edge satisfies its descriptor's owner policy. -/
 def EdgeOwnerPolicyValidWith (d : RelationDescriptor) (e : Edge) : Prop :=
   ownerPolicySatisfied d.ownerPolicy e
@@ -271,6 +335,7 @@ structure EdgeValidWith (d : RelationDescriptor) (e : Edge) : Prop where
   idAuthorship : EdgeIdAuthorshipValid e
   goalCausal : EdgeGoalCausalValidWith d.relClass e
   sourceOwned : EdgeSourceOwned e
+  endpointBinding : EdgeEndpointBindingValidWith d e
   ownerPolicy : EdgeOwnerPolicyValidWith d e
   mask : EdgeMaskValidWith d e
   supersessionEndpointShape : EdgeSupersessionEndpointShapeValidWith d.relClass e
@@ -309,6 +374,117 @@ theorem registered_edge_descriptor_unique :
 /-- Table-scoped Edge validity under one frozen registry. -/
 def EdgeTableValid (registry : RelationRegistry) (edges : Set Edge) : Prop :=
   ∀ e : Edge, e ∈ edges → EdgeCoreValid registry e
+
+-- ============================================================
+-- Goal assignment and evidence queries (doc 06 §Goal Assignment)
+-- ============================================================
+
+/-- GO-12 — Goal assignment to a Self-Perspective, without introducing a Self
+    entity or pinning a named `core/inspires` relation id in Lean. The kernel
+    face is the registered Causal Goal→Perspective edge shape; the concrete
+    relation id remains build-time vocabulary. -/
+def goalAssignedToPerspective
+    (registry : RelationRegistry) (edges : Set Edge) (goal : Goal) (self : Memory) : Prop :=
+  memory_kind self = .Perspective ∧
+  ∃ e : Edge,
+    e ∈ edges ∧
+    EdgeHasClass registry e .Causal ∧
+    edge_source e = .goal goal ∧
+    edge_target e = .memory self
+
+/-- Projection: an assignment target is a Perspective row. -/
+theorem goal_assignment_target_perspective :
+    ∀ registry edges goal self,
+      goalAssignedToPerspective registry edges goal self → memory_kind self = .Perspective := by
+  intro _ _ _ _ h
+  exact h.1
+
+/-- GO-12 — active goals for a queried Self-Perspective: begin at assigned
+    Goal sources, follow Goal supersession inside the Goal table, and return
+    only current Active heads. This is a query over Goals+Edges, not a Self row. -/
+def activeGoalsForSelf
+    (registry : RelationRegistry) (goals : Set Goal) (edges : Set Edge)
+    (self : Memory) : Set Goal :=
+  fun head =>
+    memory_kind self = .Perspective ∧
+    ∃ source : Goal,
+      source ∈ goals ∧
+      goalAssignedToPerspective registry edges source self ∧
+      activeGoalHeadFrom goals source head
+
+/-- Projection: every Self-assigned active Goal is Active. -/
+theorem active_goal_for_self_active :
+    ∀ registry goals edges self head,
+      head ∈ activeGoalsForSelf registry goals edges self → goal_state head = .Active := by
+  intro registry goals edges self head h
+  rcases h with ⟨_, source, _, _, hhead⟩
+  exact active_goal_head_from_active goals source head hhead
+
+/-- Projection: every Self-assigned active Goal is a lifecycle head. -/
+theorem active_goal_for_self_head :
+    ∀ registry goals edges self head,
+      head ∈ activeGoalsForSelf registry goals edges self → goalIsHead goals head := by
+  intro registry goals edges self head h
+  rcases h with ⟨_, source, _, _, hhead⟩
+  exact active_goal_head_from_head goals source head hhead
+
+/-- Projection: Self-assigned active Goals come from Perspective-targeted
+    assignment, not from an owner-only active-goal scan. -/
+theorem active_goal_for_self_has_assignment :
+    ∀ registry goals edges self head,
+      head ∈ activeGoalsForSelf registry goals edges self →
+        ∃ source : Goal,
+          source ∈ goals ∧
+          goalAssignedToPerspective registry edges source self ∧
+          activeGoalHeadFrom goals source head := by
+  intro registry goals edges self head h
+  exact h.2
+
+/-- Goal evidence edge shape: Goal → Fact/Abstraction evidence. In the Rust
+    vocabulary this is `core/motivated-by`; Lean keeps the relation id opaque
+    and records the kernel-visible Structural shape. -/
+def goalEvidenceEdge
+    (registry : RelationRegistry) (edges : Set Edge) (goal : Goal) (memory : Memory) : Prop :=
+  ∃ e : Edge,
+    e ∈ edges ∧
+    EdgeHasClass registry e .Structural ∧
+    edge_source e = .goal goal ∧
+    edge_target e = .memory memory ∧
+    (memory_kind memory = .Fact ∨ memory_kind memory = .Abstraction)
+
+/-- GO-14/GO-16 — table-scoped evidence requirement for operator-authored
+    Goals. User/External Goals may be intent without evidence here; A→Goal
+    operator output must carry a Goal→Fact/Abstraction evidence edge. -/
+def GoalEvidenceValid
+    (registry : RelationRegistry) (goals : Set Goal) (memories : Set Memory)
+    (edges : Set Edge) : Prop :=
+  ∀ g : Goal,
+    g ∈ goals →
+    goal_authorship g = .SystemOperator →
+      ∃ m : Memory, m ∈ memories ∧ goalEvidenceEdge registry edges g m
+
+/-- Projection: every SystemOperator Goal has table-resolved evidence. -/
+theorem system_operator_goal_has_evidence :
+    ∀ registry goals memories edges,
+      GoalEvidenceValid registry goals memories edges →
+      ∀ g : Goal,
+        g ∈ goals →
+        goal_authorship g = .SystemOperator →
+          ∃ m : Memory, m ∈ memories ∧ goalEvidenceEdge registry edges g m := by
+  intro registry goals memories edges hvalid g hg hauth
+  exact hvalid g hg hauth
+
+/-- Projection: Goal evidence never points at a Perspective. -/
+theorem goal_evidence_not_perspective :
+    ∀ registry edges g m,
+      goalEvidenceEdge registry edges g m → memory_kind m ≠ .Perspective := by
+  intro registry edges g m h hperspective
+  rcases h with ⟨_, _, _, _, _, hkind⟩
+  rcases hkind with hfact | habstraction
+  · rw [hfact] at hperspective
+    exact (nomatch hperspective)
+  · rw [habstraction] at hperspective
+    exact (nomatch hperspective)
 
 -- ============================================================
 -- Validity projection theorems
@@ -365,25 +541,61 @@ theorem edge_respects_mask :
   rcases hvalid with ⟨d, hregistered, h⟩
   exact ⟨d, hregistered, h, h.mask⟩
 
+/-- Projection: a FollowHead source endpoint is Fact-like. -/
+theorem source_follow_head_endpoint_is_fact :
+    ∀ (d : RelationDescriptor) (e : Edge),
+      EdgeValidWith d e →
+      d.sourceBinding = .FollowHead →
+      (edge_source e).memoryKind? = some .Fact := by
+  intro d e hvalid hbinding
+  have h := hvalid.endpointBinding.1
+  rw [hbinding] at h
+  exact followHeadEndpointIsFact (edge_source e) h
+
+/-- Projection: a FollowHead target endpoint is Fact-like. -/
+theorem target_follow_head_endpoint_is_fact :
+    ∀ (d : RelationDescriptor) (e : Edge),
+      EdgeValidWith d e →
+      d.targetBinding = .FollowHead →
+      (edge_target e).memoryKind? = some .Fact := by
+  intro d e hvalid hbinding
+  have h := hvalid.endpointBinding.2
+  rw [hbinding] at h
+  exact followHeadEndpointIsFact (edge_target e) h
+
 -- ============================================================
 -- ME-11 and ME-10 — PROVED from valid rows + mask layer
 -- ============================================================
 
-/-- ME-11 — every valid memory→memory edge's relation class is legal for
-    its endpoint kinds. THEOREM: a valid edge satisfies its mask, and
-    masks only tighten the matrix. -/
+/-- ME-11 — every valid edge whose endpoints are memory-like (Memory rows or
+    FollowHead FactEntity refs) has a relation class legal for the resolved
+    endpoint kinds. THEOREM: valid edges satisfy their mask, and masks only
+    tighten the matrix. -/
+theorem edge_class_legal_for_node :
+    ∀ registry (e : Edge) (c : RelationClass), EdgeHasClass registry e c →
+      ∀ (ks kt : MemoryKind),
+        (edge_source e).memoryKind? = some ks →
+        (edge_target e).memoryKind? = some kt →
+        c ∈ legalClasses ks kt := by
+  intro registry e c hclass ks kt hs ht
+  rcases hclass with ⟨d, _, h, hd⟩
+  have hmask := h.mask
+  unfold EdgeMaskValidWith at hmask
+  have hlegal := d.masksTightenOnly (edge_source e) (edge_target e) ks kt hmask hs ht
+  rw [hd] at hlegal
+  exact hlegal
+
+/-- ME-11 — memory→memory specialization of `edge_class_legal_for_node`. -/
 theorem edge_class_legal :
     ∀ registry (e : Edge) (c : RelationClass), EdgeHasClass registry e c → ∀ (ms mt : Memory),
       edge_source e = .memory ms → edge_target e = .memory mt →
       c ∈ legalClasses (memory_kind ms) (memory_kind mt) := by
   intro registry e c hclass ms mt hs ht
-  rcases hclass with ⟨d, _, h, hd⟩
-  have hmask := h.mask
-  unfold EdgeMaskValidWith at hmask
-  rw [hs, ht] at hmask
-  have hlegal := d.masksTightenOnly ms mt hmask
-  rw [hd] at hlegal
-  exact hlegal
+  apply edge_class_legal_for_node registry e c hclass
+  · rw [hs]
+    rfl
+  · rw [ht]
+    rfl
 
 /-- ME-10 — ℓ(source) ≥ ℓ(target) for valid memory→memory edges.
     THEOREM: the matrix's upward cells admit no class at all. -/

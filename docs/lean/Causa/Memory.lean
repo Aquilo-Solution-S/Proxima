@@ -17,7 +17,9 @@ U-1 — the layering is enforced structurally across three files:
 
 The Trauma Test (doc 02): Facts are accepted, not revised;
 Abstractions and Perspectives are re-derivable; wake-context change
-affects future derivations, never existing Facts.
+affects future derivations, never existing Facts. Stateful Fact heads are
+modeled as `FactEntity` aggregates that point at a current Fact; they do not
+replace Fact identity (`MemoryId`).
 -/
 
 import Causa.Prelude
@@ -110,6 +112,82 @@ def Fact.memory (f : Fact) : Memory := f.val
 /-- ME-1 — Facts are structurally memories with kind `.Fact`; no
     source-event axiom is required. -/
 theorem fact_memory_kind (f : Fact) : memory_kind f.memory = .Fact := f.property
+
+-- ============================================================
+-- Stateful Fact heads (doc 03 §Stateful Fact schemas)
+-- ============================================================
+
+/-- Opaque-to-the-kernel sidecar-declared natural key for a stateful Fact
+    schema. Lean represents it as uninterpreted text; the kernel never parses
+    it and never derives entity identity from it. -/
+abbrev NaturalKey : Type := Text
+
+/-- Stable reference aggregate for a stateful Fact. It is not a new semantic
+    memory kind: it carries no payload/text/citation/provenance, only a fresh
+    handle and the current immutable Fact version selected by the sidecar
+    natural-key head query. -/
+structure FactEntity where
+  id          : FactEntityId
+  owner       : Owner
+  schema      : SchemaRef
+  natural_key : NaturalKey
+  current     : Fact
+  current_owner : memory_owner current.memory = owner
+  current_schema : memory_schema current.memory = schema
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def fact_entity_id : FactEntity → FactEntityId := FactEntity.id
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def fact_entity_owner : FactEntity → Owner := FactEntity.owner
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def fact_entity_schema : FactEntity → SchemaRef := FactEntity.schema
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def fact_entity_natural_key : FactEntity → NaturalKey := FactEntity.natural_key
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def fact_entity_current : FactEntity → Fact := FactEntity.current
+
+/-- Fact-entity id uniqueness is a table/store invariant, not a content-derived
+    property of the natural key. -/
+def FactEntityIdUnique (entities : Set FactEntity) : Prop :=
+  ∀ e1 e2 : FactEntity,
+    e1 ∈ entities →
+    e2 ∈ entities →
+    fact_entity_id e1 = fact_entity_id e2 →
+    e1 = e2
+
+/-- Stateful Fact entity uniqueness is by the declared natural-key tuple within
+    `(owner, schema)`. The id remains a fresh surrogate; the natural key is the
+    table uniqueness guard, not a content-addressable identity. -/
+def FactEntityNaturalKeyUnique (entities : Set FactEntity) : Prop :=
+  ∀ e1 e2 : FactEntity,
+    e1 ∈ entities →
+    e2 ∈ entities →
+    fact_entity_owner e1 = fact_entity_owner e2 →
+    fact_entity_schema e1 = fact_entity_schema e2 →
+    fact_entity_natural_key e1 = fact_entity_natural_key e2 →
+    e1 = e2
+
+/-- A FactEntity's current version is always a Fact. -/
+theorem factEntityCurrentIsFact :
+    ∀ e : FactEntity, memory_kind e.current.memory = .Fact := by
+  intro e
+  exact fact_memory_kind e.current
+
+/-- A FactEntity current head is owner-aligned with the aggregate row. -/
+theorem factEntityCurrentOwner :
+    ∀ e : FactEntity, memory_owner e.current.memory = fact_entity_owner e := by
+  intro e
+  exact e.current_owner
+
+/-- A FactEntity current head is schema-aligned with the aggregate row. -/
+theorem factEntityCurrentSchema :
+    ∀ e : FactEntity, memory_schema e.current.memory = fact_entity_schema e := by
+  intro e
+  exact e.current_schema
 
 -- ============================================================
 -- Personality absence (doc 02 §Personality, D4)

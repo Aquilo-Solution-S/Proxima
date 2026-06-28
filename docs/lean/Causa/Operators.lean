@@ -194,40 +194,9 @@ theorem atop_edge_shape :
 -- CN-6 — derived memories have provenance (doc 02 §Provenance)
 -- ============================================================
 
-/-- Every derived memory (Abstraction or Perspective) has at least
-    one valid downward Provenance edge (doc 02 §Provenance: "F→A writes
-    Abstraction → Fact* provenance edges; A→P writes Perspective →
-    Abstraction*"). Merged CN-6 (minimization pass); the per-kind
-    target kinds are matrix-forced (theorems below). Cross-domain
-    synthesis (CN-7) is the same shape with provenance to EVERY input
-    Fact — the typed Abstraction is the only cross-domain join
-    object. Bibliographic provenance for A/P is the transitive
-    closure to Facts (CI-3). -/
-axiom derived_has_provenance :
-  ∀ registry m, memory_kind m ≠ .Fact →
-    ∃ e : Edge, EdgeHasClass registry e .Provenance ∧ edge_source e = .memory m ∧
-      (∃ mt : Memory, edge_target e = .memory mt)
-
-/-- CN-6a in original shape — every Abstraction has valid F-provenance. -/
-theorem abstraction_has_provenance :
-    ∀ registry m, memory_kind m = .Abstraction →
-      ∃ e : Edge, EdgeHasClass registry e .Provenance ∧ edge_source e = .memory m ∧
-        (∃ mt : Memory, edge_target e = .memory mt ∧
-          (memory_kind mt = .Fact ∨ memory_kind mt = .Abstraction)) := by
-  intro registry m hk
-  have hne : memory_kind m ≠ .Fact := by rw [hk]; intro h; exact (nomatch h)
-  obtain ⟨e, hc, hs, ⟨mt, ht⟩⟩ := derived_has_provenance registry m hne
-  exact ⟨e, hc, hs, ⟨mt, ht, (provenance_pins_target registry e hc m mt hs ht).1 hk⟩⟩
-
-/-- CN-6b in original shape — every Perspective has valid A-provenance. -/
-theorem perspective_has_provenance :
-    ∀ registry m, memory_kind m = .Perspective →
-      ∃ e : Edge, EdgeHasClass registry e .Provenance ∧ edge_source e = .memory m ∧
-        (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Abstraction) := by
-  intro registry m hk
-  have hne : memory_kind m ≠ .Fact := by rw [hk]; intro h; exact (nomatch h)
-  obtain ⟨e, hc, hs, ⟨mt, ht⟩⟩ := derived_has_provenance registry m hne
-  exact ⟨e, hc, hs, ⟨mt, ht, (provenance_pins_target registry e hc m mt hs ht).2 hk⟩⟩
+/- CN-6 is table-scoped in `Causa.Provenance`: persisted derived rows
+   require persisted registered Provenance edges to persisted input rows.
+   This file keeps only the edge-shape machinery used by that table bundle. -/
 
 -- ============================================================
 -- CN-8 — F→A source-batch gate (doc 04 §Source-batch lifecycle,
@@ -249,6 +218,138 @@ axiom memory_source_batch : Memory → Option SourceBatchId
     dimension. -/
 axiom InputContract : Type
 axiom memory_input_contract : Memory → Option InputContract
+
+-- ============================================================
+-- CN-8b — operator invocation ledger / input completeness
+-- ============================================================
+
+/-- The coarse operator phase whose input/output kinds are checked by the
+    kernel. This is a ledger classification, not executable operator code. -/
+inductive OperatorPhase where
+  | ftoa
+  | atoa
+  | atop
+  | atogoal
+  deriving DecidableEq, Repr
+
+/-- Phase input-kind contract. It says which declared input rows an invocation
+    ledger may claim, not that retrieval found every relevant row in reality. -/
+def OperatorPhase.inputKind : OperatorPhase → MemoryKind → Prop
+  | .ftoa, k => k = .Fact
+  | .atoa, k => k = .Abstraction
+  | .atop, k => k = .Abstraction
+  | .atogoal, k => k = .Abstraction
+
+/-- Phase memory-output contract. A→Goal produces Goal rows, not Memory rows. -/
+def OperatorPhase.outputMemoryKind : OperatorPhase → MemoryKind → Prop
+  | .ftoa, k => k = .Abstraction
+  | .atoa, k => k = .Abstraction
+  | .atop, k => k = .Perspective
+  | .atogoal, _ => False
+
+/-- Phase goal-output contract. -/
+def OperatorPhase.outputGoalAllowed : OperatorPhase → Prop
+  | .atogoal => True
+  | _ => False
+
+/-- The edge authorship expected for edges emitted as part of one invocation's
+    input/output ledger. -/
+def OperatorPhase.edgeAuthorship : OperatorPhase → EdgeAuthorship → Prop
+  | .ftoa, a => a = .OperatorFtoA
+  | .atoa, a => a = .OperatorAtoA
+  | .atop, a => a = .OperatorAtoP
+  | .atogoal, a => a = .OperatorAtoGoal
+
+/-- A ledger/manifest for one operator run: declared inputs, outputs, and edges.
+    The kernel treats this as a consistency witness. It does not prove the input
+    set was semantically complete, the prompt was good, or the model was right. -/
+structure OperatorInvocation where
+  phase : OperatorPhase
+  operatorId : OperatorId
+  inputContractId : InputContract
+  inputs : Set Memory
+  outputMemories : Set Memory
+  outputGoals : Set Goal
+  outputEdges : Set Edge
+
+/-- Invocation rows reference admitted graph rows only. -/
+structure InvocationInGraph
+    (memories : Set Memory) (goals : Set Goal) (edges : Set Edge)
+    (inv : OperatorInvocation) : Prop where
+  inputsPresent : ∀ m : Memory, m ∈ inv.inputs → m ∈ memories
+  outputMemoriesPresent : ∀ m : Memory, m ∈ inv.outputMemories → m ∈ memories
+  outputGoalsPresent : ∀ g : Goal, g ∈ inv.outputGoals → g ∈ goals
+  outputEdgesPresent : ∀ e : Edge, e ∈ inv.outputEdges → e ∈ edges
+
+/-- Invocation phase/kind consistency. -/
+structure InvocationShapeValid (inv : OperatorInvocation) : Prop where
+  inputsShape : ∀ m : Memory, m ∈ inv.inputs →
+    inv.phase.inputKind (memory_kind m)
+  outputMemoriesShape : ∀ m : Memory, m ∈ inv.outputMemories →
+    inv.phase.outputMemoryKind (memory_kind m)
+  outputGoalsShape : ∀ g : Goal, g ∈ inv.outputGoals →
+    inv.phase.outputGoalAllowed
+
+/-- Invocation edge consistency under the active relation registry. -/
+structure InvocationEdgeShapeValid (registry : RelationRegistry) (inv : OperatorInvocation) : Prop where
+  outputEdgesShape : ∀ e : Edge, e ∈ inv.outputEdges →
+    EdgeOperatorShapeValid registry e ∧ inv.phase.edgeAuthorship (edge_authorship e)
+
+/-- Input completeness relative to the invocation ledger: every declared input is
+    represented by a declared persisted edge from each relevant output. Memory
+    outputs use Provenance; Goal outputs use Structural evidence. -/
+structure InvocationProvenanceComplete
+    (registry : RelationRegistry) (inv : OperatorInvocation) : Prop where
+  memoryInputs : ∀ out : Memory, out ∈ inv.outputMemories →
+    ∀ inp : Memory, inp ∈ inv.inputs →
+      ∃ e : Edge, e ∈ inv.outputEdges ∧ EdgeHasClass registry e .Provenance ∧
+        edge_source e = .memory out ∧ edge_target e = .memory inp
+  goalInputs : ∀ g : Goal, g ∈ inv.outputGoals →
+    ∀ inp : Memory, inp ∈ inv.inputs →
+      ∃ e : Edge, e ∈ inv.outputEdges ∧ EdgeHasClass registry e .Structural ∧
+        edge_source e = .goal g ∧ edge_target e = .memory inp
+
+/-- Projection: memory-output provenance edges declared by the invocation ledger
+    are present in the admitted Edge table. -/
+theorem invocation_memory_input_provenance_persisted :
+    ∀ registry memories goals edges inv,
+      InvocationInGraph memories goals edges inv →
+      InvocationProvenanceComplete registry inv →
+      ∀ out : Memory, out ∈ inv.outputMemories →
+      ∀ inp : Memory, inp ∈ inv.inputs →
+        ∃ e : Edge, e ∈ edges ∧ EdgeHasClass registry e .Provenance ∧
+          edge_source e = .memory out ∧ edge_target e = .memory inp := by
+  intro registry memories goals edges inv hgraph hcomplete out hout inp hin
+  obtain ⟨e, heInv, hc, hs, ht⟩ := hcomplete.memoryInputs out hout inp hin
+  exact ⟨e, hgraph.outputEdgesPresent e heInv, hc, hs, ht⟩
+
+/-- Projection: goal-output evidence edges declared by the invocation ledger are
+    present in the admitted Edge table. -/
+theorem invocation_goal_input_evidence_persisted :
+    ∀ registry memories goals edges inv,
+      InvocationInGraph memories goals edges inv →
+      InvocationProvenanceComplete registry inv →
+      ∀ g : Goal, g ∈ inv.outputGoals →
+      ∀ inp : Memory, inp ∈ inv.inputs →
+        ∃ e : Edge, e ∈ edges ∧ EdgeHasClass registry e .Structural ∧
+          edge_source e = .goal g ∧ edge_target e = .memory inp := by
+  intro registry memories goals edges inv hgraph hcomplete g hg inp hin
+  obtain ⟨e, heInv, hc, hs, ht⟩ := hcomplete.goalInputs g hg inp hin
+  exact ⟨e, hgraph.outputEdgesPresent e heInv, hc, hs, ht⟩
+
+/-- Projection: input kind checks are phase-local ledger checks. -/
+theorem invocation_input_kind_valid :
+    ∀ inv, InvocationShapeValid inv → ∀ m : Memory, m ∈ inv.inputs →
+      inv.phase.inputKind (memory_kind m) := by
+  intro inv hshape m hm
+  exact hshape.inputsShape m hm
+
+/-- Projection: memory-output kind checks are phase-local ledger checks. -/
+theorem invocation_output_memory_kind_valid :
+    ∀ inv, InvocationShapeValid inv → ∀ m : Memory, m ∈ inv.outputMemories →
+      inv.phase.outputMemoryKind (memory_kind m) := by
+  intro inv hshape m hm
+  exact hshape.outputMemoriesShape m hm
 
 /-- F→A exclusivity, per doc 04 §Phase 2: "Exclusive per (input
     contract, operator id, output Abstraction schema)" within one
