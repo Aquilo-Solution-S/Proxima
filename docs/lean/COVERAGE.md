@@ -128,7 +128,8 @@
 | ID | Invariant | Carrier |
 |---|---|---|
 | CF-G | Payload opacity — the domainless boundary | structural ABSENCE: `SchemaRef` (Identity) is an opaque per-row tag with NO accessor at all (no resolution, no payload, no capabilities); the kernel sees a row is schema-typed and nothing more |
-| CF-* (compliance) | A flavor must comply with the basic rules | structural: the rules in Memory/Edges/Operators/Goals/Owner/Compliance quantify over every row, so a flavor cannot produce a non-compliant one — derived, never axiomatized |
+| CF-* (compliance) | A flavor must comply with the basic rules | THEOREMS in `Causa.Flavor` — a concrete flavor's rows discharge the universal invariants (`fact_is_fact`, `abstraction_grounded`, `published_readable`/`published_read_only`, `wipeable_when_abandoned`) via only pre-existing theorems; the rules quantify over every row, so compliance is derived, never axiomatized |
+| CF-OPEN | Substrate is OPEN — any app integrates as a flavor with zero kernel change and no new axiom | `Causa.Flavor` constructive witness: a flavor's vocabulary is inhabitants of existing types (`SchemaRef`/`RelationId`) taken as PARAMETERS, not axioms; `#print axioms` on the flavor theorems names only pre-existing kernel axioms — never one named `flavor`. That machine-checked absence IS the openness (D16/D18) |
 | CF-43..46 | Goal entity core-owned; flavor owns payload/tools | structural: Goal lives in the kernel; payloads opaque |
 | CF-60 | Cross-flavor reads obey Owner/access surface | Owner/read authorization (Causa.Authorization); no materialized personality read-scope after D4 |
 
