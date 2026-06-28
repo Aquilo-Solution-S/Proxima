@@ -69,6 +69,8 @@
 | ME-18 | Cross-context supersession policy | excluded: wake/Perspective context semantics deferred after D4; no personality instance axis in kernel |
 | ME-19 | Relation registry: unregistered relations invalid | structure `RelationRegistry` with registered descriptor set + id uniqueness; `EdgeCoreValid registry` / `EdgeHasClass registry` require descriptor membership before a row is valid. Core relation table content still deferred to build-time vocabulary rows. |
 | ME-20 | Core relations table (derived-from/supersedes/inspires/authored) | excluded: vocabulary content, not law — flavors/core register ids; classes pinned by `RelationClass` |
+| ME-K1 | Text-bearing Memory rows can be model-independent knowledge artifacts | `KnowledgeContent := Text`; `InterpreterKind` / `InterpreterClass`; `KnowledgeArtifact` requires `memory_text carrier = some text` plus class-level recoverability; THEOREMs `knowledge_artifact_has_text`, `knowledge_artifact_model_independent`, `knowledge_artifact_recoverable_by_its_kind` |
+| ME-K2 | Long-term knowledge artifact = admitted text-bearing Memory row, not one model cache | def `KnowledgeArtifactIn memories artifact`; THEOREM `long_term_knowledge_artifact_has_text_memory`; no `Truth`/`Knows`/specific LLM or human instance in core |
 
 ## 04 — Consolidation (CN)
 
@@ -202,6 +204,7 @@
 | P5 | `principle_5_memories_grounded_in_facts`; `principle_epistemic_abstraction_grounded_in_facts`; `principle_epistemic_perspective_has_abstraction_provenance` | `MemoryGraphValid` bundles memory/goal/FactEntity/edge table validity, FactEntity head presence, endpoint presence, derived-row provenance, and strict derivation time; `memory_grounds_in_facts`, `abstraction_grounds_in_facts`, and `perspective_has_provenance` prove admitted rows bottom out in Facts / Perspectives trace to Abstractions. |
 | P6 | `principle_6a_derivation_provenance_strictly_upward`; `principle_6b_personality_read_scope_removed` | `edge_layer_rule` over `EdgeCoreValid`; structural absence of `read_scope`/`personality_may_read`; wake context deferred. |
 | P7 | `principle_7_personality_is_not_entity` | structural absence: no personality row/type/instance; no Personality module; Self projections are queries over existing Goal/Perspective rows. |
+| P8 | `principle_8_knowledge_artifact_model_independent`; `principle_8b_long_term_knowledge_artifact_has_text_memory` | `KnowledgeArtifact` + `InterpreterClass` witness semantic uptake at class level; `KnowledgeArtifactIn` proves admitted text-bearing Memory carrier. |
 
 Principle decider exclusions:
 - P2 goal measurement/justification.
