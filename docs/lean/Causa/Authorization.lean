@@ -19,13 +19,9 @@ layer is gone.
 
 import Causa.Prelude
 import Causa.Owner
+import Causa.Identity
 
 namespace Causa
-
-/-- The reserved World group — public read (§2.2 / §6). Every user is a member
-    at `viewer`: reads all kinds, writes none. A definition; World's read-only
-    character is now a theorem (`world_read_only`), not an axiom. -/
-def world : Owner := fun _ => some Role.viewer
 
 -- ============================================================
 -- The gates (per kind) — spec §3 / §10 invariants 1–2
@@ -52,6 +48,15 @@ def may_read (r : User) (o : Owner) (k : AccessKind) : Prop :=
 def may_write (r : User) (o : Owner) (k : AccessKind) : Prop :=
   ∃ x : Role, o r = some x ∧ x.mayWrite k
 
+/-- Server-resolved read gate: rows store `OwnerRef`; the trusted host resolves
+    it through `OwnerState` before the pure kernel rule runs. -/
+def may_read_in (s : OwnerState) (r : User) (o : OwnerRef) (k : AccessKind) : Prop :=
+  may_read r (s.resolve o) k
+
+/-- Server-resolved write gate: callers never supply the resolved Owner map. -/
+def may_write_in (s : OwnerState) (r : User) (o : OwnerRef) (k : AccessKind) : Prop :=
+  may_write r (s.resolve o) k
+
 /-- AUTH-MANAGE — a request may META-MANAGE a group `o` (write its membership /
     role map) iff `o` is not a personal group AND the requester holds a role
     there with management authority. The personal-group exclusion is a group
@@ -59,6 +64,10 @@ def may_write (r : User) (o : Owner) (k : AccessKind) : Prop :=
     immutable. -/
 def may_manage (r : User) (o : Owner) : Prop :=
   ¬ Owner.isPersonal o ∧ ∃ x : Role, o r = some x ∧ x.manages
+
+/-- Server-resolved management gate over stable owner references. -/
+def may_manage_in (s : OwnerState) (r : User) (o : OwnerRef) : Prop :=
+  may_manage r (s.resolve o)
 
 /-- AUTH-1 — write implies read: whoever may write an entity may read it.
     THEOREM — same owning group, and `Role.write_le_read` (read ceiling ≥ write
@@ -68,6 +77,14 @@ theorem may_write_implies_read :
       may_write r o k → may_read r o k := by
   rintro r o k ⟨x, hx, hw⟩
   exact ⟨x, hx, Nat.lt_of_lt_of_le hw x.write_le_read⟩
+
+/-- AUTH-1 over the stable owner boundary: resolution does not weaken the core
+    role law. -/
+theorem may_write_in_implies_read_in :
+    ∀ (s : OwnerState) (r : User) (o : OwnerRef) (k : AccessKind),
+      may_write_in s r o k → may_read_in s r o k := by
+  intro s r o k h
+  exact may_write_implies_read r (s.resolve o) k h
 
 /-- AUTH-2 — World is read-only: an entity owned by World cannot be written.
     THEOREM — World maps everyone to `viewer`, whose write ceiling is 0, so
@@ -87,6 +104,26 @@ theorem world_universally_readable :
   intro r k
   exact ⟨Role.viewer, rfl, by cases k <;> simp [Role.mayRead, Role.viewer, AccessKind.rank]⟩
 
+/-- The stable `.world` owner reference resolves to a read-only owner in every
+    admissible owner state. -/
+theorem owner_state_world_read_only :
+    ∀ (s : OwnerState) (r : User) (k : AccessKind),
+      ¬ may_write_in s r .world k := by
+  intro s r k h
+  unfold may_write_in at h
+  rw [s.world_resolves] at h
+  exact world_read_only r k h
+
+/-- The stable `.world` owner reference is universally readable after server
+    resolution. -/
+theorem owner_state_world_universally_readable :
+    ∀ (s : OwnerState) (r : User) (k : AccessKind),
+      may_read_in s r .world k := by
+  intro s r k
+  unfold may_read_in
+  rw [s.world_resolves]
+  exact world_universally_readable r k
+
 /-- AUTH-MANAGE-personal — personal groups forbid meta-management: no requester
     may manage a user's personal group. THEOREM — the gate requires
     `¬ Owner.isPersonal o`, and a personal group is, by construction, personal. -/
@@ -94,6 +131,23 @@ theorem personal_forbids_manage :
     ∀ (u r : User), ¬ may_manage r (Owner.ofUser u) := by
   rintro u r ⟨hnp, _⟩
   exact hnp ⟨u, rfl⟩
+
+/-- The stable personal owner reference resolves to exactly that user's personal
+    group. Visibility through the owner table therefore reduces to identity. -/
+theorem owner_state_personal_visible :
+    ∀ (s : OwnerState) (u r : User),
+      visible (s.resolve (.personal u)) r ↔ r = u := by
+  intro s u r
+  rw [s.personal_resolves u]
+  exact visible_personal u r
+
+/-- Personal owner refs remain unmanageable after server resolution. -/
+theorem owner_state_personal_forbids_manage :
+    ∀ (s : OwnerState) (u r : User), ¬ may_manage_in s r (.personal u) := by
+  intro s u r h
+  unfold may_manage_in at h
+  rw [s.personal_resolves u] at h
+  exact personal_forbids_manage u r h
 
 /-- AUTH-MANAGE-world — the World group cannot be managed either: every member
     is a `viewer` (`manage = false`), so no one holds a managing role there.
@@ -103,6 +157,34 @@ theorem world_forbids_manage : ∀ r : User, ¬ may_manage r world := by
   simp only [world, Option.some.injEq] at hx
   subst hx
   simp [Role.manages, Role.viewer] at hm
+
+/-- The stable World owner ref remains unmanageable after server resolution. -/
+theorem owner_state_world_forbids_manage :
+    ∀ (s : OwnerState) (r : User), ¬ may_manage_in s r .world := by
+  intro s r h
+  unfold may_manage_in at h
+  rw [s.world_resolves] at h
+  exact world_forbids_manage r h
+
+/-- Read access through a stable owner ref depends only on the server-resolved
+    owner map for that ref. -/
+theorem may_read_in_resolve_eq :
+    ∀ (s₁ s₂ : OwnerState) (r : User) (o : OwnerRef) (k : AccessKind),
+      s₁.resolve o = s₂.resolve o →
+      (may_read_in s₁ r o k ↔ may_read_in s₂ r o k) := by
+  intro s₁ s₂ r o k h
+  unfold may_read_in
+  rw [h]
+
+/-- Write access through a stable owner ref depends only on the server-resolved
+    owner map for that ref. -/
+theorem may_write_in_resolve_eq :
+    ∀ (s₁ s₂ : OwnerState) (r : User) (o : OwnerRef) (k : AccessKind),
+      s₁.resolve o = s₂.resolve o →
+      (may_write_in s₁ r o k ↔ may_write_in s₂ r o k) := by
+  intro s₁ s₂ r o k h
+  unfold may_write_in
+  rw [h]
 
 /-- NEST-safe — mounting a sub-group at a cap cannot escalate write authority:
     if the cap may not write kind `k`, no requester gains write on the mounted

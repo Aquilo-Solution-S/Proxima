@@ -229,13 +229,16 @@ def noopFiring (registry : RelationRegistry) (actor : User) (goal : Goal) (trig 
 def motivationDescriptor (relId : RelationId) : RelationDescriptor where
   id := relId
   relClass := .Causal
+  sourceBinding := .Pin
+  targetBinding := .Pin
   ownerPolicy := .SourceOwned
   targetAccessPolicy := .None
   endpointAdmitted := fun s t => (∃ g : Goal, s = .goal g) ∧ (∃ m : Memory, t = .memory m)
   masksTightenOnly := by
-    intro ms _ h
+    intro s _ _ _ h hs _
     obtain ⟨⟨g, hg⟩, _⟩ := h
-    simp at hg
+    rw [hg] at hs
+    cases hs
   supersessionSameOwner := by intro h; cases h
 
 /-- A concrete Goal→Fact motivation edge (PerspectiveGoalLink, N4). -/
@@ -260,6 +263,7 @@ def motivationValid (goal : Goal) (m : Memory) (relId : RelationId) (uuid : Edge
       cases h
   goalCausal := fun _ _ => rfl
   sourceOwned := rfl
+  endpointBinding := ⟨trivial, trivial⟩
   ownerPolicy := trivial
   mask := ⟨⟨goal, rfl⟩, ⟨m, rfl⟩⟩
   supersessionEndpointShape := by intro h; cases h

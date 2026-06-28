@@ -68,11 +68,14 @@ theorem principle_4_facts_connect_non_interpretively :
   intro c
   rfl
 
-/-- P5 — every memory is grounded in Facts: a well-founded derivation/
+/-- P5 — every admitted memory is grounded in Facts: a well-founded derivation/
     supersession descent (incl. higher-order A→A provenance) bottoms out
-    at Facts. Names the Provenance.lean grounding theorem. -/
+    at Facts inside the admitted memory graph. Names the Provenance.lean
+    table-scoped grounding theorem. -/
 theorem principle_5_memories_grounded_in_facts :
-    ∀ registry (m : Memory), GroundsInFact registry m :=
+    ∀ registry memories goals factEntities edges,
+      MemoryGraphValid registry memories goals factEntities edges →
+      ∀ m : Memory, m ∈ memories → GroundsInFact registry edges m :=
   memory_grounds_in_facts
 
 /-- P6a — derivation/provenance edges obey the layer directionality
