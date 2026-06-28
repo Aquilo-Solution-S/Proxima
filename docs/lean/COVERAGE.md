@@ -36,7 +36,7 @@ with before/after counts.
 | ES-7 | 1:1 source-ingest receipt→Fact materialization | excluded: source/flavor ingest implementation; core sees only typed Fact rows after D1 |
 | ES-8 | Source must not abstract/interpret/cross-join/relevance-filter/persist | excluded: source/flavor ingest contract; kernel carries the consequence via `operator_memory_output_not_fact` + no downward operator writes |
 | ES-9 | Compliance metadata: every source declares 4 fields; Facts inherit | excluded: engine registration totality (CO-39..45 rows); kernel keeps SourceId opaque |
-| ES-10 | Idempotency keys content-derived/opaque, never natural-person identifiers | comment Compliance.lean suppression docstring (CO-20) |
+| ES-10 | Idempotency keys content-derived/opaque, never natural-person identifiers | excluded: source/flavor ingest concern with no kernel carrier (suppression docstring retired 2026-06-28 with the `SuppressionKey` axioms) |
 | ES-11 | Facts' typing frozen at insert; engine does not migrate Facts across schema versions | `Immutable Memory`-stance via `AppendOnly Memory` + accessor totality (`memory_schema` fixed per row); migration mechanics excluded (SR-50..55 exclusion block) |
 | ES-12 | No `Principal.Org` variant; org-wide = `<org>-everyone` group | structural: no `Principal` sum at all — `Owner := Group` (`Set User`); a User is the singleton group `Owner.ofUser u`, org-wide is an ordinary shared (non-singleton) Group. Realign 2026-06-28 |
 | ES-13 | Per-memory ACL (AccessGrant) is v2+, not v1 | structural absence + Owner.lean header comment |
@@ -175,7 +175,7 @@ CF-A/B/C/D above.
 | ST-9 | Owner identity columns (principal kind + id) | `Owner := Group` (`Set User`) — the kernel models owner as group membership over the atom `User`; a personal owner is `Owner.ofUser u`. The (kind+id) column shape is engine storage. org has no kernel face — decisions `2026-06-11-org-out-of-kernel.md`, S0 collapse, owner realign 2026-06-28 |
 | ST-10 | Cross-owner edges/evidence rejected | axiom `edge_scope_single_owner` |
 | ST-11 | INSERT-only cognitive lifecycle | class `AppendOnly` + instances |
-| ST-13 | Only compliance erasure deletes | Compliance.lean (`erased`, `erasure_removes_cognitive`) |
+| ST-13 | Only compliance erasure deletes | Compliance.lean: def `abandoned` is the SOLE delete trigger (owning group empty) + THEOREMs `drop_personal_abandoned`, `source_abandoned_cascades_to_edge`, `world_never_abandoned` — realign 2026-06-28 (was axioms `erased`/`erasure_removes_cognitive`) |
 | ST-14 | Stateful current-state = head query, never replacement | comment + SR-43 row |
 | ST-15..17 | Vector-store independence (targets F/A/P AND Goals) | `EmbeddingTarget` sum + `embedding_target` + `Immutable Embedding`; absence of entity→Embedding accessor |
 | ST-22/23 | Content hash/dedup key not Fact identity; collision semantics | `Memory.id` remains Fact identity; source/flavor ingest dedup key excluded after D1 |
@@ -204,17 +204,12 @@ storage-layout mechanics.
 | ID | Invariant | Carrier |
 |---|---|---|
 | CO-1 | Cognitive lifecycle append-only | classes + instances (ST-11 row) |
-| CO-2/6 | Compliance out-of-band, never a Memory mutation | inductive `ComplianceOp` + header comment |
-| CO-3 | Scope = one Owner or Owner-scoped source object | constructor shapes of `ComplianceOp` |
-| CO-4/5 | Admin-authored; operator visibility diminished | excluded: authorization surface (engine/protocol) |
-| CO-7 | delete_owner removes cognitive, retains suppression+audit | axioms `erased`, `erasure_removes_cognitive` (Memory+Goal); THEOREM `erasure_removes_edges`; suppression survival structural |
-| CO-8 | delete_source_scope | constructor `DeleteSourceScope` (semantics engine-resolved per flavor — comment) |
-| CO-9/10 | Pause/resume semantics | axiom `paused` + comment (dispatch gate engine-enforced) |
-| CO-12/13/14 | Outcomes incl. refusal-is-valid | inductive `ComplianceOutcome` |
-| CO-15/16/20 | Suppression retains opaque key only | accessor shape `suppression_key : SuppressionEntry → SuppressionKey` |
-| CO-17/18 | Suppression blocks re-ingest | axiom `suppression_blocks_reingest` |
-| CO-19/29 | Suppression/audit survive erasure indefinitely | structural (unconditional quantification; Compliance.lean comment) |
-| CO-11, CO-21..28, CO-30..58 | Export, audit content, side effects, vocabulary fields, owner policy, GDPR mappings | excluded: controller/engine obligations and legal commentary; ES-9/ES-10 rows carry the kernel-relevant faces |
+| CO-7 / ST-13 | Erasure = ABANDONMENT (reference count zero): an entity whose owning group has no members is wipeable; a user dropping abandons their personal group | def `abandoned` (`∀ u, o u = none`) + THEOREM `drop_personal_abandoned` over `Group.drop`; edge cascade THEOREM `source_abandoned_cascades_to_edge`; retention boundary THEOREM `world_never_abandoned`. Realign 2026-06-28 — replaces axioms `erased`/`erasure_removes_cognitive` + THEOREM `erasure_removes_edges`; Compliance.lean 6 axioms → 0 |
+| CO-2/3/4/5/6, CO-8, CO-12/13/14 | Admin op surface / scope / outcomes / source-scope delete | excluded: admin op & outcome protocol — the kernel rule is the `abandoned` predicate, not an op/outcome enum (`ComplianceOp`/`ComplianceOutcome`/`DeleteSourceScope` retired 2026-06-28) |
+| CO-9/10 | Pause/resume semantics | excluded: runtime dispatch gate, NOT erasure (`paused` axiom retired 2026-06-28) |
+| CO-15/16/17/18/20 | Suppression / dedup-key retention + re-ingest block | excluded: source/flavor ingest boundary (`SuppressionKey`/`SuppressionEntry`/`suppression_key` retired 2026-06-28) |
+| CO-19/29 | Suppression/audit survive erasure indefinitely | excluded: audit & suppression are engine tables, never cognitive rows — they survive by not being kernel entities at all |
+| CO-11, CO-21..28, CO-30..58 | Export, audit content, side effects, vocabulary fields, owner policy, GDPR mappings | excluded: controller/engine obligations and legal commentary; ES-9 carries the kernel-relevant face |
 
 ### r1 additions (codex review, 2026-06-11)
 
@@ -266,6 +261,15 @@ Implemented reductions:
 - Compliance: `suppression_owner` REMOVED (doc 13 retains the opaque key
   only — entry carries no Owner; ES-4 makes key-matching scope-matching);
   erasure Edge conjunct PROVED (`erasure_removes_edges`). −2.
+  *(Further realign 2026-06-28: Compliance collapsed to the reference-counter
+  model. Erasure is `abandoned o := ∀ u, o u = none` — the owning group is
+  empty — the SOLE delete trigger; a user dropping (`Group.drop`, Owner.lean)
+  abandons their personal group (`drop_personal_abandoned`), the edge cascade is
+  `source_abandoned_cascades_to_edge`, and World persistence is
+  `world_never_abandoned`. The 6 axioms `erased`, `erasure_removes_cognitive`,
+  `paused`, `SuppressionKey`, `SuppressionEntry`, `suppression_key` and the
+  inductives `ComplianceOp`/`ComplianceOutcome` are GONE — suppression/pause/
+  export/op-protocol are engine concerns. Compliance.lean 6 axioms → 0.)*
 - Composition: registry restructured around the composition law
   (`registry_composition` + `flavor_schemas`/`flavor_relations` +
   `contributions_namespaced`); `core_always_present`,
