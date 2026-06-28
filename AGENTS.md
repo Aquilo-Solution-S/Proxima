@@ -73,6 +73,31 @@ kernel, **the kernel wins** until renegotiated in writing. Check it with
 `cd docs/lean && lake build`; coverage of doc invariants is tracked in
 `docs/lean/COVERAGE.md`.
 
+## v0.0.4 breaking refactor
+
+Pre-stable v0.0.4 may make breaking Rust, storage, and MCP/API changes to
+remove obsolete ontology rather than preserve adapters. Keep the detailed
+roadmap/matrix in ignored `.local/` planning artifacts; tracked repo changes
+should carry only durable, condensed rules and executable checks.
+
+Branch policy:
+
+1. Land PR0 / authority cleanup directly on `main`.
+2. Create `refactor/v0.0.4-kernel-alignment` from that `main` commit.
+3. Send breaking runtime/storage/API slices to that protected refactor branch.
+4. Merge back to `main` only when the slice ledger is green; tag `v0.0.4`
+   from `main` after post-merge CI passes.
+
+Breaking deletion target: remove production compatibility for `Principal` /
+`OwnerPrincipalKind`, `ReadScope`, materialized Personality/Self authz,
+`entity_owner` reachability, core Event/EventSource identity, `goal_parents`,
+public aggregate `Storage`, raw flavor `PgPool` / core-table SQL capability,
+and stale MCP/wire names. Do not weaken the Lean guardrails: server-resolved
+`OwnerRef`, source-owned descriptor-admitted edges with target redaction,
+optional sidecars/receipts, `MemoryGraphValid`, `OperatorInvocation`
+completeness, abandonment-only hard deletion, build-time flavor registries,
+set-based authorized reads, and atomic command-port writes.
+
 ## Verification
 
 Use the smallest relevant check:
