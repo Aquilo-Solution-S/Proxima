@@ -58,10 +58,11 @@ theorem drop_personal_abandoned (u : User) :
     itself abandoned, because a valid edge inherits its source's owner
     (`edge_source_owned`, projected from `EdgeCoreValid`). Wiping abandoned nodes
     therefore licenses wiping their edges — the cascade is sound. THEOREM, no axiom. -/
-theorem source_abandoned_cascades_to_edge (e : Edge) (hv : EdgeCoreValid e) :
+theorem source_abandoned_cascades_to_edge
+    (registry : RelationRegistry) (e : Edge) (hv : EdgeCoreValid registry e) :
     abandoned (edge_source e).owner → abandoned (edge_owner e) := by
   intro h
-  rw [← edge_source_owned e hv]
+  rw [← edge_source_owned registry e hv]
   exact h
 
 /-- The retention boundary: World is never abandoned — every user is a member at

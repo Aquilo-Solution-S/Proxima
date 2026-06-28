@@ -228,6 +228,19 @@ structure RelationDescriptor where
       relClass ∈ legalClasses (memory_kind ms) (memory_kind mt)
   supersessionSameOwner : relClass = .Supersession → ownerPolicy = .SameOwner
 
+/-- Minimal build-time relation registry. This is deliberately narrower than
+    the deleted Composition module: no flavor ontology, runtime registration,
+    tool registry, or schema namespace model. It only says valid edge rows are
+    checked against a frozen set of relation descriptors, with unique ids. -/
+structure RelationRegistry where
+  descriptors : Set RelationDescriptor
+  relationIdUnique :
+    ∀ d₁ d₂ : RelationDescriptor,
+      d₁ ∈ descriptors →
+      d₂ ∈ descriptors →
+      d₁.id = d₂.id →
+      d₁ = d₂
+
 /-- Relation owner-policy satisfaction for a concrete edge. Source-owned
     edge rows are universal (`EdgeSourceOwned`); `.SameOwner` is a stricter
     relation-local target policy. -/
@@ -262,81 +275,95 @@ structure EdgeValidWith (d : RelationDescriptor) (e : Edge) : Prop where
   mask : EdgeMaskValidWith d e
   supersessionEndpointShape : EdgeSupersessionEndpointShapeValidWith d.relClass e
 
-/-- Core validity for one persisted Edge row. This is the replacement for
-    the former global axioms over all raw `Edge` values. The descriptor
-    witness is the build-time relation row used to validate this edge. -/
-def EdgeCoreValid (e : Edge) : Prop :=
-  ∃ d : RelationDescriptor, EdgeValidWith d e
+/-- Core validity for one persisted Edge row under the active build-time
+    relation registry. The descriptor witness must be registered; ad-hoc
+    descriptors cannot validate rows. -/
+def EdgeCoreValid (registry : RelationRegistry) (e : Edge) : Prop :=
+  ∃ d : RelationDescriptor, d ∈ registry.descriptors ∧ EdgeValidWith d e
 
-/-- A valid edge classified by its validating descriptor. This replaces the
-    former global `relation_class : RelationId → RelationClass` accessor. -/
-def EdgeHasClass (e : Edge) (c : RelationClass) : Prop :=
-  ∃ d : RelationDescriptor, EdgeValidWith d e ∧ d.relClass = c
+/-- A valid edge classified by its registered validating descriptor. This
+    replaces the former global `relation_class : RelationId → RelationClass`
+    accessor. -/
+def EdgeHasClass (registry : RelationRegistry) (e : Edge) (c : RelationClass) : Prop :=
+  ∃ d : RelationDescriptor, d ∈ registry.descriptors ∧ EdgeValidWith d e ∧ d.relClass = c
 
-/-- Class evidence already includes ordinary core validity. -/
+/-- Class evidence already includes ordinary core validity under the same
+    registry. -/
 theorem edge_has_class_core_valid :
-    ∀ e c, EdgeHasClass e c → EdgeCoreValid e := by
-  intro e c h
-  rcases h with ⟨d, hvalid, _⟩
-  exact ⟨d, hvalid⟩
+    ∀ registry e c, EdgeHasClass registry e c → EdgeCoreValid registry e := by
+  intro registry e c h
+  rcases h with ⟨d, hregistered, hvalid, _⟩
+  exact ⟨d, hregistered, hvalid⟩
 
-/-- Table-scoped Edge validity. -/
-def EdgeTableValid (edges : Set Edge) : Prop :=
-  ∀ e : Edge, e ∈ edges → EdgeCoreValid e
+/-- Registered relation ids resolve to a unique descriptor for a given edge. -/
+theorem registered_edge_descriptor_unique :
+    ∀ (registry : RelationRegistry) (e : Edge) (d₁ d₂ : RelationDescriptor),
+      d₁ ∈ registry.descriptors →
+      d₂ ∈ registry.descriptors →
+      EdgeValidWith d₁ e →
+      EdgeValidWith d₂ e →
+      d₁ = d₂ := by
+  intro registry e d₁ d₂ h₁ h₂ hv₁ hv₂
+  exact registry.relationIdUnique d₁ d₂ h₁ h₂ (hv₁.relationMatches.symm.trans hv₂.relationMatches)
+
+/-- Table-scoped Edge validity under one frozen registry. -/
+def EdgeTableValid (registry : RelationRegistry) (edges : Set Edge) : Prop :=
+  ∀ e : Edge, e ∈ edges → EdgeCoreValid registry e
 
 -- ============================================================
 -- Validity projection theorems
 -- ============================================================
 
-/-- Former `edge_id_authorship_split` axiom, now projected from row validity. -/
+/-- Former `edge_id_authorship_split` axiom, now projected from registered row validity. -/
 theorem edge_id_authorship_split :
-    ∀ e : Edge, EdgeCoreValid e →
+    ∀ registry e, EdgeCoreValid registry e →
       ((∃ h : ContentHash, edge_id e = .sourceAuthored h) ↔
         edge_authorship e = .SourceIngest) := by
-  intro e hvalid
-  rcases hvalid with ⟨d, h⟩
+  intro registry e hvalid
+  rcases hvalid with ⟨d, _, h⟩
   exact h.idAuthorship
 
-/-- Former `causal_goal_edge_perspectival` axiom, now projected from row validity. -/
+/-- Former `causal_goal_edge_perspectival` axiom, now projected from registered row validity. -/
 theorem causal_goal_edge_perspectival :
-    ∀ e : Edge, EdgeHasClass e .Causal →
+    ∀ registry e, EdgeHasClass registry e .Causal →
       ((∃ g : Goal, edge_source e = .goal g) ∨
         (∃ g : Goal, edge_target e = .goal g)) →
       edge_authorship e = .PerspectiveGoalLink := by
-  intro e hclass hgoal
-  rcases hclass with ⟨d, h, hd⟩
+  intro registry e hclass hgoal
+  rcases hclass with ⟨d, _, h, hd⟩
   exact h.goalCausal hd hgoal
 
-/-- Former `edge_source_owned` axiom, now projected from row validity. -/
+/-- Former `edge_source_owned` axiom, now projected from registered row validity. -/
 theorem edge_source_owned :
-    ∀ e : Edge, EdgeCoreValid e → (edge_source e).owner = edge_owner e := by
-  intro e hvalid
-  rcases hvalid with ⟨d, h⟩
+    ∀ registry e, EdgeCoreValid registry e → (edge_source e).owner = edge_owner e := by
+  intro registry e hvalid
+  rcases hvalid with ⟨d, _, h⟩
   exact h.sourceOwned
 
 /-- Former `supersession_intra_owner` axiom, now projected from descriptor
     owner policy: Supersession-class descriptors are `.SameOwner`, and a
     valid edge satisfies that descriptor policy. -/
 theorem supersession_intra_owner :
-    ∀ e : Edge, EdgeHasClass e .Supersession →
+    ∀ registry e, EdgeHasClass registry e .Supersession →
       (edge_target e).owner = (edge_source e).owner := by
-  intro e hclass
-  rcases hclass with ⟨d, h, hd⟩
+  intro registry e hclass
+  rcases hclass with ⟨d, _, h, hd⟩
   have hpolicy : d.ownerPolicy = .SameOwner := d.supersessionSameOwner hd
   have howner := h.ownerPolicy
   unfold EdgeOwnerPolicyValidWith ownerPolicySatisfied at howner
   rw [hpolicy] at howner
   exact howner
 
-/-- Former `edge_respects_mask` axiom, now projected from the descriptor
-    witness used to validate the row. -/
+/-- Former `edge_respects_mask` axiom, now projected from the registered
+    descriptor witness used to validate the row. -/
 theorem edge_respects_mask :
-    ∀ e : Edge, EdgeCoreValid e →
+    ∀ registry e, EdgeCoreValid registry e →
       ∃ d : RelationDescriptor,
+        d ∈ registry.descriptors ∧
         EdgeValidWith d e ∧ d.endpointAdmitted (edge_source e) (edge_target e) := by
-  intro e hvalid
-  rcases hvalid with ⟨d, h⟩
-  exact ⟨d, h, h.mask⟩
+  intro registry e hvalid
+  rcases hvalid with ⟨d, hregistered, h⟩
+  exact ⟨d, hregistered, h, h.mask⟩
 
 -- ============================================================
 -- ME-11 and ME-10 — PROVED from valid rows + mask layer
@@ -346,11 +373,11 @@ theorem edge_respects_mask :
     its endpoint kinds. THEOREM: a valid edge satisfies its mask, and
     masks only tighten the matrix. -/
 theorem edge_class_legal :
-    ∀ (e : Edge) (c : RelationClass), EdgeHasClass e c → ∀ (ms mt : Memory),
+    ∀ registry (e : Edge) (c : RelationClass), EdgeHasClass registry e c → ∀ (ms mt : Memory),
       edge_source e = .memory ms → edge_target e = .memory mt →
       c ∈ legalClasses (memory_kind ms) (memory_kind mt) := by
-  intro e c hclass ms mt hs ht
-  rcases hclass with ⟨d, h, hd⟩
+  intro registry e c hclass ms mt hs ht
+  rcases hclass with ⟨d, _, h, hd⟩
   have hmask := h.mask
   unfold EdgeMaskValidWith at hmask
   rw [hs, ht] at hmask
@@ -361,12 +388,12 @@ theorem edge_class_legal :
 /-- ME-10 — ℓ(source) ≥ ℓ(target) for valid memory→memory edges.
     THEOREM: the matrix's upward cells admit no class at all. -/
 theorem edge_layer_rule :
-    ∀ (e : Edge), EdgeCoreValid e → ∀ (ms mt : Memory),
+    ∀ registry (e : Edge), EdgeCoreValid registry e → ∀ (ms mt : Memory),
       edge_source e = .memory ms → edge_target e = .memory mt →
       (memory_kind mt).layer ≤ (memory_kind ms).layer := by
-  intro e hvalid ms mt hs ht
-  rcases hvalid with ⟨d, h⟩
-  have h := edge_class_legal e d.relClass ⟨d, h, rfl⟩ ms mt hs ht
+  intro registry e hvalid ms mt hs ht
+  rcases hvalid with ⟨d, hregistered, h⟩
+  have h := edge_class_legal registry e d.relClass ⟨d, hregistered, h, rfl⟩ ms mt hs ht
   revert h
   cases memory_kind ms <;> cases memory_kind mt <;> intro h <;>
     first
@@ -380,22 +407,22 @@ theorem edge_layer_rule :
 
 /-- Memory supersession is not a Memory row field. It is the existence
     of a valid Supersession-class edge from the new row to the old row. -/
-def memorySupersedes (new old : Memory) : Prop :=
+def memorySupersedes (registry : RelationRegistry) (new old : Memory) : Prop :=
   ∃ e : Edge,
-    EdgeHasClass e .Supersession ∧
+    EdgeHasClass registry e .Supersession ∧
     edge_source e = .memory new ∧
     edge_target e = .memory old
 
 /-- ME-5a — supersession endpoint kind must match (doc 02). THEOREM:
     only the A→A and P→P matrix cells admit Supersession. -/
 theorem supersession_same_kind :
-    ∀ (e : Edge), ∀ (m m' : Memory),
-      EdgeHasClass e .Supersession →
+    ∀ registry (e : Edge), ∀ (m m' : Memory),
+      EdgeHasClass registry e .Supersession →
       edge_source e = .memory m →
       edge_target e = .memory m' →
       memory_kind m = memory_kind m' := by
-  intro e m m' hsup hs ht
-  have hleg := edge_class_legal e .Supersession hsup m m' hs ht
+  intro registry e m m' hsup hs ht
+  have hleg := edge_class_legal registry e .Supersession hsup m m' hs ht
   revert hleg
   cases memory_kind m <;> cases memory_kind m' <;> intro hleg <;>
     first
@@ -406,14 +433,14 @@ theorem supersession_same_kind :
 /-- ME-4 — "Facts never supersede and are never superseded"
     (doc 02, verbatim). THEOREM: no Fact cell admits Supersession. -/
 theorem facts_never_supersede :
-    ∀ (e : Edge), ∀ (m m' : Memory),
-      EdgeHasClass e .Supersession →
+    ∀ registry (e : Edge), ∀ (m m' : Memory),
+      EdgeHasClass registry e .Supersession →
       edge_source e = .memory m →
       edge_target e = .memory m' →
       memory_kind m ≠ .Fact ∧ memory_kind m' ≠ .Fact := by
-  intro e m m' hsup hs ht
-  have hleg := edge_class_legal e .Supersession hsup m m' hs ht
-  have hk := supersession_same_kind e m m' hsup hs ht
+  intro registry e m m' hsup hs ht
+  have hleg := edge_class_legal registry e .Supersession hsup m m' hs ht
+  have hk := supersession_same_kind registry e m m' hsup hs ht
   constructor
   · intro hf
     rw [hf, ← hk, hf] at hleg
@@ -426,13 +453,13 @@ theorem facts_never_supersede :
 /-- ME-5b — supersession stays within one Owner. THEOREM: from the
     valid Supersession-class edge and Supersession intra-Owner validity. -/
 theorem supersession_same_owner :
-    ∀ (e : Edge), ∀ (m m' : Memory),
-      EdgeHasClass e .Supersession →
+    ∀ registry (e : Edge), ∀ (m m' : Memory),
+      EdgeHasClass registry e .Supersession →
       edge_source e = .memory m →
       edge_target e = .memory m' →
       memory_owner m = memory_owner m' := by
-  intro e m m' hsup hs ht
-  have htgt := supersession_intra_owner e hsup
+  intro registry e m m' hsup hs ht
+  have htgt := supersession_intra_owner registry e hsup
   rw [hs, ht] at htgt
   -- htgt : NodeRef.owner (.memory m') = NodeRef.owner (.memory m)
   --      ≡ memory_owner m' = memory_owner m
@@ -445,17 +472,17 @@ theorem supersession_same_owner :
     endpoint — is row validity (doc 02 §Relation Registry:
     `core/supersedes` is A→A, P→P, Goal→Goal). -/
 theorem supersession_same_endpoint_shape :
-    ∀ e : Edge,
-      EdgeHasClass e .Supersession →
+    ∀ registry e,
+      EdgeHasClass registry e .Supersession →
       ((∃ ms mt : Memory, edge_source e = .memory ms ∧ edge_target e = .memory mt ∧
           memory_kind ms = memory_kind mt) ∨
        (∃ gs gt : Goal, edge_source e = .goal gs ∧ edge_target e = .goal gt)) := by
-  intro e hsup
-  rcases hsup with ⟨d, h, hd⟩
+  intro registry e hsup
+  rcases hsup with ⟨d, hregistered, h, hd⟩
   have hshape := h.supersessionEndpointShape hd
   rcases hshape with hmem | hgoal
   · rcases hmem with ⟨ms, mt, hs, ht⟩
-    exact Or.inl ⟨ms, mt, hs, ht, supersession_same_kind e ms mt ⟨d, h, hd⟩ hs ht⟩
+    exact Or.inl ⟨ms, mt, hs, ht, supersession_same_kind registry e ms mt ⟨d, hregistered, h, hd⟩ hs ht⟩
   · exact Or.inr hgoal
 
 end Causa

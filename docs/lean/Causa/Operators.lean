@@ -53,28 +53,28 @@ namespace Causa
     here: their legality is the matrix + masks. Target kind for A→P
     remains matrix-forced; F→A states its Fact target directly because
     A→A provenance is legal. -/
-def operatorEdgeShape : EdgeAuthorship → Edge → Prop
+def operatorEdgeShape (registry : RelationRegistry) : EdgeAuthorship → Edge → Prop
   | .OperatorFtoA, e =>
-      EdgeHasClass e .Provenance ∧
+      EdgeHasClass registry e .Provenance ∧
       (∃ ms : Memory, edge_source e = .memory ms ∧ memory_kind ms = .Abstraction) ∧
       (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Fact)
   | .OperatorAtoA, e =>
-      EdgeHasClass e .Provenance ∧
+      EdgeHasClass registry e .Provenance ∧
       (∃ ms : Memory, edge_source e = .memory ms ∧ memory_kind ms = .Abstraction) ∧
       (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Abstraction)
   | .OperatorAtoP, e =>
-      EdgeHasClass e .Provenance ∧
+      EdgeHasClass registry e .Provenance ∧
       (∃ ms : Memory, edge_source e = .memory ms ∧ memory_kind ms = .Perspective) ∧
       (∃ mt : Memory, edge_target e = .memory mt)
   | .OperatorAtoGoal, e =>
-      EdgeHasClass e .Structural ∧
+      EdgeHasClass registry e .Structural ∧
       (∃ g : Goal, edge_source e = .goal g) ∧
       (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt ≠ .Perspective)
   | .PerspectiveLink, e =>
-      (EdgeHasClass e .Causal ∨ EdgeHasClass e .Interpretive) ∧
+      (EdgeHasClass registry e .Causal ∨ EdgeHasClass registry e .Interpretive) ∧
       (∃ ms : Memory, edge_source e = .memory ms ∧ memory_kind ms = .Perspective)
   | .PerspectiveGoalLink, e =>
-      EdgeHasClass e .Causal ∧
+      EdgeHasClass registry e .Causal ∧
       (∃ g : Goal, edge_source e = .goal g) ∧
       ((∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Fact) ∨
        (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Perspective))
@@ -82,30 +82,30 @@ def operatorEdgeShape : EdgeAuthorship → Edge → Prop
 
 /-- CN-1..CN-4 — authorship-shape validity for one persisted Edge row.
     This is row validity, not a global property of raw `Edge` values. -/
-def EdgeOperatorShapeValid (e : Edge) : Prop :=
-  operatorEdgeShape (edge_authorship e) e
+def EdgeOperatorShapeValid (registry : RelationRegistry) (e : Edge) : Prop :=
+  operatorEdgeShape registry (edge_authorship e) e
 
 /-- Former `operator_edges_shaped` axiom, now projected from row validity. -/
 theorem operator_edges_shaped :
-    ∀ e : Edge, EdgeOperatorShapeValid e →
-      operatorEdgeShape (edge_authorship e) e := by
-  intro _ h
+    ∀ registry e, EdgeOperatorShapeValid registry e →
+      operatorEdgeShape registry (edge_authorship e) e := by
+  intro _ _ h
   exact h
 
 /-- CN-5 — operator memory outputs are never Facts. The output side of
     F→A/A→A/A→P operator edges is the source endpoint by Proxima's
     provenance direction convention (`new -> inputs`). -/
 theorem operator_memory_output_not_fact :
-    ∀ (e : Edge) (m : Memory),
-      EdgeOperatorShapeValid e →
+    ∀ registry (e : Edge) (m : Memory),
+      EdgeOperatorShapeValid registry e →
       (edge_authorship e = .OperatorFtoA ∨
        edge_authorship e = .OperatorAtoA ∨
        edge_authorship e = .OperatorAtoP) →
       edge_source e = .memory m →
       memory_kind m ≠ .Fact := by
-  intro e m hshape ha hsout
+  intro registry e m hshape ha hsout
   rcases ha with hfa | ha
-  · have h := operator_edges_shaped e hshape
+  · have h := operator_edges_shaped registry e hshape
     rw [hfa] at h
     rcases h with ⟨_, ⟨ms, hsrc, hkind⟩, _⟩
     rw [hsout] at hsrc
@@ -114,7 +114,7 @@ theorem operator_memory_output_not_fact :
     intro hfalse
     exact (nomatch hfalse)
   · rcases ha with haa | hap
-    · have h := operator_edges_shaped e hshape
+    · have h := operator_edges_shaped registry e hshape
       rw [haa] at h
       rcases h with ⟨_, ⟨ms, hsrc, hkind⟩, _⟩
       rw [hsout] at hsrc
@@ -122,7 +122,7 @@ theorem operator_memory_output_not_fact :
       rw [heq, hkind]
       intro hfalse
       exact (nomatch hfalse)
-    · have h := operator_edges_shaped e hshape
+    · have h := operator_edges_shaped registry e hshape
       rw [hap] at h
       rcases h with ⟨_, ⟨ms, hsrc, hkind⟩, _⟩
       rw [hsout] at hsrc
@@ -134,13 +134,13 @@ theorem operator_memory_output_not_fact :
 /-- Helper: a valid Provenance-class memory→memory edge with a known source
     kind has its target kind pinned by the matrix. -/
 theorem provenance_pins_target :
-    ∀ (e : Edge), EdgeHasClass e .Provenance → ∀ (ms mt : Memory),
+    ∀ registry (e : Edge), EdgeHasClass registry e .Provenance → ∀ (ms mt : Memory),
       edge_source e = .memory ms → edge_target e = .memory mt →
       (memory_kind ms = .Abstraction →
         memory_kind mt = .Fact ∨ memory_kind mt = .Abstraction) ∧
       (memory_kind ms = .Perspective → memory_kind mt = .Abstraction) := by
-  intro e hc ms mt hs ht
-  have hleg := edge_class_legal e .Provenance hc ms mt hs ht
+  intro registry e hc ms mt hs ht
+  have hleg := edge_class_legal registry e .Provenance hc ms mt hs ht
   constructor
   · intro hk
     rw [hk] at hleg
@@ -166,29 +166,29 @@ theorem provenance_pins_target :
 
 /-- CN-1 in full — F→A writes `Abstraction → Fact` provenance edges. -/
 theorem ftoa_edge_shape :
-    ∀ e : Edge, EdgeOperatorShapeValid e → edge_authorship e = .OperatorFtoA →
-      EdgeHasClass e .Provenance ∧
+    ∀ registry e, EdgeOperatorShapeValid registry e → edge_authorship e = .OperatorFtoA →
+      EdgeHasClass registry e .Provenance ∧
       (∃ ms : Memory, edge_source e = .memory ms ∧ memory_kind ms = .Abstraction) ∧
       (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Fact) := by
-  intro e hshape ha
-  have h := operator_edges_shaped e hshape
+  intro registry e hshape ha
+  have h := operator_edges_shaped registry e hshape
   rw [ha] at h
   exact h
 
 /-- CN-2 in full — A→P writes `Perspective → Abstraction` provenance
     edges. THEOREM: the target kind is matrix-forced. -/
 theorem atop_edge_shape :
-    ∀ e : Edge, EdgeOperatorShapeValid e →
+    ∀ registry e, EdgeOperatorShapeValid registry e →
       edge_authorship e = .OperatorAtoP →
-      EdgeHasClass e .Provenance ∧
+      EdgeHasClass registry e .Provenance ∧
       (∃ ms : Memory, edge_source e = .memory ms ∧ memory_kind ms = .Perspective) ∧
       (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Abstraction) := by
-  intro e hshape ha
-  have h := operator_edges_shaped e hshape
+  intro registry e hshape ha
+  have h := operator_edges_shaped registry e hshape
   rw [ha] at h
   obtain ⟨hc, ⟨ms, hs, hk⟩, ⟨mt, ht⟩⟩ := h
   exact ⟨hc, ⟨ms, hs, hk⟩,
-    ⟨mt, ht, (provenance_pins_target e hc ms mt hs ht).2 hk⟩⟩
+    ⟨mt, ht, (provenance_pins_target registry e hc ms mt hs ht).2 hk⟩⟩
 
 -- ============================================================
 -- CN-6 — derived memories have provenance (doc 02 §Provenance)
@@ -204,30 +204,30 @@ theorem atop_edge_shape :
     object. Bibliographic provenance for A/P is the transitive
     closure to Facts (CI-3). -/
 axiom derived_has_provenance :
-  ∀ m : Memory, memory_kind m ≠ .Fact →
-    ∃ e : Edge, EdgeHasClass e .Provenance ∧ edge_source e = .memory m ∧
+  ∀ registry m, memory_kind m ≠ .Fact →
+    ∃ e : Edge, EdgeHasClass registry e .Provenance ∧ edge_source e = .memory m ∧
       (∃ mt : Memory, edge_target e = .memory mt)
 
 /-- CN-6a in original shape — every Abstraction has valid F-provenance. -/
 theorem abstraction_has_provenance :
-    ∀ m : Memory, memory_kind m = .Abstraction →
-      ∃ e : Edge, EdgeHasClass e .Provenance ∧ edge_source e = .memory m ∧
+    ∀ registry m, memory_kind m = .Abstraction →
+      ∃ e : Edge, EdgeHasClass registry e .Provenance ∧ edge_source e = .memory m ∧
         (∃ mt : Memory, edge_target e = .memory mt ∧
           (memory_kind mt = .Fact ∨ memory_kind mt = .Abstraction)) := by
-  intro m hk
+  intro registry m hk
   have hne : memory_kind m ≠ .Fact := by rw [hk]; intro h; exact (nomatch h)
-  obtain ⟨e, hc, hs, ⟨mt, ht⟩⟩ := derived_has_provenance m hne
-  exact ⟨e, hc, hs, ⟨mt, ht, (provenance_pins_target e hc m mt hs ht).1 hk⟩⟩
+  obtain ⟨e, hc, hs, ⟨mt, ht⟩⟩ := derived_has_provenance registry m hne
+  exact ⟨e, hc, hs, ⟨mt, ht, (provenance_pins_target registry e hc m mt hs ht).1 hk⟩⟩
 
 /-- CN-6b in original shape — every Perspective has valid A-provenance. -/
 theorem perspective_has_provenance :
-    ∀ m : Memory, memory_kind m = .Perspective →
-      ∃ e : Edge, EdgeHasClass e .Provenance ∧ edge_source e = .memory m ∧
+    ∀ registry m, memory_kind m = .Perspective →
+      ∃ e : Edge, EdgeHasClass registry e .Provenance ∧ edge_source e = .memory m ∧
         (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Abstraction) := by
-  intro m hk
+  intro registry m hk
   have hne : memory_kind m ≠ .Fact := by rw [hk]; intro h; exact (nomatch h)
-  obtain ⟨e, hc, hs, ⟨mt, ht⟩⟩ := derived_has_provenance m hne
-  exact ⟨e, hc, hs, ⟨mt, ht, (provenance_pins_target e hc m mt hs ht).2 hk⟩⟩
+  obtain ⟨e, hc, hs, ⟨mt, ht⟩⟩ := derived_has_provenance registry m hne
+  exact ⟨e, hc, hs, ⟨mt, ht, (provenance_pins_target registry e hc m mt hs ht).2 hk⟩⟩
 
 -- ============================================================
 -- CN-8 — F→A source-batch gate (doc 04 §Source-batch lifecycle,
