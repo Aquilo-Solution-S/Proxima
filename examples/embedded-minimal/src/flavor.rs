@@ -103,7 +103,7 @@ impl FlavorApp for EmbeddedMinimalFlavor {
 mod tests {
     use proxima::Proxima;
     use proxima_core::verbs::schema::PayloadKind;
-    use proxima_core::{Principal, Relation, UserId};
+    use proxima_core::{OwnerRef, Relation, UserId};
     use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
     use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemorySidecar};
     use proxima_storage_pg::verbs::event_ingest::ingest_fact;
@@ -119,7 +119,7 @@ mod tests {
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let booted = Proxima::<EmbeddedMinimalFlavor>::app()
                 .database_url(url)
-                .owner(Principal::User(UserId::new(uuid::Uuid::now_v7())))
+                .owner(OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7())))
                 .allow_insecure_single_owner()
                 .build()
                 .await?;

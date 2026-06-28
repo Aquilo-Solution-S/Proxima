@@ -68,11 +68,11 @@ Rows that carry an `Owner` store two identity columns:
 | `owner_principal_kind` | `User` or `Group` |
 | `owner_principal_id` | matching UserId or GroupId |
 
-`Owner = Principal` (doc 01 §Owner; Track B / S0 removed the tenant
-field from Core — no org column exists). Access predicates and identity
-comparisons (operator gates, edge scoping, dedup keys) use principal kind
-+ principal id only. Cross-owner edges and cross-owner evidence are
-rejected.
+`OwnerRef` is the storage owner handle (doc 01 §Owner; Track B / S0
+removed the tenant field from Core — no org column exists). Access
+predicates and identity comparisons (operator gates, edge scoping, dedup
+keys) use owner kind + owner id only. Cross-owner edges and cross-owner
+evidence are rejected.
 
 <a id="storage-layout"></a>
 

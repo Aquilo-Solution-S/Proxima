@@ -227,8 +227,9 @@ async fn load_work_item(
 ) -> Result<WorkItemRow, McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
     let pool = pg_pool(ctx)?;
-    let row: Option<WorkItemSqlRow> = sqlx::query_as(
-        "SELECT m.schema_id,
+    let row: Option<WorkItemSqlRow> =
+        sqlx::query_as(proxima_storage_pg::access::owner_ref_compat::sql(
+            "SELECT m.schema_id,
                 w.repo_id AS work_repo_id,
                 w.title AS work_title,
                 w.instructions AS work_instructions,
@@ -243,20 +244,20 @@ async fn load_work_item(
           WHERE m.memory_id = $1
             AND EXISTS (
                 SELECT 1
-                  FROM proxima_core.entity_owner eo
+                  FROM __PROXIMA_ENTITY_OWNER__ eo
                  WHERE eo.entity_id = m.memory_id
                    AND eo.owner_principal_kind = $2
                    AND eo.owner_principal_id = $3
                    AND eo.is_home
             )
             AND m.tombstoned_at IS NULL",
-    )
-    .bind(memory_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .fetch_optional(pool.as_ref())
-    .await
-    .map_err(map_storage)?;
+        ))
+        .bind(memory_id.into_inner())
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .fetch_optional(pool.as_ref())
+        .await
+        .map_err(map_storage)?;
 
     let Some(row) = row else {
         return Err(McpToolError::InvalidInput("work item not visible".into()));

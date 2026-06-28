@@ -3,7 +3,7 @@
 use crate::common::{drop_db, fresh_pg};
 use proxima_core::storage::Storage;
 use proxima_core::{
-    InstantiatePersonalityRequest, Principal, SetWakeEntriesRequest, UserId, WakeEntryAuthoredBy,
+    InstantiatePersonalityRequest, OwnerRef, SetWakeEntriesRequest, UserId, WakeEntryAuthoredBy,
     WakeEntryDraft, WakeEntryTriggerKind,
 };
 use std::sync::Arc;
@@ -34,10 +34,10 @@ async fn set_wake_entries_within_appends_one() -> Result<(), Box<dyn std::error:
     let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
 
-    let owner = Principal::User(UserId::new(Uuid::now_v7()));
+    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
     let inst = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            principal: owner.clone(),
+            principal: owner,
             display_name: "test".into(),
         })
         .await?;
@@ -74,10 +74,10 @@ async fn set_wake_entries_within_preserves_carried_entry_id()
     let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
 
-    let owner = Principal::User(UserId::new(Uuid::now_v7()));
+    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
     let inst = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            principal: owner.clone(),
+            principal: owner,
             display_name: "test".into(),
         })
         .await?;
@@ -127,17 +127,17 @@ async fn concurrent_replace_all_keeps_only_last_writer_entries()
     let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
 
-    let owner = Principal::User(UserId::new(Uuid::now_v7()));
+    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
     let inst = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            principal: owner.clone(),
+            principal: owner,
             display_name: "test".into(),
         })
         .await?;
     let pid = inst.instance_id;
 
     pg.set_wake_entries(&SetWakeEntriesRequest {
-        principal: owner.clone(),
+        principal: owner,
         personality_instance_id: pid,
         entries: vec![wake_entry(
             pid,
@@ -177,7 +177,7 @@ async fn concurrent_replace_all_keeps_only_last_writer_entries()
 
     let pg = Arc::new(pg);
     let first_req = SetWakeEntriesRequest {
-        principal: owner.clone(),
+        principal: owner,
         personality_instance_id: pid,
         entries: vec![wake_entry(
             pid,
@@ -186,7 +186,7 @@ async fn concurrent_replace_all_keeps_only_last_writer_entries()
         )],
     };
     let second_req = SetWakeEntriesRequest {
-        principal: owner.clone(),
+        principal: owner,
         personality_instance_id: pid,
         entries: vec![wake_entry(pid, "proxima-code/file-revision-v1", "second")],
     };

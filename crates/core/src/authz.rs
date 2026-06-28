@@ -18,9 +18,9 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use tokio::time::{Instant, Interval, Sleep};
 
-use crate::access::AccessScope;
+use crate::access::{AccessKind, AccessScope, OwnerRoles};
 use crate::auth::{AuthError, Credentials};
-use crate::{Owner, Principal};
+use crate::{Owner, OwnerRef, UserId};
 
 pub use hooks::{
     AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, OwnerResolver,
@@ -29,17 +29,18 @@ pub use hooks::{
 /// WHO: the authorization currency for owner scoping.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Identity {
-    pub principal: Principal,
-    pub accessible_principals: HashSet<Principal>,
+    subject: Option<UserId>,
+    principal: OwnerRef,
+    accessible_principals: HashSet<OwnerRef>,
     /// Streams terminate past this; `None` = no expiry.
-    pub expires_at: Option<SystemTime>,
+    expires_at: Option<SystemTime>,
     /// Revocation generation; hosts bump it to force re-auth.
-    pub auth_epoch: u64,
+    auth_epoch: u64,
 }
 
 impl Identity {
     #[must_use]
-    pub fn can_access_principal(&self, principal: &Principal) -> bool {
+    pub fn can_access_principal(&self, principal: &OwnerRef) -> bool {
         self.accessible_principals.contains(principal)
     }
 }
@@ -106,7 +107,7 @@ pub struct CapabilitySet {
     pub tool_scope: ToolScope,
     /// The sole surviving per-token memory capability after the RoleSet/grant
     /// collapse. Unrestricted = acts as owner on every accessible principal;
-    /// Granted = decided by the persisted `group_membership` + `entity_owner`
+    /// Granted = decided by the persisted `group_membership` + owner-row
     /// reachability rows (the resolved `S_read`/`S_write` sets).
     pub access: AccessScope,
 }
@@ -135,51 +136,260 @@ pub enum AuthPath {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthzContext {
-    pub identity: Identity,
-    pub capabilities: CapabilitySet,
-    pub auth_path: AuthPath,
+    identity: Identity,
+    capabilities: CapabilitySet,
+    auth_path: AuthPath,
+    owner_roles: Option<OwnerRoles>,
 }
 
 impl AuthzContext {
     #[must_use]
-    pub fn scoped_owner(&self, principal: Principal) -> Owner {
-        principal
+    pub fn subject(&self) -> Option<UserId> {
+        self.identity.subject
     }
 
-    /// Self-scoped, full-capability context for trusted in-process
-    /// surfaces: the desktop shell's IPC commands, embedded
-    /// single-owner hosts, the dev-only gRPC service, and tests.
-    /// Wire transports never mint this — they authenticate real
-    /// credentials at the edge, and the MCP edge rejects host
-    /// authenticator output claiming [`AuthPath::System`].
     #[must_use]
-    pub fn single_owner(owner: &Owner, auth_path: AuthPath) -> Self {
-        let mut principals = HashSet::with_capacity(1);
-        principals.insert(owner.clone());
+    pub const fn auth_path(&self) -> AuthPath {
+        self.auth_path
+    }
+
+    #[must_use]
+    pub fn principal(&self) -> OwnerRef {
+        self.identity.principal
+    }
+
+    #[must_use]
+    pub fn expires_at(&self) -> Option<SystemTime> {
+        self.identity.expires_at
+    }
+
+    #[must_use]
+    pub fn identity_for_revalidation(&self) -> Identity {
+        self.identity.clone()
+    }
+
+    #[must_use]
+    pub fn tool_scope(&self) -> &ToolScope {
+        &self.capabilities.tool_scope
+    }
+
+    #[must_use]
+    pub fn access_scope(&self) -> AccessScope {
+        self.capabilities.access
+    }
+
+    #[must_use]
+    pub fn can_access_owner(&self, owner: &OwnerRef) -> bool {
+        self.identity.can_access_principal(owner)
+    }
+
+    pub(crate) fn accessible_owners(&self) -> impl Iterator<Item = OwnerRef> + '_ {
+        self.identity.accessible_principals.iter().copied()
+    }
+
+    #[must_use]
+    pub(crate) fn is_server_resolved(&self) -> bool {
+        self.owner_roles.is_some()
+    }
+
+    #[must_use]
+    pub fn scoped_owner(&self, owner: OwnerRef) -> Owner {
+        owner
+    }
+
+    #[must_use]
+    pub fn may_read(&self, owner: &OwnerRef, kind: AccessKind) -> bool {
+        self.owner_roles
+            .as_ref()
+            .is_some_and(|roles| roles.may_read(owner, kind))
+    }
+
+    #[must_use]
+    pub fn may_write(&self, owner: &OwnerRef, kind: AccessKind) -> bool {
+        self.owner_roles
+            .as_ref()
+            .is_some_and(|roles| roles.may_write(owner, kind))
+    }
+
+    #[must_use]
+    pub fn may_manage(&self, owner: &OwnerRef) -> bool {
+        self.owner_roles
+            .as_ref()
+            .is_some_and(|roles| roles.may_manage(owner))
+    }
+
+    #[must_use]
+    pub fn readable_owners(&self, kind: AccessKind) -> Vec<OwnerRef> {
+        self.owner_roles
+            .as_ref()
+            .map_or_else(Vec::new, |roles| roles.readable_owners(kind))
+    }
+
+    #[must_use]
+    pub fn writable_owners(&self, kind: AccessKind) -> Vec<OwnerRef> {
+        self.owner_roles
+            .as_ref()
+            .map_or_else(Vec::new, |roles| roles.writable_owners(kind))
+    }
+
+    #[must_use]
+    pub fn server_resolved(owner_roles: OwnerRoles, auth_path: AuthPath) -> Self {
+        let subject = owner_roles.subject();
+        let accessible_principals = owner_roles
+            .readable_owners(AccessKind::Goal)
+            .into_iter()
+            .collect();
         Self {
             identity: Identity {
-                principal: owner.clone(),
-                accessible_principals: principals,
+                subject: Some(subject),
+                principal: OwnerRef::Personal(subject),
+                accessible_principals,
                 expires_at: None,
                 auth_epoch: 0,
             },
             capabilities: CapabilitySet::all(),
             auth_path,
+            owner_roles: Some(owner_roles),
+        }
+    }
+
+    #[must_use]
+    pub fn with_tool_scope(mut self, tool_scope: ToolScope) -> Self {
+        self.capabilities.tool_scope = tool_scope;
+        self
+    }
+
+    #[must_use]
+    pub fn narrowed_to_owner(mut self, owner: OwnerRef) -> Option<Self> {
+        let roles = self.owner_roles.as_ref()?;
+        if !roles.may_read(&owner, AccessKind::Goal) {
+            return None;
+        }
+        let subject = roles.subject();
+        let narrowed_roles = match owner {
+            OwnerRef::Personal(user) if user == subject => OwnerRoles::for_subject(subject, []),
+            OwnerRef::Group(_) => roles
+                .role_for(&owner)
+                .map(|role| OwnerRoles::for_subject(subject, [(owner, role)]))?,
+            OwnerRef::World => OwnerRoles::for_subject(subject, []),
+            OwnerRef::Personal(_) => return None,
+        }
+        .ok()?;
+        let accessible_principals = narrowed_roles
+            .readable_owners(AccessKind::Goal)
+            .into_iter()
+            .collect();
+        self.owner_roles = Some(narrowed_roles);
+        self.identity.accessible_principals = accessible_principals;
+        Some(self)
+    }
+
+    #[must_use]
+    pub fn with_expires_at(mut self, expires_at: Option<SystemTime>) -> Self {
+        self.identity.expires_at = expires_at;
+        self
+    }
+
+    #[must_use]
+    pub fn with_auth_epoch(mut self, auth_epoch: u64) -> Self {
+        self.identity.auth_epoch = auth_epoch;
+        self
+    }
+
+    /// # Panics
+    ///
+    /// Panics only if constructing the empty subject role set fails.
+    #[must_use]
+    pub fn for_subject(subject: UserId, auth_path: AuthPath) -> Self {
+        Self::server_resolved(OwnerRoles::for_subject(subject, []).unwrap(), auth_path)
+    }
+
+    /// # Panics
+    ///
+    /// Panics if `roles` contains invalid owner-role overrides.
+    #[must_use]
+    pub fn for_subject_with_role<I>(subject: UserId, roles: I, auth_path: AuthPath) -> Self
+    where
+        I: IntoIterator<Item = (OwnerRef, crate::access::Role)>,
+    {
+        Self::server_resolved(OwnerRoles::for_subject(subject, roles).unwrap(), auth_path)
+    }
+
+    /// Compatibility helper for already-owner-scoped trusted surfaces. It is
+    /// server-resolved for personal owners; group access must be represented by
+    /// an explicit subject role and cannot be minted from a bare group owner.
+    #[must_use]
+    pub fn single_owner(owner: &Owner, auth_path: AuthPath) -> Self {
+        match *owner {
+            OwnerRef::Personal(subject) => Self::for_subject(subject, auth_path),
+            OwnerRef::World | OwnerRef::Group(_) => Self::denied_for_owner(owner),
+        }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn scoped_access<I>(
+        owner: Owner,
+        accessible_owners: I,
+        tool_scope: ToolScope,
+        access: AccessScope,
+        auth_path: AuthPath,
+    ) -> Self
+    where
+        I: IntoIterator<Item = OwnerRef>,
+    {
+        let mut accessible_principals = accessible_owners.into_iter().collect::<HashSet<_>>();
+        let subject = match owner {
+            OwnerRef::Personal(subject) => Some(subject),
+            OwnerRef::World | OwnerRef::Group(_) => None,
+        };
+        if matches!(owner, OwnerRef::Personal(_)) {
+            accessible_principals.insert(owner);
+        }
+        Self {
+            identity: Identity {
+                subject,
+                principal: owner,
+                accessible_principals,
+                expires_at: None,
+                auth_epoch: 0,
+            },
+            capabilities: CapabilitySet { tool_scope, access },
+            auth_path,
+            owner_roles: None,
+        }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn from_identity(
+        identity: Identity,
+        capabilities: CapabilitySet,
+        auth_path: AuthPath,
+    ) -> Self {
+        Self {
+            identity,
+            capabilities,
+            auth_path,
+            owner_roles: None,
         }
     }
 
     /// Fail-closed, zero-capability context. Carries the owner's
     /// identity for audit but grants no roles, an empty tool palette,
     /// and no accessible principals — every capability check and every
-    /// owner-scope check denies. The dual of [`Self::single_owner`]:
-    /// minted where a request reaches dispatch without authenticated
-    /// credentials in a posture that must never serve them as trusted
-    /// (e.g. the MCP host's release-build unauthenticated arm).
+    /// owner-scope check denies.
     #[must_use]
-    pub fn denied(owner: &Owner) -> Self {
+    pub fn denied() -> Self {
+        Self::denied_for_owner(&OwnerRef::World)
+    }
+
+    #[must_use]
+    pub fn denied_for_owner(owner: &Owner) -> Self {
         Self {
             identity: Identity {
-                principal: owner.clone(),
+                subject: None,
+                principal: *owner,
                 accessible_principals: HashSet::new(),
                 expires_at: None,
                 auth_epoch: 0,
@@ -189,6 +399,7 @@ impl AuthzContext {
                 access: AccessScope::Granted,
             },
             auth_path: AuthPath::Denied,
+            owner_roles: None,
         }
     }
 }
@@ -207,7 +418,7 @@ pub trait Authenticator: Send + Sync {
     /// Current revocation epoch for a principal. A host bumps the returned
     /// value to force active streams authenticated at a lower epoch to
     /// terminate. The default never revokes.
-    async fn current_auth_epoch(&self, _principal: &Principal) -> u64 {
+    async fn current_auth_epoch(&self, _principal: &OwnerRef) -> u64 {
         0
     }
 }
@@ -267,7 +478,7 @@ impl<I> RevalidatedStream<I> {
             && self.epoch_check.is_none()
             && let Some(authenticator) = self.authenticator.clone()
         {
-            let principal = self.identity.principal.clone();
+            let principal = self.identity.principal;
             self.epoch_check = Some(Box::pin(async move {
                 authenticator.current_auth_epoch(&principal).await
             }));
@@ -378,21 +589,26 @@ const fn non_zero_duration(duration: Duration) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::UserId;
+    use crate::access::Role;
+    use crate::{GroupId, UserId};
     use futures_util::StreamExt;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::sync::mpsc;
     use tokio::time;
 
     fn owner() -> Owner {
-        Principal::User(UserId::new(uuid::Uuid::now_v7()))
+        OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
     }
 
     fn identity(expires_at: Option<SystemTime>, auth_epoch: u64) -> Identity {
-        let principal = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let principal = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let mut accessible_principals = HashSet::with_capacity(1);
-        accessible_principals.insert(principal.clone());
+        accessible_principals.insert(principal);
         Identity {
+            subject: match principal {
+                OwnerRef::Personal(user) => Some(user),
+                OwnerRef::World | OwnerRef::Group(_) => None,
+            },
             principal,
             accessible_principals,
             expires_at,
@@ -419,7 +635,7 @@ mod tests {
             Err(AuthError::AuthRequired)
         }
 
-        async fn current_auth_epoch(&self, _principal: &Principal) -> u64 {
+        async fn current_auth_epoch(&self, _principal: &OwnerRef) -> u64 {
             self.epoch.load(Ordering::SeqCst)
         }
     }
@@ -448,13 +664,54 @@ mod tests {
     #[test]
     fn denied_context_has_denied_path_and_no_accessible_principals() {
         let o = owner();
-        let ctx = AuthzContext::denied(&o);
+        let ctx = AuthzContext::denied_for_owner(&o);
 
         assert_eq!(ctx.auth_path, AuthPath::Denied);
         assert!(ctx.identity.accessible_principals.is_empty());
         assert!(!ctx.identity.can_access_principal(&o));
         assert_eq!(ctx.capabilities.access, AccessScope::Granted);
         assert!(!ctx.capabilities.tool_scope.allows("resource:memory"));
+    }
+
+    #[test]
+    fn unauthenticated_denied_context_grants_no_owner_access() {
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let ctx = AuthzContext::denied();
+
+        assert_eq!(ctx.auth_path(), AuthPath::Denied);
+        assert_eq!(ctx.subject(), None);
+        assert!(!ctx.may_read(&owner, AccessKind::Fact));
+        assert!(!ctx.may_write(&owner, AccessKind::Fact));
+        assert!(!ctx.may_manage(&owner));
+        assert!(ctx.readable_owners(AccessKind::Goal).is_empty());
+        assert!(ctx.writable_owners(AccessKind::Goal).is_empty());
+    }
+
+    #[test]
+    fn resolved_subject_context_gets_world_read_and_role_ceilings() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let roles = OwnerRoles::for_subject(subject, [(group, Role::editor())]).unwrap();
+
+        let ctx = AuthzContext::server_resolved(roles, AuthPath::HostBearer);
+
+        assert_eq!(ctx.subject(), Some(subject));
+        assert!(ctx.may_read(&OwnerRef::World, AccessKind::Goal));
+        assert!(!ctx.may_write(&OwnerRef::World, AccessKind::Fact));
+        assert!(ctx.may_write(&OwnerRef::Personal(subject), AccessKind::Goal));
+        assert!(ctx.may_write(&group, AccessKind::Perspective));
+        assert!(!ctx.may_write(&group, AccessKind::Goal));
+        assert!(!ctx.may_manage(&group));
+
+        let readable = ctx.readable_owners(AccessKind::Goal);
+        assert!(readable.contains(&OwnerRef::World));
+        assert!(readable.contains(&OwnerRef::Personal(subject)));
+        assert!(readable.contains(&group));
+
+        let writable = ctx.writable_owners(AccessKind::Goal);
+        assert!(writable.contains(&OwnerRef::Personal(subject)));
+        assert!(!writable.contains(&OwnerRef::World));
+        assert!(!writable.contains(&group));
     }
 
     #[test]

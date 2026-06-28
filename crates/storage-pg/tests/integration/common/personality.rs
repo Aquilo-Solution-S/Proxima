@@ -171,9 +171,6 @@ pub fn test_flavor_descriptor() -> FlavorDescriptor {
 /// Anthropic client and a fake embedding client.
 #[must_use]
 pub fn build_test_engine(pg: PgStorage, anthropic: Arc<dyn AnthropicClient>) -> Engine {
-    use proxima_core::Principal;
-
-    let owner = super::owner_fixture();
     let mut registry = FlavorRegistry::new();
     registry.add_flavor(test_flavor_descriptor());
     registry.add_fact_schema::<TestFactV1>();
@@ -182,7 +179,6 @@ pub fn build_test_engine(pg: PgStorage, anthropic: Arc<dyn AnthropicClient>) -> 
     registry.add_perspective_schema::<TestPersonalitySelfV1>();
     registry.add_abstraction_schema::<TestAbstractionV1>();
     let frozen = registry.freeze();
-    let _principal: Principal = owner.clone();
     Engine::new(frozen)
         .with_storage(Arc::new(pg))
         .with_anthropic(anthropic)
@@ -198,7 +194,7 @@ pub async fn instantiate_test_personality(
         .instantiate_personality(
             &AuthzContext::single_owner(owner, AuthPath::System),
             InstantiatePersonalityRequest {
-                principal: owner.clone(),
+                principal: *owner,
                 display_name: "Test Personality".into(),
             },
         )
@@ -217,7 +213,7 @@ pub async fn ingest_test_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Mem
     let draft = EventDraft {
         source_id: SourceId::new(TEST_SOURCE_ID),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.clone(),
+        principal: *owner,
         author_personality_instance_id: None,
         schema_id: SchemaId::new(TEST_FACT_SCHEMA.into()),
         schema_version: SchemaVersion::new(1),
@@ -257,7 +253,7 @@ pub async fn ingest_other_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Me
     let draft = EventDraft {
         source_id: SourceId::new(TEST_SOURCE_ID),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.clone(),
+        principal: *owner,
         author_personality_instance_id: None,
         schema_id: SchemaId::new(TEST_OTHER_FACT_SCHEMA.into()),
         schema_version: SchemaVersion::new(1),

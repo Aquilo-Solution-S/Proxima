@@ -75,7 +75,7 @@ impl ServerHandler for DynamicHandler {
             context.peer.set_peer_info(request);
         }
         let auth = auth_context(&context);
-        let scope = auth.as_ref().map(|ctx| &ctx.authz.capabilities.tool_scope);
+        let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
         let advertised_tools = self.advertised_tool_ids(scope);
         let advertised_resources = advertised_resource_scope_keys(scope);
         let mut info = self.get_info();
@@ -92,7 +92,7 @@ impl ServerHandler for DynamicHandler {
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListResourcesResult, ErrorData>> + MaybeSendFuture + '_ {
         let auth = auth_context(&context);
-        let scope = auth.as_ref().map(|ctx| &ctx.authz.capabilities.tool_scope);
+        let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
         let resource = RawResource {
             title: Some(selfdoc::HOW_TO_TITLE.to_string()),
             description: Some(selfdoc::HOW_TO_DESCRIPTION.to_string()),
@@ -121,7 +121,7 @@ impl ServerHandler for DynamicHandler {
     ) -> impl Future<Output = Result<ListResourceTemplatesResult, ErrorData>> + MaybeSendFuture + '_
     {
         let auth = auth_context(&context);
-        let scope = auth.as_ref().map(|ctx| &ctx.authz.capabilities.tool_scope);
+        let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
         let resource_templates = all_core_resources()
             .filter(|resource| {
                 resource.is_template && resource_scope_allows(scope, resource.scope_key)
@@ -144,7 +144,7 @@ impl ServerHandler for DynamicHandler {
         let server = self.server.clone();
         async move {
             if uri == selfdoc::HOW_TO_URI {
-                let scope = auth.as_ref().map(|ctx| &ctx.authz.capabilities.tool_scope);
+                let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
                 let advertised = server
                     .registry()
                     .list_mcp_tools()
@@ -183,7 +183,7 @@ impl ServerHandler for DynamicHandler {
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + MaybeSendFuture + '_ {
         let auth = auth_context(&context);
-        let scope = auth.as_ref().map(|ctx| &ctx.authz.capabilities.tool_scope);
+        let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
         let tools: Vec<Tool> = self
             .server
             .registry()

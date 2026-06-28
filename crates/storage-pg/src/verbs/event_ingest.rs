@@ -19,14 +19,14 @@ use proxima_core::verbs::event_ingest::{
 };
 use proxima_core::{
     AuthorizedEventIngest, AuthorizedFactWithCitation, AuthzContext, Engine, EntityKind,
-    FactPayload, MemoryId, Owner, OwnerPrincipalKind, Relation, SourceBatchId, StorageError,
+    FactPayload, MemoryId, Owner, OwnerRefKind, Relation, SourceBatchId, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
+use crate::access::owner_ref_compat::insert_home;
 use crate::error::{internal, map_err};
 use crate::pg_ident::PgIdent;
 use crate::sidecars::{PgMemorySidecar, PgSidecarRegistryFrozen};
-use crate::verbs::entity_owner::insert_entity_owner_home;
 
 pub type EventIngestSidecarFuture<'t> =
     Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
@@ -247,10 +247,35 @@ where
         &'t EventIngestOutcome,
     ) -> EventIngestSidecarFuture<'t>,
 {
+    let owner = authz.principal();
+    ingest_fact_for_owner_in_tx(tx, engine, authz, &owner, relation, payload, sidecar).await
+}
+
+/// Transaction-scoped uncited Fact ingest helper for an explicit target owner.
+///
+/// # Errors
+///
+/// Returns storage errors from Fact authorization, materialization, sidecar
+/// insertion, or embedding enqueue.
+pub async fn ingest_fact_for_owner_in_tx<P, F>(
+    tx: &mut Transaction<'_, Postgres>,
+    engine: &Engine,
+    authz: &AuthzContext,
+    owner: &Owner,
+    relation: Relation,
+    payload: &P,
+    sidecar: F,
+) -> Result<EventIngestOutcome, StorageError>
+where
+    P: FactPayload,
+    F: for<'t> FnOnce(
+        &'t mut Transaction<'_, Postgres>,
+        &'t EventIngestOutcome,
+    ) -> EventIngestSidecarFuture<'t>,
+{
     let now = time::OffsetDateTime::now_utc();
-    let owner = authz.identity.principal.clone();
     let draft = EventDraft::from_payload(
-        &owner,
+        owner,
         "proxima/fact",
         SourceBatchId::new(uuid::Uuid::now_v7()),
         payload,
@@ -287,8 +312,36 @@ where
         &'t EventIngestOutcome,
     ) -> EventIngestSidecarFuture<'t>,
 {
+    let owner = authz.principal();
+    ingest_fact_for_owner(pool, engine, authz, &owner, relation, payload, sidecar).await
+}
+
+/// Pool-scoped uncited Fact ingest helper for an explicit target owner.
+///
+/// # Errors
+///
+/// Returns storage errors from transaction setup, Fact authorization, sidecar
+/// insertion, or transaction commit.
+pub async fn ingest_fact_for_owner<P, F>(
+    pool: &PgPool,
+    engine: &Engine,
+    authz: &AuthzContext,
+    owner: &Owner,
+    relation: Relation,
+    payload: &P,
+    sidecar: F,
+) -> Result<EventIngestOutcome, StorageError>
+where
+    P: FactPayload,
+    F: for<'t> FnOnce(
+        &'t mut Transaction<'_, Postgres>,
+        &'t EventIngestOutcome,
+    ) -> EventIngestSidecarFuture<'t>,
+{
     let mut tx = pool.begin().await.map_err(internal)?;
-    let outcome = ingest_fact_in_tx(&mut tx, engine, authz, relation, payload, sidecar).await?;
+    let outcome =
+        ingest_fact_for_owner_in_tx(&mut tx, engine, authz, owner, relation, payload, sidecar)
+            .await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }
@@ -465,13 +518,14 @@ pub async fn attach_citation_in_tx(
     let owner = authorized.owner();
     let (owner_kind, owner_principal_id) = owner.columns();
 
-    let existing_mapping_id = sqlx::query_scalar::<_, Option<uuid::Uuid>>(
-        r"SELECT citation_mapping_id
+    let existing_mapping_id =
+        sqlx::query_scalar::<_, Option<uuid::Uuid>>(crate::access::owner_ref_compat::sql(
+            "SELECT citation_mapping_id
             FROM proxima_core.memories m
            WHERE m.memory_id = $1
              AND EXISTS (
                 SELECT 1
-                  FROM proxima_core.entity_owner eo
+                  FROM __PROXIMA_ENTITY_OWNER__ eo
                  WHERE eo.entity_id = m.memory_id
                    AND eo.owner_principal_kind = $2
                    AND eo.owner_principal_id = $3
@@ -479,14 +533,14 @@ pub async fn attach_citation_in_tx(
              )
              AND m.kind IS NULL
              AND m.tombstoned_at IS NULL",
-    )
-    .bind(memory_uuid)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?
-    .ok_or(StorageError::NotFound)?;
+        ))
+        .bind(memory_uuid)
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .fetch_optional(tx.as_mut())
+        .await
+        .map_err(map_err)?
+        .ok_or(StorageError::NotFound)?;
 
     if let Some(citation_mapping_id) = existing_mapping_id {
         let cited_object_id =
@@ -513,20 +567,20 @@ pub async fn attach_citation_in_tx(
     )
     .await?;
 
-    let updated = sqlx::query(
-        r"UPDATE proxima_core.memories m
+    let updated = sqlx::query(crate::access::owner_ref_compat::sql(
+        "UPDATE proxima_core.memories m
              SET citation_mapping_id = $2
            WHERE m.memory_id = $1
              AND EXISTS (
                 SELECT 1
-                  FROM proxima_core.entity_owner eo
+                  FROM __PROXIMA_ENTITY_OWNER__ eo
                  WHERE eo.entity_id = m.memory_id
                    AND eo.owner_principal_kind = $3
                    AND eo.owner_principal_id = $4
                    AND eo.is_home
              )
              AND m.citation_mapping_id IS NULL",
-    )
+    ))
     .bind(memory_uuid)
     .bind(citation_mapping_id)
     .bind(owner_kind)
@@ -557,7 +611,7 @@ async fn cited_object_id_for_mapping_in_tx(
 ) -> Result<uuid::Uuid, StorageError> {
     let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query_scalar::<_, uuid::Uuid>(
-        r"SELECT cm.cited_object_id
+        "SELECT cm.cited_object_id
             FROM proxima_core.citation_mappings cm
            WHERE cm.citation_mapping_id = $1
              AND cm.memory_id = $2
@@ -587,7 +641,7 @@ async fn upsert_cited_object_in_tx(
     let (owner_kind, owner_principal_id) = owner.columns();
     let cited_object_id_new = uuid::Uuid::now_v7();
     let cited_object_id = sqlx::query_scalar::<_, uuid::Uuid>(
-        r"INSERT INTO proxima_core.cited_objects
+        "INSERT INTO proxima_core.cited_objects
             (cited_object_id, schema_id, owner_principal_kind,
              owner_principal_id, content_hash)
          VALUES ($1, $2, $3, $4, $5)
@@ -622,7 +676,7 @@ async fn insert_citation_mapping_in_tx(
 ) -> Result<(), StorageError> {
     let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
-        r"INSERT INTO proxima_core.citation_mappings
+        "INSERT INTO proxima_core.citation_mappings
             (citation_mapping_id, schema_id, memory_id,
              cited_object_id, owner_principal_kind,
              owner_principal_id)
@@ -702,7 +756,7 @@ where
     let (owner_kind, owner_principal_id) = owner.columns();
 
     let existing = sqlx::query_scalar::<_, uuid::Uuid>(
-        r"SELECT memory_id FROM proxima_core.memories
+        "SELECT memory_id FROM proxima_core.memories
            WHERE event_id = $1
              AND tombstoned_at IS NULL",
     )
@@ -713,7 +767,7 @@ where
 
     if let Some(memory_id) = existing {
         let seq = sqlx::query_scalar::<_, uuid::Uuid>(
-            r"SELECT seq FROM proxima_core.change_event
+            "SELECT seq FROM proxima_core.change_event
                  WHERE entity_memory_id = $1 ORDER BY seq ASC LIMIT 1",
         )
         .bind(memory_id)
@@ -738,7 +792,7 @@ where
                 let citation_mapping_id = uuid::Uuid::now_v7();
                 let cited_object_id_new = uuid::Uuid::now_v7();
                 let cited_object_id = sqlx::query_scalar::<_, uuid::Uuid>(
-                    r"INSERT INTO proxima_core.cited_objects
+                    "INSERT INTO proxima_core.cited_objects
                         (cited_object_id, schema_id, owner_principal_kind,
                          owner_principal_id, content_hash)
                      VALUES ($1, $2, $3, $4, $5)
@@ -785,7 +839,7 @@ where
         .map(|pending| (*pending).citation_mapping_id());
 
     sqlx::query(
-        r"INSERT INTO proxima_core.source_batches
+        "INSERT INTO proxima_core.source_batches
             (id, source_id, owner_principal_kind,
              owner_principal_id)
          VALUES ($1, $2, $3, $4)
@@ -800,7 +854,7 @@ where
     .map_err(map_err)?;
 
     sqlx::query(
-        r"INSERT INTO proxima_core.events
+        "INSERT INTO proxima_core.events
             (event_id, source_id, source_batch_id,
              owner_principal_kind, owner_principal_id,
              schema_id, schema_version, observed_at, occurred_at)
@@ -825,7 +879,7 @@ where
     );
 
     sqlx::query(
-        r"INSERT INTO proxima_core.memories
+        "INSERT INTO proxima_core.memories
             (memory_id, schema_id, schema_version, event_id, citation_mapping_id,
              text, personality_instance_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -840,7 +894,7 @@ where
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
-    insert_entity_owner_home(
+    insert_home(
         tx.as_mut(),
         memory_id,
         &owner,
@@ -885,7 +939,7 @@ where
                 cited_object_id,
             } => {
                 sqlx::query(
-                    r"INSERT INTO proxima_core.citation_mappings
+                    "INSERT INTO proxima_core.citation_mappings
                         (citation_mapping_id, schema_id, memory_id,
                          cited_object_id, owner_principal_kind,
                          owner_principal_id)
@@ -922,7 +976,7 @@ where
     }
 
     sqlx::query(
-        r"INSERT INTO proxima_core.change_event
+        "INSERT INTO proxima_core.change_event
             (seq, owner_principal_kind, owner_principal_id,
              kind, entity_kind,
              entity_memory_id, entity_schema_id,
@@ -967,7 +1021,7 @@ async fn derive_fact_entity_after_sidecar(
 
     let (owner_kind, owner_principal_id) = owner.columns();
     let fact_entity_id = sqlx::query_scalar::<_, uuid::Uuid>(
-        r"INSERT INTO proxima_core.fact_entities
+        "INSERT INTO proxima_core.fact_entities
             (fact_entity_id, owner_principal_kind, owner_principal_id,
              schema_id, schema_version, natural_key, current_memory_id, current_created_at)
          VALUES
@@ -1067,7 +1121,7 @@ async fn fact_natural_key_after_sidecar(
 
 async fn enqueue_embedding_job_in_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owner_kind: OwnerPrincipalKind,
+    owner_kind: OwnerRefKind,
     owner_principal_id: uuid::Uuid,
     entity_kind: EntityKind,
     entity_id: uuid::Uuid,

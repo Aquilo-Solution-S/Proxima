@@ -1,6 +1,5 @@
 //! Auth-gated `EventIngest` plus caller-owned sidecar transaction tests.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::common::{drop_db, fresh_pg, owner_fixture};
@@ -9,12 +8,14 @@ use proxima_core::verbs::event_ingest::{
 };
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
-    AccessScope, AuthPath, AuthzContext, CapabilitySet, Engine, ErrorCode, FactPayload,
-    FlavorRegistryFrozen, GroupId, Identity, Owner, PayloadKeyBuilder, Principal, Relation,
-    SchemaId, SchemaVersion, SourceBatchId, SourceId, Storage, StorageError, ToolScope, UserId,
+    AuthPath, AuthzContext, Engine, ErrorCode, FactPayload, FlavorRegistryFrozen, GroupId, Owner,
+    OwnerRef, PayloadKeyBuilder, Relation, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    Storage, StorageError, UserId,
 };
 use proxima_storage_pg::verbs::event_ingest::{event_ingest_with_sidecar_atomic, ingest_fact};
 use uuid::Uuid;
+
+type ResolvedAuthz = AuthzContext;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct UncitedFactPayload {
@@ -72,7 +73,7 @@ fn fresh_draft(owner: &Owner) -> EventDraft {
     EventDraft {
         source_id: SourceId::new("test/sidecar-source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.clone(),
+        principal: *owner,
         author_personality_instance_id: None,
         schema_id: SchemaId::new("test/sidecar_fact".into()),
         schema_version: SchemaVersion::new(1),
@@ -94,40 +95,38 @@ fn fresh_draft(owner: &Owner) -> EventDraft {
     }
 }
 
-fn bot_principal() -> Principal {
-    Principal::User(UserId::new(Uuid::now_v7()))
+fn bot_principal() -> OwnerRef {
+    OwnerRef::Personal(UserId::new(Uuid::now_v7()))
 }
 
 fn group_owner() -> Owner {
-    Principal::Group(GroupId::new(Uuid::now_v7()))
+    OwnerRef::Group(GroupId::new(Uuid::now_v7()))
 }
 
-fn granted_bot_authz(bot: &Principal) -> AuthzContext {
-    AuthzContext {
-        identity: Identity {
-            principal: bot.clone(),
-            accessible_principals: HashSet::from([bot.clone()]),
-            expires_at: None,
-            auth_epoch: 0,
-        },
-        capabilities: CapabilitySet {
-            tool_scope: ToolScope::All,
-            access: AccessScope::Granted,
-        },
-        auth_path: AuthPath::HostBearer,
-    }
+fn granted_bot_authz(bot: &OwnerRef) -> ResolvedAuthz {
+    let OwnerRef::Personal(user) = *bot else {
+        panic!("bot test principal must be a user");
+    };
+    AuthzContext::for_subject(user, AuthPath::HostBearer)
+}
+
+fn bot_authz_with_role(bot: &OwnerRef, owner: Owner, role: Role) -> ResolvedAuthz {
+    let OwnerRef::Personal(user) = *bot else {
+        panic!("bot test principal must be a user");
+    };
+    AuthzContext::for_subject_with_role(user, [(owner, role)], AuthPath::HostBearer)
 }
 
 async fn seed_group_membership(
     pg: &proxima_storage_pg::PgStorage,
-    space_owner: &Principal,
+    space_owner: &OwnerRef,
     relation: Relation,
-    subject: &Principal,
+    subject: &OwnerRef,
 ) {
-    let Principal::Group(group) = space_owner else {
+    let OwnerRef::Group(group) = space_owner else {
         panic!("group membership can only seed group-owned spaces");
     };
-    let Principal::User(user) = subject else {
+    let OwnerRef::Personal(user) = subject else {
         panic!("group membership can only seed user members");
     };
     pg.add_group_member(*group, *user, relation, Uuid::now_v7())
@@ -209,6 +208,7 @@ async fn source_ingest_only_authorizes_event_ingest_with_write_grant()
     assert!(err.message.contains("requires ingest on this owner"));
 
     seed_group_membership(&pg, &owner, Relation::Ingest, &bot).await;
+    let authz = bot_authz_with_role(&bot, owner, Role::ingest());
 
     let authorized = engine
         .authorize_event_ingest(&authz, Relation::Ingest, fresh_draft(&owner))

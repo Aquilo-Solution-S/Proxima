@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use proxima_core::{Owner, Principal, UserId};
+use proxima_core::{Owner, OwnerRef, UserId};
 use proxima_pg_testkit::{
     FNV_OFFSET_BASIS, create_db_from_template, db_url, drop_db, ensure_template, fnv1a64_extend,
 };
@@ -43,7 +43,7 @@ pub async fn migrated_db() -> (String, PgStorage) {
 
 #[must_use]
 pub fn test_owner() -> Owner {
-    Principal::User(UserId::new(Uuid::now_v7()))
+    OwnerRef::Personal(UserId::new(Uuid::now_v7()))
 }
 
 pub fn git(repo: &Path, args: &[&str]) {
@@ -60,18 +60,18 @@ pub fn git(repo: &Path, args: &[&str]) {
     );
 }
 
-pub async fn insert_entity_owner_home(
+pub async fn insert_home(
     pool: &sqlx::PgPool,
     entity_id: Uuid,
     owner: &Owner,
 ) -> Result<(), sqlx::Error> {
     let (owner_kind, owner_principal_id) = owner.columns();
-    sqlx::query(
-        "INSERT INTO proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "INSERT INTO __PROXIMA_ENTITY_OWNER__
             (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
          VALUES ($1, $2, $3, true, $4)
          ON CONFLICT DO NOTHING",
-    )
+    ))
     .bind(entity_id)
     .bind(owner_kind)
     .bind(owner_principal_id)

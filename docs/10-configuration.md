@@ -198,9 +198,9 @@ return presigned URLs only, never `bucket` or `object_key`.
 ## Owner Scoping
 
 Owner access control is per-row on graph data (see
-[01 §Owner](01-event-source.md#owner--scoping-primitive)). `Owner =
-Principal` (Track B / S0 removed the tenant field from Core). Runtime
-config selects the binary's default Owner principal and, under a host
+[01 §Owner](01-event-source.md#owner--scoping-primitive)). `OwnerRef` is
+the row-scoping handle (Track B / S0 removed the tenant field from Core).
+Runtime config selects the binary's default owner and, under a host
 `Authenticator`, resolves a per-request actor from the bearer. There is
 no per-Owner inference/credential table — that surface was removed.
 

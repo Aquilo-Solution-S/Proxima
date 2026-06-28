@@ -6,12 +6,10 @@
 //! map, former wake-token material fails closed, and everything else
 //! goes to the optional host [`Authenticator`].
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use proxima_core::{
-    AuthPath, Authenticator, AuthzContext, CapabilitySet, Credentials, Identity, Owner, ToolScope,
-};
+use proxima_core::{AuthPath, Authenticator, AuthzContext, Credentials, Owner, ToolScope};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -40,19 +38,6 @@ fn parse_wire_token(raw: &str) -> WireToken {
     WireToken::Host(raw.to_string())
 }
 
-fn self_scoped_identity(owner: &Owner) -> Identity {
-    let mut accessible = HashSet::with_capacity(1);
-    accessible.insert(owner.clone());
-    Identity {
-        principal: owner.clone(),
-        accessible_principals: accessible,
-        // Wake-store TTL / master rotation govern today; stream
-        // expiry lands with the revalidation slice.
-        expires_at: None,
-        auth_epoch: 0,
-    }
-}
-
 /// Per-request MCP auth context injected by the edge middleware.
 /// `authz` is the core authorization currency; the remaining fields
 /// are MCP-session specifics the tool host needs.
@@ -69,11 +54,7 @@ impl McpAuthContext {
     #[must_use]
     pub fn for_master(token: Uuid, owner: Owner) -> Self {
         Self {
-            authz: AuthzContext {
-                identity: self_scoped_identity(&owner),
-                capabilities: CapabilitySet::all(),
-                auth_path: AuthPath::MasterDev,
-            },
+            authz: AuthzContext::single_owner(&owner, AuthPath::MasterDev),
             owner,
             model_id: None,
             master_token_id: Some(token),
@@ -149,13 +130,10 @@ impl McpEdgeAuth {
     }
 
     async fn resolve_master(&self, token: Uuid) -> Option<McpAuthContext> {
-        let owner = self.master_tokens.read().await.get(&token).cloned()?;
+        let owner = self.master_tokens.read().await.get(&token).copied()?;
         let mut ctx = McpAuthContext::for_master(token, owner);
-        ctx.authz.capabilities.tool_scope = ctx
-            .authz
-            .capabilities
-            .tool_scope
-            .intersect(&self.tool_scope);
+        let tool_scope = ctx.authz.tool_scope().intersect(&self.tool_scope);
+        ctx.authz = ctx.authz.with_tool_scope(tool_scope);
         Some(ctx)
     }
 
@@ -165,18 +143,13 @@ impl McpEdgeAuth {
             .authenticate(&Credentials::Bearer(material))
             .await
             .ok()?;
-        if authz.auth_path != AuthPath::HostBearer {
+        if authz.auth_path() != AuthPath::HostBearer {
             return None;
         }
-        let can_access_configured_owner = authz.identity.can_access_principal(owner);
-        if !can_access_configured_owner {
-            return None;
-        }
-        let mut authz = authz;
-        authz.identity.accessible_principals = HashSet::from([owner.clone()]);
-        authz.capabilities.tool_scope = authz.capabilities.tool_scope.intersect(&self.tool_scope);
+        let tool_scope = authz.tool_scope().intersect(&self.tool_scope);
+        let authz = authz.narrowed_to_owner(*owner)?.with_tool_scope(tool_scope);
         Some(McpAuthContext {
-            owner: authz.scoped_owner(owner.clone()),
+            owner: authz.scoped_owner(*owner),
             authz,
             model_id: None,
             master_token_id: None,
@@ -189,12 +162,30 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use proxima_core::{
-        AccessScope, AuthError, Engine, ErrorCode, FlavorRegistry, GetGraphReadRequest, Principal,
-        UserId,
+        AccessScope, AuthError, Engine, ErrorCode, FlavorRegistry, GetGraphReadRequest, GroupId,
+        OwnerRef, Role, UserId,
     };
 
     fn fake_owner() -> Owner {
-        Principal::User(UserId::new(uuid::Uuid::now_v7()))
+        OwnerRef::Personal(fake_user())
+    }
+
+    fn fake_user() -> UserId {
+        UserId::new(uuid::Uuid::now_v7())
+    }
+
+    fn fake_group_owner() -> Owner {
+        OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()))
+    }
+
+    type TestAuthz = AuthzContext;
+
+    fn host_owner_context(owner: Owner) -> TestAuthz {
+        AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+    }
+
+    fn host_group_context(subject: UserId, group_owner: Owner, role: Role) -> TestAuthz {
+        AuthzContext::for_subject_with_role(subject, [(group_owner, role)], AuthPath::HostBearer)
     }
 
     struct StubHostAuth {
@@ -232,16 +223,16 @@ mod tests {
         let auth = McpEdgeAuth::headless();
         let owner = fake_owner();
         let token = Uuid::now_v7();
-        auth.replace_local_master_token(token, owner.clone()).await;
+        auth.replace_local_master_token(token, owner).await;
 
         let ctx = auth
             .resolve(&format!("{MASTER_TOKEN_PREFIX}{token}"))
             .await
             .expect("master resolves");
-        assert_eq!(ctx.authz.auth_path, AuthPath::MasterDev);
+        assert_eq!(ctx.authz.auth_path(), AuthPath::MasterDev);
         assert_eq!(ctx.master_token_id, Some(token));
-        assert_eq!(ctx.authz.capabilities.access, AccessScope::Unrestricted);
-        assert!(ctx.authz.capabilities.tool_scope.allows("anything"));
+        assert_eq!(ctx.authz.access_scope(), AccessScope::Unrestricted);
+        assert!(ctx.authz.tool_scope().allows("anything"));
 
         assert!(
             auth.resolve(&format!("{RESERVED_PXW_PREFIX}{token}"))
@@ -270,74 +261,46 @@ mod tests {
     #[tokio::test]
     async fn host_path_accepts_host_bearer_scoped_to_owner() {
         let owner = fake_owner();
-        let mut accessible = HashSet::new();
-        accessible.insert(owner.clone());
-        let authz = AuthzContext {
-            identity: Identity {
-                principal: owner.clone(),
-                accessible_principals: accessible,
-                expires_at: None,
-                auth_epoch: 0,
-            },
-            capabilities: CapabilitySet::all(),
-            auth_path: AuthPath::HostBearer,
-        };
-        let auth = McpEdgeAuth::headless()
-            .with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner.clone());
+        let authz = host_owner_context(owner);
+        let auth =
+            McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
 
         let ctx = auth.resolve("host-token").await.expect("host resolves");
-        assert_eq!(ctx.authz.auth_path, AuthPath::HostBearer);
+        assert_eq!(ctx.authz.auth_path(), AuthPath::HostBearer);
         assert_eq!(ctx.owner, owner);
         assert!(ctx.master_token_id.is_none());
     }
 
     #[tokio::test]
-    async fn host_path_accepts_granted_host_context_for_configured_owner() {
+    async fn host_path_accepts_resolved_host_context_for_configured_owner() {
         let owner = fake_owner();
-        let mut accessible = HashSet::new();
-        accessible.insert(owner.clone());
-        let authz = AuthzContext {
-            identity: Identity {
-                principal: owner.clone(),
-                accessible_principals: accessible,
-                expires_at: None,
-                auth_epoch: 0,
-            },
-            capabilities: CapabilitySet {
-                tool_scope: ToolScope::All,
-                access: AccessScope::Granted,
-            },
-            auth_path: AuthPath::HostBearer,
-        };
-        let auth = McpEdgeAuth::headless()
-            .with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner.clone());
+        let authz = host_owner_context(owner);
+        let auth =
+            McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
 
         let ctx = auth.resolve("host-token").await.expect("host resolves");
         assert_eq!(ctx.owner, owner);
-        assert_eq!(ctx.authz.capabilities.access, AccessScope::Granted);
+        assert!(ctx.authz.can_access_owner(&owner));
     }
 
     #[tokio::test]
-    async fn granted_host_context_without_persisted_grant_is_denied_by_owner_scoped_ops() {
-        let owner = fake_owner();
-        let subject = fake_owner();
-        let mut accessible = HashSet::new();
-        accessible.insert(owner.clone());
-        let authz = AuthzContext {
-            identity: Identity {
-                principal: subject,
-                accessible_principals: accessible,
-                expires_at: None,
-                auth_epoch: 0,
-            },
-            capabilities: CapabilitySet {
-                tool_scope: ToolScope::All,
-                access: AccessScope::Granted,
-            },
-            auth_path: AuthPath::HostBearer,
-        };
-        let auth = McpEdgeAuth::headless()
-            .with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner.clone());
+    async fn host_context_without_configured_owner_role_is_rejected() {
+        let owner = fake_group_owner();
+        let authz = AuthzContext::for_subject(fake_user(), AuthPath::HostBearer);
+        let auth =
+            McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
+
+        assert!(auth.resolve("host-token").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn owner_scoped_ops_deny_host_context_after_role_narrowing() {
+        let owner = fake_group_owner();
+        let other = fake_group_owner();
+        let subject = fake_user();
+        let authz = host_group_context(subject, other, Role::admin());
+        let auth =
+            McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), other);
         let ctx = auth.resolve("host-token").await.expect("host resolves");
         let engine = Engine::new(FlavorRegistry::new().freeze());
 
@@ -350,60 +313,36 @@ mod tests {
                 },
             )
             .await
-            .expect_err("granted host context needs a persisted grant");
+            .expect_err("configured owner role must not widen to another owner");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
     }
 
     #[tokio::test]
     async fn host_path_restricts_host_context_to_configured_owner() {
-        let owner = fake_owner();
-        let other = fake_owner();
-        let mut accessible = HashSet::new();
-        accessible.insert(owner.clone());
-        accessible.insert(other.clone());
-        let authz = AuthzContext {
-            identity: Identity {
-                principal: owner.clone(),
-                accessible_principals: accessible,
-                expires_at: None,
-                auth_epoch: 0,
-            },
-            capabilities: CapabilitySet {
-                tool_scope: ToolScope::All,
-                access: AccessScope::Granted,
-            },
-            auth_path: AuthPath::HostBearer,
-        };
-        let auth = McpEdgeAuth::headless()
-            .with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner.clone());
+        let owner = fake_group_owner();
+        let other = fake_group_owner();
+        let subject = fake_user();
+        let authz = AuthzContext::for_subject_with_role(
+            subject,
+            [(owner, Role::admin()), (other, Role::admin())],
+            AuthPath::HostBearer,
+        );
+        let auth =
+            McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
 
         let ctx = auth.resolve("host-token").await.expect("host resolves");
-        assert_eq!(
-            ctx.authz.identity.accessible_principals,
-            HashSet::from([owner])
-        );
-        assert!(!ctx.authz.identity.can_access_principal(&other));
+        assert!(ctx.authz.can_access_owner(&owner));
+        assert!(!ctx.authz.can_access_owner(&other));
     }
 
     #[tokio::test]
     async fn host_claiming_system_or_engine_paths_is_rejected() {
         let owner = fake_owner();
         for path in [AuthPath::System, AuthPath::Wake, AuthPath::MasterDev] {
-            let mut accessible = HashSet::new();
-            accessible.insert(owner.clone());
-            let authz = AuthzContext {
-                identity: Identity {
-                    principal: owner.clone(),
-                    accessible_principals: accessible,
-                    expires_at: None,
-                    auth_epoch: 0,
-                },
-                capabilities: CapabilitySet::all(),
-                auth_path: path,
-            };
+            let authz = AuthzContext::single_owner(&owner, path);
             let auth = McpEdgeAuth::headless()
-                .with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner.clone());
+                .with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
             assert!(
                 auth.resolve("host-token").await.is_none(),
                 "{path:?} must be rejected"
@@ -415,18 +354,7 @@ mod tests {
     async fn host_identity_without_owner_access_is_rejected() {
         let owner = fake_owner();
         let stranger = fake_owner();
-        let mut accessible = HashSet::new();
-        accessible.insert(stranger.clone());
-        let authz = AuthzContext {
-            identity: Identity {
-                principal: stranger.clone(),
-                accessible_principals: accessible,
-                expires_at: None,
-                auth_epoch: 0,
-            },
-            capabilities: CapabilitySet::all(),
-            auth_path: AuthPath::HostBearer,
-        };
+        let authz = host_owner_context(stranger);
         let auth =
             McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
         assert!(auth.resolve("host-token").await.is_none());
@@ -435,18 +363,7 @@ mod tests {
     #[tokio::test]
     async fn malformed_reserved_prefix_is_not_forwarded_to_host() {
         let owner = fake_owner();
-        let mut accessible = HashSet::new();
-        accessible.insert(owner.clone());
-        let authz = AuthzContext {
-            identity: Identity {
-                principal: owner.clone(),
-                accessible_principals: accessible,
-                expires_at: None,
-                auth_epoch: 0,
-            },
-            capabilities: CapabilitySet::all(),
-            auth_path: AuthPath::HostBearer,
-        };
+        let authz = host_owner_context(owner);
         let auth =
             McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
         assert!(auth.resolve("pxw_not-a-uuid").await.is_none());

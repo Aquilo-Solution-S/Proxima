@@ -14,7 +14,7 @@ use proxima_pg_testkit::drop_db;
 use tempfile::TempDir;
 use uuid::Uuid;
 
-fn owner_cols(owner: &Owner) -> (proxima_core::OwnerPrincipalKind, Uuid) {
+fn owner_cols(owner: &Owner) -> (proxima_core::OwnerRefKind, Uuid) {
     owner.columns()
 }
 
@@ -188,7 +188,7 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         let path = repo.path().to_string_lossy().into_owned();
         register_repo(pg.pool(), &owner, repo_id, &path, "fixture").await?;
 
-        let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner.clone());
+        let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner);
         let (report, cursor) = source
             .run_poll(pg.pool(), &Cursor::empty(), &mut |_| {})
             .await?;
@@ -208,37 +208,39 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         assert!(facts.1 > 0, "expected file facts");
         assert!(facts.2 > 0, "expected chunk facts");
 
-        let citation_mappings: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*)::bigint \
+        let citation_mappings: i64 =
+            sqlx::query_scalar(proxima_storage_pg::access::owner_ref_compat::sql(
+                "SELECT COUNT(*)::bigint \
              FROM proxima_core.citation_mappings cm \
              JOIN proxima_core.memories m ON m.memory_id = cm.memory_id \
-             JOIN proxima_core.entity_owner eo \
+             JOIN __PROXIMA_ENTITY_OWNER__ eo \
                ON eo.entity_id = m.memory_id \
               AND eo.is_home \
              WHERE eo.owner_principal_kind = $1 AND eo.owner_principal_id = $2",
-        )
-        .bind(kind)
-        .bind(principal_id)
-        .fetch_one(pg.pool())
-        .await?;
+            ))
+            .bind(kind)
+            .bind(principal_id)
+            .fetch_one(pg.pool())
+            .await?;
         assert!(
             citation_mappings >= facts.0 + facts.1,
             "only Fact rows carry citation mappings; code chunks are derived Abstractions"
         );
 
-        let cited_objects: i64 = sqlx::query_scalar(
-            "SELECT COUNT(DISTINCT cm.cited_object_id)::bigint \
+        let cited_objects: i64 =
+            sqlx::query_scalar(proxima_storage_pg::access::owner_ref_compat::sql(
+                "SELECT COUNT(DISTINCT cm.cited_object_id)::bigint \
              FROM proxima_core.citation_mappings cm \
              JOIN proxima_core.memories m ON m.memory_id = cm.memory_id \
-             JOIN proxima_core.entity_owner eo \
+             JOIN __PROXIMA_ENTITY_OWNER__ eo \
                ON eo.entity_id = m.memory_id \
               AND eo.is_home \
              WHERE eo.owner_principal_kind = $1 AND eo.owner_principal_id = $2",
-        )
-        .bind(kind)
-        .bind(principal_id)
-        .fetch_one(pg.pool())
-        .await?;
+            ))
+            .bind(kind)
+            .bind(principal_id)
+            .fetch_one(pg.pool())
+            .await?;
         assert!(cited_objects < citation_mappings);
 
         let ast_edges: i64 = sqlx::query_scalar(

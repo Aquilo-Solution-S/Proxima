@@ -36,7 +36,7 @@ pub(super) async fn instantiate_personality(
         .engine()
         .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
     let req = InstantiatePersonalityRequest {
-        principal: ctx.owner.clone(),
+        principal: ctx.owner,
         display_name: display_name.clone(),
     };
     let (audit, preflight_failure) = match personality_config_changed_input(

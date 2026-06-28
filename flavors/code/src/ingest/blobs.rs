@@ -140,7 +140,7 @@ pub async fn append_code_slice(
     let text = render_code_slice(payload);
     let draft = DerivedDraft {
         memory_id,
-        owner: owner.clone(),
+        owner: *owner,
         kind: EntityKind::Abstraction,
         author_personality_instance_id: None,
         schema_id: <CodeChunkV1 as AbstractionPayload>::schema_id(),

@@ -69,8 +69,8 @@ pub use proxima_core::verbs::schema::PayloadKind;
 pub use proxima_core::{
     AbstractionPayload, AccessScope, AuthPath, AuthzContext, CapabilitySet, CitationMappingPayload,
     CitedObjectPayload, Engine, EngineHandle, FactPayload, FlavorRegistry, GoalPayload, GroupId,
-    Identity, McpCallLogInput, McpCallLogOutcome, MemoryId, ModelId, OperatorId, Owner,
-    PersonalityInstanceId, PerspectivePayload, Principal, PromptVersion, Relation, SchemaId,
+    Identity, McpCallLogInput, McpCallLogOutcome, MemoryId, ModelId, OperatorId, Owner, OwnerRef,
+    PersonalityInstanceId, PerspectivePayload, PromptVersion, Relation, Role, SchemaId,
     SchemaVersion, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
     SidecarPayload, SourceBatchId, SourceId, StorageError, ToolId, ToolScope, UserId,
     canonical_json_bytes, provider_safe_tool_name, proxima_flavor,
@@ -128,11 +128,11 @@ use sqlx::PgPool;
 /// One Owner per embedded host: a Group principal.
 ///
 /// This is the single place embedded hosts construct `Owner`. Since the
-/// `Owner = Principal` collapse (S0, Track B), the former org scalar is
+/// `Owner = OwnerRef` collapse (S0, Track B), the former org scalar is
 /// gone — tenancy is a flavor/app concern, not a substrate one.
 #[must_use]
 pub fn company_owner(id: uuid::Uuid) -> Owner {
-    Principal::Group(GroupId::new(id))
+    OwnerRef::Group(GroupId::new(id))
 }
 
 /// Persist one host-observed MCP tool call through an embedded engine.
@@ -378,13 +378,13 @@ pub enum EmbedError {
 
 #[cfg(test)]
 mod tests {
-    use proxima_core::Principal;
+    use proxima_core::OwnerRef;
 
     #[test]
     fn company_owner_is_group_scoped() {
         let id = uuid::Uuid::now_v7();
         let owner = super::company_owner(id);
-        assert!(matches!(owner, Principal::Group(_)));
+        assert!(matches!(owner, OwnerRef::Group(_)));
     }
 
     #[test]

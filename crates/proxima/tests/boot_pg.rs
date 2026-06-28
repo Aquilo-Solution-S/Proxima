@@ -296,7 +296,7 @@ async fn facade_boot_exposes_pg_sidecars_and_worker_drains_embedding_jobs() {
         let model_id = "facade-drain-embed";
         let built = Proxima::<GoalTestApp>::app()
             .database_url(db_url)
-            .owner(owner.clone())
+            .owner(owner)
             .allow_insecure_single_owner()
             .embed_client(Arc::new(ConstantEmbedding::prefixed(
                 model_id,

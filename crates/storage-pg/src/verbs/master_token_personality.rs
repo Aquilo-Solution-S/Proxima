@@ -13,7 +13,7 @@
 //! mapping points to.
 
 use proxima_core::{
-    InstantiatePersonalityRequest, MasterTokenPersonality, MemoryId, Owner, OwnerPrincipalKind,
+    InstantiatePersonalityRequest, MasterTokenPersonality, MemoryId, Owner, OwnerRefKind,
     PersonalityInstanceId, StorageError,
 };
 use sqlx::{PgConnection, PgPool};
@@ -63,7 +63,7 @@ async fn mint_under_lock(
     conn: &mut PgConnection,
     owner: &Owner,
     master_token_id: Uuid,
-    kind: OwnerPrincipalKind,
+    kind: OwnerRefKind,
     principal_id: Uuid,
 ) -> Result<MasterTokenPersonality, StorageError> {
     // Re-check inside the lock: a peer may have minted while we waited.
@@ -72,7 +72,7 @@ async fn mint_under_lock(
     }
 
     let req = InstantiatePersonalityRequest {
-        principal: owner.clone(),
+        principal: *owner,
         display_name: SHELL_AUTHOR_DISPLAY_NAME.into(),
     };
     let resp = consolidate::instantiate_personality_on_conn(&mut *conn, &req).await?;
@@ -84,7 +84,7 @@ async fn mint_under_lock(
              personality_instance_id
          ) VALUES ($1, $2, $3, $4)"#,
         master_token_id,
-        kind as OwnerPrincipalKind,
+        kind as OwnerRefKind,
         principal_id,
         instance_id.into_inner(),
     )
@@ -111,7 +111,7 @@ async fn mint_under_lock(
 async fn lookup_pool(
     pool: &PgPool,
     master_token_id: Uuid,
-    kind: OwnerPrincipalKind,
+    kind: OwnerRefKind,
     principal_id: Uuid,
 ) -> Result<Option<MasterTokenPersonality>, StorageError> {
     let row = sqlx::query!(
@@ -125,7 +125,7 @@ async fn lookup_pool(
                AND mtp.owner_principal_id = $3
              LIMIT 1"#,
         master_token_id,
-        kind as OwnerPrincipalKind,
+        kind as OwnerRefKind,
         principal_id,
     )
     .fetch_optional(pool)
@@ -142,7 +142,7 @@ async fn lookup_pool(
 async fn lookup_conn(
     conn: &mut PgConnection,
     master_token_id: Uuid,
-    kind: OwnerPrincipalKind,
+    kind: OwnerRefKind,
     principal_id: Uuid,
 ) -> Result<Option<MasterTokenPersonality>, StorageError> {
     let row = sqlx::query!(
@@ -156,7 +156,7 @@ async fn lookup_conn(
                AND mtp.owner_principal_id = $3
              LIMIT 1"#,
         master_token_id,
-        kind as OwnerPrincipalKind,
+        kind as OwnerRefKind,
         principal_id,
     )
     .fetch_optional(&mut *conn)

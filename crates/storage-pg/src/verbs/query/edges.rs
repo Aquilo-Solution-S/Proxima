@@ -4,7 +4,7 @@ use proxima_core::verbs::query::{
     QueryRequest,
 };
 use proxima_core::verbs::schema::SchemaInfo;
-use proxima_core::{EdgeId, OwnerPrincipalKind, Principal, StorageError};
+use proxima_core::{EdgeId, OwnerRef, OwnerRefKind, StorageError};
 use sqlx::PgPool;
 
 use crate::error::internal;
@@ -16,7 +16,7 @@ use super::{read_owner_columns, resolve_heads_by_fact_entity_id};
 /// Decoupled from `QueryRequest::limit`, which sizes the node window.
 pub const MAX_SNAPSHOT_EDGES: usize = 50_000;
 
-const READ_EDGES_SQL: &str = r"
+const READ_EDGES_SQL: &str = "
 WITH edge_heads AS (
     SELECT e.edge_id, e.relation, e.relation_class,
            COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
@@ -44,7 +44,7 @@ visible AS (
     SELECT edge_heads.*,
            EXISTS (
                SELECT 1
-                 FROM proxima_core.entity_owner seo
+                 FROM __PROXIMA_ENTITY_OWNER__ seo
                  JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
                    ON seo.owner_principal_kind = rs.kind
                   AND seo.owner_principal_id = rs.id
@@ -52,7 +52,7 @@ visible AS (
            ) AS source_readable,
            EXISTS (
                SELECT 1
-                 FROM proxima_core.entity_owner teo
+                 FROM __PROXIMA_ENTITY_OWNER__ teo
                  JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
                    ON teo.owner_principal_kind = rs.kind
                   AND teo.owner_principal_id = rs.id
@@ -60,7 +60,7 @@ visible AS (
            ) AS target_readable,
            EXISTS (
                SELECT 1
-                 FROM proxima_core.entity_owner weo
+                 FROM __PROXIMA_ENTITY_OWNER__ weo
                 WHERE weo.entity_id = edge_heads.source_entity_id
                   AND weo.owner_principal_kind = $3
                   AND weo.owner_principal_id = $4
@@ -110,7 +110,7 @@ impl From<Option<EntityRef>> for EndpointSql {
 
 pub(crate) async fn read_edges(
     pool: &PgPool,
-    read_owners: &[Principal],
+    read_owners: &[OwnerRef],
     req: &EdgeReadRequest,
 ) -> Result<EdgeReadResponse, StorageError> {
     if read_owners.is_empty() {
@@ -131,24 +131,25 @@ pub(crate) async fn read_edges(
         req.limit
             .min(u32::try_from(MAX_SNAPSHOT_EDGES).expect("MAX_SNAPSHOT_EDGES fits in u32")),
     );
-    let mut rows = sqlx::query_as::<_, EdgeRowDb>(READ_EDGES_SQL)
-        .bind(&read_owner_kinds)
-        .bind(&read_owner_ids)
-        .bind(world_kind)
-        .bind(world_id)
-        .bind(edge_ids_filter)
-        .bind(&edge_ids)
-        .bind(req.filter.relation.as_deref())
-        .bind(source.memory)
-        .bind(source.goal)
-        .bind(source.fact_entity)
-        .bind(target.memory)
-        .bind(target.goal)
-        .bind(target.fact_entity)
-        .bind(limit)
-        .fetch_all(pool)
-        .await
-        .map_err(internal)?;
+    let mut rows =
+        sqlx::query_as::<_, EdgeRowDb>(crate::access::owner_ref_compat::sql(READ_EDGES_SQL))
+            .bind(&read_owner_kinds)
+            .bind(&read_owner_ids)
+            .bind(world_kind)
+            .bind(world_id)
+            .bind(edge_ids_filter)
+            .bind(&edge_ids)
+            .bind(req.filter.relation.as_deref())
+            .bind(source.memory)
+            .bind(source.goal)
+            .bind(source.fact_entity)
+            .bind(target.memory)
+            .bind(target.goal)
+            .bind(target.fact_entity)
+            .bind(limit)
+            .fetch_all(pool)
+            .await
+            .map_err(internal)?;
     hydrate_fact_entity_heads(pool, &mut rows).await?;
     let edges = rows
         .into_iter()
@@ -159,11 +160,11 @@ pub(crate) async fn read_edges(
 
 pub(crate) async fn edge_exists(
     pool: &PgPool,
-    read_owners: &[Principal],
+    read_owners: &[OwnerRef],
     req: &EdgeExistsRequest,
 ) -> Result<EdgeExistsResponse, StorageError> {
     let read = EdgeReadRequest {
-        principal: req.principal.clone(),
+        principal: req.principal,
         edge_ids: req.edge_ids.clone(),
         filter: req.filter.clone(),
         limit: 1,
@@ -177,7 +178,7 @@ pub(crate) async fn edge_exists(
 pub(super) async fn query_edges(
     pool: &PgPool,
     req: &QueryRequest,
-    read_owner_kinds: &[OwnerPrincipalKind],
+    read_owner_kinds: &[OwnerRefKind],
     read_owner_ids: &[uuid::Uuid],
     visible_memory_ids: &[uuid::Uuid],
     visible_goal_ids: &[uuid::Uuid],
@@ -213,7 +214,7 @@ async fn query_edges_by_id(
     pool: &PgPool,
     req: &QueryRequest,
     edge_ids: &[uuid::Uuid],
-    read_owner_kinds: &[OwnerPrincipalKind],
+    read_owner_kinds: &[OwnerRefKind],
     read_owner_ids: &[uuid::Uuid],
     schemas: &[SchemaInfo],
 ) -> Result<Vec<EdgeRow>, StorageError> {
@@ -228,7 +229,7 @@ async fn query_edges_by_id(
         pool,
         &read_owners,
         &EdgeReadRequest {
-            principal: req.principal.clone(),
+            principal: req.principal,
             edge_ids,
             filter: EdgeFilter::default(),
             limit: req.limit,
@@ -287,7 +288,7 @@ async fn query_edges_between_visible_nodes(
 ) -> Result<Vec<EdgeRow>, StorageError> {
     let (world_kind, world_id) = proxima_core::access::world().columns();
     let rows = sqlx::query_as::<_, EdgeRowDb>(
-        "SELECT e.edge_id, e.relation, e.relation_class,
+        crate::access::owner_ref_compat::sql("SELECT e.edge_id, e.relation, e.relation_class,
                 COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
                 e.source_goal_id, e.source_fact_entity_id,
                 COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id,
@@ -295,7 +296,7 @@ async fn query_edges_between_visible_nodes(
                 true AS target_readable,
                 EXISTS (
                     SELECT 1
-                      FROM proxima_core.entity_owner weo
+                      FROM __PROXIMA_ENTITY_OWNER__ weo
                      WHERE weo.entity_id = COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id)
                        AND weo.owner_principal_kind = $3
                        AND weo.owner_principal_id = $4
@@ -312,7 +313,7 @@ async fn query_edges_between_visible_nodes(
                 OR e.target_goal_id = ANY($2::uuid[])
                 OR tfe.current_memory_id = ANY($1::uuid[]))
          ORDER BY e.created_at DESC
-         LIMIT $5",
+         LIMIT $5"),
     )
     .bind(visible_memory_ids)
     .bind(visible_goal_ids)

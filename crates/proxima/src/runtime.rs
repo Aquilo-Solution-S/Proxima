@@ -12,7 +12,7 @@ use proxima_core::{
     AnthropicClient, AuthPath, Authenticator, AuthzContext, EmbeddingClient, FlavorRegistryFrozen,
     RevalidationConfig, ToolScope,
 };
-use proxima_core::{Engine, EngineHandle, Owner};
+use proxima_core::{Engine, EngineHandle, Owner, OwnerRef, Role, UserId};
 use proxima_mcp_server::{
     McpEdgeAuth, McpToolHost, OriginAllowlist, assert_loopback, default_allowlist,
     streamable_http_service,
@@ -323,14 +323,14 @@ impl BuiltProxima {
     #[must_use]
     pub fn single_owner_authz(&self) -> Option<AuthzContext> {
         self.insecure_single_owner
-            .then(|| AuthzContext::single_owner(&self.owner, AuthPath::System))
+            .then(|| insecure_single_owner_authz(&self.owner, AuthPath::System))
     }
 
     #[must_use]
     pub fn core_mcp_tools(&self) -> CoreMcpTools {
         CoreMcpTools::new(
             self.pool.clone(),
-            self.owner.clone(),
+            self.owner,
             self.registry.clone(),
             self.engine.clone(),
         )
@@ -383,7 +383,21 @@ impl RunningProxima {
     #[must_use]
     pub fn single_owner_authz(&self) -> Option<AuthzContext> {
         self.insecure_single_owner
-            .then(|| AuthzContext::single_owner(&self.owner, AuthPath::System))
+            .then(|| insecure_single_owner_authz(&self.owner, AuthPath::System))
+    }
+}
+
+type InsecureAuthz = AuthzContext;
+
+fn insecure_single_owner_authz(owner: &Owner, auth_path: AuthPath) -> InsecureAuthz {
+    match *owner {
+        OwnerRef::Personal(subject) => AuthzContext::for_subject(subject, auth_path),
+        OwnerRef::Group(group) => AuthzContext::for_subject_with_role(
+            UserId::new(group.into_inner()),
+            [(*owner, Role::admin())],
+            auth_path,
+        ),
+        OwnerRef::World => AuthzContext::denied_for_owner(owner),
     }
 }
 
@@ -498,7 +512,7 @@ async fn boot_app<A: FlavorApp + 'static>(
             database_url: config.database_url.clone(),
             s3: config.s3.clone(),
         },
-        config.owner.clone(),
+        config.owner,
     )
     .bundle::<A>();
     if let Some(client) = parts.embed_client.clone() {
@@ -519,23 +533,17 @@ async fn build_router<A: FlavorApp>(
     cancel: &CancellationToken,
     config: &crate::RuntimeConfig,
 ) -> Router {
-    let owner = config.owner.clone();
+    let owner = config.owner;
     let mut edge_auth = McpEdgeAuth::headless().with_tool_scope(config.tool_scope.clone());
     if let Some(authenticator) = authenticator {
-        edge_auth = edge_auth.with_host(authenticator, owner.clone());
+        edge_auth = edge_auth.with_host(authenticator, owner);
     }
     if let Some(token) = config.master_token {
-        edge_auth
-            .replace_local_master_token(token, owner.clone())
-            .await;
+        edge_auth.replace_local_master_token(token, owner).await;
     }
     let edge_auth = Arc::new(edge_auth);
-    let mcp_host = McpToolHost::from_pool(
-        pool.clone(),
-        owner.clone(),
-        Arc::new(engine.registry().clone()),
-    )
-    .with_engine(engine.clone());
+    let mcp_host = McpToolHost::from_pool(pool.clone(), owner, Arc::new(engine.registry().clone()))
+        .with_engine(engine.clone());
     let allowed_hosts = resolve_allowed_hosts(config);
     let mcp_service = streamable_http_service(mcp_host, &allowlist, &allowed_hosts, cancel);
     let app_router = A::mount_http(
@@ -697,7 +705,7 @@ mod tests {
     #[async_trait]
     impl Authenticator for StubAuth {
         async fn authenticate(&self, _creds: &Credentials) -> Result<AuthzContext, AuthError> {
-            Ok(AuthzContext::single_owner(
+            Ok(insecure_single_owner_authz(
                 &self.owner,
                 AuthPath::HostBearer,
             ))
@@ -719,7 +727,7 @@ mod tests {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
-            .owner(owner.clone())
+            .owner(owner)
             .with_mcp()
             .authenticator(Arc::new(StubAuth { owner }))
             .resolve()
@@ -738,7 +746,7 @@ mod tests {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
-            .owner(owner.clone())
+            .owner(owner)
             .with_mcp()
             .mcp_bind("0.0.0.0:8080".parse().unwrap())
             .expose_network(true)
@@ -767,7 +775,7 @@ mod tests {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
-            .owner(owner.clone())
+            .owner(owner)
             .with_mcp()
             .mcp_bind("0.0.0.0:8080".parse().unwrap())
             .expose_network(true)
@@ -867,7 +875,7 @@ mod tests {
         let owner = owner();
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
-            .owner(owner.clone())
+            .owner(owner)
             .with_mcp()
             .expose_network(true)
             .authenticator(Arc::new(StubAuth { owner }))

@@ -191,7 +191,7 @@ fn stateful_draft_for(owner: &Owner, payload_value: &Value) -> EventDraft {
     EventDraft {
         source_id: SourceId::new(format!("test/cleanup-stateful/{}", Uuid::now_v7())),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.clone(),
+        principal: *owner,
         author_personality_instance_id: None,
         schema_id: CleanupStatefulFactV1::schema_id(),
         schema_version: SchemaVersion::new(CleanupStatefulFactV1::SCHEMA_VERSION),
@@ -264,9 +264,7 @@ async fn cleanup_due_facts_erases_fact_and_tombstones_direct_derivative()
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
     let engine = Engine::new(registry).with_storage(storage);
 
-    let ingest = engine
-        .event_ingest(&authz, fresh_draft(owner.clone()))
-        .await?;
+    let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
     let fact_id = ingest.memory_id.into_inner();
     let event_id = ingest.event_id.into_inner().to_vec();
     let citation_mapping_id: Uuid = sqlx::query_scalar(
@@ -324,9 +322,7 @@ async fn cleanup_due_facts_tombstones_transitive_derivatives()
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
     let engine = Engine::new(registry).with_storage(storage);
 
-    let ingest = engine
-        .event_ingest(&authz, fresh_draft(owner.clone()))
-        .await?;
+    let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
     let fact_id = ingest.memory_id.into_inner();
     let event_id = ingest.event_id.into_inner().to_vec();
     let citation_mapping_id = citation_mapping_id_for_memory(&pg, fact_id).await?;
@@ -371,16 +367,10 @@ async fn cleanup_due_facts_aggressively_tombstones_multi_support_derivative()
     let engine = Engine::new(registry).with_storage(storage);
 
     let due_fact = engine
-        .event_ingest(
-            &authz,
-            fresh_draft_with_content_hash(owner.clone(), [1; 32]),
-        )
+        .event_ingest(&authz, fresh_draft_with_content_hash(owner, [1; 32]))
         .await?;
     let surviving_fact = engine
-        .event_ingest(
-            &authz,
-            fresh_draft_with_content_hash(owner.clone(), [2; 32]),
-        )
+        .event_ingest(&authz, fresh_draft_with_content_hash(owner, [2; 32]))
         .await?;
     let due_fact_id = due_fact.memory_id.into_inner();
     let surviving_fact_id = surviving_fact.memory_id.into_inner();
@@ -422,12 +412,8 @@ async fn cleanup_due_facts_garbage_collects_cited_objects_by_reference_count()
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
     let engine = Engine::new(registry).with_storage(storage);
 
-    let first = engine
-        .event_ingest(&authz, fresh_draft(owner.clone()))
-        .await?;
-    let second = engine
-        .event_ingest(&authz, fresh_draft(owner.clone()))
-        .await?;
+    let first = engine.event_ingest(&authz, fresh_draft(owner)).await?;
+    let second = engine.event_ingest(&authz, fresh_draft(owner)).await?;
     let first_fact_id = first.memory_id.into_inner();
     let second_fact_id = second.memory_id.into_inner();
     let cited_object_id = cited_object_id_for_memory(&pg, first_fact_id).await?;
@@ -466,9 +452,7 @@ async fn cleanup_due_facts_deletes_cited_object_sidecars_and_surfaces_s3_refs()
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
     let engine = Engine::new(registry).with_storage(storage);
 
-    let ingest = engine
-        .event_ingest(&authz, fresh_draft(owner.clone()))
-        .await?;
+    let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
     let fact_id = ingest.memory_id.into_inner();
     let cited_object_id = cited_object_id_for_memory(&pg, fact_id).await?;
     insert_uploaded_blob_sidecar(&pg, cited_object_id).await?;
@@ -505,7 +489,7 @@ async fn tombstone_fact_forgets_uncited_fact() -> Result<(), Box<dyn std::error:
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
     let engine = Engine::new(registry).with_storage(storage);
 
-    let mut draft = fresh_draft(owner.clone());
+    let mut draft = fresh_draft(owner);
     draft.citation = None;
     let ingest = engine.event_ingest(&authz, draft).await?;
     let fact_id = ingest.memory_id.into_inner();
@@ -578,12 +562,8 @@ async fn tombstone_fact_keeps_shared_cited_object() -> Result<(), Box<dyn std::e
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
     let engine = Engine::new(registry).with_storage(storage);
 
-    let first = engine
-        .event_ingest(&authz, fresh_draft(owner.clone()))
-        .await?;
-    let second = engine
-        .event_ingest(&authz, fresh_draft(owner.clone()))
-        .await?;
+    let first = engine.event_ingest(&authz, fresh_draft(owner)).await?;
+    let second = engine.event_ingest(&authz, fresh_draft(owner)).await?;
     let first_fact_id = first.memory_id.into_inner();
     let second_fact_id = second.memory_id.into_inner();
     let cited_object_id = cited_object_id_for_memory(&pg, first_fact_id).await?;
@@ -632,9 +612,7 @@ async fn tombstone_fact_cascades_to_lineage_children() -> Result<(), Box<dyn std
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
     let engine = Engine::new(registry).with_storage(storage);
 
-    let ingest = engine
-        .event_ingest(&authz, fresh_draft(owner.clone()))
-        .await?;
+    let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
     let fact_id = ingest.memory_id.into_inner();
     let derivative_id = insert_direct_derivative(&pg, &owner, fact_id).await?;
 
@@ -663,9 +641,7 @@ async fn tombstone_fact_is_idempotent() -> Result<(), Box<dyn std::error::Error>
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
     let engine = Engine::new(registry).with_storage(storage);
 
-    let ingest = engine
-        .event_ingest(&authz, fresh_draft(owner.clone()))
-        .await?;
+    let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
 
     let first = engine
         .tombstone_fact(&authz, &owner, ingest.memory_id)
@@ -695,9 +671,7 @@ async fn tombstone_fact_drops_goal_evidence_edge() -> Result<(), Box<dyn std::er
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
     let engine = Engine::new(registry).with_storage(storage);
 
-    let ingest = engine
-        .event_ingest(&authz, fresh_draft(owner.clone()))
-        .await?;
+    let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
     let fact_id = ingest.memory_id.into_inner();
     let goal_id = insert_active_goal(&pg, &owner).await?;
     let edge_id = insert_motivated_by_edge(&pg, &owner, goal_id, fact_id).await?;
@@ -923,7 +897,7 @@ async fn insert_active_goal(
     .bind(owner_principal_id)
     .execute(pg.pool())
     .await?;
-    insert_entity_owner_home(pg, goal_id, owner).await?;
+    insert_home(pg, goal_id, owner).await?;
     Ok(goal_id)
 }
 
@@ -1088,7 +1062,7 @@ async fn assert_tombstoned_derivative_filtered(
     owner: &Owner,
     derivative_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut req = QueryRequest::for_principal(owner.clone());
+    let mut req = QueryRequest::for_principal(*owner);
     req.memory_ids = vec![MemoryId::new(derivative_id)];
     let query = engine.query(authz, &req).await?;
     assert!(query.memories.is_empty());
@@ -1097,7 +1071,7 @@ async fn assert_tombstoned_derivative_filtered(
         .walk_memory_lineage(
             std::slice::from_ref(owner),
             &MemoryLineageRequest {
-                principal: owner.clone(),
+                principal: *owner,
                 start_memory_id: MemoryId::new(derivative_id),
                 direction: MemoryLineageDirection::Ancestors,
                 depth: 2,
@@ -1232,7 +1206,7 @@ async fn insert_derivative(
     .bind(text)
     .execute(pg.pool())
     .await?;
-    insert_entity_owner_home(pg, derivative_id, owner).await?;
+    insert_home(pg, derivative_id, owner).await?;
 
     insert_provenance_edge(pg, owner, derivative_id, origin_id, origin_kind).await?;
 
@@ -1318,18 +1292,18 @@ async fn insert_provenance_edge(
     Ok(())
 }
 
-async fn insert_entity_owner_home(
+async fn insert_home(
     pg: &proxima_storage_pg::PgStorage,
     entity_id: Uuid,
     owner: &Owner,
 ) -> Result<(), sqlx::Error> {
     let (owner_kind, owner_principal_id) = owner.columns();
-    sqlx::query(
-        "INSERT INTO proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "INSERT INTO __PROXIMA_ENTITY_OWNER__
             (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
          VALUES ($1, $2, $3, true, $4)
          ON CONFLICT DO NOTHING",
-    )
+    ))
     .bind(entity_id)
     .bind(owner_kind)
     .bind(owner_principal_id)

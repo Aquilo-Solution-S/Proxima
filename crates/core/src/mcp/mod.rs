@@ -854,7 +854,6 @@ pub fn all_core_actions() -> impl Iterator<Item = &'static CoreActionMeta> {
         .chain(core_tools::personality::CORE_PERSONALITY_ACTIONS.iter())
         .chain(core_tools::fact::CORE_FACT_ACTIONS.iter())
         .chain(core_tools::membership::CORE_MEMBERSHIP_ACTIONS.iter())
-        .chain(core_tools::share::CORE_SHARE_ACTIONS.iter())
 }
 
 #[must_use]
@@ -880,7 +879,7 @@ pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations>
             base.read_only(false).destructive(false).idempotent(false)
         }
 
-        "core_wake" | "core_personality" | "core_membership" | "core_share" => {
+        "core_wake" | "core_personality" | "core_membership" => {
             base.read_only(false).destructive(true).idempotent(false)
         }
 
@@ -899,7 +898,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{AuthPath, FlavorRegistry, Principal, UserId};
+    use crate::{AuthPath, FlavorRegistry, OwnerRef, UserId};
 
     #[test]
     fn provider_safe_tool_name_replaces_runner_invalid_separators() {
@@ -979,15 +978,13 @@ mod tests {
             "core_personality",
             "core_fact",
             "core_membership",
-            "core_share",
         ]);
         let expected_counts = BTreeMap::from([
             ("core_goal", 5_usize),
             ("core_wake", 5),
-            ("core_personality", 6),
+            ("core_personality", 4),
             ("core_fact", 4),
             ("core_membership", 3),
-            ("core_share", 6),
         ]);
         let mut seen_scope_keys = BTreeSet::new();
         let mut counts = BTreeMap::<&'static str, usize>::new();
@@ -1141,9 +1138,9 @@ mod tests {
     }
 
     fn prefixed_ctx() -> McpToolCtx {
-        let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         McpToolCtx {
-            owner: owner.clone(),
+            owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: None,
             mode: OutputMode::PrefixedIds,
@@ -1174,14 +1171,14 @@ mod tests {
 mod ctx_engine_tests {
     use super::*;
     use crate::AuthPath;
-    use crate::{Engine, FlavorRegistry, Principal, UserId};
+    use crate::{Engine, FlavorRegistry, OwnerRef, UserId};
     use std::sync::Arc;
 
     #[tokio::test]
     async fn ctx_engine_returns_none_when_unwired() {
-        let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let ctx = McpToolCtx {
-            owner: owner.clone(),
+            owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(Arc::new(HandleTable::new())),
             mode: OutputMode::Handles,
@@ -1203,10 +1200,10 @@ mod ctx_engine_tests {
 
     #[tokio::test]
     async fn ctx_engine_returns_some_when_wired() {
-        let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let engine = Arc::new(Engine::new(FlavorRegistry::new().freeze()));
         let ctx = McpToolCtx {
-            owner: owner.clone(),
+            owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(Arc::new(HandleTable::new())),
             mode: OutputMode::Handles,

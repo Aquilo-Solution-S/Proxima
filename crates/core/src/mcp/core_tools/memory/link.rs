@@ -85,7 +85,7 @@ impl McpTool for LinkTool {
                 confidence: args.confidence,
             });
             let edge = AppendMemoryEdgeRequestInput {
-                owner: space.owner.clone(),
+                owner: space.owner,
                 relation,
                 source_memory_id: source_id,
                 target_memory_id: target_id,

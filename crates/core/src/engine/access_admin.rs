@@ -1,141 +1,12 @@
-use crate::access::{EntityId, Relation, world};
+use crate::access::Relation;
 use crate::authz::{AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome};
 use crate::error::ProtocolError;
-use crate::personality::MemorySnapshot;
 use crate::storage::StorageError;
-use crate::{EntityOwnerRow, GroupId, Principal, RemoveOwnerOutcome, UserId};
+use crate::{GroupId, OwnerRef, UserId};
 
 use super::Engine;
 
 impl Engine {
-    /// Share one entity with another principal by adding a read-only
-    /// `entity_owner` row.
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidArgument` when the entity has no home owner,
-    /// `Forbidden` when the caller lacks editor on that home owner, and
-    /// `Internal` for storage failures.
-    pub async fn share_entry(
-        &self,
-        authz: &AuthzContext,
-        entity: EntityId,
-        with: Principal,
-    ) -> Result<(), ProtocolError> {
-        let home = self.home_owner_for(entity).await?;
-        let permit = self.authorize_write(authz, &home, Relation::Editor).await?;
-        self.veto_and_observe_access_admin(
-            authz,
-            &home,
-            permit.owner(),
-            Relation::Editor,
-            AuthzOperation::EntityShare {
-                entity,
-                owner: with.clone(),
-            },
-        )?;
-        self.storage()
-            .add_entity_owner_share(entity, &with, None)
-            .await
-            .map_err(|err| storage_error("add_entity_owner_share", &err))
-    }
-
-    /// Remove one read-only entity share. Home rows are refused by storage.
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidArgument` when the entity has no home owner,
-    /// `Forbidden` when the caller lacks editor on that home owner, and
-    /// `Internal` for storage failures.
-    pub async fn unshare_entry(
-        &self,
-        authz: &AuthzContext,
-        entity: EntityId,
-        with: Principal,
-    ) -> Result<RemoveOwnerOutcome, ProtocolError> {
-        let home = self.home_owner_for(entity).await?;
-        let permit = self.authorize_write(authz, &home, Relation::Editor).await?;
-        self.veto_and_observe_access_admin(
-            authz,
-            &home,
-            permit.owner(),
-            Relation::Editor,
-            AuthzOperation::EntityShare {
-                entity,
-                owner: with.clone(),
-            },
-        )?;
-        self.storage()
-            .remove_entity_owner_share(entity, &with)
-            .await
-            .map_err(|err| storage_error("remove_entity_owner_share", &err))
-    }
-
-    /// List all home/share rows for one entity.
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidArgument` when the entity has no home owner,
-    /// `Forbidden` when the caller lacks editor on that home owner, and
-    /// `Internal` for storage failures.
-    pub async fn list_entry_shares(
-        &self,
-        authz: &AuthzContext,
-        entity: EntityId,
-    ) -> Result<Vec<EntityOwnerRow>, ProtocolError> {
-        let home = self.home_owner_for(entity).await?;
-        self.authorize_write(authz, &home, Relation::Editor).await?;
-        self.storage()
-            .list_entity_owners(entity)
-            .await
-            .map_err(|err| storage_error("list_entity_owners", &err))
-    }
-
-    /// Publish one entity by adding the World read row.
-    ///
-    /// # Errors
-    ///
-    /// Same as [`Self::share_entry`].
-    pub async fn publish_entry(
-        &self,
-        authz: &AuthzContext,
-        entity: EntityId,
-    ) -> Result<(), ProtocolError> {
-        self.share_entry(authz, entity, world()).await
-    }
-
-    /// Remove the World read row from one entity.
-    ///
-    /// # Errors
-    ///
-    /// Same as [`Self::unshare_entry`].
-    pub async fn unpublish_entry(
-        &self,
-        authz: &AuthzContext,
-        entity: EntityId,
-    ) -> Result<RemoveOwnerOutcome, ProtocolError> {
-        self.unshare_entry(authz, entity, world()).await
-    }
-
-    /// List public World-readable memory entities.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Forbidden` for unauthenticated/denied readers and
-    /// `Internal` for storage failures.
-    pub async fn list_world_entities(
-        &self,
-        authz: &AuthzContext,
-        limit: usize,
-    ) -> Result<Vec<MemorySnapshot>, ProtocolError> {
-        self.authorize_read(authz).await?;
-        let sidecars = self.sidecar_specs();
-        self.storage()
-            .list_world_entities(limit, &sidecars)
-            .await
-            .map_err(|err| storage_error("list_world_entities", &err))
-    }
-
     /// Add a user to a group with one relation.
     ///
     /// # Errors
@@ -149,11 +20,11 @@ impl Engine {
         member: UserId,
         relation: Relation,
     ) -> Result<(), ProtocolError> {
-        let group_owner = Principal::Group(group);
+        let group_owner = OwnerRef::Group(group);
         let permit = self
             .authorize_write(authz, &group_owner, Relation::Admin)
             .await?;
-        let member_principal = Principal::User(member);
+        let member_principal = OwnerRef::Personal(member);
         self.veto_and_observe_access_admin(
             authz,
             &group_owner,
@@ -183,11 +54,11 @@ impl Engine {
         group: GroupId,
         member: UserId,
     ) -> Result<(), ProtocolError> {
-        let group_owner = Principal::Group(group);
+        let group_owner = OwnerRef::Group(group);
         let permit = self
             .authorize_write(authz, &group_owner, Relation::Admin)
             .await?;
-        let member_principal = Principal::User(member);
+        let member_principal = OwnerRef::Personal(member);
         let current_relations = self
             .storage()
             .list_group_members(group)
@@ -204,7 +75,7 @@ impl Engine {
                 Relation::Admin,
                 AuthzOperation::Membership {
                     group,
-                    member: member_principal.clone(),
+                    member: member_principal,
                     relation,
                 },
             )?;
@@ -226,7 +97,7 @@ impl Engine {
         authz: &AuthzContext,
         group: GroupId,
     ) -> Result<Vec<(UserId, Relation)>, ProtocolError> {
-        let group_owner = Principal::Group(group);
+        let group_owner = OwnerRef::Group(group);
         self.authorize_write(authz, &group_owner, Relation::Admin)
             .await?;
         self.storage()
@@ -235,19 +106,11 @@ impl Engine {
             .map_err(|err| storage_error("list_group_members", &err))
     }
 
-    async fn home_owner_for(&self, entity: EntityId) -> Result<Principal, ProtocolError> {
-        self.storage()
-            .entity_home_owner(entity)
-            .await
-            .map_err(|err| storage_error("entity_home_owner", &err))?
-            .ok_or_else(|| ProtocolError::invalid_argument("entity", "entry not found"))
-    }
-
     fn veto_and_observe_access_admin(
         &self,
         authz: &AuthzContext,
-        requested: &Principal,
-        resolved: &Principal,
+        requested: &OwnerRef,
+        resolved: &OwnerRef,
         relation: Relation,
         operation: AuthzOperation,
     ) -> Result<(), ProtocolError> {
@@ -274,7 +137,9 @@ impl Engine {
 }
 
 fn actor_uuid(authz: &AuthzContext) -> uuid::Uuid {
-    authz.identity.principal.columns().1
+    authz
+        .subject()
+        .map_or_else(|| authz.principal().columns().1, UserId::into_inner)
 }
 
 fn storage_error(context: &str, err: &StorageError) -> ProtocolError {

@@ -92,14 +92,14 @@ mod tests {
     use crate::authz::{AuthPath, AuthzContext};
     use crate::mcp::HandleTable;
     use crate::mcp::OutputMode;
-    use crate::{Engine, FlavorRegistry, McpAuthorContext, McpToolExtensions, Principal, UserId};
+    use crate::{Engine, FlavorRegistry, McpAuthorContext, McpToolExtensions, OwnerRef, UserId};
     use std::sync::Arc;
 
     fn make_ctx() -> McpToolCtx {
-        let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let engine = Arc::new(Engine::new(FlavorRegistry::new().freeze()));
         McpToolCtx {
-            owner: owner.clone(),
+            owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(Arc::new(HandleTable::new())),
             mode: OutputMode::Handles,

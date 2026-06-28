@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use proxima_core::{Owner, Principal, UserId};
+use proxima_core::{Owner, OwnerRef, UserId};
 use uuid::Uuid;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:31415";
@@ -201,7 +201,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
 
     Ok(McpConfig {
         database_url,
-        owner: Principal::User(UserId::new(owner_user)),
+        owner: OwnerRef::Personal(UserId::new(owner_user)),
         bind,
         master_token,
     })

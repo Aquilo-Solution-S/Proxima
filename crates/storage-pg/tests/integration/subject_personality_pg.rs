@@ -3,7 +3,7 @@
 use crate::common::{drop_db, fresh_pg};
 use proxima_core::personality::ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID;
 use proxima_core::storage::Storage;
-use proxima_core::{GroupId, Principal, UserId};
+use proxima_core::{GroupId, OwnerRef, UserId};
 use uuid::Uuid;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -11,14 +11,14 @@ async fn ensure_subject_personality_is_idempotent_and_mints_roots()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
-    let owner = Principal::User(UserId::new(Uuid::now_v7()));
-    let subject = Principal::User(UserId::new(Uuid::now_v7()));
+    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let subject = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
 
     let first = pg.ensure_subject_personality(&owner, &subject).await?;
     let second = pg.ensure_subject_personality(&owner, &subject).await?;
     assert_eq!(first, second);
 
-    let other_subject = Principal::Group(GroupId::new(Uuid::now_v7()));
+    let other_subject = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
     let other = pg
         .ensure_subject_personality(&owner, &other_subject)
         .await?;

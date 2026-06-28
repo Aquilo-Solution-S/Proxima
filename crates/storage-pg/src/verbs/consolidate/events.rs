@@ -1,5 +1,5 @@
 use proxima_core::personality::{ChangeEventForWake, PersonalityInstanceId, WakeChainDepth};
-use proxima_core::{Owner, OwnerPrincipalKind, Principal, StorageError};
+use proxima_core::{Owner, OwnerRef, OwnerRefKind, StorageError};
 use sqlx::PgPool;
 use sqlx::Row;
 
@@ -8,7 +8,7 @@ use crate::error::map_err;
 
 pub async fn list_change_events_after(
     pool: &PgPool,
-    read_owners: &[Principal],
+    read_owners: &[OwnerRef],
     after: uuid::Uuid,
     limit: usize,
 ) -> Result<Vec<ChangeEventForWake>, StorageError> {
@@ -19,7 +19,7 @@ pub async fn list_change_events_after(
     let (world_kind, world_id) = proxima_core::access::world().columns();
     let edge_visibility = edge_event_visibility_predicate(1, 2, 5, 6);
     let sql = format!(
-        r"SELECT ce.seq, ce.entity_personality_instance_id, ce.wake_chain_depth
+        "SELECT ce.seq, ce.entity_personality_instance_id, ce.wake_chain_depth
              FROM proxima_core.change_event ce
              WHERE EXISTS (
                 SELECT 1
@@ -63,7 +63,7 @@ pub async fn list_change_events_after(
     Ok(out)
 }
 
-fn read_owner_columns(read_owners: &[Principal]) -> (Vec<OwnerPrincipalKind>, Vec<uuid::Uuid>) {
+fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<uuid::Uuid>) {
     let kinds = read_owners
         .iter()
         .map(|principal| principal.columns().0)
@@ -86,7 +86,7 @@ pub async fn list_change_events_for_replay(
     let (world_kind, world_id) = proxima_core::access::world().columns();
     let edge_visibility = edge_event_visibility_predicate(1, 2, 6, 7);
     let sql = format!(
-        r"SELECT ce.seq, ce.entity_personality_instance_id, ce.wake_chain_depth
+        "SELECT ce.seq, ce.entity_personality_instance_id, ce.wake_chain_depth
              FROM proxima_core.change_event ce
              WHERE EXISTS (
                 SELECT 1
@@ -150,13 +150,13 @@ pub(crate) fn edge_event_visibility_predicate(
         ce.edge_target_memory_id, ce.edge_target_goal_id,
         (SELECT fe.current_memory_id FROM proxima_core.fact_entities fe
           WHERE fe.fact_entity_id = ce.edge_target_fact_entity_id))";
-    format!(
-        r"(
+    crate::access::owner_ref_compat::sql_owned(format!(
+        "(
                     ce.edge_id IS NULL
                     OR (
                         EXISTS (
                             SELECT 1
-                              FROM proxima_core.entity_owner seo
+                              FROM __PROXIMA_ENTITY_OWNER__ seo
                               JOIN unnest(${read_kinds_param}::proxima_core.owner_principal_kind[], ${read_ids_param}::uuid[]) AS rs(kind, id)
                                 ON seo.owner_principal_kind = rs.kind
                                AND seo.owner_principal_id = rs.id
@@ -165,14 +165,14 @@ pub(crate) fn edge_event_visibility_predicate(
                         AND NOT (
                             EXISTS (
                                 SELECT 1
-                                  FROM proxima_core.entity_owner weo
+                                  FROM __PROXIMA_ENTITY_OWNER__ weo
                                  WHERE weo.entity_id = {source_entity}
                                    AND weo.owner_principal_kind = ${world_kind_param}
                                    AND weo.owner_principal_id = ${world_id_param}
                             )
                             AND NOT EXISTS (
                                 SELECT 1
-                                  FROM proxima_core.entity_owner teo
+                                  FROM __PROXIMA_ENTITY_OWNER__ teo
                                   JOIN unnest(${read_kinds_param}::proxima_core.owner_principal_kind[], ${read_ids_param}::uuid[]) AS rt(kind, id)
                                     ON teo.owner_principal_kind = rt.kind
                                    AND teo.owner_principal_id = rt.id
@@ -181,5 +181,5 @@ pub(crate) fn edge_event_visibility_predicate(
                         )
                     )
                )"
-    )
+    ))
 }

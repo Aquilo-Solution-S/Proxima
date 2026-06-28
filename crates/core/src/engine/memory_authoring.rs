@@ -76,11 +76,11 @@ impl Engine {
             .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
 
-        let owner = write_permit.owner().clone();
+        let owner = *write_permit.owner();
         if let Some(prior) = req.supersedes {
             let prior_home = self
                 .storage()
-                .entity_home_owner(EntityId::Memory(prior))
+                .home_owner(EntityId::Memory(prior))
                 .await
                 .map_err(|err| ProtocolError::internal(err.to_string()))?;
             if prior_home.as_ref() != Some(&owner) {
@@ -110,7 +110,7 @@ impl Engine {
         let outcome = self
             .author_derived(AuthorDerivedRequestInput {
                 memory_id: req.memory_id,
-                owner: owner.clone(),
+                owner,
                 kind: req.kind,
                 text: req.text,
                 schema_id: req.schema_id,
@@ -160,7 +160,7 @@ impl Engine {
         let write_permit = self
             .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
-        let owner = write_permit.owner().clone();
+        let owner = *write_permit.owner();
         let source_kind = self
             .load_required_memory_kind(&owner, req.source_memory_id)
             .await?;
@@ -270,7 +270,7 @@ impl Engine {
         }
         let storage_req = AuthorDerivedRequest {
             memory_id: req.memory_id,
-            owner: owner.clone(),
+            owner,
             kind: req.kind,
             text: req.text,
             schema_id: req.schema_id,
@@ -303,7 +303,7 @@ impl Engine {
             } else {
                 let source_owner = self
                     .storage()
-                    .entity_home_owner(EntityId::Memory(edge.source_memory_id))
+                    .home_owner(EntityId::Memory(edge.source_memory_id))
                     .await
                     .map_err(|err| ProtocolError::internal(err.to_string()))?
                     .ok_or_else(|| ProtocolError::invalid_argument("edges", "memory not found"))?;
@@ -414,13 +414,13 @@ mod tests {
     use crate::error::ErrorCode;
     use crate::{
         AbstractionPayload, AgentDerivationV1, CORE_DERIVED_FROM_RELATION, EntityKind,
-        FlavorRegistry, Principal, UserId,
+        FlavorRegistry, OwnerRef, UserId,
     };
 
     use super::*;
 
     fn owner() -> Owner {
-        Principal::User(UserId::new(uuid::Uuid::now_v7()))
+        OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
     }
 
     fn engine() -> Engine {
@@ -446,10 +446,10 @@ mod tests {
         let owner = owner();
         let err = engine
             .author_derived_authorized(
-                &AuthzContext::denied(&owner),
+                &AuthzContext::denied_for_owner(&owner),
                 AuthorDerivedRequestInput {
                     memory_id: MemoryId::new(uuid::Uuid::now_v7()),
-                    owner: owner.clone(),
+                    owner,
                     kind: EntityKind::Abstraction,
                     text: "body".into(),
                     schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
@@ -479,9 +479,9 @@ mod tests {
             .expect("core relation registered");
         let err = engine
             .append_memory_edge_authorized(
-                &AuthzContext::denied(&owner),
+                &AuthzContext::denied_for_owner(&owner),
                 AppendMemoryEdgeRequestInput {
-                    owner: owner.clone(),
+                    owner,
                     relation,
                     source_memory_id: MemoryId::new(uuid::Uuid::now_v7()),
                     target_memory_id: MemoryId::new(uuid::Uuid::now_v7()),

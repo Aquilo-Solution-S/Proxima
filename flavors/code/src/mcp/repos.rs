@@ -163,7 +163,7 @@ impl McpTool for CodeIngestHeadSnapshotTool {
             let source = crate::LocalGitSource::new(
                 repo.repo_id,
                 PathBuf::from(repo.canonical_path.clone()),
-                ctx.owner.clone(),
+                ctx.owner,
             );
             let outcome = source
                 .run_head_snapshot(pool.as_ref())

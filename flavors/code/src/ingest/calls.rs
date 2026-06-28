@@ -141,7 +141,7 @@ pub async fn ingest_calls_edge(
 #[cfg(test)]
 mod tests {
     use super::calls_edge_id;
-    use proxima_core::{Principal, UserId};
+    use proxima_core::{OwnerRef, UserId};
     use uuid::Uuid;
 
     /// Pins the org-free call-edge `edge_id` against drift. Track B / S0:
@@ -150,7 +150,7 @@ mod tests {
     /// exactly this uuid so re-ingested call sites dedup by `edge_id`.
     #[test]
     fn calls_edge_id_golden_is_org_free() {
-        let owner = Principal::User(UserId::new(
+        let owner = OwnerRef::Personal(UserId::new(
             Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
         ));
         let source = Uuid::parse_str("00000000-0000-0000-0000-0000000000aa").expect("uuid literal");

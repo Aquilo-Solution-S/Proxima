@@ -3,10 +3,9 @@
 use crate::common::{
     create_db, db_url, drop_db, fresh_pg, seed_memory, seed_memory_edge, share_entity,
 };
-use std::collections::HashSet;
 use std::sync::Arc;
 
-use proxima_core::access::{AccessScope, world};
+use proxima_core::access::world;
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_history::EventHistoryRequest;
@@ -19,12 +18,14 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
-    AuthPath, AuthzContext, CORE_DERIVED_FROM_RELATION, CapabilitySet, ChangeEventKind, EdgeId,
-    EntityKind, GroupId, Identity, MemoryId, Owner, Principal, RelationClass, SchemaId,
-    SchemaVersion, SourceBatchId, SourceId, ToolScope, UserId,
+    AuthPath, AuthzContext, CORE_DERIVED_FROM_RELATION, ChangeEventKind, EdgeId, EntityKind,
+    GroupId, MemoryId, Owner, OwnerRef, RelationClass, Role, SchemaId, SchemaVersion,
+    SourceBatchId, SourceId, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
+
+type ResolvedAuthz = AuthzContext;
 
 fn schemas_for_test() -> Vec<SchemaInfo> {
     vec![
@@ -91,28 +92,23 @@ fn fresh_event_draft(owner: Owner, payload: Vec<u8>) -> EventDraft {
     }
 }
 
-fn build_engine(storage: Arc<dyn Storage>, _owner: Owner, _principal: Principal) -> Engine {
+fn build_engine(storage: Arc<dyn Storage>, _owner: Owner, _principal: OwnerRef) -> Engine {
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     Engine::new(registry).with_storage(storage)
 }
 
 fn read_set_authz(
-    principal: Principal,
-    read_owners: impl IntoIterator<Item = Principal>,
-) -> AuthzContext {
-    AuthzContext {
-        identity: Identity {
-            principal,
-            accessible_principals: read_owners.into_iter().collect::<HashSet<_>>(),
-            expires_at: None,
-            auth_epoch: 0,
-        },
-        capabilities: CapabilitySet {
-            tool_scope: ToolScope::All,
-            access: AccessScope::Unrestricted,
-        },
-        auth_path: AuthPath::System,
-    }
+    principal: OwnerRef,
+    read_owners: impl IntoIterator<Item = OwnerRef>,
+) -> ResolvedAuthz {
+    let OwnerRef::Personal(user) = principal else {
+        panic!("event-history test principal must be a user");
+    };
+    let roles = read_owners
+        .into_iter()
+        .filter(|owner| matches!(owner, OwnerRef::Group(_)))
+        .map(|owner| (owner, Role::viewer()));
+    AuthzContext::for_subject_with_role(user, roles, AuthPath::System)
 }
 
 #[tokio::test]
@@ -128,10 +124,10 @@ async fn event_history_returns_owner_scoped_newest_first() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
         let user1 = UserId::new(Uuid::now_v7());
         let user2 = UserId::new(Uuid::now_v7());
-        let owner1 = Principal::User(user1);
-        let owner2 = Principal::User(user2);
-        let engine1 = build_engine(storage.clone(), owner1.clone(), Principal::User(user1));
-        let engine2 = build_engine(storage, owner2.clone(), Principal::User(user2));
+        let owner1 = OwnerRef::Personal(user1);
+        let owner2 = OwnerRef::Personal(user2);
+        let engine1 = build_engine(storage.clone(), owner1, OwnerRef::Personal(user1));
+        let engine2 = build_engine(storage, owner2, OwnerRef::Personal(user2));
         let authz1 =
             proxima_core::AuthzContext::single_owner(&owner1, proxima_core::AuthPath::System);
         let authz2 =
@@ -139,18 +135,18 @@ async fn event_history_returns_owner_scoped_newest_first() {
 
         for body in [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()] {
             engine1
-                .event_ingest(&authz1, fresh_event_draft(owner1.clone(), body))
+                .event_ingest(&authz1, fresh_event_draft(owner1, body))
                 .await?;
         }
         engine2
-            .event_ingest(&authz2, fresh_event_draft(owner2.clone(), b"z".to_vec()))
+            .event_ingest(&authz2, fresh_event_draft(owner2, b"z".to_vec()))
             .await?;
 
         let resp1 = engine1
             .event_history(
                 &authz1,
                 &EventHistoryRequest {
-                    principal: owner1.clone(),
+                    principal: owner1,
                     limit: 100,
                     before: None,
                 },
@@ -171,7 +167,7 @@ async fn event_history_returns_owner_scoped_newest_first() {
             .event_history(
                 &authz2,
                 &EventHistoryRequest {
-                    principal: owner2.clone(),
+                    principal: owner2,
                     limit: 100,
                     before: None,
                 },
@@ -183,7 +179,7 @@ async fn event_history_returns_owner_scoped_newest_first() {
             .event_history(
                 &authz1,
                 &EventHistoryRequest {
-                    principal: owner1.clone(),
+                    principal: owner1,
                     limit: 2,
                     before: None,
                 },
@@ -218,9 +214,9 @@ async fn event_history_applies_public_source_guard_to_edge_events()
     let (pg, db_name) = fresh_pg().await;
 
     let result = async {
-        let gp = Principal::Group(GroupId::new(Uuid::now_v7()));
-        let private = Principal::Group(GroupId::new(Uuid::now_v7()));
-        let p = Principal::User(UserId::new(Uuid::now_v7()));
+        let gp = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let private = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let world = world();
 
         let a_public = seed_memory(&pg, &gp, EntityKind::Abstraction, "A public").await?;
@@ -238,12 +234,12 @@ async fn event_history_applies_public_source_guard_to_edge_events()
         .await?;
         insert_edge_append_event(&pg, &gp, edge, a_public, f_private).await?;
 
-        let p_read = vec![p.clone(), gp.clone(), world.clone()];
+        let p_read = vec![p, gp, world];
         let read_edges = pg
             .read_edges(
                 &p_read,
                 &EdgeReadRequest {
-                    principal: p.clone(),
+                    principal: p,
                     edge_ids: vec![edge],
                     filter: EdgeFilter::default(),
                     limit: 10,
@@ -256,7 +252,7 @@ async fn event_history_applies_public_source_guard_to_edge_events()
         );
 
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-        let engine = build_engine(storage, p.clone(), p.clone());
+        let engine = build_engine(storage, p, p);
         let authz = read_set_authz(p, p_read);
         let history = engine
             .event_history(
@@ -296,9 +292,9 @@ async fn query_high_water_applies_public_source_guard_to_edge_events()
     let (pg, db_name) = fresh_pg().await;
 
     let result = async {
-        let gp = Principal::Group(GroupId::new(Uuid::now_v7()));
-        let private = Principal::Group(GroupId::new(Uuid::now_v7()));
-        let p = Principal::User(UserId::new(Uuid::now_v7()));
+        let gp = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let private = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let world = world();
 
         let a_public = seed_memory(&pg, &gp, EntityKind::Abstraction, "A public").await?;
@@ -316,7 +312,7 @@ async fn query_high_water_applies_public_source_guard_to_edge_events()
         .await?;
         let hidden_seq = insert_edge_append_event(&pg, &gp, edge, a_public, f_private).await?;
 
-        let p_read = vec![p.clone(), gp, world];
+        let p_read = vec![p, gp, world];
         let query = pg
             .query_memories(
                 &QueryRequest {
@@ -360,7 +356,7 @@ async fn query_high_water_applies_public_source_guard_to_edge_events()
 
 async fn insert_edge_append_event(
     pg: &PgStorage,
-    owner: &Principal,
+    owner: &OwnerRef,
     edge_id: EdgeId,
     source_memory_id: MemoryId,
     target_memory_id: MemoryId,

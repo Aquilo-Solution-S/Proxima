@@ -1,7 +1,7 @@
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 
 use proxima_core::verbs::query::{MemoryLineageDirection, MemoryLineageRequest};
-use proxima_core::{MemoryId, Owner, Principal, RelationClass, Storage, UserId};
+use proxima_core::{MemoryId, Owner, OwnerRef, RelationClass, Storage, UserId};
 use uuid::Uuid;
 
 #[tokio::test]
@@ -11,7 +11,7 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
     pg.run_migrations().await?;
 
     let owner = owner_fixture();
-    let other_owner = Principal::User(UserId::new(Uuid::from_u128(99)));
+    let other_owner = OwnerRef::Personal(UserId::new(Uuid::from_u128(99)));
 
     let old = insert_memory(&pg, &owner, "old abstraction", 1).await?;
     let new = insert_memory(&pg, &owner, "new abstraction", 2).await?;
@@ -47,12 +47,12 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
     )
     .await?;
 
-    let owner_read = vec![owner.clone()];
+    let owner_read = vec![owner];
     let ancestors = pg
         .walk_memory_lineage(
             &owner_read,
             &MemoryLineageRequest {
-                principal: owner.clone(),
+                principal: owner,
                 start_memory_id: MemoryId::new(perspective),
                 direction: MemoryLineageDirection::Ancestors,
                 depth: 3,
@@ -122,22 +122,22 @@ async fn insert_memory(
     .bind(wake_chain_depth)
     .execute(pg.pool())
     .await?;
-    insert_entity_owner_home(pg, memory_id, owner).await?;
+    insert_home(pg, memory_id, owner).await?;
     Ok(memory_id)
 }
 
-async fn insert_entity_owner_home(
+async fn insert_home(
     pg: &proxima_storage_pg::PgStorage,
     entity_id: Uuid,
     owner: &Owner,
 ) -> Result<(), sqlx::Error> {
     let (owner_kind, owner_principal_id) = owner.columns();
-    sqlx::query(
-        "INSERT INTO proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "INSERT INTO __PROXIMA_ENTITY_OWNER__
             (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
          VALUES ($1, $2, $3, true, $4)
          ON CONFLICT DO NOTHING",
-    )
+    ))
     .bind(entity_id)
     .bind(owner_kind)
     .bind(owner_principal_id)

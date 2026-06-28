@@ -1,19 +1,20 @@
 //! Public typed `GoalWrite` surface for embedded product hosts.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::common::{create_db, db_url, drop_db};
 
-use proxima_core::authz::{AuthPath, CapabilitySet, Identity, ToolScope};
+use proxima_core::authz::AuthPath;
 use proxima_core::error::ErrorCode;
 use proxima_core::verbs::goal_write::{GoalCreateRequest, GoalEvidenceRef, IdempotencyKey};
 use proxima_core::{
-    AccessScope, AuthzContext, Engine, GoalPayload, GroupId, MemoryId, Owner, PayloadKeyBuilder,
-    Principal, Relation, Storage, UserId,
+    AuthzContext, Engine, GoalPayload, GroupId, MemoryId, Owner, OwnerRef, PayloadKeyBuilder,
+    Relation, Role, Storage, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
+
+type ResolvedAuthz = AuthzContext;
 
 const REQUEST_ID: &str = "product:onboarding:initial-goal:1";
 
@@ -77,11 +78,11 @@ async fn insert_memory(
     .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "INSERT INTO __PROXIMA_ENTITY_OWNER__
             (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
          VALUES ($1, $2, $3, true, NULL)",
-    )
+    ))
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -96,7 +97,7 @@ fn product_request(
     text: &str,
 ) -> GoalCreateRequest<ProductInitialGoal> {
     GoalCreateRequest::product(
-        owner.clone(),
+        *owner,
         target_self,
         IdempotencyKey::new(REQUEST_ID).expect("stable request id is valid"),
         "Practice goal",
@@ -113,14 +114,14 @@ fn assert_idempotency_conflict(err: &proxima_core::error::ProtocolError) {
 
 async fn seed_group_membership(
     pg: &PgStorage,
-    space_owner: &Principal,
+    space_owner: &OwnerRef,
     relation: Relation,
-    subject: &Principal,
+    subject: &OwnerRef,
 ) {
-    let Principal::Group(group) = space_owner else {
+    let OwnerRef::Group(group) = space_owner else {
         panic!("group membership can only seed group-owned spaces");
     };
-    let Principal::User(user) = subject else {
+    let OwnerRef::Personal(user) = subject else {
         panic!("group membership can only seed user members");
     };
     pg.add_group_member(*group, *user, relation, Uuid::now_v7())
@@ -128,22 +129,13 @@ async fn seed_group_membership(
         .expect("seed group membership");
 }
 
-async fn viewer_without_memory_write(pg: &PgStorage, owner: &Owner) -> AuthzContext {
-    let viewer = Principal::User(UserId::new(Uuid::now_v7()));
+async fn viewer_without_memory_write(pg: &PgStorage, owner: &Owner) -> ResolvedAuthz {
+    let viewer = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
     seed_group_membership(pg, owner, Relation::Viewer, &viewer).await;
-    AuthzContext {
-        identity: Identity {
-            principal: viewer.clone(),
-            accessible_principals: HashSet::from([viewer]),
-            expires_at: None,
-            auth_epoch: 0,
-        },
-        capabilities: CapabilitySet {
-            tool_scope: ToolScope::All,
-            access: AccessScope::Granted,
-        },
-        auth_path: AuthPath::HostBearer,
-    }
+    let OwnerRef::Personal(user) = viewer else {
+        panic!("viewer principal must be a user");
+    };
+    AuthzContext::for_subject_with_role(user, [(*owner, Role::viewer())], AuthPath::HostBearer)
 }
 
 async fn boot_registered(
@@ -151,12 +143,16 @@ async fn boot_registered(
 ) -> Result<(PgStorage, Owner, MemoryId, Engine, AuthzContext), Box<dyn std::error::Error>> {
     let pg = PgStorage::connect(url).await?;
     pg.run_migrations().await?;
-    let owner = Principal::Group(GroupId::new(Uuid::now_v7()));
+    let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
     let target_self = insert_self(&pg, &owner).await?;
     let engine = Engine::compose(Arc::new(pg.clone()), |registry| {
         registry.add_goal_schema::<ProductInitialGoal>();
     });
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::for_subject_with_role(
+        UserId::new(Uuid::now_v7()),
+        [(owner, Role::admin())],
+        AuthPath::System,
+    );
     Ok((pg, owner, target_self, engine, authz))
 }
 
@@ -343,7 +339,7 @@ async fn engine_goalwrite_rejects_unregistered_goal_schema() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let owner = Principal::User(UserId::new(Uuid::now_v7()));
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let target_self = insert_self(&pg, &owner).await?;
         let engine = Engine::compose(Arc::new(pg), |_registry| {});
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
@@ -379,8 +375,12 @@ async fn engine_goalwrite_rejects_unauthorized_callers_before_write() {
         // Cross-owner: a context scoped to `owner` cannot create a Goal for a
         // different principal (the `can_access_principal` branch), even with
         // full graph_write capabilities.
-        let other_owner = Principal::User(UserId::new(Uuid::now_v7()));
-        let owner_authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let other_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner_authz = AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin())],
+            AuthPath::System,
+        );
         let cross_owner = engine
             .create_goal(
                 &owner_authz,
@@ -404,7 +404,7 @@ async fn engine_goalwrite_rejects_unauthorized_callers_before_write() {
 
         // Fail-closed: the zero-capability denied context (the unauthenticated
         // posture) carries no graph_write role and is rejected.
-        let denied = AuthzContext::denied(&owner);
+        let denied = AuthzContext::denied_for_owner(&owner);
         let denied_err = engine
             .create_goal(
                 &denied,

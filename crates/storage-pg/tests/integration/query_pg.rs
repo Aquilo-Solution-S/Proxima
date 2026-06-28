@@ -14,7 +14,7 @@ use proxima_core::verbs::query::{
     EntityKind, PersonalityRootFilter, QueryRequest, SupersessionStatus,
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
-use proxima_core::{Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId};
+use proxima_core::{Owner, OwnerRef, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
@@ -55,21 +55,17 @@ async fn seed_goal(
     .bind(owner_principal_id)
     .execute(pg.pool())
     .await?;
-    insert_entity_owner_home(pg, goal_id, owner).await
+    insert_home(pg, goal_id, owner).await
 }
 
-async fn insert_entity_owner_home(
-    pg: &PgStorage,
-    entity_id: Uuid,
-    owner: &Owner,
-) -> Result<(), sqlx::Error> {
+async fn insert_home(pg: &PgStorage, entity_id: Uuid, owner: &Owner) -> Result<(), sqlx::Error> {
     let (owner_kind, owner_principal_id) = owner.columns();
-    sqlx::query(
-        "INSERT INTO proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "INSERT INTO __PROXIMA_ENTITY_OWNER__
             (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
          VALUES ($1, $2, $3, true, $4)
          ON CONFLICT DO NOTHING",
-    )
+    ))
     .bind(entity_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -99,7 +95,7 @@ async fn insert_abstraction_memory(
     .bind(supersedes)
     .execute(pg.pool())
     .await?;
-    insert_entity_owner_home(pg, memory_id, owner).await?;
+    insert_home(pg, memory_id, owner).await?;
     Ok(memory_id)
 }
 
@@ -339,7 +335,7 @@ async fn insert_perspective_memory(
         .await?;
     }
 
-    insert_entity_owner_home(pg, memory_id, owner).await?;
+    insert_home(pg, memory_id, owner).await?;
     Ok(memory_id)
 }
 
@@ -355,12 +351,12 @@ async fn query_returns_stored_schema_version() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
-        let owner = Principal::User(user);
+        let owner = OwnerRef::Personal(user);
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
 
-        let mut draft = fresh_draft(owner.clone());
+        let mut draft = fresh_draft(owner);
         draft.schema_id = SchemaId::new("test/fact_blob_v2".into());
         draft.schema_version = SchemaVersion::new(2);
         engine
@@ -373,7 +369,7 @@ async fn query_returns_stored_schema_version() {
         let resp = engine
             .query(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                &QueryRequest::for_principal(owner.clone()),
+                &QueryRequest::for_principal(owner),
             )
             .await?;
 
@@ -404,7 +400,7 @@ async fn query_active_only_filters_inactive_personality_roots() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
-        let owner = Principal::User(user);
+        let owner = OwnerRef::Personal(user);
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_personality_root_test());
         let engine = Engine::new(registry).with_storage(storage);
@@ -442,7 +438,7 @@ async fn query_active_only_filters_inactive_personality_roots() {
         )
         .await?;
 
-        let mut include_inactive = QueryRequest::for_principal(owner.clone());
+        let mut include_inactive = QueryRequest::for_principal(owner);
         include_inactive.personality_roots = PersonalityRootFilter::IncludeInactive;
         let resp = engine
             .query(
@@ -460,7 +456,7 @@ async fn query_active_only_filters_inactive_personality_roots() {
         assert!(all_ids.contains(&orphan_root));
         assert!(all_ids.contains(&normal_perspective));
 
-        let mut active_only = QueryRequest::for_principal(owner.clone());
+        let mut active_only = QueryRequest::for_principal(owner);
         active_only.personality_roots = PersonalityRootFilter::ActiveOnly;
         let resp = engine
             .query(
@@ -501,15 +497,15 @@ async fn query_returns_fact_rows() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
-        let owner = Principal::User(user);
+        let owner = OwnerRef::Personal(user);
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
 
         // Ingest two distinct Facts.
-        let draft1 = fresh_draft(owner.clone());
+        let draft1 = fresh_draft(owner);
         let draft2 = {
-            let mut d = fresh_draft(owner.clone());
+            let mut d = fresh_draft(owner);
             d.payload = b"another fact".to_vec();
             d.source_batch_id = SourceBatchId::new(Uuid::now_v7());
             d
@@ -529,7 +525,7 @@ async fn query_returns_fact_rows() {
             .await?;
 
         // Query for all memories for this owner.
-        let req = QueryRequest::for_principal(owner.clone());
+        let req = QueryRequest::for_principal(owner);
         let resp = engine
             .query(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
@@ -569,14 +565,14 @@ async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exc
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
-        let owner = Principal::User(user);
+        let owner = OwnerRef::Personal(user);
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
 
         let first = engine
             .event_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                fresh_draft(owner.clone()),
+                fresh_draft(owner),
             )
             .await?
             .memory_id;
@@ -584,7 +580,7 @@ async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exc
             .event_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 {
-                    let mut draft = fresh_draft(owner.clone());
+                    let mut draft = fresh_draft(owner);
                     draft.payload = b"second".to_vec();
                     draft.source_batch_id = SourceBatchId::new(Uuid::now_v7());
                     draft
@@ -597,7 +593,7 @@ async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exc
         let e2 = insert_test_edge(&pg, &owner, first.into_inner(), second.into_inner(), 2).await?;
         let e3 = insert_test_edge(&pg, &owner, first.into_inner(), second.into_inner(), 3).await?;
 
-        let mut req = QueryRequest::for_principal(owner.clone());
+        let mut req = QueryRequest::for_principal(owner);
         req.limit = 2;
         let resp = engine
             .query(
@@ -635,14 +631,14 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
-        let owner = Principal::User(user);
+        let owner = OwnerRef::Personal(user);
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
 
         let outside = engine
             .event_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                fresh_draft(owner.clone()),
+                fresh_draft(owner),
             )
             .await?
             .memory_id;
@@ -650,7 +646,7 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
             .event_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 {
-                    let mut draft = fresh_draft(owner.clone());
+                    let mut draft = fresh_draft(owner);
                     draft.payload = b"inside-a".to_vec();
                     draft.source_batch_id = SourceBatchId::new(Uuid::now_v7());
                     draft
@@ -662,7 +658,7 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
             .event_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 {
-                    let mut draft = fresh_draft(owner.clone());
+                    let mut draft = fresh_draft(owner);
                     draft.payload = b"inside-b".to_vec();
                     draft.source_batch_id = SourceBatchId::new(Uuid::now_v7());
                     draft
@@ -680,7 +676,7 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
         let hidden_edge =
             insert_test_edge(&pg, &owner, outside.into_inner(), inside_b.into_inner(), 2).await?;
 
-        let mut req = QueryRequest::for_principal(owner.clone());
+        let mut req = QueryRequest::for_principal(owner);
         req.limit = 2;
         let resp = engine
             .query(
@@ -717,14 +713,14 @@ async fn query_edge_id_hydration_returns_requested_edge_without_visible_nodes() 
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
-        let owner = Principal::User(user);
+        let owner = OwnerRef::Personal(user);
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
 
         let a = engine
             .event_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                fresh_draft(owner.clone()),
+                fresh_draft(owner),
             )
             .await?
             .memory_id;
@@ -732,7 +728,7 @@ async fn query_edge_id_hydration_returns_requested_edge_without_visible_nodes() 
             .event_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 {
-                    let mut draft = fresh_draft(owner.clone());
+                    let mut draft = fresh_draft(owner);
                     draft.payload = b"target".to_vec();
                     draft.source_batch_id = SourceBatchId::new(Uuid::now_v7());
                     draft
@@ -742,7 +738,7 @@ async fn query_edge_id_hydration_returns_requested_edge_without_visible_nodes() 
             .memory_id;
         let edge_id = insert_test_edge(&pg, &owner, a.into_inner(), b.into_inner(), 1).await?;
 
-        let mut req = QueryRequest::for_principal(owner.clone());
+        let mut req = QueryRequest::for_principal(owner);
         req.limit = 1;
         req.edge_ids = vec![edge_id];
         let resp = engine
@@ -775,14 +771,14 @@ async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
-        let owner = Principal::User(user);
+        let owner = OwnerRef::Personal(user);
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
 
         let a = engine
             .event_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                fresh_draft(owner.clone()),
+                fresh_draft(owner),
             )
             .await?
             .memory_id;
@@ -790,7 +786,7 @@ async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
             .event_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 {
-                    let mut draft = fresh_draft(owner.clone());
+                    let mut draft = fresh_draft(owner);
                     draft.payload = b"second".to_vec();
                     draft.source_batch_id = SourceBatchId::new(Uuid::now_v7());
                     draft
@@ -802,7 +798,7 @@ async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
         let total = proxima_storage_pg::query::MAX_SNAPSHOT_EDGES + 1;
         insert_n_test_edges_bulk(&pg, &owner, a.into_inner(), b.into_inner(), total).await?;
 
-        let mut req = QueryRequest::for_principal(owner.clone());
+        let mut req = QueryRequest::for_principal(owner);
         req.limit = 2;
         let resp = engine
             .query(
@@ -836,13 +832,13 @@ async fn query_owner_scope_is_principal() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
-        let stored_owner = Principal::User(user);
-        let requested_owner = stored_owner.clone();
+        let stored_owner = OwnerRef::Personal(user);
+        let requested_owner = stored_owner;
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
 
-        let draft = fresh_draft(stored_owner.clone());
+        let draft = fresh_draft(stored_owner);
         let outcome = engine
             .event_ingest(
                 &proxima_core::AuthzContext::single_owner(
@@ -859,7 +855,7 @@ async fn query_owner_scope_is_principal() {
                     &stored_owner,
                     proxima_core::AuthPath::System,
                 ),
-                &QueryRequest::for_principal(requested_owner.clone()),
+                &QueryRequest::for_principal(requested_owner),
             )
             .await?;
 
@@ -887,13 +883,13 @@ async fn query_filter_abstraction_returns_empty() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
-        let owner = Principal::User(user);
+        let owner = OwnerRef::Personal(user);
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
 
         // Ingest a Fact.
-        let draft = fresh_draft(owner.clone());
+        let draft = fresh_draft(owner);
         engine
             .event_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
@@ -903,8 +899,8 @@ async fn query_filter_abstraction_returns_empty() {
 
         // Query with entity_kind = Abstraction filter.
         let req = QueryRequest {
-            principal: owner.clone(),
-            read_owners: vec![owner.clone()],
+            principal: owner,
+            read_owners: vec![owner],
             entity_kind: Some(EntityKind::Abstraction),
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,
@@ -946,8 +942,8 @@ async fn query_heads_only_ignores_cross_owner_supersedes_successor() {
         pg.run_migrations().await?;
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
-        let victim = Principal::User(UserId::new(Uuid::now_v7()));
-        let attacker = Principal::User(UserId::new(Uuid::now_v7()));
+        let victim = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let attacker = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let foreign_shadowed =
             insert_abstraction_memory(&pg, &victim, "victim head with foreign successor", None)
                 .await?;
@@ -971,8 +967,8 @@ async fn query_heads_only_ignores_cross_owner_supersedes_successor() {
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
         let req = QueryRequest {
-            principal: victim.clone(),
-            read_owners: vec![victim.clone()],
+            principal: victim,
+            read_owners: vec![victim],
             entity_kind: Some(EntityKind::Abstraction),
             schema_id: Some(SchemaId::new("test/head-abstraction-v1".into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -1035,7 +1031,7 @@ async fn query_goals_filter_by_schema_id() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
-        let owner = Principal::User(user);
+        let owner = OwnerRef::Personal(user);
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
@@ -1056,8 +1052,8 @@ async fn query_goals_filter_by_schema_id() {
 
         // Filtering by a Fact schema_id must return zero goals.
         let req_fact_filter = QueryRequest {
-            principal: owner.clone(),
-            read_owners: vec![owner.clone()],
+            principal: owner,
+            read_owners: vec![owner],
             entity_kind: Some(EntityKind::Goal),
             schema_id: Some(SchemaId::new("test/fact_blob".into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -1080,8 +1076,8 @@ async fn query_goals_filter_by_schema_id() {
 
         // Filtering by the matching goal schema_id returns the goal.
         let req_goal_filter = QueryRequest {
-            principal: owner.clone(),
-            read_owners: vec![owner.clone()],
+            principal: owner,
+            read_owners: vec![owner],
             entity_kind: Some(EntityKind::Goal),
             schema_id: Some(SchemaId::new("test/goal_blob".into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -1100,8 +1096,8 @@ async fn query_goals_filter_by_schema_id() {
 
         // Filtering by a non-existent schema_id returns zero goals.
         let req_unknown = QueryRequest {
-            principal: owner.clone(),
-            read_owners: vec![owner.clone()],
+            principal: owner,
+            read_owners: vec![owner],
             entity_kind: None,
             schema_id: Some(SchemaId::new("test/never_registered".into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -1138,7 +1134,7 @@ async fn query_returns_stored_goal_schema_version() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
-        let owner = Principal::User(user);
+        let owner = OwnerRef::Personal(user);
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
@@ -1158,7 +1154,7 @@ async fn query_returns_stored_goal_schema_version() {
         let resp = engine
             .query(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                &QueryRequest::for_principal(owner.clone()),
+                &QueryRequest::for_principal(owner),
             )
             .await?;
         assert_eq!(resp.goals.len(), 1);
@@ -1188,13 +1184,13 @@ async fn query_filter_nonexistent_schema_returns_empty() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
-        let owner = Principal::User(user);
+        let owner = OwnerRef::Personal(user);
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
 
         // Ingest a Fact.
-        let draft = fresh_draft(owner.clone());
+        let draft = fresh_draft(owner);
         engine
             .event_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
@@ -1204,8 +1200,8 @@ async fn query_filter_nonexistent_schema_returns_empty() {
 
         // Query with non-existent schema_id filter.
         let req = QueryRequest {
-            principal: owner.clone(),
-            read_owners: vec![owner.clone()],
+            principal: owner,
+            read_owners: vec![owner],
             entity_kind: None,
             schema_id: Some(SchemaId::new("test/non_existent".into())),
             supersession: SupersessionStatus::HeadsOnly,

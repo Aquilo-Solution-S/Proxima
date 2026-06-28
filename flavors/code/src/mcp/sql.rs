@@ -1,10 +1,10 @@
 //! Owner-scoped head-by-natural-key CTEs and lookup helpers for code MCP tools.
 
-use proxima_core::{McpToolCtx, McpToolError, Owner, OwnerPrincipalKind};
+use proxima_core::{McpToolCtx, McpToolError, Owner, OwnerRefKind};
 
 use super::pg_pool;
 
-pub const CHUNK_HEADS_CTE: &str = r"
+pub const CHUNK_HEADS_CTE: &str = "
 chunk_heads AS (
     SELECT memory_id, repo_id, file_path, chunk_index,
            text, language, chunk_type,
@@ -21,7 +21,7 @@ chunk_heads AS (
         JOIN proxima_core.memories m USING (memory_id)
         WHERE EXISTS (
                   SELECT 1
-                    FROM proxima_core.entity_owner eo
+                    FROM __PROXIMA_ENTITY_OWNER__ eo
                    WHERE eo.entity_id = m.memory_id
                      AND eo.owner_principal_kind = $1
                      AND eo.owner_principal_id = $2
@@ -33,7 +33,7 @@ chunk_heads AS (
 )
 ";
 
-pub const FILE_REVISION_HEADS_CTE: &str = r"
+pub const FILE_REVISION_HEADS_CTE: &str = "
 file_revision_heads AS (
     SELECT DISTINCT ON (f.repo_id, f.file_path)
         f.memory_id, f.repo_id, f.file_path, f.language,
@@ -43,7 +43,7 @@ file_revision_heads AS (
     JOIN proxima_core.memories m USING (memory_id)
     WHERE EXISTS (
               SELECT 1
-                FROM proxima_core.entity_owner eo
+                FROM __PROXIMA_ENTITY_OWNER__ eo
                WHERE eo.entity_id = m.memory_id
                  AND eo.owner_principal_kind = $1
                  AND eo.owner_principal_id = $2
@@ -53,7 +53,7 @@ file_revision_heads AS (
 )
 ";
 
-pub fn owner_principal(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid) {
+pub fn owner_principal(owner: &Owner) -> (OwnerRefKind, uuid::Uuid) {
     owner.columns()
 }
 

@@ -11,7 +11,8 @@ use proxima_core::verbs::event_ingest::{
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
-    GroupId, Owner, Principal, Relation, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+    GroupId, Owner, OwnerRef, Relation, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -95,12 +96,12 @@ async fn event_ingest_writes_fact_and_change_event() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
-        let owner = Principal::User(user);
+        let owner = OwnerRef::Personal(user);
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
 
-        let draft = fresh_draft(owner.clone());
+        let draft = fresh_draft(owner);
 
         let outcome = engine
             .event_ingest(
@@ -161,11 +162,11 @@ async fn event_ingest_stamps_fact_author_without_change_event_author() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
 
-        let owner = Principal::User(UserId::new(Uuid::now_v7()));
-        let subject = owner.clone();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let subject = owner;
         let personality = pg.ensure_subject_personality(&owner, &subject).await?;
 
-        let mut authored = fresh_draft(owner.clone());
+        let mut authored = fresh_draft(owner);
         authored.author_personality_instance_id = Some(personality.instance_id);
         let authored_outcome = pg.ingest_event_atomic(&authored, None).await?;
 
@@ -231,8 +232,8 @@ async fn list_change_events_for_replay_respects_bounds_and_owner() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
-        let owner = Principal::User(user);
-        let other_owner = Principal::User(UserId::new(Uuid::now_v7()));
+        let owner = OwnerRef::Personal(user);
+        let other_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
@@ -240,16 +241,16 @@ async fn list_change_events_for_replay_respects_bounds_and_owner() {
         let first = engine
             .event_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                fresh_draft(owner.clone()),
+                fresh_draft(owner),
             )
             .await?;
         let second = engine
             .event_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                fresh_draft(owner.clone()),
+                fresh_draft(owner),
             )
             .await?;
-        pg.ingest_event_atomic(&fresh_draft(other_owner.clone()), None)
+        pg.ingest_event_atomic(&fresh_draft(other_owner), None)
             .await?;
 
         let rows = pg
@@ -291,9 +292,9 @@ async fn list_change_events_after_scopes_by_principal() {
         pg.run_migrations().await?;
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
-        let principal = Principal::User(UserId::new(Uuid::now_v7()));
-        let stored_owner = principal.clone();
-        let requested_owner = principal.clone();
+        let principal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let stored_owner = principal;
+        let requested_owner = principal;
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
@@ -304,7 +305,7 @@ async fn list_change_events_after_scopes_by_principal() {
                     &stored_owner,
                     proxima_core::AuthPath::System,
                 ),
-                fresh_draft(stored_owner.clone()),
+                fresh_draft(stored_owner),
             )
             .await?;
 
@@ -337,21 +338,25 @@ async fn list_change_events_after_filters_by_read_owners() {
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage(storage);
 
-        let p = Principal::User(UserId::new(Uuid::now_v7()));
-        let q = Principal::User(UserId::new(Uuid::now_v7()));
-        let g1 = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let q = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let g1 = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         seed_membership(pg.pool(), &g1, &q, Relation::Viewer).await?;
 
         let group_event = engine
             .event_ingest(
-                &proxima_core::AuthzContext::single_owner(&g1, proxima_core::AuthPath::System),
-                fresh_draft(g1.clone()),
+                &proxima_core::AuthzContext::for_subject_with_role(
+                    UserId::new(Uuid::now_v7()),
+                    [(g1, Role::admin())],
+                    proxima_core::AuthPath::System,
+                ),
+                fresh_draft(g1),
             )
             .await?;
         let p_event = engine
             .event_ingest(
                 &proxima_core::AuthzContext::single_owner(&p, proxima_core::AuthPath::System),
-                fresh_draft(p.clone()),
+                fresh_draft(p),
             )
             .await?;
 
@@ -375,14 +380,14 @@ async fn list_change_events_after_filters_by_read_owners() {
 
 async fn seed_membership(
     pool: &sqlx::PgPool,
-    group: &Principal,
-    member: &Principal,
+    group: &OwnerRef,
+    member: &OwnerRef,
     relation: Relation,
 ) -> Result<(), sqlx::Error> {
-    let Principal::Group(group_id) = group else {
+    let OwnerRef::Group(group_id) = group else {
         panic!("group principal required");
     };
-    let Principal::User(member_id) = member else {
+    let OwnerRef::Personal(member_id) = member else {
         panic!("user principal required");
     };
     sqlx::query(

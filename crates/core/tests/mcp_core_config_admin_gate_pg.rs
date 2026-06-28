@@ -1,38 +1,35 @@
 mod common;
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use common::{drop_db, fresh_pg};
-use proxima_core::authz::{AuthPath, AuthzContext, CapabilitySet, Identity, ToolScope};
+use proxima_core::authz::{AuthPath, AuthzContext};
 use proxima_core::mcp::core_tools::add_wake_entry::AddWakeEntryArgs;
-use proxima_core::mcp::core_tools::personality::{CorePersonalityArgs, CorePersonalityTool};
 use proxima_core::mcp::core_tools::remove_wake_entry::RemoveWakeEntryArgs;
-use proxima_core::mcp::core_tools::set_read_scope::SetReadScopeArgs;
 use proxima_core::mcp::core_tools::update_wake_entry::{UpdateWakeEntryArgs, WakeEntryPatch};
 use proxima_core::mcp::core_tools::wake::{CoreWakeArgs, CoreWakeOutput, CoreWakeTool};
 use proxima_core::mcp::core_tools::wake_entry_input::WakeEntryDraftInput;
 use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolExtensions, OutputMode};
-use proxima_core::personality::{
-    InstantiatePersonalityRequest, ListReadScopeRequest, SetWakeEntriesRequest,
-};
+use proxima_core::personality::{InstantiatePersonalityRequest, SetWakeEntriesRequest};
 use proxima_core::storage::Storage;
 use proxima_core::{
-    AccessScope, Engine, FlavorRegistry, GroupId, Owner, PersonalityInstanceId, Principal,
-    Relation, UserId, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
+    Engine, FlavorRegistry, GroupId, Owner, OwnerRef, PersonalityInstanceId, Relation, Role,
+    UserId, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
 };
 use uuid::Uuid;
 
+type ResolvedAuthz = AuthzContext;
+
 async fn seed_group_membership(
     pg: &proxima_storage_pg::PgStorage,
-    space_owner: &Principal,
+    space_owner: &OwnerRef,
     relation: Relation,
-    subject: &Principal,
+    subject: &OwnerRef,
 ) {
-    let Principal::Group(group) = space_owner else {
+    let OwnerRef::Group(group) = space_owner else {
         panic!("group membership can only seed group-owned spaces");
     };
-    let Principal::User(user) = subject else {
+    let OwnerRef::Personal(user) = subject else {
         panic!("group membership can only seed user members");
     };
     pg.add_group_member(*group, *user, relation, Uuid::now_v7())
@@ -40,33 +37,36 @@ async fn seed_group_membership(
         .expect("seed group membership");
 }
 
-async fn non_admin_authz(pg: &proxima_storage_pg::PgStorage, owner: &Owner) -> AuthzContext {
-    let editor_user = Principal::User(UserId::new(Uuid::now_v7()));
-    seed_group_membership(pg, owner, Relation::Editor, &editor_user).await;
-    AuthzContext {
-        identity: Identity {
-            principal: editor_user.clone(),
-            accessible_principals: HashSet::from([editor_user]),
-            expires_at: None,
-            auth_epoch: 0,
-        },
-        capabilities: CapabilitySet {
-            tool_scope: ToolScope::All,
-            access: AccessScope::Granted,
-        },
-        auth_path: AuthPath::HostBearer,
+fn admin_authz(owner: &Owner) -> ResolvedAuthz {
+    match *owner {
+        OwnerRef::Personal(subject) => AuthzContext::for_subject(subject, AuthPath::System),
+        OwnerRef::Group(_) => AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(*owner, Role::admin())],
+            AuthPath::System,
+        ),
+        OwnerRef::World => AuthzContext::denied_for_owner(owner),
     }
 }
 
+async fn non_admin_authz(pg: &proxima_storage_pg::PgStorage, owner: &Owner) -> ResolvedAuthz {
+    let editor_user = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    seed_group_membership(pg, owner, Relation::Editor, &editor_user).await;
+    let OwnerRef::Personal(user) = editor_user else {
+        panic!("editor principal must be a user");
+    };
+    AuthzContext::for_subject_with_role(user, [(*owner, Role::editor())], AuthPath::HostBearer)
+}
+
 fn test_owner() -> Owner {
-    Principal::Group(GroupId::new(Uuid::now_v7()))
+    OwnerRef::Group(GroupId::new(Uuid::now_v7()))
 }
 
 fn ctx(owner: &Owner, pg: &proxima_storage_pg::PgStorage, authz: AuthzContext) -> McpToolCtx {
     let registry = FlavorRegistry::default().freeze();
     let engine = Engine::new(registry.clone()).with_storage(pg.clone().into_handle());
     McpToolCtx {
-        owner: owner.clone(),
+        owner: *owner,
         authz,
         handles: None,
         mode: OutputMode::RawIds,
@@ -92,7 +92,7 @@ async fn instantiate(
 ) -> Result<PersonalityInstanceId, Box<dyn std::error::Error>> {
     let response = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            principal: owner.clone(),
+            principal: *owner,
             display_name: display_name.into(),
         })
         .await?;
@@ -184,11 +184,7 @@ async fn add_wake_entry_requires_admin_and_preserves_storage_on_denial()
         },
     };
     CoreWakeTool::call(
-        ctx(
-            &owner,
-            &pg,
-            AuthzContext::single_owner(&owner, AuthPath::System),
-        ),
+        ctx(&owner, &pg, admin_authz(&owner)),
         CoreWakeArgs::Add(admin_args),
     )
     .await?;
@@ -208,7 +204,7 @@ async fn update_wake_entry_requires_admin_and_preserves_storage_on_denial()
     let pid = instantiate(&pg, &owner, "update gate").await?;
     let wid = Uuid::now_v7();
     pg.set_wake_entries(&SetWakeEntriesRequest {
-        principal: owner.clone(),
+        principal: owner,
         personality_instance_id: pid,
         entries: vec![wake_entry(wid, pid, "original", "test/update")],
     })
@@ -238,11 +234,7 @@ async fn update_wake_entry_requires_admin_and_preserves_storage_on_denial()
         },
     };
     CoreWakeTool::call(
-        ctx(
-            &owner,
-            &pg,
-            AuthzContext::single_owner(&owner, AuthPath::System),
-        ),
+        ctx(&owner, &pg, admin_authz(&owner)),
         CoreWakeArgs::Update(admin_args),
     )
     .await?;
@@ -262,7 +254,7 @@ async fn remove_wake_entry_requires_admin_and_preserves_storage_on_denial()
     let pid = instantiate(&pg, &owner, "remove gate").await?;
     let wid = Uuid::now_v7();
     pg.set_wake_entries(&SetWakeEntriesRequest {
-        principal: owner.clone(),
+        principal: owner,
         personality_instance_id: pid,
         entries: vec![wake_entry(wid, pid, "remove-me", "test/remove")],
     })
@@ -281,11 +273,7 @@ async fn remove_wake_entry_requires_admin_and_preserves_storage_on_denial()
     assert_eq!(wake_labels(&pg, &owner, pid).await?, vec!["remove-me"]);
 
     let output = CoreWakeTool::call(
-        ctx(
-            &owner,
-            &pg,
-            AuthzContext::single_owner(&owner, AuthPath::System),
-        ),
+        ctx(&owner, &pg, admin_authz(&owner)),
         CoreWakeArgs::Remove(RemoveWakeEntryArgs {
             wake_entry: wid.to_string(),
         }),
@@ -296,63 +284,6 @@ async fn remove_wake_entry_requires_admin_and_preserves_storage_on_denial()
     };
     assert!(output.removed);
     assert!(wake_labels(&pg, &owner, pid).await?.is_empty());
-
-    drop(pg);
-    drop_db(&db_name).await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn set_read_scope_requires_admin_and_preserves_storage_on_denial()
--> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
-    pg.run_migrations().await?;
-    let owner = test_owner();
-    let reader = instantiate(&pg, &owner, "reader").await?;
-    let readable = instantiate(&pg, &owner, "readable").await?;
-
-    let args = SetReadScopeArgs {
-        personality: reader.into_inner().to_string(),
-        readable_personalities: vec![readable.into_inner().to_string()],
-    };
-    let err = CorePersonalityTool::call(
-        ctx(&owner, &pg, non_admin_authz(&pg, &owner).await),
-        CorePersonalityArgs::SetReadScope(args),
-    )
-    .await
-    .expect_err("non-admin set_read_scope must be denied");
-    assert_admin_denied(&err);
-    assert!(
-        pg.list_read_scope(&ListReadScopeRequest {
-            principal: owner.clone(),
-            reader_personality_instance_id: reader,
-        })
-        .await?
-        .readable_personality_instance_ids
-        .is_empty()
-    );
-
-    CorePersonalityTool::call(
-        ctx(
-            &owner,
-            &pg,
-            AuthzContext::single_owner(&owner, AuthPath::System),
-        ),
-        CorePersonalityArgs::SetReadScope(SetReadScopeArgs {
-            personality: reader.into_inner().to_string(),
-            readable_personalities: vec![readable.into_inner().to_string()],
-        }),
-    )
-    .await?;
-    assert_eq!(
-        pg.list_read_scope(&ListReadScopeRequest {
-            principal: owner.clone(),
-            reader_personality_instance_id: reader,
-        })
-        .await?
-        .readable_personality_instance_ids,
-        vec![readable]
-    );
 
     drop(pg);
     drop_db(&db_name).await?;

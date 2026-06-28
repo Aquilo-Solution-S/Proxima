@@ -3,13 +3,13 @@ use crate::common::personality::{
     ingest_test_fact,
 };
 use proxima_core::{
-    EntityKind, MemoryId, MemoryOperatorKind, Owner, Principal, RelationClass, UserId,
+    EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerRef, RelationClass, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
 fn other_owner() -> Owner {
-    Principal::User(UserId::new(Uuid::now_v7()))
+    OwnerRef::Personal(UserId::new(Uuid::now_v7()))
 }
 
 async fn insert_derived_memory(
@@ -40,7 +40,7 @@ async fn insert_derived_memory(
     .bind(Uuid::now_v7())
     .execute(pg.pool())
     .await?;
-    crate::common::insert_entity_owner_home(pg, memory_id, owner).await?;
+    crate::common::insert_home(pg, memory_id, owner).await?;
     Ok(MemoryId::new(memory_id))
 }
 

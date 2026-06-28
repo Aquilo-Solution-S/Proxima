@@ -20,6 +20,8 @@ use proxima_core::mcp::{
 use proxima_core::{AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner};
 use serde::Serialize;
 
+type ResolvedAuthz = AuthzContext;
+
 use crate::auth::McpAuthContext;
 
 #[derive(Clone)]
@@ -101,7 +103,7 @@ impl McpToolHost {
         owner: Option<Owner>,
         auth: Option<&McpAuthContext>,
     ) -> McpToolCtx {
-        let owner = owner.unwrap_or_else(|| self.owner.clone());
+        let owner = owner.unwrap_or(self.owner);
         // Wire requests always carry Some(auth): `mcp_auth_layer` 401s
         // unauthenticated requests before dispatch, and the facade always
         // passes Some(authz). A None here is either an in-crate test
@@ -137,15 +139,15 @@ impl McpToolHost {
     /// permissive test arm below is compiled out of release builds, so
     /// the admin fallback cannot silently return.
     #[cfg(not(test))]
-    fn unauthenticated_authz(owner: &Owner) -> AuthzContext {
-        AuthzContext::denied(owner)
+    fn unauthenticated_authz(owner: &Owner) -> ResolvedAuthz {
+        AuthzContext::denied_for_owner(owner)
     }
 
     /// Test scaffolds call the host directly without an auth layer and
     /// rely on a full single-owner context. Compiled out of release
     /// builds (see the release arm above).
     #[cfg(test)]
-    fn unauthenticated_authz(owner: &Owner) -> AuthzContext {
+    fn unauthenticated_authz(owner: &Owner) -> ResolvedAuthz {
         AuthzContext::single_owner(owner, AuthPath::System)
     }
 
@@ -180,12 +182,12 @@ impl McpToolHost {
 
         if let (Some(engine), Some(auth_ctx)) = (self.engine.as_ref(), auth.as_ref())
             && matches!(
-                auth_ctx.authz.auth_path,
+                auth_ctx.authz.auth_path(),
                 proxima_core::AuthPath::HostBearer | proxima_core::AuthPath::MasterDev
             )
         {
             let identity = engine
-                .ensure_subject_personality(&auth_ctx.owner, &auth_ctx.authz.identity.principal)
+                .ensure_subject_personality(&auth_ctx.owner, &auth_ctx.authz.principal())
                 .await
                 .map_err(|err| ToolInvocationError::Tool(McpToolError::Other(err.to_string())))?;
             author.personality_instance_id = Some(identity.instance_id);
@@ -200,7 +202,7 @@ impl McpToolHost {
             .iter()
             .find(|d| tool_name_matches(d.name, name))
         {
-            let owner = auth.as_ref().map(|ctx| ctx.owner.clone());
+            let owner = auth.as_ref().map(|ctx| ctx.owner);
             let ctx = self.ctx_for(author, owner, auth.as_ref());
             let call_fn = descriptor.call;
             let terminal: TerminalDispatch<'_> = Box::new(move |call| {
@@ -234,10 +236,10 @@ impl McpToolHost {
                 "unknown resource {uri}"
             )))
         })?;
-        let owner = auth.as_ref().map(|ctx| ctx.owner.clone());
+        let owner = auth.as_ref().map(|ctx| ctx.owner);
         let ctx = self.ctx_for(author, owner, auth.as_ref());
         let scope_key = parsed.scope_key();
-        if !ctx.authz.capabilities.tool_scope.allows(scope_key) {
+        if !ctx.authz.tool_scope().allows(scope_key) {
             return Err(ToolInvocationError::NotAuthorized(scope_key.to_string()));
         }
 
@@ -420,10 +422,10 @@ mod tests {
     use super::*;
     use crate::auth::McpAuthContext;
     use proxima_core::mcp::McpAuthorContext;
-    use proxima_core::{FlavorRegistry, Owner, Principal, UserId};
+    use proxima_core::{FlavorRegistry, Owner, OwnerRef, UserId};
 
     fn fake_owner() -> Owner {
-        Principal::User(UserId::new(uuid::Uuid::now_v7()))
+        OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
     }
 
     fn make_server() -> McpToolHost {

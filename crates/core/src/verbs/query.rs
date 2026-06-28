@@ -9,7 +9,7 @@ use crate::change_event::EntityRef;
 use crate::personality::PersonalityInstanceId;
 use crate::verbs::goal_write::GoalState;
 use crate::verbs::schema::SchemaTombstone;
-use crate::{EdgeId, GoalId, MemoryId, Owner, Principal, SchemaId, SchemaVersion, SidecarPayload};
+use crate::{EdgeId, GoalId, MemoryId, Owner, OwnerRef, SchemaId, SchemaVersion, SidecarPayload};
 
 /// Re-export the canonical `EntityKind` from `change_event` so query
 /// callers don't need a second import path. The duplicate
@@ -76,9 +76,9 @@ pub enum SearchOrder {
 /// metadata before dispatching to storage.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemorySearchRequest {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     #[serde(skip)]
-    pub read_owners: Vec<Principal>,
+    pub read_owners: Vec<OwnerRef>,
     pub query: String,
     #[serde(default = "default_search_mode")]
     pub mode: SearchMode,
@@ -135,7 +135,7 @@ pub enum MemoryLineageDirection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryLineageRequest {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     pub start_memory_id: MemoryId,
     pub direction: MemoryLineageDirection,
     pub depth: u8,
@@ -227,9 +227,9 @@ pub struct StatefulHeadsFilter {
 /// registers a sidecar (M3+).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueryRequest {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     #[serde(skip)]
-    pub read_owners: Vec<Principal>,
+    pub read_owners: Vec<OwnerRef>,
     pub entity_kind: Option<EntityKind>,
     pub schema_id: Option<SchemaId>,
     pub supersession: SupersessionStatus,
@@ -265,9 +265,9 @@ impl QueryRequest {
     /// filter. Pagination cursor lands when M2 introduces real
     /// data.
     #[must_use]
-    pub fn for_principal(principal: Principal) -> Self {
+    pub fn for_principal(principal: OwnerRef) -> Self {
         Self {
-            principal: principal.clone(),
+            principal,
             read_owners: vec![principal],
             entity_kind: None,
             schema_id: None,
@@ -334,7 +334,7 @@ pub struct EdgeFilter {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EdgeReadRequest {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     #[serde(default)]
     pub edge_ids: Vec<EdgeId>,
     #[serde(default)]
@@ -349,7 +349,7 @@ pub struct EdgeReadResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EdgeExistsRequest {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     #[serde(default)]
     pub edge_ids: Vec<EdgeId>,
     #[serde(default)]

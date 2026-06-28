@@ -10,7 +10,7 @@ use proxima_pg_testkit::drop_db;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-fn owner_cols(owner: &Owner) -> (proxima_core::OwnerPrincipalKind, Uuid) {
+fn owner_cols(owner: &Owner) -> (proxima_core::OwnerRefKind, Uuid) {
     owner.columns()
 }
 

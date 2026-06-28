@@ -69,7 +69,7 @@ pub(super) async fn update_wake_entry(
         .update_wake_entry(
             &ctx.authz,
             &UpdateWakeEntryRequest {
-                principal: ctx.owner.clone(),
+                principal: ctx.owner,
                 wake_entry_id: wid,
                 patch: WakeEntryPatchInput::from(args.patch),
                 audit,

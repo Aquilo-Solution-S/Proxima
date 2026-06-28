@@ -47,7 +47,7 @@ pub(super) async fn remove_wake_entry(
         .remove_wake_entry(
             &ctx.authz,
             &RemoveWakeEntryRequest {
-                principal: ctx.owner.clone(),
+                principal: ctx.owner,
                 wake_entry_id: wid,
                 audit,
             },

@@ -11,7 +11,7 @@ use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
-use proxima_core::{Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId};
+use proxima_core::{Owner, OwnerRef, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId};
 use proxima_storage_pg::PgStorage;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -93,9 +93,9 @@ async fn close_batch_idempotent_and_owner_scoped() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user_a = UserId::new(Uuid::now_v7());
-        let owner_a = Principal::User(user_a);
+        let owner_a = OwnerRef::Personal(user_a);
         let user_b = UserId::new(Uuid::now_v7());
-        let owner_b = Principal::User(user_b);
+        let owner_b = OwnerRef::Personal(user_b);
 
         let engine_a = Engine::new(FlavorRegistryFrozen::with_schemas(schemas_for_test()))
             .with_storage(storage.clone());
@@ -104,7 +104,7 @@ async fn close_batch_idempotent_and_owner_scoped() {
 
         // Open a batch by ingesting one event under owner A.
         let batch_id = SourceBatchId::new(Uuid::now_v7());
-        let draft = fresh_draft(owner_a.clone(), batch_id);
+        let draft = fresh_draft(owner_a, batch_id);
         engine_a
             .event_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner_a, proxima_core::AuthPath::System),
@@ -116,7 +116,7 @@ async fn close_batch_idempotent_and_owner_scoped() {
         let outcome = engine_a
             .close_batch(
                 &proxima_core::AuthzContext::single_owner(&owner_a, proxima_core::AuthPath::System),
-                owner_a.clone(),
+                owner_a,
                 batch_id,
             )
             .await?;
@@ -127,7 +127,7 @@ async fn close_batch_idempotent_and_owner_scoped() {
         let replay = engine_a
             .close_batch(
                 &proxima_core::AuthzContext::single_owner(&owner_a, proxima_core::AuthPath::System),
-                owner_a.clone(),
+                owner_a,
                 batch_id,
             )
             .await?;
@@ -138,7 +138,7 @@ async fn close_batch_idempotent_and_owner_scoped() {
         let cross = engine_b
             .close_batch(
                 &proxima_core::AuthzContext::single_owner(&owner_b, proxima_core::AuthPath::System),
-                owner_b.clone(),
+                owner_b,
                 batch_id,
             )
             .await
@@ -150,7 +150,7 @@ async fn close_batch_idempotent_and_owner_scoped() {
         let missing = engine_a
             .close_batch(
                 &proxima_core::AuthzContext::single_owner(&owner_a, proxima_core::AuthPath::System),
-                owner_a.clone(),
+                owner_a,
                 nope,
             )
             .await

@@ -80,7 +80,7 @@ pub async fn get_graph(
         .get_graph(
             &ctx.authz,
             &GetGraphReadRequest {
-                principal: ctx.owner.clone(),
+                principal: ctx.owner,
                 include_tombstoned: args.include_tombstoned,
             },
         )
@@ -159,12 +159,7 @@ fn scoped_substrate_tools(ctx: &McpToolCtx) -> Vec<SubstrateToolItem> {
     ctx.registry
         .list_mcp_tools()
         .iter()
-        .filter(|desc| {
-            ctx.authz
-                .capabilities
-                .tool_scope
-                .allows_group_advertisement(desc.name)
-        })
+        .filter(|desc| ctx.authz.tool_scope().allows_group_advertisement(desc.name))
         .map(|desc| SubstrateToolItem {
             tool_id: desc.name.to_string(),
             source: substrate_tool_source(desc),

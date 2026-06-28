@@ -6,8 +6,8 @@ use proxima_core::verbs::event_ingest::{
 };
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, Engine, FactPayload,
-    FlavorRegistry, FlavorRegistryFrozen, GroupId, MemoryId, Owner, PayloadKeyBuilder,
-    PersonalityInstanceId, Principal, Relation, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    FlavorRegistry, FlavorRegistryFrozen, GroupId, MemoryId, Owner, OwnerRef, PayloadKeyBuilder,
+    PersonalityInstanceId, Relation, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
     Storage, StorageError, UserId, canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{
@@ -202,7 +202,7 @@ fn draft(owner: &Owner, note: &str, author: Option<PersonalityInstanceId>) -> Ev
     EventDraft {
         source_id: SourceId::new("test/inline-cited-source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.clone(),
+        principal: *owner,
         author_personality_instance_id: author,
         schema_id: TestFact::schema_id(),
         schema_version: SchemaVersion::new(TestFact::SCHEMA_VERSION),
@@ -269,13 +269,13 @@ async fn create_sidecar_tables(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
 
 async fn seed_membership(
     pool: &sqlx::PgPool,
-    group: &Principal,
-    member: &Principal,
+    group: &OwnerRef,
+    member: &OwnerRef,
 ) -> Result<(), sqlx::Error> {
-    let Principal::Group(group_id) = group else {
+    let OwnerRef::Group(group_id) = group else {
         panic!("group principal required");
     };
-    let Principal::User(member_id) = member else {
+    let OwnerRef::Personal(member_id) = member else {
         panic!("user principal required");
     };
     sqlx::query(
@@ -460,7 +460,7 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
             .authorize_citation_attachment(
                 &authz,
                 Relation::Ingest,
-                owner.clone(),
+                owner,
                 fact_outcome.memory_id,
                 cited_object(),
                 citation_mapping(1, 5),
@@ -513,7 +513,7 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
             .authorize_citation_attachment(
                 &authz,
                 Relation::Ingest,
-                owner.clone(),
+                owner,
                 MemoryId::new(Uuid::now_v7()),
                 cited_object(),
                 citation_mapping(1, 5),
@@ -543,14 +543,18 @@ async fn facts_citing_object_filters_by_read_owners() -> Result<(), Box<dyn std:
         create_sidecar_tables(pg.pool()).await?;
 
         let engine = engine();
-        let p = Principal::User(UserId::new(Uuid::now_v7()));
-        let q = Principal::User(UserId::new(Uuid::now_v7()));
-        let g1 = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let q = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let g1 = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         seed_membership(pg.pool(), &g1, &q).await?;
 
         let group_authorized = engine
             .authorize_fact_with_citation(
-                &AuthzContext::single_owner(&g1, AuthPath::System),
+                &AuthzContext::for_subject_with_role(
+                    UserId::new(Uuid::now_v7()),
+                    [(g1, Role::admin())],
+                    AuthPath::System,
+                ),
                 Relation::Ingest,
                 draft(&g1, "group fact", None),
                 cited_object(),
