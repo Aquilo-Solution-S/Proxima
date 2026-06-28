@@ -254,6 +254,23 @@ theorem goal_supersession_prior_is_head :
   intro goals huniq g1 g2 prior_id hg1 hg2 h1 h2
   exact huniq g1 g2 prior_id hg1 hg2 h1 h2
 
+/-- GO-17 — root Goal rows (no `supersedes`) are creations, and creation is
+    only `(none) -> Active` (doc 06 lifecycle). Paused/terminal roots would be
+    lifecycle conclusions without a prior Goal. -/
+def GoalRootValid (goals : Set Goal) : Prop :=
+  ∀ g : Goal, g ∈ goals → goal_supersedes g = none → goal_state g = .Active
+
+/-- Projection: a root Goal in a valid Goal table is Active. -/
+theorem goal_root_active :
+    ∀ (goals : Set Goal),
+      GoalRootValid goals →
+      ∀ g : Goal,
+        g ∈ goals →
+        goal_supersedes g = none →
+        goal_state g = .Active := by
+  intro goals hvalid g hg hroot
+  exact hvalid g hg hroot
+
 -- ============================================================
 -- Goal-to-Goal topology
 -- ============================================================
@@ -279,6 +296,46 @@ theorem terminal_goal_closes_with_fact :
   intro g h
   exact g.terminal_close_fact h
 
+/-- GO-18 — table-scoped strengthening for close Facts: a terminal Goal's
+    close Fact resolves to an actual Fact row owned by the same Owner as the
+    Goal. The row-local `terminal_close_fact` field only proves the shape; this
+    predicate is the storage/table validity face. -/
+def GoalTerminalCloseFactValid (goals : Set Goal) (memories : Set Memory) : Prop :=
+  ∀ g : Goal, g ∈ goals → (goal_state g).terminal = true →
+    ∃ m : Memory,
+      m ∈ memories ∧
+      goal_close_fact g = some m ∧
+      memory_kind m = .Fact ∧
+      memory_owner m = goal_owner g
+
+/-- Projection: terminal close Facts are table rows. -/
+theorem terminal_goal_close_fact_member :
+    ∀ (goals : Set Goal) (memories : Set Memory),
+      GoalTerminalCloseFactValid goals memories →
+      ∀ g : Goal,
+        g ∈ goals →
+        (goal_state g).terminal = true →
+        ∃ m : Memory, m ∈ memories ∧ goal_close_fact g = some m := by
+  intro goals memories hvalid g hg hterminal
+  obtain ⟨m, hm, hclose, _, _⟩ := hvalid g hg hterminal
+  exact ⟨m, hm, hclose⟩
+
+/-- Projection: terminal close Facts are same-owner Facts. -/
+theorem terminal_goal_close_fact_same_owner_fact :
+    ∀ (goals : Set Goal) (memories : Set Memory),
+      GoalTerminalCloseFactValid goals memories →
+      ∀ (g : Goal) (m : Memory),
+        g ∈ goals →
+        (goal_state g).terminal = true →
+        goal_close_fact g = some m →
+        memory_kind m = .Fact ∧ memory_owner m = goal_owner g := by
+  intro goals memories hvalid g m hg hterminal hclose
+  obtain ⟨stored, _, hstored, hkind, howner⟩ := hvalid g hg hterminal
+  rw [hclose] at hstored
+  injection hstored with heq
+  rw [heq]
+  exact ⟨hkind, howner⟩
+
 /-- A lifecycle head in the actual Goal table: no later row in the same
     table supersedes this row's id. -/
 def goalIsHead (goals : Set Goal) (g : Goal) : Prop :=
@@ -294,18 +351,109 @@ theorem goal_superseded_not_head :
   intro goals g g' hg' hsup hhead
   exact hhead.2 ⟨g', hg', hsup⟩
 
+/-- Supersession reachability within one Goal table, from an originally
+    assigned/source Goal row to any later row in its supersession lineage. -/
+inductive GoalSupersessionReachable (goals : Set Goal) : Goal → Goal → Prop where
+  | refl {g : Goal} :
+      g ∈ goals → GoalSupersessionReachable goals g g
+  | step {source mid next : Goal} :
+      GoalSupersessionReachable goals source mid →
+      next ∈ goals →
+      goal_supersedes next = some (goal_id mid) →
+      GoalSupersessionReachable goals source next
+
+/-- A current active head reached from an assigned/source Goal row. -/
+def activeGoalHeadFrom (goals : Set Goal) (source head : Goal) : Prop :=
+  GoalSupersessionReachable goals source head ∧
+  goal_state head = .Active ∧
+  goalIsHead goals head
+
+/-- Projection: a reached active Goal head is Active. -/
+theorem active_goal_head_from_active :
+    ∀ (goals : Set Goal) (source head : Goal),
+      activeGoalHeadFrom goals source head → goal_state head = .Active := by
+  intro goals source head h
+  exact h.2.1
+
+/-- Projection: a reached active Goal head is a lifecycle head. -/
+theorem active_goal_head_from_head :
+    ∀ (goals : Set Goal) (source head : Goal),
+      activeGoalHeadFrom goals source head → goalIsHead goals head := by
+  intro goals source head h
+  exact h.2.2
+
 /-- GO-8 — G_active(owner) = current Goal heads where state = Active
     (doc 06 §Goal Entity, verbatim). A query, not an entity.
 
-    NOTE the deliberate duality (decision
-    `docs/domain/decisions/2026-06-11-active-goals-two-queries.md`):
-    doc 06 also sketches context-scoped active-goal queries. Those
-    depend on wake context/Perspective selection and the named
-    `core/inspires` relation constant; the kernel models relation
-    CLASSES and shapes, not named relation ids, so the context query
-    stays engine-level. The Owner query below is the substrate head/
-    Active filter over the actual Goal table. -/
+    NOTE the deliberate duality: this Owner query is the substrate head/Active
+    filter over the actual Goal table. The assignment-scoped Self query over
+    Goal→Perspective inspiration edges is defined in `Causa.Edges`, where Edge
+    rows and registered descriptors are available without introducing a Self
+    entity or a named relation-id axiom. -/
 def activeGoals (goals : Set Goal) (o : Owner) : Set Goal :=
   fun g => goal_owner g = o ∧ goal_state g = .Active ∧ goalIsHead goals g
+
+-- ============================================================
+-- Self as query, not entity (doc 06 §Self)
+-- ============================================================
+
+/-- GO-7 — the Goal half of Self(owner): active Goal heads. This is only an
+    alias for a query over existing Goal rows, deliberately not a `Self` row. -/
+def selfGoals (goals : Set Goal) (o : Owner) : Set Goal :=
+  activeGoals goals o
+
+/-- GO-7 — the Perspective half of Self(owner): existing Perspective rows owned
+    by the same resolved owner. No personality instance, read-scope matrix, or
+    cached Self row is introduced. -/
+def selfPerspectives (memories : Set Memory) (o : Owner) : Set Memory :=
+  fun m => m ∈ memories ∧ memory_owner m = o ∧ memory_kind m = .Perspective
+
+/-- Self goals are exactly active goals; the name adds no new entity. -/
+theorem self_goals_are_active_goals :
+    ∀ (goals : Set Goal) (o : Owner), selfGoals goals o = activeGoals goals o := by
+  intro goals o
+  rfl
+
+/-- Projection: every Self goal belongs to the requested owner. -/
+theorem self_goal_owner :
+    ∀ (goals : Set Goal) (o : Owner) (g : Goal),
+      g ∈ selfGoals goals o → goal_owner g = o := by
+  intro goals o g h
+  exact h.1
+
+/-- Projection: every Self goal is active. -/
+theorem self_goal_active :
+    ∀ (goals : Set Goal) (o : Owner) (g : Goal),
+      g ∈ selfGoals goals o → goal_state g = .Active := by
+  intro goals o g h
+  exact h.2.1
+
+/-- Projection: every Self goal is a lifecycle head in the source Goal table. -/
+theorem self_goal_head :
+    ∀ (goals : Set Goal) (o : Owner) (g : Goal),
+      g ∈ selfGoals goals o → goalIsHead goals g := by
+  intro goals o g h
+  exact h.2.2
+
+/-- Projection: every Self perspective is drawn from the source Memory table. -/
+theorem self_perspective_member :
+    ∀ (memories : Set Memory) (o : Owner) (m : Memory),
+      m ∈ selfPerspectives memories o → m ∈ memories := by
+  intro memories o m h
+  exact h.1
+
+/-- Projection: every Self perspective belongs to the requested owner. -/
+theorem self_perspective_owner :
+    ∀ (memories : Set Memory) (o : Owner) (m : Memory),
+      m ∈ selfPerspectives memories o → memory_owner m = o := by
+  intro memories o m h
+  exact h.2.1
+
+/-- Projection: Self's memory component contains only Perspectives. -/
+theorem self_perspective_kind :
+    ∀ (memories : Set Memory) (o : Owner) (m : Memory),
+      m ∈ selfPerspectives memories o → memory_kind m = .Perspective := by
+  intro memories o m h
+  exact h.2.2
 
 end Causa

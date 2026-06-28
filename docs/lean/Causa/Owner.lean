@@ -4,9 +4,11 @@ Causa — Owner
 The scoping primitive (doc 01 §Owner). Every Memory and Goal carries an Owner:
 its access scope.
 
-Ontology (realign 2026-06-28): **an Owner is always a Group**, and a Group maps
-each member to a `Role`. The one irreducible atom is `User` (a person); groups,
-owners, roles, and World are structural over it.
+Ontology (realign 2026-06-28): **a resolved Owner is always a Group**, and a
+Group maps each member to a `Role`. Stable persisted owner references are modeled
+separately in `Causa.Identity` (`OwnerRef`); this file models the resolved
+Leopard-style result. The one irreducible atom is `User` (a person); groups,
+resolved owners, roles, and World are structural over it.
 
 A `Role` is two independent capability ceilings over the access ladder
 F < A < P < G — how high a member may READ and how high they may WRITE (read and
@@ -21,7 +23,9 @@ and forbid meta-management (`personal_forbids_manage`).
 billing/quota attribution is engine metadata, never a kernel face; org-wide
 visibility is a default `<org>-everyone` group.
 
-Owner is the SINGLE owning Group of each entity. There is no separate
+The resolved Owner is the SINGLE owning Group used by authorization checks. Row
+storage should point at a stable `OwnerRef`; the host resolves that reference to
+this group-shaped `Owner` before the kernel rule runs. There is no separate
 `is_home`/`reaches`/`entity_owner` reachability layer (removed with the share
 set, D11): read-only sharing is a viewer-role membership in that one group, and
 publishing is transfer to World. One entity, one owner group.
@@ -116,12 +120,13 @@ def Role.join (x y : Role) : Role :=
 -- Group and Owner
 -- ============================================================
 
-/-- A Group maps each member to their `Role`; `none` = not a member. No
-    separate group-handle primitive. `abbrev` keeps it reducible. -/
+/-- A Group maps each member to their `Role`; `none` = not a member. This is the
+    resolved authorization view, not the stable persisted owner-table handle.
+    `abbrev` keeps it reducible. -/
 abbrev Group : Type := User → Option Role
 
-/-- An Owner is always a Group (doc 01 §Owner). The access scope of every
-    Memory and Goal. -/
+/-- A resolved Owner is always a Group (doc 01 §Owner). Entity rows eventually
+    carry stable `OwnerRef`s; authorization uses the host-resolved `Owner`. -/
 abbrev Owner : Type := Group
 
 /-- A user as an Owner: the personal group, in which only that user is a
@@ -131,6 +136,11 @@ noncomputable def Owner.ofUser (u : User) : Owner :=
 
 /-- An Owner is personal iff it is some user's personal group. -/
 def Owner.isPersonal (o : Owner) : Prop := ∃ u : User, o = Owner.ofUser u
+
+/-- The reserved World group — public read. Every user is a member at `viewer`:
+    reads all kinds, writes none. Defined at the resolved-owner layer; the stable
+    `.world` owner reference is introduced in `Causa.Identity`. -/
+def world : Owner := fun _ => some Role.viewer
 
 -- ============================================================
 -- Membership

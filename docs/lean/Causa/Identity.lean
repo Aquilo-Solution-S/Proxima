@@ -41,8 +41,33 @@ axiom Id : Type
 
 abbrev MemoryId          : Type := Id
 abbrev GoalId            : Type := Id
+/-- Stable handle for a stateful Fact aggregate. It is a fresh engine-minted
+    token, NOT a content hash and NOT Fact identity; Fact identity remains the
+    current version's `MemoryId`. -/
+abbrev FactEntityId      : Type := Id
 abbrev CitedObjectId     : Type := Id
 abbrev CitationMappingId : Type := Id
+
+/-- Stable persisted owner-table reference. This is not the resolved membership
+    map (`Owner := User → Option Role`). Entity rows should store this reference;
+    the host resolves it through `OwnerState` before authorization. No new axiom:
+    group refs reuse the existing engine-minted `Id`. -/
+inductive OwnerRef where
+  | world
+  | personal (u : User)
+  | group (id : Id)
+
+/-- The resolved Leopard-style owner map used by pure authorization rules. -/
+abbrev ResolvedOwner : Type := Owner
+
+/-- Server/host owner state: the trusted boundary that resolves stable owner refs
+    into current role maps. The kernel does not model the Leopard expansion
+    algorithm, SQL tables, or caches; it consumes only this resolved function. -/
+structure OwnerState where
+  resolve : OwnerRef → ResolvedOwner
+  world_resolves : resolve .world = world
+  personal_resolves : ∀ u : User, resolve (.personal u) = Owner.ofUser u
+
 /-- The fresh-token half of `EdgeId` (operator / user / engine edges). -/
 abbrev EdgeUuid          : Type := Id
 /-- A source/flavor ingest batch grouping token. -/
