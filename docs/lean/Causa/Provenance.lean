@@ -2,8 +2,9 @@
 Causa — Provenance grounding
 
 N1: every memory is grounded by a well-founded derivation /
-supersession descent. Temporal monotonicity is a companion law, not
-the acyclicity source.
+supersession descent. Acyclicity is NOT assumed — it FOLLOWS from the strict
+arrow of time: provenance and supersession strictly advance `created_at`, and
+Nat time is well-founded. One temporal axiom; the grounding is its theorem.
 -/
 
 import Causa.Operators
@@ -14,18 +15,23 @@ namespace Causa
     `m` derives from, or supersedes, `m'`. -/
 def derivesFrom (m m' : Memory) : Prop :=
   ∃ e : Edge, edge_source e = .memory m ∧ edge_target e = .memory m' ∧
-    (relation_class (edge_relation e) = .Provenance ∨
-     relation_class (edge_relation e) = .Supersession)
+    (EdgeHasClass e .Provenance ∨ EdgeHasClass e .Supersession)
 
-/-- N1 structural grounding: universal accessibility for the
-    descent relation. This is the acyclicity / no-infinite-descent
-    law; it is independent of timestamps. -/
-axiom grounding_wf : WellFounded (fun lo hi => derivesFrom hi lo)
+/-- N1 — the single grounding law: what a memory derives from or is superseded
+    by was created STRICTLY earlier. Provenance and supersession advance forward
+    in time — you cannot derive from a memory that does not yet exist, and a new
+    version supersedes an older one. This strictness is the whole of N1. -/
+axiom derivation_created_at_strict :
+  ∀ m m' : Memory, derivesFrom m m' → memory_created_at m' < memory_created_at m
 
-/-- N1 temporal companion: lower memories are not newer than the
-    memories deriving from or superseding them. -/
-axiom derivation_created_at_monotone :
-  ∀ m m' : Memory, derivesFrom m m' → memory_created_at m' ≤ memory_created_at m
+/-- N1 structural grounding: the descent relation is well-founded (acyclic, no
+    infinite descent). THEOREM, no longer an axiom — descent strictly decreases
+    the `created_at` instant, and `<` on `Nat` is well-founded, so its inverse
+    image under `memory_created_at` is too. The arrow of time grounds the graph. -/
+theorem grounding_wf : WellFounded (fun lo hi => derivesFrom hi lo) :=
+  Subrelation.wf
+    (fun {a b} h => derivation_created_at_strict b a h)
+    (invImage memory_created_at Nat.lt_wfRel).wf
 
 /-- A memory is grounded when repeated descent reaches Facts. -/
 inductive GroundsInFact : Memory → Prop where
@@ -40,7 +46,7 @@ theorem memory_grounds_in_facts : ∀ m : Memory, GroundsInFact m := by
     (fun m ih => by
       by_cases hfact : memory_kind m = .Fact
       · exact GroundsInFact.fact hfact
-      · obtain ⟨e, hs, hc, ⟨mt, ht⟩⟩ := derived_has_provenance m hfact
+      · obtain ⟨e, hc, hs, ⟨mt, ht⟩⟩ := derived_has_provenance m hfact
         have hder : derivesFrom m mt := by
           exact ⟨e, hs, ht, Or.inl hc⟩
         exact GroundsInFact.step hder (ih mt hder))

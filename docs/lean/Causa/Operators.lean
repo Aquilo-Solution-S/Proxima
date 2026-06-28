@@ -13,11 +13,11 @@ Lean, operators are not modeled as functions — entities plus
 write-shape obligations carry the same content: what each authorship
 class may produce, and what every derived memory must possess.
 
-Minimized trusted core (2026-06-11): the four per-authorship shape
-axioms (CN-1..4) are ONE axiom over the `operatorEdgeShape` def; the
-target-kind conjuncts of CN-1/CN-2 and of the provenance obligation
-are PROVED from the edge matrix (Provenance pins the target kind
-uniquely given the source kind).
+Minimized trusted core (D14): operator edge shape is row validity, not
+a global axiom over all raw `Edge` values. Target-kind conjuncts of
+CN-1/CN-2 and of the provenance obligation are PROVED from valid edge
+rows plus the edge matrix (Provenance pins the target kind uniquely
+given the source kind).
 
 CN-5 — no downward writes (A→F, P→A, P→F): the kernel face is the
 operator edge shape plus the class-legality matrix. Source/flavor
@@ -55,48 +55,57 @@ namespace Causa
     A→A provenance is legal. -/
 def operatorEdgeShape : EdgeAuthorship → Edge → Prop
   | .OperatorFtoA, e =>
-      relation_class (edge_relation e) = .Provenance ∧
+      EdgeHasClass e .Provenance ∧
       (∃ ms : Memory, edge_source e = .memory ms ∧ memory_kind ms = .Abstraction) ∧
       (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Fact)
   | .OperatorAtoA, e =>
-      relation_class (edge_relation e) = .Provenance ∧
+      EdgeHasClass e .Provenance ∧
       (∃ ms : Memory, edge_source e = .memory ms ∧ memory_kind ms = .Abstraction) ∧
       (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Abstraction)
   | .OperatorAtoP, e =>
-      relation_class (edge_relation e) = .Provenance ∧
+      EdgeHasClass e .Provenance ∧
       (∃ ms : Memory, edge_source e = .memory ms ∧ memory_kind ms = .Perspective) ∧
       (∃ mt : Memory, edge_target e = .memory mt)
   | .OperatorAtoGoal, e =>
-      relation_class (edge_relation e) = .Structural ∧
+      EdgeHasClass e .Structural ∧
       (∃ g : Goal, edge_source e = .goal g) ∧
       (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt ≠ .Perspective)
   | .PerspectiveLink, e =>
-      (relation_class (edge_relation e) = .Causal ∨
-       relation_class (edge_relation e) = .Interpretive) ∧
+      (EdgeHasClass e .Causal ∨ EdgeHasClass e .Interpretive) ∧
       (∃ ms : Memory, edge_source e = .memory ms ∧ memory_kind ms = .Perspective)
   | .PerspectiveGoalLink, e =>
-      relation_class (edge_relation e) = .Causal ∧
+      EdgeHasClass e .Causal ∧
       (∃ g : Goal, edge_source e = .goal g) ∧
-      (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Fact)
+      ((∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Fact) ∨
+       (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Perspective))
   | _, _ => True
 
-/-- CN-1..CN-4 — every edge satisfies its authorship's shape. -/
-axiom operator_edges_shaped :
-  ∀ e : Edge, operatorEdgeShape (edge_authorship e) e
+/-- CN-1..CN-4 — authorship-shape validity for one persisted Edge row.
+    This is row validity, not a global property of raw `Edge` values. -/
+def EdgeOperatorShapeValid (e : Edge) : Prop :=
+  operatorEdgeShape (edge_authorship e) e
+
+/-- Former `operator_edges_shaped` axiom, now projected from row validity. -/
+theorem operator_edges_shaped :
+    ∀ e : Edge, EdgeOperatorShapeValid e →
+      operatorEdgeShape (edge_authorship e) e := by
+  intro _ h
+  exact h
 
 /-- CN-5 — operator memory outputs are never Facts. The output side of
     F→A/A→A/A→P operator edges is the source endpoint by Proxima's
     provenance direction convention (`new -> inputs`). -/
 theorem operator_memory_output_not_fact :
     ∀ (e : Edge) (m : Memory),
+      EdgeOperatorShapeValid e →
       (edge_authorship e = .OperatorFtoA ∨
        edge_authorship e = .OperatorAtoA ∨
        edge_authorship e = .OperatorAtoP) →
       edge_source e = .memory m →
       memory_kind m ≠ .Fact := by
-  intro e m ha hsout
+  intro e m hshape ha hsout
   rcases ha with hfa | ha
-  · have h := operator_edges_shaped e
+  · have h := operator_edges_shaped e hshape
     rw [hfa] at h
     rcases h with ⟨_, ⟨ms, hsrc, hkind⟩, _⟩
     rw [hsout] at hsrc
@@ -105,7 +114,7 @@ theorem operator_memory_output_not_fact :
     intro hfalse
     exact (nomatch hfalse)
   · rcases ha with haa | hap
-    · have h := operator_edges_shaped e
+    · have h := operator_edges_shaped e hshape
       rw [haa] at h
       rcases h with ⟨_, ⟨ms, hsrc, hkind⟩, _⟩
       rw [hsout] at hsrc
@@ -113,7 +122,7 @@ theorem operator_memory_output_not_fact :
       rw [heq, hkind]
       intro hfalse
       exact (nomatch hfalse)
-    · have h := operator_edges_shaped e
+    · have h := operator_edges_shaped e hshape
       rw [hap] at h
       rcases h with ⟨_, ⟨ms, hsrc, hkind⟩, _⟩
       rw [hsout] at hsrc
@@ -122,18 +131,16 @@ theorem operator_memory_output_not_fact :
       intro hfalse
       exact (nomatch hfalse)
 
-/-- Helper: a Provenance-class memory→memory edge with a known source
+/-- Helper: a valid Provenance-class memory→memory edge with a known source
     kind has its target kind pinned by the matrix. -/
 theorem provenance_pins_target :
-    ∀ (e : Edge) (ms mt : Memory),
+    ∀ (e : Edge), EdgeHasClass e .Provenance → ∀ (ms mt : Memory),
       edge_source e = .memory ms → edge_target e = .memory mt →
-      relation_class (edge_relation e) = .Provenance →
       (memory_kind ms = .Abstraction →
         memory_kind mt = .Fact ∨ memory_kind mt = .Abstraction) ∧
       (memory_kind ms = .Perspective → memory_kind mt = .Abstraction) := by
-  intro e ms mt hs ht hc
-  have hleg := edge_class_legal e ms mt hs ht
-  rw [hc] at hleg
+  intro e hc ms mt hs ht
+  have hleg := edge_class_legal e .Provenance hc ms mt hs ht
   constructor
   · intro hk
     rw [hk] at hleg
@@ -157,38 +164,38 @@ theorem provenance_pins_target :
              · exact (nomatch h'')
              · rcases h'' with h3 | h3 <;> exact (nomatch h3))
 
-/-- CN-1 in full — F→A writes `Abstraction → Fact` provenance edges.
-    THEOREM: the target kind is matrix-forced. -/
+/-- CN-1 in full — F→A writes `Abstraction → Fact` provenance edges. -/
 theorem ftoa_edge_shape :
-    ∀ e : Edge, edge_authorship e = .OperatorFtoA →
-      relation_class (edge_relation e) = .Provenance ∧
+    ∀ e : Edge, EdgeOperatorShapeValid e → edge_authorship e = .OperatorFtoA →
+      EdgeHasClass e .Provenance ∧
       (∃ ms : Memory, edge_source e = .memory ms ∧ memory_kind ms = .Abstraction) ∧
       (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Fact) := by
-  intro e ha
-  have h := operator_edges_shaped e
+  intro e hshape ha
+  have h := operator_edges_shaped e hshape
   rw [ha] at h
   exact h
 
 /-- CN-2 in full — A→P writes `Perspective → Abstraction` provenance
     edges. THEOREM: the target kind is matrix-forced. -/
 theorem atop_edge_shape :
-    ∀ e : Edge, edge_authorship e = .OperatorAtoP →
-      relation_class (edge_relation e) = .Provenance ∧
+    ∀ e : Edge, EdgeOperatorShapeValid e →
+      edge_authorship e = .OperatorAtoP →
+      EdgeHasClass e .Provenance ∧
       (∃ ms : Memory, edge_source e = .memory ms ∧ memory_kind ms = .Perspective) ∧
       (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Abstraction) := by
-  intro e ha
-  have h := operator_edges_shaped e
+  intro e hshape ha
+  have h := operator_edges_shaped e hshape
   rw [ha] at h
   obtain ⟨hc, ⟨ms, hs, hk⟩, ⟨mt, ht⟩⟩ := h
   exact ⟨hc, ⟨ms, hs, hk⟩,
-    ⟨mt, ht, (provenance_pins_target e ms mt hs ht hc).2 hk⟩⟩
+    ⟨mt, ht, (provenance_pins_target e hc ms mt hs ht).2 hk⟩⟩
 
 -- ============================================================
 -- CN-6 — derived memories have provenance (doc 02 §Provenance)
 -- ============================================================
 
 /-- Every derived memory (Abstraction or Perspective) has at least
-    one downward Provenance edge (doc 02 §Provenance: "F→A writes
+    one valid downward Provenance edge (doc 02 §Provenance: "F→A writes
     Abstraction → Fact* provenance edges; A→P writes Perspective →
     Abstraction*"). Merged CN-6 (minimization pass); the per-kind
     target kinds are matrix-forced (theorems below). Cross-domain
@@ -198,32 +205,29 @@ theorem atop_edge_shape :
     closure to Facts (CI-3). -/
 axiom derived_has_provenance :
   ∀ m : Memory, memory_kind m ≠ .Fact →
-    ∃ e : Edge, edge_source e = .memory m ∧
-      relation_class (edge_relation e) = .Provenance ∧
+    ∃ e : Edge, EdgeHasClass e .Provenance ∧ edge_source e = .memory m ∧
       (∃ mt : Memory, edge_target e = .memory mt)
 
-/-- CN-6a in original shape — every Abstraction has F-provenance. -/
+/-- CN-6a in original shape — every Abstraction has valid F-provenance. -/
 theorem abstraction_has_provenance :
     ∀ m : Memory, memory_kind m = .Abstraction →
-      ∃ e : Edge, edge_source e = .memory m ∧
-        relation_class (edge_relation e) = .Provenance ∧
+      ∃ e : Edge, EdgeHasClass e .Provenance ∧ edge_source e = .memory m ∧
         (∃ mt : Memory, edge_target e = .memory mt ∧
           (memory_kind mt = .Fact ∨ memory_kind mt = .Abstraction)) := by
   intro m hk
   have hne : memory_kind m ≠ .Fact := by rw [hk]; intro h; exact (nomatch h)
-  obtain ⟨e, hs, hc, ⟨mt, ht⟩⟩ := derived_has_provenance m hne
-  exact ⟨e, hs, hc, ⟨mt, ht, (provenance_pins_target e m mt hs ht hc).1 hk⟩⟩
+  obtain ⟨e, hc, hs, ⟨mt, ht⟩⟩ := derived_has_provenance m hne
+  exact ⟨e, hc, hs, ⟨mt, ht, (provenance_pins_target e hc m mt hs ht).1 hk⟩⟩
 
-/-- CN-6b in original shape — every Perspective has A-provenance. -/
+/-- CN-6b in original shape — every Perspective has valid A-provenance. -/
 theorem perspective_has_provenance :
     ∀ m : Memory, memory_kind m = .Perspective →
-      ∃ e : Edge, edge_source e = .memory m ∧
-        relation_class (edge_relation e) = .Provenance ∧
+      ∃ e : Edge, EdgeHasClass e .Provenance ∧ edge_source e = .memory m ∧
         (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Abstraction) := by
   intro m hk
   have hne : memory_kind m ≠ .Fact := by rw [hk]; intro h; exact (nomatch h)
-  obtain ⟨e, hs, hc, ⟨mt, ht⟩⟩ := derived_has_provenance m hne
-  exact ⟨e, hs, hc, ⟨mt, ht, (provenance_pins_target e m mt hs ht hc).2 hk⟩⟩
+  obtain ⟨e, hc, hs, ⟨mt, ht⟩⟩ := derived_has_provenance m hne
+  exact ⟨e, hc, hs, ⟨mt, ht, (provenance_pins_target e hc m mt hs ht).2 hk⟩⟩
 
 -- ============================================================
 -- CN-8 — F→A source-batch gate (doc 04 §Source-batch lifecycle,
