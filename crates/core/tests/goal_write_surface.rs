@@ -2,7 +2,7 @@ use proxima_core::verbs::goal_write::{
     GoalAuthorship, GoalCreateRequest, GoalPayloadWrite, GoalWriteBuildError, IdempotencyKey,
 };
 use proxima_core::{
-    GoalPayload, MemoryId, Owner, PayloadKeyBuilder, Principal, SchemaVersion, UserId,
+    GoalPayload, MemoryId, Owner, OwnerRef, PayloadKeyBuilder, SchemaVersion, UserId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -69,12 +69,12 @@ fn typed_goal_payload_write_rejects_invalid_display_fields() {
 
 #[test]
 fn product_goal_create_request_defaults_to_user_authorship_and_explicit_self_target() {
-    let owner: Owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+    let owner: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let target_self = MemoryId::new(uuid::Uuid::now_v7());
     let request_id = IdempotencyKey::new("onboarding:initial-goal:1").expect("stable key");
 
     let request = GoalCreateRequest::product(
-        owner.clone(),
+        owner,
         target_self,
         request_id,
         "Initial goal",

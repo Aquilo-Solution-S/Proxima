@@ -28,7 +28,7 @@ use crate::error::ProtocolError;
 use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage::{StorageError, StorageHandle};
 use crate::verbs::schema::FlavorRegistryFrozen;
-use crate::{Owner, Principal, SetWakeEntriesRequest, SetWakeEntriesResponse, WakeEntryDraft};
+use crate::{Owner, OwnerRef, SetWakeEntriesRequest, SetWakeEntriesResponse, WakeEntryDraft};
 
 #[allow(unused_imports)]
 pub(in crate::engine) use access_sets::AccessSets;
@@ -45,9 +45,8 @@ pub use memory_authoring::{
 pub use personality::{
     AddWakeEntryRequest, AddWakeEntryResponse, InstantiatePersonalityAdminResponse,
     PersonalityConfigAuditEmit, PersonalityConfigChangedInput, RemoveWakeEntryRequest,
-    RemoveWakeEntryResponse, SetReadScopeAdminRequest, SetReadScopeAdminResponse,
-    SetWakeEntriesAdminResponse, TombstonePersonalityAdminResponse, UpdateWakeEntryRequest,
-    UpdateWakeEntryResponse, WakeEntryPatchInput,
+    RemoveWakeEntryResponse, SetWakeEntriesAdminResponse, TombstonePersonalityAdminResponse,
+    UpdateWakeEntryRequest, UpdateWakeEntryResponse, WakeEntryPatchInput,
 };
 pub use pipeline::{MemoryPermit, PermitMode};
 pub use read_verbs::{
@@ -181,7 +180,7 @@ impl Engine {
         req: &SetWakeEntriesRequest,
     ) -> Result<SetWakeEntriesResponse, ProtocolError> {
         let mut effective = req.clone();
-        effective.principal = permit.owner().clone();
+        effective.principal = *permit.owner();
         crate::personality::validate_wake_entries_detect_config(&effective.entries)?;
         self.storage
             .set_wake_entries(&effective)
@@ -231,7 +230,7 @@ impl Engine {
     pub async fn ensure_subject_personality(
         &self,
         owner: &Owner,
-        subject: &Principal,
+        subject: &OwnerRef,
     ) -> Result<crate::storage::MasterTokenPersonality, StorageError> {
         self.storage
             .ensure_subject_personality(owner, subject)

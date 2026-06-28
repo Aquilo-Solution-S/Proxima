@@ -3,11 +3,11 @@ use proxima_core::personality::{
     PersonalityInstanceRow, PersonalityStatus, ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
     WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryRow, WakeEntryTriggerKind,
 };
-use proxima_core::{MemoryId, Owner, OwnerPrincipalKind, StorageError};
+use proxima_core::{MemoryId, Owner, OwnerRefKind, StorageError};
 use sqlx::{Connection, PgConnection, PgPool};
 
+use crate::access::owner_ref_compat::insert_home;
 use crate::error::map_err;
-use crate::verbs::entity_owner::insert_entity_owner_home;
 
 pub async fn list_personality_instances(
     pool: &PgPool,
@@ -29,7 +29,7 @@ pub async fn list_personality_instances(
            AND ($3::bool OR p.status <> 'tombstoned'::proxima_core.personality_status)
          ORDER BY p.created_at, p.personality_instance_id",
     )
-    .bind(owner_kind as OwnerPrincipalKind)
+    .bind(owner_kind as OwnerRefKind)
     .bind(owner_principal_id)
     .bind(include_tombstoned)
     .fetch_all(pool)
@@ -54,7 +54,7 @@ pub async fn list_personality_instances(
              AND tombstoned_at IS NULL
            ORDER BY label, wake_entry_id",
     )
-    .bind(owner_kind as OwnerPrincipalKind)
+    .bind(owner_kind as OwnerRefKind)
     .bind(owner_principal_id)
     .bind(&instance_ids[..])
     .fetch_all(pool)
@@ -81,7 +81,7 @@ pub async fn list_personality_instances(
     let mut out = Vec::with_capacity(rows.len());
     for (instance_id, root_memory_id, display_name, status) in rows {
         out.push(PersonalityInstanceRow {
-            owner: owner.clone(),
+            owner: *owner,
             personality_instance_id: PersonalityInstanceId::new(instance_id),
             current_root_perspective_memory_id: MemoryId::new(root_memory_id),
             display_name,
@@ -144,7 +144,7 @@ pub(crate) async fn instantiate_personality_on_conn(
     .execute(&mut *tx)
     .await
     .map_err(map_err)?;
-    insert_entity_owner_home(&mut tx, memory_id, &owner, Some(instance_id)).await?;
+    insert_home(&mut tx, memory_id, &owner, Some(instance_id)).await?;
 
     let change_seq = uuid::Uuid::now_v7();
     sqlx::query!(
@@ -154,7 +154,7 @@ pub(crate) async fn instantiate_personality_on_conn(
              entity_personality_instance_id, wake_chain_depth)
          VALUES ($1, $2, $3, 'EntityAppend', 'Perspective', $4, $5, 1, $6, 0)"#,
         change_seq,
-        owner_kind as OwnerPrincipalKind,
+        owner_kind as OwnerRefKind,
         owner_principal_id,
         memory_id,
         ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,

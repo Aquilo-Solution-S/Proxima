@@ -11,9 +11,8 @@ use crate::dependency::MemoryDependency;
 use crate::personality::WakeEntryDraft;
 use crate::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
-    InstantiatePersonalityResponse, ListReadScopeRequest, ListReadScopeResponse, MemorySnapshot,
-    PersonalityInstanceId, PersonalityInstanceRow, PersonalityRef, PersonalityWriteOutcome,
-    PersonalityWriteRequest, SetReadScopeRequest, SetReadScopeResponse, SetWakeEntriesRequest,
+    InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
+    PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeEntriesRequest,
     SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse,
 };
 use crate::verbs::close_batch::CloseBatchOutcome;
@@ -33,9 +32,9 @@ use crate::{
     GoalPayload, PerspectivePayload,
 };
 use crate::{
-    EdgeAuthorshipKind, EdgeId, EntityId, EntityKind, EntityOwnerRow, FactEntityId, GroupId,
-    MembershipRow, MemoryId, MemoryOperatorKind, Owner, Principal, RegisteredRelation, Relation,
-    RemoveOwnerOutcome, SchemaId, SchemaVersion, UserId,
+    EdgeAuthorshipKind, EdgeId, EntityId, EntityKind, FactEntityId, GroupId, MembershipRow,
+    MemoryId, MemoryOperatorKind, Owner, OwnerRef, RegisteredRelation, Relation, SchemaId,
+    SchemaVersion, UserId,
 };
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -494,7 +493,7 @@ pub trait Storage: Send + Sync {
     /// Read-set-scoped memory-neighbor edges for graph MCP projections.
     async fn load_neighbor_memory_edges(
         &self,
-        _read_owners: &[Principal],
+        _read_owners: &[OwnerRef],
         _memory_ids: &[MemoryId],
         _limit: usize,
     ) -> Result<Vec<NeighborEdgeRow>, StorageError> {
@@ -570,7 +569,7 @@ pub trait Storage: Send + Sync {
     /// log at read time (cursor for a follow-up pull).
     async fn event_history(
         &self,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
         req: &EventHistoryRequest,
     ) -> Result<EventHistoryResponse, StorageError>;
 
@@ -595,14 +594,14 @@ pub trait Storage: Send + Sync {
     /// Read-set-scoped edge read by edge id and/or endpoint filter.
     async fn read_edges(
         &self,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
         req: &crate::verbs::query::EdgeReadRequest,
     ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError>;
 
     /// Read-set-scoped existence probe for an edge id and/or endpoint filter.
     async fn edge_exists(
         &self,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
         req: &crate::verbs::query::EdgeExistsRequest,
     ) -> Result<crate::verbs::query::EdgeExistsResponse, StorageError>;
 
@@ -628,7 +627,7 @@ pub trait Storage: Send + Sync {
     /// one cited object.
     async fn facts_citing_object(
         &self,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
         cited_object_id: uuid::Uuid,
         sidecars: &[SidecarSpec],
     ) -> Result<Vec<crate::personality::MemorySnapshot>, StorageError>;
@@ -645,7 +644,7 @@ pub trait Storage: Send + Sync {
     /// if present.
     async fn citation_of_entity_head(
         &self,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
         fact_entity_id: FactEntityId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError>;
 
@@ -653,7 +652,7 @@ pub trait Storage: Send + Sync {
     /// Supersession edges. Does not traverse Goals or write edges.
     async fn walk_memory_lineage(
         &self,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
         req: &crate::verbs::query::MemoryLineageRequest,
     ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError>;
 
@@ -663,7 +662,7 @@ pub trait Storage: Send + Sync {
     /// heads. No `GoalConnection` sidecar is modeled.
     async fn list_active_goals(
         &self,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
         self_perspective_memory_id: crate::MemoryId,
         limit: usize,
     ) -> Result<Vec<ActiveGoalSummary>, StorageError>;
@@ -673,50 +672,18 @@ pub trait Storage: Send + Sync {
     /// recursive memberships in v0.0.1.
     async fn resolve_membership(
         &self,
-        member: &Principal,
+        member: &OwnerRef,
     ) -> Result<Vec<MembershipRow>, StorageError>;
 
-    /// Entity reachability predicate over the caller's resolved read-owner
-    /// set. Dead/tombstoned entities have no `entity_owner` rows.
-    async fn entity_is_readable(
+    /// Row-owner visibility predicate over the caller's resolved owner set.
+    async fn visible_to_any(
         &self,
         entity: EntityId,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
     ) -> Result<bool, StorageError>;
 
-    /// Home owner lookup for a Memory or Goal entity. Dead/tombstoned
-    /// entities have no `entity_owner` rows and return `None`.
-    async fn entity_home_owner(&self, entity: EntityId) -> Result<Option<Principal>, StorageError>;
-
-    /// Add a read-only `entity_owner` share row. Idempotent.
-    async fn add_entity_owner_share(
-        &self,
-        entity: EntityId,
-        owner: &Principal,
-        granted_by: Option<uuid::Uuid>,
-    ) -> Result<(), StorageError>;
-
-    /// Remove a read-only `entity_owner` share row. Home rows are never
-    /// removed through this path.
-    async fn remove_entity_owner_share(
-        &self,
-        entity: EntityId,
-        owner: &Principal,
-    ) -> Result<RemoveOwnerOutcome, StorageError>;
-
-    /// List all reachability rows for one entity.
-    async fn list_entity_owners(
-        &self,
-        entity: EntityId,
-    ) -> Result<Vec<EntityOwnerRow>, StorageError>;
-
-    /// Public marketplace view: memories carrying a World `entity_owner`
-    /// row, newest first.
-    async fn list_world_entities(
-        &self,
-        limit: usize,
-        sidecars: &[SidecarSpec],
-    ) -> Result<Vec<MemorySnapshot>, StorageError>;
+    /// Home owner lookup for a Memory or Goal entity.
+    async fn home_owner(&self, entity: EntityId) -> Result<Option<OwnerRef>, StorageError>;
 
     /// Add one group membership relation. Idempotent.
     async fn add_group_member(
@@ -752,7 +719,7 @@ pub trait Storage: Send + Sync {
     /// different owner. sqlx failures map to `Internal`.
     async fn close_batch(
         &self,
-        principal: &Principal,
+        principal: &OwnerRef,
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError>;
 
@@ -802,7 +769,7 @@ pub trait Storage: Send + Sync {
     async fn ensure_subject_personality(
         &self,
         owner: &Owner,
-        subject: &Principal,
+        subject: &OwnerRef,
     ) -> Result<MasterTokenPersonality, StorageError>;
 
     /// Replace active `WakeEntry` rows for one personality instance.
@@ -822,20 +789,6 @@ pub trait Storage: Send + Sync {
         personality_instance_id: PersonalityInstanceId,
         mutate: WakeEntriesMutator,
     ) -> Result<SetWakeEntriesResponse, StorageError>;
-
-    /// List explicit read-scope grants for one reader personality. Identity
-    /// reads are implicit and are not returned.
-    async fn list_read_scope(
-        &self,
-        req: &ListReadScopeRequest,
-    ) -> Result<ListReadScopeResponse, StorageError>;
-
-    /// Replace explicit read-scope grants for one reader personality. Identity
-    /// reads remain implicit even when omitted.
-    async fn set_read_scope(
-        &self,
-        req: &SetReadScopeRequest,
-    ) -> Result<SetReadScopeResponse, StorageError>;
 
     /// Upsert the owner-scoped Fact-retention duration, in seconds.
     async fn upsert_fact_retention(&self, owner: &Owner, seconds: i64) -> Result<(), StorageError>;
@@ -871,7 +824,7 @@ pub trait Storage: Send + Sync {
 
     async fn list_change_events_after(
         &self,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
         after: uuid::Uuid,
         limit: usize,
     ) -> Result<Vec<ChangeEventForWake>, StorageError>;
@@ -1130,7 +1083,7 @@ impl Storage for NoopStorage {
 
     async fn event_history(
         &self,
-        _read_owners: &[Principal],
+        _read_owners: &[OwnerRef],
         _req: &EventHistoryRequest,
     ) -> Result<EventHistoryResponse, StorageError> {
         Ok(EventHistoryResponse {
@@ -1161,7 +1114,7 @@ impl Storage for NoopStorage {
 
     async fn read_edges(
         &self,
-        _read_owners: &[Principal],
+        _read_owners: &[OwnerRef],
         _req: &crate::verbs::query::EdgeReadRequest,
     ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError> {
         Ok(crate::verbs::query::EdgeReadResponse { edges: Vec::new() })
@@ -1169,7 +1122,7 @@ impl Storage for NoopStorage {
 
     async fn edge_exists(
         &self,
-        _read_owners: &[Principal],
+        _read_owners: &[OwnerRef],
         _req: &crate::verbs::query::EdgeExistsRequest,
     ) -> Result<crate::verbs::query::EdgeExistsResponse, StorageError> {
         Ok(crate::verbs::query::EdgeExistsResponse { exists: false })
@@ -1185,7 +1138,7 @@ impl Storage for NoopStorage {
 
     async fn facts_citing_object(
         &self,
-        _read_owners: &[Principal],
+        _read_owners: &[OwnerRef],
         _cited_object_id: uuid::Uuid,
         _sidecars: &[SidecarSpec],
     ) -> Result<Vec<crate::personality::MemorySnapshot>, StorageError> {
@@ -1201,7 +1154,7 @@ impl Storage for NoopStorage {
 
     async fn citation_of_entity_head(
         &self,
-        _read_owners: &[Principal],
+        _read_owners: &[OwnerRef],
         _fact_entity_id: FactEntityId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
         Ok(None)
@@ -1209,7 +1162,7 @@ impl Storage for NoopStorage {
 
     async fn walk_memory_lineage(
         &self,
-        _read_owners: &[Principal],
+        _read_owners: &[OwnerRef],
         _req: &crate::verbs::query::MemoryLineageRequest,
     ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError> {
         Ok(crate::verbs::query::MemoryLineageResponse {
@@ -1221,7 +1174,7 @@ impl Storage for NoopStorage {
 
     async fn list_active_goals(
         &self,
-        _read_owners: &[Principal],
+        _read_owners: &[OwnerRef],
         _self_perspective_memory_id: crate::MemoryId,
         _limit: usize,
     ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
@@ -1230,56 +1183,21 @@ impl Storage for NoopStorage {
 
     async fn resolve_membership(
         &self,
-        _member: &Principal,
+        _member: &OwnerRef,
     ) -> Result<Vec<MembershipRow>, StorageError> {
         Ok(Vec::new())
     }
 
-    async fn entity_is_readable(
+    async fn visible_to_any(
         &self,
         _entity: EntityId,
-        _read_owners: &[Principal],
+        _read_owners: &[OwnerRef],
     ) -> Result<bool, StorageError> {
         Ok(false)
     }
 
-    async fn entity_home_owner(
-        &self,
-        _entity: EntityId,
-    ) -> Result<Option<Principal>, StorageError> {
+    async fn home_owner(&self, _entity: EntityId) -> Result<Option<OwnerRef>, StorageError> {
         Ok(None)
-    }
-
-    async fn add_entity_owner_share(
-        &self,
-        _entity: EntityId,
-        _owner: &Principal,
-        _granted_by: Option<uuid::Uuid>,
-    ) -> Result<(), StorageError> {
-        Err(StorageError::Internal("NoopStorage rejects writes".into()))
-    }
-
-    async fn remove_entity_owner_share(
-        &self,
-        _entity: EntityId,
-        _owner: &Principal,
-    ) -> Result<RemoveOwnerOutcome, StorageError> {
-        Err(StorageError::Internal("NoopStorage rejects writes".into()))
-    }
-
-    async fn list_entity_owners(
-        &self,
-        _entity: EntityId,
-    ) -> Result<Vec<EntityOwnerRow>, StorageError> {
-        Ok(Vec::new())
-    }
-
-    async fn list_world_entities(
-        &self,
-        _limit: usize,
-        _sidecars: &[SidecarSpec],
-    ) -> Result<Vec<MemorySnapshot>, StorageError> {
-        Ok(Vec::new())
     }
 
     async fn add_group_member(
@@ -1309,7 +1227,7 @@ impl Storage for NoopStorage {
 
     async fn close_batch(
         &self,
-        _principal: &Principal,
+        _principal: &OwnerRef,
         _source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
@@ -1350,7 +1268,7 @@ impl Storage for NoopStorage {
     async fn ensure_subject_personality(
         &self,
         _owner: &Owner,
-        _subject: &Principal,
+        _subject: &OwnerRef,
     ) -> Result<MasterTokenPersonality, StorageError> {
         Err(StorageError::Internal(
             "mock: ensure_subject_personality not stubbed".into(),
@@ -1370,22 +1288,6 @@ impl Storage for NoopStorage {
         _personality_instance_id: PersonalityInstanceId,
         _mutate: WakeEntriesMutator,
     ) -> Result<SetWakeEntriesResponse, StorageError> {
-        Err(StorageError::Internal("NoopStorage rejects writes".into()))
-    }
-
-    async fn list_read_scope(
-        &self,
-        _req: &ListReadScopeRequest,
-    ) -> Result<ListReadScopeResponse, StorageError> {
-        Ok(ListReadScopeResponse {
-            readable_personality_instance_ids: Vec::new(),
-        })
-    }
-
-    async fn set_read_scope(
-        &self,
-        _req: &SetReadScopeRequest,
-    ) -> Result<SetReadScopeResponse, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
@@ -1430,7 +1332,7 @@ impl Storage for NoopStorage {
 
     async fn list_change_events_after(
         &self,
-        _read_owners: &[Principal],
+        _read_owners: &[OwnerRef],
         _after: uuid::Uuid,
         _limit: usize,
     ) -> Result<Vec<ChangeEventForWake>, StorageError> {

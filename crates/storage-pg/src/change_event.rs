@@ -5,7 +5,7 @@
 
 use proxima_core::{
     ChangeEvent, ChangeEventKind, ChangeEventKindTag, EntityKind, EntityRef, FactEntityId, GoalId,
-    MemoryId, OwnerPrincipalKind, SchemaId, SchemaVersion, StorageError,
+    MemoryId, OwnerRefKind, SchemaId, SchemaVersion, StorageError,
 };
 use uuid::Uuid;
 
@@ -14,7 +14,7 @@ use crate::error::internal;
 #[derive(Debug, sqlx::FromRow)]
 struct ChangeEventRow {
     seq: Uuid,
-    owner_principal_kind: OwnerPrincipalKind,
+    owner_principal_kind: OwnerRefKind,
     owner_principal_id: Uuid,
     kind: ChangeEventKindTag,
     entity_kind: Option<EntityKind>,

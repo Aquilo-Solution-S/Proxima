@@ -177,7 +177,7 @@ pub struct McpCallLogOutcome {
 #[cfg(test)]
 mod tests {
     use super::McpCallLogInput;
-    use crate::{Principal, UserId};
+    use crate::{OwnerRef, UserId};
     use uuid::Uuid;
 
     /// Pins the org-free MCP-call replay key against drift. Track B / S0:
@@ -185,7 +185,7 @@ mod tests {
     /// timestamps — no org. A fixed input must reproduce exactly this hex.
     #[test]
     fn mcp_call_event_id_golden_is_org_free() {
-        let owner = Principal::User(UserId::new(
+        let owner = OwnerRef::Personal(UserId::new(
             Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
         ));
         let input = McpCallLogInput {

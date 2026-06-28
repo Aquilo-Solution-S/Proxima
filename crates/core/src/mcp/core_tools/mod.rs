@@ -24,7 +24,6 @@ pub mod instantiate_personality;
 pub mod list_edge_types;
 pub mod list_events;
 pub mod list_personalities;
-pub mod list_read_scope;
 pub mod list_schemas;
 pub mod list_substrate_tools;
 pub mod list_wake_entries;
@@ -32,8 +31,6 @@ pub mod membership;
 pub mod memory;
 pub mod memory_spaces;
 pub mod personality;
-pub mod set_read_scope;
-pub mod share;
 pub mod tombstone_fact;
 pub mod tombstone_personality;
 pub mod wake;
@@ -51,7 +48,6 @@ pub use payload::{
 };
 pub use personality::CorePersonalityTool;
 pub use search_memories::SearchMemoriesTool;
-pub use share::CoreShareTool;
 pub use update_wake_entry::WakeEntryPatch;
 pub use wake::CoreWakeTool;
 pub use wake_entry_input::WakeEntryDraftInput;
@@ -94,5 +90,4 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<CorePersonalityTool>();
     registry.add_substrate_mcp_tool::<CoreFactTool>();
     registry.add_substrate_mcp_tool::<CoreMembershipTool>();
-    registry.add_substrate_mcp_tool::<CoreShareTool>();
 }

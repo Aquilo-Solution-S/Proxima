@@ -261,7 +261,7 @@ fn build_app(
     let mut app = Proxima::<ProximaMcpApp>::app()
         .from_env()
         .database_url(config.database_url)
-        .owner(config.owner.clone())
+        .owner(config.owner)
         .tool_scope(tool_scope);
     if let Some(bind) = config.bind {
         app = app.mcp_bind(bind);
@@ -400,7 +400,7 @@ fn oidc_from_env(
         issuer: issuer.clone(),
         jwks_uri,
         audience,
-        owner: config.owner.clone(),
+        owner: config.owner,
         allowed_subjects,
         leeway_secs: 60,
     };
@@ -484,7 +484,7 @@ mod tests {
     fn config() -> McpConfig {
         McpConfig {
             database_url: DEFAULT_DATABASE_URL.to_string(),
-            owner: proxima_core::Principal::User(proxima_core::UserId::new(uuid::Uuid::nil())),
+            owner: proxima_core::OwnerRef::Personal(proxima_core::UserId::new(uuid::Uuid::nil())),
             bind: Some(DEFAULT_BIND.parse().expect("valid bind")),
             master_token: Some(uuid::Uuid::nil()),
         }

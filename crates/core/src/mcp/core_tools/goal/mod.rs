@@ -243,7 +243,7 @@ async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput,
         .create_goal_from_payload_write(
             &ctx.authz,
             &GoalCreatePayloadWriteRequest {
-                principal: ctx.owner.clone(),
+                principal: ctx.owner,
                 target_self,
                 payload,
                 request_id,
@@ -297,7 +297,7 @@ async fn goal_transition(
         .transition_goal(
             &ctx.authz,
             &GoalTransitionRequest {
-                principal: ctx.owner.clone(),
+                principal: ctx.owner,
                 prior_goal_id: prior,
                 next_state,
                 authorship: GoalAuthorship::User,
@@ -345,7 +345,7 @@ async fn goal_mark_achieved(
         .mark_goal_achieved(
             &ctx.authz,
             &GoalMarkAchievedRequest {
-                principal: ctx.owner.clone(),
+                principal: ctx.owner,
                 prior_goal_id: prior,
                 authorship: GoalAuthorship::System(SystemOrigin::Tool {
                     tool_id: ToolId::new(CORE_GOAL_MARK_ACHIEVED_SCOPE_KEY),
@@ -396,7 +396,7 @@ async fn goal_modify(
         .modify_goal(
             &ctx.authz,
             &GoalModifyRequest {
-                principal: ctx.owner.clone(),
+                principal: ctx.owner,
                 prior_goal_id: prior,
                 replacement: payload,
                 authorship: GoalAuthorship::User,
@@ -482,7 +482,7 @@ async fn goal_decompose(
         .decompose_goal(
             &ctx.authz,
             &GoalDecomposeRequest {
-                principal: ctx.owner.clone(),
+                principal: ctx.owner,
                 parent_goal_id: parent,
                 authorship: GoalAuthorship::System(SystemOrigin::Tool {
                     tool_id: ToolId::new(CORE_GOAL_DECOMPOSE_SCOPE_KEY),

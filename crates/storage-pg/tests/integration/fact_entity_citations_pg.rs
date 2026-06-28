@@ -155,7 +155,7 @@ fn draft_for(owner: &Owner, payload_value: &Value) -> EventDraft {
     EventDraft {
         source_id: SourceId::new(format!("test/fact-entity-citation/{}", Uuid::now_v7())),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.clone(),
+        principal: *owner,
         author_personality_instance_id: None,
         schema_id: StatefulFactV1::schema_id(),
         schema_version: SchemaVersion::new(StatefulFactV1::SCHEMA_VERSION),

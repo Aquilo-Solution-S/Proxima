@@ -5,7 +5,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
-use proxima_core::{AuthError, AuthPath, Authenticator, AuthzContext, Credentials};
+use proxima_core::{AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerRef};
 use serde::Deserialize;
 
 use crate::config::{OidcAuthConfig, OidcConfigError};
@@ -79,9 +79,11 @@ impl Authenticator for OidcAuthenticator {
         }
 
         tracing::debug!(sub = %data.claims.sub, "oidc token accepted");
-        let mut ctx = AuthzContext::single_owner(&self.config.owner, AuthPath::HostBearer);
-        ctx.identity.expires_at = Some(UNIX_EPOCH + Duration::from_secs(data.claims.exp));
-        Ok(ctx)
+        let OwnerRef::Personal(subject) = self.config.owner else {
+            return Err(AuthError::InvalidCredentials);
+        };
+        Ok(AuthzContext::for_subject(subject, AuthPath::HostBearer)
+            .with_expires_at(Some(UNIX_EPOCH + Duration::from_secs(data.claims.exp))))
     }
 }
 
@@ -90,7 +92,7 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, encode};
-    use proxima_core::{Owner, Principal, UserId};
+    use proxima_core::{Owner, OwnerRef, UserId};
     use serde::Serialize;
     use uuid::Uuid;
 
@@ -115,7 +117,7 @@ mod tests {
     }
 
     fn test_owner() -> Owner {
-        Principal::User(UserId::new(Uuid::new_v4()))
+        OwnerRef::Personal(UserId::new(Uuid::new_v4()))
     }
 
     // Static 2048-bit RSA test keypair (same key as the `keys.rs` /
@@ -215,7 +217,7 @@ hWfFqOK7kd53G/fwyOu4usJWEGojv1ey6Sn9X1myw/jG5XNE9yLrbA==
     async fn valid_token_maps_to_single_owner_host_bearer() {
         let keys = test_keys();
         let owner = test_owner();
-        let auth = authenticator(config(owner.clone()), KID, keys.decoding.clone());
+        let auth = authenticator(config(owner), KID, keys.decoding.clone());
         let token = token(&keys, KID, ISSUER, AUDIENCE, "subject-1", future_exp());
 
         let ctx = auth
@@ -223,9 +225,9 @@ hWfFqOK7kd53G/fwyOu4usJWEGojv1ey6Sn9X1myw/jG5XNE9yLrbA==
             .await
             .expect("authenticate valid token");
 
-        assert_eq!(ctx.auth_path, AuthPath::HostBearer);
-        assert_eq!(ctx.identity.principal, owner);
-        assert!(ctx.identity.expires_at.is_some());
+        assert_eq!(ctx.auth_path(), AuthPath::HostBearer);
+        assert_eq!(ctx.principal(), owner);
+        assert!(ctx.expires_at().is_some());
     }
 
     #[tokio::test]

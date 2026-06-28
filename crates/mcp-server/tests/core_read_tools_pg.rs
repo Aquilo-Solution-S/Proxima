@@ -4,9 +4,7 @@ use std::sync::Arc;
 
 use common::{create_db, db_url, drop_db};
 use proxima_core::mcp::McpAuthorContext;
-use proxima_core::{
-    Engine, FlavorRegistry, Owner, OwnerPrincipalKind, Principal, RelationClass, UserId,
-};
+use proxima_core::{Engine, FlavorRegistry, Owner, OwnerRef, RelationClass, UserId};
 use proxima_mcp_server::{McpAuthContext, McpToolHost};
 use proxima_storage_pg::PgStorage;
 
@@ -18,7 +16,7 @@ async fn core_read_resources_return_prefixed_ids_and_author()
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
 
-    let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let author = uuid::Uuid::now_v7();
     let source = insert_memory(&pg, &owner, "source lineage memory", Some(author)).await?;
     let derived = insert_memory(&pg, &owner, "derived lineage memory", Some(author)).await?;
@@ -26,12 +24,12 @@ async fn core_read_resources_return_prefixed_ids_and_author()
 
     let registry = FlavorRegistry::new().freeze();
     let engine = Arc::new(Engine::new(registry.clone()).with_storage(pg.clone().into_handle()));
-    let server = McpToolHost::from_pool(pg.pool().clone(), owner.clone(), Arc::new(registry))
-        .with_engine(engine);
+    let server =
+        McpToolHost::from_pool(pg.pool().clone(), owner, Arc::new(registry)).with_engine(engine);
     // The host is now the authoritative scope chokepoint, so reads need an
     // authenticated full-scope context (production always passes Some(auth);
     // a None context is unauthenticated and correctly denied).
-    let auth = McpAuthContext::for_master(uuid::Uuid::now_v7(), owner.clone());
+    let auth = McpAuthContext::for_master(uuid::Uuid::now_v7(), owner);
 
     let fetched = server
         .read_resource(
@@ -103,11 +101,7 @@ async fn insert_memory(
     personality_instance_id: Option<uuid::Uuid>,
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     let memory_id = uuid::Uuid::now_v7();
-    let owner_kind = OwnerPrincipalKind::of(owner);
-    let owner_principal_id = match owner {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
+    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
@@ -121,11 +115,11 @@ async fn insert_memory(
     .bind(personality_instance_id)
     .execute(pg.pool())
     .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "INSERT INTO __PROXIMA_ENTITY_OWNER__
             (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
          VALUES ($1, $2, $3, true, $4)",
-    )
+    ))
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)

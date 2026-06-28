@@ -53,7 +53,7 @@ pub(super) async fn citation_of_fact(
         .read_fact_citation(
             &ctx.authz,
             &FactCitationReadRequest {
-                principal: ctx.owner.clone(),
+                principal: ctx.owner,
                 fact_memory_id,
             },
         )
@@ -81,7 +81,7 @@ pub(super) async fn citation_of_entity_head(
         .read_entity_head_citation(
             &ctx.authz,
             &EntityHeadCitationReadRequest {
-                principal: ctx.owner.clone(),
+                principal: ctx.owner,
                 fact_entity_id,
             },
         )

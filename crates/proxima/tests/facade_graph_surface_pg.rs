@@ -7,8 +7,8 @@ use proxima::{
     FlavorApp, FlavorBundle, FlavorRegistry, MemoryId, MemoryLineageDirection,
     MemoryLineageRequest, MemoryOperatorKind, PayloadKeyBuilder, PgMemoryPayload,
     PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarRegistry, Proxima, Relation,
-    SchemaId, SchemaVersion, SidecarPayload, StorageError, company_owner, fact_entity_id_for,
-    ingest_fact,
+    Role, SchemaId, SchemaVersion, SidecarPayload, StorageError, UserId, company_owner,
+    fact_entity_id_for,
 };
 use proxima::{RelationClass, RelationDescriptor};
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
@@ -278,11 +278,15 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
             .database_url(db_url)
-            .owner(owner.clone())
+            .owner(owner)
             .build()
             .await?;
         create_sidecar_tables(&built.pool).await?;
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin())],
+            AuthPath::System,
+        );
 
         let fact = FacadeFact {
             note_id: Uuid::now_v7(),
@@ -290,10 +294,11 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             body: "A consumer needs a single facade crate.".to_string(),
         };
         let fact_for_sidecar = fact.clone();
-        let fact_outcome = ingest_fact(
+        let fact_outcome = proxima_storage_pg::verbs::event_ingest::ingest_fact_for_owner(
             &built.pool,
             built.engine.as_ref(),
             &authz,
+            &owner,
             Relation::Ingest,
             &fact,
             move |tx, outcome| {
@@ -336,7 +341,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .engine
             .author_derived(AuthorDerivedRequestInput {
                 memory_id: derived_id,
-                owner: owner.clone(),
+                owner,
                 kind: EntityKind::Abstraction,
                 text: "Single facade dependency is enough for flavor authors.".to_string(),
                 schema_id: SchemaId::new(FacadeAbstraction::SCHEMA_ID.to_string()),
@@ -376,7 +381,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .walk_memory_lineage(
                 &authz,
                 &MemoryLineageRequest {
-                    principal: owner.clone(),
+                    principal: owner,
                     start_memory_id: derived_id,
                     direction: MemoryLineageDirection::Ancestors,
                     depth: 2,
@@ -427,7 +432,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .edge_exists(
                 &authz,
                 &EdgeExistsRequest {
-                    principal: owner.clone(),
+                    principal: owner,
                     edge_ids: Vec::new(),
                     filter: present_filter.clone(),
                 },
@@ -440,7 +445,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .edge_exists(
                 &authz,
                 &EdgeExistsRequest {
-                    principal: owner.clone(),
+                    principal: owner,
                     edge_ids: Vec::new(),
                     filter: EdgeFilter {
                         target: Some(EntityRef::FactEntity(proxima::FactEntityId::new(

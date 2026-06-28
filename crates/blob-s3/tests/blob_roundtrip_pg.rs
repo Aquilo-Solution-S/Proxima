@@ -81,7 +81,7 @@ async fn prepare_then_complete_then_read_roundtrip() {
 
     let prepared = store
         .prepare_upload(CitedBlobUploadPrepareTs {
-            principal: owner.clone(),
+            principal: owner,
             filename: "test.pdf".into(),
             mime: "application/pdf".into(),
             byte_len: body.len() as u64,
@@ -102,7 +102,7 @@ async fn prepare_then_complete_then_read_roundtrip() {
 
     let completed = store
         .complete_upload(CitedBlobUploadCompleteTs {
-            principal: owner.clone(),
+            principal: owner,
             upload_id: prepared.upload_id,
         })
         .await

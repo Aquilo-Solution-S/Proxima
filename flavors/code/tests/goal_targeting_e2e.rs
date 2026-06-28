@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 mod common;
 
-use common::{insert_entity_owner_home, migrated_db, test_owner};
+use common::{insert_home, migrated_db, test_owner};
 use proxima_code::{build_engine_with, register_repo};
 use proxima_core::personality::{InstantiatePersonalityRequest, PersonalityInstanceId};
 use proxima_core::test_fixtures::ConstantEmbedding;
-use proxima_core::{AuthPath, AuthzContext, CORE_INSPIRES_RELATION, Owner, Principal};
+use proxima_core::{AuthPath, AuthzContext, CORE_INSPIRES_RELATION, Owner};
 use proxima_pg_testkit::drop_db;
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -23,11 +23,7 @@ async fn author_inspires_edge(
     source_goal_id: Uuid,
     target_memory_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let owner_kind = proxima_core::OwnerPrincipalKind::of(owner);
-    let owner_principal_id = match owner {
-        Principal::User(u) => u.into_inner(),
-        Principal::Group(g) => g.into_inner(),
-    };
+    let (owner_kind, owner_principal_id) = owner.columns();
     let edge_id = Uuid::now_v7();
     let mut tx = pg.pool().begin().await?;
     sqlx::query(
@@ -73,11 +69,7 @@ async fn seed_active_goal(
     pg: &PgStorage,
     owner: &Owner,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let owner_kind = proxima_core::OwnerPrincipalKind::of(owner);
-    let owner_principal_id = match owner {
-        Principal::User(u) => u.into_inner(),
-        Principal::Group(g) => g.into_inner(),
-    };
+    let (owner_kind, owner_principal_id) = owner.columns();
     let goal_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.goals
@@ -94,7 +86,7 @@ async fn seed_active_goal(
     .bind(owner_principal_id)
     .execute(pg.pool())
     .await?;
-    insert_entity_owner_home(pg.pool(), goal_id, owner).await?;
+    insert_home(pg.pool(), goal_id, owner).await?;
     Ok(goal_id)
 }
 
@@ -136,7 +128,7 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
             .instantiate_personality(
                 &authz,
                 InstantiatePersonalityRequest {
-                    principal: owner.clone(),
+                    principal: owner,
                     display_name: "Alice".into(),
                 },
             )
@@ -145,7 +137,7 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
             .instantiate_personality(
                 &authz,
                 InstantiatePersonalityRequest {
-                    principal: owner.clone(),
+                    principal: owner,
                     display_name: "Bob".into(),
                 },
             )

@@ -8,9 +8,8 @@ use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::{
     AbstractionPayload, AgentDerivationV1, AgentNoteV1, AuthPath, AuthorshipKindMask, AuthzContext,
     EdgeAuthorshipKind, EntityKind, EntityKindMask, ErrorCode, FlavorRegistry, MemoryId,
-    MemoryOperatorKind, Owner, OwnerPrincipalKind, PersonalityInstanceId, Principal, Relation,
-    RelationClass, RelationDescriptor, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId,
-    Storage, UserId,
+    MemoryOperatorKind, Owner, OwnerRef, PersonalityInstanceId, Relation, RelationClass,
+    RelationDescriptor, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, Storage, UserId,
 };
 use uuid::Uuid;
 
@@ -86,7 +85,7 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
     let outcome = engine
         .author_derived(proxima_core::AuthorDerivedRequestInput {
             memory_id: derived_memory_id,
-            owner: owner.clone(),
+            owner,
             kind: EntityKind::Abstraction,
             text: "derived body".into(),
             schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
@@ -177,7 +176,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
     let old = engine
         .author_derived(proxima_core::AuthorDerivedRequestInput {
             memory_id: old_memory_id,
-            owner: owner.clone(),
+            owner,
             kind: EntityKind::Abstraction,
             text: "old assertion body".into(),
             schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
@@ -207,7 +206,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
     let new = engine
         .author_derived(proxima_core::AuthorDerivedRequestInput {
             memory_id: new_memory_id,
-            owner: owner.clone(),
+            owner,
             kind: EntityKind::Abstraction,
             text: "new assertion body".into(),
             schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
@@ -246,10 +245,11 @@ async fn engine_author_derived_supersedes_in_same_transaction()
     .await?;
     assert_eq!(supersedes_edge_count, 1);
 
-    let head_ids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT m.memory_id
+    let head_ids: Vec<Uuid> =
+        sqlx::query_scalar(proxima_storage_pg::access::owner_ref_compat::sql(
+            "SELECT m.memory_id
            FROM proxima_core.memories m
-           JOIN proxima_core.entity_owner eo
+           JOIN __PROXIMA_ENTITY_OWNER__ eo
              ON eo.entity_id = m.memory_id
             AND eo.is_home
           WHERE eo.owner_principal_kind = $1
@@ -262,15 +262,12 @@ async fn engine_author_derived_supersedes_in_same_transaction()
                   WHERE newer.supersedes = m.memory_id
                     AND newer.tombstoned_at IS NULL
             )",
-    )
-    .bind(OwnerPrincipalKind::of(&owner))
-    .bind(match &owner {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    })
-    .bind(AgentDerivationV1::SCHEMA_ID)
-    .fetch_all(pg.pool())
-    .await?;
+        ))
+        .bind(owner.columns().0)
+        .bind(owner.columns().1)
+        .bind(AgentDerivationV1::SCHEMA_ID)
+        .fetch_all(pg.pool())
+        .await?;
     assert!(head_ids.contains(&new_memory_id.into_inner()));
     assert!(!head_ids.contains(&old_memory_id.into_inner()));
 
@@ -278,7 +275,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
         .walk_memory_lineage(
             std::slice::from_ref(&owner),
             &proxima_core::verbs::query::MemoryLineageRequest {
-                principal: owner.clone(),
+                principal: owner,
                 start_memory_id: new_memory_id,
                 direction: proxima_core::verbs::query::MemoryLineageDirection::Ancestors,
                 depth: 2,
@@ -313,7 +310,7 @@ async fn author_derived_authorized_enforces_intra_owner_same_kind_supersedes()
 
     let result = async {
         let attacker = owner_fixture();
-        let victim = Principal::User(UserId::new(Uuid::now_v7()));
+        let victim = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let victim_prior = insert_source_memory(
             &pg,
             &victim,
@@ -346,7 +343,7 @@ async fn author_derived_authorized_enforces_intra_owner_same_kind_supersedes()
                 &authz,
                 derived_authorized_request(
                     foreign_new_id,
-                    attacker.clone(),
+                    attacker,
                     EntityKind::Abstraction,
                     "foreign successor",
                     Some(victim_prior),
@@ -372,7 +369,7 @@ async fn author_derived_authorized_enforces_intra_owner_same_kind_supersedes()
                 &authz,
                 derived_authorized_request(
                     same_owner_new_id,
-                    attacker.clone(),
+                    attacker,
                     EntityKind::Abstraction,
                     "same-owner successor",
                     Some(attacker_prior),
@@ -395,7 +392,7 @@ async fn author_derived_authorized_enforces_intra_owner_same_kind_supersedes()
                 &authz,
                 derived_authorized_request(
                     wrong_kind_new_id,
-                    attacker.clone(),
+                    attacker,
                     EntityKind::Abstraction,
                     "wrong-kind successor",
                     Some(attacker_perspective),
@@ -525,11 +522,7 @@ async fn insert_source_memory(
     text: &str,
 ) -> Result<MemoryId, sqlx::Error> {
     let memory_id = Uuid::now_v7();
-    let owner_kind = OwnerPrincipalKind::of(owner);
-    let owner_principal_id = match owner {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
+    let (owner_kind, owner_principal_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
@@ -545,11 +538,11 @@ async fn insert_source_memory(
     .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "INSERT INTO __PROXIMA_ENTITY_OWNER__
             (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
          VALUES ($1, $2, $3, true, $4)",
-    )
+    ))
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)

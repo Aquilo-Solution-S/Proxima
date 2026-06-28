@@ -11,7 +11,7 @@
 //! `change_event` here once a consumer needs the live signal.
 
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
-use proxima_core::{OwnerPrincipalKind, Principal, SourceBatchId, StorageError};
+use proxima_core::{OwnerRef, OwnerRefKind, SourceBatchId, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
@@ -22,7 +22,7 @@ use crate::error::map_err;
 /// `Internal` on sqlx failure.
 pub async fn close_batch(
     pool: &PgPool,
-    principal: &Principal,
+    principal: &OwnerRef,
     source_batch_id: SourceBatchId,
 ) -> Result<CloseBatchOutcome, StorageError> {
     let (owner_kind, owner_principal_id) = principal.columns();
@@ -35,7 +35,7 @@ pub async fn close_batch(
                AND owner_principal_kind = $2
                AND owner_principal_id = $3"#,
         batch_id,
-        owner_kind as OwnerPrincipalKind,
+        owner_kind as OwnerRefKind,
         owner_principal_id,
     )
     .fetch_optional(pool)
@@ -66,7 +66,7 @@ pub async fn close_batch(
                AND closed_at IS NULL
              RETURNING closed_at AS "closed_at!""#,
         batch_id,
-        owner_kind as OwnerPrincipalKind,
+        owner_kind as OwnerRefKind,
         owner_principal_id,
     )
     .fetch_optional(pool)
@@ -89,7 +89,7 @@ pub async fn close_batch(
                AND owner_principal_id = $3
                AND closed_at IS NOT NULL"#,
         batch_id,
-        owner_kind as OwnerPrincipalKind,
+        owner_kind as OwnerRefKind,
         owner_principal_id,
     )
     .fetch_one(pool)

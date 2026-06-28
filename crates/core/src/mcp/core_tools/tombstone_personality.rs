@@ -38,7 +38,7 @@ pub(super) async fn tombstone_personality(
         .engine()
         .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
     let req = TombstonePersonalityRequest {
-        principal: ctx.owner.clone(),
+        principal: ctx.owner,
         personality_instance_id: pid,
     };
     let (audit, preflight_failure) = match personality_config_changed_input(

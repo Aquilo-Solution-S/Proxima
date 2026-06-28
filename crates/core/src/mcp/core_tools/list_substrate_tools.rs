@@ -53,12 +53,7 @@ pub async fn list_substrate_tools(
 ) -> Result<ListSubstrateToolsOutput, McpToolError> {
     let mut tools = Vec::new();
     for desc in ctx.registry.list_mcp_tools() {
-        if !ctx
-            .authz
-            .capabilities
-            .tool_scope
-            .allows_group_advertisement(desc.name)
-        {
+        if !ctx.authz.tool_scope().allows_group_advertisement(desc.name) {
             continue;
         }
         tools.push(SubstrateToolItem {
@@ -119,15 +114,11 @@ fn action_spec(
 }
 
 fn action_visible(ctx: &McpToolCtx, tool: &str, action: &str) -> bool {
-    match &ctx.authz.capabilities.tool_scope {
+    match ctx.authz.tool_scope() {
         crate::authz::ToolScope::All => true,
         crate::authz::ToolScope::Palette(allowed) => {
             allowed.iter().any(|entry| entry == tool)
-                || ctx
-                    .authz
-                    .capabilities
-                    .tool_scope
-                    .allows_action(tool, action)
+                || ctx.authz.tool_scope().allows_action(tool, action)
         }
     }
 }
@@ -136,7 +127,7 @@ fn action_visible(ctx: &McpToolCtx, tool: &str, action: &str) -> bool {
 mod tests {
     use super::*;
     use crate::mcp::{McpAuthorContext, McpToolExtensions, OutputMode};
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, Principal, UserId};
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, OwnerRef, UserId};
     use std::sync::Arc;
 
     #[test]
@@ -155,9 +146,9 @@ mod tests {
 
     #[tokio::test]
     async fn tool_catalog_exposes_action_level_metadata() {
-        let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let ctx = McpToolCtx {
-            owner: owner.clone(),
+            owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: None,
             mode: OutputMode::PrefixedIds,

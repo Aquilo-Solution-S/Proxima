@@ -3,8 +3,7 @@ use proxima_core::relation::RelationClass;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{EdgeRow, GoalRow, MemoryRow, StatefulHeadsFilter};
 use proxima_core::{
-    GoalId, MemoryId, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion, SidecarPayload,
-    StorageError,
+    GoalId, MemoryId, Owner, OwnerRefKind, SchemaId, SchemaVersion, SidecarPayload, StorageError,
 };
 use sqlx::PgPool;
 
@@ -95,7 +94,7 @@ fn entity_ref_from_endpoint(
     }
 }
 
-fn owner_from_parts(kind: OwnerPrincipalKind, principal_id: uuid::Uuid) -> Owner {
+fn owner_from_parts(kind: OwnerRefKind, principal_id: uuid::Uuid) -> Owner {
     kind.with_uuid(principal_id)
 }
 
@@ -104,7 +103,7 @@ pub(super) struct GoalRowDb {
     goal_id: uuid::Uuid,
     schema_id: String,
     schema_version: i32,
-    owner_principal_kind: OwnerPrincipalKind,
+    owner_principal_kind: OwnerRefKind,
     owner_principal_id: uuid::Uuid,
     title: String,
     text: String,
@@ -132,7 +131,7 @@ pub(super) struct EdgeRowDb {
 #[derive(Debug, sqlx::FromRow)]
 pub(super) struct MemoryRowDb {
     pub(super) memory_id: uuid::Uuid,
-    owner_principal_kind: OwnerPrincipalKind,
+    owner_principal_kind: OwnerRefKind,
     owner_principal_id: uuid::Uuid,
     pub(super) schema_id: String,
     pub(super) schema_version: i32,
@@ -146,7 +145,7 @@ pub(super) struct MemoryRowDb {
 /// owner has events.
 pub(super) async fn read_seq_high_water(
     pool: &PgPool,
-    read_owner_kinds: &[OwnerPrincipalKind],
+    read_owner_kinds: &[OwnerRefKind],
     read_owner_ids: &[uuid::Uuid],
 ) -> Result<Option<uuid::Uuid>, StorageError> {
     let (world_kind, world_id) = proxima_core::access::world().columns();

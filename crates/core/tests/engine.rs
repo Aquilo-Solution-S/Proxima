@@ -9,47 +9,38 @@ use proxima_core::engine::{EmbeddingClientReloader, Engine};
 use proxima_core::error::ErrorCode;
 use proxima_core::ids::{SourceBatchId, UserId};
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient};
-use proxima_core::owner::{Owner, Principal};
+use proxima_core::owner::{Owner, OwnerRef};
 use proxima_core::verbs::event_history::EventHistoryRequest;
 use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, SchemaRequest};
-use proxima_core::{
-    AccessScope, AuthPath, AuthzContext, CapabilitySet, Identity, McpCallLogInput, ToolScope,
-};
+use proxima_core::{AuthPath, AuthzContext, McpCallLogInput};
 use test_fixtures::ConstantEmbedding;
 use uuid::Uuid;
 
-fn fresh_owner() -> (Principal, Owner) {
+type ResolvedAuthz = AuthzContext;
+
+fn fresh_owner() -> (OwnerRef, Owner) {
     let user = UserId::new(Uuid::now_v7());
-    let principal = Principal::User(user);
-    let owner = principal.clone();
+    let principal = OwnerRef::Personal(user);
+    let owner = principal;
     (principal, owner)
 }
 
-fn boot_engine(principal: Principal, owner: Owner) -> Engine {
+fn boot_engine(principal: OwnerRef, owner: Owner) -> Engine {
     let _ = (principal, owner);
     Engine::new(FlavorRegistryFrozen::new())
 }
 
-fn fresh_caller() -> Principal {
-    Principal::User(UserId::new(Uuid::now_v7()))
+fn fresh_caller() -> OwnerRef {
+    OwnerRef::Personal(UserId::new(Uuid::now_v7()))
 }
 
-fn granted_no_access_authz(auth_path: AuthPath) -> AuthzContext {
-    AuthzContext {
-        identity: Identity {
-            principal: fresh_caller(),
-            accessible_principals: std::collections::HashSet::new(),
-            expires_at: None,
-            auth_epoch: 0,
-        },
-        capabilities: CapabilitySet {
-            tool_scope: ToolScope::All,
-            access: AccessScope::Granted,
-        },
-        auth_path,
-    }
+fn granted_no_access_authz(auth_path: AuthPath) -> ResolvedAuthz {
+    let OwnerRef::Personal(user) = fresh_caller() else {
+        unreachable!("fresh caller is personal");
+    };
+    AuthzContext::for_subject(user, auth_path)
 }
 
 #[derive(Debug)]
@@ -82,8 +73,8 @@ fn schema_verb_returns_empty_registry() {
 #[tokio::test]
 async fn reload_embedding_client_replaces_engine_slot() {
     let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner.clone())
-        .with_embedding_reloader(Arc::new(FixedEmbeddingReloader));
+    let engine =
+        boot_engine(principal, owner).with_embedding_reloader(Arc::new(FixedEmbeddingReloader));
 
     assert!(engine.embed_client().is_none());
     let outcome = engine
@@ -116,11 +107,11 @@ async fn drain_embedding_jobs_without_client_is_noop() {
 #[tokio::test]
 async fn query_verb_returns_empty_for_configured_owner() {
     let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner.clone());
+    let engine = boot_engine(principal, owner);
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
 
     let resp = engine
-        .query(&authz, &QueryRequest::for_principal(owner.clone()))
+        .query(&authz, &QueryRequest::for_principal(owner))
         .await
         .expect("single-owner query must succeed");
 
@@ -134,7 +125,7 @@ async fn query_verb_returns_empty_for_configured_owner() {
 #[tokio::test]
 async fn query_scopes_reads_to_authz_context_not_client_principal() {
     let (principal, configured) = fresh_owner();
-    let engine = boot_engine(principal, configured.clone());
+    let engine = boot_engine(principal, configured);
     let authz = AuthzContext::single_owner(&configured, AuthPath::System);
     let (_, foreign) = fresh_owner();
 
@@ -145,9 +136,9 @@ async fn query_scopes_reads_to_authz_context_not_client_principal() {
     // vector: it can never widen what the caller sees, so the verb returns the
     // caller's accessible subset (empty here under NoopStorage) rather than
     // Forbidden. Cross-principal no-leak against real data is proven in the PG
-    // integration suite (entity_owner_pg).
+    // integration suite (owner_ref_compat_pg).
     let resp = engine
-        .query(&authz, &QueryRequest::for_principal(foreign.clone()))
+        .query(&authz, &QueryRequest::for_principal(foreign))
         .await
         .expect("a foreign client principal is scoped away, not rejected");
     assert!(resp.memories.is_empty() && resp.goals.is_empty() && resp.edges.is_empty());
@@ -156,13 +147,13 @@ async fn query_scopes_reads_to_authz_context_not_client_principal() {
 #[tokio::test]
 async fn tombstone_personality_rejects_noop_storage_write() {
     let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner.clone());
+    let engine = boot_engine(principal, owner);
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let err = engine
         .tombstone_personality(
             &authz,
             proxima_core::TombstonePersonalityRequest {
-                principal: owner.clone(),
+                principal: owner,
                 personality_instance_id: proxima_core::PersonalityInstanceId::new(Uuid::now_v7()),
             },
         )
@@ -174,11 +165,11 @@ async fn tombstone_personality_rejects_noop_storage_write() {
 #[tokio::test]
 async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
     let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner.clone());
+    let engine = boot_engine(principal, owner);
     let authz = granted_no_access_authz(AuthPath::Wake);
 
     let ingest_err = engine
-        .close_batch(&authz, owner.clone(), SourceBatchId::new(Uuid::now_v7()))
+        .close_batch(&authz, owner, SourceBatchId::new(Uuid::now_v7()))
         .await
         .expect_err("wake context must not close batches");
     assert!(
@@ -201,7 +192,7 @@ async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
 #[tokio::test]
 async fn event_history_ignores_client_principal_as_access_vector() {
     let (principal, owner_a) = fresh_owner();
-    let engine = boot_engine(principal, owner_a.clone());
+    let engine = boot_engine(principal, owner_a);
     let (_, owner_b) = fresh_owner();
     let authz = AuthzContext::single_owner(&owner_a, AuthPath::System);
     let response = engine
@@ -221,7 +212,7 @@ async fn event_history_ignores_client_principal_as_access_vector() {
 
 fn sample_mcp_input(owner: &Owner) -> McpCallLogInput {
     McpCallLogInput {
-        owner: owner.clone(),
+        owner: *owner,
         actor_oid: "oid-1".into(),
         actor_upn: "agent@example.com".into(),
         tool_name: "core_search_memories".into(),
@@ -239,7 +230,7 @@ fn sample_mcp_input(owner: &Owner) -> McpCallLogInput {
 #[tokio::test]
 async fn persist_mcp_call_rejects_context_without_ingest_grant() {
     let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner.clone());
+    let engine = boot_engine(principal, owner);
     let authz = granted_no_access_authz(AuthPath::HostBearer);
 
     let err = engine
@@ -252,7 +243,7 @@ async fn persist_mcp_call_rejects_context_without_ingest_grant() {
 #[tokio::test]
 async fn read_mcp_call_history_rejects_context_without_read_grant() {
     let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner.clone());
+    let engine = boot_engine(principal, owner);
     let authz = granted_no_access_authz(AuthPath::HostBearer);
 
     let err = engine
@@ -272,7 +263,7 @@ async fn read_mcp_call_history_rejects_context_without_read_grant() {
 #[tokio::test]
 async fn persist_mcp_call_rejects_owner_the_context_cannot_access() {
     let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner.clone());
+    let engine = boot_engine(principal, owner);
     // A context scoped to a different owner must not write the log,
     // even though the caller supplied `owner` in the input.
     let (_, stranger_owner) = fresh_owner();
@@ -288,7 +279,7 @@ async fn persist_mcp_call_rejects_owner_the_context_cannot_access() {
 #[tokio::test]
 async fn persist_mcp_call_rejects_context_without_graph_write_role() {
     let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner.clone());
+    let engine = boot_engine(principal, owner);
     let authz = granted_no_access_authz(AuthPath::HostBearer);
 
     let err = engine
@@ -301,7 +292,7 @@ async fn persist_mcp_call_rejects_context_without_graph_write_role() {
 #[tokio::test]
 async fn persist_mcp_call_authorized_context_clears_the_gate() {
     let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner.clone());
+    let engine = boot_engine(principal, owner);
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     // A context that clears the authz gate reaches storage; NoopStorage
     // then rejects the write with Internal — distinguishing "gate
@@ -316,7 +307,7 @@ async fn persist_mcp_call_authorized_context_clears_the_gate() {
 #[tokio::test]
 async fn read_mcp_call_history_rejects_context_without_graph_read_role() {
     let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner.clone());
+    let engine = boot_engine(principal, owner);
     let authz = granted_no_access_authz(AuthPath::HostBearer);
 
     let err = engine
@@ -336,7 +327,7 @@ async fn read_mcp_call_history_rejects_context_without_graph_read_role() {
 #[tokio::test]
 async fn read_mcp_call_history_rejects_zero_limit_as_invalid_argument() {
     let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner.clone());
+    let engine = boot_engine(principal, owner);
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
 
     let err = engine
@@ -358,7 +349,7 @@ async fn read_mcp_call_history_rejects_zero_limit_as_invalid_argument() {
 #[tokio::test]
 async fn fact_retention_rejects_owner_the_context_cannot_access() {
     let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner.clone());
+    let engine = boot_engine(principal, owner);
     let (_, stranger_owner) = fresh_owner();
     let stranger = AuthzContext::single_owner(&stranger_owner, AuthPath::System);
 
@@ -390,7 +381,7 @@ async fn fact_retention_rejects_owner_the_context_cannot_access() {
 #[tokio::test]
 async fn fact_retention_rejects_context_without_admin_role() {
     let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner.clone());
+    let engine = boot_engine(principal, owner);
     let authz = granted_no_access_authz(AuthPath::HostBearer);
 
     let err = engine
@@ -421,7 +412,7 @@ async fn fact_retention_rejects_context_without_admin_role() {
 #[tokio::test]
 async fn fact_retention_authorized_context_clears_the_gate() {
     let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner.clone());
+    let engine = boot_engine(principal, owner);
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
 
     let err = engine

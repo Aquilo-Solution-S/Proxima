@@ -81,7 +81,7 @@ pub async fn list_events(
         .list_events(
             &ctx.authz,
             &ListEventsReadRequest {
-                principal: ctx.owner.clone(),
+                principal: ctx.owner,
                 after,
                 limit: overfetch_limit(limit),
             },
@@ -253,7 +253,7 @@ mod tests {
         ChangeEventForWake {
             event: ChangeEvent {
                 seq,
-                owner: crate::Principal::User(crate::UserId::new(uuid::Uuid::now_v7())),
+                owner: crate::OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7())),
                 kind: ChangeEventKind::EntityDelete {
                     entity_kind: EntityKind::Fact,
                     entity: EntityRef::Memory(MemoryId::new(uuid::Uuid::now_v7())),

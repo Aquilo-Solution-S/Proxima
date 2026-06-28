@@ -5,10 +5,10 @@
 //! the pull-read decode in `change_event.rs` relies on, so a raw INSERT
 //! cannot persist an undecodable row. Mirrors the edges endpoint CHECKs.
 
-use proxima_core::{Owner, OwnerPrincipalKind};
+use proxima_core::{Owner, OwnerRefKind};
 use uuid::Uuid;
 
-fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
+fn owner_parts(owner: &Owner) -> (OwnerRefKind, Uuid) {
     owner.columns()
 }
 

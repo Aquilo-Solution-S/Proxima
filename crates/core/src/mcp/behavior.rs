@@ -78,7 +78,7 @@ impl ScopeGateBehavior {
         args: &serde_json::Value,
         ctx: &McpToolCtx,
     ) -> Result<(), McpToolError> {
-        let scope = &ctx.authz.capabilities.tool_scope;
+        let scope = ctx.authz.tool_scope();
         if core_tool_has_actions(tool) {
             if !scope.allows_group_advertisement(tool) {
                 return Err(McpToolError::NotAuthorized(tool.to_string()));
@@ -122,7 +122,7 @@ mod tests {
     use super::*;
     use crate::{
         AuthPath, AuthzContext, FlavorRegistry, McpAuthorContext, McpToolExtensions, OutputMode,
-        Principal, ToolScope, UserId,
+        OwnerRef, ToolScope, UserId,
     };
 
     #[derive(Debug)]
@@ -226,11 +226,11 @@ mod tests {
     }
 
     fn test_ctx(tool_scope: ToolScope) -> McpToolCtx {
-        let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
-        let mut authz = AuthzContext::single_owner(&owner, AuthPath::System);
-        authz.capabilities.tool_scope = tool_scope;
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let authz =
+            AuthzContext::single_owner(&owner, AuthPath::System).with_tool_scope(tool_scope);
         McpToolCtx {
-            owner: owner.clone(),
+            owner,
             authz,
             handles: None,
             mode: OutputMode::PrefixedIds,

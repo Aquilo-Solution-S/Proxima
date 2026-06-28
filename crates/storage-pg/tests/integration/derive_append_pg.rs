@@ -1,8 +1,8 @@
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::storage::{Storage, StorageError};
 use proxima_core::{
-    AgentDerivationV1, EntityKind, MemoryId, MemoryOperatorKind, Owner, PersonalityInstanceId,
-    Principal, SchemaId, SchemaVersion, SidecarPayload, UserId,
+    AgentDerivationV1, EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerRef,
+    PersonalityInstanceId, SchemaId, SchemaVersion, SidecarPayload, UserId,
 };
 use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_in_tx};
 use proxima_storage_pg::{PgSidecarRegistryFrozen, verbs::derive_append::DerivedOutcome};
@@ -156,7 +156,7 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
     let result = async {
         pg.run_migrations().await?;
         let attacker = owner_fixture();
-        let victim = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let victim = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
 
         let victim_prior_id = uuid::Uuid::now_v7();
         let victim_prior = agent_draft(
@@ -174,7 +174,7 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
 
         let mut foreign = agent_draft(
             uuid::Uuid::now_v7(),
-            attacker.clone(),
+            attacker,
             EntityKind::Abstraction,
             "foreign",
             "foreign successor",
@@ -195,7 +195,7 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
         let attacker_prior_id = uuid::Uuid::now_v7();
         let attacker_prior = agent_draft(
             attacker_prior_id,
-            attacker.clone(),
+            attacker,
             EntityKind::Abstraction,
             "attacker",
             "attacker prior",
@@ -208,7 +208,7 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
 
         let mut same_owner = agent_draft(
             uuid::Uuid::now_v7(),
-            attacker.clone(),
+            attacker,
             EntityKind::Abstraction,
             "same-owner",
             "same-owner successor",
@@ -231,7 +231,7 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
         let attacker_perspective_id = uuid::Uuid::now_v7();
         let attacker_perspective = agent_draft(
             attacker_perspective_id,
-            attacker.clone(),
+            attacker,
             EntityKind::Perspective,
             "perspective",
             "attacker perspective",
@@ -295,13 +295,13 @@ async fn external_agent_abstraction_stamps_author_without_change_event_author()
         pg.run_migrations().await?;
 
         let owner = owner_fixture();
-        let subject = owner.clone();
+        let subject = owner;
         let personality = pg.ensure_subject_personality(&owner, &subject).await?;
 
         let authored_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"derive-author-test-1");
         let authored = agent_draft(
             authored_id,
-            owner.clone(),
+            owner,
             EntityKind::Abstraction,
             "authored",
             "authored abstraction",

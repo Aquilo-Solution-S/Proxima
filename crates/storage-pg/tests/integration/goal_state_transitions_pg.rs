@@ -2,11 +2,11 @@ use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::verbs::goal_write::GoalAuthorshipKind::{External, System, User};
 use proxima_core::verbs::goal_write::GoalState::{Abandoned, Achieved, Active, Paused};
 use proxima_core::verbs::goal_write::{GoalAuthorshipKind, GoalAuthorshipOrigin, GoalState};
-use proxima_core::{Owner, OwnerPrincipalKind};
+use proxima_core::{Owner, OwnerRefKind};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
-fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
+fn owner_parts(owner: &Owner) -> (OwnerRefKind, Uuid) {
     owner.columns()
 }
 
@@ -48,22 +48,18 @@ async fn insert_goal(
     .bind(request_id)
     .fetch_one(pg.pool())
     .await?;
-    insert_entity_owner_home(pg, inserted, owner).await?;
+    insert_home(pg, inserted, owner).await?;
     Ok(inserted)
 }
 
-async fn insert_entity_owner_home(
-    pg: &PgStorage,
-    entity_id: Uuid,
-    owner: &Owner,
-) -> Result<(), sqlx::Error> {
+async fn insert_home(pg: &PgStorage, entity_id: Uuid, owner: &Owner) -> Result<(), sqlx::Error> {
     let (owner_kind, owner_principal_id) = owner_parts(owner);
-    sqlx::query(
-        "INSERT INTO proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "INSERT INTO __PROXIMA_ENTITY_OWNER__
             (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
          VALUES ($1, $2, $3, true, $4)
          ON CONFLICT DO NOTHING",
-    )
+    ))
     .bind(entity_id)
     .bind(owner_kind)
     .bind(owner_principal_id)

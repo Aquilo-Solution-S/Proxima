@@ -7,7 +7,7 @@ use uuid::Uuid;
 fn test_owner_principal_roundtrip() {
     let user_id = UserId::new(Uuid::now_v7());
 
-    let owner = Owner::User(user_id);
+    let owner = Owner::Personal(user_id);
 
     let json = serde_json::to_string(&owner).unwrap();
     let decoded: Owner = serde_json::from_str(&json).unwrap();

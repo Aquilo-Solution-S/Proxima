@@ -9,8 +9,8 @@
 //! insert; the loser would return an orphan personality id.
 
 use proxima_core::{
-    InstantiatePersonalityRequest, MasterTokenPersonality, MemoryId, Owner, OwnerPrincipalKind,
-    PersonalityInstanceId, Principal, StorageError,
+    InstantiatePersonalityRequest, MasterTokenPersonality, MemoryId, Owner, OwnerRef, OwnerRefKind,
+    PersonalityInstanceId, StorageError,
 };
 use sqlx::{PgConnection, PgPool, Row};
 use uuid::Uuid;
@@ -30,7 +30,7 @@ const LOCK_KEY_DOMAIN: &[u8] = b"subject_personality_lock_v1";
 pub async fn ensure_subject_personality(
     pool: &PgPool,
     owner: &Owner,
-    subject: &Principal,
+    subject: &OwnerRef,
 ) -> Result<MasterTokenPersonality, StorageError> {
     let (owner_kind, owner_principal_id) = owner.columns();
     let (subject_kind, subject_principal_id) = subject.columns();
@@ -75,9 +75,9 @@ pub async fn ensure_subject_personality(
 async fn mint_under_lock(
     conn: &mut PgConnection,
     owner: &Owner,
-    owner_kind: OwnerPrincipalKind,
+    owner_kind: OwnerRefKind,
     owner_principal_id: Uuid,
-    subject_kind: OwnerPrincipalKind,
+    subject_kind: OwnerRefKind,
     subject_principal_id: Uuid,
 ) -> Result<MasterTokenPersonality, StorageError> {
     // Re-check inside the lock: a peer may have minted while we waited.
@@ -94,7 +94,7 @@ async fn mint_under_lock(
     }
 
     let req = InstantiatePersonalityRequest {
-        principal: owner.clone(),
+        principal: *owner,
         display_name: SUBJECT_DISPLAY_NAME.into(),
     };
     let resp = consolidate::instantiate_personality_on_conn(&mut *conn, &req).await?;
@@ -135,9 +135,9 @@ async fn mint_under_lock(
 
 async fn lookup_pool(
     pool: &PgPool,
-    owner_kind: OwnerPrincipalKind,
+    owner_kind: OwnerRefKind,
     owner_principal_id: Uuid,
-    subject_kind: OwnerPrincipalKind,
+    subject_kind: OwnerRefKind,
     subject_principal_id: Uuid,
 ) -> Result<Option<MasterTokenPersonality>, StorageError> {
     let row = sqlx::query(
@@ -164,9 +164,9 @@ async fn lookup_pool(
 
 async fn lookup_conn(
     conn: &mut PgConnection,
-    owner_kind: OwnerPrincipalKind,
+    owner_kind: OwnerRefKind,
     owner_principal_id: Uuid,
-    subject_kind: OwnerPrincipalKind,
+    subject_kind: OwnerRefKind,
     subject_principal_id: Uuid,
 ) -> Result<Option<MasterTokenPersonality>, StorageError> {
     let row = sqlx::query(
@@ -198,7 +198,7 @@ fn into_personality(row: &sqlx::postgres::PgRow) -> MasterTokenPersonality {
     }
 }
 
-fn lock_key(subject_kind: OwnerPrincipalKind, subject_id: Uuid) -> i64 {
+fn lock_key(subject_kind: OwnerRefKind, subject_id: Uuid) -> i64 {
     let mut hasher = blake3::Hasher::new();
     hasher.update(LOCK_KEY_DOMAIN);
     hasher.update(subject_kind.as_str().as_bytes());

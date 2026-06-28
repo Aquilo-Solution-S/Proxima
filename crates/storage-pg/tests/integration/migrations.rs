@@ -31,7 +31,7 @@ async fn migrations_apply_to_fresh_db() {
             row.0
         );
 
-        // S0 (Owner = Principal collapse, Track B): owner_org_id must be GONE
+        // S0 (Owner = OwnerRef collapse, Track B): owner_org_id must be GONE
         // from every proxima_core table. This is the keystone gate for the
         // DDL-drop migration — a single missed column would silently keep org
         // in storage and pass the table-count check above.

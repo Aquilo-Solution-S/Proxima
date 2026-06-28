@@ -12,7 +12,7 @@ use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtens
 use proxima_core::storage::Storage;
 use proxima_core::{
     AuthPath, AuthzContext, Engine, FlavorRegistry, InstantiatePersonalityRequest, McpTool,
-    Principal, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind,
+    OwnerRef, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind,
 };
 use proxima_storage_pg::PgStorage;
 
@@ -24,10 +24,10 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
 
-    let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let inst = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            principal: owner.clone(),
+            principal: owner,
             display_name: "caller".into(),
         })
         .await?;
@@ -46,7 +46,7 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
 
     // Construct an McpToolCtx pretending we're a wake invocation on this personality.
     let ctx = McpToolCtx {
-        owner: owner.clone(),
+        owner,
         authz: AuthzContext::single_owner(&owner, AuthPath::System),
         handles: Some(Arc::new(HandleTable::new())),
         mode: OutputMode::Handles,

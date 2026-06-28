@@ -15,7 +15,6 @@ pub enum PersonalityConfigChangedVerb {
     AddWakeEntry,
     UpdateWakeEntry,
     RemoveWakeEntry,
-    SetReadScope,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -65,9 +64,6 @@ pub enum PersonalityConfigChangeSnapshot {
         wake_entry_count: usize,
         wake_entry_ids: Vec<uuid::Uuid>,
     },
-    ReadScope {
-        readable_personality_instance_ids: Vec<uuid::Uuid>,
-    },
 }
 
 impl FactPayload for PersonalityConfigChangedV1 {
@@ -104,7 +100,6 @@ impl PersonalityConfigChangedVerb {
             Self::AddWakeEntry => "add_wake_entry",
             Self::UpdateWakeEntry => "update_wake_entry",
             Self::RemoveWakeEntry => "remove_wake_entry",
-            Self::SetReadScope => "set_read_scope",
         }
     }
 }
@@ -195,15 +190,6 @@ fn add_snapshot_to_key(
             key.field_str(&format!("{prefix}.kind"), "wake_entries");
             key.field_usize(&format!("{prefix}.wake_entry_count"), *wake_entry_count);
             key.field_uuid_list(&format!("{prefix}.wake_entry_ids"), wake_entry_ids);
-        }
-        PersonalityConfigChangeSnapshot::ReadScope {
-            readable_personality_instance_ids,
-        } => {
-            key.field_str(&format!("{prefix}.kind"), "read_scope");
-            key.field_uuid_list(
-                &format!("{prefix}.readable_personality_instance_ids"),
-                readable_personality_instance_ids,
-            );
         }
     }
 }

@@ -92,7 +92,7 @@ fn test_allows_loopback_http(_url: &reqwest::Url) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use proxima_core::{Principal, UserId};
+    use proxima_core::{OwnerRef, UserId};
 
     use super::*;
 
@@ -101,7 +101,7 @@ mod tests {
             issuer: issuer.to_string(),
             jwks_uri: jwks_uri.map(ToOwned::to_owned),
             audience: "proxima-api".to_string(),
-            owner: Principal::User(UserId::new(uuid::Uuid::now_v7())),
+            owner: OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7())),
             allowed_subjects: None,
             leeway_secs: 60,
         }

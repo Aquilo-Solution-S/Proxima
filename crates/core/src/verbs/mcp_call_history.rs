@@ -2,13 +2,13 @@
 //! MCP-call activity log, optionally scoped to a single actor. Read-side
 //! counterpart to `persist_mcp_call`. See docs/14 §protocol surface.
 
-use crate::Principal;
+use crate::OwnerRef;
 
 pub const MAX_MCP_CALL_HISTORY_LIMIT: u32 = 200;
 
 #[derive(Debug, Clone)]
 pub struct McpCallHistoryRequest {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     /// `Some` => scope to one actor (per-user privacy view); `None` => all
     /// actors under the Owner.
     pub actor_oid: Option<String>,

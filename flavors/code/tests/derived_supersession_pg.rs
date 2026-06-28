@@ -3,7 +3,7 @@ mod common;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use common::{TestDb, insert_entity_owner_home, test_owner};
+use common::{TestDb, insert_home, test_owner};
 use proxima_code::{
     CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1, build_engine,
 };
@@ -56,7 +56,7 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     .execute(db.pg.pool())
     .await
     .expect("insert goal activation evidence");
-    insert_entity_owner_home(db.pg.pool(), goal_activated_memory_id, &owner)
+    insert_home(db.pg.pool(), goal_activated_memory_id, &owner)
         .await
         .expect("insert goal activation home owner");
 
@@ -68,7 +68,7 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     let old_outcome = engine
         .author_derived(proxima_core::AuthorDerivedRequestInput {
             memory_id: old_memory_id,
-            owner: owner.clone(),
+            owner,
             kind: EntityKind::Abstraction,
             text: old_payload.summary.clone(),
             schema_id: SchemaId::new(CodeExecutionPlanV1::SCHEMA_ID.into()),
@@ -89,7 +89,7 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     let new_outcome = engine
         .author_derived(proxima_core::AuthorDerivedRequestInput {
             memory_id: new_memory_id,
-            owner: owner.clone(),
+            owner,
             kind: EntityKind::Abstraction,
             text: new_payload.summary.clone(),
             schema_id: SchemaId::new(CodeExecutionPlanV1::SCHEMA_ID.into()),
@@ -130,11 +130,12 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     .expect("read supersedes edge");
     assert_eq!(edge_count, 1);
 
-    let current_plan_ids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT m.memory_id
+    let current_plan_ids: Vec<Uuid> =
+        sqlx::query_scalar(proxima_storage_pg::access::owner_ref_compat::sql(
+            "SELECT m.memory_id
            FROM proxima_core.memories m
            JOIN proxima_code.execution_plan_v1 p USING (memory_id)
-           JOIN proxima_core.entity_owner eo
+           JOIN __PROXIMA_ENTITY_OWNER__ eo
              ON eo.entity_id = m.memory_id
             AND eo.is_home
           WHERE eo.owner_principal_kind = $1
@@ -146,14 +147,14 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
                   WHERE newer.supersedes = m.memory_id
                     AND newer.tombstoned_at IS NULL
             )",
-    )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(CodeExecutionPlanV1::SCHEMA_ID)
-    .bind(plan_key)
-    .fetch_all(db.pg.pool())
-    .await
-    .expect("query current code plans");
+        ))
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .bind(CodeExecutionPlanV1::SCHEMA_ID)
+        .bind(plan_key)
+        .fetch_all(db.pg.pool())
+        .await
+        .expect("query current code plans");
     assert_eq!(current_plan_ids, vec![new_memory_id.into_inner()]);
 }
 

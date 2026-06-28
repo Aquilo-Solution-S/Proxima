@@ -8,7 +8,7 @@ use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
 };
 use proxima_core::{
-    MemoryId, Owner, PersonalityInstanceId, Principal, SchemaId, SchemaVersion,
+    MemoryId, Owner, OwnerRef, PersonalityInstanceId, SchemaId, SchemaVersion,
     SearchProjectionColumnKind, SourceBatchId, SourceId, Storage, UserId,
 };
 use uuid::Uuid;
@@ -20,7 +20,7 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
     pg.run_migrations().await?;
 
     let owner = owner_fixture();
-    let other_owner = Principal::User(UserId::new(Uuid::from_u128(7)));
+    let other_owner = OwnerRef::Personal(UserId::new(Uuid::from_u128(7)));
 
     let near = insert_embedded_memory(&pg, &owner, "nearest", [0.99, 0.01, 0.0]).await?;
     let far = insert_embedded_memory(&pg, &owner, "orthogonal", [0.0, 1.0, 0.0]).await?;
@@ -29,8 +29,8 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
     let rows = pg
         .search_memories(
             &MemorySearchRequest {
-                principal: owner.clone(),
-                read_owners: vec![owner.clone()],
+                principal: owner,
+                read_owners: vec![owner],
                 query: "semantic query".into(),
                 mode: SearchMode::Semantic,
                 supersession: SupersessionStatus::HeadsOnly,
@@ -69,7 +69,7 @@ async fn search_heads_only_ignores_cross_owner_supersedes_successor()
     pg.run_migrations().await?;
 
     let victim = owner_fixture();
-    let attacker = Principal::User(UserId::new(Uuid::now_v7()));
+    let attacker = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
     let foreign_shadowed = insert_search_abstraction(
         &pg,
         &victim,
@@ -97,8 +97,8 @@ async fn search_heads_only_ignores_cross_owner_supersedes_successor()
     let rows = pg
         .search_memories(
             &MemorySearchRequest {
-                principal: victim.clone(),
-                read_owners: vec![victim.clone()],
+                principal: victim,
+                read_owners: vec![victim],
                 query: "headscope".into(),
                 mode: SearchMode::Lexical,
                 supersession: SupersessionStatus::HeadsOnly,
@@ -284,8 +284,8 @@ async fn search_projects_authoring_personality_and_nil_as_none()
     let authored_rows = pg
         .search_memories(
             &MemorySearchRequest {
-                principal: owner.clone(),
-                read_owners: vec![owner.clone()],
+                principal: owner,
+                read_owners: vec![owner],
                 query: "authored attribution".into(),
                 mode: SearchMode::Lexical,
                 supersession: SupersessionStatus::HeadsOnly,
@@ -313,8 +313,8 @@ async fn search_projects_authoring_personality_and_nil_as_none()
     let nil_rows = pg
         .search_memories(
             &MemorySearchRequest {
-                principal: owner.clone(),
-                read_owners: vec![owner.clone()],
+                principal: owner,
+                read_owners: vec![owner],
                 query: "nil attribution".into(),
                 mode: SearchMode::Lexical,
                 supersession: SupersessionStatus::HeadsOnly,
@@ -682,7 +682,7 @@ async fn insert_tagged_abstraction(
         .execute(pg.pool())
         .await?;
     }
-    insert_entity_owner_home(pg, input.memory_id, owner).await?;
+    insert_home(pg, input.memory_id, owner).await?;
     Ok(MemoryId::new(input.memory_id))
 }
 
@@ -728,7 +728,7 @@ async fn insert_embedded_memory_with_vec(
     .bind(owner_principal_id)
     .execute(pg.pool())
     .await?;
-    insert_entity_owner_home(pg, memory_id, owner).await?;
+    insert_home(pg, memory_id, owner).await?;
     Ok(memory_id)
 }
 
@@ -752,7 +752,7 @@ async fn insert_text_memory(
     .bind(personality_instance_id)
     .execute(pg.pool())
     .await?;
-    insert_entity_owner_home(pg, memory_id, owner).await?;
+    insert_home(pg, memory_id, owner).await?;
     Ok(memory_id)
 }
 
@@ -776,22 +776,22 @@ async fn insert_search_abstraction(
     .bind(supersedes)
     .execute(pg.pool())
     .await?;
-    insert_entity_owner_home(pg, memory_id, owner).await?;
+    insert_home(pg, memory_id, owner).await?;
     Ok(memory_id)
 }
 
-async fn insert_entity_owner_home(
+async fn insert_home(
     pg: &proxima_storage_pg::PgStorage,
     entity_id: Uuid,
     owner: &Owner,
 ) -> Result<(), sqlx::Error> {
     let (owner_kind, owner_principal_id) = owner.columns();
-    sqlx::query(
-        "INSERT INTO proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "INSERT INTO __PROXIMA_ENTITY_OWNER__
             (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
          VALUES ($1, $2, $3, true, $4)
          ON CONFLICT DO NOTHING",
-    )
+    ))
     .bind(entity_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -817,7 +817,7 @@ async fn ingest_fact_memory(
             &EventDraft {
                 source_id: SourceId::new("test/search"),
                 source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-                principal: owner.clone(),
+                principal: *owner,
                 author_personality_instance_id: None,
                 schema_id: SchemaId::new(schema_id.to_string()),
                 schema_version: SchemaVersion::new(1),
@@ -845,8 +845,8 @@ async fn ingest_fact_memory(
 
 fn lexical_request(owner: &Owner, query: &str) -> MemorySearchRequest {
     MemorySearchRequest {
-        principal: owner.clone(),
-        read_owners: vec![owner.clone()],
+        principal: *owner,
+        read_owners: vec![*owner],
         query: query.into(),
         mode: SearchMode::Lexical,
         supersession: SupersessionStatus::HeadsOnly,
@@ -866,8 +866,8 @@ fn lexical_request(owner: &Owner, query: &str) -> MemorySearchRequest {
 
 fn semantic_request(owner: &Owner, query_embedding: Vec<f32>) -> MemorySearchRequest {
     MemorySearchRequest {
-        principal: owner.clone(),
-        read_owners: vec![owner.clone()],
+        principal: *owner,
+        read_owners: vec![*owner],
         query: "semantic query".into(),
         mode: SearchMode::Semantic,
         supersession: SupersessionStatus::HeadsOnly,
@@ -887,8 +887,8 @@ fn semantic_request(owner: &Owner, query_embedding: Vec<f32>) -> MemorySearchReq
 
 fn tagged_search_request(owner: &Owner, query: &str, mode: SearchMode) -> MemorySearchRequest {
     MemorySearchRequest {
-        principal: owner.clone(),
-        read_owners: vec![owner.clone()],
+        principal: *owner,
+        read_owners: vec![*owner],
         query: query.into(),
         mode,
         supersession: SupersessionStatus::HeadsOnly,

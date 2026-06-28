@@ -5,7 +5,7 @@
 use proxima_core::verbs::event_history::{
     EventHistoryRequest, EventHistoryResponse, MAX_EVENT_HISTORY_LIMIT,
 };
-use proxima_core::{ChangeEvent, OwnerPrincipalKind, Principal, StorageError};
+use proxima_core::{ChangeEvent, OwnerRef, OwnerRefKind, StorageError};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -15,7 +15,7 @@ use crate::verbs::consolidate::edge_event_visibility_predicate;
 
 pub(crate) async fn event_history(
     pool: &PgPool,
-    read_owners: &[Principal],
+    read_owners: &[OwnerRef],
     req: &EventHistoryRequest,
 ) -> Result<EventHistoryResponse, StorageError> {
     if read_owners.is_empty() {
@@ -85,7 +85,7 @@ pub(crate) async fn event_history(
     })
 }
 
-fn read_owner_columns(read_owners: &[Principal]) -> (Vec<OwnerPrincipalKind>, Vec<uuid::Uuid>) {
+fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<uuid::Uuid>) {
     let kinds = read_owners
         .iter()
         .map(|principal| principal.columns().0)

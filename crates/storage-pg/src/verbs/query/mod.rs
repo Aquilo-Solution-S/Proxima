@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use proxima_core::{
-    FactEntityId, Owner, OwnerPrincipalKind, Principal, SchemaId, SchemaVersion, StorageError,
+    FactEntityId, Owner, OwnerRef, OwnerRefKind, SchemaId, SchemaVersion, StorageError,
 };
 use sqlx::{Executor, PgConnection, PgPool, Postgres};
 
@@ -38,7 +38,7 @@ pub(crate) use search::search_memories;
 
 /// Append the same-home-owner successor predicate: a successor row
 /// (`successor_alias`) suppresses a head row (`head_alias`) only when both
-/// share the same home `entity_owner`. Supersession is intra-Owner
+/// share the same home owner-row. Supersession is intra-Owner
 /// (`Causa/Edges.lean` `supersession_intra_owner`), so a cross-Owner
 /// successor — corrupt or forged — never hides another Owner's head.
 pub(super) fn push_same_home_owner_successor_predicate(
@@ -48,23 +48,24 @@ pub(super) fn push_same_home_owner_successor_predicate(
 ) {
     write!(
         sql,
-        " AND EXISTS ( \
-            SELECT 1 FROM proxima_core.entity_owner eo_s \
+        "{}",
+        crate::access::owner_ref_compat::sql_owned(format!(
+            " AND EXISTS ( \
+            SELECT 1 FROM __PROXIMA_ENTITY_OWNER__ eo_s \
              WHERE eo_s.entity_id = {successor_alias}.memory_id AND eo_s.is_home \
                AND EXISTS ( \
-                   SELECT 1 FROM proxima_core.entity_owner eo_h \
+                   SELECT 1 FROM __PROXIMA_ENTITY_OWNER__ eo_h \
                     WHERE eo_h.entity_id = {head_alias}.memory_id AND eo_h.is_home \
                       AND eo_h.owner_principal_kind = eo_s.owner_principal_kind \
                       AND eo_h.owner_principal_id = eo_s.owner_principal_id \
                ) \
-        )",
+        )"
+        ))
     )
     .expect("write to String is infallible");
 }
 
-pub(crate) fn read_owner_columns(
-    read_owners: &[Principal],
-) -> (Vec<OwnerPrincipalKind>, Vec<uuid::Uuid>) {
+pub(crate) fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<uuid::Uuid>) {
     let kinds = read_owners
         .iter()
         .map(|principal| principal.columns().0)

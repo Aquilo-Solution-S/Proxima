@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use crate::access::{EntityId, Relation};
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
-use crate::{GroupId, Owner, Principal};
+use crate::{GroupId, Owner, OwnerRef};
 
 /// Reason a hook denied an otherwise-allowed request.
 #[derive(Debug)]
@@ -26,11 +26,11 @@ pub enum AuthzOperation {
     /// Membership mutation audited by group, member, and relation.
     Membership {
         group: GroupId,
-        member: Principal,
+        member: OwnerRef,
         relation: Relation,
     },
     /// Entity ownership/share mutation audited by entity and owner.
-    EntityShare { entity: EntityId, owner: Principal },
+    EntityShare { entity: EntityId, owner: OwnerRef },
 }
 
 #[derive(Debug)]

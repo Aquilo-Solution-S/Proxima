@@ -16,9 +16,8 @@ use std::time::Duration;
 use proxima_core::SidecarPayload;
 use proxima_core::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
-    InstantiatePersonalityResponse, ListReadScopeRequest, ListReadScopeResponse, MemorySnapshot,
-    PersonalityInstanceId, PersonalityInstanceRow, PersonalityRef, PersonalityWriteOutcome,
-    PersonalityWriteRequest, SetReadScopeRequest, SetReadScopeResponse, SetWakeEntriesRequest,
+    InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
+    PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeEntriesRequest,
     SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse,
 };
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
@@ -40,10 +39,10 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EdgeEndpointKindRow, EdgeId,
-    EmbeddingJobClaim, EntityId, EntityOwnerRow, FactEntityId, GroupId, MasterTokenPersonality,
-    MembershipRow, MemoryDependency, MemoryGraphPayloadRow, MemoryId, MemoryKindRow,
-    NeighborEdgeRow, Owner, Principal, Relation, RemoveOwnerOutcome, SchemaId, SchemaVersion,
-    SourceBatchId, Storage, StorageError, StorageHandle, UserId,
+    EmbeddingJobClaim, EntityId, FactEntityId, GroupId, MasterTokenPersonality, MembershipRow,
+    MemoryDependency, MemoryGraphPayloadRow, MemoryId, MemoryKindRow, NeighborEdgeRow, Owner,
+    OwnerRef, Relation, SchemaId, SchemaVersion, SourceBatchId, Storage, StorageError,
+    StorageHandle, UserId,
 };
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -54,6 +53,8 @@ pub use verbs::fact_embeddings::{
 
 use crate::error::internal;
 
+#[doc(hidden)]
+pub mod access;
 mod authorship;
 mod change_event;
 mod error;
@@ -75,7 +76,7 @@ pub use sidecars::{
 /// dev DB created locally via `createdb proxima_dev`.
 pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_dev";
 
-const NEIGHBOR_MEMORY_EDGES_SQL: &str = r"
+const NEIGHBOR_MEMORY_EDGES_SQL: &str = "
 SELECT e.edge_id, e.relation,
        e.source_kind,
        COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
@@ -83,7 +84,7 @@ SELECT e.edge_id, e.relation,
        COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id,
        EXISTS (
            SELECT 1
-             FROM proxima_core.entity_owner teo
+             FROM __PROXIMA_ENTITY_OWNER__ teo
              JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
                ON teo.owner_principal_kind = rs.kind
               AND teo.owner_principal_id = rs.id
@@ -91,7 +92,7 @@ SELECT e.edge_id, e.relation,
        ) AS target_readable,
        EXISTS (
            SELECT 1
-             FROM proxima_core.entity_owner weo
+             FROM __PROXIMA_ENTITY_OWNER__ weo
             WHERE weo.entity_id = COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id)
               AND weo.owner_principal_kind = $3
               AND weo.owner_principal_id = $4
@@ -103,7 +104,7 @@ SELECT e.edge_id, e.relation,
     ON tfe.fact_entity_id = e.target_fact_entity_id
  WHERE EXISTS (
            SELECT 1
-             FROM proxima_core.entity_owner seo
+             FROM __PROXIMA_ENTITY_OWNER__ seo
              JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
                ON seo.owner_principal_kind = rs.kind
               AND seo.owner_principal_id = rs.id
@@ -116,14 +117,14 @@ SELECT e.edge_id, e.relation,
    AND NOT (
         EXISTS (
             SELECT 1
-              FROM proxima_core.entity_owner weo
+              FROM __PROXIMA_ENTITY_OWNER__ weo
              WHERE weo.entity_id = COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id)
                AND weo.owner_principal_kind = $3
                AND weo.owner_principal_id = $4
         )
         AND NOT EXISTS (
             SELECT 1
-              FROM proxima_core.entity_owner teo
+              FROM __PROXIMA_ENTITY_OWNER__ teo
               JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
                 ON teo.owner_principal_kind = rs.kind
                AND teo.owner_principal_id = rs.id
@@ -464,7 +465,7 @@ impl Storage for PgStorage {
         let mut tx = self.pool.begin().await.map_err(internal)?;
         let draft = verbs::derive_append::DerivedDraft {
             memory_id: req.memory_id.into_inner(),
-            owner: req.owner.clone(),
+            owner: req.owner,
             kind: req.kind,
             author_personality_instance_id: req.author_personality_instance_id,
             schema_id: req.schema_id.clone(),
@@ -557,25 +558,26 @@ impl Storage for PgStorage {
             .map(MemoryId::into_inner)
             .collect::<Vec<_>>();
         let (owner_kind, owner_principal_id) = owner.columns();
-        let rows: Vec<(uuid::Uuid, Option<proxima_core::EntityKind>)> = sqlx::query_as(
-            "SELECT m.memory_id, m.kind
+        let rows: Vec<(uuid::Uuid, Option<proxima_core::EntityKind>)> =
+            sqlx::query_as(crate::access::owner_ref_compat::sql(
+                "SELECT m.memory_id, m.kind
              FROM proxima_core.memories m
              WHERE EXISTS (
                     SELECT 1
-                      FROM proxima_core.entity_owner eo
+                      FROM __PROXIMA_ENTITY_OWNER__ eo
                      WHERE eo.entity_id = m.memory_id
                        AND eo.owner_principal_kind = $1
                        AND eo.owner_principal_id = $2
                        AND eo.is_home
              )
                AND m.memory_id = ANY($3::uuid[])",
-        )
-        .bind(owner_kind)
-        .bind(owner_principal_id)
-        .bind(&ids)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
+            ))
+            .bind(owner_kind)
+            .bind(owner_principal_id)
+            .bind(&ids)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(internal)?;
         Ok(rows
             .into_iter()
             .map(|(memory_id, kind)| MemoryKindRow {
@@ -600,8 +602,9 @@ impl Storage for PgStorage {
             .map(MemoryId::into_inner)
             .collect::<Vec<_>>();
         let (owner_kind, owner_principal_id) = owner.columns();
-        let rows: Vec<(uuid::Uuid, Option<Vec<String>>, Option<String>)> = sqlx::query_as(
-            "SELECT m.memory_id,
+        let rows: Vec<(uuid::Uuid, Option<Vec<String>>, Option<String>)> =
+            sqlx::query_as(crate::access::owner_ref_compat::sql(
+                "SELECT m.memory_id,
                     COALESCE(n.tags, d.tags) AS tags,
                     CASE WHEN $4
                          THEN COALESCE(n.body, d.body, m.text)
@@ -612,21 +615,21 @@ impl Storage for PgStorage {
              LEFT JOIN proxima_core.agent_derivation_v1 d USING (memory_id)
              WHERE EXISTS (
                     SELECT 1
-                      FROM proxima_core.entity_owner eo
+                      FROM __PROXIMA_ENTITY_OWNER__ eo
                      WHERE eo.entity_id = m.memory_id
                        AND eo.owner_principal_kind = $1
                        AND eo.owner_principal_id = $2
                        AND eo.is_home
              )
                AND m.memory_id = ANY($3::uuid[])",
-        )
-        .bind(owner_kind)
-        .bind(owner_principal_id)
-        .bind(&ids)
-        .bind(include_body)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
+            ))
+            .bind(owner_kind)
+            .bind(owner_principal_id)
+            .bind(&ids)
+            .bind(include_body)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(internal)?;
         Ok(rows
             .into_iter()
             .map(|(memory_id, tags, body)| MemoryGraphPayloadRow {
@@ -639,7 +642,7 @@ impl Storage for PgStorage {
 
     async fn load_neighbor_memory_edges(
         &self,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
         memory_ids: &[MemoryId],
         limit: usize,
     ) -> Result<Vec<NeighborEdgeRow>, StorageError> {
@@ -666,16 +669,18 @@ impl Storage for PgStorage {
             Option<uuid::Uuid>,
             bool,
             bool,
-        )> = sqlx::query_as(NEIGHBOR_MEMORY_EDGES_SQL)
-            .bind(&read_owner_kinds)
-            .bind(&read_owner_ids)
-            .bind(world_kind)
-            .bind(world_id)
-            .bind(&ids)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(internal)?;
+        )> = sqlx::query_as(crate::access::owner_ref_compat::sql(
+            NEIGHBOR_MEMORY_EDGES_SQL,
+        ))
+        .bind(&read_owner_kinds)
+        .bind(&read_owner_ids)
+        .bind(world_kind)
+        .bind(world_id)
+        .bind(&ids)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
         Ok(rows
             .into_iter()
             .map(
@@ -831,7 +836,7 @@ impl Storage for PgStorage {
 
     async fn event_history(
         &self,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
         req: &EventHistoryRequest,
     ) -> Result<EventHistoryResponse, StorageError> {
         verbs::event_history::event_history(&self.pool, read_owners, req).await
@@ -854,7 +859,7 @@ impl Storage for PgStorage {
 
     async fn read_edges(
         &self,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
         req: &EdgeReadRequest,
     ) -> Result<EdgeReadResponse, StorageError> {
         verbs::query::read_edges(&self.pool, read_owners, req).await
@@ -862,7 +867,7 @@ impl Storage for PgStorage {
 
     async fn edge_exists(
         &self,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
         req: &EdgeExistsRequest,
     ) -> Result<EdgeExistsResponse, StorageError> {
         verbs::query::edge_exists(&self.pool, read_owners, req).await
@@ -895,7 +900,7 @@ impl Storage for PgStorage {
 
     async fn facts_citing_object(
         &self,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
         cited_object_id: uuid::Uuid,
         sidecars: &[SidecarSpec],
     ) -> Result<Vec<MemorySnapshot>, StorageError> {
@@ -918,7 +923,7 @@ impl Storage for PgStorage {
 
     async fn citation_of_entity_head(
         &self,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
         fact_entity_id: FactEntityId,
     ) -> Result<Option<FactCitationReadback>, StorageError> {
         verbs::query::citation_of_entity_head(&self.pool, read_owners, fact_entity_id).await
@@ -926,7 +931,7 @@ impl Storage for PgStorage {
 
     async fn walk_memory_lineage(
         &self,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
         req: &MemoryLineageRequest,
     ) -> Result<MemoryLineageResponse, StorageError> {
         verbs::query::walk_memory_lineage(&self.pool, read_owners, req).await
@@ -934,7 +939,7 @@ impl Storage for PgStorage {
 
     async fn list_active_goals(
         &self,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
         self_perspective_memory_id: MemoryId,
         limit: usize,
     ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
@@ -949,7 +954,7 @@ impl Storage for PgStorage {
 
     async fn close_batch(
         &self,
-        principal: &Principal,
+        principal: &OwnerRef,
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError> {
         verbs::close_batch::close_batch(&self.pool, principal, source_batch_id).await
@@ -993,7 +998,7 @@ impl Storage for PgStorage {
     async fn ensure_subject_personality(
         &self,
         owner: &Owner,
-        subject: &Principal,
+        subject: &OwnerRef,
     ) -> Result<MasterTokenPersonality, StorageError> {
         verbs::subject_personality::ensure_subject_personality(&self.pool, owner, subject).await
     }
@@ -1018,20 +1023,6 @@ impl Storage for PgStorage {
             mutate,
         )
         .await
-    }
-
-    async fn list_read_scope(
-        &self,
-        req: &ListReadScopeRequest,
-    ) -> Result<ListReadScopeResponse, StorageError> {
-        verbs::consolidate::list_read_scope(&self.pool, req).await
-    }
-
-    async fn set_read_scope(
-        &self,
-        req: &SetReadScopeRequest,
-    ) -> Result<SetReadScopeResponse, StorageError> {
-        verbs::consolidate::set_read_scope(&self.pool, req).await
     }
 
     async fn upsert_fact_retention(&self, owner: &Owner, seconds: i64) -> Result<(), StorageError> {
@@ -1088,7 +1079,7 @@ impl Storage for PgStorage {
 
     async fn list_change_events_after(
         &self,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
         after: uuid::Uuid,
         limit: usize,
     ) -> Result<Vec<ChangeEventForWake>, StorageError> {
@@ -1201,54 +1192,21 @@ impl Storage for PgStorage {
 
     async fn resolve_membership(
         &self,
-        member: &Principal,
+        member: &OwnerRef,
     ) -> Result<Vec<MembershipRow>, StorageError> {
-        verbs::entity_owner::resolve_membership(&self.pool, member).await
+        access::owner_ref_compat::resolve_membership(&self.pool, member).await
     }
 
-    async fn entity_is_readable(
+    async fn visible_to_any(
         &self,
         entity: EntityId,
-        read_owners: &[Principal],
+        read_owners: &[OwnerRef],
     ) -> Result<bool, StorageError> {
-        verbs::entity_owner::entity_is_readable(&self.pool, entity, read_owners).await
+        access::owner_ref_compat::visible_to_any(&self.pool, entity, read_owners).await
     }
 
-    async fn entity_home_owner(&self, entity: EntityId) -> Result<Option<Principal>, StorageError> {
-        verbs::entity_owner::entity_home_owner(&self.pool, entity).await
-    }
-
-    async fn add_entity_owner_share(
-        &self,
-        entity: EntityId,
-        owner: &Principal,
-        granted_by: Option<uuid::Uuid>,
-    ) -> Result<(), StorageError> {
-        verbs::entity_owner::add_entity_owner_share(&self.pool, entity.uuid(), owner, granted_by)
-            .await
-    }
-
-    async fn remove_entity_owner_share(
-        &self,
-        entity: EntityId,
-        owner: &Principal,
-    ) -> Result<RemoveOwnerOutcome, StorageError> {
-        verbs::entity_owner::remove_entity_owner_share(&self.pool, entity.uuid(), owner).await
-    }
-
-    async fn list_entity_owners(
-        &self,
-        entity: EntityId,
-    ) -> Result<Vec<EntityOwnerRow>, StorageError> {
-        verbs::entity_owner::list_entity_owners(&self.pool, entity.uuid()).await
-    }
-
-    async fn list_world_entities(
-        &self,
-        limit: usize,
-        sidecars: &[SidecarSpec],
-    ) -> Result<Vec<MemorySnapshot>, StorageError> {
-        verbs::entity_owner::list_world_entities(&self.pool, &self.sidecars, limit, sidecars).await
+    async fn home_owner(&self, entity: EntityId) -> Result<Option<OwnerRef>, StorageError> {
+        access::owner_ref_compat::home_owner(&self.pool, entity).await
     }
 
     async fn add_group_member(
@@ -1258,7 +1216,7 @@ impl Storage for PgStorage {
         relation: Relation,
         granted_by: uuid::Uuid,
     ) -> Result<(), StorageError> {
-        verbs::entity_owner::add_group_member(
+        access::owner_ref_compat::add_group_member(
             &self.pool,
             group_id,
             member_user_id,
@@ -1273,13 +1231,13 @@ impl Storage for PgStorage {
         group_id: GroupId,
         member_user_id: UserId,
     ) -> Result<(), StorageError> {
-        verbs::entity_owner::remove_group_member(&self.pool, group_id, member_user_id).await
+        access::owner_ref_compat::remove_group_member(&self.pool, group_id, member_user_id).await
     }
 
     async fn list_group_members(
         &self,
         group_id: GroupId,
     ) -> Result<Vec<(UserId, Relation)>, StorageError> {
-        verbs::entity_owner::list_group_members(&self.pool, group_id).await
+        access::owner_ref_compat::list_group_members(&self.pool, group_id).await
     }
 }

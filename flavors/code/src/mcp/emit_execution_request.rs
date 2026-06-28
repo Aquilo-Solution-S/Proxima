@@ -593,7 +593,7 @@ async fn append_execution_plan(
     );
     let draft = DerivedDraft {
         memory_id: memory_id.into_inner(),
-        owner: ctx.owner.clone(),
+        owner: ctx.owner,
         kind: EntityKind::Abstraction,
         author_personality_instance_id: ctx.author.personality_instance_id,
         schema_id: <CodeExecutionPlanV1 as AbstractionPayload>::schema_id(),
@@ -1058,7 +1058,7 @@ pub(super) async fn load_execution_request(
         Option<Uuid>,
         Option<String>,
         Option<String>,
-    )> = sqlx::query_as(
+    )> = sqlx::query_as(proxima_storage_pg::access::owner_ref_compat::sql(
         "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind,
                 m.schema_id,
                 r.repo_id,
@@ -1069,13 +1069,13 @@ pub(super) async fn load_execution_request(
          WHERE m.memory_id = $1
            AND EXISTS (
                 SELECT 1
-                  FROM proxima_core.entity_owner eo
+                  FROM __PROXIMA_ENTITY_OWNER__ eo
                  WHERE eo.entity_id = m.memory_id
                    AND eo.owner_principal_kind = $2
                    AND eo.owner_principal_id = $3
                    AND eo.is_home
            )",
-    )
+    ))
     .bind(memory_id.into_inner())
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -1112,28 +1112,29 @@ pub(super) async fn find_execution_request_by_key(
     request_key: &str,
 ) -> Result<Option<MemoryId>, McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
-    let existing: Option<Uuid> = sqlx::query_scalar(
-        "SELECT r.memory_id
+    let existing: Option<Uuid> =
+        sqlx::query_scalar(proxima_storage_pg::access::owner_ref_compat::sql(
+            "SELECT r.memory_id
          FROM proxima_code.work_requested_v1 r
          JOIN proxima_core.memories m USING (memory_id)
          WHERE r.repo_id = $1
            AND r.request_key = $2
            AND EXISTS (
                 SELECT 1
-                  FROM proxima_core.entity_owner eo
+                  FROM __PROXIMA_ENTITY_OWNER__ eo
                  WHERE eo.entity_id = m.memory_id
                    AND eo.owner_principal_kind = $3
                    AND eo.owner_principal_id = $4
                    AND eo.is_home
            )",
-    )
-    .bind(repo_id)
-    .bind(request_key)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_storage)?;
+        ))
+        .bind(repo_id)
+        .bind(request_key)
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(map_storage)?;
     Ok(existing.map(MemoryId::new))
 }
 
@@ -1212,10 +1213,10 @@ pub(super) async fn load_prior_derived_targets(
     prior_memory_id: MemoryId,
 ) -> Result<Vec<MemoryId>, McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
-    let rows: Vec<Uuid> = sqlx::query_scalar(
+    let rows: Vec<Uuid> = sqlx::query_scalar(proxima_storage_pg::access::owner_ref_compat::sql(
         "SELECT e.target_memory_id
          FROM proxima_core.edges e
-         JOIN proxima_core.entity_owner target_owner
+         JOIN __PROXIMA_ENTITY_OWNER__ target_owner
            ON target_owner.entity_id = e.target_memory_id
           AND target_owner.owner_principal_kind = $1
           AND target_owner.owner_principal_id = $2
@@ -1225,7 +1226,7 @@ pub(super) async fn load_prior_derived_targets(
            AND e.source_memory_id = $4
            AND e.target_memory_id IS NOT NULL
          ORDER BY e.created_at, e.edge_id",
-    )
+    ))
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(CORE_DERIVED_FROM_RELATION)
@@ -1282,27 +1283,28 @@ async fn validate_goal_activated_fact(
     memory_id: MemoryId,
 ) -> Result<Uuid, McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
-    let row: Option<(EntityKind, String, Uuid)> = sqlx::query_as(
-        "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind,
+    let row: Option<(EntityKind, String, Uuid)> =
+        sqlx::query_as(proxima_storage_pg::access::owner_ref_compat::sql(
+            "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind,
                 m.schema_id, g.goal_id
          FROM proxima_core.memories m
          JOIN proxima_core.goal_activated_v1 g USING (memory_id)
          WHERE m.memory_id = $1
            AND EXISTS (
                 SELECT 1
-                  FROM proxima_core.entity_owner eo
+                  FROM __PROXIMA_ENTITY_OWNER__ eo
                  WHERE eo.entity_id = m.memory_id
                    AND eo.owner_principal_kind = $2
                    AND eo.owner_principal_id = $3
                    AND eo.is_home
            )",
-    )
-    .bind(memory_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_storage)?;
+        ))
+        .bind(memory_id.into_inner())
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(map_storage)?;
     let Some((kind, schema_id, goal_id)) = row else {
         return Err(McpToolError::InvalidInput(format!(
             "goal_activated_memory is not visible: {}",
@@ -1324,14 +1326,14 @@ async fn validate_active_goal_context(
     planner_root: MemoryId,
 ) -> Result<(), McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
-    let active: bool = sqlx::query_scalar(
+    let active: bool = sqlx::query_scalar(proxima_storage_pg::access::owner_ref_compat::sql(
         "SELECT EXISTS(
              SELECT 1
              FROM proxima_core.goals g
              WHERE g.goal_id = $3
                AND EXISTS (
                     SELECT 1
-                      FROM proxima_core.entity_owner eo
+                      FROM __PROXIMA_ENTITY_OWNER__ eo
                      WHERE eo.entity_id = g.goal_id
                        AND eo.owner_principal_kind = $1
                        AND eo.owner_principal_id = $2
@@ -1339,7 +1341,7 @@ async fn validate_active_goal_context(
                )
                AND g.state = 'Active'
          )",
-    )
+    ))
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(goal_id)
@@ -1352,7 +1354,7 @@ async fn validate_active_goal_context(
         ));
     }
 
-    let assigned: bool = sqlx::query_scalar(
+    let assigned: bool = sqlx::query_scalar(proxima_storage_pg::access::owner_ref_compat::sql(
         "WITH RECURSIVE lineage(goal_id) AS (
              SELECT $3::uuid
              UNION
@@ -1362,7 +1364,7 @@ async fn validate_active_goal_context(
               WHERE g.supersedes IS NOT NULL
                 AND EXISTS (
                      SELECT 1
-                       FROM proxima_core.entity_owner eo
+                       FROM __PROXIMA_ENTITY_OWNER__ eo
                       WHERE eo.entity_id = g.goal_id
                         AND eo.owner_principal_kind = $1
                         AND eo.owner_principal_id = $2
@@ -1378,7 +1380,7 @@ async fn validate_active_goal_context(
                AND e.target_kind = 'Perspective'
                AND e.target_memory_id = $4
          )",
-    )
+    ))
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(goal_id)
@@ -1401,25 +1403,26 @@ async fn validate_evidence_in_owner(
 ) -> Result<(), McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
     for memory_id in evidence {
-        let row: Option<EntityKind> = sqlx::query_scalar(
-            "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind
+        let row: Option<EntityKind> =
+            sqlx::query_scalar(proxima_storage_pg::access::owner_ref_compat::sql(
+                "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind
              FROM proxima_core.memories m
              WHERE m.memory_id = $1
                AND EXISTS (
                     SELECT 1
-                      FROM proxima_core.entity_owner eo
+                      FROM __PROXIMA_ENTITY_OWNER__ eo
                      WHERE eo.entity_id = m.memory_id
                        AND eo.owner_principal_kind = $2
                        AND eo.owner_principal_id = $3
                        AND eo.is_home
                )",
-        )
-        .bind(memory_id.into_inner())
-        .bind(owner_kind)
-        .bind(owner_principal_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(map_storage)?;
+            ))
+            .bind(memory_id.into_inner())
+            .bind(owner_kind)
+            .bind(owner_principal_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(map_storage)?;
         match row {
             Some(EntityKind::Fact) => {}
             Some(kind) => {
@@ -1654,7 +1657,7 @@ mod tests {
     use std::sync::Arc;
 
     use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolExtensions, OutputMode};
-    use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, GroupId, Principal, UserId};
+    use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, GroupId, OwnerRef, UserId};
     use sqlx::postgres::PgPoolOptions;
 
     use super::*;
@@ -1665,7 +1668,7 @@ mod tests {
     /// this uuid so re-issued plans stay idempotent.
     #[test]
     fn execution_plan_memory_id_golden_is_org_free() {
-        let owner = Principal::User(UserId::new(
+        let owner = OwnerRef::Personal(UserId::new(
             Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
         ));
         let repo_id =
@@ -1681,12 +1684,12 @@ mod tests {
     }
 
     fn test_ctx(handles: Arc<HandleTable>) -> McpToolCtx {
-        let owner = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let pool = PgPoolOptions::new()
             .connect_lazy("postgres://proxima:proxima@localhost/proxima")
             .expect("lazy pool");
         McpToolCtx {
-            owner: owner.clone(),
+            owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(handles),
             mode: OutputMode::Handles,

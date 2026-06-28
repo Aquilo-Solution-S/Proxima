@@ -414,7 +414,7 @@ fn draft_for<P: FactPayload>(owner: &Owner, payload_value: &Value) -> EventDraft
     EventDraft {
         source_id: SourceId::new(format!("test/fact-entity/{}", Uuid::now_v7())),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.clone(),
+        principal: *owner,
         author_personality_instance_id: None,
         schema_id: P::schema_id(),
         schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
@@ -765,7 +765,7 @@ async fn replay_is_idempotent_and_does_not_mint_or_move_entity() {
 }
 
 // Removed: `full_owner_triple_participates_in_entity_identity`. Track B (S0)
-// collapsed `Owner = Principal` — org no longer participates in Fact-entity
+// collapsed `Owner = OwnerRef` — org no longer participates in Fact-entity
 // identity, so two owners differing only by org are now the same Owner and
 // must collapse to one entity. The org-invariance assertion that replaces this
 // is a separate verification-test task (see the S0 plan, Step 8).

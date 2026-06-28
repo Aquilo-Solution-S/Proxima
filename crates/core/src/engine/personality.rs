@@ -14,9 +14,8 @@ use crate::personality::{
 use crate::storage::StorageError;
 use crate::verbs::event_ingest::{Citation, CitationMappingHint, CitedObjectHint, EventDraft};
 use crate::{
-    ListReadScopeRequest, MemoryId, Principal, SchemaId, SchemaVersion, SetReadScopeRequest,
-    SetReadScopeResponse, SetWakeEntriesRequest, SetWakeEntriesResponse, SourceBatchId,
-    WakeEntriesMutator, WakeEntryDraft,
+    MemoryId, OwnerRef, SchemaId, SchemaVersion, SetWakeEntriesRequest, SetWakeEntriesResponse,
+    SourceBatchId, WakeEntriesMutator, WakeEntryDraft,
 };
 
 #[derive(Debug, Clone)]
@@ -37,7 +36,7 @@ pub enum PersonalityConfigAuditEmit {
 
 #[derive(Debug, Clone)]
 pub struct AddWakeEntryRequest {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     pub personality_instance_id: crate::PersonalityInstanceId,
     pub entry: WakeEntryDraft,
     pub audit: Option<PersonalityConfigChangedInput>,
@@ -51,7 +50,7 @@ pub struct AddWakeEntryResponse {
 
 #[derive(Debug, Clone)]
 pub struct UpdateWakeEntryRequest {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     pub wake_entry_id: uuid::Uuid,
     pub patch: WakeEntryPatchInput,
     pub audit: Option<PersonalityConfigChangedInput>,
@@ -65,7 +64,7 @@ pub struct UpdateWakeEntryResponse {
 
 #[derive(Debug, Clone)]
 pub struct RemoveWakeEntryRequest {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     pub wake_entry_id: uuid::Uuid,
     pub audit: Option<PersonalityConfigChangedInput>,
 }
@@ -73,21 +72,6 @@ pub struct RemoveWakeEntryRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoveWakeEntryResponse {
     pub removed: bool,
-    pub audit_emit: PersonalityConfigAuditEmit,
-}
-
-#[derive(Debug, Clone)]
-pub struct SetReadScopeAdminRequest {
-    pub principal: Principal,
-    pub reader_personality_instance_id: crate::PersonalityInstanceId,
-    pub readable_personality_instance_ids: Vec<crate::PersonalityInstanceId>,
-    pub audit: Option<PersonalityConfigChangedInput>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SetReadScopeAdminResponse {
-    pub response: SetReadScopeResponse,
-    pub readable_personality_instance_ids: Vec<crate::PersonalityInstanceId>,
     pub audit_emit: PersonalityConfigAuditEmit,
 }
 
@@ -126,7 +110,7 @@ impl Engine {
     pub async fn list_personality_instances(
         &self,
         authz: &AuthzContext,
-        principal: &Principal,
+        principal: &OwnerRef,
         include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, ProtocolError> {
         let permit = self
@@ -139,7 +123,7 @@ impl Engine {
     async fn list_personality_instances_authorized(
         &self,
         permit: &WritePermit,
-        _principal: &Principal,
+        _principal: &OwnerRef,
         include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, ProtocolError> {
         self.storage
@@ -182,7 +166,7 @@ impl Engine {
             .authorize_write(authz, &req.principal, Relation::Admin)
             .await?;
         let mut effective = req;
-        effective.principal = permit.owner().clone();
+        effective.principal = *permit.owner();
         let before = self
             .personality_snapshot(permit.owner(), effective.personality_instance_id)
             .await?;
@@ -215,7 +199,7 @@ impl Engine {
         req: TombstonePersonalityRequest,
     ) -> Result<TombstonePersonalityResponse, ProtocolError> {
         let mut effective = req;
-        effective.principal = permit.owner().clone();
+        effective.principal = *permit.owner();
         self.storage
             .tombstone_personality(&effective)
             .await
@@ -296,7 +280,7 @@ impl Engine {
             ));
         }
         let mut effective = req;
-        effective.principal = permit.owner().clone();
+        effective.principal = *permit.owner();
         self.storage
             .instantiate_personality(&effective)
             .await
@@ -324,7 +308,7 @@ impl Engine {
             .wake_entries_snapshot(permit.owner(), req.personality_instance_id)
             .await?;
         let mut effective = req.clone();
-        effective.principal = permit.owner().clone();
+        effective.principal = *permit.owner();
         crate::personality::validate_wake_entries_detect_config(&effective.entries)?;
         let response = self
             .storage
@@ -478,67 +462,6 @@ impl Engine {
         let audit_emit = self.emit_audit_status(&permit, req.audit.clone()).await;
         Ok(RemoveWakeEntryResponse {
             removed: true,
-            audit_emit,
-        })
-    }
-
-    /// Replace explicit read-scope grants and emit the config-change audit
-    /// under the same admin permit.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Forbidden` when the context cannot access `req.principal`
-    /// or lacks admin authority; storage errors map to `Internal`.
-    pub async fn set_read_scope(
-        &self,
-        authz: &AuthzContext,
-        req: &SetReadScopeAdminRequest,
-    ) -> Result<SetReadScopeAdminResponse, ProtocolError> {
-        let permit = self
-            .authorize_write(authz, &req.principal, Relation::Admin)
-            .await?;
-        let before = self
-            .storage
-            .list_read_scope(&ListReadScopeRequest {
-                principal: permit.owner().clone(),
-                reader_personality_instance_id: req.reader_personality_instance_id,
-            })
-            .await
-            .ok()
-            .map(|response| PersonalityConfigChangeSnapshot::ReadScope {
-                readable_personality_instance_ids: response
-                    .readable_personality_instance_ids
-                    .into_iter()
-                    .map(crate::PersonalityInstanceId::into_inner)
-                    .collect(),
-            });
-        let response = self
-            .storage
-            .set_read_scope(&SetReadScopeRequest {
-                principal: permit.owner().clone(),
-                reader_personality_instance_id: req.reader_personality_instance_id,
-                readable_personality_instance_ids: req.readable_personality_instance_ids.clone(),
-            })
-            .await
-            .map_err(|err| ProtocolError::internal(format!("set_read_scope: {err}")))?;
-        let after = Some(PersonalityConfigChangeSnapshot::ReadScope {
-            readable_personality_instance_ids: req
-                .readable_personality_instance_ids
-                .iter()
-                .copied()
-                .filter(|id| *id != req.reader_personality_instance_id)
-                .map(crate::PersonalityInstanceId::into_inner)
-                .collect(),
-        });
-        let audit = req.audit.clone().map(|mut input| {
-            input.before = before;
-            input.after = after;
-            input
-        });
-        let audit_emit = self.emit_audit_status(&permit, audit).await;
-        Ok(SetReadScopeAdminResponse {
-            response,
-            readable_personality_instance_ids: req.readable_personality_instance_ids.clone(),
             audit_emit,
         })
     }
@@ -748,21 +671,20 @@ mod tests {
     use crate::error::ErrorCode;
     use crate::personality::{WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind};
     use crate::{
-        Engine, FlavorRegistry, InstantiatePersonalityRequest, Principal, SetWakeEntriesRequest,
+        Engine, FlavorRegistry, InstantiatePersonalityRequest, OwnerRef, SetWakeEntriesRequest,
         TombstonePersonalityRequest, UserId,
     };
 
     use super::{
-        AddWakeEntryRequest, RemoveWakeEntryRequest, SetReadScopeAdminRequest,
-        UpdateWakeEntryRequest, WakeEntryPatchInput,
+        AddWakeEntryRequest, RemoveWakeEntryRequest, UpdateWakeEntryRequest, WakeEntryPatchInput,
     };
 
     fn engine() -> Engine {
         Engine::new(FlavorRegistry::new().freeze())
     }
 
-    fn owner() -> Principal {
-        Principal::User(UserId::new(uuid::Uuid::now_v7()))
+    fn owner() -> OwnerRef {
+        OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
     }
 
     fn personality_id() -> crate::PersonalityInstanceId {
@@ -791,13 +713,13 @@ mod tests {
         let owner = owner();
         let pid = personality_id();
         let req = AddWakeEntryRequest {
-            principal: owner.clone(),
+            principal: owner,
             personality_instance_id: pid,
             entry: wake_entry_draft(pid),
             audit: None,
         };
         let err = engine()
-            .add_wake_entry(&AuthzContext::denied(&owner), &req)
+            .add_wake_entry(&AuthzContext::denied_for_owner(&owner), &req)
             .await
             .expect_err("denied context must fail before storage");
         assert_forbidden(&err);
@@ -807,7 +729,7 @@ mod tests {
     async fn update_wake_entry_denies_denied_context() {
         let owner = owner();
         let req = UpdateWakeEntryRequest {
-            principal: owner.clone(),
+            principal: owner,
             wake_entry_id: uuid::Uuid::now_v7(),
             patch: WakeEntryPatchInput {
                 label: Some("new label".into()),
@@ -820,7 +742,7 @@ mod tests {
             audit: None,
         };
         let err = engine()
-            .update_wake_entry(&AuthzContext::denied(&owner), &req)
+            .update_wake_entry(&AuthzContext::denied_for_owner(&owner), &req)
             .await
             .expect_err("denied context must fail before storage");
         assert_forbidden(&err);
@@ -830,28 +752,12 @@ mod tests {
     async fn remove_wake_entry_denies_denied_context() {
         let owner = owner();
         let req = RemoveWakeEntryRequest {
-            principal: owner.clone(),
+            principal: owner,
             wake_entry_id: uuid::Uuid::now_v7(),
             audit: None,
         };
         let err = engine()
-            .remove_wake_entry(&AuthzContext::denied(&owner), &req)
-            .await
-            .expect_err("denied context must fail before storage");
-        assert_forbidden(&err);
-    }
-
-    #[tokio::test]
-    async fn set_read_scope_denies_denied_context() {
-        let owner = owner();
-        let req = SetReadScopeAdminRequest {
-            principal: owner.clone(),
-            reader_personality_instance_id: personality_id(),
-            readable_personality_instance_ids: vec![personality_id()],
-            audit: None,
-        };
-        let err = engine()
-            .set_read_scope(&AuthzContext::denied(&owner), &req)
+            .remove_wake_entry(&AuthzContext::denied_for_owner(&owner), &req)
             .await
             .expect_err("denied context must fail before storage");
         assert_forbidden(&err);
@@ -862,12 +768,12 @@ mod tests {
         let owner = owner();
         let pid = personality_id();
         let req = SetWakeEntriesRequest {
-            principal: owner.clone(),
+            principal: owner,
             personality_instance_id: pid,
             entries: vec![wake_entry_draft(pid)],
         };
         let err = engine()
-            .set_wake_entries_with_audit(&AuthzContext::denied(&owner), &req, None)
+            .set_wake_entries_with_audit(&AuthzContext::denied_for_owner(&owner), &req, None)
             .await
             .expect_err("denied context must fail before storage");
         assert_forbidden(&err);
@@ -877,11 +783,11 @@ mod tests {
     async fn tombstone_personality_with_audit_denies_denied_context() {
         let owner = owner();
         let req = TombstonePersonalityRequest {
-            principal: owner.clone(),
+            principal: owner,
             personality_instance_id: personality_id(),
         };
         let err = engine()
-            .tombstone_personality_with_audit(&AuthzContext::denied(&owner), req, None)
+            .tombstone_personality_with_audit(&AuthzContext::denied_for_owner(&owner), req, None)
             .await
             .expect_err("denied context must fail before storage");
         assert_forbidden(&err);
@@ -891,11 +797,11 @@ mod tests {
     async fn instantiate_personality_with_audit_denies_denied_context() {
         let owner = owner();
         let req = InstantiatePersonalityRequest {
-            principal: owner.clone(),
+            principal: owner,
             display_name: "Engineer".into(),
         };
         let err = engine()
-            .instantiate_personality_with_audit(&AuthzContext::denied(&owner), req, None)
+            .instantiate_personality_with_audit(&AuthzContext::denied_for_owner(&owner), req, None)
             .await
             .expect_err("denied context must fail before storage");
         assert_forbidden(&err);

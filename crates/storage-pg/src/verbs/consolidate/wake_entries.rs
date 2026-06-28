@@ -151,7 +151,7 @@ pub async fn set_wake_entries_within(
     let new_entries = mutate(&current).map_err(StorageError::Internal)?;
 
     let req = SetWakeEntriesRequest {
-        principal: owner.clone(),
+        principal: *owner,
         personality_instance_id,
         entries: new_entries,
     };

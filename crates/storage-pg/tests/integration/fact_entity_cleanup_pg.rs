@@ -14,7 +14,7 @@ use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthPath, AuthorshipKindMask, AuthzContext, EdgeAuthorshipKind, EdgeId, EdgePayload,
     EndpointBinding, EntityKind, EntityKindMask, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
-    MemoryId, Owner, PayloadKeyBuilder, Principal, Relation, RelationClass, RelationDescriptor,
+    MemoryId, Owner, OwnerRef, PayloadKeyBuilder, Relation, RelationClass, RelationDescriptor,
     SchemaId, SchemaRef, SchemaVersion, SidecarPayload, SourceBatchId, SourceId, StorageError,
     UserId, canonical_json_bytes,
 };
@@ -238,7 +238,7 @@ fn draft_for(owner: &Owner, payload_value: &Value, cited: bool) -> EventDraft {
     EventDraft {
         source_id: SourceId::new(format!("test/fact-entity-cleanup/{}", Uuid::now_v7())),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.clone(),
+        principal: *owner,
         author_personality_instance_id: None,
         schema_id: StatefulFactV1::schema_id(),
         schema_version: SchemaVersion::new(StatefulFactV1::SCHEMA_VERSION),
@@ -598,7 +598,7 @@ async fn cleanup_is_owner_scoped_for_identical_natural_keys()
         pg.run_migrations().await?;
         create_sidecar(&pg).await?;
         let owner = owner_fixture();
-        let other = Principal::User(UserId::new(Uuid::now_v7()));
+        let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let registry = registry_for_test();
         let engine = engine_for(&pg, registry);
         let owner_fact =
@@ -707,7 +707,7 @@ async fn insert_direct_derivative(
     .bind(derivative_id)
     .execute(pg.pool())
     .await?;
-    insert_entity_owner_home(pg, derivative_id, owner).await?;
+    insert_home(pg, derivative_id, owner).await?;
 
     sqlx::query(
         "INSERT INTO proxima_core.edges
@@ -728,18 +728,14 @@ async fn insert_direct_derivative(
     Ok(derivative_id)
 }
 
-async fn insert_entity_owner_home(
-    pg: &PgStorage,
-    entity_id: Uuid,
-    owner: &Owner,
-) -> Result<(), sqlx::Error> {
+async fn insert_home(pg: &PgStorage, entity_id: Uuid, owner: &Owner) -> Result<(), sqlx::Error> {
     let (owner_kind, owner_principal_id) = owner.columns();
-    sqlx::query(
-        "INSERT INTO proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "INSERT INTO __PROXIMA_ENTITY_OWNER__
             (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
          VALUES ($1, $2, $3, true, $4)
          ON CONFLICT DO NOTHING",
-    )
+    ))
     .bind(entity_id)
     .bind(owner_kind)
     .bind(owner_principal_id)

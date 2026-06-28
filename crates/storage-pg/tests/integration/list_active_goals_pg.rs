@@ -5,19 +5,19 @@ use proxima_core::relation::CORE_INSPIRES_RELATION;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
-    EdgeAuthorshipKind, EntityKind, FlavorRegistry, GoalId, GroupId, MemoryId, Owner,
-    OwnerPrincipalKind, Principal, Relation, UserId,
+    EdgeAuthorshipKind, EntityKind, FlavorRegistry, GoalId, GroupId, MemoryId, Owner, OwnerRef,
+    OwnerRefKind, Relation, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use uuid::Uuid;
 
-fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
+fn owner_parts(owner: &Owner) -> (OwnerRefKind, Uuid) {
     owner.columns()
 }
 
 fn other_owner() -> Owner {
-    Principal::User(UserId::new(Uuid::now_v7()))
+    OwnerRef::Personal(UserId::new(Uuid::now_v7()))
 }
 
 async fn insert_self(
@@ -38,7 +38,7 @@ async fn insert_self(
     .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
-    insert_entity_owner_home(pg, memory_id, owner).await?;
+    insert_home(pg, memory_id, owner).await?;
     Ok(MemoryId::new(memory_id))
 }
 
@@ -70,7 +70,7 @@ async fn insert_goal(
     .bind(request_id)
     .execute(pg.pool())
     .await?;
-    insert_entity_owner_home(pg, goal_id.into_inner(), owner).await?;
+    insert_home(pg, goal_id.into_inner(), owner).await?;
     if state == GoalState::Active {
         insert_goal_activated_fact(pg, owner, goal_id).await?;
     }
@@ -267,7 +267,7 @@ async fn insert_goal_activated_fact(
     .bind(citation_mapping_id)
     .execute(&mut *tx)
     .await?;
-    insert_entity_owner_home_in_tx(&mut tx, memory_id, owner).await?;
+    insert_home_in_tx(&mut tx, memory_id, owner).await?;
 
     sqlx::query(
         "INSERT INTO proxima_core.goal_activated_v1
@@ -317,9 +317,9 @@ async fn list_active_goals_filters_by_read_owners() -> Result<(), Box<dyn std::e
 
     let result = async {
         pg.run_migrations().await?;
-        let p = Principal::User(UserId::new(Uuid::now_v7()));
-        let q = Principal::User(UserId::new(Uuid::now_v7()));
-        let g1 = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let q = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let g1 = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
 
         seed_membership(&pg, &g1, &q, Relation::Viewer).await?;
 
@@ -353,7 +353,7 @@ async fn list_active_goals_requires_readable_seed_target() -> Result<(), Box<dyn
 
     let result = async {
         pg.run_migrations().await?;
-        let private = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let private = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let world = world();
         let private_self = insert_self(&pg, &private).await?;
         let goal = insert_goal(&pg, &private, GoalState::Active, None, "private-active").await?;
@@ -383,17 +383,17 @@ async fn list_active_goals_requires_readable_seed_target() -> Result<(), Box<dyn
     result
 }
 
-async fn insert_entity_owner_home(
+async fn insert_home(
     pg: &PgStorage,
     entity_id: Uuid,
-    owner: &Principal,
+    owner: &OwnerRef,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (owner_kind, owner_principal_id) = owner.columns();
-    sqlx::query(
-        "INSERT INTO proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "INSERT INTO __PROXIMA_ENTITY_OWNER__
             (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
          VALUES ($1, $2, $3, true, $4)",
-    )
+    ))
     .bind(entity_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -403,17 +403,17 @@ async fn insert_entity_owner_home(
     Ok(())
 }
 
-async fn insert_entity_owner_home_in_tx(
+async fn insert_home_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     entity_id: Uuid,
-    owner: &Principal,
+    owner: &OwnerRef,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (owner_kind, owner_principal_id) = owner.columns();
-    sqlx::query(
-        "INSERT INTO proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "INSERT INTO __PROXIMA_ENTITY_OWNER__
             (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
          VALUES ($1, $2, $3, true, $4)",
-    )
+    ))
     .bind(entity_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -425,14 +425,14 @@ async fn insert_entity_owner_home_in_tx(
 
 async fn seed_membership(
     pg: &PgStorage,
-    group: &Principal,
-    member: &Principal,
+    group: &OwnerRef,
+    member: &OwnerRef,
     relation: Relation,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Principal::Group(group_id) = group else {
+    let OwnerRef::Group(group_id) = group else {
         panic!("seed_membership group must be a group principal");
     };
-    let Principal::User(member_id) = member else {
+    let OwnerRef::Personal(member_id) = member else {
         panic!("seed_membership member must be a user principal");
     };
     sqlx::query(

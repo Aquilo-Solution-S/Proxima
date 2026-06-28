@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::engine::MemoryPermit;
 use crate::{
-    EventId, FactPayload, MemoryId, Owner, PersonalityInstanceId, Principal, SchemaId,
+    EventId, FactPayload, MemoryId, Owner, OwnerRef, PersonalityInstanceId, SchemaId,
     SchemaVersion, SidecarPayload, SourceBatchId, SourceId,
 };
 
@@ -110,7 +110,7 @@ pub struct InlineCitationMappingDraft {
 pub struct EventDraft {
     pub source_id: SourceId,
     pub source_batch_id: SourceBatchId,
-    pub principal: Principal,
+    pub principal: OwnerRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author_personality_instance_id: Option<PersonalityInstanceId>,
     pub schema_id: SchemaId,
@@ -394,7 +394,7 @@ impl EventDraft {
         Self {
             source_id: SourceId::new(source_id.into()),
             source_batch_id,
-            principal: owner.clone(),
+            principal: *owner,
             author_personality_instance_id: None,
             schema_id: P::schema_id(),
             schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
@@ -429,8 +429,8 @@ impl EventDraft {
 
     /// The storage `Owner` (= principal) for this draft.
     #[must_use]
-    pub fn owner(&self) -> Owner {
-        self.principal.clone()
+    pub const fn owner(&self) -> Owner {
+        self.principal
     }
 
     /// Canonical `event_id` per docs/01: BLAKE3 of
@@ -467,7 +467,7 @@ pub struct EventIngestOutcome {
 mod tests {
     use super::EventDraft;
     use crate::{
-        PayloadKeyBuilder, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+        OwnerRef, PayloadKeyBuilder, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
     };
     use uuid::Uuid;
 
@@ -476,7 +476,7 @@ mod tests {
         EventDraft {
             source_id: SourceId::new("test/source"),
             source_batch_id: SourceBatchId::new(Uuid::nil()),
-            principal: Principal::User(UserId::new(
+            principal: OwnerRef::Personal(UserId::new(
                 Uuid::parse_str("018f0f4e-6b45-7c00-9bb5-b89b28d9c0a1").expect("uuid literal"),
             )),
             author_personality_instance_id: None,
@@ -509,7 +509,7 @@ mod tests {
     /// fixed input must reproduce exactly this hex forever.
     #[test]
     fn event_id_golden_is_org_free() {
-        let principal = Principal::User(UserId::new(
+        let principal = OwnerRef::Personal(UserId::new(
             Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
         ));
         let draft = EventDraft {

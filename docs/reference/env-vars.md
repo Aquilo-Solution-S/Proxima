@@ -36,7 +36,7 @@ This table is a human reference. Source code and deployment manifests remain aut
 
 | Flag | Required when | Notes |
 |---|---|---|
-| `--owner-user <UUID>` | headless MCP host | fixed owner principal; `Owner = Principal`, no org field |
+| `--owner-user <UUID>` | headless MCP host | fixed `OwnerRef::Personal` owner; no org field |
 | `--master-token <token>` | loopback dev master-token auth | do not use as standing network-exposed auth |
 
 ## Build/Test/Internal Variables

@@ -1,6 +1,6 @@
 use std::net::{Ipv4Addr, SocketAddr};
 
-use proxima_core::{Principal, UserId};
+use proxima_core::{OwnerRef, UserId};
 use serde_json::json;
 
 #[tokio::test]
@@ -11,7 +11,7 @@ async fn run_with_handle_serves_tools_list() -> Result<(), Box<dyn std::error::E
     };
     let cfg = proxima_mcp::McpConfig {
         database_url,
-        owner: Principal::User(UserId::new(uuid::Uuid::nil())),
+        owner: OwnerRef::Personal(UserId::new(uuid::Uuid::nil())),
         bind: Some(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)),
         master_token: Some(uuid::Uuid::nil()),
     };

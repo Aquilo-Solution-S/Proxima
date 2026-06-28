@@ -68,7 +68,7 @@ pub(super) async fn add_wake_entry(
         .add_wake_entry(
             &ctx.authz,
             &AddWakeEntryRequest {
-                principal: ctx.owner.clone(),
+                principal: ctx.owner,
                 personality_instance_id: pid,
                 entry: new_draft,
                 audit,

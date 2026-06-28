@@ -2,14 +2,14 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use proxima::{
-    AccessScope, AppInfo, AuthPath, AuthzContext, CapabilitySet, CoreMcpError, CoreMcpErrorKind,
-    CoreMcpTools, FlavorApp, FlavorBundle, Identity, NamedMigrator, PgSidecarRegistry, Proxima,
-    StorageError, ToolScope, company_owner,
+    AccessScope, AppInfo, AuthPath, AuthzContext, CoreMcpError, CoreMcpErrorKind, CoreMcpTools,
+    FlavorApp, FlavorBundle, NamedMigrator, PgSidecarRegistry, Proxima, StorageError, ToolScope,
+    company_owner,
 };
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
-    CitationMappingPayload, CitedObjectPayload, FlavorRegistry, GroupId, MemoryId, Owner,
-    Principal, Relation, SchemaId, Storage, UserId, all_core_resources,
+    CitationMappingPayload, CitedObjectPayload, FlavorRegistry, GroupId, MemoryId, Owner, OwnerRef,
+    Relation, Role, SchemaId, Storage, UserId, all_core_resources,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
@@ -17,6 +17,8 @@ use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgSidecarFuture,
 };
 use uuid::Uuid;
+
+type ResolvedAuthz = AuthzContext;
 
 struct EmptyApp;
 struct AgentMemoryApp;
@@ -152,50 +154,44 @@ impl FlavorApp for AgentMemoryApp {
     }
 }
 
-fn host_authz(owner: &Owner, tool_scope: ToolScope) -> AuthzContext {
-    let accessible_principals = HashSet::from([owner.clone()]);
-    AuthzContext {
-        identity: Identity {
-            principal: owner.clone(),
-            accessible_principals,
-            expires_at: None,
-            auth_epoch: 0,
-        },
-        capabilities: CapabilitySet {
-            tool_scope,
-            access: AccessScope::Unrestricted,
-        },
-        auth_path: AuthPath::HostBearer,
-    }
+fn host_authz(owner: &Owner, tool_scope: ToolScope) -> ResolvedAuthz {
+    let authz = match *owner {
+        OwnerRef::Personal(subject) => AuthzContext::for_subject(subject, AuthPath::HostBearer),
+        OwnerRef::Group(_) => AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(*owner, Role::admin())],
+            AuthPath::HostBearer,
+        ),
+        OwnerRef::World => AuthzContext::denied_for_owner(owner),
+    };
+    authz.with_tool_scope(tool_scope)
 }
 
-fn space_authz(principal: Principal, owners: Vec<Owner>, access: AccessScope) -> AuthzContext {
-    let accessible_principals = owners.into_iter().collect::<HashSet<_>>();
-    AuthzContext {
-        identity: Identity {
-            principal,
-            accessible_principals,
-            expires_at: None,
-            auth_epoch: 0,
-        },
-        capabilities: CapabilitySet {
-            tool_scope: ToolScope::All,
-            access,
-        },
-        auth_path: AuthPath::HostBearer,
-    }
+fn space_authz(subject: OwnerRef, owners: Vec<Owner>, access: AccessScope) -> ResolvedAuthz {
+    let OwnerRef::Personal(user) = subject else {
+        panic!("space auth test subjects must be users");
+    };
+    let group_role = match access {
+        AccessScope::Unrestricted => Role::admin(),
+        AccessScope::Granted => Role::viewer(),
+    };
+    let roles = owners
+        .into_iter()
+        .filter(|owner| matches!(owner, OwnerRef::Group(_)))
+        .map(|owner| (owner, group_role));
+    AuthzContext::for_subject_with_role(user, roles, AuthPath::HostBearer)
 }
 
 async fn seed_group_membership(
     pg: &PgStorage,
-    space_owner: &Principal,
+    space_owner: &OwnerRef,
     relation: Relation,
-    subject: &Principal,
+    subject: &OwnerRef,
 ) {
-    let Principal::Group(group) = space_owner else {
+    let OwnerRef::Group(group) = space_owner else {
         panic!("group membership can only seed group-owned spaces");
     };
-    let Principal::User(user) = subject else {
+    let OwnerRef::Personal(user) = subject else {
         panic!("group membership can only seed user members");
     };
     pg.add_group_member(*group, *user, relation, Uuid::now_v7())
@@ -208,8 +204,9 @@ fn space_key(current: &Owner, owner: &Owner) -> String {
         return "current".into();
     }
     match owner {
-        Principal::User(user) => format!("user:{}", user.into_inner()),
-        Principal::Group(group) => format!("group:{}", group.into_inner()),
+        OwnerRef::World => "world".into(),
+        OwnerRef::Personal(user) => format!("user:{}", user.into_inner()),
+        OwnerRef::Group(group) => format!("group:{}", group.into_inner()),
     }
 }
 
@@ -243,11 +240,11 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
     let db_url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let personal = Principal::User(UserId::new(Uuid::now_v7()));
-        let shared = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let shared = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(db_url.clone())
-            .owner(personal.clone())
+            .owner(personal)
             .build()
             .await?;
         let tools = built.core_mcp_tools();
@@ -255,26 +252,32 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
         seed_group_membership(&pg, &shared, Relation::Viewer, &personal).await;
         let shared_space = space_key(&personal, &shared);
         let authz = space_authz(
-            personal.clone(),
-            vec![personal.clone(), shared.clone()],
+            personal,
+            vec![personal, shared],
             AccessScope::Granted,
         );
 
         let spaces = call_test_model_tool(
             &tools,
             authz.clone(),
-            personal.clone(),
+            personal,
             "core_memory_spaces",
             serde_json::json!({}),
         )
         .await?;
-        assert_eq!(spaces["spaces"][0]["key"], "current");
-        assert_eq!(spaces["spaces"][1]["key"], shared_space);
+        let space_keys = spaces["spaces"]
+            .as_array()
+            .expect("spaces is an array")
+            .iter()
+            .map(|space| space["key"].as_str().expect("space key").to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(space_keys.first().map(String::as_str), Some("current"));
+        assert!(space_keys.contains(&shared_space));
 
         call_test_model_tool(
             &tools,
             authz.clone(),
-            personal.clone(),
+            personal,
             "core_remember",
             serde_json::json!({"space":"current","title":"private","body":"private body","tags":[]}),
         )
@@ -283,7 +286,7 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
         let denied = call_test_model_tool(
             &tools,
             authz,
-            personal.clone(),
+            personal,
             "core_remember",
             serde_json::json!({"space":shared_space,"title":"leak","body":"should deny","tags":[]}),
         )
@@ -307,25 +310,25 @@ async fn shared_space_include_body_uses_shared_owner() {
     let db_url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let personal = Principal::User(UserId::new(Uuid::now_v7()));
-        let shared = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let shared = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(db_url)
-            .owner(personal.clone())
+            .owner(personal)
             .build()
             .await?;
         let tools = built.core_mcp_tools();
         let shared_space = space_key(&personal, &shared);
         let authz = space_authz(
-            personal.clone(),
-            vec![personal.clone(), shared.clone()],
+            personal,
+            vec![personal, shared],
             AccessScope::Unrestricted,
         );
 
         let remembered = call_test_model_tool(
             &tools,
             authz.clone(),
-            personal.clone(),
+            personal,
             "core_remember",
             serde_json::json!({"space":shared_space.clone(),"title":"shared note","body":"shared body unique needle","tags":["shared"]}),
         )
@@ -335,7 +338,7 @@ async fn shared_space_include_body_uses_shared_owner() {
         let search = call_test_model_tool(
             &tools,
             authz,
-            personal.clone(),
+            personal,
             "core_search_memories",
             serde_json::json!({
                 "query": "unique needle",
@@ -367,25 +370,25 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
     let db_url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let personal = Principal::User(UserId::new(Uuid::now_v7()));
-        let shared = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let shared = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(db_url)
-            .owner(personal.clone())
+            .owner(personal)
             .build()
             .await?;
         let tools = built.core_mcp_tools();
         let shared_space = space_key(&personal, &shared);
         let authz = space_authz(
-            personal.clone(),
-            vec![personal.clone(), shared.clone()],
+            personal,
+            vec![personal, shared],
             AccessScope::Unrestricted,
         );
 
         let personal_fact = call_test_model_tool(
             &tools,
             authz.clone(),
-            personal.clone(),
+            personal,
             "core_remember",
             serde_json::json!({"space":"current","title":"personal fact","body":"personal source","tags":[]}),
         )
@@ -393,7 +396,7 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
         let shared_fact = call_test_model_tool(
             &tools,
             authz.clone(),
-            personal.clone(),
+            personal,
             "core_remember",
             serde_json::json!({"space":shared_space,"title":"shared fact","body":"shared source","tags":[]}),
         )
@@ -402,7 +405,7 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
         let derived = call_test_model_tool(
             &tools,
             authz,
-            personal.clone(),
+            personal,
             "core_derive",
             serde_json::json!({
                 "space": "current",
@@ -439,223 +442,6 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "single fixture covers publish, World read, and tombstone semantics"
-)]
-async fn publish_agent_note_adds_world_row_without_copying() {
-    let db_name = unique_db_name("proxima_core_memory_publish");
-    create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
-
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let personal = Principal::User(UserId::new(Uuid::now_v7()));
-        let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(db_url)
-            .owner(personal.clone())
-            .build()
-            .await?;
-        let tools = built.core_mcp_tools();
-        let authz = space_authz(personal.clone(), vec![personal.clone()], AccessScope::Unrestricted);
-
-        let remembered = call_test_model_tool(
-            &tools,
-            authz.clone(),
-            personal.clone(),
-            "core_remember",
-            serde_json::json!({"space":"current","title":"private note","body":"publish unique needle","tags":["private"]}),
-        )
-        .await?;
-        let source = remembered["handle"].as_str().expect("source handle");
-        let memory_count_before: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM proxima_core.memories")
-                .fetch_one(&built.pool)
-                .await?;
-
-        let published = call_test_model_tool(
-            &tools,
-            authz.clone(),
-            personal.clone(),
-            "core_share",
-            serde_json::json!({
-                "action": "publish",
-                "entity": source
-            }),
-        )
-        .await?;
-        assert_eq!(published["ok"], true);
-        let memory_count_after: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM proxima_core.memories")
-                .fetch_one(&built.pool)
-                .await?;
-        assert_eq!(memory_count_after, memory_count_before, "publish must not copy");
-
-        let personal_search = call_test_model_tool(
-            &tools,
-            authz.clone(),
-            personal.clone(),
-            "core_search_memories",
-            serde_json::json!({"spaces":["current"],"query":"publish unique needle","mode":"lexical","kind":"Fact","include_body":true}),
-        )
-        .await?;
-        assert_eq!(personal_search["memories"][0]["memory"], source);
-        assert_eq!(personal_search["memories"][0]["space"], "current");
-
-        let shares = call_test_model_tool(
-            &tools,
-            authz.clone(),
-            personal.clone(),
-            "core_share",
-            serde_json::json!({"action":"list_shares","entity":source}),
-        )
-        .await?;
-        let world_key = space_key(&personal, &proxima_core::access::world());
-        assert!(
-            shares
-                .as_array()
-                .expect("shares")
-                .iter()
-                .any(|share| share["owner"] == world_key && share["is_home"] == false),
-            "publish must add a non-home World owner row"
-        );
-
-        let world = call_test_model_tool(
-            &tools,
-            authz.clone(),
-            personal.clone(),
-            "core_share",
-            serde_json::json!({"action":"list_world","limit":5}),
-        )
-        .await?;
-        assert_eq!(world.as_array().expect("world list")[0]["memory"], source);
-
-        let world_reader = Principal::User(UserId::new(Uuid::now_v7()));
-        let world_reader_authz = space_authz(
-            world_reader.clone(),
-            vec![world_reader.clone()],
-            AccessScope::Granted,
-        );
-        let world_read = read_test_model_resource(
-            &tools,
-            world_reader_authz,
-            world_reader,
-            &format!("proxima://memory/{source}"),
-        )
-        .await?;
-        assert_eq!(world_read["memory"], source);
-
-        let tombstone = call_test_model_tool(
-            &tools,
-            authz.clone(),
-            personal.clone(),
-            "core_fact",
-            serde_json::json!({ "action": "tombstone", "fact": source, "confirm": true, "expect_handle": source }),
-        )
-        .await?;
-        assert_eq!(tombstone["fact_erased"], true);
-
-        let world_after_tombstone = call_test_model_tool(
-            &tools,
-            authz,
-            personal.clone(),
-            "core_share",
-            serde_json::json!({"action":"list_world","limit":5}),
-        )
-        .await?;
-        assert!(
-            world_after_tombstone
-                .as_array()
-                .expect("world list after tombstone")
-                .is_empty(),
-            "tombstone must remove World listing"
-        );
-
-        built.shutdown();
-        Ok(())
-    }
-    .await;
-
-    let _ = drop_db(&db_name).await;
-    result.expect("publish share test failed");
-}
-
-#[tokio::test]
-async fn core_share_publish_rejects_viewer_only_group_members() {
-    let db_name = unique_db_name("proxima_core_memory_publish_negative");
-    create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
-
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let group_owner = Principal::Group(GroupId::new(Uuid::now_v7()));
-        let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(db_url.clone())
-            .owner(group_owner.clone())
-            .build()
-            .await?;
-        let tools = built.core_mcp_tools();
-        let pg = PgStorage::connect(&db_url).await?;
-        let admin_authz = AuthzContext::single_owner(&group_owner, AuthPath::System);
-
-        let note = call_test_model_tool(
-            &tools,
-            admin_authz.clone(),
-            group_owner.clone(),
-            "core_remember",
-            serde_json::json!({"space":"current","title":"publish negative","body":"negative note","tags":[]}),
-        )
-        .await?;
-        let note_handle = note["handle"].as_str().unwrap();
-
-        let viewer = Principal::User(UserId::new(Uuid::now_v7()));
-        seed_group_membership(&pg, &group_owner, Relation::Viewer, &viewer).await;
-        let viewer_authz = space_authz(viewer.clone(), vec![viewer], AccessScope::Granted);
-        let publish_denied = call_test_model_tool(
-            &tools,
-            viewer_authz,
-            group_owner.clone(),
-            "core_share",
-            serde_json::json!({"action":"publish","entity": note_handle}),
-        )
-        .await
-        .expect_err("viewer membership must not publish");
-        assert!(publish_denied
-            .to_string()
-            .contains("requires editor on this owner"));
-
-        call_test_model_tool(
-            &tools,
-            admin_authz.clone(),
-            group_owner.clone(),
-            "core_share",
-            serde_json::json!({"action":"publish","entity": note_handle}),
-        )
-        .await?;
-
-        let outsider = Principal::User(UserId::new(Uuid::now_v7()));
-        let unpublish_denied = call_test_model_tool(
-            &tools,
-            space_authz(outsider.clone(), vec![outsider], AccessScope::Granted),
-            group_owner.clone(),
-            "core_share",
-            serde_json::json!({"action":"unpublish","entity": note_handle}),
-        )
-        .await
-        .expect_err("unrelated caller must not unpublish");
-        assert!(unpublish_denied
-            .to_string()
-            .contains("requires editor on this owner"));
-
-        drop(pg);
-        built.shutdown();
-        Ok(())
-    }
-    .await;
-
-    let _ = drop_db(&db_name).await;
-    result.expect("core_share publish negative test failed");
-}
-
-#[tokio::test]
 async fn facade_lists_and_dispatches_core_mcp_tools() {
     let db_name = unique_db_name("proxima_core_mcp");
     create_db(&db_name).await.expect("PG required for tests");
@@ -665,7 +451,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
             .database_url(db_url)
-            .owner(owner.clone())
+            .owner(owner)
             .build()
             .await?;
         let tools = built.core_mcp_tools();
@@ -707,7 +493,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         let output = call_test_model_tool(
             &tools,
             admin_authz,
-            owner.clone(),
+            owner,
             "core_personality",
             serde_json::json!({ "action": "list" }),
         )
@@ -720,7 +506,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         let denied = tools
             .call_core_tool(
                 host_authz(&owner, ToolScope::Palette(Vec::new())),
-                owner.clone(),
+                owner,
                 None,
                 "core_personality",
                 serde_json::json!({ "action": "list" }),
@@ -733,7 +519,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         let invalid = tools
             .read_core_resource(
                 host_authz(&owner, ToolScope::All),
-                owner.clone(),
+                owner,
                 None,
                 "proxima://memory/not-a-memory-id",
             )
@@ -744,7 +530,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         let unknown = tools
             .call_core_tool(
                 host_authz(&owner, ToolScope::All),
-                owner.clone(),
+                owner,
                 None,
                 "core/not_a_tool",
                 serde_json::json!({}),
@@ -771,7 +557,7 @@ async fn facade_reads_core_resources_with_resource_scope() {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
             .database_url(db_url)
-            .owner(owner.clone())
+            .owner(owner)
             .build()
             .await?;
         let tools = built.core_mcp_tools();
@@ -780,7 +566,7 @@ async fn facade_reads_core_resources_with_resource_scope() {
         let remembered = call_test_model_tool(
             &tools,
             authz.clone(),
-            owner.clone(),
+            owner,
             "core_remember",
             serde_json::json!({
                 "title": "Resource facade",
@@ -795,15 +581,14 @@ async fn facade_reads_core_resources_with_resource_scope() {
         let resource_memory = read_test_model_resource(
             &tools,
             authz.clone(),
-            owner.clone(),
+            owner,
             &format!("proxima://memory/{memory}"),
         )
         .await?;
         assert_eq!(resource_memory["memory"], memory);
 
         let resource_schemas =
-            read_test_model_resource(&tools, authz.clone(), owner.clone(), "proxima://schemas")
-                .await?;
+            read_test_model_resource(&tools, authz.clone(), owner, "proxima://schemas").await?;
         assert!(
             !resource_schemas["schemas"]
                 .as_array()
@@ -817,7 +602,7 @@ async fn facade_reads_core_resources_with_resource_scope() {
                 &owner,
                 ToolScope::Palette(vec!["resource:schemas".to_string()]),
             ),
-            owner.clone(),
+            owner,
             &format!("proxima://memory/{memory}"),
         )
         .await;
@@ -844,7 +629,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(db_url)
-            .owner(owner.clone())
+            .owner(owner)
             .embed_client(test_embedding())
             .build()
             .await?;
@@ -865,8 +650,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
             "resource:memory must stay in the core resource catalog"
         );
         let resource_listing =
-            read_test_model_resource(&tools, authz.clone(), owner.clone(), "proxima://tools")
-                .await?;
+            read_test_model_resource(&tools, authz.clone(), owner, "proxima://tools").await?;
         let substrate_tool_ids: HashSet<_> = resource_listing["tools"]
             .as_array()
             .expect("tools")
@@ -881,7 +665,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
         let remembered = call_test_model_tool(
             &tools,
             authz.clone(),
-            owner.clone(),
+            owner,
             "core_remember",
             serde_json::json!({
                 "title": "Retrieval surface",
@@ -897,7 +681,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
         let lexical = call_test_model_tool(
             &tools,
             authz.clone(),
-            owner.clone(),
+            owner,
             "core_search_memories",
             serde_json::json!({
                 "query": "keyword needle",
@@ -912,7 +696,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
         let semantic = call_test_model_tool(
             &tools,
             authz.clone(),
-            owner.clone(),
+            owner,
             "core_search_memories",
             serde_json::json!({
                 "query": "unrelated semantic query",
@@ -924,13 +708,9 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
         .await?;
         assert_eq!(semantic["memories"][0]["memory"], memory);
 
-        let fetched = read_test_model_resource(
-            &tools,
-            authz,
-            owner.clone(),
-            &format!("proxima://memory/{memory}"),
-        )
-        .await?;
+        let fetched =
+            read_test_model_resource(&tools, authz, owner, &format!("proxima://memory/{memory}"))
+                .await?;
         assert_eq!(fetched["memory"], memory);
 
         built.shutdown();
@@ -956,7 +736,7 @@ async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() 
         // No .embed_client(...) — engine.embed_client() is None.
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(db_url)
-            .owner(owner.clone())
+            .owner(owner)
             .build()
             .await?;
         let tools = built.core_mcp_tools();
@@ -965,7 +745,7 @@ async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() 
         call_test_model_tool(
             &tools,
             authz.clone(),
-            owner.clone(),
+            owner,
             "core_remember",
             serde_json::json!({
                 "title": "Degrade path",
@@ -981,7 +761,7 @@ async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() 
         let default_search = call_test_model_tool(
             &tools,
             authz.clone(),
-            owner.clone(),
+            owner,
             "core_search_memories",
             serde_json::json!({
                 "query": "lexical needle",
@@ -1007,7 +787,7 @@ async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() 
         let semantic = call_test_model_tool(
             &tools,
             authz,
-            owner.clone(),
+            owner,
             "core_search_memories",
             serde_json::json!({
                 "query": "lexical needle",
@@ -1041,7 +821,7 @@ async fn facade_core_fact_tombstone_is_idempotent() {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
             .database_url(db_url)
-            .owner(owner.clone())
+            .owner(owner)
             .build()
             .await?;
         let tools = built.core_mcp_tools();
@@ -1050,7 +830,7 @@ async fn facade_core_fact_tombstone_is_idempotent() {
         let remembered = call_test_model_tool(
             &tools,
             authz.clone(),
-            owner.clone(),
+            owner,
             "core_remember",
             serde_json::json!({
                 "title": "Tombstone surface",
@@ -1065,7 +845,7 @@ async fn facade_core_fact_tombstone_is_idempotent() {
         let first = call_test_model_tool(
             &tools,
             authz.clone(),
-            owner.clone(),
+            owner,
             "core_fact",
             serde_json::json!({ "action": "tombstone", "fact": memory, "confirm": true, "expect_handle": memory }),
         )
@@ -1076,7 +856,7 @@ async fn facade_core_fact_tombstone_is_idempotent() {
         let second = call_test_model_tool(
             &tools,
             authz,
-            owner.clone(),
+            owner,
             "core_fact",
             serde_json::json!({ "action": "tombstone", "fact": memory, "confirm": true, "expect_handle": memory }),
         )
@@ -1104,7 +884,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
         let other_owner = company_owner(Uuid::now_v7());
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(db_url)
-            .owner(owner.clone())
+            .owner(owner)
             .embed_client(test_embedding())
             .build()
             .await?;
@@ -1115,7 +895,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
         let remembered = call_test_model_tool(
             &tools,
             authz.clone(),
-            owner.clone(),
+            owner,
             "core_remember",
             serde_json::json!({
                 "title": "Cited retrieval",
@@ -1150,7 +930,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
         let citing = call_test_model_tool(
             &tools,
             authz.clone(),
-            owner.clone(),
+            owner,
             "core_fact",
             serde_json::json!({ "action": "facts_citing_object", "cited_object_id": cited_object_id.to_string() }),
         )
@@ -1160,7 +940,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
         let citation = call_test_model_tool(
             &tools,
             authz.clone(),
-            owner.clone(),
+            owner,
             "core_fact",
             serde_json::json!({ "action": "citation_of_fact", "fact": memory }),
         )

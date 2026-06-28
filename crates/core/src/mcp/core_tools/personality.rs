@@ -10,8 +10,6 @@ use super::instantiate_personality::{
 use super::list_personalities::{
     ListPersonalitiesArgs, ListPersonalitiesOutput, list_personalities,
 };
-use super::list_read_scope::{ListReadScopeArgs, ListReadScopeOutput, list_read_scope};
-use super::set_read_scope::{SetReadScopeArgs, SetReadScopeOutput, set_read_scope};
 use super::tombstone_personality::{
     TombstonePersonalityArgs, TombstonePersonalityOutput, tombstone_personality,
 };
@@ -19,10 +17,8 @@ use super::{DESTRUCTIVE_NON_IDEMPOTENT, READ_ONLY, WRITE_NON_IDEMPOTENT};
 
 const CORE_PERSONALITY_INSTANTIATE_SCOPE_KEY: &str = "core_personality:instantiate";
 const CORE_PERSONALITY_TOMBSTONE_SCOPE_KEY: &str = "core_personality:tombstone";
-const CORE_PERSONALITY_SET_READ_SCOPE_SCOPE_KEY: &str = "core_personality:set_read_scope";
 const CORE_PERSONALITY_LIST_SCOPE_KEY: &str = "core_personality:list";
 const CORE_PERSONALITY_GET_SCOPE_KEY: &str = "core_personality:get";
-const CORE_PERSONALITY_LIST_READ_SCOPE_SCOPE_KEY: &str = "core_personality:list_read_scope";
 const PERSONALITY_CONFIG_CHANGED_SCHEMA_IDS: &[&str] =
     &[<super::PersonalityConfigChangedV1 as crate::FactPayload>::SCHEMA_ID];
 
@@ -45,14 +41,6 @@ pub const CORE_PERSONALITY_ACTIONS: &[CoreActionMeta] = &[
     },
     CoreActionMeta {
         tool: CorePersonalityTool::NAME,
-        action: "set_read_scope",
-        scope_key: CORE_PERSONALITY_SET_READ_SCOPE_SCOPE_KEY,
-        description: "Replace explicit cross-personality read grants.",
-        produces_schema_ids: PERSONALITY_CONFIG_CHANGED_SCHEMA_IDS,
-        annotations: WRITE_NON_IDEMPOTENT,
-    },
-    CoreActionMeta {
-        tool: CorePersonalityTool::NAME,
         action: "list",
         scope_key: CORE_PERSONALITY_LIST_SCOPE_KEY,
         description: "List personality instances for the authenticated owner.",
@@ -67,14 +55,6 @@ pub const CORE_PERSONALITY_ACTIONS: &[CoreActionMeta] = &[
         produces_schema_ids: &[],
         annotations: READ_ONLY,
     },
-    CoreActionMeta {
-        tool: CorePersonalityTool::NAME,
-        action: "list_read_scope",
-        scope_key: CORE_PERSONALITY_LIST_READ_SCOPE_SCOPE_KEY,
-        description: "List explicit cross-personality read grants.",
-        produces_schema_ids: &[],
-        annotations: READ_ONLY,
-    },
 ];
 
 #[derive(Debug, Default)]
@@ -85,10 +65,8 @@ pub struct CorePersonalityTool;
 pub enum CorePersonalityArgs {
     Instantiate(InstantiatePersonalityArgs),
     Tombstone(TombstonePersonalityArgs),
-    SetReadScope(SetReadScopeArgs),
     List(ListPersonalitiesArgs),
     Get(GetPersonalityArgs),
-    ListReadScope(ListReadScopeArgs),
 }
 
 #[derive(Debug, Serialize)]
@@ -96,16 +74,13 @@ pub enum CorePersonalityArgs {
 pub enum CorePersonalityOutput {
     Instantiate(InstantiatePersonalityOutput),
     Tombstone(TombstonePersonalityOutput),
-    SetReadScope(SetReadScopeOutput),
     List(ListPersonalitiesOutput),
     Get(GetPersonalityOutput),
-    ListReadScope(ListReadScopeOutput),
 }
 
 impl McpTool for CorePersonalityTool {
     const NAME: &'static str = "core_personality";
-    const DESCRIPTION: &'static str =
-        "Personality dispatcher — instantiate/tombstone/set_read_scope/list/get/list_read_scope.";
+    const DESCRIPTION: &'static str = "Personality dispatcher — instantiate/tombstone/list/get.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = PERSONALITY_CONFIG_CHANGED_SCHEMA_IDS;
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
@@ -119,22 +94,12 @@ impl McpTool for CorePersonalityTool {
             required_fields: &["personality", "confirm", "expect_handle"],
         },
         McpActionArgSpec {
-            action: "set_read_scope",
-            allowed_fields: &["personality", "readable_personalities"],
-            required_fields: &["personality", "readable_personalities"],
-        },
-        McpActionArgSpec {
             action: "list",
             allowed_fields: &["include_tombstoned"],
             required_fields: &[],
         },
         McpActionArgSpec {
             action: "get",
-            allowed_fields: &["personality"],
-            required_fields: &["personality"],
-        },
-        McpActionArgSpec {
-            action: "list_read_scope",
             allowed_fields: &["personality"],
             required_fields: &["personality"],
         },
@@ -154,18 +119,12 @@ impl McpTool for CorePersonalityTool {
                 CorePersonalityArgs::Tombstone(args) => tombstone_personality(ctx, args)
                     .await
                     .map(CorePersonalityOutput::Tombstone),
-                CorePersonalityArgs::SetReadScope(args) => set_read_scope(ctx, args)
-                    .await
-                    .map(CorePersonalityOutput::SetReadScope),
                 CorePersonalityArgs::List(args) => list_personalities(ctx, args)
                     .await
                     .map(CorePersonalityOutput::List),
                 CorePersonalityArgs::Get(args) => get_personality(ctx, args)
                     .await
                     .map(CorePersonalityOutput::Get),
-                CorePersonalityArgs::ListReadScope(args) => list_read_scope(ctx, args)
-                    .await
-                    .map(CorePersonalityOutput::ListReadScope),
             }
         })
     }

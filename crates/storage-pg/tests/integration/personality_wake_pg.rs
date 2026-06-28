@@ -19,7 +19,7 @@ use proxima_core::verbs::event_ingest::{
 };
 use proxima_core::{
     AbstractionPayload, EntityKind, FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner,
-    PerspectivePayload, Principal, RegisteredRelation, RelationClass, SchemaId, SchemaVersion,
+    OwnerRef, PerspectivePayload, RegisteredRelation, RelationClass, SchemaId, SchemaVersion,
     SidecarPayload, SourceBatchId, SourceId, StorageError, WakeEntryGoalScope,
 };
 use proxima_storage_pg::sidecars::{
@@ -171,7 +171,7 @@ async fn seed_test_personality(
 ) -> Result<proxima_core::InstantiatePersonalityResponse, Box<dyn std::error::Error>> {
     let response = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            principal: owner.clone(),
+            principal: *owner,
             display_name: "Engineer A".into(),
         })
         .await?;
@@ -180,8 +180,9 @@ async fn seed_test_personality(
 
 fn principal_id(owner: &Owner) -> Uuid {
     match owner {
-        Principal::User(id) => id.into_inner(),
-        Principal::Group(id) => id.into_inner(),
+        OwnerRef::World => proxima_core::WORLD_OWNER_UUID,
+        OwnerRef::Personal(id) => id.into_inner(),
+        OwnerRef::Group(id) => id.into_inner(),
     }
 }
 
@@ -368,7 +369,7 @@ async fn personality_wake_storage_round_trip() {
 
         let first = sample_entry(instance, "proxima-test/fact-v1");
         pg.set_wake_entries(&SetWakeEntriesRequest {
-            principal: owner.clone(),
+            principal: owner,
             personality_instance_id: instance,
             entries: vec![first],
         })
@@ -376,7 +377,7 @@ async fn personality_wake_storage_round_trip() {
         let mut replacement = sample_entry(instance, "core/goal-activated-v1");
         replacement.goal_scope = WakeEntryGoalScope::TriggerGoalAssigned;
         pg.set_wake_entries(&SetWakeEntriesRequest {
-            principal: owner.clone(),
+            principal: owner,
             personality_instance_id: instance,
             entries: vec![replacement.clone()],
         })
@@ -430,7 +431,7 @@ async fn list_personality_instances_populates_wake_entries() {
         let entry = sample_entry(response.instance_id, "proxima-test/fact-v1");
 
         pg.set_wake_entries(&SetWakeEntriesRequest {
-            principal: owner.clone(),
+            principal: owner,
             personality_instance_id: response.instance_id,
             entries: vec![entry],
         })
@@ -561,7 +562,7 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
         let instance = PersonalityRef::new(seed.instance_id);
         let first = pg
             .append_personality_memories(&PersonalityWriteRequest {
-                owner: owner.clone(),
+                owner,
                 instance: instance.clone(),
                 model_id: "test-model",
                 prompt_version: "test-v1",
@@ -579,7 +580,7 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
             .await?;
         let second = pg
             .append_personality_memories(&PersonalityWriteRequest {
-                owner: owner.clone(),
+                owner,
                 instance: instance.clone(),
                 model_id: "test-model",
                 prompt_version: "test-v1",
@@ -596,7 +597,7 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
             })
             .await?;
         pg.append_personality_memories(&PersonalityWriteRequest {
-            owner: owner.clone(),
+            owner,
             instance: instance.clone(),
             model_id: "test-model",
             prompt_version: "test-v1",
@@ -616,7 +617,7 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
 
         let sibling_root_id = current_root_perspective_memory_id(&pg, sibling.instance_id).await?;
         pg.append_personality_memories(&PersonalityWriteRequest {
-            owner: owner.clone(),
+            owner,
             instance: PersonalityRef::new(sibling.instance_id),
             model_id: "test-model",
             prompt_version: "test-v1",
@@ -694,7 +695,7 @@ async fn same_batch_same_schema_perspectives_form_a_linear_chain_not_a_fork() {
 
         let out = pg
             .append_personality_memories(&PersonalityWriteRequest {
-                owner: owner.clone(),
+                owner,
                 instance: instance.clone(),
                 model_id: "test-model",
                 prompt_version: "test-v1",
@@ -780,7 +781,7 @@ async fn concurrent_cross_request_perspectives_serialize_into_linear_chain() {
             Vec::new(),
         )];
         pg.append_personality_memories(&PersonalityWriteRequest {
-            owner: owner.clone(),
+            owner,
             instance: instance.clone(),
             model_id: "test-model",
             prompt_version: "test-v1",
@@ -806,7 +807,7 @@ async fn concurrent_cross_request_perspectives_serialize_into_linear_chain() {
             Vec::new(),
         )];
         let req_a = PersonalityWriteRequest {
-            owner: owner.clone(),
+            owner,
             instance: instance.clone(),
             model_id: "test-model",
             prompt_version: "test-v1",
@@ -818,7 +819,7 @@ async fn concurrent_cross_request_perspectives_serialize_into_linear_chain() {
             memories: &drafts_a,
         };
         let req_b = PersonalityWriteRequest {
-            owner: owner.clone(),
+            owner,
             instance: instance.clone(),
             model_id: "test-model",
             prompt_version: "test-v1",
@@ -884,9 +885,7 @@ async fn personality_provenance_edges_use_operator_authorship() {
         let owner = owner_fixture();
         let seed = seed_test_personality(&pg, &owner).await?;
         let root_id = current_root_perspective_memory_id(&pg, seed.instance_id).await?;
-        let fact = pg
-            .ingest_event_atomic(&fact_draft(owner.clone()), None)
-            .await?;
+        let fact = pg.ingest_event_atomic(&fact_draft(owner), None).await?;
         let registry = FlavorRegistry::new().freeze();
         let provenance_relation =
             resolve_registered_relation(&registry, CORE_DERIVED_FROM_RELATION);
@@ -896,7 +895,7 @@ async fn personality_provenance_edges_use_operator_authorship() {
 
         let abstraction = pg
             .append_personality_memories(&PersonalityWriteRequest {
-                owner: owner.clone(),
+                owner,
                 instance: instance.clone(),
                 model_id: "test-model",
                 prompt_version: "test-v1",
@@ -978,9 +977,7 @@ async fn personality_provenance_skips_perspective_context_targets() {
         let owner = owner_fixture();
         let seed = seed_test_personality(&pg, &owner).await?;
         let root_id = current_root_perspective_memory_id(&pg, seed.instance_id).await?;
-        let fact = pg
-            .ingest_event_atomic(&fact_draft(owner.clone()), None)
-            .await?;
+        let fact = pg.ingest_event_atomic(&fact_draft(owner), None).await?;
         let registry = FlavorRegistry::new().freeze();
         let provenance_relation =
             resolve_registered_relation(&registry, CORE_DERIVED_FROM_RELATION);
@@ -1043,9 +1040,7 @@ async fn personality_authored_edge_links_root_to_emitted_memory() {
         let owner = owner_fixture();
         let seed = seed_test_personality(&pg, &owner).await?;
         let root_id = current_root_perspective_memory_id(&pg, seed.instance_id).await?;
-        let fact = pg
-            .ingest_event_atomic(&fact_draft(owner.clone()), None)
-            .await?;
+        let fact = pg.ingest_event_atomic(&fact_draft(owner), None).await?;
         let registry = FlavorRegistry::new().freeze();
         let provenance_relation =
             resolve_registered_relation(&registry, CORE_DERIVED_FROM_RELATION);
@@ -1055,7 +1050,7 @@ async fn personality_authored_edge_links_root_to_emitted_memory() {
 
         let abstraction = pg
             .append_personality_memories(&PersonalityWriteRequest {
-                owner: owner.clone(),
+                owner,
                 instance: instance.clone(),
                 model_id: "test-model",
                 prompt_version: "test-v1",
