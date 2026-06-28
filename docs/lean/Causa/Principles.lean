@@ -68,6 +68,59 @@ theorem principle_4_facts_connect_non_interpretively :
   intro c
   rfl
 
+/-- Epistemic corollary — a valid Fact→Fact edge cannot carry a Causal class.
+    Causal claims must be represented above Facts / perspective-relatively. -/
+theorem principle_epistemic_fact_to_fact_not_causal :
+    ∀ registry (e : Edge) (source target : Memory),
+      EdgeHasClass registry e .Causal →
+      edge_source e = .memory source →
+      edge_target e = .memory target →
+      memory_kind source = .Fact →
+      memory_kind target = .Fact →
+      False := by
+  intro registry e source target hclass hsource htarget hsourceFact htargetFact
+  have hlegal := edge_class_legal registry e .Causal hclass source target hsource htarget
+  rw [hsourceFact, htargetFact] at hlegal
+  rcases hlegal with h | h <;> exact (nomatch h)
+
+/-- Epistemic corollary — a valid Fact→Fact edge cannot carry an Interpretive
+    class. Interpretation is not an observer-independent Fact edge. -/
+theorem principle_epistemic_fact_to_fact_not_interpretive :
+    ∀ registry (e : Edge) (source target : Memory),
+      EdgeHasClass registry e .Interpretive →
+      edge_source e = .memory source →
+      edge_target e = .memory target →
+      memory_kind source = .Fact →
+      memory_kind target = .Fact →
+      False := by
+  intro registry e source target hclass hsource htarget hsourceFact htargetFact
+  have hlegal := edge_class_legal registry e .Interpretive hclass source target hsource htarget
+  rw [hsourceFact, htargetFact] at hlegal
+  rcases hlegal with h | h <;> exact (nomatch h)
+
+/-- Epistemic corollary — operator-emitted generalizations/interpretations cannot
+    become new immutable Facts. This is a representation bound, not a solution to
+    Hume's problem of induction. -/
+theorem principle_epistemic_operator_output_not_fact :
+    ∀ registry (e : Edge) (output : Memory),
+      EdgeOperatorShapeValid registry e →
+      (edge_authorship e = .OperatorFtoA ∨
+       edge_authorship e = .OperatorAtoA ∨
+       edge_authorship e = .OperatorAtoP) →
+      edge_source e = .memory output →
+      memory_kind output ≠ .Fact :=
+  operator_memory_output_not_fact
+
+/-- Epistemic corollary — valid Supersession cannot revise Fact identity:
+    neither endpoint of a valid Supersession memory edge can be a Fact. -/
+theorem principle_epistemic_supersession_cannot_touch_facts :
+    ∀ registry (e : Edge) (source target : Memory),
+      EdgeHasClass registry e .Supersession →
+      edge_source e = .memory source →
+      edge_target e = .memory target →
+      memory_kind source ≠ .Fact ∧ memory_kind target ≠ .Fact :=
+  facts_never_supersede
+
 /-- P5 — every admitted memory is grounded in Facts: a well-founded derivation/
     supersession descent (incl. higher-order A→A provenance) bottoms out
     at Facts inside the admitted memory graph. Names the Provenance.lean
@@ -77,6 +130,27 @@ theorem principle_5_memories_grounded_in_facts :
       MemoryGraphValid registry memories goals factEntities edges →
       ∀ m : Memory, m ∈ memories → GroundsInFact registry edges m :=
   memory_grounds_in_facts
+
+/-- Epistemic corollary — every admitted Abstraction is empirically grounded:
+    it has finite descent to Facts inside the valid memory graph. -/
+theorem principle_epistemic_abstraction_grounded_in_facts :
+    ∀ registry memories goals factEntities edges,
+      MemoryGraphValid registry memories goals factEntities edges →
+      ∀ m : Memory, m ∈ memories → memory_kind m = .Abstraction →
+        GroundsInFact registry edges m :=
+  abstraction_grounds_in_facts
+
+/-- Epistemic corollary — every admitted Perspective has persisted Provenance
+    to an admitted Abstraction; no Perspective is a view from nowhere. -/
+theorem principle_epistemic_perspective_has_abstraction_provenance :
+    ∀ registry memories goals factEntities edges,
+      MemoryGraphValid registry memories goals factEntities edges →
+      ∀ m : Memory, m ∈ memories → memory_kind m = .Perspective →
+        ∃ e : Edge, e ∈ edges ∧ EdgeHasClass registry e .Provenance ∧
+          edge_source e = .memory m ∧
+          (∃ mt : Memory, mt ∈ memories ∧ edge_target e = .memory mt ∧
+            memory_kind mt = .Abstraction) :=
+  perspective_has_provenance
 
 /-- P6a — derivation/provenance edges obey the layer directionality
     law: for memory→memory edges, ℓ(source) ≥ ℓ(target). This names
