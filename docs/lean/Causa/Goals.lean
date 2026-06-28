@@ -18,6 +18,14 @@ Self must never be cached as a Memory row, a Goal row, Personality
 instance, or materialized causal chain ("cache would become
 authority"). The absence of a `Self` axiom here is the invariant;
 COVERAGE.md records it explicitly.
+
+Wake (2026-06-28): a Goal may carry optional `WakeConfig`. When present
+the Goal is ARMED — it reacts to matching Facts (the Mail→Fact→Wake
+loop). "Goals are wake entries when configured to wake": an action with
+no goal-context is useless, so wake rides on the Goal that gives it
+direction, NOT a separate entity kind. The Goal row carries only the
+CONFIG; the firing semantics (no-escalation, time-grounding, motivation)
+are proved in `Causa.Wake`.
 -/
 
 import Causa.Prelude
@@ -74,9 +82,37 @@ inductive GoalAuthorship where
   | SystemOperator  -- A→Goal operator output
   deriving DecidableEq, Repr
 
+-- ============================================================
+-- Wake configuration (2026-06-28) — what arms a Goal to react
+-- ============================================================
+
+/-- A tool the agent may invoke during a wake. A thin descriptor: a name and
+    the schema of its arguments. The kernel needs only the tool's identity;
+    what it DOES (its World side effect) is flavor/engine mechanics, and the
+    record it leaves is an ordinary Fact (the ToolCall abstraction returns a
+    Fact). -/
+structure Action where
+  name      : Text
+  signature : SchemaRef
+
+/-- Wake configuration carried by a Goal. `trigger` is the (opaque,
+    flavor-supplied) Fact matcher; `toolset` the permitted Actions ("World
+    Actions"); `prompt` the standing instruction; `hard_memories` the
+    always-injected context. A Goal with `wake = some _` is ARMED; `none` is a
+    passive standing intent. This is the new kernel STRUCTURE (point 1, "it
+    holds the configuration") — but it rides on the existing `Goal` kind
+    (point 6, "Goals are wake entries when configured to wake"), never a
+    separate entity. -/
+structure WakeConfig where
+  trigger       : Set Fact
+  toolset       : Set Action
+  prompt        : Text
+  hard_memories : Set MemoryId
+
 /-- Goal row shape. Supersession stores the prior Goal id, not a recursive
     object pointer. Goal↔Goal DAG/topology is deliberately absent: those
-    decisions are represented by ordinary Edge rows and relation descriptors. -/
+    decisions are represented by ordinary Edge rows and relation descriptors.
+    `wake` arms the Goal (D-A); `none` = a passive standing intent. -/
 structure Goal where
   id          : GoalId
   owner       : Owner
@@ -87,6 +123,7 @@ structure Goal where
   supersedes  : Option GoalId
   authorship  : GoalAuthorship
   close_fact  : Option Memory
+  wake        : Option WakeConfig
   terminal_close_fact :
     state.terminal = true →
       ∃ m : Memory, close_fact = some m ∧ memory_kind m = .Fact
@@ -117,6 +154,13 @@ def goal_authorship : Goal → GoalAuthorship := Goal.authorship
 
 /-- Compatibility accessor for prose/Rust vocabulary. -/
 def goal_close_fact : Goal → Option Memory := Goal.close_fact
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def goal_wake : Goal → Option WakeConfig := Goal.wake
+
+/-- A Goal is ARMED when it carries wake configuration — only then does it
+    react to Facts. The passive case (`none`) is a standing intent. -/
+def goalArmed (g : Goal) : Prop := (goal_wake g).isSome = true
 
 /-- Goal id uniqueness is a table/store invariant, not a global property of
     raw structure values. -/

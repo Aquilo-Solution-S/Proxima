@@ -57,9 +57,10 @@ theorem fact_is_fact (schema : SchemaRef) (owner : Owner) (id : MemoryId) (t : I
 /-- The flavor's Abstraction is grounded in Facts — the universal N1 grounding
     theorem (`memory_grounds_in_facts`) applies directly. The flavor inherits
     provenance grounding for free. -/
-theorem abstraction_grounded (schema : SchemaRef) (owner : Owner) (id : MemoryId) (t : Instant) :
-    GroundsInFact (abstraction schema owner id t) :=
-  memory_grounds_in_facts _
+theorem abstraction_grounded
+    (registry : RelationRegistry) (schema : SchemaRef) (owner : Owner) (id : MemoryId) (t : Instant) :
+    GroundsInFact registry (abstraction schema owner id t) :=
+  memory_grounds_in_facts registry _
 
 /-- A flavor Fact published to World is readable by every requester — its access
     is its owner's, governed by the universal rule (`world_universally_readable`). -/

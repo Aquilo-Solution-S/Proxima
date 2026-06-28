@@ -22,20 +22,21 @@ theorem principle_1_facts_below_perspective :
     need none here. Whether the evidence satisfies the Goal is a
     measurement/decider judgment, not a universal kernel rule. -/
 theorem principle_2_operator_goals_carry_evidence :
-    ∀ e : Edge, EdgeOperatorShapeValid e → edge_authorship e = .OperatorAtoGoal →
-      EdgeHasClass e .Structural ∧
+    ∀ registry (e : Edge), EdgeOperatorShapeValid registry e →
+      edge_authorship e = .OperatorAtoGoal →
+      EdgeHasClass registry e .Structural ∧
       (∃ g : Goal, edge_source e = .goal g) ∧
       (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt ≠ .Perspective) := by
-  intro e hshape ha
-  have h := operator_edges_shaped e hshape
+  intro registry e hshape ha
+  have h := operator_edges_shaped registry e hshape
   rw [ha] at h
   exact h
 
 /-- P3 — operator memory outputs are never Facts. Discharged by
     CN-5 `operator_memory_output_not_fact`. -/
 theorem principle_3_operators_never_output_facts :
-    ∀ (e : Edge) (m : Memory),
-      EdgeOperatorShapeValid e →
+    ∀ registry (e : Edge) (m : Memory),
+      EdgeOperatorShapeValid registry e →
       (edge_authorship e = .OperatorFtoA ∨
        edge_authorship e = .OperatorAtoA ∨
        edge_authorship e = .OperatorAtoP) →
@@ -53,7 +54,7 @@ theorem principle_3b_goal_close_is_an_act :
     fact may be related causally ONLY by a perspective-authored
     claim, never a structural/source-ingest/user edge. -/
 theorem principle_3c_causal_closure_is_perspectival :
-    ∀ e : Edge, EdgeHasClass e .Causal →
+    ∀ registry e, EdgeHasClass registry e .Causal →
       ((∃ g : Goal, edge_source e = .goal g) ∨
         (∃ g : Goal, edge_target e = .goal g)) →
       edge_authorship e = .PerspectiveGoalLink :=
@@ -71,14 +72,14 @@ theorem principle_4_facts_connect_non_interpretively :
     supersession descent (incl. higher-order A→A provenance) bottoms out
     at Facts. Names the Provenance.lean grounding theorem. -/
 theorem principle_5_memories_grounded_in_facts :
-    ∀ m : Memory, GroundsInFact m :=
+    ∀ registry (m : Memory), GroundsInFact registry m :=
   memory_grounds_in_facts
 
 /-- P6a — derivation/provenance edges obey the layer directionality
     law: for memory→memory edges, ℓ(source) ≥ ℓ(target). This names
     existing theorem ME-10 `edge_layer_rule`. -/
 theorem principle_6a_derivation_provenance_strictly_upward :
-    ∀ (e : Edge), EdgeCoreValid e → ∀ (ms mt : Memory),
+    ∀ registry (e : Edge), EdgeCoreValid registry e → ∀ (ms mt : Memory),
       edge_source e = .memory ms →
       edge_target e = .memory mt →
       (memory_kind mt).layer ≤ (memory_kind ms).layer :=
@@ -86,8 +87,8 @@ theorem principle_6a_derivation_provenance_strictly_upward :
 
 /-- P6b — materialized personality read-scope was removed: there is no
     kernel `PersonalityInstance`, `read_scope`, or authored-personality
-    accessor. Wake/read context will be modeled from facts and
-    perspectives in a later slice. -/
+    accessor. Wake/read context is modeled from Goals, Facts, access roles,
+    and Perspective-context edges, not a materialized personality scope. -/
 def principle_6b_personality_read_scope_removed : String :=
   "no kernel PersonalityInstance/read_scope; wake context is not materialized"
 
