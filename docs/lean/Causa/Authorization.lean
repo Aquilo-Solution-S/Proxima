@@ -7,13 +7,14 @@ how high one may READ and how high one may WRITE. Read and write are
 independent, so a source-ingest role (write Facts only) never widens into a
 general editor.
 
-The entity is named by its single `is_home` write Owner; `reaches` gives the
-Owners it is shared into (its `entity_owner` rows). The host resolves the DATA
-— who populates each group at what role, and which Owners an entity reaches —
-ONCE; the kernel fixes only the RULE (read/write = the role's ceiling over the
-kind) and names the share relation. World is the universal read-only group. No
-grant or visibility flag lives on the entity (invariant #5); the retired
-owner-space `AccessGrant` / `MemoryAction` layer is gone.
+Each entity has a SINGLE owning Group. There is no `is_home`/`reaches`/
+`entity_owner` share layer (removed with the share set, D11): a read-only share
+is just a viewer-role membership in that one group, and publishing is transfer to
+World. The host resolves the DATA — who populates each group at what role — ONCE;
+the kernel fixes only the RULE (read/write = the role's ceiling over the kind).
+World is the universal read-only group. No grant or visibility flag lives on the
+entity (invariant #5); the retired owner-space `AccessGrant` / `MemoryAction`
+layer is gone.
 -/
 
 import Causa.Prelude
