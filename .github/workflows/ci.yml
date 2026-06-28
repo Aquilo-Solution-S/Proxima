@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, road-to-v1]
+    branches: [main, 'refactor/**']
   pull_request:
-    branches: [main, road-to-v1]
+    branches: [main, 'refactor/**']
 
 # Least-privilege default: every job's GITHUB_TOKEN is read-only (no job
 # writes contents, packages, or PRs).
