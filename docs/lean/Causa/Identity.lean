@@ -12,7 +12,9 @@ Identity rules (doc 07 §Identity Rules):
   - Edge: insert-only.
   - Source/flavor ingest deduplication is metadata around typed Facts,
     not a separate core Event entity.
-  - Embedding: re-embed writes a new row; the entity row is untouched.
+  - Embeddings are engine-side: the kernel models no `Embedding` entity,
+    and the deliberate absence of a `Memory → Embedding` accessor IS the
+    vector-store-independence invariant (ST-15..17).
 -/
 
 import Causa.Prelude
@@ -21,39 +23,51 @@ import Causa.Owner
 namespace Causa
 
 -- ============================================================
--- ID slots
+-- Identity — ONE opaque token (doc 07 §ID Types)
 -- ============================================================
 
-/-- UUIDv7 — sortable-by-time entity identity (doc 07 §ID Types).
-    The kernel keeps UUID structure opaque; "v7" is an engine
-    commitment recorded here as commentary. -/
-axiom MemoryId : Type
-axiom GoalId   : Type
-axiom CitedObjectId      : Type
-axiom CitationMappingId  : Type
+/-- The one identity primitive: a fresh, unique, engine-minted token (UUIDv7).
+    EQUALITY is all the kernel asks of it — for row uniqueness and for id-pointers
+    (e.g. Goal supersession). Its 128-bit layout and v7 time-sortability are
+    engine commitments, deliberately NOT modeled: the kernel's time axis is
+    `Memory.created_at : Instant`, never the id (two clocks would be a hazard),
+    and a concrete UUIDv7 would expose ordering/arithmetic the kernel never uses.
+    Opaque, not concrete, is the faithful boundary.
 
-/-- The two id representations of doc 07 §ID Types / AGENTS.md
-    invariant 17: deterministic content hashes vs fresh UUIDv7s.
-    Both opaque — the SPLIT is the invariant, not the encoding. -/
-axiom ContentHash : Type
-axiom EdgeUuid    : Type
+    The kernel needs NO cross-type id distinctness (no theorem reads it), so the
+    per-entity id names are documentation abbrevs over this single type rather
+    than separate opaque types. -/
+axiom Id : Type
 
-/-- EdgeId is a SUM (AGENTS.md invariant 17, doc 07 §ID Types):
-    source-ingest-authored edges carry a deterministic content hash
-    (payload-derived structural edges are deduplicable); operator /
-    user / engine edges carry a fresh UUIDv7. The authorship coupling
-    is pinned in Causa.Edges (`edge_id_authorship_split`). -/
+abbrev MemoryId          : Type := Id
+abbrev GoalId            : Type := Id
+abbrev CitedObjectId     : Type := Id
+abbrev CitationMappingId : Type := Id
+/-- The fresh-token half of `EdgeId` (operator / user / engine edges). -/
+abbrev EdgeUuid          : Type := Id
+/-- A source/flavor ingest batch grouping token. -/
+abbrev SourceBatchId     : Type := Id
+
+/-- The content-addressable arm's id. The kernel cannot observe "hash-ness" — it
+    sees no payload — so a content hash is, to the kernel, the same opaque
+    equality-token as any other `Id`. That source-ingest edges are
+    content-addressable (so re-ingest dedups, AGENTS.md invariant 17) is an engine
+    commitment, carried by the `sourceAuthored` CONSTRUCTOR, not by a distinct id
+    type. The name is kept only to document which `EdgeId` arm it is; the split
+    read by `edge_id_authorship_split` (Causa.Edges) is the constructor. -/
+abbrev ContentHash : Type := Id
+
+/-- EdgeId is a SUM: source-ingest-authored edges carry a content-addressable id
+    (deduplicable); operator / user / engine edges carry a fresh `Id`. The kernel
+    distinguishes the two by CONSTRUCTOR alone — both arms are `Id` underneath. -/
 inductive EdgeId where
   | sourceAuthored (h : ContentHash)
   | authored       (u : EdgeUuid)
 
-axiom SourceId      : Type
-axiom SourceBatchId : Type
-
-/-- Opaque (schema_id, schema_version) reference. THE domainless
-    boundary: the kernel sees that every Memory/Goal is schema-typed,
-    never what the schema contains. Resolution to a namespaced
-    SchemaId happens in Causa.Composition. -/
+/-- Opaque (schema_id, schema_version) reference — NOT an identity. THE domainless
+    boundary: the kernel sees that every Memory/Goal is schema-typed, never what
+    the schema contains. Resolution to a namespaced SchemaId is in
+    Causa.Composition. -/
 axiom SchemaRef : Type
 
 -- ============================================================
@@ -65,15 +79,8 @@ axiom SchemaRef : Type
 class AppendOnly (α : Type) : Prop
 
 /-- Never superseded, never updated. Facts, Edges, cited objects,
-    citation mappings, embeddings (ST-2, ST-5..8, ST-15). -/
+    citation mappings (ST-2, ST-5..8). -/
 class Immutable (α : Type) : Prop
-
-/-- Append-only with supersession: a new row may name the prior head
-    it supersedes (ST-3, ST-4; doc 02 §Re-derivation). Supersession
-    is logical — current state is a query over append-only rows
-    (ST-26). -/
-class Supersedable (α : Type) where
-  supersedes : α → Option α
 
 -- ============================================================
 -- Source/batch identifiers
@@ -90,29 +97,12 @@ class Supersedable (α : Type) where
    Causa.Operators). Decision:
    `docs/domain/decisions/2026-06-11-batch-id-scope.md`. -/
 
--- ============================================================
--- Embeddings — vector-store independence (doc 07 §Vector Store)
--- ============================================================
-
-/-- ST-15..17 — embeddings reference entity ids but the entity has no
-    accessor to its embeddings: there is NO kernel function
-    `Memory → Embedding`. That deliberate absence IS the independence
-    invariant — entity writes never block on embedding; embeddings can
-    be rebuilt or dropped without mutating entities; multiple models
-    coexist. Re-embedding writes a new row (`Immutable Embedding`);
-    the entity row does not change.
-
-    Embeddings may point at Facts, Abstractions, Perspectives, AND
-    Goals (doc 07 §Vector Store) — hence the id-sum target. Edges are
-    never embedded as relations: similarity is query-time evidence and
-    never authors graph edges (doc 07, grounding U-2). -/
-inductive EmbeddingTarget where
-  | memory (id : MemoryId)
-  | goal   (id : GoalId)
-
-axiom Embedding : Type
-axiom embedding_target : Embedding → EmbeddingTarget
-
-instance : Immutable Embedding := ⟨⟩
+/- ST-15..17 — vector-store independence is carried by ABSENCE: the kernel
+   declares no `Embedding` entity and no `Memory → Embedding` accessor. Entity
+   writes never block on embedding; embeddings can be rebuilt or dropped without
+   mutating entities; multiple models coexist; re-embedding is a new engine row.
+   Embeddings (over F/A/P and Goals) and the fact that edges are never embedded
+   as relations are engine concerns — similarity is query-time evidence and never
+   authors graph edges (doc 07, grounding U-2). Nothing kernel-side to model. -/
 
 end Causa
