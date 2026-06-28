@@ -177,4 +177,12 @@ def Group.union (a b : Group) : Group :=
     | none,   some y => some y
     | none,   none   => none
 
+/-- Drop a user from a group — the membership change behind sharing-removal and
+    compliance erasure: the user loses their role, everyone else is unchanged.
+    This is the ONLY mutable face of ownership; the entity row that names this
+    group never changes (cognitive content stays append-only). When the last
+    member is dropped the group is abandoned (`Causa.Compliance.abandoned`). -/
+noncomputable def Group.drop (g : Group) (u : User) : Group :=
+  fun x => if x = u then none else g x
+
 end Causa

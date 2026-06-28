@@ -1,137 +1,75 @@
 /-
 Causa — Compliance
 
-The ONLY delete path in the system (doc 13; ST-13). Two lifecycles,
-strictly separated (doc 13 §Contract boundary):
+The ONLY delete path in the system (doc 13; ST-13). The cognitive lifecycle is
+append-only (Facts immutable; A/P/Goals supersede); erasure is the separate,
+out-of-band lifecycle. The whole of it reduces to ONE idea: a reference counter.
 
-  - cognitive:   append-only; Facts immutable; A/P/Goals supersede;
-  - compliance:  out-of-band admin operation; may hard-delete
-                 substrate rows; scoped to one Owner or one
-                 Owner-scoped source object; admin/controller-
-                 authored, never operator-authored; surfaced through
-                 the admin protocol, never as a Memory mutation.
+Every entity is owned by a Group (Causa.Owner) — its access scope. The owning
+group's MEMBERSHIP is that reference count. Sharing adds members; a user
+dropping removes them (`Group.drop`). When the owning group has no members left,
+the entity is ABANDONED — reference count zero — and may be hard-deleted.
+Nothing else licenses deletion: live data (data someone still owns) is never
+wiped. "Core wipes data only when a user drops" is exactly this.
 
-CO-14 — refusal is a valid compliance result, not a substrate
-failure (a lawful/retention hold may block erasure).
+The entity row never mutates: the immutable cognitive content names one stable
+group, and ALL mutability — sharing, dropping, compliance — lives in the group
+roster. So erasure needs no field mutation and no append-only exception; it is
+the observable emptiness of the owning group, not an opaque `erased` flag.
 
-Excluded as engine/controller mechanics (recorded in COVERAGE.md):
-audit row content bounds (CO-21..26 — ids/timestamps/counts, never
-payloads), export serialization (CO-11), external side effects
-(CO-30..33 — already-sent emails are not rolled back; downstream
-cleanup is a controller obligation), owner-policy defaults
-(CO-46..52), GDPR article mappings (CO-53..58).
+Engine/controller mechanics are NOT kernel faces (recorded in COVERAGE.md):
+suppression/dedup keys (CO-15..20), pause/resume dispatch gates (CO-9/10),
+export serialization (CO-11), the admin op/outcome protocol (CO-2..14),
+audit-row content (CO-21..29), external side effects (CO-30..33), owner-policy
+defaults and GDPR article mappings (CO-46..58). The kernel fixes only the RULE:
+abandoned ⇔ wipeable, plus the cascade from a node to its edges.
 -/
 
 import Causa.Prelude
 import Causa.Owner
-import Causa.Identity
-import Causa.Memory
-import Causa.Goals
 import Causa.Edges
+import Causa.Authorization
 
 namespace Causa
 
 -- ============================================================
--- Operations and outcomes (doc 13 §Operations, §Outcomes)
+-- Abandonment — the single delete trigger (doc 13 §Operations; ST-13)
 -- ============================================================
 
-/-- The closed compliance surface. CO-3 — the constructor shapes ARE
-    the scope rule: nothing broader than one Owner or one
-    Owner-scoped source object is expressible. -/
-inductive ComplianceOp where
-  | DeleteOwner       (o : Owner)
-  | DeleteSourceScope (o : Owner) (s : SourceId)
-  | PauseOwner        (o : Owner)
-  | ResumeOwner       (o : Owner)
-  | ExportOwner       (o : Owner)
+/-- Reference count zero: no user holds a role in the owning group, so nobody
+    owns the entity. The ONE condition that licenses a hard delete. A definition,
+    not an opaque `erased` axiom: the kernel states *when* a wipe is lawful (the
+    owning group is empty), never that substrate rows are physically gone — that
+    is the engine performing the wipe. `Group.drop` (Causa.Owner) removes a
+    member; when the last is gone, `abandoned` holds. -/
+def abandoned (o : Owner) : Prop := ∀ u : User, o u = none
 
-/-- CO-12/13/23 — outcomes. CO-14: `Refused` is a valid result. -/
-inductive ComplianceOutcome where
-  | Completed
-  | Refused
-  | NotFound
-  | Unauthorized
-  deriving DecidableEq, Repr
+/-- CO-7 / ST-13 — the GDPR theorem: when a user drops out of their own personal
+    group, that group abandons, so everything they solely own becomes wipeable.
+    The entire erasure contract for a personal owner, discharged as a theorem
+    over `Group.drop`. No `erased` / `erasure_removes_cognitive` axiom remains. -/
+theorem drop_personal_abandoned (u : User) :
+    abandoned ((Owner.ofUser u).drop u) := by
+  intro v
+  by_cases h : v = u <;> simp [Group.drop, Owner.ofUser, h]
 
--- ============================================================
--- Suppression list (doc 13 §Suppression list)
--- ============================================================
+/-- CO-7' edge face — cascade soundness (re-cast of the old `erasure_removes_edges`,
+    now a one-liner): a VALID edge whose source endpoint has an abandoned owner is
+    itself abandoned, because a valid edge inherits its source's owner
+    (`edge_source_owned`, projected from `EdgeCoreValid`). Wiping abandoned nodes
+    therefore licenses wiping their edges — the cascade is sound. THEOREM, no axiom. -/
+theorem source_abandoned_cascades_to_edge (e : Edge) (hv : EdgeCoreValid e) :
+    abandoned (edge_source e).owner → abandoned (edge_owner e) := by
+  intro h
+  rw [← edge_source_owned e hv]
+  exact h
 
-/-- CO-15/16/20 — a suppression entry retains ONLY an opaque
-    source/flavor ingest key plus operation metadata (deletion
-    timestamp, operation id — engine-level). The accessor shape is the
-    PII guard: no natural-person identifier — and per the minimization
-    pass, NO Owner — is reachable from a suppression entry (doc 13
-    §Suppression list retains "opaque idempotency key only"; owner is
-    reachable only via operation id → audit row, an audit-log concern).
-    A non-opaque key would itself become PII surviving deletion. -/
-axiom SuppressionKey : Type
-axiom SuppressionEntry : Type
-axiom suppression_key : SuppressionEntry → SuppressionKey
-
-/- CO-17/18 — source/flavor ingest checks suppression before dedup.
-   The check is an engine/flavor boundary obligation because core no
-   longer models Event as an entity. CO-19 — entries are retained
-   indefinitely; survival of `delete_owner` is structural (see below). -/
-
--- ============================================================
--- Erasure semantics (doc 13 §Operations)
--- ============================================================
-
-/-- What `delete_owner` removes vs retains (CO-7), stated as the
-    survival predicate over the post-erasure substrate. Erasure
-    removes owner-scoped memories, goals, edges, sidecars,
-    embeddings, source-batch payloads, invocation caches — and
-    RETAINS suppression entries and audit rows.
-
-    Spec-mode encoding: `erased o` marks an Owner whose erasure
-    completed; the survivor axioms state what may still exist for an
-    erased Owner. The kernel does not model the substrate-row store
-    itself, so removal is expressed through its observable face:
-    nothing cognitive remains reachable for an erased Owner. -/
-axiom erased : Owner → Prop
-
-/-- CO-7'a — no cognitive entity survives its Owner's erasure. The
-    Edge conjunct is PROVED below (an edge's owner is its endpoints'
-    owner; no endpoint survives) — minimization pass. -/
-axiom erasure_removes_cognitive :
-  ∀ o : Owner, erased o →
-    (∀ m : Memory, memory_owner m ≠ o) ∧
-    (∀ g : Goal,   goal_owner g   ≠ o)
-
-/-- CO-7'a, Edge face — THEOREM from source-owned edge scope: an edge's
-    Owner is its source endpoint's Owner, and no endpoint survives erasure. -/
-theorem erasure_removes_edges :
-    ∀ o : Owner, erased o → ∀ e : Edge, edge_owner e ≠ o := by
-  intro o ho e he
-  obtain ⟨hm, hg⟩ := erasure_removes_cognitive o ho
-  have hscope := edge_source_owned e
-  cases hsrc : edge_source e with
-  | memory ms =>
-      rw [hsrc] at hscope
-      exact hm ms (by rw [show NodeRef.owner (.memory ms) = memory_owner ms from rfl] at hscope; rw [hscope, he])
-  | goal g =>
-      rw [hsrc] at hscope
-      exact hg g (by rw [show NodeRef.owner (.goal g) = goal_owner g from rfl] at hscope; rw [hscope, he])
-
-/- CO-7'b / CO-19 / CO-29 — suppression SURVIVES erasure, carried
-    structurally: `erasure_removes_cognitive` does not range over
-    SuppressionEntry. The core kernel retains only the opaque
-    suppression-key face; source/flavor ingest must consult it before
-    materializing a typed Fact. Audit-row retention (CO-21..29) is an
-    engine-table concern → COVERAGE.md exclusion. -/
-
--- ============================================================
--- Pause (doc 13 §Operations)
--- ============================================================
-
-/-- CO-9 — pause stops FUTURE operator dispatch and wake execution;
-    reads and export remain available. CO-10 — resume clears it.
-    Kernel face: `paused` is a state predicate; the dispatch gate is
-    that no wake/operator-authored memory is created for a paused
-    Owner — expressed as creation-time guard in the engine, recorded
-    here as the predicate the engine must consult. Existing memories
-    are untouched (append-only; pause is not erasure). -/
-axiom paused : Owner → Prop
+/-- The retention boundary: World is never abandoned — every user is a member at
+    `viewer` — so published/public data is never auto-wiped by the abandonment
+    rule. Any user witnesses the owning group's non-emptiness. THEOREM. -/
+theorem world_never_abandoned (u : User) : ¬ abandoned world := by
+  intro h
+  have hu := h u
+  simp [world] at hu
 
 end Causa
