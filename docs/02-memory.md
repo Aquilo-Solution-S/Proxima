@@ -18,7 +18,7 @@ part the table names hide:
 | **Fact** | An accepted observation from an Event Source — the event stream. Never revised. | `memories` (`kind` NULL, `event_id` set) | EventSource ingest |
 | **Abstraction** | A re-derivable interpretation over Facts. | `memories` (`kind = 'Abstraction'`) | `F→A` operator |
 | **Perspective** | A re-derivable integration over Abstractions; the lens reads are taken through. The self-perspective anchors a personality. | `memories` (`kind = 'Perspective'`) | `A→P` operator |
-| **Goal** | A desired end-state, with a lifecycle (`state`) and a parent DAG (`goal_parents`). | `goals` (its own table) | user / external / `A→Goal` operator |
+| **Goal** | A desired end-state with a lifecycle (`state`). Goal↔Goal topology is ordinary Edge topology, not a Goal row field. | `goals` (its own table) | user / external / `A→Goal` operator |
 | **Citation** | *Not a node.* An immutable, content-addressed outside-proof attached to a Fact ("I assert this because of that source"). | `cited_objects` + a `cited_<schema>` byte sidecar, linked to a Fact by `citation_mappings` | attached at Fact ingest |
 
 So `memories` is **three** node kinds in one table (Fact, Abstraction,
@@ -134,7 +134,8 @@ separate entity axis (see 06).
 
 Every edge relation resolves to a build-time `RelationDescriptor`
 registered by core or a flavor (see 08). Unregistered relations are
-invalid.
+invalid. The descriptor is the policy row: class, endpoint mask, owner
+policy, target write-admission policy, and mask-tightening proof.
 
 Closed relation classes:
 
@@ -158,7 +159,15 @@ Core relations:
 | `core/motivated-by` | `Structural` | Goal → Fact / Abstraction evidence |
 
 Relation classes are substrate vocabulary. Flavors add relation ids, not new
-classes.
+classes. Relation policy fields are closed substrate vocabulary:
+
+| Field | Values | Meaning |
+|---|---|---|
+| `ownerPolicy` | `SourceOwned`, `SameOwner` | Whether the target may cross Owner boundaries. Edge row owner is always source Owner. |
+| `targetAccessPolicy` | `None`, `Read`, `Write` | Extra target-side gate for edge writes; source write is always required. |
+
+Core relation policy cells are descriptor data, not edge-row columns; they are
+pinned relation-by-relation in the registry.
 
 ## The Directionality Rule
 
@@ -166,10 +175,16 @@ Universal edge constraints:
 
 - Endpoint ids must exist.
 - Declared endpoint kind must equal stored endpoint kind.
-- `source.owner == target.owner == edge.owner`.
+- Edges are source-owned: `edge.owner == source.owner`.
+- Descriptor `ownerPolicy` selects cross-owner admissibility:
+  `SourceOwned` permits a foreign target; `SameOwner` requires
+  `target.owner == source.owner`.
+- Supersession-class descriptors must use `SameOwner`.
 - F/A/P layer rule: `ℓ(source) ≥ ℓ(target)`.
 - Goal endpoints sit outside F/A/P layer comparison; descriptor masks govern.
 - Descriptor masks may tighten legal shapes, never relax F/A/P layering.
+- Edge write admission requires source write authority plus the descriptor's
+  target gate (`None` / `Read` / `Write`).
 - Fact-sourced agent/user links are rejected by `core_link`; derive an
   Abstraction/Perspective and link from that.
 - `Causal` / `Interpretive` Fact→Fact edges are forbidden.
@@ -194,23 +209,34 @@ F/A/P matrix:
 
 ## Edge Scope Invariant
 
-All edges are single-Owner:
+Edges are source-owned:
 
 ```
-source.owner == target.owner == edge.owner
+edge.owner == source.owner
 ```
 
-Cross-owner sharing is a query/access concern, not an edge write.
+The target may belong to a different Owner only when the relation descriptor
+uses `SourceOwned`. This is what makes cross-owner provenance expressible: an
+Abstraction owned by one group may cite/prove itself from another group's Fact
+while the edge remains owned by the Abstraction's source. Relations whose
+descriptor uses `SameOwner` are stricter; Supersession-class descriptors must
+be `SameOwner`, because a row supersedes its own prior head, never another
+Owner's entity.
+
+Query visibility is not row ownership: source-readable edges may still redact
+or suppress unreadable targets.
 
 Edge authorship vocabulary:
 
 | Authorship | Use |
 |---|---|
-| `EventSource` | Payload-derived structural edges. |
+| `SourceIngest` | Payload-derived structural edges from typed Fact ingest. |
 | `OperatorFtoA` | F→A provenance. |
+| `OperatorAtoA` | A→A provenance. |
 | `OperatorAtoP` | A→P provenance. |
-| `OperatorAtoGoal` | A→Goal provenance. |
+| `OperatorAtoGoal` | A→Goal evidence/provenance shape. |
 | `PerspectiveLink` | P-authored causal / interpretive framing. |
+| `PerspectiveGoalLink` | Perspective-authored causal claim involving a Goal: `core/inspires` Goal→Perspective inspiration or Goal→Fact outcome attribution. |
 | `Engine` | Substrate-authored edges such as supersession / authored. |
 | `User` | Explicit user/API-authored graph edits. |
 | `ExternalAgent` | Agent-authored MCP / imported edges. |

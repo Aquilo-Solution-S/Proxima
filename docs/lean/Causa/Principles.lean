@@ -22,12 +22,12 @@ theorem principle_1_facts_below_perspective :
     need none here. Whether the evidence satisfies the Goal is a
     measurement/decider judgment, not a universal kernel rule. -/
 theorem principle_2_operator_goals_carry_evidence :
-    ∀ e : Edge, edge_authorship e = .OperatorAtoGoal →
-      relation_class (edge_relation e) = .Structural ∧
+    ∀ e : Edge, EdgeOperatorShapeValid e → edge_authorship e = .OperatorAtoGoal →
+      EdgeHasClass e .Structural ∧
       (∃ g : Goal, edge_source e = .goal g) ∧
       (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt ≠ .Perspective) := by
-  intro e ha
-  have h := operator_edges_shaped e
+  intro e hshape ha
+  have h := operator_edges_shaped e hshape
   rw [ha] at h
   exact h
 
@@ -35,6 +35,7 @@ theorem principle_2_operator_goals_carry_evidence :
     CN-5 `operator_memory_output_not_fact`. -/
 theorem principle_3_operators_never_output_facts :
     ∀ (e : Edge) (m : Memory),
+      EdgeOperatorShapeValid e →
       (edge_authorship e = .OperatorFtoA ∨
        edge_authorship e = .OperatorAtoA ∨
        edge_authorship e = .OperatorAtoP) →
@@ -52,7 +53,7 @@ theorem principle_3b_goal_close_is_an_act :
     fact may be related causally ONLY by a perspective-authored
     claim, never a structural/source-ingest/user edge. -/
 theorem principle_3c_causal_closure_is_perspectival :
-    ∀ e : Edge, relation_class (edge_relation e) = .Causal →
+    ∀ e : Edge, EdgeHasClass e .Causal →
       ((∃ g : Goal, edge_source e = .goal g) ∨
         (∃ g : Goal, edge_target e = .goal g)) →
       edge_authorship e = .PerspectiveGoalLink :=
@@ -77,7 +78,7 @@ theorem principle_5_memories_grounded_in_facts :
     law: for memory→memory edges, ℓ(source) ≥ ℓ(target). This names
     existing theorem ME-10 `edge_layer_rule`. -/
 theorem principle_6a_derivation_provenance_strictly_upward :
-    ∀ (e : Edge) (ms mt : Memory),
+    ∀ (e : Edge), EdgeCoreValid e → ∀ (ms mt : Memory),
       edge_source e = .memory ms →
       edge_target e = .memory mt →
       (memory_kind mt).layer ≤ (memory_kind ms).layer :=

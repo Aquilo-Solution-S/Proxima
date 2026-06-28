@@ -116,13 +116,11 @@ paths, and payload text.
 |---|---|---|
 | `events` | EventSource dedup and observed payload metadata | one row per accepted observation payload |
 | `memories` | Fact / Abstraction / Perspective identity | common identity, Owner, schema, and lifecycle metadata |
-| `edges` | graph relations between Memories and Goals | relation id must be registered; endpoints are typed entity refs |
+| `edges` | graph relations between Memories and Goals | relation id must resolve to a build-time `RelationDescriptor`; endpoints are typed entity refs; descriptor policy governs masks / owner policy / target write gate; Goal↔Goal topology lives here |
 | `goals` | Goal identity and lifecycle | distinct entity; typed GoalPayload sidecar; supersession-only lifecycle |
-| `goal_parents` | Goal DAG parents | Goal-to-Goal hierarchy, not Memory edges |
 | `cited_objects` | bibliographic cited-object identity | Owner-scoped idempotency by payload key |
 | `citation_mappings` | Fact-only citation mapping | at most one mapping per Fact |
 | `source_batches` | core source-batch lifecycle | fixed shape; domain metadata belongs on cited objects |
-| `read_scope_matrix` | cross-personality A/P/Goal read scope | per-Owner adjacency; identity diagonal is always allowed |
 | `change_event` | change-event pull log | same transaction as announced entity or edge append |
 | `schema_migrations` | applied SQL migrations | tracks physical sidecar/core migration files |
 
