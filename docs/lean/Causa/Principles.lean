@@ -3,11 +3,12 @@ Causa — Principles
 
 Named principle surface over existing kernel content. This file adds no
 trusted assumptions; each theorem below is discharged by definitions or
-existing axioms/theorems from Memory, Edges, and Operators.
+existing definitions/theorems from Memory, Edges, Operators, Provenance, and Knowledge.
 -/
 
 import Causa.Operators
 import Causa.Provenance
+import Causa.Knowledge
 
 namespace Causa
 
@@ -173,5 +174,20 @@ def principle_6b_personality_read_scope_removed : String :=
     wake context; the kernel carries this by structural absence. -/
 def principle_7_personality_is_not_entity : String :=
   "personality has no kernel row/type/instance; it emerges from Perspective context"
+
+/-- P8 — knowledge artifacts are model-independent: recoverability is witnessed
+    by an interpreter class, not one named LLM model or human. -/
+theorem principle_8_knowledge_artifact_model_independent :
+    ∀ a : KnowledgeArtifact,
+      ∃ c : InterpreterClass,
+        c ∈ a.interpreterClasses ∧ c.canRecover a.text a.content :=
+  knowledge_artifact_model_independent
+
+/-- P8b — long-term knowledge artifacts are admitted text-bearing Memory rows. -/
+theorem principle_8b_long_term_knowledge_artifact_has_text_memory :
+    ∀ memories (a : KnowledgeArtifact),
+      KnowledgeArtifactIn memories a →
+        a.carrier ∈ memories ∧ ∃ text : Text, memory_text a.carrier = some text :=
+  long_term_knowledge_artifact_has_text_memory
 
 end Causa
