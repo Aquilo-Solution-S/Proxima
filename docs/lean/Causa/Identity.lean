@@ -64,10 +64,14 @@ inductive EdgeId where
   | sourceAuthored (h : ContentHash)
   | authored       (u : EdgeUuid)
 
-/-- Opaque (schema_id, schema_version) reference — NOT an identity. THE domainless
-    boundary: the kernel sees that every Memory/Goal is schema-typed, never what
-    the schema contains. Resolution to a namespaced SchemaId is in
-    Causa.Composition. -/
+/-- The opaque per-row schema tag every Memory/Goal/Edge/CitedObject carries —
+    NOT an identity. THE domainless boundary, payload opacity in its strongest
+    form: the kernel sees a row is schema-typed but has NO accessor on it at all
+    (no resolution, no payload, no capabilities). A flavor's sidecar conforms to
+    this schema; the kernel never inspects it. Namespacing, versioning, the flavor
+    registry, and admission of registered schemas are engine/build-time concerns,
+    not kernel ontology — the universal rules bind every row regardless of which
+    flavor produced it. -/
 axiom SchemaRef : Type
 
 -- ============================================================
