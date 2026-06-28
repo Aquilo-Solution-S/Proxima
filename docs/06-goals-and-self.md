@@ -36,7 +36,6 @@ Goal row fields:
 | `payload` | typed sidecar bytes |
 | `state` | lifecycle state |
 | `supersedes` | previous Goal head, nullable |
-| `parent_goal_ids` | DAG parents |
 | `authorship` | `User`, `System`, or `External` |
 | `request_id` | Owner-scoped idempotency key |
 
@@ -48,6 +47,9 @@ States:
 | `Paused` | no | no | Suspended direction |
 | `Achieved` | no | yes | Positive close |
 | `Abandoned` | no | yes | Post-active negative close |
+
+Goal-to-Goal decomposition, dependency, and inspiration are ordinary
+Edge topology with relation descriptors, not Goal row fields.
 
 Lifecycle:
 
@@ -178,8 +180,9 @@ heads = follow Goal supersession for each assigned source
 return heads where state = Active
 ```
 
-Assignment means "this Goal may inspire this Self." It does not imply
-execution, obligation, repository scope, or wake policy.
+Assignment means "this Goal may inspire this Self." It is a causal
+edge (`core/inspires`), not a structural membership edge. It does not
+imply execution, obligation, repository scope, or wake policy.
 
 ## Goal Core Boundary
 
@@ -246,13 +249,13 @@ Owner is per row.
 |---|---|
 | Goal | Owner columns on Goal row |
 | Self-Perspective | Owner columns on Memory row |
-| `core/inspires` edge | same Owner as endpoints |
-| `core/motivated-by` edge | same Owner as endpoints |
+| `core/inspires` edge | source-owned: edge Owner = source Goal Owner; descriptor/write policy may tighten target scope |
+| `core/motivated-by` edge | source-owned: edge Owner = source Goal Owner; descriptor/write policy may tighten target scope |
 | Lifecycle Fact | same Owner as Goal write |
 
-Cross-owner Goal assignment and cross-owner evidence are rejected.
-Owner means principal — org is a billing annotation, not part of
-Owner (doc 01 §Owner, renegotiated 2026-06-11).
+Cross-owner Goal assignment/evidence is relation/write-surface policy,
+not the global Edge ownership law. Owner means the owning Group — org is
+not part of Owner.
 
 ## Authorship
 
