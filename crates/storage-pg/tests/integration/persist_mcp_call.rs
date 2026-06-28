@@ -243,7 +243,7 @@ fn sample_input(
     let io_byte_len_original =
         original_len.unwrap_or_else(|| u64::try_from(io_body.len()).unwrap());
     McpCallLogInput {
-        owner: owner.clone(),
+        owner: *owner,
         actor_oid: "00000000-0000-0000-0000-000000000001".into(),
         actor_upn: "agent@example.com".into(),
         tool_name: "core_search_memories".into(),

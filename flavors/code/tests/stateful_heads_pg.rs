@@ -27,7 +27,7 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo, SchemaTombstone};
 use proxima_core::{
-    AbstractionPayload, CORE_DERIVED_FROM_RELATION, FactPayload, FlavorRegistry, Owner, Principal,
+    AbstractionPayload, CORE_DERIVED_FROM_RELATION, FactPayload, FlavorRegistry, Owner, OwnerRef,
     SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
 use proxima_pg_testkit::drop_db;
@@ -36,7 +36,7 @@ use uuid::Uuid;
 
 fn make_owner() -> (UserId, Owner) {
     let user = UserId::new(Uuid::now_v7());
-    let owner = Principal::User(user);
+    let owner = OwnerRef::Personal(user);
     (user, owner)
 }
 
@@ -178,53 +178,21 @@ async fn heads_only_returns_latest_per_natural_key() {
         let repo_id = Uuid::now_v7();
 
         // 3 revisions of file_a — same NK, increasing created_at.
-        let _r1 = seed_file_revision(
-            pg.pool(),
-            &engine,
-            owner.clone(),
-            repo_id,
-            "src/a.rs",
-            b"v1",
-        )
-        .await?;
+        let _r1 = seed_file_revision(pg.pool(), &engine, owner, repo_id, "src/a.rs", b"v1").await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
-        let _r2 = seed_file_revision(
-            pg.pool(),
-            &engine,
-            owner.clone(),
-            repo_id,
-            "src/a.rs",
-            b"v2",
-        )
-        .await?;
+        let _r2 = seed_file_revision(pg.pool(), &engine, owner, repo_id, "src/a.rs", b"v2").await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
-        let r3 = seed_file_revision(
-            pg.pool(),
-            &engine,
-            owner.clone(),
-            repo_id,
-            "src/a.rs",
-            b"v3",
-        )
-        .await?;
+        let r3 = seed_file_revision(pg.pool(), &engine, owner, repo_id, "src/a.rs", b"v3").await?;
 
         // 1 revision of file_b — distinct NK.
         tokio::time::sleep(Duration::from_millis(20)).await;
-        let r_b = seed_file_revision(
-            pg.pool(),
-            &engine,
-            owner.clone(),
-            repo_id,
-            "src/b.rs",
-            b"b1",
-        )
-        .await?;
+        let r_b = seed_file_revision(pg.pool(), &engine, owner, repo_id, "src/b.rs", b"b1").await?;
 
         // Heads-only query — engine populates stateful_heads from the
         // registered NK columns on FileRevisionV1.
         let req = QueryRequest {
-            principal: owner.clone(),
-            read_owners: vec![owner.clone()],
+            principal: owner,
+            read_owners: vec![owner],
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -262,8 +230,8 @@ async fn heads_only_returns_latest_per_natural_key() {
 
         // IncludeSuperseded — all 4 rows visible.
         let req_all = QueryRequest {
-            principal: owner.clone(),
-            read_owners: vec![owner.clone()],
+            principal: owner,
+            read_owners: vec![owner],
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
@@ -312,7 +280,7 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
 
         // Two distinct commit Facts.
         for payload in [b"c1" as &[u8], b"c2"] {
-            let draft = fresh_draft(owner.clone(), CommitV1::SCHEMA_ID, payload);
+            let draft = fresh_draft(owner, CommitV1::SCHEMA_ID, payload);
             engine
                 .event_ingest(
                     &proxima_core::AuthzContext::single_owner(
@@ -325,8 +293,8 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
         }
 
         let req = QueryRequest {
-            principal: owner.clone(),
-            read_owners: vec![owner.clone()],
+            principal: owner,
+            read_owners: vec![owner],
             entity_kind: None,
             schema_id: Some(SchemaId::new(CommitV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -367,14 +335,14 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
         let user = UserId::new(Uuid::now_v7());
-        let owner: Owner = Principal::User(user);
+        let owner: Owner = OwnerRef::Personal(user);
         let engine = Engine::new(registry_for_test()).with_storage(storage);
         let repo_id = Uuid::now_v7();
 
         let first_memory = seed_file_revision_state(
             pg.pool(),
             &engine,
-            owner.clone(),
+            owner,
             repo_id,
             "src/shared.rs",
             b"rev-1",
@@ -385,7 +353,7 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
         let second_memory = seed_file_revision_state(
             pg.pool(),
             &engine,
-            owner.clone(),
+            owner,
             repo_id,
             "src/shared.rs",
             b"rev-2",
@@ -394,8 +362,8 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
         .await?;
 
         let req = QueryRequest {
-            principal: Principal::User(user),
-            read_owners: vec![owner.clone()],
+            principal: OwnerRef::Personal(user),
+            read_owners: vec![owner],
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -451,7 +419,7 @@ async fn owner_snapshot_heads_only_folds_stateful_fact_schemas() {
         let a_v1 = seed_file_revision_state(
             pg.pool(),
             &engine,
-            owner.clone(),
+            owner,
             repo_id,
             "src/a.rs",
             b"a1",
@@ -462,14 +430,14 @@ async fn owner_snapshot_heads_only_folds_stateful_fact_schemas() {
         let a_v2 = seed_file_revision_state(
             pg.pool(),
             &engine,
-            owner.clone(),
+            owner,
             repo_id,
             "src/a.rs",
             b"a2",
             FileState::Present,
         )
         .await?;
-        let mut req = QueryRequest::for_principal(owner.clone());
+        let mut req = QueryRequest::for_principal(owner);
         req.limit = 100;
         let resp = engine
             .query(
@@ -507,7 +475,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
         let present = seed_file_revision_state(
             pg.pool(),
             &engine,
-            owner.clone(),
+            owner,
             repo_id,
             "src/deleted.rs",
             b"v1",
@@ -518,7 +486,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
         let tombstone = seed_file_revision_state(
             pg.pool(),
             &engine,
-            owner.clone(),
+            owner,
             repo_id,
             "src/deleted.rs",
             b"v2",
@@ -526,7 +494,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
         )
         .await?;
 
-        let mut req = QueryRequest::for_principal(owner.clone());
+        let mut req = QueryRequest::for_principal(owner);
         req.schema_id = Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into()));
         req.limit = 100;
         let resp = engine.query(&authz, &req).await?;
@@ -599,7 +567,7 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
         let active = seed_file_revision_state(
             pg.pool(),
             &engine,
-            owner.clone(),
+            owner,
             repo_id,
             "src/live.rs",
             b"live",
@@ -609,7 +577,7 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
         let deleted = seed_file_revision_state(
             pg.pool(),
             &engine,
-            owner.clone(),
+            owner,
             repo_id,
             "src/deleted.rs",
             b"gone",
@@ -618,7 +586,7 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
         .await?;
         let edge_id = insert_memory_edge(pg.pool(), &owner, active, deleted).await?;
 
-        let mut req = QueryRequest::for_principal(owner.clone());
+        let mut req = QueryRequest::for_principal(owner);
         req.limit = 100;
         let resp = engine
             .query(
@@ -659,7 +627,7 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
         let active = seed_file_revision_state(
             pg.pool(),
             &engine,
-            owner.clone(),
+            owner,
             repo_id,
             "src/live.rs",
             b"live",
@@ -669,7 +637,7 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
         let deleted = seed_file_revision_state(
             pg.pool(),
             &engine,
-            owner.clone(),
+            owner,
             repo_id,
             "src/deleted.rs",
             b"gone",
@@ -678,7 +646,7 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
         .await?;
         let edge_id = insert_memory_edge(pg.pool(), &owner, active, deleted).await?;
 
-        let mut req = QueryRequest::for_principal(owner.clone());
+        let mut req = QueryRequest::for_principal(owner);
         req.edge_ids = vec![edge_id];
         req.limit = 1;
         let resp = engine

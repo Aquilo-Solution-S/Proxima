@@ -25,8 +25,8 @@ pub(crate) async fn read_mcp_call_history(
             Option<Vec<u8>>,
             bool,
         ),
-    >(
-        r"SELECT memories.created_at,
+    >(crate::access::owner_ref_compat::sql(
+        "SELECT memories.created_at,
                   fact.tool_name,
                   fact.ok,
                   fact.error,
@@ -38,7 +38,7 @@ pub(crate) async fn read_mcp_call_history(
              LEFT JOIN proxima_core.cited_mcp_call_io_v1 io USING (cited_object_id)
             WHERE EXISTS (
                     SELECT 1
-                      FROM proxima_core.entity_owner eo
+                      FROM __PROXIMA_ENTITY_OWNER__ eo
                      WHERE eo.entity_id = memories.memory_id
                        AND eo.owner_principal_kind = $1
                        AND eo.owner_principal_id = $2
@@ -47,7 +47,7 @@ pub(crate) async fn read_mcp_call_history(
               AND ($3::text IS NULL OR fact.actor_oid = $3)
             ORDER BY memories.created_at DESC
             LIMIT $4",
-    )
+    ))
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(req.actor_oid.as_deref())

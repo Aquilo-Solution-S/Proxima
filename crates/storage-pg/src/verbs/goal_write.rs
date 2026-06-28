@@ -21,11 +21,11 @@ use proxima_core::{
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
+use crate::access::owner_ref_compat::insert_home;
 use crate::authorship::{AuthorshipColumns, authorship_columns};
 use crate::error::{internal, map_err};
 use crate::sidecars::{PgSidecarKey, PgSidecarRegistryFrozen};
 use crate::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
-use crate::verbs::entity_owner::insert_entity_owner_home;
 use crate::verbs::event_ingest::ingest_event_in_tx;
 
 const LIFECYCLE_SOURCE_ID: &str = "core/goal-lifecycle";
@@ -860,7 +860,7 @@ async fn insert_goal_row(
     .execute(&mut **tx)
     .await
     .map_err(map_goal_insert_err)?;
-    insert_entity_owner_home(tx, goal_id, &owner, authorship.personality_instance_id).await?;
+    insert_home(tx, goal_id, &owner, authorship.personality_instance_id).await?;
     Ok(())
 }
 
@@ -930,19 +930,19 @@ async fn load_prior_goal(
     goal_id: GoalId,
 ) -> Result<StoredGoal, StorageError> {
     let (owner_kind, owner_principal_id) = owner.columns();
-    let row: Option<StoredGoalRow> = sqlx::query_as(
+    let row: Option<StoredGoalRow> = sqlx::query_as(crate::access::owner_ref_compat::sql(
         "SELECT schema_id, schema_version, title, text, payload, state
            FROM proxima_core.goals
           WHERE goal_id = $1
             AND EXISTS (
                 SELECT 1
-                  FROM proxima_core.entity_owner eo
+                  FROM __PROXIMA_ENTITY_OWNER__ eo
                  WHERE eo.entity_id = goal_id
                    AND eo.owner_principal_kind = $2
                    AND eo.owner_principal_id = $3
                    AND eo.is_home
             )",
-    )
+    ))
     .bind(goal_id.into_inner())
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -986,21 +986,21 @@ async fn validate_parent_owner(
     parent_id: GoalId,
 ) -> Result<(), StorageError> {
     let (owner_kind, owner_principal_id) = owner.columns();
-    let exists: bool = sqlx::query_scalar(
+    let exists: bool = sqlx::query_scalar(crate::access::owner_ref_compat::sql(
         "SELECT EXISTS (
              SELECT 1
                FROM proxima_core.goals
               WHERE goal_id = $1
                 AND EXISTS (
                     SELECT 1
-                      FROM proxima_core.entity_owner eo
+                      FROM __PROXIMA_ENTITY_OWNER__ eo
                      WHERE eo.entity_id = goal_id
                        AND eo.owner_principal_kind = $2
                        AND eo.owner_principal_id = $3
                        AND eo.is_home
                 )
          )",
-    )
+    ))
     .bind(parent_id.into_inner())
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -1028,21 +1028,21 @@ async fn validate_active_head(
         ));
     }
     let (owner_kind, owner_principal_id) = owner.columns();
-    let newer_exists: bool = sqlx::query_scalar(
+    let newer_exists: bool = sqlx::query_scalar(crate::access::owner_ref_compat::sql(
         "SELECT EXISTS (
              SELECT 1
                FROM proxima_core.goals
               WHERE supersedes = $1
                 AND EXISTS (
                     SELECT 1
-                      FROM proxima_core.entity_owner eo
+                      FROM __PROXIMA_ENTITY_OWNER__ eo
                      WHERE eo.entity_id = goal_id
                        AND eo.owner_principal_kind = $2
                        AND eo.owner_principal_id = $3
                        AND eo.is_home
                 )
          )",
-    )
+    ))
     .bind(goal_id.into_inner())
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -1067,7 +1067,7 @@ fn draft_from_stored(
     request_id: &str,
 ) -> GoalDraft {
     GoalDraft {
-        principal: owner.clone(),
+        principal: *owner,
         schema_id: stored.schema_id.clone(),
         schema_version: stored.schema_version,
         title: stored.title.clone(),
@@ -1092,7 +1092,7 @@ fn draft_from_payload(
     request_id: &str,
 ) -> GoalDraft {
     GoalDraft {
-        principal: owner.clone(),
+        principal: *owner,
         schema_id: payload.schema_id.clone(),
         schema_version: payload.schema_version,
         title: payload.title.clone(),
@@ -1138,20 +1138,20 @@ async fn validate_evidence_in_owner(
                 "duplicate goal evidence".into(),
             ));
         }
-        let row: Option<EvidenceRow> = sqlx::query_as(
+        let row: Option<EvidenceRow> = sqlx::query_as(crate::access::owner_ref_compat::sql(
             "SELECT m.kind
                FROM proxima_core.memories m
               WHERE m.memory_id = $1
                 AND m.tombstoned_at IS NULL
                 AND EXISTS (
                     SELECT 1
-                      FROM proxima_core.entity_owner eo
+                      FROM __PROXIMA_ENTITY_OWNER__ eo
                      WHERE eo.entity_id = m.memory_id
                        AND eo.owner_principal_kind = $2
                        AND eo.owner_principal_id = $3
                        AND eo.is_home
                 )",
-        )
+        ))
         .bind(item.memory_id.into_inner())
         .bind(owner_kind)
         .bind(owner_principal_id)
@@ -1185,14 +1185,14 @@ async fn outgoing_motivated_by_evidence(
     goal_id: GoalId,
 ) -> Result<Vec<EvidenceTarget>, StorageError> {
     let (owner_kind, owner_principal_id) = owner.columns();
-    let rows: Vec<(EntityKind, uuid::Uuid)> = sqlx::query_as(
+    let rows: Vec<(EntityKind, uuid::Uuid)> = sqlx::query_as(crate::access::owner_ref_compat::sql(
         "SELECT target_kind, target_memory_id
            FROM proxima_core.edges e
           WHERE relation = $1
             AND source_goal_id = $2
             AND EXISTS (
                 SELECT 1
-                  FROM proxima_core.entity_owner eo
+                  FROM __PROXIMA_ENTITY_OWNER__ eo
                  WHERE eo.entity_id = e.source_goal_id
                    AND eo.owner_principal_kind = $3
                    AND eo.owner_principal_id = $4
@@ -1200,7 +1200,7 @@ async fn outgoing_motivated_by_evidence(
             )
             AND target_memory_id IS NOT NULL
           ORDER BY created_at ASC",
-    )
+    ))
     .bind(CORE_MOTIVATED_BY_RELATION)
     .bind(goal_id.into_inner())
     .bind(owner_kind)
@@ -1270,7 +1270,7 @@ where
     let draft = EventDraft {
         source_id: SourceId::new(LIFECYCLE_SOURCE_ID),
         source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
-        principal: owner.clone(),
+        principal: *owner,
         author_personality_instance_id: None,
         schema_id: SchemaId::new(T::SCHEMA_ID.to_string()),
         schema_version: SchemaVersion::new(T::SCHEMA_VERSION),

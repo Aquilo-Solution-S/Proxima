@@ -3,11 +3,11 @@
 use crate::common::{create_db, db_url, drop_db};
 
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{Owner, OwnerPrincipalKind, Principal, UserId};
+use proxima_core::{Owner, OwnerRef, OwnerRefKind, UserId};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
-fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
+fn owner_parts(owner: &Owner) -> (OwnerRefKind, Uuid) {
     owner.columns()
 }
 
@@ -48,7 +48,7 @@ async fn external_authorship_cannot_seed_goal_state() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let owner = Principal::User(UserId::new(Uuid::now_v7()));
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
 
         for state in [
             GoalState::Active,

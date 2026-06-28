@@ -15,7 +15,7 @@ use crate::verbs::event_ingest::{
 };
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::verbs::schema::{PayloadKind, ProtocolPayload, SchemaInfo};
-use crate::{EntityKind, MemoryId, Owner, Principal, SidecarPayload, SourceBatchId};
+use crate::{EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload, SourceBatchId};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EmbeddingDrainOutcome {
@@ -77,7 +77,7 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &draft.principal, relation)
             .await?;
-        draft.principal = permit.owner().clone();
+        draft.principal = *permit.owner();
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
@@ -121,7 +121,7 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &draft.principal, relation)
             .await?;
-        draft.principal = permit.owner().clone();
+        draft.principal = *permit.owner();
 
         // Validate the Fact only by schema-existence, matching
         // `authorize_event_ingest`. The Fact payload is built from a
@@ -191,14 +191,14 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         relation: Relation,
-        principal: Principal,
+        principal: OwnerRef,
         memory_id: MemoryId,
         cited_object: InlineCitedObjectDraft,
         mapping: InlineCitationMappingDraft,
     ) -> Result<AuthorizedCitationAttachment, ProtocolError> {
         let requested = principal;
         let permit = self.authorize_write(authz, &requested, relation).await?;
-        let owner = permit.owner().clone();
+        let owner = *permit.owner();
         let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
         Ok(AuthorizedCitationAttachment::new(
             permit.into(),
@@ -493,11 +493,11 @@ impl Engine {
         authz: &AuthzContext,
         mut input: McpCallLogInput,
     ) -> Result<McpCallLogOutcome, ProtocolError> {
-        let owner = authz.scoped_owner(input.owner.clone());
+        let owner = authz.scoped_owner(input.owner);
         let permit = self
             .authorize_write(authz, &owner, Relation::Ingest)
             .await?;
-        input.owner = permit.owner().clone();
+        input.owner = *permit.owner();
         self.storage
             .persist_mcp_call_atomic(&input)
             .await
@@ -517,7 +517,7 @@ impl Engine {
     pub async fn close_batch(
         &self,
         authz: &AuthzContext,
-        principal: Principal,
+        principal: OwnerRef,
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, ProtocolError> {
         let requested = principal;
@@ -580,7 +580,7 @@ mod tests {
     }
 
     fn test_owner() -> Owner {
-        Principal::User(UserId::new(uuid::Uuid::now_v7()))
+        OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
     }
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -645,7 +645,11 @@ mod tests {
         );
 
         let err = engine
-            .authorize_event_ingest(&AuthzContext::denied(&owner), Relation::Editor, draft)
+            .authorize_event_ingest(
+                &AuthzContext::denied_for_owner(&owner),
+                Relation::Editor,
+                draft,
+            )
             .await
             .expect_err("denied context must fail");
 
@@ -680,7 +684,7 @@ mod tests {
 
         let err = engine
             .authorize_fact_with_citation(
-                &AuthzContext::denied(&owner),
+                &AuthzContext::denied_for_owner(&owner),
                 Relation::Editor,
                 draft,
                 cited_object,

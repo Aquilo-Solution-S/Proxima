@@ -1,6 +1,6 @@
 use proxima_core::personality::{MemorySnapshot, SidecarSpec};
 use proxima_core::verbs::query::FactCitationReadback;
-use proxima_core::{FactEntityId, MemoryId, OwnerPrincipalKind, Principal, SchemaId, StorageError};
+use proxima_core::{FactEntityId, MemoryId, OwnerRef, OwnerRefKind, SchemaId, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
@@ -10,7 +10,7 @@ use crate::verbs::consolidate::load_memory_by_id;
 pub(crate) async fn facts_citing_object(
     pool: &PgPool,
     pg_sidecars: &PgSidecarRegistryFrozen,
-    read_owners: &[Principal],
+    read_owners: &[OwnerRef],
     cited_object_id: uuid::Uuid,
     sidecars: &[SidecarSpec],
 ) -> Result<Vec<MemorySnapshot>, StorageError> {
@@ -18,7 +18,7 @@ pub(crate) async fn facts_citing_object(
         return Ok(Vec::new());
     }
     let (read_owner_kinds, read_owner_ids) = read_owner_columns(read_owners);
-    let memory_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
+    let memory_ids: Vec<uuid::Uuid> = sqlx::query_scalar(crate::access::owner_ref_compat::sql(
         "SELECT m.memory_id
            FROM proxima_core.memories m
            JOIN proxima_core.citation_mappings cm
@@ -28,7 +28,7 @@ pub(crate) async fn facts_citing_object(
           WHERE cm.cited_object_id = $1
             AND EXISTS (
                 SELECT 1
-                  FROM proxima_core.entity_owner eo
+                  FROM __PROXIMA_ENTITY_OWNER__ eo
                   JOIN unnest($2::proxima_core.owner_principal_kind[], $3::uuid[]) AS s(kind, id)
                     ON eo.owner_principal_kind = s.kind
                    AND eo.owner_principal_id = s.id
@@ -37,7 +37,7 @@ pub(crate) async fn facts_citing_object(
             AND m.kind IS NULL
             AND m.tombstoned_at IS NULL
           ORDER BY m.created_at DESC, m.memory_id DESC",
-    )
+    ))
     .bind(cited_object_id)
     .bind(&read_owner_kinds)
     .bind(&read_owner_ids)
@@ -93,7 +93,7 @@ pub(crate) async fn citation_of_fact(
 
 pub(crate) async fn citation_of_entity_head(
     pool: &PgPool,
-    read_owners: &[Principal],
+    read_owners: &[OwnerRef],
     fact_entity_id: FactEntityId,
 ) -> Result<Option<FactCitationReadback>, StorageError> {
     if read_owners.is_empty() {
@@ -101,19 +101,19 @@ pub(crate) async fn citation_of_entity_head(
     }
     let (read_owner_kinds, read_owner_ids) = read_owner_columns(read_owners);
     let fact_entity_uuid = fact_entity_id.into_inner();
-    let head = sqlx::query_scalar::<_, uuid::Uuid>(
+    let head = sqlx::query_scalar::<_, uuid::Uuid>(crate::access::owner_ref_compat::sql(
         "SELECT fe.current_memory_id
            FROM proxima_core.fact_entities fe
           WHERE fe.fact_entity_id = $1
             AND EXISTS (
                 SELECT 1
-                  FROM proxima_core.entity_owner eo
+                  FROM __PROXIMA_ENTITY_OWNER__ eo
                   JOIN unnest($2::proxima_core.owner_principal_kind[], $3::uuid[]) AS s(kind, id)
                     ON eo.owner_principal_kind = s.kind
                    AND eo.owner_principal_id = s.id
                  WHERE eo.entity_id = fe.current_memory_id
             )",
-    )
+    ))
     .bind(fact_entity_uuid)
     .bind(&read_owner_kinds)
     .bind(&read_owner_ids)
@@ -126,7 +126,7 @@ pub(crate) async fn citation_of_entity_head(
     citation_of_fact(pool, MemoryId::new(head)).await
 }
 
-fn read_owner_columns(read_owners: &[Principal]) -> (Vec<OwnerPrincipalKind>, Vec<uuid::Uuid>) {
+fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<uuid::Uuid>) {
     let kinds = read_owners
         .iter()
         .map(|principal| principal.columns().0)

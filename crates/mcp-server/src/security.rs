@@ -195,8 +195,8 @@ async fn mcp_auth(
     if request.headers().contains_key(ORIGIN) && !state.allowlist.allows(request.headers()) {
         return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
     }
-    let identity = ctx.authz.identity.clone();
-    let epoch_source = if ctx.authz.auth_path == AuthPath::HostBearer {
+    let identity = ctx.authz.identity_for_revalidation();
+    let epoch_source = if ctx.authz.auth_path() == AuthPath::HostBearer {
         state.auth.host_authenticator()
     } else {
         None
@@ -378,7 +378,6 @@ fn parse_origin(value: &str) -> Option<ParsedOrigin> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
     use std::convert::Infallible;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -388,7 +387,7 @@ mod tests {
     use axum::body::{Body, Bytes, to_bytes};
     use futures_util::stream;
     use proxima_core::{
-        AuthError, Authenticator, AuthzContext, Credentials, Identity, Principal,
+        AuthError, Authenticator, AuthzContext, Credentials, Identity, OwnerRef,
         RevalidationConfig, UserId,
     };
     use tokio::sync::mpsc;
@@ -459,15 +458,14 @@ mod tests {
     }
 
     fn identity(expires_at: Option<SystemTime>, auth_epoch: u64) -> Identity {
-        let principal = Principal::User(UserId::new(uuid::Uuid::now_v7()));
-        let mut accessible_principals = HashSet::with_capacity(1);
-        accessible_principals.insert(principal.clone());
-        Identity {
-            principal,
-            accessible_principals,
-            expires_at,
-            auth_epoch,
-        }
+        let principal = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let OwnerRef::Personal(subject) = principal else {
+            unreachable!("principal is personal");
+        };
+        proxima_core::AuthzContext::for_subject(subject, proxima_core::AuthPath::HostBearer)
+            .with_expires_at(expires_at)
+            .with_auth_epoch(auth_epoch)
+            .identity_for_revalidation()
     }
 
     fn receiver_body(receiver: mpsc::UnboundedReceiver<Result<Bytes, Infallible>>) -> Body {
@@ -503,7 +501,7 @@ mod tests {
             Err(AuthError::AuthRequired)
         }
 
-        async fn current_auth_epoch(&self, _principal: &Principal) -> u64 {
+        async fn current_auth_epoch(&self, _principal: &OwnerRef) -> u64 {
             self.epoch.load(Ordering::SeqCst)
         }
     }

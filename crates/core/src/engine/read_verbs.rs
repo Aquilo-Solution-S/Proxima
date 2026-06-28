@@ -2,13 +2,12 @@ use crate::access::Relation;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::personality::{
-    ChangeEventForWake, ListReadScopeRequest, ListReadScopeResponse, MemorySnapshot,
-    PersonalityInstanceId, PersonalityInstanceRow, SidecarSpec,
+    ChangeEventForWake, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow, SidecarSpec,
 };
 use crate::storage::{EdgeEndpointKindRow, MemoryGraphPayloadRow, NeighborEdgeRow, StorageError};
 use crate::verbs::query::{FactCitationReadback, MemorySearchRequest, MemorySearchResult};
 use crate::verbs::schema::PayloadKind;
-use crate::{EdgeId, EntityId, FactEntityId, MemoryId, Principal, SchemaId, SchemaVersion};
+use crate::{EdgeId, EntityId, FactEntityId, MemoryId, OwnerRef, SchemaId, SchemaVersion};
 
 use super::Engine;
 
@@ -43,7 +42,7 @@ pub struct GetMemoryReadResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetGraphReadRequest {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     pub include_tombstoned: bool,
 }
 
@@ -56,7 +55,7 @@ pub struct GetGraphReadResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListEventsReadRequest {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     pub after: uuid::Uuid,
     pub limit: usize,
 }
@@ -69,19 +68,19 @@ pub struct ListEventsReadResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactCitationReadRequest {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     pub fact_memory_id: MemoryId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntityHeadCitationReadRequest {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     pub fact_entity_id: FactEntityId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactsCitingObjectReadRequest {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     pub cited_object_id: uuid::Uuid,
 }
 
@@ -316,30 +315,6 @@ impl Engine {
             .map_err(|err| storage_error("facts_citing_object", &err))
     }
 
-    /// Owner-scoped read-scope matrix projection for one reader personality.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks [`Relation::Admin`], and `Internal` when storage reads fail.
-    pub async fn list_read_scope(
-        &self,
-        authz: &AuthzContext,
-        req: &ListReadScopeRequest,
-    ) -> Result<ListReadScopeResponse, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, &req.principal, Relation::Admin)
-            .await?;
-        let effective = ListReadScopeRequest {
-            principal: permit.owner().clone(),
-            reader_personality_instance_id: req.reader_personality_instance_id,
-        };
-        self.storage
-            .list_read_scope(&effective)
-            .await
-            .map_err(|err| storage_error("list_read_scope", &err))
-    }
-
     pub(in crate::engine) fn sidecar_specs(&self) -> Vec<SidecarSpec> {
         self.registry
             .list()
@@ -365,15 +340,15 @@ fn storage_error(context: &str, err: &StorageError) -> ProtocolError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
     use crate::access::AccessScope;
-    use crate::authz::{AuthPath, AuthzContext, CapabilitySet, Identity, ToolScope};
+    use crate::authz::{AuthPath, AuthzContext, ToolScope};
     use crate::error::ErrorCode;
     use crate::verbs::query::{
         MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
     };
-    use crate::{Engine, FactEntityId, FlavorRegistry, GroupId, MemoryId, Principal, UserId};
+    use crate::{Engine, FactEntityId, FlavorRegistry, GroupId, MemoryId, OwnerRef, UserId};
+
+    type ResolvedAuthz = AuthzContext;
 
     use super::{
         EntityHeadCitationReadRequest, FactCitationReadRequest, FactsCitingObjectReadRequest,
@@ -384,19 +359,19 @@ mod tests {
         Engine::new(FlavorRegistry::new().freeze())
     }
 
-    fn owner() -> Principal {
-        Principal::User(UserId::new(uuid::Uuid::now_v7()))
+    fn owner() -> OwnerRef {
+        OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
     }
 
-    fn group_owner() -> Principal {
-        Principal::Group(GroupId::new(uuid::Uuid::now_v7()))
+    fn group_owner() -> OwnerRef {
+        OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()))
     }
 
-    fn search_req(owner: &Principal) -> SearchReadRequest {
+    fn search_req(owner: &OwnerRef) -> SearchReadRequest {
         SearchReadRequest {
             search: MemorySearchRequest {
-                principal: owner.clone(),
-                read_owners: vec![owner.clone()],
+                principal: *owner,
+                read_owners: vec![*owner],
                 query: "needle".into(),
                 mode: SearchMode::Lexical,
                 supersession: SupersessionStatus::HeadsOnly,
@@ -421,29 +396,21 @@ mod tests {
         assert_eq!(err.code, ErrorCode::Forbidden);
     }
 
-    fn granted_authz(owner: &Principal) -> AuthzContext {
-        let mut accessible_principals = HashSet::new();
-        accessible_principals.insert(owner.clone());
-        AuthzContext {
-            identity: Identity {
-                principal: owner.clone(),
-                accessible_principals,
-                expires_at: None,
-                auth_epoch: 0,
-            },
-            capabilities: CapabilitySet {
-                tool_scope: ToolScope::All,
-                access: AccessScope::Granted,
-            },
-            auth_path: AuthPath::HostBearer,
-        }
+    fn granted_authz(owner: &OwnerRef) -> ResolvedAuthz {
+        AuthzContext::scoped_access(
+            *owner,
+            [*owner],
+            ToolScope::All,
+            AccessScope::Granted,
+            AuthPath::HostBearer,
+        )
     }
 
     #[tokio::test]
     async fn search_denies_denied_context() {
         let owner = owner();
         let err = engine()
-            .search(&AuthzContext::denied(&owner), &search_req(&owner))
+            .search(&AuthzContext::denied_for_owner(&owner), &search_req(&owner))
             .await
             .expect_err("denied context must fail");
         assert_forbidden(&err);
@@ -471,7 +438,7 @@ mod tests {
             include_neighbor_edges: false,
         };
         let err = engine()
-            .get_memory(&AuthzContext::denied(&owner), &req)
+            .get_memory(&AuthzContext::denied_for_owner(&owner), &req)
             .await
             .expect_err("denied context must fail");
         assert_forbidden(&err);
@@ -481,11 +448,11 @@ mod tests {
     async fn get_graph_denies_denied_context() {
         let owner = owner();
         let req = GetGraphReadRequest {
-            principal: owner.clone(),
+            principal: owner,
             include_tombstoned: false,
         };
         let err = engine()
-            .get_graph(&AuthzContext::denied(&owner), &req)
+            .get_graph(&AuthzContext::denied_for_owner(&owner), &req)
             .await
             .expect_err("denied context must fail");
         assert_forbidden(&err);
@@ -495,12 +462,12 @@ mod tests {
     async fn list_events_denies_denied_context() {
         let owner = owner();
         let req = ListEventsReadRequest {
-            principal: owner.clone(),
+            principal: owner,
             after: uuid::Uuid::nil(),
             limit: 1,
         };
         let err = engine()
-            .list_events(&AuthzContext::denied(&owner), &req)
+            .list_events(&AuthzContext::denied_for_owner(&owner), &req)
             .await
             .expect_err("denied context must fail");
         assert_forbidden(&err);
@@ -510,11 +477,11 @@ mod tests {
     async fn read_fact_citation_denies_denied_context() {
         let owner = owner();
         let req = FactCitationReadRequest {
-            principal: owner.clone(),
+            principal: owner,
             fact_memory_id: MemoryId::new(uuid::Uuid::now_v7()),
         };
         let err = engine()
-            .read_fact_citation(&AuthzContext::denied(&owner), &req)
+            .read_fact_citation(&AuthzContext::denied_for_owner(&owner), &req)
             .await
             .expect_err("denied context must fail");
         assert_forbidden(&err);
@@ -524,11 +491,11 @@ mod tests {
     async fn read_entity_head_citation_denies_denied_context() {
         let owner = owner();
         let req = EntityHeadCitationReadRequest {
-            principal: owner.clone(),
+            principal: owner,
             fact_entity_id: FactEntityId::new(uuid::Uuid::now_v7()),
         };
         let err = engine()
-            .read_entity_head_citation(&AuthzContext::denied(&owner), &req)
+            .read_entity_head_citation(&AuthzContext::denied_for_owner(&owner), &req)
             .await
             .expect_err("denied context must fail");
         assert_forbidden(&err);
@@ -538,25 +505,11 @@ mod tests {
     async fn facts_citing_object_denies_denied_context() {
         let owner = owner();
         let req = FactsCitingObjectReadRequest {
-            principal: owner.clone(),
+            principal: owner,
             cited_object_id: uuid::Uuid::now_v7(),
         };
         let err = engine()
-            .facts_citing_object(&AuthzContext::denied(&owner), &req)
-            .await
-            .expect_err("denied context must fail");
-        assert_forbidden(&err);
-    }
-
-    #[tokio::test]
-    async fn list_read_scope_denies_denied_context() {
-        let owner = owner();
-        let req = crate::ListReadScopeRequest {
-            principal: owner.clone(),
-            reader_personality_instance_id: crate::PersonalityInstanceId::new(uuid::Uuid::now_v7()),
-        };
-        let err = engine()
-            .list_read_scope(&AuthzContext::denied(&owner), &req)
+            .facts_citing_object(&AuthzContext::denied_for_owner(&owner), &req)
             .await
             .expect_err("denied context must fail");
         assert_forbidden(&err);

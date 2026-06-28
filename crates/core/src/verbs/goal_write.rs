@@ -5,7 +5,7 @@
 //! storage-side body lives in proxima-storage-pg.
 
 use crate::{
-    GoalId, GoalPayload, MemoryId, ModelId, OperatorId, Owner, PersonalityInstanceId, Principal,
+    GoalId, GoalPayload, MemoryId, ModelId, OperatorId, Owner, OwnerRef, PersonalityInstanceId,
     PromptVersion, SchemaId, SchemaVersion, SidecarPayload, ToolId,
 };
 
@@ -75,7 +75,7 @@ pub enum GoalWriteBuildError {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalDraft {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub title: String,
@@ -94,7 +94,7 @@ impl GoalDraft {
     /// Build an Active Goal draft from an already-encoded typed payload.
     #[must_use]
     pub fn active_from_payload_write(
-        principal: Principal,
+        principal: OwnerRef,
         payload: GoalPayloadWrite,
         parent_goal_ids: Vec<GoalId>,
         authorship: GoalAuthorship,
@@ -119,7 +119,7 @@ impl GoalDraft {
     /// The storage `Owner` (= principal) for this draft.
     #[must_use]
     pub fn owner(&self) -> Owner {
-        self.principal.clone()
+        self.principal
     }
 }
 
@@ -257,7 +257,7 @@ fn normalize_goal_display_field(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalCreateRequest<P> {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     pub target_self_perspective_id: MemoryId,
     pub title: String,
     pub text: String,
@@ -282,7 +282,7 @@ impl<P> GoalCreateRequest<P> {
     /// edge, not an unassigned owner-scoped row.
     #[must_use]
     pub fn product(
-        principal: Principal,
+        principal: OwnerRef,
         target_self_perspective_id: MemoryId,
         request_id: IdempotencyKey,
         title: impl Into<String>,

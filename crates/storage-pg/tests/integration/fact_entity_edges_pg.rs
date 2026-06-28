@@ -16,7 +16,7 @@ use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthPath, AuthorshipKindMask, AuthzContext, ChangeEventKind, EdgeAuthorshipKind,
     EndpointBinding, EntityKind, EntityKindMask, EntityRef, FactPayload, FactTombstone,
-    FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner, PayloadKeyBuilder, Principal, Relation,
+    FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner, OwnerRef, PayloadKeyBuilder, Relation,
     RelationClass, RelationDescriptor, SchemaVersion, SidecarPayload, SourceBatchId, SourceId,
     StorageError, UserId, canonical_json_bytes,
 };
@@ -462,7 +462,7 @@ fn draft_for_payload<F: FactPayload>(owner: &Owner, payload_value: &Value) -> Ev
     EventDraft {
         source_id: SourceId::new(format!("test/fact-entity-edge/{}", Uuid::now_v7())),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner.clone(),
+        principal: *owner,
         author_personality_instance_id: None,
         schema_id: F::schema_id(),
         schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
@@ -711,7 +711,7 @@ async fn follow_head_edge_writes_log_and_graph_resolves_to_latest_head()
         let source_v2 = ingest_fact(&pg, &engine, &owner, &fact("source", "v2", "Present")).await?;
 
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
-        let mut req = QueryRequest::for_principal(owner.clone());
+        let mut req = QueryRequest::for_principal(owner);
         req.limit = 100;
         let response = engine.query(&authz, &req).await?;
         let edge = response
@@ -758,7 +758,7 @@ async fn follow_head_tombstoned_head_uses_existing_visibility()
         let target_tombstone =
             ingest_fact(&pg, &engine, &owner, &fact("target", "deleted", "Deleted")).await?;
 
-        let mut req = QueryRequest::for_principal(owner.clone());
+        let mut req = QueryRequest::for_principal(owner);
         req.limit = 100;
         let response = engine.query(&authz, &req).await?;
         assert!(
@@ -1165,7 +1165,7 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
                     .is_some_and(sqlx::error::DatabaseError::is_foreign_key_violation)
         );
 
-        let other = Principal::User(UserId::new(Uuid::now_v7()));
+        let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let other_source =
             ingest_fact(&pg, &engine, &other, &fact("other", "v1", "Present")).await?;
         let other_entity = memory_fact_entity_id(&pg, other_source.memory_id).await?;
@@ -1201,7 +1201,7 @@ async fn event_history_and_list_events_preserve_fact_entity_endpoints()
             .event_history(
                 std::slice::from_ref(&owner),
                 &EventHistoryRequest {
-                    principal: owner.clone(),
+                    principal: owner,
                     limit: 100,
                     before: None,
                 },
@@ -1227,7 +1227,7 @@ async fn event_history_and_list_events_preserve_fact_entity_endpoints()
         ));
 
         let ctx = McpToolCtx {
-            owner: owner.clone(),
+            owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: None,
             mode: OutputMode::RawIds,
@@ -1312,7 +1312,7 @@ async fn pin_relations_still_round_trip_memory_endpoints() -> Result<(), Box<dyn
         );
 
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
-        let mut req = QueryRequest::for_principal(owner.clone());
+        let mut req = QueryRequest::for_principal(owner);
         req.limit = 100;
         let response = engine.query(&authz, &req).await?;
         let edge = response

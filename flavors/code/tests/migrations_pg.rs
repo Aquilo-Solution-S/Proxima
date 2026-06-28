@@ -86,7 +86,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
             assert_enum_column(pg.pool(), "proxima_code", table, column).await?;
         }
 
-        // S0 (Owner = Principal collapse, Track B): the full-collapse decision
+        // S0 (Owner = OwnerRef collapse, Track B): the full-collapse decision
         // removes owner_org_id from proxima_code too. Keystone gate for the
         // flavor DDL-drop migration — a missed column would silently keep org
         // in the flavor schema and pass every check above.

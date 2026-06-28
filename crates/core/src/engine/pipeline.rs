@@ -1,8 +1,8 @@
-use crate::access::{AccessScope, EntityId, Relation, world};
+use crate::access::{EntityId, Relation, world};
 use crate::authz::{AuthPath, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome};
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
-use crate::{Owner, PersonalityInstanceId, Principal};
+use crate::{Owner, OwnerRef, PersonalityInstanceId};
 
 use super::Engine;
 
@@ -33,13 +33,13 @@ pub enum PermitMode {
 /// only this module's authorization gates can mint it.
 #[derive(Debug)]
 pub struct WritePermit {
-    owner: Principal,
+    owner: OwnerRef,
     relation: Relation,
 }
 
 impl WritePermit {
     #[must_use]
-    pub fn owner(&self) -> &Principal {
+    pub fn owner(&self) -> &OwnerRef {
         &self.owner
     }
 
@@ -51,7 +51,7 @@ impl WritePermit {
 
 impl From<WritePermit> for MemoryPermit {
     fn from(permit: WritePermit) -> Self {
-        Self::owner_scoped(permit.owner.clone(), permit.owner, permit.relation, None)
+        Self::owner_scoped(permit.owner, permit.owner, permit.relation, None)
     }
 }
 
@@ -59,12 +59,12 @@ impl From<WritePermit> for MemoryPermit {
 /// module's authorization gates can mint it.
 #[derive(Debug)]
 pub struct EntryReadPermit {
-    owner: Principal,
+    owner: OwnerRef,
 }
 
 impl EntryReadPermit {
     #[must_use]
-    pub fn owner(&self) -> &Principal {
+    pub fn owner(&self) -> &OwnerRef {
         &self.owner
     }
 }
@@ -123,10 +123,10 @@ impl Engine {
     pub(in crate::engine) async fn authorize_write(
         &self,
         authz: &AuthzContext,
-        owner: &Principal,
+        owner: &OwnerRef,
         required: Relation,
     ) -> Result<WritePermit, ProtocolError> {
-        if authz.auth_path == AuthPath::Denied {
+        if authz.auth_path() == AuthPath::Denied {
             let input = AuthzInput {
                 authz,
                 requested: owner,
@@ -198,10 +198,10 @@ impl Engine {
     pub(in crate::engine) async fn authorize_read(
         &self,
         authz: &AuthzContext,
-    ) -> Result<Vec<Principal>, ProtocolError> {
+    ) -> Result<Vec<OwnerRef>, ProtocolError> {
         let access = self.resolve_access(authz).await?;
         let read = access.read_owners().to_vec();
-        let principal = authz.identity.principal.clone();
+        let principal = authz.principal();
         let input = AuthzInput {
             authz,
             requested: &principal,
@@ -234,16 +234,16 @@ impl Engine {
         let read = self.authorize_read(authz).await?;
         let home = self
             .storage()
-            .entity_home_owner(entity)
+            .home_owner(entity)
             .await
-            .map_err(|err| storage_error("entity_home_owner", &err))?
+            .map_err(|err| storage_error("home_owner", &err))?
             .ok_or_else(|| ProtocolError::forbidden("entry not found"))?;
 
         let readable = self
             .storage()
-            .entity_is_readable(entity, &read)
+            .visible_to_any(entity, &read)
             .await
-            .map_err(|err| storage_error("entity_is_readable", &err))?;
+            .map_err(|err| storage_error("visible_to_any", &err))?;
         if !readable {
             return Err(ProtocolError::forbidden("entry not found"));
         }
@@ -260,7 +260,7 @@ impl Engine {
         requested: &Owner,
         relation: Relation,
     ) -> Result<MemoryPermit, ProtocolError> {
-        if authz.auth_path == AuthPath::Denied {
+        if authz.auth_path() == AuthPath::Denied {
             let input = AuthzInput {
                 authz,
                 requested,
@@ -306,12 +306,8 @@ impl Engine {
         let subject_personality = match basis {
             AccessBasis::ActingAsOwner => None,
         };
-        let permit = MemoryPermit::owner_scoped(
-            resolved.clone(),
-            requested.clone(),
-            relation,
-            subject_personality,
-        );
+        let permit =
+            MemoryPermit::owner_scoped(resolved, *requested, relation, subject_personality);
         self.registry
             .run_authorization_observers(&input, AuthzOutcome::Allowed);
         Ok(permit)
@@ -334,30 +330,24 @@ impl Engine {
         Ok(basis)
     }
 
-    /// Steps 0/2/3 of the spec algorithm. `can_access` gates ONLY identity-owner +
-    /// unrestricted; persisted space bindings (incl. owner rows + group member
-    /// inheritance) are NOT can_access-gated — that is how cross-principal access
-    /// works. Resolution is short-circuited for Unrestricted/identity before any DB read.
-    // TEMP: grant-DB resolution removed in the vocab swap; deleted in Phase 4 with the
-    // old gate (replaced by AccessSets::can_write). Remove the allow then.
-    #[allow(clippy::unused_async)]
+    /// Relation gate over the server-resolved owner access sets.
     async fn resolve_relation(
         &self,
         authz: &AuthzContext,
         owner: &Owner,
         relation: Relation,
     ) -> Result<AccessBasis, ProtocolError> {
-        let principal = &authz.identity.principal;
-        let identity_owner = matches!(owner, Principal::User(_))
-            && principal == owner
-            && authz.identity.can_access_principal(owner);
-        let unrestricted = authz.capabilities.access == AccessScope::Unrestricted
-            && authz.identity.can_access_principal(owner);
-        if identity_owner || unrestricted {
-            return Ok(AccessBasis::ActingAsOwner);
+        let access = self.resolve_access(authz).await?;
+        let allowed = if relation == Relation::Viewer {
+            access.can_read(owner)
+        } else {
+            access.can_write(owner, relation)
+        };
+        if allowed {
+            Ok(AccessBasis::ActingAsOwner)
+        } else {
+            Err(ProtocolError::forbidden(relation.denied_message()))
         }
-        let _ = principal;
-        Err(ProtocolError::forbidden(relation.denied_message()))
     }
 }
 
@@ -368,20 +358,21 @@ fn storage_error(context: &str, err: &StorageError) -> ProtocolError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
     use std::sync::{Arc, Mutex};
 
     use crate::access::{AccessScope, EntityId, Relation, world};
     use crate::authz::{
         AuthPath, AuthorizationHook, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome,
-        AuthzVeto, CapabilitySet, Identity, OwnerResolver, ToolScope,
+        AuthzVeto, OwnerResolver, ToolScope,
     };
     use crate::error::ErrorCode;
     use crate::error::ProtocolError;
-    use crate::{FlavorRegistry, GroupId, MemoryId, Owner, Principal, UserId};
+    use crate::{FlavorRegistry, GroupId, MemoryId, Owner, OwnerRef, UserId};
 
     use super::super::access_sets::tests::MembershipStorage;
     use super::{AccessBasis, Engine, PermitMode};
+
+    type ResolvedAuthz = AuthzContext;
 
     fn engine() -> Engine {
         Engine::new(FlavorRegistry::new().freeze())
@@ -403,19 +394,19 @@ mod tests {
     }
 
     fn owner() -> Owner {
-        Principal::User(UserId::new(uuid::Uuid::now_v7()))
+        OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
     }
 
     fn group_owner() -> Owner {
-        Principal::Group(GroupId::new(uuid::Uuid::now_v7()))
+        OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()))
     }
 
-    fn storage(member: Principal, group: GroupId) -> MembershipStorage {
+    fn storage(member: OwnerRef, group: GroupId) -> MembershipStorage {
         storage_with_relation(member, group, Relation::Viewer)
     }
 
     fn storage_with_relation(
-        member: Principal,
+        member: OwnerRef,
         group: GroupId,
         membership_relation: Relation,
     ) -> MembershipStorage {
@@ -430,9 +421,9 @@ mod tests {
     }
 
     fn storage_with_entity(
-        member: Principal,
+        member: OwnerRef,
         group: GroupId,
-        home_owner: Option<Principal>,
+        home_owner: Option<OwnerRef>,
         entity_readable: bool,
     ) -> MembershipStorage {
         MembershipStorage {
@@ -445,22 +436,14 @@ mod tests {
         }
     }
 
-    fn granted_context(owner: &Owner) -> AuthzContext {
-        let mut accessible_principals = HashSet::new();
-        accessible_principals.insert(owner.clone());
-        AuthzContext {
-            identity: Identity {
-                principal: owner.clone(),
-                accessible_principals,
-                expires_at: None,
-                auth_epoch: 0,
-            },
-            capabilities: CapabilitySet {
-                tool_scope: ToolScope::All,
-                access: AccessScope::Granted,
-            },
-            auth_path: AuthPath::HostBearer,
-        }
+    fn granted_context(owner: &Owner) -> ResolvedAuthz {
+        AuthzContext::scoped_access(
+            *owner,
+            [*owner],
+            ToolScope::All,
+            AccessScope::Granted,
+            AuthPath::HostBearer,
+        )
     }
 
     #[derive(Debug)]
@@ -474,7 +457,7 @@ mod tests {
             _authz: &AuthzContext,
             _requested: &Owner,
         ) -> Result<Owner, ProtocolError> {
-            Ok(self.resolved.clone())
+            Ok(self.resolved)
         }
     }
 
@@ -496,7 +479,7 @@ mod tests {
     impl AuthorizationHook for RecordingHook {
         fn observe(&self, input: &AuthzInput<'_>, outcome: AuthzOutcome) {
             assert!(matches!(
-                input.authz.auth_path,
+                input.authz.auth_path(),
                 AuthPath::System | AuthPath::HostBearer
             ));
             assert_eq!(input.relation, Relation::Viewer);
@@ -548,7 +531,7 @@ mod tests {
     async fn authorize_write_allows_self_editor() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let engine = engine_with_storage(storage(p.clone(), g1));
+        let engine = engine_with_storage(storage(p, g1));
         let authz = granted_context(&p);
 
         let permit = engine
@@ -564,8 +547,8 @@ mod tests {
     async fn authorize_write_denies_viewer_for_editor() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let g1_owner = Principal::Group(g1);
-        let engine = engine_with_storage(storage(p.clone(), g1));
+        let g1_owner = OwnerRef::Group(g1);
+        let engine = engine_with_storage(storage(p, g1));
         let authz = granted_context(&p);
 
         let err = engine
@@ -580,8 +563,8 @@ mod tests {
     async fn authorize_write_allows_editor_member_for_group() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let g1_owner = Principal::Group(g1);
-        let engine = engine_with_storage(storage_with_relation(p.clone(), g1, Relation::Editor));
+        let g1_owner = OwnerRef::Group(g1);
+        let engine = engine_with_storage(storage_with_relation(p, g1, Relation::Editor));
         let authz = granted_context(&p);
 
         let permit = engine
@@ -599,7 +582,7 @@ mod tests {
         let g1 = GroupId::new(uuid::Uuid::now_v7());
         let mut registry = FlavorRegistry::new();
         registry.add_authorization_hook(Arc::new(VetoHook));
-        let engine = engine_from_registry_and_storage(registry, storage(p.clone(), g1));
+        let engine = engine_from_registry_and_storage(registry, storage(p, g1));
         let authz = granted_context(&p);
 
         let err = engine
@@ -615,8 +598,8 @@ mod tests {
     async fn authorize_write_denied_context_forbidden() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let engine = engine_with_storage(storage(p.clone(), g1));
-        let authz = AuthzContext::denied(&p);
+        let engine = engine_with_storage(storage(p, g1));
+        let authz = AuthzContext::denied_for_owner(&p);
 
         let err = engine
             .authorize_write(&authz, &p, Relation::Editor)
@@ -630,20 +613,14 @@ mod tests {
     async fn authorize_write_denies_world_for_every_write_relation() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let engine = engine_with_storage(storage(p.clone(), g1));
-        let authz = AuthzContext {
-            identity: Identity {
-                principal: p.clone(),
-                accessible_principals: HashSet::from([p, world()]),
-                expires_at: None,
-                auth_epoch: 0,
-            },
-            capabilities: CapabilitySet {
-                tool_scope: ToolScope::All,
-                access: AccessScope::Unrestricted,
-            },
-            auth_path: AuthPath::HostBearer,
-        };
+        let engine = engine_with_storage(storage(p, g1));
+        let authz = AuthzContext::scoped_access(
+            p,
+            [p, world()],
+            ToolScope::All,
+            AccessScope::Unrestricted,
+            AuthPath::HostBearer,
+        );
 
         for relation in [Relation::Admin, Relation::Editor, Relation::Ingest] {
             let err = engine
@@ -660,8 +637,8 @@ mod tests {
     async fn authorize_read_returns_world_and_groups() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let g1_owner = Principal::Group(g1);
-        let engine = engine_with_storage(storage(p.clone(), g1));
+        let g1_owner = OwnerRef::Group(g1);
+        let engine = engine_with_storage(storage(p, g1));
         let authz = granted_context(&p);
 
         let read = engine
@@ -678,8 +655,8 @@ mod tests {
     async fn authorize_read_denied_forbidden() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let engine = engine_with_storage(storage(p.clone(), g1));
-        let authz = AuthzContext::denied(&p);
+        let engine = engine_with_storage(storage(p, g1));
+        let authz = AuthzContext::denied_for_owner(&p);
 
         let err = engine
             .authorize_read(&authz)
@@ -693,7 +670,7 @@ mod tests {
     async fn authorize_entry_read_ok_when_readable() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let engine = engine_with_storage(storage_with_entity(p.clone(), g1, Some(p.clone()), true));
+        let engine = engine_with_storage(storage_with_entity(p, g1, Some(p), true));
         let authz = granted_context(&p);
 
         let permit = engine
@@ -711,7 +688,7 @@ mod tests {
     async fn authorize_entry_read_absent_is_forbidden() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let engine = engine_with_storage(storage_with_entity(p.clone(), g1, None, true));
+        let engine = engine_with_storage(storage_with_entity(p, g1, None, true));
         let authz = granted_context(&p);
 
         let err = engine
@@ -731,7 +708,7 @@ mod tests {
         let p = owner();
         let other = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let engine = engine_with_storage(storage_with_entity(p.clone(), g1, Some(other), false));
+        let engine = engine_with_storage(storage_with_entity(p, g1, Some(other), false));
         let authz = granted_context(&p);
 
         let err = engine
@@ -764,7 +741,7 @@ mod tests {
     async fn denied_context_returns_forbidden() {
         let engine = engine();
         let owner = owner();
-        let authz = AuthzContext::denied(&owner);
+        let authz = AuthzContext::denied_for_owner(&owner);
 
         let err = engine
             .authorize_request(&authz, &owner, Relation::Viewer)
@@ -783,7 +760,7 @@ mod tests {
             outcomes: outcomes.clone(),
         }));
         let engine = engine_from_registry(registry);
-        let authz = AuthzContext::denied(&owner);
+        let authz = AuthzContext::denied_for_owner(&owner);
 
         let err = engine
             .authorize_request(&authz, &owner, Relation::Viewer)
@@ -802,9 +779,7 @@ mod tests {
         let requested = owner();
         let hidden = owner();
         let mut registry = FlavorRegistry::new();
-        registry.set_owner_resolver(Arc::new(StaticResolver {
-            resolved: hidden.clone(),
-        }));
+        registry.set_owner_resolver(Arc::new(StaticResolver { resolved: hidden }));
         let engine = engine_from_registry(registry);
         let authz = AuthzContext::single_owner(&requested, AuthPath::System);
 

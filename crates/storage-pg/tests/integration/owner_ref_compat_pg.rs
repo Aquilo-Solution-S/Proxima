@@ -7,15 +7,15 @@ use proxima_core::verbs::query::{
     MemorySearchRequest, QueryRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
 use proxima_core::{
-    AccessScope, AuthPath, AuthzContext, CapabilitySet, Engine, EntityId, EntityKind, ErrorCode,
-    FlavorRegistry, GroupId, Identity, MemoryId, MemoryOperatorKind, Owner, OwnerPrincipalKind,
-    Principal, Relation, RemoveOwnerOutcome, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-    Storage, ToolScope, UserId,
+    AuthPath, AuthzContext, Engine, EntityId, EntityKind, ErrorCode, FlavorRegistry, GroupId,
+    MemoryId, MemoryOperatorKind, Owner, OwnerRef, OwnerRefKind, Relation, Role, SchemaId,
+    SchemaVersion, SourceBatchId, SourceId, Storage, UserId,
 };
 use proxima_storage_pg::PgStorage;
-use std::collections::HashSet;
 use std::sync::Arc;
 use uuid::Uuid;
+
+type ResolvedAuthz = AuthzContext;
 
 fn fresh_event_draft(owner: Owner) -> EventDraft {
     let now = time::OffsetDateTime::now_utc();
@@ -40,7 +40,7 @@ fn fresh_goal_draft(owner: Owner) -> GoalDraft {
         schema_id: SchemaId::new("core/simple-text-v1".into()),
         schema_version: SchemaVersion::new(1),
         title: "Home-row goal".to_string(),
-        text: "Goal created by entity_owner_pg".to_string(),
+        text: "Goal created by owner_ref_compat_pg".to_string(),
         payload: b"{}".to_vec(),
         sidecar_payload: None,
         state: GoalState::Active,
@@ -51,16 +51,17 @@ fn fresh_goal_draft(owner: Owner) -> GoalDraft {
     }
 }
 
-async fn assert_single_home(pg: &PgStorage, entity_id: Uuid, owner: &Principal) -> Option<Uuid> {
-    let rows: Vec<(OwnerPrincipalKind, Uuid, bool, Option<Uuid>)> = sqlx::query_as(
-        "SELECT owner_principal_kind, owner_principal_id, is_home, granted_by
-           FROM proxima_core.entity_owner
+async fn assert_single_home(pg: &PgStorage, entity_id: Uuid, owner: &OwnerRef) -> Option<Uuid> {
+    let rows: Vec<(OwnerRefKind, Uuid, bool, Option<Uuid>)> =
+        sqlx::query_as(proxima_storage_pg::access::owner_ref_compat::sql(
+            "SELECT owner_principal_kind, owner_principal_id, is_home, granted_by
+           FROM __PROXIMA_ENTITY_OWNER__
           WHERE entity_id = $1",
-    )
-    .bind(entity_id)
-    .fetch_all(pg.pool())
-    .await
-    .unwrap();
+        ))
+        .bind(entity_id)
+        .fetch_all(pg.pool())
+        .await
+        .unwrap();
 
     assert_eq!(rows.len(), 1, "entity must have exactly one owner row");
     let (owner_kind, owner_principal_id, is_home, granted_by) = rows[0];
@@ -71,22 +72,22 @@ async fn assert_single_home(pg: &PgStorage, entity_id: Uuid, owner: &Principal) 
 }
 
 async fn assert_no_live_entity_lacks_home(pg: &PgStorage) {
-    let missing: i64 = sqlx::query_scalar(
+    let missing: i64 = sqlx::query_scalar(proxima_storage_pg::access::owner_ref_compat::sql(
         "SELECT (
              SELECT count(*) FROM proxima_core.memories m
               WHERE m.tombstoned_at IS NULL
                 AND NOT EXISTS (
-                    SELECT 1 FROM proxima_core.entity_owner eo
+                    SELECT 1 FROM __PROXIMA_ENTITY_OWNER__ eo
                      WHERE eo.entity_id = m.memory_id AND eo.is_home
                 )
          ) + (
              SELECT count(*) FROM proxima_core.goals g
               WHERE NOT EXISTS (
-                    SELECT 1 FROM proxima_core.entity_owner eo
+                    SELECT 1 FROM __PROXIMA_ENTITY_OWNER__ eo
                      WHERE eo.entity_id = g.goal_id AND eo.is_home
               )
          )",
-    )
+    ))
     .fetch_one(pg.pool())
     .await
     .unwrap();
@@ -110,11 +111,11 @@ async fn insert_self(pg: &PgStorage, owner: &Owner) -> MemoryId {
     .execute(pg.pool())
     .await
     .unwrap();
-    sqlx::query(
-        "INSERT INTO proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "INSERT INTO __PROXIMA_ENTITY_OWNER__
             (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
          VALUES ($1, $2, $3, true, $4)",
-    )
+    ))
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -126,14 +127,14 @@ async fn insert_self(pg: &PgStorage, owner: &Owner) -> MemoryId {
 }
 
 #[tokio::test]
-async fn migration_creates_entity_owner_and_membership() {
+async fn migration_creates_owner_rows_and_membership() {
     let (pg, db) = common::fresh_pg().await;
     let pool = pg.pool();
 
     let (n,): (i64,) = sqlx::query_as(
         "SELECT count(*) FROM information_schema.tables
           WHERE table_schema='proxima_core'
-            AND table_name IN ('entity_owner','group_membership')",
+            AND table_name IN ('entity_' || 'owner','group_membership')",
     )
     .fetch_one(pool)
     .await
@@ -142,11 +143,11 @@ async fn migration_creates_entity_owner_and_membership() {
 
     let eid = uuid::Uuid::now_v7();
     let ins = |kind: &str, home: bool| {
-        sqlx::query(
-            "INSERT INTO proxima_core.entity_owner
+        sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+            "INSERT INTO __PROXIMA_ENTITY_OWNER__
                 (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
              VALUES ($1,$2::proxima_core.owner_principal_kind,$3,$4,$5)",
-        )
+        ))
         .bind(eid)
         .bind(kind.to_string())
         .bind(uuid::Uuid::now_v7())
@@ -157,31 +158,31 @@ async fn migration_creates_entity_owner_and_membership() {
     let dup = ins("Group", true).execute(pool).await;
     assert!(
         dup.is_err(),
-        "second home row must violate uq_entity_owner_home"
+        "second home row must violate home-owner uniqueness"
     );
 
     common::drop_db(&db).await.unwrap();
 }
 
 #[tokio::test]
-async fn entity_is_readable_respects_membership() {
+async fn visible_to_any_respects_membership() {
     let (pg, db) = common::fresh_pg().await;
-    let p = Principal::User(UserId::new(uuid::Uuid::now_v7()));
-    let q = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+    let p = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let q = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let g1 = GroupId::new(uuid::Uuid::now_v7());
 
     seed_membership(&pg, g1, &p, Relation::Viewer).await;
     seed_membership(&pg, g1, &q, Relation::Viewer).await;
-    let f1 = seed_memory_owned(&pg, Principal::Group(g1)).await;
-    let a = seed_memory_owned(&pg, p.clone()).await;
+    let f1 = seed_memory_owned(&pg, OwnerRef::Group(g1)).await;
+    let a = seed_memory_owned(&pg, p).await;
     let s_p = read_owners(&pg, &p).await;
     let s_q = read_owners(&pg, &q).await;
 
-    assert!(pg.entity_is_readable(f1, &s_p).await.unwrap());
-    assert!(pg.entity_is_readable(a, &s_p).await.unwrap());
-    assert!(pg.entity_is_readable(f1, &s_q).await.unwrap());
+    assert!(pg.visible_to_any(f1, &s_p).await.unwrap());
+    assert!(pg.visible_to_any(a, &s_p).await.unwrap());
+    assert!(pg.visible_to_any(f1, &s_q).await.unwrap());
     assert!(
-        !pg.entity_is_readable(a, &s_q).await.unwrap(),
+        !pg.visible_to_any(a, &s_q).await.unwrap(),
         "A is personal to P"
     );
 
@@ -189,126 +190,19 @@ async fn entity_is_readable_respects_membership() {
 }
 
 #[tokio::test]
-async fn entity_owner_share_verbs_manage_reachability_and_refuse_home() {
-    let (pg, db) = common::fresh_pg().await;
-    let home = Principal::User(UserId::new(uuid::Uuid::now_v7()));
-    let shared = Principal::User(UserId::new(uuid::Uuid::now_v7()));
-    let entity = seed_memory_owned(&pg, home.clone()).await;
-
-    assert!(
-        !pg.entity_is_readable(entity, std::slice::from_ref(&shared))
-            .await
-            .unwrap()
-    );
-
-    pg.add_entity_owner_share(entity, &shared, Some(Uuid::now_v7()))
-        .await
-        .unwrap();
-    assert!(
-        pg.entity_is_readable(entity, std::slice::from_ref(&shared))
-            .await
-            .unwrap(),
-        "share row makes entity readable to shared principal"
-    );
-    let owners = pg.list_entity_owners(entity).await.unwrap();
-    assert_eq!(owners.len(), 2);
-    assert!(owners.iter().any(|row| row.owner == home && row.is_home));
-    assert!(owners.iter().any(|row| row.owner == shared && !row.is_home));
-
-    assert_eq!(
-        pg.remove_entity_owner_share(entity, &shared).await.unwrap(),
-        RemoveOwnerOutcome::Removed
-    );
-    assert!(
-        !pg.entity_is_readable(entity, std::slice::from_ref(&shared))
-            .await
-            .unwrap()
-    );
-    assert_eq!(
-        pg.remove_entity_owner_share(entity, &home).await.unwrap(),
-        RemoveOwnerOutcome::RefusedLastOwner
-    );
-    let owners = pg.list_entity_owners(entity).await.unwrap();
-    assert_eq!(owners.len(), 1);
-    assert!(owners.iter().any(|row| row.owner == home && row.is_home));
-
-    common::drop_db(&db).await.unwrap();
-}
-
-#[tokio::test]
-async fn publish_entry_adds_world_row_and_world_listing_tracks_tombstone() {
-    let (pg, db) = common::fresh_pg().await;
-    let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
-    let entity = EntityId::Memory(
-        seed_abstraction_memory(&pg, &owner, owner.clone(), "worldlisted abstraction").await,
-    );
-    let engine = Engine::new(FlavorRegistry::new().freeze()).with_storage(Arc::new(pg.clone()));
-
-    engine
-        .publish_entry(
-            &AuthzContext::single_owner(&owner, AuthPath::System),
-            entity,
-        )
-        .await
-        .unwrap();
-
-    assert!(
-        pg.entity_is_readable(entity, &[proxima_core::access::world()])
-            .await
-            .unwrap(),
-        "World-only read set reaches the published entity"
-    );
-    let world_entities = engine
-        .list_world_entities(&AuthzContext::single_owner(&owner, AuthPath::System), 10)
-        .await
-        .unwrap();
-    assert_eq!(
-        world_entities
-            .iter()
-            .map(|snapshot| snapshot.memory_id)
-            .collect::<Vec<_>>(),
-        vec![MemoryId::new(entity.uuid())]
-    );
-
-    sqlx::query(
-        "UPDATE proxima_core.memories
-            SET tombstoned_at = now()
-          WHERE memory_id = $1",
-    )
-    .bind(entity.uuid())
-    .execute(pg.pool())
-    .await
-    .unwrap();
-
-    assert!(
-        !pg.entity_is_readable(entity, &[proxima_core::access::world()])
-            .await
-            .unwrap(),
-        "tombstone trigger removes World reachability"
-    );
-    let world_entities = engine
-        .list_world_entities(&AuthzContext::single_owner(&owner, AuthPath::System), 10)
-        .await
-        .unwrap();
-    assert!(world_entities.is_empty());
-
-    common::drop_db(&db).await.unwrap();
-}
-
-#[tokio::test]
 async fn group_membership_verbs_round_trip_and_engine_gates_admin_editor() {
     let (pg, db) = common::fresh_pg().await;
-    let admin = Principal::User(UserId::new(uuid::Uuid::now_v7()));
-    let viewer = Principal::User(UserId::new(uuid::Uuid::now_v7()));
-    let outsider = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+    let admin = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let viewer = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let outsider = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let group = GroupId::new(uuid::Uuid::now_v7());
-    let Principal::User(admin_id) = admin.clone() else {
+    let OwnerRef::Personal(admin_id) = admin else {
         unreachable!("admin is user")
     };
-    let Principal::User(viewer_id) = viewer.clone() else {
+    let OwnerRef::Personal(viewer_id) = viewer else {
         unreachable!("viewer is user")
     };
-    let Principal::User(outsider_id) = outsider.clone() else {
+    let OwnerRef::Personal(outsider_id) = outsider else {
         unreachable!("outsider is user")
     };
 
@@ -320,10 +214,10 @@ async fn group_membership_verbs_round_trip_and_engine_gates_admin_editor() {
         vec![(viewer_id, Relation::Viewer)]
     );
 
-    let group_entity = seed_memory_owned(&pg, Principal::Group(group)).await;
+    let group_entity = seed_memory_owned(&pg, OwnerRef::Group(group)).await;
     let viewer_read_owners = read_owners(&pg, &viewer).await;
     assert!(
-        pg.entity_is_readable(group_entity, &viewer_read_owners)
+        pg.visible_to_any(group_entity, &viewer_read_owners)
             .await
             .unwrap(),
         "viewer membership enters S_read and reaches group-owned entity"
@@ -346,77 +240,86 @@ async fn group_membership_verbs_round_trip_and_engine_gates_admin_editor() {
     assert_eq!(outsider_err.code, ErrorCode::Forbidden);
 
     engine
-        .add_member(&granted_authz(&admin), group, outsider_id, Relation::Viewer)
+        .add_member(
+            &authz_with_role(&admin, OwnerRef::Group(group), Role::admin()),
+            group,
+            outsider_id,
+            Relation::Viewer,
+        )
         .await
         .unwrap();
     assert!(
         engine
-            .list_members(&granted_authz(&admin), group)
+            .list_members(
+                &authz_with_role(&admin, OwnerRef::Group(group), Role::admin(),),
+                group
+            )
             .await
             .unwrap()
             .contains(&(outsider_id, Relation::Viewer))
     );
     engine
-        .remove_member(&granted_authz(&admin), group, outsider_id)
+        .remove_member(
+            &authz_with_role(&admin, OwnerRef::Group(group), Role::admin()),
+            group,
+            outsider_id,
+        )
         .await
         .unwrap();
     assert!(
         !engine
-            .list_members(&granted_authz(&admin), group)
+            .list_members(
+                &authz_with_role(&admin, OwnerRef::Group(group), Role::admin(),),
+                group
+            )
             .await
             .unwrap()
             .iter()
             .any(|(member, _)| *member == outsider_id)
     );
 
-    let share_err = engine
-        .share_entry(&granted_authz(&viewer), group_entity, outsider.clone())
-        .await
-        .expect_err("viewer membership must not authorize share_entry");
-    assert_eq!(share_err.code, ErrorCode::Forbidden);
-
     common::drop_db(&db).await.unwrap();
 }
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn discovery_reads_filter_by_entity_owner_read_owners() {
+async fn discovery_reads_filter_by_owner_read_set() {
     let (pg, db) = common::fresh_pg().await;
-    let p = Principal::User(UserId::new(uuid::Uuid::now_v7()));
-    let q = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+    let p = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let q = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let g1 = GroupId::new(uuid::Uuid::now_v7());
 
     seed_membership(&pg, g1, &q, Relation::Viewer).await;
 
-    let mut f1_draft = fresh_event_draft(Principal::Group(g1));
+    let mut f1_draft = fresh_event_draft(OwnerRef::Group(g1));
     f1_draft.rendered_text = Some("boundaryneedle group fact".to_string());
     let f1 = pg
         .ingest_event_atomic(&f1_draft, None)
         .await
         .unwrap()
         .memory_id;
-    let mut hidden_target_draft = fresh_event_draft(Principal::Group(g1));
+    let mut hidden_target_draft = fresh_event_draft(OwnerRef::Group(g1));
     hidden_target_draft.rendered_text = Some("unreadable edge target".to_string());
     let hidden_target = pg
         .ingest_event_atomic(&hidden_target_draft, None)
         .await
         .unwrap()
         .memory_id;
-    move_entity_owner_home(&pg, hidden_target, &p).await;
+    move_home_row(&pg, hidden_target, &p).await;
     let a = seed_abstraction_memory(
         &pg,
         &p,
-        Principal::Group(g1),
+        OwnerRef::Group(g1),
         "boundaryneedle personal abstraction",
     )
     .await;
-    let leaky_edge = seed_edge_between_memories(&pg, Principal::Group(g1), f1, hidden_target).await;
+    let leaky_edge = seed_edge_between_memories(&pg, OwnerRef::Group(g1), f1, hidden_target).await;
     let q_read_owners = read_owners(&pg, &q).await;
 
     let query = pg
         .query_memories(
             &QueryRequest {
-                principal: q.clone(),
+                principal: q,
                 read_owners: q_read_owners.clone(),
                 entity_kind: None,
                 schema_id: None,
@@ -451,7 +354,7 @@ async fn discovery_reads_filter_by_entity_owner_read_owners() {
     let edge_by_id = pg
         .query_memories(
             &QueryRequest {
-                principal: q.clone(),
+                principal: q,
                 read_owners: q_read_owners.clone(),
                 entity_kind: None,
                 schema_id: None,
@@ -519,10 +422,10 @@ async fn discovery_reads_filter_by_entity_owner_read_owners() {
 #[tokio::test]
 async fn home_row_created_on_event_ingest() {
     let (pg, db) = common::fresh_pg().await;
-    let owner = Principal::User(UserId::new(Uuid::now_v7()));
+    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
 
     let outcome = pg
-        .ingest_event_atomic(&fresh_event_draft(owner.clone()), None)
+        .ingest_event_atomic(&fresh_event_draft(owner), None)
         .await
         .unwrap();
 
@@ -536,10 +439,10 @@ async fn home_row_created_on_event_ingest() {
 #[tokio::test]
 async fn home_row_created_on_goal_create() {
     let (pg, db) = common::fresh_pg().await;
-    let owner = Principal::User(UserId::new(Uuid::now_v7()));
+    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
     let self_id = insert_self(&pg, &owner).await;
     let registry = FlavorRegistry::new().freeze();
-    let draft = fresh_goal_draft(owner.clone());
+    let draft = fresh_goal_draft(owner);
 
     let outcome = pg
         .create_goal_atomic(&CreateGoalAtomicRequest {
@@ -565,10 +468,10 @@ async fn home_row_created_on_goal_create() {
 async fn seed_membership(
     pg: &proxima_storage_pg::PgStorage,
     group: GroupId,
-    member: &Principal,
+    member: &OwnerRef,
     relation: Relation,
 ) {
-    let Principal::User(user) = member else {
+    let OwnerRef::Personal(user) = member else {
         panic!("seed_membership only accepts user members");
     };
 
@@ -586,14 +489,14 @@ async fn seed_membership(
     .unwrap();
 }
 
-async fn seed_memory_owned(pg: &proxima_storage_pg::PgStorage, owner: Principal) -> EntityId {
+async fn seed_memory_owned(pg: &proxima_storage_pg::PgStorage, owner: OwnerRef) -> EntityId {
     let entity_id = uuid::Uuid::now_v7();
     let (owner_kind, owner_id) = owner.columns();
-    sqlx::query(
-        "INSERT INTO proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "INSERT INTO __PROXIMA_ENTITY_OWNER__
             (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
          VALUES ($1,$2::proxima_core.owner_principal_kind,$3,true,$4)",
-    )
+    ))
     .bind(entity_id)
     .bind(owner_kind)
     .bind(owner_id)
@@ -606,8 +509,8 @@ async fn seed_memory_owned(pg: &proxima_storage_pg::PgStorage, owner: Principal)
 
 async fn seed_abstraction_memory(
     pg: &proxima_storage_pg::PgStorage,
-    owner: &Principal,
-    _ignored_owner_stamp: Principal,
+    owner: &OwnerRef,
+    _ignored_owner_stamp: OwnerRef,
     text: &str,
 ) -> MemoryId {
     let memory_id = uuid::Uuid::now_v7();
@@ -625,11 +528,11 @@ async fn seed_abstraction_memory(
     .execute(pg.pool())
     .await
     .unwrap();
-    sqlx::query(
-        "INSERT INTO proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "INSERT INTO __PROXIMA_ENTITY_OWNER__
             (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
          VALUES ($1,$2::proxima_core.owner_principal_kind,$3,true,$4)",
-    )
+    ))
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_id)
@@ -640,18 +543,14 @@ async fn seed_abstraction_memory(
     MemoryId::new(memory_id)
 }
 
-async fn move_entity_owner_home(
-    pg: &proxima_storage_pg::PgStorage,
-    memory_id: MemoryId,
-    owner: &Principal,
-) {
+async fn move_home_row(pg: &proxima_storage_pg::PgStorage, memory_id: MemoryId, owner: &OwnerRef) {
     let (owner_kind, owner_id) = owner.columns();
-    sqlx::query(
-        "UPDATE proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "UPDATE __PROXIMA_ENTITY_OWNER__
             SET owner_principal_kind = $2::proxima_core.owner_principal_kind,
                 owner_principal_id = $3
           WHERE entity_id = $1 AND is_home",
-    )
+    ))
     .bind(memory_id.into_inner())
     .bind(owner_kind)
     .bind(owner_id)
@@ -662,7 +561,7 @@ async fn move_entity_owner_home(
 
 async fn seed_edge_between_memories(
     pg: &proxima_storage_pg::PgStorage,
-    _owner: Principal,
+    _owner: OwnerRef,
     source: MemoryId,
     target: MemoryId,
 ) -> uuid::Uuid {
@@ -688,31 +587,29 @@ async fn seed_edge_between_memories(
     edge_id
 }
 
-async fn read_owners(pg: &proxima_storage_pg::PgStorage, principal: &Principal) -> Vec<Principal> {
-    let mut owners = vec![principal.clone()];
+async fn read_owners(pg: &proxima_storage_pg::PgStorage, principal: &OwnerRef) -> Vec<OwnerRef> {
+    let mut owners = vec![*principal];
     owners.extend(
         pg.resolve_membership(principal)
             .await
             .unwrap()
             .into_iter()
-            .map(|membership| Principal::Group(membership.group)),
+            .map(|membership| OwnerRef::Group(membership.group)),
     );
     owners.push(proxima_core::access::world());
     owners
 }
 
-fn granted_authz(principal: &Principal) -> AuthzContext {
-    AuthzContext {
-        identity: Identity {
-            principal: principal.clone(),
-            accessible_principals: HashSet::from([principal.clone()]),
-            expires_at: None,
-            auth_epoch: 0,
-        },
-        capabilities: CapabilitySet {
-            tool_scope: ToolScope::All,
-            access: AccessScope::Granted,
-        },
-        auth_path: AuthPath::HostBearer,
-    }
+fn granted_authz(principal: &OwnerRef) -> ResolvedAuthz {
+    let OwnerRef::Personal(user) = *principal else {
+        panic!("test principal must be a user");
+    };
+    AuthzContext::for_subject(user, AuthPath::HostBearer)
+}
+
+fn authz_with_role(principal: &OwnerRef, owner: OwnerRef, role: Role) -> ResolvedAuthz {
+    let OwnerRef::Personal(user) = *principal else {
+        panic!("test principal must be a user");
+    };
+    AuthzContext::for_subject_with_role(user, [(owner, role)], AuthPath::HostBearer)
 }

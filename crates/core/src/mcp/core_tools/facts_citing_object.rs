@@ -35,7 +35,7 @@ pub(super) async fn facts_citing_object(
         .facts_citing_object(
             &ctx.authz,
             &FactsCitingObjectReadRequest {
-                principal: ctx.owner.clone(),
+                principal: ctx.owner,
                 cited_object_id,
             },
         )

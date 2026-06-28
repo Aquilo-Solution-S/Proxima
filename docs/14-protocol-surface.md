@@ -46,7 +46,7 @@ Canonical substrate tools:
 | `core_publish_memory` | copy/re-ingest a core AgentNote Fact from one authorized owner-space to another; v1 never mutates Owner and never creates cross-owner edges |
 | `core_goal` | goal action dispatcher: `set`, `transition`, `modify`, `mark_achieved`, `decompose` |
 | `core_wake` | wake-config action dispatcher: `add`, `update`, `remove`, `set`, `list` |
-| `core_personality` | personality action dispatcher: `instantiate`, `tombstone`, `set_read_scope`, `list`, `get`, `list_read_scope` |
+| `core_personality` | personality action dispatcher: `instantiate`, `tombstone`, `set_owner_role_scope`, `list`, `get`, `list_owner_role_scope` |
 | `core_fact` | Fact action dispatcher: `citation_of_fact`, `citation_of_entity_head`, `facts_citing_object`, `tombstone` |
 
 Graph search is unified into `core_search_memories`; there is no
@@ -276,7 +276,7 @@ Current RPCs outside the five graph verbs:
 
 | Family | RPCs | Contract |
 |---|---|---|
-| personality lifecycle | `core_personality` actions: `instantiate`, `tombstone`, `set_read_scope`, `list`, `get`, `list_read_scope`; `core_wake` actions: `add`, `update`, `remove`, `set`, `list` | mutate runtime personality config and wake entries; not graph verbs |
+| personality lifecycle | `core_personality` actions: `instantiate`, `tombstone`, `set_owner_role_scope`, `list`, `get`, `list_owner_role_scope`; `core_wake` actions: `add`, `update`, `remove`, `set`, `list` | mutate runtime personality config and wake entries; not graph verbs |
 
 `core_personality` action `instantiate` writes the root self-Perspective and commits
 one Perspective `change_event` row. Other personality config mutations
@@ -325,9 +325,9 @@ access.
 | bearer token | user principal |
 | source credential | external EventSource |
 
-| Principal | Access |
+| Credential subject | Access |
 |---|---|
-| user | `Query`, `EventHistory`, `GoalWrite`; in-app `EventIngest` when acting as a source |
+| user (`OwnerRef::Personal`) | `Query`, `EventHistory`, `GoalWrite`; in-app `EventIngest` when acting as a source |
 | source | `EventIngest` for the registered source |
 | admin/controller | operational/config RPCs and future compliance admin operations |
 

@@ -1,7 +1,7 @@
 //! PG coverage for the per-master-token shell-author identity.
 use crate::common::{drop_db, fresh_pg};
 use proxima_core::storage::Storage;
-use proxima_core::{Principal, UserId};
+use proxima_core::{OwnerRef, UserId};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -9,7 +9,7 @@ use uuid::Uuid;
 async fn ensure_master_token_personality_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
-    let owner = Principal::User(UserId::new(Uuid::now_v7()));
+    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
     let token = Uuid::now_v7();
 
     let first = pg.ensure_master_token_personality(&owner, token).await?;
@@ -25,7 +25,7 @@ async fn distinct_tokens_resolve_to_distinct_personalities()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
-    let owner = Principal::User(UserId::new(Uuid::now_v7()));
+    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
 
     let a = pg
         .ensure_master_token_personality(&owner, Uuid::now_v7())
@@ -57,14 +57,13 @@ async fn concurrent_callers_resolve_to_single_personality() -> Result<(), Box<dy
 
     let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
-    let owner = Principal::User(UserId::new(Uuid::now_v7()));
+    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
     let token = Uuid::now_v7();
     let pg = Arc::new(pg);
 
     let mut handles = Vec::with_capacity(N);
     for _ in 0..N {
         let pg = pg.clone();
-        let owner = owner.clone();
         handles.push(tokio::spawn(async move {
             pg.ensure_master_token_personality(&owner, token).await
         }));
@@ -93,10 +92,7 @@ async fn concurrent_callers_resolve_to_single_personality() -> Result<(), Box<dy
          WHERE owner_principal_kind = 'User'
            AND owner_principal_id = $1",
     )
-    .bind(match &owner {
-        Principal::User(u) => u.into_inner(),
-        Principal::Group(g) => g.into_inner(),
-    })
+    .bind(owner.columns().1)
     .fetch_one(pg.pool())
     .await?;
     assert_eq!(count, 1, "expected exactly one personality, got {count}");

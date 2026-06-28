@@ -191,7 +191,7 @@ impl McpTool for DeriveTool {
                     &ctx.authz,
                     AuthorDerivedRequestInput {
                         memory_id,
-                        owner: space.owner.clone(),
+                        owner: space.owner,
                         kind: args.kind.to_entity_kind(),
                         text: body.to_string(),
                         schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
@@ -259,7 +259,7 @@ fn derived_memory_id(owner: &crate::Owner, kind: &str, key: &str) -> uuid::Uuid 
 #[cfg(test)]
 mod tests {
     use super::{MAX_SOURCE_HANDLES, derived_memory_id};
-    use crate::{Principal, UserId};
+    use crate::{OwnerRef, UserId};
     use uuid::Uuid;
 
     /// Pins the org-free deterministic `derive` `MemoryId` against drift.
@@ -267,7 +267,7 @@ mod tests {
     /// org. A fixed input must reproduce exactly this uuid.
     #[test]
     fn derived_memory_id_golden_is_org_free() {
-        let owner = Principal::User(UserId::new(
+        let owner = OwnerRef::Personal(UserId::new(
             Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
         ));
         let id = derived_memory_id(&owner, "Abstraction", "golden-key");

@@ -6,7 +6,7 @@ use crate::access::Relation;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
-use crate::{GroupId, Principal, UserId};
+use crate::{GroupId, OwnerRef, UserId};
 
 use super::memory_spaces::{SpaceDefault, resolve_space_owner};
 use super::{DESTRUCTIVE_NON_IDEMPOTENT, READ_ONLY, WRITE_NON_IDEMPOTENT};
@@ -229,8 +229,10 @@ async fn execute_membership(
 fn resolve_group(ctx: &McpToolCtx, raw: &str) -> Result<GroupId, McpToolError> {
     let owner = resolve_space_owner(ctx, Some(raw), SpaceDefault::Current)?.owner;
     match owner {
-        Principal::Group(group) => Ok(group),
-        Principal::User(_) => Err(McpToolError::InvalidInput("not a group".into())),
+        OwnerRef::Group(group) => Ok(group),
+        OwnerRef::World | OwnerRef::Personal(_) => {
+            Err(McpToolError::InvalidInput("not a group".into()))
+        }
     }
 }
 
@@ -263,14 +265,11 @@ fn format_relation(relation: Relation) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
     use std::sync::{Arc, Mutex};
 
     use crate::mcp::core_tools::memory_spaces::space_key;
     use crate::mcp::{McpAuthorContext, McpToolExtensions, OutputMode, validate_action_args};
-    use crate::{
-        AccessScope, AuthPath, AuthzContext, CapabilitySet, FlavorRegistry, Identity, ToolScope,
-    };
+    use crate::{AccessScope, AuthPath, AuthzContext, FlavorRegistry, ToolScope};
 
     use super::*;
 
@@ -322,23 +321,16 @@ mod tests {
         }
     }
 
-    fn ctx_with_principals(owner: Principal, accessible: Vec<Principal>) -> McpToolCtx {
-        let accessible_principals = accessible.into_iter().collect::<HashSet<_>>();
+    fn ctx_with_principals(owner: OwnerRef, accessible: Vec<OwnerRef>) -> McpToolCtx {
         McpToolCtx {
-            owner: owner.clone(),
-            authz: AuthzContext {
-                identity: Identity {
-                    principal: owner,
-                    accessible_principals,
-                    expires_at: None,
-                    auth_epoch: 0,
-                },
-                capabilities: CapabilitySet {
-                    tool_scope: ToolScope::All,
-                    access: AccessScope::Unrestricted,
-                },
-                auth_path: AuthPath::HostBearer,
-            },
+            owner,
+            authz: AuthzContext::scoped_access(
+                owner,
+                accessible,
+                ToolScope::All,
+                AccessScope::Unrestricted,
+                AuthPath::HostBearer,
+            ),
             handles: None,
             mode: OutputMode::PrefixedIds,
             registry: Arc::new(FlavorRegistry::new().freeze()),
@@ -358,10 +350,10 @@ mod tests {
 
     #[tokio::test]
     async fn add_member_routes_to_engine_with_parsed_relation() {
-        let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let group = GroupId::new(uuid::Uuid::now_v7());
-        let group_owner = Principal::Group(group);
-        let ctx = ctx_with_principals(owner, vec![group_owner.clone()]);
+        let group_owner = OwnerRef::Group(group);
+        let ctx = ctx_with_principals(owner, vec![group_owner]);
         let member = UserId::new(uuid::Uuid::now_v7());
         let engine = MockMembershipEngine::default();
 
@@ -401,8 +393,8 @@ mod tests {
 
     #[tokio::test]
     async fn non_group_group_is_invalid_input() {
-        let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
-        let ctx = ctx_with_principals(owner.clone(), vec![owner]);
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let ctx = ctx_with_principals(owner, vec![owner]);
         let member = UserId::new(uuid::Uuid::now_v7());
         let engine = MockMembershipEngine::default();
 

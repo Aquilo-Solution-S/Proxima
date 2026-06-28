@@ -36,8 +36,7 @@ pub use rows::{ActiveGoalSummary, ChangeEventForWake, PersonalityInstanceRow, Wa
 
 // Re-export from requests submodule
 pub use requests::{
-    InstantiatePersonalityRequest, InstantiatePersonalityResponse, ListReadScopeRequest,
-    ListReadScopeResponse, SetReadScopeRequest, SetReadScopeResponse, SetWakeEntriesRequest,
+    InstantiatePersonalityRequest, InstantiatePersonalityResponse, SetWakeEntriesRequest,
     SetWakeEntriesResponse, TombstonePersonalityRequest, TombstonePersonalityResponse,
 };
 

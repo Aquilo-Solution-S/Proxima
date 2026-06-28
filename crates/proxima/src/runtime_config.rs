@@ -633,7 +633,7 @@ fn validate_revalidation_config(config: RevalidationConfig) -> Result<(), Proxim
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
-    use proxima_core::{GroupId, Principal};
+    use proxima_core::{GroupId, OwnerRef};
 
     use super::*;
     use crate::company_owner;
@@ -648,7 +648,7 @@ mod tests {
     }
 
     fn owner(id: uuid::Uuid) -> Owner {
-        Principal::Group(GroupId::new(id))
+        OwnerRef::Group(GroupId::new(id))
     }
 
     fn base_config(mcp: Option<SocketAddr>) -> RuntimeConfig {

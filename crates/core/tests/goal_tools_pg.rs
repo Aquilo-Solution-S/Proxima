@@ -1,6 +1,6 @@
 //! End-to-end MCP Goal tools against transient PG storage.
 
-use std::{collections::HashSet, future::Future, pin::Pin, sync::Arc};
+use std::{future::Future, pin::Pin, sync::Arc};
 
 mod common;
 
@@ -15,13 +15,14 @@ use proxima_core::mcp::core_tools::goal::{
 };
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
-    AccessScope, AuthPath, AuthzContext, CapabilitySet, EntityKind, FlavorRegistry,
-    FlavorRegistryFrozen, GoalId, GroupId, Identity, McpTool, McpToolError, MemoryId,
-    MemoryOperatorKind, Owner, OwnerPrincipalKind, PersonalityInstanceId, PersonalityStatus,
-    Principal, Relation, Storage, ToolScope, UserId,
+    AuthPath, AuthzContext, EntityKind, FlavorRegistry, FlavorRegistryFrozen, GoalId, GroupId,
+    McpTool, McpToolError, MemoryId, MemoryOperatorKind, Owner, OwnerRef, OwnerRefKind,
+    PersonalityInstanceId, PersonalityStatus, Relation, Role, Storage, UserId,
 };
 use serde_json::json;
 use uuid::Uuid;
+
+type ResolvedAuthz = AuthzContext;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 type BoxTestFuture<'a> = Pin<Box<dyn Future<Output = TestResult> + 'a>>;
@@ -458,41 +459,44 @@ impl ToolHarness {
         self.handles.resolve_goal(handle)
     }
 
-    async fn viewer_without_memory_write(&self) -> AuthzContext {
-        let viewer = Principal::User(UserId::new(Uuid::now_v7()));
-        let Principal::Group(group) = &self.owner else {
+    async fn viewer_without_memory_write(&self) -> ResolvedAuthz {
+        let viewer = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let OwnerRef::Group(group) = &self.owner else {
             panic!("test harness owner must be a group for membership setup");
         };
-        let Principal::User(user) = viewer else {
+        let OwnerRef::Personal(user) = viewer else {
             unreachable!("viewer is a user");
         };
         self.pg
             .add_group_member(*group, user, Relation::Viewer, Uuid::now_v7())
             .await
             .expect("seed viewer membership");
-        let viewer = Principal::User(user);
-        AuthzContext {
-            identity: Identity {
-                principal: viewer.clone(),
-                accessible_principals: HashSet::from([viewer]),
-                expires_at: None,
-                auth_epoch: 0,
-            },
-            capabilities: CapabilitySet {
-                tool_scope: ToolScope::All,
-                access: AccessScope::Granted,
-            },
-            auth_path: AuthPath::HostBearer,
-        }
+        AuthzContext::for_subject_with_role(
+            user,
+            [(self.owner, Role::viewer())],
+            AuthPath::HostBearer,
+        )
     }
 
     fn ctx(&self) -> McpToolCtx {
-        self.ctx_with_authz(AuthzContext::single_owner(&self.owner, AuthPath::System))
+        self.ctx_with_authz(self.owner_admin_authz())
+    }
+
+    fn owner_admin_authz(&self) -> ResolvedAuthz {
+        match self.owner {
+            OwnerRef::Personal(subject) => AuthzContext::for_subject(subject, AuthPath::System),
+            OwnerRef::Group(_) => AuthzContext::for_subject_with_role(
+                UserId::new(Uuid::now_v7()),
+                [(self.owner, Role::admin())],
+                AuthPath::System,
+            ),
+            OwnerRef::World => AuthzContext::denied_for_owner(&self.owner),
+        }
     }
 
     fn ctx_with_authz(&self, authz: AuthzContext) -> McpToolCtx {
         McpToolCtx {
-            owner: self.owner.clone(),
+            owner: self.owner,
             authz,
             handles: Some(self.handles.clone()),
             mode: OutputMode::Handles,
@@ -591,11 +595,11 @@ async fn seed_personality_self(
     .bind(personality_id.into_inner())
     .execute(pg.pool())
     .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "INSERT INTO __PROXIMA_ENTITY_OWNER__
             (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
          VALUES ($1, $2, $3, true, NULL)",
-    )
+    ))
     .bind(root_memory_id.into_inner())
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -662,11 +666,11 @@ async fn seed_fact_memory(
     .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.entity_owner
+    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+        "INSERT INTO __PROXIMA_ENTITY_OWNER__
             (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
          VALUES ($1, $2, $3, true, NULL)",
-    )
+    ))
     .bind(memory_id.into_inner())
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -867,16 +871,11 @@ async fn assert_structured_lifecycle_chain(
 }
 
 fn nil_owner() -> Owner {
-    Principal::Group(GroupId::new(Uuid::now_v7()))
+    OwnerRef::Group(GroupId::new(Uuid::now_v7()))
 }
 
-fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
-    let kind = OwnerPrincipalKind::of(owner);
-    let principal_id = match owner {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
-    (kind, principal_id)
+fn owner_parts(owner: &Owner) -> (OwnerRefKind, Uuid) {
+    owner.columns()
 }
 
 fn author_ctx() -> McpAuthorContext {

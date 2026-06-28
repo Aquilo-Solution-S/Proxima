@@ -8,24 +8,25 @@ Every Fact in the system traces back to an Event Source. No exceptions.
 
 ## Owner — scoping primitive
 
-Every Event, Memory, and Goal carries an `Owner`: the access scope.
-Ontologically, Owner IS the principal — there is nothing else in it.
+Every Event, Memory, and Goal carries an `OwnerRef`: the stable owner handle.
+Roles are resolved by the host and passed to Core as server-built access context.
 
 ```rust
-enum Owner {                    // = Principal
-    User(UserId),               // personal — only that user sees it
-    Group(GroupId),             // group-shared — group members see it
+enum OwnerRef {
+    World,                      // public read handle
+    Personal(UserId),           // personal owner
+    Group(GroupId),             // group owner
 }
 ```
 
 **Organizations are not an ontology concept** (renegotiated
 2026-06-11 — decision `domain/decisions/2026-06-11-org-out-of-kernel.md`;
 previously `Owner` was a `{ principal, org_id }` record). Track B (S0)
-removed the tenant field from Core entirely: `Owner = Principal`. Tenancy
-/ billing attribution is a flavor/app concern, not part of Core access,
-**identity**, or storage. Operator gates, edge scoping, and dedup keys
-compare principals; the same user under two tenants is one identity, not
-two.
+removed the tenant field from Core entirely: `OwnerRef` is the row-scoping
+handle. Tenancy / billing attribution is a flavor/app concern, not part
+of Core access, **identity**, or storage. Operator gates, edge scoping,
+and dedup keys compare owner handles; the same user under two tenants is
+one identity, not two.
 
 Used identically across components 01 / 02 / 05 / 06. Storage: two
 identity columns (`owner_principal_kind`, `owner_principal_id`); there is
@@ -36,9 +37,8 @@ Schemas ([03](03-schema-registry.md)) are binary-scoped (per
 Access rule (org does not exist at this layer):
 
 ```
-visible(m, requester) iff
-    m.principal == User(requester.user_id)
-  ∨ ( m.principal == Group(g) ∧ requester ∈ members(g) )
+visible(m, ctx) iff
+    ctx.may_read(m.owner_ref, kind(m))
 ```
 
 Group membership lives in usermanager as a new membership type
@@ -49,7 +49,7 @@ v1 constraints:
 - Tenant/org membership of a group is a flavor/app concern (a
   usermanager fact); Core stores no org column and never consults one.
 - "Org-wide visible" expressed as a default `<org>-everyone` group
-  whose membership auto-syncs with org membership. No `Principal::Org`
+  whose membership auto-syncs with org membership. No organization owner
   variant.
 
 Per-memory ACL (`AccessGrant` table) is a v2+ extension layered above

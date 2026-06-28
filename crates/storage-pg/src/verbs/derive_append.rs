@@ -2,14 +2,14 @@
 
 use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::{
-    EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerPrincipalKind, PersonalityInstanceId,
-    SchemaId, SchemaVersion, StorageError,
+    EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerRefKind, PersonalityInstanceId, SchemaId,
+    SchemaVersion, StorageError,
 };
 use sqlx::{Postgres, Transaction};
 
+use crate::access::owner_ref_compat::insert_home;
 use crate::error::map_err;
 use crate::sidecars::PgSidecarFuture;
-use crate::verbs::entity_owner::insert_entity_owner_home;
 
 #[derive(Debug, Clone)]
 pub struct DerivedDraft<'a> {
@@ -84,7 +84,7 @@ pub async fn append_derived_in_tx(
             idempotent_replay: true,
         });
     }
-    insert_entity_owner_home(
+    insert_home(
         tx,
         draft.memory_id,
         &draft.owner,
@@ -130,7 +130,7 @@ async fn validate_supersedes_in_owner(
     kind: EntityKind,
 ) -> Result<(), StorageError> {
     let (owner_kind, owner_principal_id) = owner.columns();
-    let exists: bool = sqlx::query_scalar(
+    let exists: bool = sqlx::query_scalar(crate::access::owner_ref_compat::sql(
         "SELECT EXISTS (
              SELECT 1
                FROM proxima_core.memories m
@@ -139,14 +139,14 @@ async fn validate_supersedes_in_owner(
                 AND m.kind = $4
                 AND EXISTS (
                     SELECT 1
-                      FROM proxima_core.entity_owner eo
+                      FROM __PROXIMA_ENTITY_OWNER__ eo
                      WHERE eo.entity_id = m.memory_id
                        AND eo.owner_principal_kind = $2
                        AND eo.owner_principal_id = $3
                        AND eo.is_home
                 )
          )",
-    )
+    ))
     .bind(prior.into_inner())
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -166,7 +166,7 @@ async fn validate_supersedes_in_owner(
 async fn insert_embedding_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
-    owner_kind: OwnerPrincipalKind,
+    owner_kind: OwnerRefKind,
     owner_principal_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
     let (Some(embedding), Some(embedding_model_id)) = (&draft.embedding, draft.embedding_model_id)

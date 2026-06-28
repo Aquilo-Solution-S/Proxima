@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
-use proxima_core::{Owner, Principal, UserId};
+use proxima_core::{Owner, OwnerRef, UserId};
 
 #[derive(Debug, Clone)]
 pub struct ConstantEmbedding {
@@ -53,5 +53,5 @@ impl EmbeddingClient for ConstantEmbedding {
 
 #[must_use]
 pub fn owner_fixture() -> Owner {
-    Principal::User(UserId::new(uuid::Uuid::nil()))
+    OwnerRef::Personal(UserId::new(uuid::Uuid::nil()))
 }

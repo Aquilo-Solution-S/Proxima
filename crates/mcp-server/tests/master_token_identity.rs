@@ -10,7 +10,7 @@ use std::sync::Arc;
 use common::{create_db, db_url, drop_db};
 use proxima_core::mcp::McpAuthorContext;
 use proxima_core::storage::Storage;
-use proxima_core::{Engine, FlavorRegistry, Principal, UserId};
+use proxima_core::{Engine, FlavorRegistry, OwnerRef, UserId};
 use proxima_mcp_server::McpToolHost;
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -23,7 +23,7 @@ async fn master_token_call_mints_per_token_self_perspective()
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
 
-    let owner = Principal::User(UserId::new(Uuid::now_v7()));
+    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
 
     // Build an Engine wired with the live PG storage so the call_tool
     // ensure step can reach the master-token verb.
@@ -33,7 +33,7 @@ async fn master_token_call_mints_per_token_self_perspective()
     // Build McpToolHost from pool (mirrors personality_crud_e2e_pg.rs pattern).
     let server = McpToolHost::from_pool(
         pg.pool().clone(),
-        owner.clone(),
+        owner,
         Arc::new(FlavorRegistry::new().freeze()),
     )
     .with_engine(engine.clone());
@@ -41,9 +41,7 @@ async fn master_token_call_mints_per_token_self_perspective()
     // Set up MCP edge auth and register the master token.
     let auth_store = proxima_mcp_server::McpEdgeAuth::headless();
     let token = Uuid::now_v7();
-    auth_store
-        .replace_local_master_token(token, owner.clone())
-        .await;
+    auth_store.replace_local_master_token(token, owner).await;
 
     // Resolve the auth context for this token.
     let auth = auth_store
@@ -51,7 +49,7 @@ async fn master_token_call_mints_per_token_self_perspective()
         .await
         .expect("token resolves");
     assert_eq!(auth.master_token_id, Some(token));
-    assert!(auth.authz.capabilities.tool_scope.allows("anything"));
+    assert!(auth.authz.tool_scope().allows("anything"));
 
     // Build the author context with caller_self_perspective = None so the
     // ensure step (not the test) populates it.
@@ -127,7 +125,7 @@ async fn distinct_master_tokens_resolve_to_distinct_identities()
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
 
-    let owner = Principal::User(UserId::new(Uuid::now_v7()));
+    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
 
     let t_a = Uuid::now_v7();
     let t_b = Uuid::now_v7();

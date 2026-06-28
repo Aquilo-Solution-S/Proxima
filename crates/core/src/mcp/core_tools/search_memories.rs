@@ -314,7 +314,7 @@ async fn search_one_space(
     space: super::memory_spaces::ResolvedMemorySpace,
 ) -> Result<SpaceSearchResult, McpToolError> {
     let req = MemorySearchRequest {
-        principal: space.owner.clone(),
+        principal: space.owner,
         read_owners: Vec::new(),
         query: prepared.query.clone(),
         mode: prepared.effective_mode,

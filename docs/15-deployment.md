@@ -35,7 +35,7 @@ a narrower DML role.
 | Var | Required | Example | Purpose |
 |---|---|---|---|
 | `DATABASE_URL` | yes | `postgres://user:pass@host:5432/db` | Postgres connection string. |
-| `--owner-user <UUID>` | yes (CLI flag) | `550e8400-e29b-41d4-a716-446655440000` | Fixed owner principal (`Owner = Principal`; no org field). |
+| `--owner-user <UUID>` | yes (CLI flag) | `550e8400-e29b-41d4-a716-446655440000` | Fixed `OwnerRef::Personal` owner; no org field. |
 | `PROXIMA_MCP_BIND` | yes | `0.0.0.0:8080` | MCP listener address. |
 | `PROXIMA_EXPOSE_NETWORK=true` | yes | `true` | Required for non-loopback bind. |
 | `PROXIMA_ALLOWED_ORIGINS` | yes | `https://claude.example.com,https://codex.example.com` | Comma-separated origin allowlist; never `*`. |

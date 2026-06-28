@@ -414,7 +414,7 @@ impl FlavorRegistryFrozen {
     ) -> Result<Owner, ProtocolError> {
         match &self.owner_resolver {
             Some(resolver) => resolver.resolve(authz, requested),
-            None => Ok(requested.clone()),
+            None => Ok(*requested),
         }
     }
 

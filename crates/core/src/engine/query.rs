@@ -25,7 +25,7 @@ impl Engine {
     /// docs/14 §"Query" — scoped to the authorization context's read access
     /// set (`S_read`). Caller passes the transport-extracted authorization
     /// context; the engine resolves the readable owners from it and filters
-    /// results to `entity_owner ∈ S_read`. A client-supplied
+    /// results to `row owner ∈ S_read`. A client-supplied
     /// [`QueryRequest::principal`] is NOT an access vector — it can never widen
     /// what the caller sees (writes/admin reject a foreign owner; reads simply
     /// return the caller's accessible subset).
@@ -53,7 +53,7 @@ impl Engine {
 
     async fn query_authorized(
         &self,
-        read_owners: &[crate::Principal],
+        read_owners: &[crate::OwnerRef],
         req: &QueryRequest,
     ) -> Result<QueryResponse, ProtocolError> {
         if req.limit == 0 {
@@ -96,7 +96,7 @@ impl Engine {
 
     async fn read_edges_authorized(
         &self,
-        read_owners: &[crate::Principal],
+        read_owners: &[crate::OwnerRef],
         req: &EdgeReadRequest,
     ) -> Result<EdgeReadResponse, ProtocolError> {
         if req.limit == 0 {
@@ -128,7 +128,7 @@ impl Engine {
 
     async fn edge_exists_authorized(
         &self,
-        read_owners: &[crate::Principal],
+        read_owners: &[crate::OwnerRef],
         req: &EdgeExistsRequest,
     ) -> Result<EdgeExistsResponse, ProtocolError> {
         self.storage
@@ -155,7 +155,7 @@ impl Engine {
 
     async fn walk_memory_lineage_authorized(
         &self,
-        read_owners: &[crate::Principal],
+        read_owners: &[crate::OwnerRef],
         req: &MemoryLineageRequest,
     ) -> Result<MemoryLineageResponse, ProtocolError> {
         self.storage
@@ -186,7 +186,7 @@ impl Engine {
 
     async fn event_history_authorized(
         &self,
-        read_owners: &[crate::Principal],
+        read_owners: &[crate::OwnerRef],
         req: &EventHistoryRequest,
     ) -> Result<EventHistoryResponse, ProtocolError> {
         if req.limit == 0 {
@@ -232,7 +232,7 @@ impl Engine {
             return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
         }
         let mut effective = req.clone();
-        effective.principal = permit.owner().clone();
+        effective.principal = *permit.owner();
         if effective.limit > MAX_MCP_CALL_HISTORY_LIMIT {
             effective.limit = MAX_MCP_CALL_HISTORY_LIMIT;
         }

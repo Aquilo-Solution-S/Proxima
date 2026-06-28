@@ -1,6 +1,6 @@
 use proxima::{
     GoalAuthorship, GoalCreateRequest, GoalPayload, GoalPayloadWrite, IdempotencyKey, MemoryId,
-    PayloadKeyBuilder, Principal, SystemOrigin, ToolId, UserId,
+    OwnerRef, PayloadKeyBuilder, SystemOrigin, ToolId, UserId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -21,7 +21,7 @@ impl GoalPayload for FacadeGoalPayload {
 
 #[test]
 fn facade_reexports_typed_goalwrite_surface_for_embedded_hosts() {
-    let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let target_self = MemoryId::new(uuid::Uuid::now_v7());
 
     let write = GoalPayloadWrite::from_payload(
@@ -35,7 +35,7 @@ fn facade_reexports_typed_goalwrite_surface_for_embedded_hosts() {
     assert_eq!(write.schema_id.as_str(), FacadeGoalPayload::SCHEMA_ID);
 
     let request = GoalCreateRequest::product(
-        owner.clone(),
+        owner,
         target_self,
         IdempotencyKey::new("product:daily-practice").expect("stable product request id is valid"),
         "First goal",

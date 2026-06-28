@@ -84,15 +84,17 @@ impl McpTool for CodeSearchCommitsTool {
             };
             let pool = pg_pool(&ctx)?;
 
-            let commit_rows: Vec<CommitRow> = sqlx::query_as(COMMIT_SEARCH_SQL)
-                .bind(owner_kind)
-                .bind(owner_principal_id)
-                .bind(query)
-                .bind(repo_id)
-                .bind(i64::from(limit))
-                .fetch_all(pool.as_ref())
-                .await
-                .map_err(map_storage)?;
+            let commit_rows: Vec<CommitRow> = sqlx::query_as(
+                proxima_storage_pg::access::owner_ref_compat::sql(COMMIT_SEARCH_SQL),
+            )
+            .bind(owner_kind)
+            .bind(owner_principal_id)
+            .bind(query)
+            .bind(repo_id)
+            .bind(i64::from(limit))
+            .fetch_all(pool.as_ref())
+            .await
+            .map_err(map_storage)?;
             let commits = commit_rows
                 .into_iter()
                 .map(|row| CommitMatch {
@@ -110,16 +112,18 @@ impl McpTool for CodeSearchCommitsTool {
                 })
                 .collect();
 
-            let summary_rows: Vec<SummaryRow> = sqlx::query_as(SUMMARY_SEARCH_SQL)
-                .bind(owner_kind)
-                .bind(owner_principal_id)
-                .bind(query)
-                .bind(repo_id)
-                .bind(args.change_kind.as_deref())
-                .bind(i64::from(limit))
-                .fetch_all(pool.as_ref())
-                .await
-                .map_err(map_storage)?;
+            let summary_rows: Vec<SummaryRow> = sqlx::query_as(
+                proxima_storage_pg::access::owner_ref_compat::sql(SUMMARY_SEARCH_SQL),
+            )
+            .bind(owner_kind)
+            .bind(owner_principal_id)
+            .bind(query)
+            .bind(repo_id)
+            .bind(args.change_kind.as_deref())
+            .bind(i64::from(limit))
+            .fetch_all(pool.as_ref())
+            .await
+            .map_err(map_storage)?;
             let summaries = summary_rows
                 .into_iter()
                 .map(|row| SummaryMatch {
@@ -143,7 +147,7 @@ impl McpTool for CodeSearchCommitsTool {
     }
 }
 
-const COMMIT_SEARCH_SQL: &str = r"
+const COMMIT_SEARCH_SQL: &str = "
 WITH q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $3) AS tsq)
 SELECT c.memory_id, c.repo_id, c.sha, c.author_name, c.committer_time,
        left(c.message, 480) AS message_snippet,
@@ -152,7 +156,7 @@ FROM q, proxima_core.memories m
 JOIN proxima_code.commit_v1 c USING (memory_id)
 WHERE EXISTS (
           SELECT 1
-            FROM proxima_core.entity_owner eo
+            FROM __PROXIMA_ENTITY_OWNER__ eo
            WHERE eo.entity_id = m.memory_id
              AND eo.owner_principal_kind = $1
              AND eo.owner_principal_id = $2
@@ -164,7 +168,7 @@ ORDER BY score DESC, c.committer_time DESC
 LIMIT $5
 ";
 
-const SUMMARY_SEARCH_SQL: &str = r"
+const SUMMARY_SEARCH_SQL: &str = "
 WITH q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $3) AS tsq)
 SELECT s.memory_id, s.repo_id, s.commit_sha, s.summary,
        s.key_files, s.change_kind,
@@ -176,7 +180,7 @@ FROM q, proxima_core.memories m
 JOIN proxima_code.commit_summary_v1 s USING (memory_id)
 WHERE EXISTS (
           SELECT 1
-            FROM proxima_core.entity_owner eo
+            FROM __PROXIMA_ENTITY_OWNER__ eo
            WHERE eo.entity_id = m.memory_id
              AND eo.owner_principal_kind = $1
              AND eo.owner_principal_id = $2

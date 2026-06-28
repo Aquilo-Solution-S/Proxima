@@ -2,13 +2,13 @@
 //! rows for the authenticated read-owner set. See docs/14 §"`EventHistory`"
 //! and §"Cold-start stitching".
 
-use crate::{ChangeEvent, Principal};
+use crate::{ChangeEvent, OwnerRef};
 
 pub const MAX_EVENT_HISTORY_LIMIT: u32 = 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EventHistoryRequest {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     pub limit: u32,
     pub before: Option<uuid::Uuid>,
 }

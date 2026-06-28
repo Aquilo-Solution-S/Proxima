@@ -8,8 +8,8 @@ mod common;
 use async_trait::async_trait;
 use common::{create_db, db_url, drop_db, initialize, initialized, post_rpc};
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, CapabilitySet, Credentials, FlavorRegistry,
-    Identity, Owner, RevalidationConfig,
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, Owner, OwnerRef,
+    RevalidationConfig,
 };
 use proxima_mcp_server::{
     McpEdgeAuth, McpToolHost, default_allowlist, serve_streamable_http,
@@ -345,15 +345,13 @@ impl TestHostAuth {
         self.epoch.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn identity(&self) -> Identity {
-        let mut accessible_principals = std::collections::HashSet::with_capacity(1);
-        accessible_principals.insert(self.owner.clone());
-        Identity {
-            principal: self.owner.clone(),
-            accessible_principals,
-            expires_at: self.ttl.map(|ttl| std::time::SystemTime::now() + ttl),
-            auth_epoch: self.epoch.load(Ordering::SeqCst),
-        }
+    fn authz(&self) -> Result<AuthzContext, AuthError> {
+        let OwnerRef::Personal(subject) = self.owner else {
+            return Err(AuthError::InvalidCredentials);
+        };
+        Ok(AuthzContext::for_subject(subject, AuthPath::HostBearer)
+            .with_expires_at(self.ttl.map(|ttl| std::time::SystemTime::now() + ttl))
+            .with_auth_epoch(self.epoch.load(Ordering::SeqCst)))
     }
 }
 
@@ -361,16 +359,12 @@ impl TestHostAuth {
 impl Authenticator for TestHostAuth {
     async fn authenticate(&self, creds: &Credentials) -> Result<AuthzContext, AuthError> {
         match creds {
-            Credentials::Bearer(token) if token == "host-token" => Ok(AuthzContext {
-                identity: self.identity(),
-                capabilities: CapabilitySet::all(),
-                auth_path: AuthPath::HostBearer,
-            }),
+            Credentials::Bearer(token) if token == "host-token" => self.authz(),
             Credentials::Bearer(_) => Err(AuthError::InvalidCredentials),
         }
     }
 
-    async fn current_auth_epoch(&self, _principal: &proxima_core::Principal) -> u64 {
+    async fn current_auth_epoch(&self, _principal: &proxima_core::OwnerRef) -> u64 {
         self.epoch.load(Ordering::SeqCst)
     }
 }

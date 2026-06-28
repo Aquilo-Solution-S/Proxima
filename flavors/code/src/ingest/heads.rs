@@ -30,8 +30,9 @@ pub async fn file_revision_heads(
     // with versions-per-NK and went quadratic on long replay sessions
     // (see perf-logs/2026-05-16_14-31-40: 9 sqlx slow-statement
     // warnings, 1.5s → 26s as history accumulated).
-    let rows: Vec<(uuid::Uuid, String, Vec<u8>, FileState)> = sqlx::query_as(
-        "SELECT memory_id, file_path, content_sha256, state \
+    let rows: Vec<(uuid::Uuid, String, Vec<u8>, FileState)> =
+        sqlx::query_as(proxima_storage_pg::access::owner_ref_compat::sql(
+            "SELECT memory_id, file_path, content_sha256, state \
          FROM ( \
              SELECT DISTINCT ON (s.file_path) \
                  m.memory_id, s.file_path, s.content_sha256, s.state \
@@ -39,7 +40,7 @@ pub async fn file_revision_heads(
              JOIN proxima_code.file_revision_v1 s USING (memory_id) \
             WHERE EXISTS ( \
                       SELECT 1 \
-                        FROM proxima_core.entity_owner eo \
+                        FROM __PROXIMA_ENTITY_OWNER__ eo \
                        WHERE eo.entity_id = m.memory_id \
                          AND eo.owner_principal_kind = $1 \
                          AND eo.owner_principal_id = $2 \
@@ -48,12 +49,12 @@ pub async fn file_revision_heads(
               AND s.repo_id = $3 \
              ORDER BY s.file_path, m.created_at DESC \
          ) latest",
-    )
-    .bind(kind)
-    .bind(principal_id)
-    .bind(repo_id)
-    .fetch_all(pool)
-    .await?;
+        ))
+        .bind(kind)
+        .bind(principal_id)
+        .bind(repo_id)
+        .fetch_all(pool)
+        .await?;
 
     Ok(rows
         .into_iter()
@@ -88,7 +89,7 @@ pub async fn present_chunk_indexes(
     // anti-join per candidate row and was the dominant slow statement
     // in long replay sessions (94s / 4145 calls in
     // perf-logs/2026-05-16_14-31-40).
-    let rows: Vec<(i32,)> = sqlx::query_as(
+    let rows: Vec<(i32,)> = sqlx::query_as(proxima_storage_pg::access::owner_ref_compat::sql(
         "SELECT chunk_index \
          FROM ( \
              SELECT DISTINCT ON (s.chunk_index) \
@@ -97,7 +98,7 @@ pub async fn present_chunk_indexes(
              JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
             WHERE EXISTS ( \
                       SELECT 1 \
-                        FROM proxima_core.entity_owner eo \
+                        FROM __PROXIMA_ENTITY_OWNER__ eo \
                        WHERE eo.entity_id = m.memory_id \
                          AND eo.owner_principal_kind = $1 \
                          AND eo.owner_principal_id = $2 \
@@ -108,7 +109,7 @@ pub async fn present_chunk_indexes(
              ORDER BY s.chunk_index, m.created_at DESC \
          ) latest \
          WHERE latest.state = 'Present'",
-    )
+    ))
     .bind(kind)
     .bind(principal_id)
     .bind(repo_id)

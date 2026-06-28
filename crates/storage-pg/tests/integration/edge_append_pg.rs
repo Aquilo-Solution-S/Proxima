@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::common::{drop_db, fresh_pg};
@@ -7,12 +6,14 @@ use proxima_core::engine::{
 };
 use proxima_core::storage::Storage;
 use proxima_core::{
-    AbstractionPayload, AccessScope, AgentDerivationV1, AgentNoteV1, AuthPath, AuthzContext,
-    CORE_DERIVED_FROM_RELATION, CapabilitySet, EdgeAuthorshipKind, EntityKind, ErrorCode,
-    FlavorRegistry, GroupId, Identity, MemoryId, MemoryOperatorKind, Owner, Principal, Relation,
-    SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, ToolScope, UserId,
+    AbstractionPayload, AgentDerivationV1, AgentNoteV1, AuthPath, AuthzContext,
+    CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind, ErrorCode, FlavorRegistry, GroupId,
+    MemoryId, MemoryOperatorKind, Owner, OwnerRef, Relation, Role, SchemaId, SchemaVersion,
+    SidecarPayload, SourceBatchId, UserId,
 };
 use uuid::Uuid;
+
+type ResolvedAuthz = AuthzContext;
 
 #[tokio::test]
 async fn cross_owner_derived_edge_requires_source_write_and_target_read()
@@ -23,10 +24,10 @@ async fn cross_owner_derived_edge_requires_source_write_and_target_read()
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
         let engine = Engine::new(FlavorRegistry::new().freeze()).with_storage(storage);
 
-        let p = Principal::User(UserId::new(Uuid::now_v7()));
-        let no_read = Principal::User(UserId::new(Uuid::now_v7()));
-        let gp = Principal::Group(GroupId::new(Uuid::now_v7()));
-        let g1 = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let no_read = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let gp = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let g1 = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
 
         seed_membership(&pg, &gp, &p, Relation::Editor).await?;
         seed_membership(&pg, &g1, &p, Relation::Viewer).await?;
@@ -36,8 +37,8 @@ async fn cross_owner_derived_edge_requires_source_write_and_target_read()
 
         let ok = author_abstraction_over_target(
             &engine,
-            &granted_user_authz(&p),
-            gp.clone(),
+            &user_authz_with_roles(&p, [(gp, Role::editor()), (g1, Role::viewer())]),
+            gp,
             target,
             "readable target",
         )
@@ -50,7 +51,7 @@ async fn cross_owner_derived_edge_requires_source_write_and_target_read()
 
         let err = author_abstraction_over_target(
             &engine,
-            &granted_user_authz(&no_read),
+            &user_authz_with_roles(&no_read, [(gp, Role::editor())]),
             gp,
             target,
             "unreadable target",
@@ -86,8 +87,17 @@ async fn ingest_note_fact(
         &note,
         time::OffsetDateTime::now_utc(),
     );
+    let authz = match *owner {
+        OwnerRef::Personal(subject) => AuthzContext::for_subject(subject, AuthPath::System),
+        OwnerRef::Group(_) => AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(*owner, Role::admin())],
+            AuthPath::System,
+        ),
+        OwnerRef::World => AuthzContext::denied_for_owner(owner),
+    };
     engine
-        .event_ingest(&AuthzContext::single_owner(owner, AuthPath::System), draft)
+        .event_ingest(&authz, draft)
         .await
         .map(|outcome| outcome.memory_id)
 }
@@ -145,34 +155,26 @@ async fn author_abstraction_over_target(
         .await
 }
 
-fn granted_user_authz(user: &Principal) -> AuthzContext {
-    let mut accessible_principals = HashSet::new();
-    accessible_principals.insert(user.clone());
-    AuthzContext {
-        identity: Identity {
-            principal: user.clone(),
-            accessible_principals,
-            expires_at: None,
-            auth_epoch: 0,
-        },
-        capabilities: CapabilitySet {
-            tool_scope: ToolScope::All,
-            access: AccessScope::Granted,
-        },
-        auth_path: AuthPath::HostBearer,
-    }
+fn user_authz_with_roles<I>(user: &OwnerRef, roles: I) -> ResolvedAuthz
+where
+    I: IntoIterator<Item = (OwnerRef, Role)>,
+{
+    let OwnerRef::Personal(subject) = *user else {
+        panic!("edge append test principal must be a user");
+    };
+    AuthzContext::for_subject_with_role(subject, roles, AuthPath::HostBearer)
 }
 
 async fn seed_membership(
     pg: &proxima_storage_pg::PgStorage,
-    group: &Principal,
-    member: &Principal,
+    group: &OwnerRef,
+    member: &OwnerRef,
     relation: Relation,
 ) -> Result<(), sqlx::Error> {
-    let Principal::Group(group_id) = group else {
+    let OwnerRef::Group(group_id) = group else {
         panic!("group principal required");
     };
-    let Principal::User(member_id) = member else {
+    let OwnerRef::Personal(member_id) = member else {
         panic!("user principal required");
     };
     sqlx::query(
@@ -192,8 +194,8 @@ async fn seed_membership(
 async fn edge_change_event_owner(
     pg: &proxima_storage_pg::PgStorage,
     edge_id: Uuid,
-) -> Result<Principal, sqlx::Error> {
-    let (kind, id): (proxima_core::OwnerPrincipalKind, Uuid) = sqlx::query_as(
+) -> Result<OwnerRef, sqlx::Error> {
+    let (kind, id): (proxima_core::OwnerRefKind, Uuid) = sqlx::query_as(
         "SELECT owner_principal_kind, owner_principal_id
            FROM proxima_core.change_event
           WHERE edge_id = $1

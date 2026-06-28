@@ -9,7 +9,6 @@ pub mod close_batch;
 pub mod consolidate;
 pub mod derive_append;
 pub mod edge_append;
-pub(crate) mod entity_owner;
 pub(crate) mod event_history;
 pub mod event_ingest;
 pub mod fact_cleanup;

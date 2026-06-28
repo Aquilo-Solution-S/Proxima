@@ -21,11 +21,11 @@ async fn external_agent_operator_kind_is_admitted() -> Result<(), Box<dyn std::e
         .bind(memory_id)
         .execute(pg.pool())
         .await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.entity_owner
+        sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+            "INSERT INTO __PROXIMA_ENTITY_OWNER__
                 (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
              VALUES ($1, $2, $3, true, $4)",
-        )
+        ))
         .bind(memory_id)
         .bind(owner_kind)
         .bind(owner_principal_id)

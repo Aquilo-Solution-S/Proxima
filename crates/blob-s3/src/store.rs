@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use aws_sdk_s3::presigning::PresigningConfig;
-use proxima_core::{Owner, OwnerPrincipalKind, Principal, UPLOADED_BLOB_SCHEMA_ID};
+use proxima_core::{Owner, OwnerRef, OwnerRefKind, UPLOADED_BLOB_SCHEMA_ID};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use time::OffsetDateTime;
@@ -15,7 +15,7 @@ use crate::error::BlobError;
 /// Tauri/TS-compatible cited-blob upload request.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobUploadPrepareTs {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     pub filename: String,
     pub mime: String,
     pub byte_len: u64,
@@ -40,7 +40,7 @@ pub struct PresignedHeaderTs {
 /// Tauri/TS-compatible cited-blob completion request.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobUploadCompleteTs {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     pub upload_id: String,
 }
 
@@ -60,7 +60,7 @@ pub struct CitedBlobUploadCompleteOutcomeTs {
 /// Tauri/TS-compatible cited-blob abort request.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobUploadAbortTs {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     pub upload_id: String,
 }
 
@@ -73,7 +73,7 @@ pub struct CitedBlobUploadAbortOutcomeTs {
 /// Tauri/TS-compatible cited-blob read URL request.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobReadUrlTs {
-    pub principal: Principal,
+    pub principal: OwnerRef,
     pub cited_object_id: String,
 }
 
@@ -88,7 +88,7 @@ impl CitedBlobUploadPrepareTs {
     /// The storage `Owner` (= principal) for this request.
     #[must_use]
     pub fn owner(&self) -> Owner {
-        self.principal.clone()
+        self.principal
     }
 }
 
@@ -96,7 +96,7 @@ impl CitedBlobUploadCompleteTs {
     /// The storage `Owner` (= principal) for this request.
     #[must_use]
     pub fn owner(&self) -> Owner {
-        self.principal.clone()
+        self.principal
     }
 }
 
@@ -104,7 +104,7 @@ impl CitedBlobUploadAbortTs {
     /// The storage `Owner` (= principal) for this request.
     #[must_use]
     pub fn owner(&self) -> Owner {
-        self.principal.clone()
+        self.principal
     }
 }
 
@@ -112,7 +112,7 @@ impl CitedBlobReadUrlTs {
     /// The storage `Owner` (= principal) for this request.
     #[must_use]
     pub fn owner(&self) -> Owner {
-        self.principal.clone()
+        self.principal
     }
 }
 
@@ -709,11 +709,8 @@ fn parse_uuid(value: &str) -> Result<Uuid, BlobError> {
     Uuid::parse_str(value).map_err(|_| BlobError::State(format!("invalid uuid: {value}")))
 }
 
-fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
-    match owner {
-        Principal::User(user) => (OwnerPrincipalKind::User, user.into_inner()),
-        Principal::Group(group) => (OwnerPrincipalKind::Group, group.into_inner()),
-    }
+fn owner_columns(owner: &Owner) -> (OwnerRefKind, Uuid) {
+    owner.columns()
 }
 
 fn owner_hash_hex(owner: &Owner) -> String {
@@ -775,7 +772,7 @@ mod tests {
 
     #[test]
     fn object_keys_do_not_embed_raw_owner_ids() {
-        let owner = Principal::User(UserId::new(Uuid::now_v7()));
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let (owner_kind, principal_id) = owner_columns(&owner);
         let owner_hash = owner_hash_hex(&owner);
         let pending = pending_object_key(&owner_hash, Uuid::now_v7());
@@ -791,8 +788,8 @@ mod tests {
 
     #[test]
     fn owner_hash_is_owner_scoped() {
-        let a = Principal::User(UserId::new(Uuid::now_v7()));
-        let b = Principal::User(UserId::new(Uuid::now_v7()));
+        let a = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let b = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         assert_ne!(owner_hash_hex(&a), owner_hash_hex(&b));
     }
 
@@ -802,7 +799,7 @@ mod tests {
     /// stored S3 object path) forever.
     #[test]
     fn owner_hash_hex_golden_is_org_free() {
-        let owner = Principal::User(UserId::new(
+        let owner = OwnerRef::Personal(UserId::new(
             Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
         ));
         assert_eq!(

@@ -98,14 +98,7 @@ fn all_mcp_tool_arg_schemas_avoid_root_combinators() {
 const CORE_GOAL_ACTION_NAMES: &[&str] =
     &["set", "transition", "modify", "mark_achieved", "decompose"];
 const CORE_WAKE_ACTION_NAMES: &[&str] = &["add", "update", "remove", "set", "list"];
-const CORE_PERSONALITY_ACTION_NAMES: &[&str] = &[
-    "instantiate",
-    "tombstone",
-    "set_read_scope",
-    "list",
-    "get",
-    "list_read_scope",
-];
+const CORE_PERSONALITY_ACTION_NAMES: &[&str] = &["instantiate", "tombstone", "list", "get"];
 const CORE_FACT_ACTION_NAMES: &[&str] = &[
     "citation_of_fact",
     "citation_of_entity_head",
@@ -113,21 +106,12 @@ const CORE_FACT_ACTION_NAMES: &[&str] = &[
     "tombstone",
 ];
 const CORE_MEMBERSHIP_ACTION_NAMES: &[&str] = &["add_member", "remove_member", "list_members"];
-const CORE_SHARE_ACTION_NAMES: &[&str] = &[
-    "share",
-    "unshare",
-    "publish",
-    "unpublish",
-    "list_shares",
-    "list_world",
-];
 const DISPATCHER_TOOL_ACTIONS: &[(&str, &[&str])] = &[
     ("core_goal", CORE_GOAL_ACTION_NAMES),
     ("core_wake", CORE_WAKE_ACTION_NAMES),
     ("core_personality", CORE_PERSONALITY_ACTION_NAMES),
     ("core_fact", CORE_FACT_ACTION_NAMES),
     ("core_membership", CORE_MEMBERSHIP_ACTION_NAMES),
-    ("core_share", CORE_SHARE_ACTION_NAMES),
 ];
 
 #[test]
@@ -330,7 +314,6 @@ fn action_arg_specs_match_schema_derived_action_fields() {
         "core_personality",
         "core_fact",
         "core_membership",
-        "core_share",
     ] {
         assert!(
             dispatchers_seen.contains(expected),

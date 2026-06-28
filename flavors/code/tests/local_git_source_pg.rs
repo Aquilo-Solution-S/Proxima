@@ -19,8 +19,7 @@ use common::{git, migrated_db, test_owner, write_file};
 use proxima_code::{CodeChunkV1, FileRevisionV1, FileState, LocalGitSource, build_engine};
 use proxima_core::verbs::query::{PersonalityRootFilter, QueryRequest, SupersessionStatus};
 use proxima_core::{
-    AbstractionPayload, CORE_DERIVED_FROM_RELATION, FactPayload, Owner, Principal, SchemaId,
-    SchemaVersion,
+    AbstractionPayload, CORE_DERIVED_FROM_RELATION, FactPayload, Owner, SchemaId, SchemaVersion,
 };
 use proxima_pg_testkit::drop_db;
 use sqlx::Row;
@@ -52,16 +51,12 @@ fn fixture_repo() -> TempDir {
 }
 
 async fn count_present_chunks(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) -> i64 {
-    let kind = proxima_core::OwnerPrincipalKind::of(owner);
-    let principal_id = match owner {
-        Principal::User(u) => u.into_inner(),
-        Principal::Group(g) => g.into_inner(),
-    };
-    let row = sqlx::query(
+    let (kind, principal_id) = owner.columns();
+    let row = sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
         "SELECT COUNT(*)::bigint AS c \
          FROM proxima_core.memories m \
          JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
-         JOIN proxima_core.entity_owner eo \
+         JOIN __PROXIMA_ENTITY_OWNER__ eo \
            ON eo.entity_id = m.memory_id \
           AND eo.is_home \
          WHERE eo.owner_principal_kind = $1 \
@@ -71,7 +66,7 @@ async fn count_present_chunks(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid)
            AND NOT EXISTS ( \
                  SELECT 1 FROM proxima_core.memories m2 \
                  JOIN proxima_code.code_chunk_v1 s2 USING (memory_id) \
-                 JOIN proxima_core.entity_owner eo2 \
+                 JOIN __PROXIMA_ENTITY_OWNER__ eo2 \
                    ON eo2.entity_id = m2.memory_id \
                   AND eo2.is_home \
                  WHERE m2.schema_id = m.schema_id \
@@ -82,7 +77,7 @@ async fn count_present_chunks(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid)
                    AND s2.chunk_index = s.chunk_index \
                    AND m2.created_at > m.created_at \
            )",
-    )
+    ))
     .bind(kind)
     .bind(principal_id)
     .bind(repo_id)
@@ -98,16 +93,13 @@ async fn fetch_file_revision_state(
     repo_id: Uuid,
     file_path: &str,
 ) -> Option<FileState> {
-    let kind = proxima_core::OwnerPrincipalKind::of(owner);
-    let principal_id = match owner {
-        Principal::User(u) => u.into_inner(),
-        Principal::Group(g) => g.into_inner(),
-    };
-    let row: Option<(FileState,)> = sqlx::query_as(
-        "SELECT s.state \
+    let (kind, principal_id) = owner.columns();
+    let row: Option<(FileState,)> =
+        sqlx::query_as(proxima_storage_pg::access::owner_ref_compat::sql(
+            "SELECT s.state \
          FROM proxima_core.memories m \
          JOIN proxima_code.file_revision_v1 s USING (memory_id) \
-         JOIN proxima_core.entity_owner eo \
+         JOIN __PROXIMA_ENTITY_OWNER__ eo \
            ON eo.entity_id = m.memory_id \
           AND eo.is_home \
          WHERE eo.owner_principal_kind = $1 \
@@ -117,7 +109,7 @@ async fn fetch_file_revision_state(
            AND NOT EXISTS ( \
                  SELECT 1 FROM proxima_core.memories m2 \
                  JOIN proxima_code.file_revision_v1 s2 USING (memory_id) \
-                 JOIN proxima_core.entity_owner eo2 \
+                 JOIN __PROXIMA_ENTITY_OWNER__ eo2 \
                    ON eo2.entity_id = m2.memory_id \
                   AND eo2.is_home \
                  WHERE m2.schema_id = m.schema_id \
@@ -127,14 +119,14 @@ async fn fetch_file_revision_state(
                    AND s2.file_path = s.file_path \
                    AND m2.created_at > m.created_at \
            )",
-    )
-    .bind(kind)
-    .bind(principal_id)
-    .bind(repo_id)
-    .bind(file_path)
-    .fetch_optional(pool)
-    .await
-    .expect("fetch state");
+        ))
+        .bind(kind)
+        .bind(principal_id)
+        .bind(repo_id)
+        .bind(file_path)
+        .fetch_optional(pool)
+        .await
+        .expect("fetch state");
     row.map(|(s,)| s)
 }
 
@@ -150,7 +142,7 @@ async fn local_git_source_full_cycle() {
         // Phase 1 — initial index.
         let repo = fixture_repo();
         let repo_id = Uuid::now_v7();
-        let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner.clone());
+        let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner);
         let cursor = proxima_core::Cursor::empty();
         let (r1, cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
         assert!(r1.commits_emitted >= 1, "expected at least one commit");
@@ -199,8 +191,8 @@ async fn local_git_source_full_cycle() {
         // Heads-only chunk Query through the Engine — the path that
         // matters for downstream consumers.
         let q = QueryRequest {
-            principal: owner.clone(),
-            read_owners: vec![owner.clone()],
+            principal: owner,
+            read_owners: vec![owner],
             entity_kind: None,
             schema_id: Some(SchemaId::new(
                 <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID.into(),
@@ -275,8 +267,8 @@ async fn local_git_source_full_cycle() {
 
         // Old revision still exists as history (IncludeSuperseded view).
         let q_all = QueryRequest {
-            principal: owner.clone(),
-            read_owners: vec![owner.clone()],
+            principal: owner,
+            read_owners: vec![owner],
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
@@ -399,7 +391,7 @@ async fn polyglot_markdown_emits_file_revision_and_fallback_chunks() {
         git(dir.path(), &["commit", "-q", "-m", "init"]);
 
         let repo_id = Uuid::now_v7();
-        let source = LocalGitSource::new(repo_id, dir.path().to_path_buf(), owner.clone());
+        let source = LocalGitSource::new(repo_id, dir.path().to_path_buf(), owner);
         let cursor = proxima_core::Cursor::empty();
         let (report, _cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
         assert!(report.files_present_emitted >= 1);

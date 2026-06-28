@@ -1,23 +1,28 @@
-use crate::access::{AccessScope, Relation, world};
+use crate::access::{AccessKind, AccessScope, Relation, world};
 use crate::authz::{AuthPath, AuthzContext};
 use crate::error::ProtocolError;
-use crate::{MembershipRow, Principal};
+use crate::{MembershipRow, OwnerRef};
 
 use super::Engine;
 
 pub struct AccessSets {
-    read: Vec<Principal>,
-    write: Vec<(Principal, Relation)>,
+    read: Vec<OwnerRef>,
+    write: Vec<(OwnerRef, Relation)>,
 }
 
 impl AccessSets {
     #[must_use]
-    pub fn read_owners(&self) -> &[Principal] {
+    pub fn read_owners(&self) -> &[OwnerRef] {
         &self.read
     }
 
     #[must_use]
-    pub fn can_write(&self, owner: &Principal, required: Relation) -> bool {
+    pub fn can_read(&self, owner: &OwnerRef) -> bool {
+        self.read.iter().any(|candidate| candidate == owner)
+    }
+
+    #[must_use]
+    pub fn can_write(&self, owner: &OwnerRef, required: Relation) -> bool {
         self.write
             .iter()
             .any(|(candidate, relation)| candidate == owner && relation.dominates(required))
@@ -34,7 +39,7 @@ impl Engine {
         &self,
         authz: &AuthzContext,
     ) -> Result<AccessSets, ProtocolError> {
-        if authz.auth_path == AuthPath::Denied || authz.identity.accessible_principals.is_empty() {
+        if authz.auth_path() == AuthPath::Denied || authz.accessible_owners().next().is_none() {
             return Ok(AccessSets {
                 read: Vec::new(),
                 write: Vec::new(),
@@ -46,64 +51,99 @@ impl Engine {
             write: Vec::new(),
         };
 
-        match authz.capabilities.access {
-            AccessScope::Granted => {
-                for principal in &authz.identity.accessible_principals {
-                    if matches!(principal, Principal::User(_)) {
-                        access.read.push(principal.clone());
-                        push_full_authority(&mut access.write, principal.clone());
+        if authz.is_server_resolved() {
+            push_role_access(&mut access, authz);
+            return Ok(access);
+        }
 
-                        let memberships = self
-                            .storage()
-                            .resolve_membership(principal)
-                            .await
-                            .map_err(|err| {
-                                ProtocolError::internal(format!("resolve_membership: {err}"))
-                            })?;
-                        push_memberships(&mut access, memberships);
-                    }
+        match authz.access_scope() {
+            AccessScope::Granted => {
+                let principal = authz.principal();
+                if matches!(principal, OwnerRef::Personal(_)) && authz.can_access_owner(&principal)
+                {
+                    push_read_owner(&mut access.read, principal);
+                    push_full_authority(&mut access.write, principal);
+
+                    let memberships = self
+                        .storage()
+                        .resolve_membership(&principal)
+                        .await
+                        .map_err(|err| {
+                            ProtocolError::internal(format!("resolve_membership: {err}"))
+                        })?;
+                    push_memberships(&mut access, memberships);
                 }
             }
             AccessScope::Unrestricted => {
-                for principal in &authz.identity.accessible_principals {
-                    access.read.push(principal.clone());
-                    push_full_authority(&mut access.write, principal.clone());
+                for principal in authz.accessible_owners() {
+                    push_read_owner(&mut access.read, principal);
+                    push_full_authority(&mut access.write, principal);
                 }
             }
         }
 
-        access.read.push(world());
+        push_read_owner(&mut access.read, world());
         Ok(access)
     }
 }
 
-fn push_full_authority(write: &mut Vec<(Principal, Relation)>, principal: Principal) {
-    if is_world(&principal) {
+fn push_role_access(access: &mut AccessSets, authz: &AuthzContext) {
+    for owner in authz.readable_owners(AccessKind::Goal) {
+        push_read_owner(&mut access.read, owner);
+    }
+    for owner in authz.writable_owners(AccessKind::Fact) {
+        push_write_owner(&mut access.write, owner, Relation::Ingest);
+    }
+    for owner in authz.writable_owners(AccessKind::Perspective) {
+        push_write_owner(&mut access.write, owner, Relation::Editor);
+    }
+    for owner in authz.writable_owners(AccessKind::Goal) {
+        push_write_owner(&mut access.write, owner, Relation::Admin);
+    }
+    push_read_owner(&mut access.read, world());
+}
+
+fn push_read_owner(read: &mut Vec<OwnerRef>, owner: OwnerRef) {
+    if !read.contains(&owner) {
+        read.push(owner);
+    }
+}
+
+fn push_full_authority(write: &mut Vec<(OwnerRef, Relation)>, principal: OwnerRef) {
+    push_write_owner(write, principal, Relation::Admin);
+    push_write_owner(write, principal, Relation::Editor);
+    push_write_owner(write, principal, Relation::Ingest);
+}
+
+fn push_write_owner(write: &mut Vec<(OwnerRef, Relation)>, owner: OwnerRef, relation: Relation) {
+    if is_world(&owner) {
         return;
     }
-    write.push((principal.clone(), Relation::Admin));
-    write.push((principal.clone(), Relation::Editor));
-    write.push((principal, Relation::Ingest));
+    if !write
+        .iter()
+        .any(|(candidate, existing)| candidate == &owner && existing == &relation)
+    {
+        write.push((owner, relation));
+    }
 }
 
 fn push_memberships(access: &mut AccessSets, memberships: Vec<MembershipRow>) {
     for MembershipRow { group, relation } in memberships {
-        let owner = Principal::Group(group);
-        access.read.push(owner.clone());
+        let owner = OwnerRef::Group(group);
+        push_read_owner(&mut access.read, owner);
         if relation != Relation::Viewer && !is_world(&owner) {
-            access.write.push((owner, relation));
+            push_write_owner(&mut access.write, owner, relation);
         }
     }
 }
 
-fn is_world(principal: &Principal) -> bool {
+fn is_world(principal: &OwnerRef) -> bool {
     principal == &world()
 }
 
 #[cfg(test)]
 #[allow(clippy::too_many_lines, clippy::wildcard_imports)]
 pub(in crate::engine) mod tests {
-    use std::collections::HashSet;
     use std::sync::Arc;
 
     use crate::close_batch::CloseBatchOutcome;
@@ -119,10 +159,10 @@ pub(in crate::engine) mod tests {
 
     #[derive(Debug)]
     pub(in crate::engine) struct MembershipStorage {
-        pub(in crate::engine) member: Principal,
+        pub(in crate::engine) member: OwnerRef,
         pub(in crate::engine) group: GroupId,
         pub(in crate::engine) membership_relation: Relation,
-        pub(in crate::engine) home_owner: Option<Principal>,
+        pub(in crate::engine) home_owner: Option<OwnerRef>,
         pub(in crate::engine) entity_readable: bool,
         pub(in crate::engine) memory_kind: Option<EntityKind>,
     }
@@ -357,7 +397,7 @@ pub(in crate::engine) mod tests {
 
         async fn event_history(
             &self,
-            _read_owners: &[Principal],
+            _read_owners: &[OwnerRef],
             _req: &EventHistoryRequest,
         ) -> Result<EventHistoryResponse, StorageError> {
             Ok(EventHistoryResponse {
@@ -388,7 +428,7 @@ pub(in crate::engine) mod tests {
 
         async fn read_edges(
             &self,
-            _read_owners: &[Principal],
+            _read_owners: &[OwnerRef],
             _req: &verbs::query::EdgeReadRequest,
         ) -> Result<verbs::query::EdgeReadResponse, StorageError> {
             Ok(verbs::query::EdgeReadResponse { edges: Vec::new() })
@@ -396,7 +436,7 @@ pub(in crate::engine) mod tests {
 
         async fn edge_exists(
             &self,
-            _read_owners: &[Principal],
+            _read_owners: &[OwnerRef],
             _req: &verbs::query::EdgeExistsRequest,
         ) -> Result<verbs::query::EdgeExistsResponse, StorageError> {
             Ok(verbs::query::EdgeExistsResponse { exists: false })
@@ -412,7 +452,7 @@ pub(in crate::engine) mod tests {
 
         async fn facts_citing_object(
             &self,
-            _read_owners: &[Principal],
+            _read_owners: &[OwnerRef],
             _cited_object_id: uuid::Uuid,
             _sidecars: &[SidecarSpec],
         ) -> Result<Vec<MemorySnapshot>, StorageError> {
@@ -428,7 +468,7 @@ pub(in crate::engine) mod tests {
 
         async fn citation_of_entity_head(
             &self,
-            _read_owners: &[Principal],
+            _read_owners: &[OwnerRef],
             _fact_entity_id: FactEntityId,
         ) -> Result<Option<verbs::query::FactCitationReadback>, StorageError> {
             Ok(None)
@@ -436,7 +476,7 @@ pub(in crate::engine) mod tests {
 
         async fn walk_memory_lineage(
             &self,
-            _read_owners: &[Principal],
+            _read_owners: &[OwnerRef],
             _req: &verbs::query::MemoryLineageRequest,
         ) -> Result<verbs::query::MemoryLineageResponse, StorageError> {
             Ok(verbs::query::MemoryLineageResponse {
@@ -448,7 +488,7 @@ pub(in crate::engine) mod tests {
 
         async fn list_active_goals(
             &self,
-            _read_owners: &[Principal],
+            _read_owners: &[OwnerRef],
             _self_perspective_memory_id: MemoryId,
             _limit: usize,
         ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
@@ -457,7 +497,7 @@ pub(in crate::engine) mod tests {
 
         async fn resolve_membership(
             &self,
-            member: &Principal,
+            member: &OwnerRef,
         ) -> Result<Vec<MembershipRow>, StorageError> {
             if member == &self.member {
                 Ok(vec![MembershipRow {
@@ -469,55 +509,16 @@ pub(in crate::engine) mod tests {
             }
         }
 
-        async fn entity_is_readable(
+        async fn visible_to_any(
             &self,
             _entity: EntityId,
-            _read_owners: &[Principal],
+            _read_owners: &[OwnerRef],
         ) -> Result<bool, StorageError> {
             Ok(self.entity_readable)
         }
 
-        async fn entity_home_owner(
-            &self,
-            _entity: EntityId,
-        ) -> Result<Option<Principal>, StorageError> {
-            Ok(self.home_owner.clone())
-        }
-
-        async fn add_entity_owner_share(
-            &self,
-            _entity: EntityId,
-            _owner: &Principal,
-            _granted_by: Option<uuid::Uuid>,
-        ) -> Result<(), StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn remove_entity_owner_share(
-            &self,
-            _entity: EntityId,
-            _owner: &Principal,
-        ) -> Result<RemoveOwnerOutcome, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn list_entity_owners(
-            &self,
-            _entity: EntityId,
-        ) -> Result<Vec<EntityOwnerRow>, StorageError> {
-            Ok(Vec::new())
-        }
-
-        async fn list_world_entities(
-            &self,
-            _limit: usize,
-            _sidecars: &[SidecarSpec],
-        ) -> Result<Vec<MemorySnapshot>, StorageError> {
-            Ok(Vec::new())
+        async fn home_owner(&self, _entity: EntityId) -> Result<Option<OwnerRef>, StorageError> {
+            Ok(self.home_owner)
         }
 
         async fn add_group_member(
@@ -551,7 +552,7 @@ pub(in crate::engine) mod tests {
 
         async fn close_batch(
             &self,
-            _principal: &Principal,
+            _principal: &OwnerRef,
             _source_batch_id: SourceBatchId,
         ) -> Result<CloseBatchOutcome, StorageError> {
             Err(StorageError::Internal(
@@ -598,7 +599,7 @@ pub(in crate::engine) mod tests {
         async fn ensure_subject_personality(
             &self,
             _owner: &Owner,
-            _subject: &Principal,
+            _subject: &OwnerRef,
         ) -> Result<MasterTokenPersonality, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
@@ -620,24 +621,6 @@ pub(in crate::engine) mod tests {
             _personality_instance_id: PersonalityInstanceId,
             _mutate: WakeEntriesMutator,
         ) -> Result<SetWakeEntriesResponse, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn list_read_scope(
-            &self,
-            _req: &ListReadScopeRequest,
-        ) -> Result<ListReadScopeResponse, StorageError> {
-            Ok(ListReadScopeResponse {
-                readable_personality_instance_ids: Vec::new(),
-            })
-        }
-
-        async fn set_read_scope(
-            &self,
-            _req: &SetReadScopeRequest,
-        ) -> Result<SetReadScopeResponse, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
@@ -694,7 +677,7 @@ pub(in crate::engine) mod tests {
 
         async fn list_change_events_after(
             &self,
-            _read_owners: &[Principal],
+            _read_owners: &[OwnerRef],
             _after: uuid::Uuid,
             _limit: usize,
         ) -> Result<Vec<ChangeEventForWake>, StorageError> {
@@ -760,13 +743,13 @@ pub(in crate::engine) mod tests {
 
     #[tokio::test]
     async fn granted_context_resolves_read_set_and_write_set() {
-        let p = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let p = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let g1_owner = Principal::Group(g1);
+        let g1_owner = OwnerRef::Group(g1);
         let world_owner = world();
         let engine = Engine::compose(
             Arc::new(MembershipStorage {
-                member: p.clone(),
+                member: p,
                 group: g1,
                 membership_relation: Relation::Viewer,
                 home_owner: None,
@@ -775,19 +758,13 @@ pub(in crate::engine) mod tests {
             }),
             |_| {},
         );
-        let authz = AuthzContext {
-            identity: Identity {
-                principal: p.clone(),
-                accessible_principals: HashSet::from([p.clone()]),
-                expires_at: None,
-                auth_epoch: 0,
-            },
-            capabilities: CapabilitySet {
-                tool_scope: ToolScope::All,
-                access: AccessScope::Granted,
-            },
-            auth_path: AuthPath::HostBearer,
-        };
+        let authz = AuthzContext::scoped_access(
+            p,
+            [p],
+            ToolScope::All,
+            AccessScope::Granted,
+            AuthPath::HostBearer,
+        );
 
         let access = engine
             .resolve_access(&authz)
@@ -804,13 +781,62 @@ pub(in crate::engine) mod tests {
     }
 
     #[tokio::test]
+    async fn granted_context_does_not_treat_foreign_accessible_personal_owner_as_role() {
+        let subject = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let foreign = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let engine = Engine::new(FlavorRegistry::new().freeze());
+        let authz = AuthzContext::scoped_access(
+            subject,
+            [foreign],
+            ToolScope::All,
+            AccessScope::Granted,
+            AuthPath::HostBearer,
+        );
+
+        let access = engine
+            .resolve_access(&authz)
+            .await
+            .expect("foreign accessible owner should deny without storage lookup");
+
+        assert!(!access.read_owners().contains(&foreign));
+        assert!(access.read_owners().contains(&world()));
+        assert!(!access.can_write(&foreign, Relation::Admin));
+    }
+
+    #[tokio::test]
+    async fn server_resolved_context_uses_owner_role_ceilings() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let personal = OwnerRef::Personal(subject);
+        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let roles = OwnerRoles::for_subject(subject, [(group, Role::editor())]).unwrap();
+        let engine = Engine::new(FlavorRegistry::new().freeze());
+        let authz = AuthzContext::server_resolved(roles, AuthPath::HostBearer);
+
+        let access = engine
+            .resolve_access(&authz)
+            .await
+            .expect("server-resolved roles should not need storage expansion");
+
+        assert!(access.read_owners().contains(&world()));
+        assert!(access.read_owners().contains(&personal));
+        assert!(access.read_owners().contains(&group));
+        assert!(access.can_write(&personal, Relation::Admin));
+        assert!(access.can_write(&personal, Relation::Editor));
+        assert!(access.can_write(&personal, Relation::Ingest));
+        assert!(!access.can_write(&group, Relation::Admin));
+        assert!(access.can_write(&group, Relation::Editor));
+        assert!(access.can_write(&group, Relation::Ingest));
+        assert!(!access.can_write(&world(), Relation::Ingest));
+    }
+
+    #[tokio::test]
     async fn unrestricted_context_keeps_world_readable_but_never_writable() {
-        let p = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let p = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let g1 = GroupId::new(uuid::Uuid::now_v7());
         let world_owner = world();
         let engine = Engine::compose(
             Arc::new(MembershipStorage {
-                member: p.clone(),
+                member: p,
                 group: g1,
                 membership_relation: Relation::Viewer,
                 home_owner: None,
@@ -819,19 +845,13 @@ pub(in crate::engine) mod tests {
             }),
             |_| {},
         );
-        let authz = AuthzContext {
-            identity: Identity {
-                principal: p.clone(),
-                accessible_principals: HashSet::from([p.clone(), world_owner.clone()]),
-                expires_at: None,
-                auth_epoch: 0,
-            },
-            capabilities: CapabilitySet {
-                tool_scope: ToolScope::All,
-                access: AccessScope::Unrestricted,
-            },
-            auth_path: AuthPath::HostBearer,
-        };
+        let authz = AuthzContext::scoped_access(
+            p,
+            [p, world_owner],
+            ToolScope::All,
+            AccessScope::Unrestricted,
+            AuthPath::HostBearer,
+        );
 
         let access = engine
             .resolve_access(&authz)
@@ -847,12 +867,12 @@ pub(in crate::engine) mod tests {
 
     #[tokio::test]
     async fn granted_world_membership_is_read_only() {
-        let p = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let p = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let world_owner = world();
         let engine = Engine::compose(
             Arc::new(MembershipStorage {
-                member: p.clone(),
-                group: crate::access::WORLD_GROUP_ID,
+                member: p,
+                group: crate::WORLD_GROUP_ID,
                 membership_relation: Relation::Editor,
                 home_owner: None,
                 entity_readable: false,
@@ -860,19 +880,13 @@ pub(in crate::engine) mod tests {
             }),
             |_| {},
         );
-        let authz = AuthzContext {
-            identity: Identity {
-                principal: p.clone(),
-                accessible_principals: HashSet::from([p.clone()]),
-                expires_at: None,
-                auth_epoch: 0,
-            },
-            capabilities: CapabilitySet {
-                tool_scope: ToolScope::All,
-                access: AccessScope::Granted,
-            },
-            auth_path: AuthPath::HostBearer,
-        };
+        let authz = AuthzContext::scoped_access(
+            p,
+            [p],
+            ToolScope::All,
+            AccessScope::Granted,
+            AuthPath::HostBearer,
+        );
 
         let access = engine
             .resolve_access(&authz)

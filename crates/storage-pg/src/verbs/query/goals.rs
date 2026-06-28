@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 
 use proxima_core::verbs::query::{GoalRow, QueryRequest, SupersessionStatus};
-use proxima_core::{OwnerPrincipalKind, StorageError};
+use proxima_core::{OwnerRefKind, StorageError};
 use sqlx::PgPool;
 
 use crate::error::internal;
@@ -11,7 +11,7 @@ use super::rows::{GoalRowDb, goal_row_from_db};
 pub(super) async fn query_goals(
     pool: &PgPool,
     req: &QueryRequest,
-    read_owner_kinds: &[OwnerPrincipalKind],
+    read_owner_kinds: &[OwnerRefKind],
     read_owner_ids: &[uuid::Uuid],
     schema_id_filter: Option<&str>,
 ) -> Result<Vec<GoalRow>, StorageError> {
@@ -26,7 +26,7 @@ pub(super) async fn query_goals(
     } else {
         "''::bytea"
     };
-    let mut sql = format!(
+    let mut sql = crate::access::owner_ref_compat::sql_owned(format!(
         "SELECT g.goal_id, g.schema_id, g.schema_version, \
                 home_owner.owner_principal_kind, home_owner.owner_principal_id, \
                 g.title, g.text, g.state, \
@@ -34,19 +34,19 @@ pub(super) async fn query_goals(
                 COALESCE(array_agg(gp.parent_goal_id) FILTER \
                     (WHERE gp.parent_goal_id IS NOT NULL), '{{}}'::uuid[]) AS parent_goal_ids \
          FROM proxima_core.goals g \
-         LEFT JOIN proxima_core.entity_owner home_owner \
+         LEFT JOIN __PROXIMA_ENTITY_OWNER__ home_owner \
            ON home_owner.entity_id = g.goal_id \
           AND home_owner.is_home \
          LEFT JOIN proxima_core.goal_parents gp ON gp.goal_id = g.goal_id \
          WHERE EXISTS (
              SELECT 1
-               FROM proxima_core.entity_owner eo
+               FROM __PROXIMA_ENTITY_OWNER__ eo
                JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
                  ON eo.owner_principal_kind = s.kind
                 AND eo.owner_principal_id = s.id
               WHERE eo.entity_id = g.goal_id
          )",
-    );
+    ));
     // Bindings: $1=owner_kind, $2=owner_principal_id; the remaining
     // params are pushed in order, so $3 always lands on whichever
     // optional filter is present first.

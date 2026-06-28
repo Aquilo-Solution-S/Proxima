@@ -7,8 +7,8 @@ use axum::http::{Method, Request, StatusCode, header};
 use axum::routing::get;
 use proxima::{Authz, layered_router};
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, Owner,
-    Principal, UserId,
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, Owner, OwnerRef,
+    UserId,
 };
 use proxima_mcp_server::{
     MASTER_TOKEN_PREFIX, McpEdgeAuth, McpToolHost, default_allowlist, streamable_http_service,
@@ -18,7 +18,7 @@ use tower::util::ServiceExt;
 use uuid::Uuid;
 
 fn owner() -> Owner {
-    Principal::User(UserId::new(Uuid::now_v7()))
+    OwnerRef::Personal(UserId::new(Uuid::now_v7()))
 }
 
 async fn ping(Authz(_authz): Authz) -> StatusCode {
@@ -83,7 +83,7 @@ async fn layered_router_protects_app_and_mcp_with_master_token() {
     let owner = owner();
     let token = Uuid::now_v7();
     let auth = Arc::new(McpEdgeAuth::headless());
-    auth.replace_local_master_token(token, owner.clone()).await;
+    auth.replace_local_master_token(token, owner).await;
     let app = router(auth, owner);
     let bearer = format!("Bearer {MASTER_TOKEN_PREFIX}{token}");
 
@@ -133,7 +133,7 @@ async fn host_guard_allows_configured_host_and_rejects_foreign() {
     let owner = owner();
     let token = Uuid::now_v7();
     let auth = Arc::new(McpEdgeAuth::headless());
-    auth.replace_local_master_token(token, owner.clone()).await;
+    auth.replace_local_master_token(token, owner).await;
     let app = router_with_hosts(auth, owner, &["proxima.test".to_string()]);
     let bearer = format!("Bearer {MASTER_TOKEN_PREFIX}{token}");
 
@@ -157,7 +157,7 @@ async fn host_guard_empty_override_stays_loopback_only_not_allow_all() {
     let owner = owner();
     let token = Uuid::now_v7();
     let auth = Arc::new(McpEdgeAuth::headless());
-    auth.replace_local_master_token(token, owner.clone()).await;
+    auth.replace_local_master_token(token, owner).await;
     let app = router_with_hosts(auth, owner, &[]);
     let bearer = format!("Bearer {MASTER_TOKEN_PREFIX}{token}");
 
@@ -172,12 +172,7 @@ async fn host_guard_empty_override_stays_loopback_only_not_allow_all() {
 #[tokio::test]
 async fn layered_router_protects_app_and_mcp_with_host_token() {
     let owner = owner();
-    let auth = Arc::new(McpEdgeAuth::headless().with_host(
-        Arc::new(StubHostAuth {
-            owner: owner.clone(),
-        }),
-        owner.clone(),
-    ));
+    let auth = Arc::new(McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { owner }), owner));
     let app = router(auth, owner);
     let bearer = "Bearer host-token".to_string();
 

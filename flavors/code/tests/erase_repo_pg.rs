@@ -1,13 +1,13 @@
 mod common;
 
-use common::{insert_entity_owner_home, migrated_db, test_owner};
+use common::{insert_home, migrated_db, test_owner};
 use proxima_code::{CommitV1, TestRequestV1, erase_repo, register_repo};
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
-use proxima_core::{FactPayload, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion};
+use proxima_core::{FactPayload, Owner, OwnerRefKind, SchemaId, SchemaVersion};
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
 
-fn owner_principal(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
+fn owner_principal(owner: &Owner) -> (OwnerRefKind, Uuid) {
     owner.columns()
 }
 
@@ -75,7 +75,7 @@ async fn insert_repo_commit_with_test_request(
     .bind(&event_id)
     .execute(pool)
     .await?;
-    insert_entity_owner_home(pool, memory_id, owner).await?;
+    insert_home(pool, memory_id, owner).await?;
 
     sqlx::query(
         "INSERT INTO proxima_code.commit_v1

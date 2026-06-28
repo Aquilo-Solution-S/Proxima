@@ -42,7 +42,7 @@ pub(super) async fn set_wake_entries(
         .collect::<Result<Vec<_>, _>>()?;
 
     let req = SetWakeEntriesRequest {
-        principal: ctx.owner.clone(),
+        principal: ctx.owner,
         personality_instance_id: pid,
         entries: drafts.clone(),
     };

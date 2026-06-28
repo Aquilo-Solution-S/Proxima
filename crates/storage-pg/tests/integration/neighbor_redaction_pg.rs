@@ -1,16 +1,16 @@
 use crate::common::{drop_db, fresh_pg, seed_memory, seed_memory_edge, share_entity};
 use proxima_core::access::world;
 use proxima_core::{
-    CORE_DERIVED_FROM_RELATION, ChangeEventKind, EdgeId, EntityKind, GroupId, MemoryId, Principal,
+    CORE_DERIVED_FROM_RELATION, ChangeEventKind, EdgeId, EntityKind, GroupId, MemoryId, OwnerRef,
     RelationClass, Storage, UserId,
 };
 use uuid::Uuid;
 
 struct EdgeAccessFixture {
-    p_read: Vec<Principal>,
-    q_read: Vec<Principal>,
-    p_without_g1_read: Vec<Principal>,
-    world_read: Vec<Principal>,
+    p_read: Vec<OwnerRef>,
+    q_read: Vec<OwnerRef>,
+    p_without_g1_read: Vec<OwnerRef>,
+    world_read: Vec<OwnerRef>,
     a: MemoryId,
     f1: MemoryId,
     f2: MemoryId,
@@ -97,9 +97,9 @@ async fn list_change_events_applies_public_source_guard_to_edge_events()
     let (pg, db_name) = fresh_pg().await;
 
     let result = async {
-        let gp = Principal::Group(GroupId::new(Uuid::now_v7())); // source (edge) owner
-        let private = Principal::Group(GroupId::new(Uuid::now_v7())); // target owner
-        let p = Principal::User(UserId::new(Uuid::now_v7())); // reads gp, not private
+        let gp = OwnerRef::Group(GroupId::new(Uuid::now_v7())); // source (edge) owner
+        let private = OwnerRef::Group(GroupId::new(Uuid::now_v7())); // target owner
+        let p = OwnerRef::Personal(UserId::new(Uuid::now_v7())); // reads gp, not private
         let world = world();
 
         let a_public = seed_memory(&pg, &gp, EntityKind::Abstraction, "A public").await?;
@@ -121,7 +121,7 @@ async fn list_change_events_applies_public_source_guard_to_edge_events()
         // P reaches gp (passes the owner filter + reads the World-published
         // source) but cannot read the `private` target. `read_edges` omits this
         // edge via the public-source guard, so the event surface must too.
-        let p_read = vec![p.clone(), gp.clone(), world.clone()];
+        let p_read = vec![p, gp, world];
         let p_events = pg
             .list_change_events_after(&p_read, uuid::Uuid::nil(), 100)
             .await?;
@@ -134,7 +134,7 @@ async fn list_change_events_applies_public_source_guard_to_edge_events()
         );
 
         // A reader of BOTH owners sees the event (target readable → guard off).
-        let both_read = vec![gp.clone(), private.clone(), world.clone()];
+        let both_read = vec![gp, private, world];
         let both_events = pg
             .list_change_events_after(&both_read, uuid::Uuid::nil(), 100)
             .await?;
@@ -161,8 +161,8 @@ async fn list_change_events_for_replay_applies_public_source_guard_to_edge_event
     let (pg, db_name) = fresh_pg().await;
 
     let result = async {
-        let gp = Principal::Group(GroupId::new(Uuid::now_v7()));
-        let private = Principal::Group(GroupId::new(Uuid::now_v7()));
+        let gp = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let private = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let world = world();
 
         let a_public = seed_memory(&pg, &gp, EntityKind::Abstraction, "A public").await?;
@@ -202,7 +202,7 @@ async fn list_change_events_for_replay_applies_public_source_guard_to_edge_event
 
 async fn insert_edge_append_event(
     pg: &proxima_storage_pg::PgStorage,
-    owner: &Principal,
+    owner: &OwnerRef,
     edge_id: EdgeId,
     source_memory_id: MemoryId,
     target_memory_id: MemoryId,
@@ -231,11 +231,11 @@ async fn insert_edge_append_event(
 async fn seed_edge_access_fixture(
     pg: &proxima_storage_pg::PgStorage,
 ) -> Result<EdgeAccessFixture, Box<dyn std::error::Error>> {
-    let p = Principal::User(UserId::new(Uuid::now_v7()));
-    let q = Principal::User(UserId::new(Uuid::now_v7()));
-    let gp = Principal::Group(GroupId::new(Uuid::now_v7()));
-    let g1 = Principal::Group(GroupId::new(Uuid::now_v7()));
-    let private = Principal::Group(GroupId::new(Uuid::now_v7()));
+    let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let q = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let gp = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    let g1 = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    let private = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
     let world = world();
 
     let f1 = seed_memory(pg, &g1, EntityKind::Fact, "F1").await?;
@@ -274,9 +274,9 @@ async fn seed_edge_access_fixture(
     .await?;
 
     Ok(EdgeAccessFixture {
-        p_read: vec![p.clone(), gp.clone(), g1.clone(), world.clone()],
-        q_read: vec![q, g1, world.clone()],
-        p_without_g1_read: vec![p, gp, world.clone()],
+        p_read: vec![p, gp, g1, world],
+        q_read: vec![q, g1, world],
+        p_without_g1_read: vec![p, gp, world],
         world_read: vec![world],
         a,
         f1,

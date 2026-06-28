@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
-use crate::{AccessScope, Owner, OwnerPrincipalKind};
+use crate::{AccessScope, Owner, OwnerRefKind};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MemorySpacesArgs {}
@@ -48,7 +48,7 @@ impl McpTool for MemorySpacesTool {
 #[must_use]
 pub fn list_memory_spaces(ctx: &McpToolCtx) -> Vec<MemorySpaceOutput> {
     let access = MemorySpaceAccessOutput {
-        unrestricted: ctx.authz.capabilities.access == AccessScope::Unrestricted,
+        unrestricted: ctx.authz.access_scope() == AccessScope::Unrestricted,
     };
     sorted_accessible_principals(ctx)
         .into_iter()
@@ -98,22 +98,17 @@ pub fn resolve_space_owner(
     default: SpaceDefault,
 ) -> Result<ResolvedMemorySpace, McpToolError> {
     let default_owner = match default {
-        SpaceDefault::Current => ctx.owner.clone(),
-        SpaceDefault::Identity => ctx.authz.identity.principal.clone(),
+        SpaceDefault::Current => ctx.owner,
+        SpaceDefault::Identity => ctx.authz.principal(),
     };
     let owner = match raw {
-        Some("current") => ctx
-            .authz
-            .identity
-            .can_access_principal(&ctx.owner)
-            .then_some(ctx.owner.clone()),
+        Some("current") => ctx.authz.can_access_owner(&ctx.owner).then_some(ctx.owner),
         Some(key) => sorted_accessible_principals(ctx)
             .into_iter()
             .find(|owner| space_key(owner) == key),
         None => ctx
             .authz
-            .identity
-            .can_access_principal(&default_owner)
+            .can_access_owner(&default_owner)
             .then_some(default_owner),
     };
     owner
@@ -142,13 +137,7 @@ pub fn resolve_space_owner(
 }
 
 fn sorted_accessible_principals(ctx: &McpToolCtx) -> Vec<Owner> {
-    let mut owners = ctx
-        .authz
-        .identity
-        .accessible_principals
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>();
+    let mut owners = ctx.authz.accessible_owners().collect::<Vec<_>>();
     owners.sort_by_key(|owner| {
         let (kind, id) = owner.columns();
         (owner_kind_sort_key(kind), id)
@@ -156,26 +145,26 @@ fn sorted_accessible_principals(ctx: &McpToolCtx) -> Vec<Owner> {
     owners
 }
 
-const fn owner_kind_sort_key(kind: OwnerPrincipalKind) -> u8 {
+const fn owner_kind_sort_key(kind: OwnerRefKind) -> u8 {
     match kind {
-        OwnerPrincipalKind::User => 0,
-        OwnerPrincipalKind::Group => 1,
+        OwnerRefKind::User => 0,
+        OwnerRefKind::Group => 1,
     }
 }
 
 pub(crate) fn space_key(owner: &Owner) -> String {
     let (kind, id) = owner.columns();
     match kind {
-        OwnerPrincipalKind::User => format!("user:{id}"),
-        OwnerPrincipalKind::Group => format!("group:{id}"),
+        OwnerRefKind::User => format!("user:{id}"),
+        OwnerRefKind::Group => format!("group:{id}"),
     }
 }
 
 pub(crate) fn space_label(owner: &Owner) -> String {
     let (kind, id) = owner.columns();
     match kind {
-        OwnerPrincipalKind::User => format!("User {id}"),
-        OwnerPrincipalKind::Group => format!("Group {id}"),
+        OwnerRefKind::User => format!("User {id}"),
+        OwnerRefKind::Group => format!("Group {id}"),
     }
 }
 
@@ -186,42 +175,35 @@ mod tests {
 
     use crate::mcp::{McpAuthorContext, McpTool, McpToolExtensions, OutputMode};
     use crate::{
-        AccessScope, AuthPath, AuthzContext, CapabilitySet, FlavorRegistry, GroupId, Identity,
-        Principal, ToolScope, UserId,
+        AccessScope, AuthPath, AuthzContext, FlavorRegistry, GroupId, OwnerRef, ToolScope, UserId,
     };
 
     use super::*;
 
-    fn make_ctx_with_accessible(owners: Vec<Principal>, access: AccessScope) -> McpToolCtx {
+    fn make_ctx_with_accessible(owners: Vec<OwnerRef>, access: AccessScope) -> McpToolCtx {
         let principal = owners
             .first()
-            .cloned()
-            .unwrap_or_else(|| Principal::User(UserId::new(uuid::Uuid::now_v7())));
+            .copied()
+            .unwrap_or_else(|| OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7())));
         let accessible_principals = owners.into_iter().collect::<HashSet<_>>();
-        make_ctx(principal.clone(), principal, accessible_principals, access)
+        make_ctx(principal, principal, accessible_principals, access)
     }
 
     fn make_ctx(
-        owner: Principal,
-        principal: Principal,
-        accessible_principals: HashSet<Principal>,
+        owner: OwnerRef,
+        principal: OwnerRef,
+        accessible_principals: HashSet<OwnerRef>,
         access: AccessScope,
     ) -> McpToolCtx {
         McpToolCtx {
             owner,
-            authz: AuthzContext {
-                identity: Identity {
-                    principal,
-                    accessible_principals,
-                    expires_at: None,
-                    auth_epoch: 0,
-                },
-                capabilities: CapabilitySet {
-                    tool_scope: ToolScope::All,
-                    access,
-                },
-                auth_path: AuthPath::HostBearer,
-            },
+            authz: AuthzContext::scoped_access(
+                principal,
+                accessible_principals,
+                ToolScope::All,
+                access,
+                AuthPath::HostBearer,
+            ),
             handles: None,
             mode: OutputMode::PrefixedIds,
             registry: Arc::new(FlavorRegistry::new().freeze()),
@@ -241,11 +223,10 @@ mod tests {
 
     #[tokio::test]
     async fn memory_spaces_lists_accessible_principals_without_raw_authority() {
-        let personal = Principal::User(UserId::new(uuid::Uuid::now_v7()));
-        let shared = Principal::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let personal = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let shared = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
         let shared_key = space_key(&shared);
-        let ctx =
-            make_ctx_with_accessible(vec![personal.clone(), shared], AccessScope::Unrestricted);
+        let ctx = make_ctx_with_accessible(vec![personal, shared], AccessScope::Unrestricted);
 
         let out = MemorySpacesTool::call(ctx, MemorySpacesArgs {})
             .await
@@ -259,7 +240,7 @@ mod tests {
 
     #[tokio::test]
     async fn memory_spaces_granted_scope_reports_grant_gated_access() {
-        let personal = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let personal = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let ctx = make_ctx_with_accessible(vec![personal], AccessScope::Granted);
 
         let out = MemorySpacesTool::call(ctx, MemorySpacesArgs {})
@@ -272,10 +253,9 @@ mod tests {
 
     #[test]
     fn resolution_omitted_space_matches_current_owner() {
-        let personal = Principal::User(UserId::new(uuid::Uuid::now_v7()));
-        let shared = Principal::Group(GroupId::new(uuid::Uuid::now_v7()));
-        let ctx =
-            make_ctx_with_accessible(vec![personal.clone(), shared], AccessScope::Unrestricted);
+        let personal = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let shared = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let ctx = make_ctx_with_accessible(vec![personal, shared], AccessScope::Unrestricted);
 
         let resolved = resolve_space_owner(&ctx, None, SpaceDefault::Current).unwrap();
         assert_eq!(resolved.key, "current");
@@ -284,16 +264,11 @@ mod tests {
 
     #[test]
     fn resolution_rejects_owner_without_visibility() {
-        let user = Principal::User(UserId::new(uuid::Uuid::now_v7()));
-        let hidden = Principal::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let user = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let hidden = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
         let mut accessible_principals = HashSet::new();
-        accessible_principals.insert(user.clone());
-        let ctx = make_ctx(
-            user.clone(),
-            user,
-            accessible_principals,
-            AccessScope::Unrestricted,
-        );
+        accessible_principals.insert(user);
+        let ctx = make_ctx(user, user, accessible_principals, AccessScope::Unrestricted);
         let hidden_key = space_key(&hidden);
 
         let err = resolve_space_owner(&ctx, Some(&hidden_key), SpaceDefault::Current).unwrap_err();

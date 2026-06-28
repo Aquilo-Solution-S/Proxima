@@ -4,18 +4,18 @@ use proxima_core::verbs::query::{
     EdgeExistsRequest, EdgeFilter, EdgeReadRequest, MemoryLineageDirection, MemoryLineageRequest,
 };
 use proxima_core::{
-    CORE_DERIVED_FROM_RELATION, EdgeId, EntityKind, GroupId, MemoryId, Principal, RelationClass,
+    CORE_DERIVED_FROM_RELATION, EdgeId, EntityKind, GroupId, MemoryId, OwnerRef, RelationClass,
     Storage, UserId,
 };
 use uuid::Uuid;
 
 struct EdgeReadFixture {
-    p: Principal,
-    q: Principal,
-    p_read: Vec<Principal>,
-    q_read: Vec<Principal>,
-    p_without_g1_read: Vec<Principal>,
-    world_read: Vec<Principal>,
+    p: OwnerRef,
+    q: OwnerRef,
+    p_read: Vec<OwnerRef>,
+    q_read: Vec<OwnerRef>,
+    p_without_g1_read: Vec<OwnerRef>,
+    world_read: Vec<OwnerRef>,
     a: MemoryId,
     f1: MemoryId,
     a_to_f1: EdgeId,
@@ -81,8 +81,8 @@ async fn lineage_hides_unreadable_sources_and_stops_at_redacted_fact_targets()
 
     let result = async {
         let fixture = seed_edge_read_fixture(&pg).await?;
-        let gp = fixture.p_without_g1_read[1].clone();
-        let g1 = fixture.q_read[1].clone();
+        let gp = fixture.p_without_g1_read[1];
+        let g1 = fixture.q_read[1];
         let lifecycle = seed_memory(&pg, &gp, EntityKind::Fact, "lifecycle").await?;
         let evidence = seed_memory(&pg, &g1, EntityKind::Fact, "evidence").await?;
         let lifecycle_edge = seed_memory_edge(
@@ -99,7 +99,7 @@ async fn lineage_hides_unreadable_sources_and_stops_at_redacted_fact_targets()
             .walk_memory_lineage(
                 &fixture.q_read,
                 &MemoryLineageRequest {
-                    principal: fixture.q.clone(),
+                    principal: fixture.q,
                     start_memory_id: fixture.f1,
                     direction: MemoryLineageDirection::Descendants,
                     depth: 3,
@@ -126,7 +126,7 @@ async fn lineage_hides_unreadable_sources_and_stops_at_redacted_fact_targets()
             .walk_memory_lineage(
                 &fixture.p_without_g1_read,
                 &MemoryLineageRequest {
-                    principal: fixture.p.clone(),
+                    principal: fixture.p,
                     start_memory_id: lifecycle,
                     direction: MemoryLineageDirection::Ancestors,
                     depth: 2,
@@ -154,7 +154,7 @@ async fn lineage_hides_unreadable_sources_and_stops_at_redacted_fact_targets()
             .walk_memory_lineage(
                 &fixture.q_read,
                 &MemoryLineageRequest {
-                    principal: fixture.q.clone(),
+                    principal: fixture.q,
                     start_memory_id: evidence,
                     direction: MemoryLineageDirection::Descendants,
                     depth: 2,
@@ -182,14 +182,14 @@ async fn lineage_hides_unreadable_sources_and_stops_at_redacted_fact_targets()
 
 async fn read_edge_by_id(
     pg: &proxima_storage_pg::PgStorage,
-    read_owners: &[Principal],
-    principal: &Principal,
+    read_owners: &[OwnerRef],
+    principal: &OwnerRef,
     edge_id: EdgeId,
 ) -> Result<proxima_core::verbs::query::EdgeReadResponse, proxima_core::StorageError> {
     pg.read_edges(
         read_owners,
         &EdgeReadRequest {
-            principal: principal.clone(),
+            principal: *principal,
             edge_ids: vec![edge_id],
             filter: EdgeFilter::default(),
             limit: 10,
@@ -200,14 +200,14 @@ async fn read_edge_by_id(
 
 async fn edge_exists_by_id(
     pg: &proxima_storage_pg::PgStorage,
-    read_owners: &[Principal],
-    principal: &Principal,
+    read_owners: &[OwnerRef],
+    principal: &OwnerRef,
     edge_id: EdgeId,
 ) -> Result<proxima_core::verbs::query::EdgeExistsResponse, proxima_core::StorageError> {
     pg.edge_exists(
         read_owners,
         &EdgeExistsRequest {
-            principal: principal.clone(),
+            principal: *principal,
             edge_ids: vec![edge_id],
             filter: EdgeFilter::default(),
         },
@@ -218,11 +218,11 @@ async fn edge_exists_by_id(
 async fn seed_edge_read_fixture(
     pg: &proxima_storage_pg::PgStorage,
 ) -> Result<EdgeReadFixture, Box<dyn std::error::Error>> {
-    let p = Principal::User(UserId::new(Uuid::now_v7()));
-    let q = Principal::User(UserId::new(Uuid::now_v7()));
-    let gp = Principal::Group(GroupId::new(Uuid::now_v7()));
-    let g1 = Principal::Group(GroupId::new(Uuid::now_v7()));
-    let private = Principal::Group(GroupId::new(Uuid::now_v7()));
+    let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let q = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let gp = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    let g1 = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    let private = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
     let world = world();
 
     let f1 = seed_memory(pg, &g1, EntityKind::Fact, "F1").await?;
@@ -251,11 +251,11 @@ async fn seed_edge_read_fixture(
     .await?;
 
     Ok(EdgeReadFixture {
-        p: p.clone(),
-        q: q.clone(),
-        p_read: vec![p.clone(), gp.clone(), g1.clone(), world.clone()],
-        q_read: vec![q, g1, world.clone()],
-        p_without_g1_read: vec![p, gp, world.clone()],
+        p,
+        q,
+        p_read: vec![p, gp, g1, world],
+        q_read: vec![q, g1, world],
+        p_without_g1_read: vec![p, gp, world],
         world_read: vec![world],
         a,
         f1,

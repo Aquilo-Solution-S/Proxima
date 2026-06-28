@@ -18,7 +18,7 @@ mod common;
 use common::{migrated_db, test_owner};
 use proxima_code::{LocalGitSource, build_engine};
 use proxima_core::storage::Storage;
-use proxima_core::{Cursor, Owner, Principal};
+use proxima_core::{Cursor, Owner};
 use proxima_pg_testkit::drop_db;
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -111,22 +111,18 @@ fn count_branch_commits(repo: &Path, branch: &str) -> usize {
 }
 
 async fn count_commit_v1_facts(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) -> i64 {
-    let kind = proxima_core::OwnerPrincipalKind::of(owner);
-    let principal_id = match owner {
-        Principal::User(u) => u.into_inner(),
-        Principal::Group(g) => g.into_inner(),
-    };
-    let row: (i64,) = sqlx::query_as(
+    let (kind, principal_id) = owner.columns();
+    let row: (i64,) = sqlx::query_as(proxima_storage_pg::access::owner_ref_compat::sql(
         "SELECT COUNT(*)::bigint \
          FROM proxima_core.memories m \
          JOIN proxima_code.commit_v1 s USING (memory_id) \
-         JOIN proxima_core.entity_owner eo \
+         JOIN __PROXIMA_ENTITY_OWNER__ eo \
            ON eo.entity_id = m.memory_id \
           AND eo.is_home \
          WHERE eo.owner_principal_kind = $1 \
            AND eo.owner_principal_id = $2 \
            AND s.repo_id = $3",
-    )
+    ))
     .bind(kind)
     .bind(principal_id)
     .bind(repo_id)
@@ -155,7 +151,7 @@ async fn self_ingestion_streams_proxima_main() {
 
         // Phase 1 — historical ingestion.
         let repo_id = Uuid::now_v7();
-        let source = LocalGitSource::new(repo_id, clone_path.clone(), owner.clone());
+        let source = LocalGitSource::new(repo_id, clone_path.clone(), owner);
         let cursor = Cursor::empty();
         let (r1, cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
         assert!(
@@ -180,8 +176,8 @@ async fn self_ingestion_streams_proxima_main() {
             .query(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 &proxima_core::verbs::query::QueryRequest {
-                    principal: owner.clone(),
-                    read_owners: vec![owner.clone()],
+                    principal: owner,
+                    read_owners: vec![owner],
                     entity_kind: Some(proxima_core::verbs::query::EntityKind::Fact),
                     schema_id: Some(commit_schema.clone()),
                     supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,
@@ -238,8 +234,8 @@ async fn self_ingestion_streams_proxima_main() {
             .query(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 &proxima_core::verbs::query::QueryRequest {
-                    principal: owner.clone(),
-                    read_owners: vec![owner.clone()],
+                    principal: owner,
+                    read_owners: vec![owner],
                     entity_kind: Some(proxima_core::verbs::query::EntityKind::Fact),
                     schema_id: None,
                     supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,

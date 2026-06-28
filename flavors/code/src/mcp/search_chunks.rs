@@ -99,7 +99,7 @@ impl McpTool for CodeSearchChunksTool {
             };
             let pool = pg_pool(&ctx)?;
 
-            let sql = format!(
+            let sql = proxima_storage_pg::access::owner_ref_compat::sql_owned(format!(
                 "WITH {CHUNK_HEADS_CTE}, q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $3) AS tsq)
                  SELECT memory_id, repo_id, file_path, chunk_index, language,
                         chunk_type, line_range_start, line_range_end,
@@ -123,7 +123,7 @@ impl McpTool for CodeSearchChunksTool {
                    )
                  ORDER BY score DESC, memory_id DESC
                  LIMIT $8"
-            );
+            ));
             let rows: Vec<ChunkRow> = sqlx::query_as(&sql)
                 .bind(owner_kind)
                 .bind(owner_principal_id)

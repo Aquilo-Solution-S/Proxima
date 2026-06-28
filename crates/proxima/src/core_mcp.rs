@@ -159,7 +159,7 @@ impl CoreMcpTools {
             caller_self_perspective: None,
         };
         let auth = McpAuthContext {
-            owner: owner.clone(),
+            owner,
             authz,
             model_id,
             master_token_id: None,
@@ -193,7 +193,7 @@ impl CoreMcpTools {
             caller_self_perspective: None,
         };
         let auth = McpAuthContext {
-            owner: owner.clone(),
+            owner,
             authz,
             model_id,
             master_token_id: None,

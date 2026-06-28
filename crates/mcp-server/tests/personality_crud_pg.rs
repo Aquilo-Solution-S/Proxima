@@ -8,7 +8,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use common::{create_db, db_url, drop_db, initialize, initialized, post_rpc};
-use proxima_core::{Engine, FlavorRegistry, Principal, UserId};
+use proxima_core::{Engine, FlavorRegistry, OwnerRef, UserId};
 use proxima_mcp_server::{McpEdgeAuth, McpToolHost, default_allowlist, serve_streamable_http};
 use proxima_storage_pg::PgStorage;
 use serde_json::{Value, json};
@@ -73,7 +73,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
 
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
-    let owner = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     // The personality CRUD core tools dispatch through an attached engine,
     // so wire one over the same PG storage (Engine::compose embedding shape).
     let pg = PgStorage::connect(&database_url).await?;
@@ -81,14 +81,14 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
     let engine = Arc::new(Engine::compose(Arc::new(pg.clone()), |_| {}));
     let server = McpToolHost::from_pool(
         pg.pool().clone(),
-        owner.clone(),
+        owner,
         Arc::new(FlavorRegistry::new().freeze()),
     )
     .with_engine(engine);
     let auth_store = Arc::new(McpEdgeAuth::headless());
     let master_token = uuid::Uuid::now_v7();
     auth_store
-        .replace_local_master_token(master_token, owner.clone())
+        .replace_local_master_token(master_token, owner)
         .await;
 
     let (handle, addr) = serve_streamable_http(

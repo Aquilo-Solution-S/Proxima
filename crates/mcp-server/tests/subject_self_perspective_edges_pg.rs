@@ -6,7 +6,7 @@ use common::{create_db, db_url, drop_db};
 use proxima_core::mcp::{McpAuthorContext, PrefixedUuidClass, parse_prefixed_uuid};
 use proxima_core::storage::Storage;
 use proxima_core::test_fixtures::ConstantEmbedding;
-use proxima_core::{AuthPath, AuthzContext, Engine, FlavorRegistry, Owner, Principal, UserId};
+use proxima_core::{AuthPath, AuthzContext, Engine, FlavorRegistry, Owner, OwnerRef, UserId};
 use proxima_mcp_server::{McpAuthContext, McpToolHost};
 use proxima_storage_pg::PgStorage;
 use serde_json::json;
@@ -20,7 +20,7 @@ async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
 
-    let owner = Principal::User(UserId::new(Uuid::now_v7()));
+    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
 
     let registry = FlavorRegistry::new();
     let frozen = registry.freeze();
@@ -32,8 +32,8 @@ async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
                 &[1.0, 0.0, 0.0],
             ))),
     );
-    let server = McpToolHost::from_pool(pg.pool().clone(), owner.clone(), Arc::new(frozen))
-        .with_engine(engine);
+    let server =
+        McpToolHost::from_pool(pg.pool().clone(), owner, Arc::new(frozen)).with_engine(engine);
     let auth = host_bearer_auth(&owner);
 
     let remembered = server
@@ -122,7 +122,7 @@ async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
 
 fn host_bearer_auth(owner: &Owner) -> McpAuthContext {
     McpAuthContext {
-        owner: owner.clone(),
+        owner: *owner,
         authz: AuthzContext::single_owner(owner, AuthPath::HostBearer),
         model_id: None,
         master_token_id: None,

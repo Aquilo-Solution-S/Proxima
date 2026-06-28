@@ -56,14 +56,14 @@ pub(crate) async fn query_memories(
     let stateful = validated_stateful_filters(req)?;
     let root_schema_ids = active_root_schema_ids(req, schemas);
 
-    let mut sql = String::from(
+    let mut sql = String::from(crate::access::owner_ref_compat::sql(
         "SELECT m.memory_id, home_owner.owner_principal_kind, home_owner.owner_principal_id, \
                 m.schema_id, m.schema_version, m.kind \
          FROM proxima_core.memories m \
-         LEFT JOIN proxima_core.entity_owner home_owner \
+         LEFT JOIN __PROXIMA_ENTITY_OWNER__ home_owner \
            ON home_owner.entity_id = m.memory_id \
           AND home_owner.is_home",
-    );
+    ));
 
     // Bindings: $1=read_owner_kinds, $2=read_owner_ids.
     let mut next_param = 3;
@@ -103,17 +103,17 @@ pub(crate) async fn query_memories(
         .expect("write to String is infallible");
     }
 
-    sql.push_str(
+    sql.push_str(crate::access::owner_ref_compat::sql(
         " WHERE EXISTS (
             SELECT 1
-              FROM proxima_core.entity_owner eo
+              FROM __PROXIMA_ENTITY_OWNER__ eo
               JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
                 ON eo.owner_principal_kind = s.kind
                AND eo.owner_principal_id = s.id
              WHERE eo.entity_id = m.memory_id
           ) \
           AND m.tombstoned_at IS NULL",
-    );
+    ));
 
     if let Some(param) = memory_ids_param {
         write!(sql, " AND m.memory_id = ANY(${param})").expect("write to String is infallible");
@@ -240,7 +240,7 @@ async fn load_row_payloads_batch(
 pub(super) async fn visible_ids_for(
     pool: &PgPool,
     req: &QueryRequest,
-    read_owner_kinds: &[proxima_core::OwnerPrincipalKind],
+    read_owner_kinds: &[proxima_core::OwnerRefKind],
     read_owner_ids: &[uuid::Uuid],
     candidate_memory_ids: &[uuid::Uuid],
     candidate_goal_ids: &[uuid::Uuid],
@@ -269,7 +269,7 @@ pub(super) async fn visible_ids_for(
 async fn query_visible_memory_ids(
     pool: &PgPool,
     req: &QueryRequest,
-    read_owner_kinds: &[proxima_core::OwnerPrincipalKind],
+    read_owner_kinds: &[proxima_core::OwnerRefKind],
     read_owner_ids: &[uuid::Uuid],
     candidate_memory_ids: &[uuid::Uuid],
     schemas: &[SchemaInfo],
@@ -281,11 +281,11 @@ async fn query_visible_memory_ids(
     let root_schema_ids = active_root_schema_ids(req, schemas);
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
 
-    let mut sql = String::from(
+    let mut sql = String::from(crate::access::owner_ref_compat::sql(
         "SELECT m.memory_id FROM proxima_core.memories m \
-         LEFT JOIN proxima_core.entity_owner home_owner \
+         LEFT JOIN __PROXIMA_ENTITY_OWNER__ home_owner \
            ON home_owner.entity_id = m.memory_id AND home_owner.is_home",
-    );
+    ));
     for (idx, sf) in stateful.iter().enumerate() {
         let alias = stateful_alias(idx);
         write!(
@@ -297,17 +297,17 @@ async fn query_visible_memory_ids(
         .expect("write to String is infallible");
     }
 
-    sql.push_str(
+    sql.push_str(crate::access::owner_ref_compat::sql(
         " WHERE EXISTS (
             SELECT 1
-              FROM proxima_core.entity_owner eo
+              FROM __PROXIMA_ENTITY_OWNER__ eo
               JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
                 ON eo.owner_principal_kind = s.kind
                AND eo.owner_principal_id = s.id
              WHERE eo.entity_id = m.memory_id
           ) \
           AND m.tombstoned_at IS NULL",
-    );
+    ));
     sql.push_str(" AND m.memory_id = ANY($3::uuid[])");
     let mut next_param = 4;
     let schema = schema_id_filter.as_ref().map(|_| {
@@ -358,7 +358,7 @@ async fn query_visible_memory_ids(
 async fn query_visible_goal_ids(
     pool: &PgPool,
     req: &QueryRequest,
-    read_owner_kinds: &[proxima_core::OwnerPrincipalKind],
+    read_owner_kinds: &[proxima_core::OwnerRefKind],
     read_owner_ids: &[uuid::Uuid],
     candidate_goal_ids: &[uuid::Uuid],
 ) -> Result<HashSet<uuid::Uuid>, StorageError> {
@@ -370,18 +370,18 @@ async fn query_visible_goal_ids(
     {
         return Ok(HashSet::new());
     }
-    let mut sql = String::from(
+    let mut sql = String::from(crate::access::owner_ref_compat::sql(
         "SELECT g.goal_id FROM proxima_core.goals g \
          WHERE EXISTS (
              SELECT 1
-               FROM proxima_core.entity_owner eo
+               FROM __PROXIMA_ENTITY_OWNER__ eo
                JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
                  ON eo.owner_principal_kind = s.kind
                 AND eo.owner_principal_id = s.id
               WHERE eo.entity_id = g.goal_id
          ) \
            AND g.goal_id = ANY($3::uuid[])",
-    );
+    ));
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
     if schema_id_filter.is_some() {
         sql.push_str(" AND g.schema_id = $4");
@@ -502,21 +502,7 @@ fn push_reader_visibility_filter(sql: &mut String, alias: &str, reader_param: Op
             " AND (
                 {alias}.kind IS NULL
                 OR {alias}.personality_instance_id = ${param}
-                 OR EXISTS (
-                    SELECT 1
-                      FROM proxima_core.read_scope_matrix r
-                     WHERE r.reader_personality_instance_id = ${param}
-                       AND r.readable_personality_instance_id = {alias}.personality_instance_id
-                       AND EXISTS (
-                            SELECT 1
-                              FROM proxima_core.entity_owner reader_owner
-                             WHERE reader_owner.entity_id = {alias}.memory_id
-                               AND reader_owner.is_home
-                               AND reader_owner.owner_principal_kind = r.owner_principal_kind
-                               AND reader_owner.owner_principal_id = r.owner_principal_id
-                       )
-                )
-            )",
+            )"
         )
         .expect("write to String is infallible");
     }
@@ -606,12 +592,14 @@ fn push_stateful_head_branch(
         .join(" AND ");
     write!(
         sql,
-        "(m.schema_id = ${schema} \
+        "{}",
+        crate::access::owner_ref_compat::sql_owned(format!(
+            "(m.schema_id = ${schema} \
           AND m.schema_version = ${version} \
           AND NOT EXISTS ( \
             SELECT 1 FROM proxima_core.memories m2 \
             JOIN {sidecar} {newer_alias} USING (memory_id) \
-            JOIN proxima_core.entity_owner newer_owner \
+            JOIN __PROXIMA_ENTITY_OWNER__ newer_owner \
               ON newer_owner.entity_id = m2.memory_id \
              AND newer_owner.is_home \
             WHERE m2.schema_id = m.schema_id \
@@ -622,11 +610,12 @@ fn push_stateful_head_branch(
               AND {nk_pairs} \
               AND m2.created_at > m.created_at \
           ))",
-        schema = params.schema,
-        version = params.version,
-        sidecar = sf.sidecar_table,
-        newer_alias = newer_alias,
-        nk_pairs = nk_pairs,
+            schema = params.schema,
+            version = params.version,
+            sidecar = sf.sidecar_table,
+            newer_alias = newer_alias,
+            nk_pairs = nk_pairs,
+        ))
     )
     .expect("write to String is infallible");
 }

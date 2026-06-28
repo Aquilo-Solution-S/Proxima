@@ -8,8 +8,8 @@ use proxima_core::mcp::core_tools::get_memory::{GetMemoryArgs, get_memory};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
     AgentNoteV1, AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FactPayload,
-    FlavorRegistry, FlavorRegistryFrozen, McpToolError, MemoryId, Owner, PersonalityInstanceId,
-    Principal, SchemaId, UserId,
+    FlavorRegistry, FlavorRegistryFrozen, McpToolError, MemoryId, Owner, OwnerRef,
+    PersonalityInstanceId, SchemaId, UserId,
 };
 use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgSidecarFuture,
@@ -908,7 +908,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     let frozen = Arc::new(registry.freeze());
     let frozen_b = frozen.clone();
     let owner_a = nil_owner();
-    let owner_b: Owner = Principal::User(UserId::new(uuid::Uuid::from_u128(1)));
+    let owner_b: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::from_u128(1)));
 
     let shared_args = || {
         json!({
@@ -1124,7 +1124,7 @@ async fn call_tool_prefixed(
     let caller_self_perspective = author.caller_self_perspective;
     (descriptor.call)(
         McpToolCtx {
-            owner: owner.clone(),
+            owner: *owner,
             authz: AuthzContext::single_owner(owner, AuthPath::System),
             handles: None,
             mode: OutputMode::PrefixedIds,
@@ -1151,7 +1151,7 @@ async fn read_memory_prefixed(
     let caller_self_perspective = author.caller_self_perspective;
     let output = get_memory(
         McpToolCtx {
-            owner: owner.clone(),
+            owner: *owner,
             authz: AuthzContext::single_owner(owner, AuthPath::System),
             handles: None,
             mode: OutputMode::PrefixedIds,
@@ -1191,7 +1191,7 @@ async fn call_tool_with_engine(
         .expect("registered tool");
     (descriptor.call)(
         McpToolCtx {
-            owner: owner.clone(),
+            owner: *owner,
             authz: AuthzContext::single_owner(owner, AuthPath::System),
             handles: Some(handles.clone()),
             mode: OutputMode::Handles,

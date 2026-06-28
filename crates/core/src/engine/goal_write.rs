@@ -20,7 +20,7 @@ pub enum GoalTargetSelf {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalCreatePayloadWriteRequest {
-    pub principal: crate::Principal,
+    pub principal: crate::OwnerRef,
     pub target_self: GoalTargetSelf,
     pub payload: GoalPayloadWrite,
     pub request_id: IdempotencyKey,
@@ -32,7 +32,7 @@ pub struct GoalCreatePayloadWriteRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalTransitionRequest {
-    pub principal: crate::Principal,
+    pub principal: crate::OwnerRef,
     pub prior_goal_id: crate::GoalId,
     pub next_state: GoalState,
     pub authorship: GoalAuthorship,
@@ -42,7 +42,7 @@ pub struct GoalTransitionRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalMarkAchievedRequest {
-    pub principal: crate::Principal,
+    pub principal: crate::OwnerRef,
     pub prior_goal_id: crate::GoalId,
     pub authorship: GoalAuthorship,
     pub request_id: IdempotencyKey,
@@ -52,7 +52,7 @@ pub struct GoalMarkAchievedRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalModifyRequest {
-    pub principal: crate::Principal,
+    pub principal: crate::OwnerRef,
     pub prior_goal_id: crate::GoalId,
     pub replacement: GoalPayloadWrite,
     pub authorship: GoalAuthorship,
@@ -63,7 +63,7 @@ pub struct GoalModifyRequest {
 
 #[derive(Debug)]
 pub struct GoalDecomposeRequest {
-    pub principal: crate::Principal,
+    pub principal: crate::OwnerRef,
     pub parent_goal_id: crate::GoalId,
     pub authorship: GoalAuthorship,
     pub target_self: GoalTargetSelf,
@@ -125,7 +125,7 @@ impl Engine {
             .author_self_perspective_authorized(authz, req.author_self_perspective_id)
             .await?;
         let draft = GoalDraft::active_from_payload_write(
-            permit.owner().clone(),
+            *permit.owner(),
             payload,
             req.parent_goal_ids.clone(),
             req.authorship.clone(),
@@ -169,7 +169,7 @@ impl Engine {
             self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
         self.storage()
             .transition_goal_atomic(&TransitionGoalAtomicRequest {
-                owner: permit.owner().clone(),
+                owner: *permit.owner(),
                 prior_goal_id: req.prior_goal_id,
                 next_state: req.next_state,
                 authorship: req.authorship.clone(),
@@ -204,7 +204,7 @@ impl Engine {
             self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
         self.storage()
             .achieve_goal_atomic(&AchieveGoalAtomicRequest {
-                owner: permit.owner().clone(),
+                owner: *permit.owner(),
                 prior_goal_id: req.prior_goal_id,
                 authorship: req.authorship.clone(),
                 request_id: req.request_id.clone(),
@@ -240,7 +240,7 @@ impl Engine {
             self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
         self.storage()
             .modify_goal_atomic(&ModifyGoalAtomicRequest {
-                owner: permit.owner().clone(),
+                owner: *permit.owner(),
                 prior_goal_id: req.prior_goal_id,
                 replacement: self.normalize_payload_write(req.replacement.clone())?,
                 authorship: req.authorship.clone(),
@@ -288,7 +288,7 @@ impl Engine {
             self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
         self.storage()
             .decompose_goal_atomic(&DecomposeGoalAtomicRequest {
-                owner: permit.owner().clone(),
+                owner: *permit.owner(),
                 parent_goal_id: req.parent_goal_id,
                 authorship: req.authorship.clone(),
                 context,
@@ -350,7 +350,7 @@ impl Engine {
         let embedding_client = self.embed_client();
         let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
         let draft = GoalDraft::active_from_payload_write(
-            permit.owner().clone(),
+            *permit.owner(),
             payload_write,
             parent_goal_ids,
             authorship,
@@ -456,9 +456,9 @@ impl Engine {
         };
         let home_owner = self
             .storage()
-            .entity_home_owner(EntityId::Memory(memory_id))
+            .home_owner(EntityId::Memory(memory_id))
             .await
-            .map_err(|err| ProtocolError::internal(format!("entity_home_owner: {err}")))?
+            .map_err(|err| ProtocolError::internal(format!("home_owner: {err}")))?
             .ok_or_else(|| ProtocolError::forbidden("entry not found"))?;
         self.authorize_write(authz, &home_owner, Relation::Editor)
             .await?;
@@ -524,7 +524,7 @@ mod tests {
     use crate::error::ErrorCode;
     use crate::verbs::goal_write::{GoalEvidenceRef, SystemOrigin};
     use crate::{
-        AuthPath, Engine, FlavorRegistry, GoalId, GoalPayload, GroupId, Owner, Principal, SchemaId,
+        AuthPath, Engine, FlavorRegistry, GoalId, GoalPayload, GroupId, Owner, OwnerRef, SchemaId,
         SchemaVersion, ToolId, UserId,
     };
 
@@ -544,12 +544,12 @@ mod tests {
         Engine::new(FlavorRegistry::new().freeze())
     }
 
-    fn owner() -> crate::Principal {
-        crate::Principal::User(crate::UserId::new(uuid::Uuid::now_v7()))
+    fn owner() -> crate::OwnerRef {
+        crate::OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()))
     }
 
     fn storage_with_memory(
-        member: Principal,
+        member: OwnerRef,
         home_owner: Owner,
         entity_readable: bool,
         memory_kind: EntityKind,
@@ -606,10 +606,10 @@ mod tests {
     #[tokio::test]
     async fn author_self_perspective_denies_foreign_write_owner() {
         let owner = owner();
-        let foreign = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let foreign = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let memory_id = memory_id();
         let engine = engine_with_storage(storage_with_memory(
-            owner.clone(),
+            owner,
             foreign,
             true,
             EntityKind::Perspective,
@@ -631,8 +631,8 @@ mod tests {
         let owner = owner();
         let memory_id = memory_id();
         let engine = engine_with_storage(storage_with_memory(
-            owner.clone(),
-            owner.clone(),
+            owner,
+            owner,
             true,
             EntityKind::Perspective,
         ));
@@ -651,16 +651,16 @@ mod tests {
     #[tokio::test]
     async fn create_goal_from_payload_write_denies_unreadable_self_perspective_target() {
         let owner = owner();
-        let foreign = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let foreign = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let target = memory_id();
         let engine = engine_with_storage(storage_with_memory(
-            owner.clone(),
+            owner,
             foreign,
             false,
             EntityKind::Perspective,
         ));
         let req = GoalCreatePayloadWriteRequest {
-            principal: owner.clone(),
+            principal: owner,
             target_self: GoalTargetSelf::SelfPerspective(target),
             payload: payload_write(),
             request_id: request_id("create-unreadable-target"),
@@ -684,16 +684,16 @@ mod tests {
     #[tokio::test]
     async fn decompose_goal_denies_unreadable_self_perspective_target() {
         let owner = owner();
-        let foreign = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let foreign = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let target = memory_id();
         let engine = engine_with_storage(storage_with_memory(
-            owner.clone(),
+            owner,
             foreign,
             false,
             EntityKind::Perspective,
         ));
         let req = GoalDecomposeRequest {
-            principal: owner.clone(),
+            principal: owner,
             parent_goal_id: goal_id(),
             authorship: tool_authorship(),
             target_self: GoalTargetSelf::SelfPerspective(target),
@@ -718,8 +718,8 @@ mod tests {
         let owner = owner();
         let target = memory_id();
         let engine = engine_with_storage(storage_with_memory(
-            owner.clone(),
-            owner.clone(),
+            owner,
+            owner,
             true,
             EntityKind::Perspective,
         ));
@@ -745,7 +745,7 @@ mod tests {
     async fn create_goal_from_payload_write_denies_denied_context() {
         let owner = owner();
         let req = GoalCreatePayloadWriteRequest {
-            principal: owner.clone(),
+            principal: owner,
             target_self: GoalTargetSelf::SelfPerspective(memory_id()),
             payload: payload_write(),
             request_id: request_id("create"),
@@ -755,7 +755,7 @@ mod tests {
             author_self_perspective_id: None,
         };
         let err = engine()
-            .create_goal_from_payload_write(&AuthzContext::denied(&owner), &req)
+            .create_goal_from_payload_write(&AuthzContext::denied_for_owner(&owner), &req)
             .await
             .expect_err("denied context must fail before schema or storage");
         assert_forbidden(&err);
@@ -765,7 +765,7 @@ mod tests {
     async fn transition_goal_denies_denied_context() {
         let owner = owner();
         let req = GoalTransitionRequest {
-            principal: owner.clone(),
+            principal: owner,
             prior_goal_id: goal_id(),
             next_state: GoalState::Paused,
             authorship: GoalAuthorship::User,
@@ -773,7 +773,7 @@ mod tests {
             author_self_perspective_id: None,
         };
         let err = engine()
-            .transition_goal(&AuthzContext::denied(&owner), &req)
+            .transition_goal(&AuthzContext::denied_for_owner(&owner), &req)
             .await
             .expect_err("denied context must fail before storage");
         assert_forbidden(&err);
@@ -783,7 +783,7 @@ mod tests {
     async fn modify_goal_denies_denied_context() {
         let owner = owner();
         let req = GoalModifyRequest {
-            principal: owner.clone(),
+            principal: owner,
             prior_goal_id: goal_id(),
             replacement: payload_write(),
             authorship: GoalAuthorship::User,
@@ -792,7 +792,7 @@ mod tests {
             author_self_perspective_id: None,
         };
         let err = engine()
-            .modify_goal(&AuthzContext::denied(&owner), &req)
+            .modify_goal(&AuthzContext::denied_for_owner(&owner), &req)
             .await
             .expect_err("denied context must fail before schema or storage");
         assert_forbidden(&err);
@@ -802,7 +802,7 @@ mod tests {
     async fn mark_goal_achieved_denies_denied_context() {
         let owner = owner();
         let req = GoalMarkAchievedRequest {
-            principal: owner.clone(),
+            principal: owner,
             prior_goal_id: goal_id(),
             authorship: tool_authorship(),
             request_id: request_id("achieved"),
@@ -812,7 +812,7 @@ mod tests {
             author_self_perspective_id: None,
         };
         let err = engine()
-            .mark_goal_achieved(&AuthzContext::denied(&owner), &req)
+            .mark_goal_achieved(&AuthzContext::denied_for_owner(&owner), &req)
             .await
             .expect_err("denied context must fail before storage");
         assert_forbidden(&err);
@@ -822,7 +822,7 @@ mod tests {
     async fn decompose_goal_denies_denied_context() {
         let owner = owner();
         let req = GoalDecomposeRequest {
-            principal: owner.clone(),
+            principal: owner,
             parent_goal_id: goal_id(),
             authorship: tool_authorship(),
             target_self: GoalTargetSelf::SelfPerspective(memory_id()),
@@ -834,7 +834,7 @@ mod tests {
             author_self_perspective_id: None,
         };
         let err = engine()
-            .decompose_goal(&AuthzContext::denied(&owner), &req)
+            .decompose_goal(&AuthzContext::denied_for_owner(&owner), &req)
             .await
             .expect_err("denied context must fail before target lookup or storage");
         assert_forbidden(&err);
