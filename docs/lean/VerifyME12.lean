@@ -6,11 +6,12 @@ namespace Causa
     conjunct), taken as hypothesis. Verify: full ME-12 is derivable
     from residue + edge_class_legal (ME-11). -/
 theorem me12_from_residue
+    (registry : RelationRegistry)
     (residue : ∀ e : Edge,
-      EdgeHasClass e .Supersession →
+      EdgeHasClass registry e .Supersession →
       ((∃ ms mt : Memory, edge_source e = .memory ms ∧ edge_target e = .memory mt) ∨
        (∃ gs gt : Goal, edge_source e = .goal gs ∧ edge_target e = .goal gt))) :
-    ∀ e : Edge, EdgeCoreValid e → EdgeHasClass e .Supersession →
+    ∀ e : Edge, EdgeCoreValid registry e → EdgeHasClass registry e .Supersession →
       ((∃ ms mt : Memory, edge_source e = .memory ms ∧ edge_target e = .memory mt ∧
           memory_kind ms = memory_kind mt) ∨
        (∃ gs gt : Goal, edge_source e = .goal gs ∧ edge_target e = .goal gt)) := by
@@ -19,7 +20,7 @@ theorem me12_from_residue
   | inr hg => exact .inr hg
   | inl hm =>
     have ⟨ms, mt, hs, ht⟩ := hm
-    have hmem := edge_class_legal e .Supersession hsup ms mt hs ht
+    have hmem := edge_class_legal registry e .Supersession hsup ms mt hs ht
     cases hks : memory_kind ms <;> cases hkt : memory_kind mt <;>
       rw [hks, hkt] at hmem <;>
       first

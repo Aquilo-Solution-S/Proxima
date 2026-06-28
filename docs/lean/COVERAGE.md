@@ -38,7 +38,7 @@
 | AUTH-2 | World is read-only (never a write target) | THEOREM `world_read_only`, from `world := fun _ => some Role.viewer` (write ceiling 0) |
 | AUTH-3 | World is universally readable | THEOREM `world_universally_readable`, from World's `viewer` read ceiling covering every kind |
 | AUTH-4 | Per-memory ACL / owner-space grants absent — access is role-graded group membership | structural: no `AccessGrant`/`MemoryAction`; `Group := User → Option Role`; realign 2026-06-28 |
-| AUTH-EDGE | Edge write admission = source write + descriptor-selected target gate | defs `edge_write_admitted`, `targetAccessSatisfied`; THEOREMs `edge_write_admitted_core_valid`, `edge_write_admitted_source_write` |
+| AUTH-EDGE | Edge write admission = source write + registered descriptor-selected target gate | defs `edge_write_admitted`, `targetAccessSatisfied`; THEOREMs `edge_write_admitted_core_valid`, `edge_write_admitted_source_write` under `RelationRegistry` |
 | NEST-1 | Group nesting needs no new primitive — a nested group resolves to an ordinary `Owner` | def `Role.meet`/`Role.join` (role lattice) + `Group.mount`/`Group.union`; the kernel sees only the resolved `Owner`, nesting is host composition (Level 2, 2026-06-28) |
 | NEST-2 | Capped mounting cannot escalate write authority | THEOREM `mount_cannot_escalate` — if the cap may not write kind `k`, no member of the mounted group gains write `k` (meet caps the write ceiling) |
 | NEST-3 | Union grants at least each side's access | THEOREM `union_grants_each` — read via either group ⇒ read via the union (join never lowers a member's capability); write case analogous |
@@ -51,14 +51,14 @@
 | ME-2 | Fact owner is the memory row owner | structural: `Fact.memory` projects to `Memory.owner`; source/event owner inheritance moved out of core by D1 |
 | ME-3 | Optional free text is a Memory field for F/A/P; no kind-based text axiom | structure field `Memory.text : Option Text` + accessor `memory_text` |
 | ME-4 | Facts never supersede / never superseded | THEOREM `facts_never_supersede` (Edges.lean, from valid Supersession-class edge + matrix) |
-| ME-5a | Supersession same kind | THEOREM `supersession_same_kind` over `EdgeCoreValid` rows |
-| ME-5b | Supersession same owner | THEOREM `supersession_same_owner` over `EdgeCoreValid` rows, via descriptor `RelationOwnerPolicy.SameOwner` for Supersession |
+| ME-5a | Supersession same kind | THEOREM `supersession_same_kind` over `EdgeCoreValid registry` rows |
+| ME-5b | Supersession same owner | THEOREM `supersession_same_owner` over `EdgeCoreValid registry` rows, via descriptor `RelationOwnerPolicy.SameOwner` for Supersession |
 | ME-6 | Personality is not a materialized Memory author/owner slot | structural absence: no `PersonalityInstance`, no `personality_owner`, no `memory_authoring_personality`; D4 comment Memory.lean |
 | ME-7 | Facts below Perspectives; no personality read-scope matrix | theorem `principle_1_facts_below_perspective`; structural absence of `read_scope`/`personality_may_read`; wake read context deferred |
 | ME-8 | Materialized personality matrix removed | structural absence of `read_scope` and matrix-version state; wake context/read semantics deferred after D4 |
-| ME-9 | Edge scope source-owned; Supersession intra-Owner | row-validity predicate `EdgeSourceOwned` + descriptor owner policy `RelationOwnerPolicy`; projection THEOREMs `edge_source_owned`, `supersession_intra_owner` over `EdgeCoreValid` |
-| ME-10 | ℓ(source) ≥ ℓ(target) for valid memory edges | THEOREM `edge_layer_rule` (from `EdgeCoreValid` + matrix empty upward cells) |
-| ME-11 | Class-legality matrix (9 cells) | def `legalClasses` + THEOREM `edge_class_legal` (from `EdgeCoreValid` + descriptor `masksTightenOnly`) |
+| ME-9 | Edge scope source-owned; Supersession intra-Owner | row-validity predicate `EdgeSourceOwned` + descriptor owner policy `RelationOwnerPolicy`; projection THEOREMs `edge_source_owned`, `supersession_intra_owner` over `EdgeCoreValid registry` |
+| ME-10 | ℓ(source) ≥ ℓ(target) for valid memory edges | THEOREM `edge_layer_rule` (from `EdgeCoreValid registry` + matrix empty upward cells) |
+| ME-11 | Class-legality matrix (9 cells) | def `legalClasses` + THEOREM `edge_class_legal` (from `EdgeHasClass registry` + descriptor `masksTightenOnly`) |
 | ME-12 | Supersession same endpoint shape (incl. Goal→Goal) | row-validity predicate `EdgeSupersessionEndpointShapeValid` + THEOREM `supersession_same_endpoint_shape` |
 | ME-13 | Edges immutable v1 | `Edge` structure + instances `Immutable Edge`, `AppendOnly Edge` |
 | ME-14 | Descriptor masks tighten, never relax | structure `RelationDescriptor` with `endpointAdmitted` + proof field `masksTightenOnly`; row witness `EdgeValidWith`; projection THEOREM `edge_respects_mask` |
@@ -66,7 +66,7 @@
 | ME-16 | Memory id is identity | structure field `Memory.id` + table/store invariant `MemoryIdUnique` |
 | ME-17 | Personality is emergent from Perspective/wake context, not a stored instance | structural absence in Memory.lean/Principles.lean; no Personality module; wake entries deferred |
 | ME-18 | Cross-context supersession policy | excluded: wake/Perspective context semantics deferred after D4; no personality instance axis in kernel |
-| ME-19 | Relation registry: unregistered relations invalid | excluded: relation registration is engine admission; the kernel governs relation CLASS legality (`legalClasses`, Edges), not id-registration (D16) |
+| ME-19 | Relation registry: unregistered relations invalid | structure `RelationRegistry` with registered descriptor set + id uniqueness; `EdgeCoreValid registry` / `EdgeHasClass registry` require descriptor membership before a row is valid. Core relation table content still deferred to build-time vocabulary rows. |
 | ME-20 | Core relations table (derived-from/supersedes/inspires/authored) | excluded: vocabulary content, not law — flavors/core register ids; classes pinned by `RelationClass` |
 
 ## 04 — Consolidation (CN)
@@ -74,11 +74,11 @@
 | ID | Invariant | Carrier |
 |---|---|---|
 | CN-1 | F→A edge shape | def `operatorEdgeShape` + row-validity predicate `EdgeOperatorShapeValid`; full shape THEOREM `ftoa_edge_shape` |
-| CN-2 | A→P edge shape | same merged carrier + `EdgeCoreValid`; full shape THEOREM `atop_edge_shape` |
+| CN-2 | A→P edge shape | same merged carrier under `RelationRegistry`; full shape THEOREM `atop_edge_shape` |
 | CN-3 | A→Goal evidence shape (Structural class) | `operatorEdgeShape` OperatorAtoGoal arm + `EdgeOperatorShapeValid` |
 | CN-4 | frame/PerspectiveLink shape | `operatorEdgeShape` PerspectiveLink arm + `EdgeOperatorShapeValid` |
 | CN-5 | No downward writes | theorem `operator_memory_output_not_fact` + `EdgeOperatorShapeValid` + ME-1 Fact subtype |
-| CN-6 | Derived memories have valid provenance | axiom `derived_has_provenance` (merged, returns `EdgeCoreValid` edge); per-kind shapes THEOREMs `abstraction_has_provenance`, `perspective_has_provenance` |
+| CN-6 | Derived memories have valid provenance | axiom `derived_has_provenance` parameterized by `RelationRegistry` (merged, returns registered Provenance-class edge); per-kind shapes THEOREMs `abstraction_has_provenance`, `perspective_has_provenance` |
 | CN-7 | Cross-domain join is typed Abstraction | comment (shape carried by CN-6 + U-2 matrix) |
 | CN-8 | F→A batch-gate exclusivity per (owner, batch, input contract, operator, output schema) | axiom `ftoa_batch_exclusive`; wake context dimension deferred after D4, no personality dim |
 | CN-9 | Atomic invocation (all-or-nothing outputs) | excluded: storage-layer transaction contract (same stance as WH event/projection atomicity) |
@@ -109,8 +109,8 @@
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| SR-1 | Registry frozen at startup, no runtime registration | excluded: build-time composition mechanics — which flavors are linked is a build artifact, not kernel ontology (Composition.lean deleted 2026-06-28, D16) |
-| SR-2 | Every memory payload schema-typed | structure field `Memory.schema : SchemaRef` (accessor totality — every row carries an opaque schema tag). "Registered in the active registry" is engine admission, not a kernel rule (D16) |
+| SR-1 | Registry frozen at startup, no runtime registration | partial: relation-descriptor admission is now a kernel parameter (`RelationRegistry`); schema/tool/source/prompt registry freeze and flavor linking remain build-time engine mechanics (Composition.lean deleted 2026-06-28, D16) |
+| SR-2 | Every memory payload schema-typed | structure field `Memory.schema : SchemaRef` (accessor totality — every row carries an opaque schema tag). Schema registration in the active registry remains engine admission, not yet a kernel rule (D16) |
 | SR-8 | Schema ids flavor-qualified | excluded: namespacing is engine id-minting (collision-freedom = "the engine mints distinct ids"), not kernel ontology (D16) |
 | SR-11/16 | F/A/P may carry optional free text; sidecars may carry opaque typed payload | structure field `Memory.text : Option Text`; sidecar semantics deferred |
 | SR-13 | Fact identity ≠ payload hash; UUIDv7 | structure field `Memory.id` + table/store invariant `MemoryIdUnique` + ST-22 comment |

@@ -47,25 +47,26 @@ def EdgeTargetAccessValidWith
 /-- Requester-sensitive edge write admission. Descriptor validity supplies the
     relation row; source write is universal; target read/write is descriptor
     policy. -/
-def edge_write_admitted (requester : User) (e : Edge) : Prop :=
+def edge_write_admitted (registry : RelationRegistry) (requester : User) (e : Edge) : Prop :=
   ∃ d : RelationDescriptor,
+    d ∈ registry.descriptors ∧
     EdgeValidWith d e ∧
     may_write requester (edge_source e).owner (edge_source e).accessKind ∧
     EdgeTargetAccessValidWith requester d e
 
-/-- Write admission implies ordinary core row validity. -/
+/-- Write admission implies ordinary core row validity under the same registry. -/
 theorem edge_write_admitted_core_valid :
-    ∀ requester e, edge_write_admitted requester e → EdgeCoreValid e := by
-  intro requester e h
-  rcases h with ⟨d, hvalid, _, _⟩
-  exact ⟨d, hvalid⟩
+    ∀ registry requester e, edge_write_admitted registry requester e → EdgeCoreValid registry e := by
+  intro registry requester e h
+  rcases h with ⟨d, hregistered, hvalid, _, _⟩
+  exact ⟨d, hregistered, hvalid⟩
 
 /-- Write admission always includes source write authority. -/
 theorem edge_write_admitted_source_write :
-    ∀ requester e, edge_write_admitted requester e →
+    ∀ registry requester e, edge_write_admitted registry requester e →
       may_write requester (edge_source e).owner (edge_source e).accessKind := by
-  intro requester e h
-  rcases h with ⟨_, _, hsource, _⟩
+  intro registry requester e h
+  rcases h with ⟨_, _, _, hsource, _⟩
   exact hsource
 
 end Causa
