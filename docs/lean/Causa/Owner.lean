@@ -21,10 +21,10 @@ and forbid meta-management (`personal_forbids_manage`).
 billing/quota attribution is engine metadata, never a kernel face; org-wide
 visibility is a default `<org>-everyone` group.
 
-Owner here is the single `is_home` WRITE owner. Read-only sharing is realized
-as `entity_owner` reachability rows in `Causa.Authorization` (`reaches` /
-`may_read`), never as a flag on the entity: an entity carries one home Owner
-yet is reachable by many.
+Owner is the SINGLE owning Group of each entity. There is no separate
+`is_home`/`reaches`/`entity_owner` reachability layer (removed with the share
+set, D11): read-only sharing is a viewer-role membership in that one group, and
+publishing is transfer to World. One entity, one owner group.
 -/
 
 import Causa.Prelude
