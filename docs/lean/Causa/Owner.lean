@@ -7,8 +7,9 @@ its access scope.
 Ontology (realign 2026-06-28): **a resolved Owner is always a Group**, and a
 Group maps each member to a `Role`. Stable persisted owner references are modeled
 separately in `Causa.Identity` (`OwnerRef`); this file models the resolved
-Leopard-style result. The one irreducible atom is `User` (a person); groups,
-resolved owners, roles, and World are structural over it.
+Leopard-style result. The one irreducible atom is `User` (a role-bearing
+identity atom: human user, configured Agent, service actor); groups, resolved
+owners, roles, and World are structural over it.
 
 A `Role` is two independent capability ceilings over the access ladder
 F < A < P < G — how high a member may READ and how high they may WRITE (read and
@@ -39,11 +40,12 @@ namespace Causa
 -- The one irreducible atom
 -- ============================================================
 
-/-- A person — the single identity primitive of the kernel. The kernel cannot
-    define the set of persons structurally; their existence is its one input
-    from the world. Identity is the whole content of `User`: two users differ
-    because they are different inhabitants. Per-person attributes are flavor
-    sidecar data over this atom, never kernel fields. -/
+/-- The single role-bearing identity primitive of the kernel: human user,
+    configured Agent, service actor. The kernel cannot define this set
+    structurally; existence and concrete records are inputs from the world.
+    Identity is the whole content of `User`: two users differ because they are
+    different inhabitants. Human/Agent attributes, context, and tool catalogs
+    are flavor/engine sidecar data over this atom, never kernel fields. -/
 axiom User : Type
 
 /-- Spec-mode kernel: decidable person-equality comes from classical logic
@@ -129,8 +131,8 @@ abbrev Group : Type := User → Option Role
     carry stable `OwnerRef`s; authorization uses the host-resolved `Owner`. -/
 abbrev Owner : Type := Group
 
-/-- A user as an Owner: the personal group, in which only that user is a
-    member and holds the maximal `personal` role. -/
+/-- A user/agent as an Owner: the personal group, in which only that identity
+    is a member and holds the maximal `personal` role. -/
 noncomputable def Owner.ofUser (u : User) : Owner :=
   fun x => if x = u then some Role.personal else none
 
