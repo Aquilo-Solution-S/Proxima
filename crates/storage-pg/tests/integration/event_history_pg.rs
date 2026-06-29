@@ -4,7 +4,7 @@ use crate::common::{create_db, db_url, drop_db, fresh_pg, seed_memory, seed_memo
 use std::sync::Arc;
 
 use proxima_core::engine::Engine;
-use proxima_core::storage::Storage;
+use proxima_core::storage_ports::*;
 use proxima_core::verbs::event_history::EventHistoryRequest;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
@@ -89,9 +89,9 @@ fn fresh_event_draft(owner: Owner, payload: Vec<u8>) -> EventDraft {
     }
 }
 
-fn build_engine(storage: Arc<dyn Storage>, _owner: Owner, _principal: OwnerRef) -> Engine {
+fn build_engine(storage: StoragePorts, _owner: Owner, _principal: OwnerRef) -> Engine {
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-    Engine::new(registry).with_storage(storage)
+    Engine::new(registry).with_storage_ports(storage)
 }
 
 fn read_set_authz(
@@ -118,7 +118,7 @@ async fn event_history_returns_owner_scoped_newest_first() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
 
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
         let user1 = UserId::new(Uuid::now_v7());
         let user2 = UserId::new(Uuid::now_v7());
         let owner1 = OwnerRef::Personal(user1);
@@ -246,7 +246,7 @@ async fn event_history_surfaces_readable_non_world_source_edge_events()
             "read_edges keeps source-owned edge but redacts unreadable target"
         );
 
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
         let engine = build_engine(storage, p, p);
         let authz = read_set_authz(p, p_read);
         let history = engine

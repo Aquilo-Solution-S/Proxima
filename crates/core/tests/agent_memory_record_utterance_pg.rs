@@ -23,7 +23,7 @@ async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn
     let personality = PersonalityInstanceId::new(uuid::Uuid::now_v7());
     let engine = Arc::new(
         Engine::new(frozen_inner)
-            .with_storage(pg.clone().into_handle())
+            .with_storage_ports(Arc::new(pg.clone()).storage_ports())
             .with_embed(Arc::new(ConstantEmbedding::zero("test-utterance-embed"))),
     );
 

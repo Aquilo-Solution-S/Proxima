@@ -23,7 +23,9 @@ async fn core_read_resources_return_prefixed_ids_and_author()
     let edge = insert_edge(&pg, &owner, derived, source).await?;
 
     let registry = FlavorRegistry::new().freeze();
-    let engine = Arc::new(Engine::new(registry.clone()).with_storage(pg.clone().into_handle()));
+    let engine = Arc::new(
+        Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
+    );
     let server =
         McpToolHost::from_pool(pg.pool().clone(), owner, Arc::new(registry)).with_engine(engine);
     // The host is now the authoritative scope chokepoint, so reads need an

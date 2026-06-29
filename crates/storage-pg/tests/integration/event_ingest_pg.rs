@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
-use proxima_core::storage::Storage;
+use proxima_core::storage_ports::*;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
@@ -93,13 +93,13 @@ async fn event_ingest_writes_fact_and_change_event() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
 
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry).with_storage(storage);
+        let engine = Engine::new(registry).with_storage_ports(storage);
 
         let draft = fresh_draft(owner);
 
@@ -229,14 +229,14 @@ async fn list_change_events_for_replay_respects_bounds_and_owner() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
 
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let other_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry).with_storage(storage);
+        let engine = Engine::new(registry).with_storage_ports(storage);
 
         let first = engine
             .event_ingest(
@@ -290,14 +290,14 @@ async fn list_change_events_after_scopes_by_principal() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
 
         let principal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let stored_owner = principal;
         let requested_owner = principal;
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry).with_storage(storage);
+        let engine = Engine::new(registry).with_storage_ports(storage);
 
         let ingested = engine
             .event_ingest(
@@ -334,9 +334,9 @@ async fn list_change_events_after_filters_by_read_owners() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry).with_storage(storage);
+        let engine = Engine::new(registry).with_storage_ports(storage);
 
         let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let q = OwnerRef::Personal(UserId::new(Uuid::now_v7()));

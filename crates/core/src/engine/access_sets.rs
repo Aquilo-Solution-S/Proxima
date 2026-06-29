@@ -66,6 +66,8 @@ impl Engine {
 
                     let memberships = self
                         .storage()
+                        .access_read
+                        .owner_access_read
                         .resolve_membership(&principal)
                         .await
                         .map_err(|err| {
@@ -155,6 +157,7 @@ pub(in crate::engine) mod tests {
         TransitionGoalAtomicRequest,
     };
     use crate::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
+    use crate::storage_ports::{PersonalityReadPort, PersonalityWritePort, StoragePorts};
     use crate::*;
 
     #[derive(Debug)]
@@ -168,21 +171,12 @@ pub(in crate::engine) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl Storage for MembershipStorage {
+    impl FactIngestPort for MembershipStorage {
         async fn ingest_event_atomic(
             &self,
             _draft: &EventDraft,
             _embedding_model_id: Option<&str>,
         ) -> Result<EventIngestOutcome, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn persist_mcp_call_atomic(
-            &self,
-            _input: &McpCallLogInput,
-        ) -> Result<McpCallLogOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
@@ -209,17 +203,32 @@ pub(in crate::engine) mod tests {
                 "MembershipStorage rejects writes".into(),
             ))
         }
+    }
 
-        async fn fact_entity_id_for(
+    #[async_trait::async_trait]
+    impl OperatorInvocationWritePort for MembershipStorage {
+        async fn persist_mcp_call_atomic(
             &self,
-            _owner: &Owner,
-            _schema_id: &SchemaId,
-            _schema_version: SchemaVersion,
-            _natural_key: &[String],
-        ) -> Result<Option<FactEntityId>, StorageError> {
-            Ok(None)
+            _input: &McpCallLogInput,
+        ) -> Result<McpCallLogOutcome, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
         }
+    }
 
+    #[async_trait::async_trait]
+    impl OperatorInvocationReadPort for MembershipStorage {
+        async fn read_mcp_call_history(
+            &self,
+            _req: &McpCallHistoryRequest,
+        ) -> Result<McpCallHistoryResponse, StorageError> {
+            Ok(McpCallHistoryResponse { calls: Vec::new() })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryAuthoringPort for MembershipStorage {
         async fn author_derived(
             &self,
             _req: &AuthorDerivedRequest<'_>,
@@ -256,7 +265,10 @@ pub(in crate::engine) mod tests {
                 })
                 .unwrap_or_default())
         }
+    }
 
+    #[async_trait::async_trait]
+    impl MemoryReadPort for MembershipStorage {
         async fn load_fact_text(
             &self,
             _owner: &Owner,
@@ -265,6 +277,54 @@ pub(in crate::engine) mod tests {
             Ok(None)
         }
 
+        async fn query_memories(
+            &self,
+            _req: &verbs::query::QueryRequest,
+            _schemas: &[verbs::schema::SchemaInfo],
+        ) -> Result<verbs::query::QueryResponse, StorageError> {
+            Ok(verbs::query::QueryResponse {
+                memories: Vec::new(),
+                goals: Vec::new(),
+                edges: Vec::new(),
+                seq_high_water: None,
+            })
+        }
+
+        async fn search_memories(
+            &self,
+            _req: &verbs::query::MemorySearchRequest,
+            _projections: &[verbs::schema::MemorySearchProjection],
+        ) -> Result<Vec<verbs::query::MemorySearchResult>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn walk_memory_lineage(
+            &self,
+            _read_owners: &[OwnerRef],
+            _req: &verbs::query::MemoryLineageRequest,
+        ) -> Result<verbs::query::MemoryLineageResponse, StorageError> {
+            Ok(verbs::query::MemoryLineageResponse {
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                truncated: false,
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryInspectPort for MembershipStorage {
+        async fn load_memory_by_id(
+            &self,
+            _memory_id: MemoryId,
+            _reader_personality_instance_id: Option<PersonalityInstanceId>,
+            _sidecars: &[SidecarSpec],
+        ) -> Result<Option<MemorySnapshot>, StorageError> {
+            Ok(None)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EmbeddingTextPort for MembershipStorage {
         async fn load_embedding_text(
             &self,
             _owner: &Owner,
@@ -274,6 +334,18 @@ pub(in crate::engine) mod tests {
             Ok(None)
         }
 
+        async fn list_facts_missing_embedding(
+            &self,
+            _owner: &Owner,
+            _model_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<MemoryId>, StorageError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EmbeddingWritePort for MembershipStorage {
         async fn upsert_fact_embedding(
             &self,
             _owner: &Owner,
@@ -296,16 +368,10 @@ pub(in crate::engine) mod tests {
         ) -> Result<(), StorageError> {
             Ok(())
         }
+    }
 
-        async fn list_facts_missing_embedding(
-            &self,
-            _owner: &Owner,
-            _model_id: &str,
-            _limit: usize,
-        ) -> Result<Vec<MemoryId>, StorageError> {
-            Ok(Vec::new())
-        }
-
+    #[async_trait::async_trait]
+    impl EmbeddingJobPort for MembershipStorage {
         async fn claim_pending_embedding_jobs(
             &self,
             _model_id: &str,
@@ -349,7 +415,10 @@ pub(in crate::engine) mod tests {
         async fn count_pending_embedding_jobs(&self, _owner: &Owner) -> Result<u64, StorageError> {
             Ok(0)
         }
+    }
 
+    #[async_trait::async_trait]
+    impl GoalWritePort for MembershipStorage {
         async fn create_goal_atomic(
             &self,
             _req: &CreateGoalAtomicRequest<'_>,
@@ -394,7 +463,25 @@ pub(in crate::engine) mod tests {
                 "MembershipStorage rejects writes".into(),
             ))
         }
+    }
 
+    #[async_trait::async_trait]
+    impl GoalSupportReadPort for MembershipStorage {}
+
+    #[async_trait::async_trait]
+    impl GoalReadPort for MembershipStorage {
+        async fn list_active_goals(
+            &self,
+            _read_owners: &[OwnerRef],
+            _self_perspective_memory_id: MemoryId,
+            _limit: usize,
+        ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ChangeEventPort for MembershipStorage {
         async fn event_history(
             &self,
             _read_owners: &[OwnerRef],
@@ -406,26 +493,18 @@ pub(in crate::engine) mod tests {
             })
         }
 
-        async fn read_mcp_call_history(
+        async fn list_change_events_after(
             &self,
-            _req: &McpCallHistoryRequest,
-        ) -> Result<McpCallHistoryResponse, StorageError> {
-            Ok(McpCallHistoryResponse { calls: Vec::new() })
+            _read_owners: &[OwnerRef],
+            _after: uuid::Uuid,
+            _limit: usize,
+        ) -> Result<Vec<ChangeEventForWake>, StorageError> {
+            Ok(Vec::new())
         }
+    }
 
-        async fn query_memories(
-            &self,
-            _req: &verbs::query::QueryRequest,
-            _schemas: &[verbs::schema::SchemaInfo],
-        ) -> Result<verbs::query::QueryResponse, StorageError> {
-            Ok(verbs::query::QueryResponse {
-                memories: Vec::new(),
-                goals: Vec::new(),
-                edges: Vec::new(),
-                seq_high_water: None,
-            })
-        }
-
+    #[async_trait::async_trait]
+    impl EdgeReadPort for MembershipStorage {
         async fn read_edges(
             &self,
             _read_owners: &[OwnerRef],
@@ -441,13 +520,18 @@ pub(in crate::engine) mod tests {
         ) -> Result<verbs::query::EdgeExistsResponse, StorageError> {
             Ok(verbs::query::EdgeExistsResponse { exists: false })
         }
+    }
 
-        async fn search_memories(
+    #[async_trait::async_trait]
+    impl CitationPort for MembershipStorage {
+        async fn fact_entity_id_for(
             &self,
-            _req: &verbs::query::MemorySearchRequest,
-            _projections: &[verbs::schema::MemorySearchProjection],
-        ) -> Result<Vec<verbs::query::MemorySearchResult>, StorageError> {
-            Ok(Vec::new())
+            _owner: &Owner,
+            _schema_id: &SchemaId,
+            _schema_version: SchemaVersion,
+            _natural_key: &[String],
+        ) -> Result<Option<FactEntityId>, StorageError> {
+            Ok(None)
         }
 
         async fn facts_citing_object(
@@ -473,28 +557,10 @@ pub(in crate::engine) mod tests {
         ) -> Result<Option<verbs::query::FactCitationReadback>, StorageError> {
             Ok(None)
         }
+    }
 
-        async fn walk_memory_lineage(
-            &self,
-            _read_owners: &[OwnerRef],
-            _req: &verbs::query::MemoryLineageRequest,
-        ) -> Result<verbs::query::MemoryLineageResponse, StorageError> {
-            Ok(verbs::query::MemoryLineageResponse {
-                nodes: Vec::new(),
-                edges: Vec::new(),
-                truncated: false,
-            })
-        }
-
-        async fn list_active_goals(
-            &self,
-            _read_owners: &[OwnerRef],
-            _self_perspective_memory_id: MemoryId,
-            _limit: usize,
-        ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
-            Ok(Vec::new())
-        }
-
+    #[async_trait::async_trait]
+    impl OwnerAccessReadPort for MembershipStorage {
         async fn resolve_membership(
             &self,
             member: &OwnerRef,
@@ -520,7 +586,10 @@ pub(in crate::engine) mod tests {
         async fn home_owner(&self, _entity: EntityId) -> Result<Option<OwnerRef>, StorageError> {
             Ok(self.home_owner)
         }
+    }
 
+    #[async_trait::async_trait]
+    impl OwnerMembershipAdminPort for MembershipStorage {
         async fn add_group_member(
             &self,
             _group_id: GroupId,
@@ -549,7 +618,10 @@ pub(in crate::engine) mod tests {
         ) -> Result<Vec<(UserId, Relation)>, StorageError> {
             Ok(Vec::new())
         }
+    }
 
+    #[async_trait::async_trait]
+    impl SourceBatchPort for MembershipStorage {
         async fn close_batch(
             &self,
             _principal: &OwnerRef,
@@ -559,7 +631,10 @@ pub(in crate::engine) mod tests {
                 "MembershipStorage rejects writes".into(),
             ))
         }
+    }
 
+    #[async_trait::async_trait]
+    impl PersonalityReadPort for MembershipStorage {
         async fn list_personality_instances(
             &self,
             _owner: &Owner,
@@ -567,7 +642,10 @@ pub(in crate::engine) mod tests {
         ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
             Ok(Vec::new())
         }
+    }
 
+    #[async_trait::async_trait]
+    impl PersonalityWritePort for MembershipStorage {
         async fn tombstone_personality(
             &self,
             _req: &TombstonePersonalityRequest,
@@ -606,6 +684,18 @@ pub(in crate::engine) mod tests {
             ))
         }
 
+        async fn append_personality_memories(
+            &self,
+            _req: &PersonalityWriteRequest<'_>,
+        ) -> Result<PersonalityWriteOutcome, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WakeConfigPort for MembershipStorage {
         async fn set_wake_entries(
             &self,
             _req: &SetWakeEntriesRequest,
@@ -625,7 +715,10 @@ pub(in crate::engine) mod tests {
                 "MembershipStorage rejects writes".into(),
             ))
         }
+    }
 
+    #[async_trait::async_trait]
+    impl FactRetentionPort for MembershipStorage {
         async fn upsert_fact_retention(
             &self,
             _owner: &Owner,
@@ -647,7 +740,10 @@ pub(in crate::engine) mod tests {
                 "MembershipStorage rejects writes".into(),
             ))
         }
+    }
 
+    #[async_trait::async_trait]
+    impl ComplianceErasePort for MembershipStorage {
         async fn cleanup_due_facts(
             &self,
             _owner: &Owner,
@@ -674,16 +770,10 @@ pub(in crate::engine) mod tests {
                 "MembershipStorage rejects writes".into(),
             ))
         }
+    }
 
-        async fn list_change_events_after(
-            &self,
-            _read_owners: &[OwnerRef],
-            _after: uuid::Uuid,
-            _limit: usize,
-        ) -> Result<Vec<ChangeEventForWake>, StorageError> {
-            Ok(Vec::new())
-        }
-
+    #[async_trait::async_trait]
+    impl RegistryProjectionPort for MembershipStorage {
         async fn load_memory_batch_facts(
             &self,
             _owner: &Owner,
@@ -721,23 +811,38 @@ pub(in crate::engine) mod tests {
         ) -> Result<Option<MemoryId>, StorageError> {
             Ok(None)
         }
+    }
 
-        async fn append_personality_memories(
-            &self,
-            _req: &PersonalityWriteRequest<'_>,
-        ) -> Result<PersonalityWriteOutcome, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn load_memory_by_id(
-            &self,
-            _memory_id: MemoryId,
-            _reader_personality_instance_id: Option<PersonalityInstanceId>,
-            _sidecars: &[SidecarSpec],
-        ) -> Result<Option<MemorySnapshot>, StorageError> {
-            Ok(None)
+    impl MembershipStorage {
+        #[must_use]
+        pub(in crate::engine) fn storage_ports(self) -> StoragePorts {
+            let storage = Arc::new(self);
+            StoragePorts::builder()
+                .fact_ingest(storage.clone())
+                .operator_invocation_write(storage.clone())
+                .operator_invocation_read(storage.clone())
+                .memory_authoring(storage.clone())
+                .memory_read(storage.clone())
+                .memory_inspect(storage.clone())
+                .embedding_text(storage.clone())
+                .embedding_write(storage.clone())
+                .embedding_job(storage.clone())
+                .goal_write(storage.clone())
+                .goal_support_read(storage.clone())
+                .goal_read(storage.clone())
+                .change_event(storage.clone())
+                .edge_read(storage.clone())
+                .citation(storage.clone())
+                .owner_access_read(storage.clone())
+                .owner_membership_admin(storage.clone())
+                .source_batch(storage.clone())
+                .personality_read(storage.clone())
+                .personality_write(storage.clone())
+                .wake_config(storage.clone())
+                .fact_retention(storage.clone())
+                .compliance_erase(storage.clone())
+                .registry_projection(storage)
+                .build()
         }
     }
 
@@ -748,14 +853,15 @@ pub(in crate::engine) mod tests {
         let g1_owner = OwnerRef::Group(g1);
         let world_owner = world();
         let engine = Engine::compose(
-            Arc::new(MembershipStorage {
+            MembershipStorage {
                 member: p,
                 group: g1,
                 membership_relation: Relation::Viewer,
                 home_owner: None,
                 entity_readable: false,
                 memory_kind: None,
-            }),
+            }
+            .storage_ports(),
             |_| {},
         );
         let authz = AuthzContext::scoped_access(
@@ -835,14 +941,15 @@ pub(in crate::engine) mod tests {
         let g1 = GroupId::new(uuid::Uuid::now_v7());
         let world_owner = world();
         let engine = Engine::compose(
-            Arc::new(MembershipStorage {
+            MembershipStorage {
                 member: p,
                 group: g1,
                 membership_relation: Relation::Viewer,
                 home_owner: None,
                 entity_readable: false,
                 memory_kind: None,
-            }),
+            }
+            .storage_ports(),
             |_| {},
         );
         let authz = AuthzContext::scoped_access(
@@ -870,14 +977,15 @@ pub(in crate::engine) mod tests {
         let p = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let world_owner = world();
         let engine = Engine::compose(
-            Arc::new(MembershipStorage {
+            MembershipStorage {
                 member: p,
                 group: crate::WORLD_GROUP_ID,
                 membership_relation: Relation::Editor,
                 home_owner: None,
                 entity_readable: false,
                 memory_kind: None,
-            }),
+            }
+            .storage_ports(),
             |_| {},
         );
         let authz = AuthzContext::scoped_access(

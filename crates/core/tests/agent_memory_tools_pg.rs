@@ -1243,7 +1243,7 @@ fn engine_for_registry(
 ) -> Arc<Engine> {
     Arc::new(
         Engine::new((**registry).clone())
-            .with_storage(pg.clone().into_handle())
+            .with_storage_ports(Arc::new(pg.clone()).storage_ports())
             .with_embed(Arc::new(ConstantEmbedding::prefixed(
                 "test-embed",
                 &[1.0, 0.0, 0.0],

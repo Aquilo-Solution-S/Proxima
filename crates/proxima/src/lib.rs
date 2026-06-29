@@ -46,7 +46,6 @@ pub use migrations::{
 };
 pub use proxima_core::error::ProtocolError;
 pub use proxima_core::llm;
-pub use proxima_core::storage::NoopStorage;
 pub use proxima_core::verbs::event_ingest::{
     AuthorizedCitationAttachment, CitationSpec, EventDraft, EventIngestOutcome,
     InlineCitationMappingDraft, InlineCitedObjectDraft,
@@ -72,8 +71,8 @@ pub use proxima_core::{
     Identity, McpCallLogInput, McpCallLogOutcome, MemoryId, ModelId, OperatorId, Owner, OwnerRef,
     PersonalityInstanceId, PerspectivePayload, PromptVersion, Relation, Role, SchemaId,
     SchemaVersion, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
-    SidecarPayload, SourceBatchId, SourceId, StorageError, ToolId, ToolScope, UserId,
-    canonical_json_bytes, provider_safe_tool_name, proxima_flavor,
+    SidecarPayload, SourceBatchId, StorageError, ToolId, ToolScope, UserId, canonical_json_bytes,
+    provider_safe_tool_name, proxima_flavor,
 };
 pub use proxima_core::{
     AuthorDerivedEdgeInput, AuthorDerivedOutcome, AuthorDerivedRequestInput, AuthorshipKindMask,
@@ -336,7 +335,8 @@ impl ProximaBuilder {
         let pg_sidecars = Arc::new(pg_sidecars);
         let pg = pg.with_sidecars(pg_sidecars.as_ref().clone());
 
-        let mut engine = Engine::new(registry).with_storage(Arc::new(pg.clone()));
+        let mut engine =
+            Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
         if let Some(client) = embed_client {
             engine = engine.with_embed(client);
         }

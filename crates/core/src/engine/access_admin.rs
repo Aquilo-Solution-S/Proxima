@@ -37,6 +37,8 @@ impl Engine {
             },
         )?;
         self.storage()
+            .access_admin
+            .owner_membership_admin
             .add_group_member(group, member, relation, actor_uuid(authz))
             .await
             .map_err(|err| storage_error("add_group_member", &err))
@@ -61,6 +63,8 @@ impl Engine {
         let member_principal = OwnerRef::Personal(member);
         let current_relations = self
             .storage()
+            .access_admin
+            .owner_membership_admin
             .list_group_members(group)
             .await
             .map_err(|err| storage_error("list_group_members", &err))?
@@ -81,6 +85,8 @@ impl Engine {
             )?;
         }
         self.storage()
+            .access_admin
+            .owner_membership_admin
             .remove_group_member(group, member)
             .await
             .map_err(|err| storage_error("remove_group_member", &err))
@@ -101,6 +107,8 @@ impl Engine {
         self.authorize_write(authz, &group_owner, Relation::Admin)
             .await?;
         self.storage()
+            .access_admin
+            .owner_membership_admin
             .list_group_members(group)
             .await
             .map_err(|err| storage_error("list_group_members", &err))

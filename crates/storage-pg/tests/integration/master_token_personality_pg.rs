@@ -1,6 +1,6 @@
 //! PG coverage for the per-master-token shell-author identity.
 use crate::common::{drop_db, fresh_pg};
-use proxima_core::storage::Storage;
+use proxima_core::storage_ports::*;
 use proxima_core::{OwnerRef, UserId};
 use std::sync::Arc;
 use uuid::Uuid;

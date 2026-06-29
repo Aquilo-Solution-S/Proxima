@@ -47,6 +47,8 @@ impl Engine {
     ) -> Result<(), ProtocolError> {
         let seconds = retention_seconds_to_i64(seconds)?;
         self.storage
+            .fact_retention
+            .fact_retention
             .upsert_fact_retention(permit.owner(), seconds)
             .await
             .map_err(|e| ProtocolError::internal(format!("set_fact_retention: {e}")))
@@ -73,6 +75,8 @@ impl Engine {
         _owner: &Owner,
     ) -> Result<Option<i64>, ProtocolError> {
         self.storage
+            .fact_retention
+            .fact_retention
             .get_fact_retention(permit.owner())
             .await
             .map_err(|e| ProtocolError::internal(format!("get_fact_retention: {e}")))
@@ -99,6 +103,8 @@ impl Engine {
         _owner: &Owner,
     ) -> Result<bool, ProtocolError> {
         self.storage
+            .fact_retention
+            .fact_retention
             .clear_fact_retention(permit.owner())
             .await
             .map_err(|e| ProtocolError::internal(format!("clear_fact_retention: {e}")))
@@ -132,6 +138,8 @@ impl Engine {
         let cited_object_sidecar_tables =
             sidecar_tables(self.registry.schemas(), PayloadKind::CitedObject);
         self.storage
+            .fact_retention
+            .compliance_erase
             .cleanup_due_facts(
                 permit.owner(),
                 &fact_sidecar_tables,
@@ -167,6 +175,8 @@ impl Engine {
         let cited_object_sidecar_tables =
             sidecar_tables(self.registry.schemas(), PayloadKind::CitedObject);
         self.storage
+            .fact_retention
+            .compliance_erase
             .tombstone_fact(
                 permit.owner(),
                 fact_id.into_inner(),

@@ -1,3 +1,4 @@
+use proxima_core::storage_ports::*;
 mod common;
 
 use std::sync::Arc;
@@ -9,7 +10,7 @@ use proxima_core::{
     AbstractionPayload, AgentDerivationV1, AgentNoteV1, AuthPath, AuthorshipKindMask, AuthzContext,
     EdgeAuthorshipKind, EntityKind, EntityKindMask, ErrorCode, FlavorRegistry, MemoryId,
     MemoryOperatorKind, Owner, OwnerRef, PersonalityInstanceId, Relation, RelationClass,
-    RelationDescriptor, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, Storage, UserId,
+    RelationDescriptor, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, UserId,
 };
 use uuid::Uuid;
 
@@ -52,7 +53,7 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
         AuthorshipKindMask::external_agent(),
     ));
     let engine = proxima_core::Engine::new(registry.freeze())
-        .with_storage(pg.clone().into_handle())
+        .with_storage_ports(Arc::new(pg.clone()).storage_ports())
         .with_embed(Arc::new(ConstantEmbedding::prefixed(
             "test-embed",
             &[12.0, 1.0, 2.0],
@@ -154,7 +155,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
     let owner = owner_fixture();
     let registry = FlavorRegistry::new();
     let engine = proxima_core::Engine::new(registry.freeze())
-        .with_storage(pg.clone().into_handle())
+        .with_storage_ports(Arc::new(pg.clone()).storage_ports())
         .with_embed(Arc::new(ConstantEmbedding::prefixed(
             "test-embed",
             &[22.0, 1.0, 2.0],
@@ -331,7 +332,7 @@ async fn author_derived_authorized_enforces_intra_owner_same_kind_supersedes()
         .await?;
 
         let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze())
-            .with_storage(pg.clone().into_handle());
+            .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let authz = AuthzContext::single_owner(&attacker, AuthPath::System);
 
         let foreign_new_id = MemoryId::new(Uuid::now_v7());

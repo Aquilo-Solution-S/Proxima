@@ -1,8 +1,8 @@
 //! Per-verb PG implementations.
 //!
-//! Each module exposes a single `pub(crate) async fn` with the same
-//! shape as its `Storage` trait method. The `Storage for PgStorage`
-//! impl in `lib.rs` is a thin delegation layer over these.
+//! Each module exposes `pub(crate)` async functions with the same
+//! shape as the narrow storage-port methods. The `PgStorage` port
+//! impls in `lib.rs` are thin delegation layers over these.
 
 pub(crate) mod active_goals;
 pub mod close_batch;

@@ -2,8 +2,9 @@ use crate::common::{drop_db, fresh_pg, seed_memory, seed_memory_edge};
 use proxima_core::access::world;
 use proxima_core::{
     CORE_DERIVED_FROM_RELATION, ChangeEventKind, EdgeId, EntityKind, GroupId, MemoryId, OwnerRef,
-    RelationClass, Storage, UserId,
+    RelationClass, UserId,
 };
+use proxima_core::{ChangeEventPort, MemoryReadPort};
 use uuid::Uuid;
 
 struct EdgeAccessFixture {
@@ -124,7 +125,7 @@ async fn list_change_events_surfaces_readable_non_world_source_edge_events()
         assert!(
             p_events.iter().any(|e| matches!(
                 &e.event.kind,
-                ChangeEventKind::EdgeAppend { edge_id, .. } if *edge_id == edge.into_inner()
+                ChangeEventKind::EdgeAppend { edge_id, .. } if edge_id == &edge.into_inner()
             )),
             "source-readable non-world edge event must be visible"
         );
@@ -137,7 +138,7 @@ async fn list_change_events_surfaces_readable_non_world_source_edge_events()
         assert!(
             both_events.iter().any(|e| matches!(
                 &e.event.kind,
-                ChangeEventKind::EdgeAppend { edge_id, .. } if *edge_id == edge.into_inner()
+                ChangeEventKind::EdgeAppend { edge_id, .. } if edge_id == &edge.into_inner()
             )),
             "reader of both endpoints sees the edge event"
         );
@@ -179,7 +180,7 @@ async fn list_change_events_for_replay_surfaces_source_owned_edge_events()
         assert!(
             replay_events.iter().any(|e| matches!(
                 &e.event.kind,
-                ChangeEventKind::EdgeAppend { edge_id, .. } if *edge_id == edge.into_inner()
+                ChangeEventKind::EdgeAppend { edge_id, .. } if edge_id == &edge.into_inner()
             )),
             "replay for the source owner sees non-world edge events"
         );

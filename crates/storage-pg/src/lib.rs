@@ -1,11 +1,8 @@
-//! Postgres `Storage` impl.
-//!
-//! See docs/07-storage.md and the `Storage` trait in
-//! `proxima_core`.
+//! Postgres storage port impls.
 //!
 //! The verb logic lives under [`verbs`]; this module wires the
 //! `PgStorage` struct, connection lifecycle, and migration runner,
-//! then delegates each `Storage` trait method to its per-verb
+//! then delegates each narrow storage port method to its per-verb
 //! implementation.
 #[cfg(feature = "test-fixtures")]
 extern crate self as proxima_storage_pg;
@@ -19,6 +16,14 @@ use proxima_core::personality::{
     InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
     PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeEntriesRequest,
     SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse,
+};
+use proxima_core::storage_ports::{
+    ChangeEventPort, CitationPort, ComplianceErasePort, EdgeReadPort, EmbeddingJobPort,
+    EmbeddingTextPort, EmbeddingWritePort, FactIngestPort, FactRetentionPort, GoalReadPort,
+    GoalSupportReadPort, GoalWritePort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
+    OperatorInvocationReadPort, OperatorInvocationWritePort, OwnerAccessReadPort,
+    OwnerMembershipAdminPort, PersonalityReadPort, PersonalityWritePort, RegistryProjectionPort,
+    SourceBatchPort, StoragePorts, WakeConfigPort,
 };
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
 use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
@@ -41,8 +46,7 @@ use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EdgeEndpointKindRow, EdgeId,
     EmbeddingJobClaim, EntityId, FactEntityId, GroupId, MasterTokenPersonality, MembershipRow,
     MemoryDependency, MemoryGraphPayloadRow, MemoryId, MemoryKindRow, NeighborEdgeRow, Owner,
-    OwnerRef, Relation, SchemaId, SchemaVersion, SourceBatchId, Storage, StorageError,
-    StorageHandle, UserId,
+    OwnerRef, Relation, SchemaId, SchemaVersion, SourceBatchId, StorageError, UserId,
 };
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -305,8 +309,33 @@ impl PgStorage {
     }
 
     #[must_use]
-    pub fn into_handle(self) -> StorageHandle {
-        Arc::new(self)
+    pub fn storage_ports(self: Arc<Self>) -> StoragePorts {
+        StoragePorts::builder()
+            .fact_ingest(self.clone())
+            .operator_invocation_write(self.clone())
+            .operator_invocation_read(self.clone())
+            .memory_authoring(self.clone())
+            .memory_read(self.clone())
+            .memory_inspect(self.clone())
+            .embedding_text(self.clone())
+            .embedding_write(self.clone())
+            .embedding_job(self.clone())
+            .goal_write(self.clone())
+            .goal_support_read(self.clone())
+            .goal_read(self.clone())
+            .change_event(self.clone())
+            .edge_read(self.clone())
+            .citation(self.clone())
+            .owner_access_read(self.clone())
+            .owner_membership_admin(self.clone())
+            .source_batch(self.clone())
+            .personality_read(self.clone())
+            .personality_write(self.clone())
+            .wake_config(self.clone())
+            .fact_retention(self.clone())
+            .compliance_erase(self.clone())
+            .registry_projection(self)
+            .build()
     }
 
     /// Global enqueue-only embedding reconciliation.
@@ -378,124 +407,13 @@ fn edge_draft_from_spec<'a>(edge: &'a DerivedEdgeSpec<'a>) -> verbs::edge_append
 }
 
 #[async_trait::async_trait]
-impl Storage for PgStorage {
+impl FactIngestPort for PgStorage {
     async fn ingest_event_atomic(
         &self,
         draft: &EventDraft,
         embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError> {
         verbs::event_ingest::ingest_event_atomic(&self.pool, draft, embedding_model_id).await
-    }
-
-    async fn load_fact_text(
-        &self,
-        owner: &Owner,
-        memory_id: MemoryId,
-    ) -> Result<Option<String>, StorageError> {
-        verbs::fact_embeddings::load_fact_text(&self.pool, owner, memory_id).await
-    }
-
-    async fn load_embedding_text(
-        &self,
-        owner: &Owner,
-        entity_kind: proxima_core::EntityKind,
-        memory_id: MemoryId,
-    ) -> Result<Option<String>, StorageError> {
-        verbs::fact_embeddings::load_embedding_text(&self.pool, owner, entity_kind, memory_id).await
-    }
-
-    async fn upsert_fact_embedding(
-        &self,
-        owner: &Owner,
-        memory_id: MemoryId,
-        model_id: &str,
-        dim: usize,
-        vec: &[f32],
-    ) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(|err| {
-            StorageError::Internal(format!("begin Fact embedding upsert tx: {err}"))
-        })?;
-        verbs::fact_embeddings::upsert_fact_embedding(
-            &mut tx, owner, memory_id, model_id, dim, vec,
-        )
-        .await?;
-        tx.commit().await.map_err(crate::error::map_err)
-    }
-
-    async fn upsert_memory_embedding(
-        &self,
-        owner: &Owner,
-        entity_kind: proxima_core::EntityKind,
-        memory_id: MemoryId,
-        model_id: &str,
-        dim: usize,
-        vec: &[f32],
-    ) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(|err| {
-            StorageError::Internal(format!("begin memory embedding upsert tx: {err}"))
-        })?;
-        verbs::fact_embeddings::upsert_memory_embedding(
-            &mut tx,
-            owner,
-            entity_kind,
-            memory_id,
-            model_id,
-            dim,
-            vec,
-        )
-        .await?;
-        tx.commit().await.map_err(crate::error::map_err)
-    }
-
-    async fn list_facts_missing_embedding(
-        &self,
-        owner: &Owner,
-        model_id: &str,
-        limit: usize,
-    ) -> Result<Vec<MemoryId>, StorageError> {
-        verbs::fact_embeddings::list_facts_missing_embedding(&self.pool, owner, model_id, limit)
-            .await
-    }
-
-    async fn claim_pending_embedding_jobs(
-        &self,
-        model_id: &str,
-        limit: i64,
-    ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
-        verbs::fact_embeddings::claim_pending_embedding_jobs(&self.pool, model_id, limit).await
-    }
-
-    async fn complete_embedding_job(&self, claim: &EmbeddingJobClaim) -> Result<(), StorageError> {
-        verbs::fact_embeddings::complete_embedding_job(&self.pool, claim).await
-    }
-
-    async fn fail_embedding_job(
-        &self,
-        claim: &EmbeddingJobClaim,
-        error: &str,
-    ) -> Result<(), StorageError> {
-        verbs::fact_embeddings::fail_embedding_job(&self.pool, claim, error).await
-    }
-
-    async fn enqueue_missing_embedding_jobs(
-        &self,
-        owner: &Owner,
-        model_id: &str,
-        limit: i64,
-    ) -> Result<u64, StorageError> {
-        verbs::fact_embeddings::enqueue_missing_embedding_jobs(&self.pool, owner, model_id, limit)
-            .await
-    }
-
-    async fn count_pending_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError> {
-        verbs::fact_embeddings::count_pending_embedding_jobs(&self.pool, owner).await
-    }
-
-    async fn persist_mcp_call_atomic(
-        &self,
-        input: &McpCallLogInput,
-    ) -> Result<McpCallLogOutcome, StorageError> {
-        verbs::persist_mcp_call::persist_mcp_call_atomic(&self.pool, input).await
     }
 
     async fn ingest_event_with_typed_sidecar(
@@ -551,7 +469,30 @@ impl Storage for PgStorage {
         tx.commit().await.map_err(crate::error::map_err)?;
         Ok(outcome)
     }
+}
 
+#[async_trait::async_trait]
+impl OperatorInvocationWritePort for PgStorage {
+    async fn persist_mcp_call_atomic(
+        &self,
+        input: &McpCallLogInput,
+    ) -> Result<McpCallLogOutcome, StorageError> {
+        verbs::persist_mcp_call::persist_mcp_call_atomic(&self.pool, input).await
+    }
+}
+
+#[async_trait::async_trait]
+impl OperatorInvocationReadPort for PgStorage {
+    async fn read_mcp_call_history(
+        &self,
+        req: &McpCallHistoryRequest,
+    ) -> Result<McpCallHistoryResponse, StorageError> {
+        verbs::mcp_call_history::read_mcp_call_history(&self.pool, req).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryAuthoringPort for PgStorage {
     async fn author_derived(
         &self,
         req: &AuthorDerivedRequest<'_>,
@@ -674,6 +615,49 @@ impl Storage for PgStorage {
             .collect())
     }
 
+    async fn load_memory_edge_ids(
+        &self,
+        _owner: &Owner,
+        relation: &str,
+        source_memory_id: MemoryId,
+        target_memory_ids: &[MemoryId],
+    ) -> Result<Vec<EdgeId>, StorageError> {
+        if target_memory_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let target_ids = target_memory_ids
+            .iter()
+            .copied()
+            .map(MemoryId::into_inner)
+            .collect::<Vec<_>>();
+        let rows: Vec<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT edge_id
+             FROM proxima_core.edges
+             WHERE relation = $1
+               AND source_memory_id = $2
+               AND target_memory_id = ANY($3::uuid[])
+             ORDER BY edge_id DESC",
+        )
+        .bind(relation)
+        .bind(source_memory_id.into_inner())
+        .bind(&target_ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows.into_iter().map(EdgeId::new).collect())
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryReadPort for PgStorage {
+    async fn load_fact_text(
+        &self,
+        owner: &Owner,
+        memory_id: MemoryId,
+    ) -> Result<Option<String>, StorageError> {
+        verbs::fact_embeddings::load_fact_text(&self.pool, owner, memory_id).await
+    }
+
     async fn load_memory_graph_payloads(
         &self,
         owner: &Owner,
@@ -788,38 +772,6 @@ impl Storage for PgStorage {
             .collect())
     }
 
-    async fn load_memory_edge_ids(
-        &self,
-        _owner: &Owner,
-        relation: &str,
-        source_memory_id: MemoryId,
-        target_memory_ids: &[MemoryId],
-    ) -> Result<Vec<EdgeId>, StorageError> {
-        if target_memory_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let target_ids = target_memory_ids
-            .iter()
-            .copied()
-            .map(MemoryId::into_inner)
-            .collect::<Vec<_>>();
-        let rows: Vec<uuid::Uuid> = sqlx::query_scalar(
-            "SELECT edge_id
-             FROM proxima_core.edges
-             WHERE relation = $1
-               AND source_memory_id = $2
-               AND target_memory_id = ANY($3::uuid[])
-             ORDER BY edge_id DESC",
-        )
-        .bind(relation)
-        .bind(source_memory_id.into_inner())
-        .bind(&target_ids)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
-        Ok(rows.into_iter().map(EdgeId::new).collect())
-    }
-
     async fn load_edge_endpoint_kinds(
         &self,
         edge_ids: &[EdgeId],
@@ -855,29 +807,165 @@ impl Storage for PgStorage {
             .collect())
     }
 
-    async fn active_personality_root(
+    async fn query_memories(
         &self,
-        owner: &Owner,
-        instance_id: PersonalityInstanceId,
-    ) -> Result<Option<MemoryId>, StorageError> {
-        let (owner_kind, owner_id) = owner.columns();
-        let row: Option<(uuid::Uuid,)> = sqlx::query_as(
-            "SELECT current_root_perspective_memory_id
-             FROM proxima_core.personality
-             WHERE owner_kind = $1
-               AND owner_id IS NOT DISTINCT FROM $2
-               AND personality_instance_id = $3
-               AND status <> 'tombstoned'::proxima_core.personality_status",
-        )
-        .bind(owner_kind)
-        .bind(owner_id)
-        .bind(instance_id.into_inner())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(internal)?;
-        Ok(row.map(|(memory_id,)| MemoryId::new(memory_id)))
+        req: &QueryRequest,
+        schemas: &[proxima_core::verbs::schema::SchemaInfo],
+    ) -> Result<QueryResponse, StorageError> {
+        verbs::query::query_memories(&self.pool, &self.sidecars, req, schemas).await
     }
 
+    async fn search_memories(
+        &self,
+        req: &MemorySearchRequest,
+        projections: &[proxima_core::verbs::schema::MemorySearchProjection],
+    ) -> Result<Vec<MemorySearchResult>, StorageError> {
+        verbs::query::search_memories(&self.pool, req, projections).await
+    }
+
+    async fn walk_memory_lineage(
+        &self,
+        read_owners: &[OwnerRef],
+        req: &MemoryLineageRequest,
+    ) -> Result<MemoryLineageResponse, StorageError> {
+        verbs::query::walk_memory_lineage(&self.pool, read_owners, req).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryInspectPort for PgStorage {
+    async fn load_memory_by_id(
+        &self,
+        memory_id: proxima_core::MemoryId,
+        reader_personality_instance_id: Option<PersonalityInstanceId>,
+        sidecars: &[SidecarSpec],
+    ) -> Result<Option<MemorySnapshot>, StorageError> {
+        verbs::consolidate::load_memory_by_id(
+            &self.pool,
+            &self.sidecars,
+            memory_id,
+            reader_personality_instance_id,
+            sidecars,
+        )
+        .await
+    }
+
+    async fn list_memory_dependencies(
+        &self,
+        owner: &Owner,
+        source_memory_id: MemoryId,
+    ) -> Result<Vec<MemoryDependency>, StorageError> {
+        verbs::consolidate::list_memory_dependencies(&self.pool, owner, source_memory_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl EmbeddingTextPort for PgStorage {
+    async fn load_embedding_text(
+        &self,
+        owner: &Owner,
+        entity_kind: proxima_core::EntityKind,
+        memory_id: MemoryId,
+    ) -> Result<Option<String>, StorageError> {
+        verbs::fact_embeddings::load_embedding_text(&self.pool, owner, entity_kind, memory_id).await
+    }
+
+    async fn list_facts_missing_embedding(
+        &self,
+        owner: &Owner,
+        model_id: &str,
+        limit: usize,
+    ) -> Result<Vec<MemoryId>, StorageError> {
+        verbs::fact_embeddings::list_facts_missing_embedding(&self.pool, owner, model_id, limit)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl EmbeddingWritePort for PgStorage {
+    async fn upsert_fact_embedding(
+        &self,
+        owner: &Owner,
+        memory_id: MemoryId,
+        model_id: &str,
+        dim: usize,
+        vec: &[f32],
+    ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(|err| {
+            StorageError::Internal(format!("begin Fact embedding upsert tx: {err}"))
+        })?;
+        verbs::fact_embeddings::upsert_fact_embedding(
+            &mut tx, owner, memory_id, model_id, dim, vec,
+        )
+        .await?;
+        tx.commit().await.map_err(crate::error::map_err)
+    }
+
+    async fn upsert_memory_embedding(
+        &self,
+        owner: &Owner,
+        entity_kind: proxima_core::EntityKind,
+        memory_id: MemoryId,
+        model_id: &str,
+        dim: usize,
+        vec: &[f32],
+    ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(|err| {
+            StorageError::Internal(format!("begin memory embedding upsert tx: {err}"))
+        })?;
+        verbs::fact_embeddings::upsert_memory_embedding(
+            &mut tx,
+            owner,
+            entity_kind,
+            memory_id,
+            model_id,
+            dim,
+            vec,
+        )
+        .await?;
+        tx.commit().await.map_err(crate::error::map_err)
+    }
+}
+
+#[async_trait::async_trait]
+impl EmbeddingJobPort for PgStorage {
+    async fn claim_pending_embedding_jobs(
+        &self,
+        model_id: &str,
+        limit: i64,
+    ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
+        verbs::fact_embeddings::claim_pending_embedding_jobs(&self.pool, model_id, limit).await
+    }
+
+    async fn complete_embedding_job(&self, claim: &EmbeddingJobClaim) -> Result<(), StorageError> {
+        verbs::fact_embeddings::complete_embedding_job(&self.pool, claim).await
+    }
+
+    async fn fail_embedding_job(
+        &self,
+        claim: &EmbeddingJobClaim,
+        error: &str,
+    ) -> Result<(), StorageError> {
+        verbs::fact_embeddings::fail_embedding_job(&self.pool, claim, error).await
+    }
+
+    async fn enqueue_missing_embedding_jobs(
+        &self,
+        owner: &Owner,
+        model_id: &str,
+        limit: i64,
+    ) -> Result<u64, StorageError> {
+        verbs::fact_embeddings::enqueue_missing_embedding_jobs(&self.pool, owner, model_id, limit)
+            .await
+    }
+
+    async fn count_pending_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError> {
+        verbs::fact_embeddings::count_pending_embedding_jobs(&self.pool, owner).await
+    }
+}
+
+#[async_trait::async_trait]
+impl GoalWritePort for PgStorage {
     async fn create_goal_atomic(
         &self,
         req: &CreateGoalAtomicRequest<'_>,
@@ -912,7 +1000,54 @@ impl Storage for PgStorage {
     ) -> Result<DecomposeGoalOutcome, StorageError> {
         verbs::goal_write::decompose_goal_atomic(&self.pool, &self.sidecars, req).await
     }
+}
 
+#[async_trait::async_trait]
+impl GoalSupportReadPort for PgStorage {
+    async fn active_personality_root(
+        &self,
+        owner: &Owner,
+        instance_id: PersonalityInstanceId,
+    ) -> Result<Option<MemoryId>, StorageError> {
+        let (owner_kind, owner_id) = owner.columns();
+        let row: Option<(uuid::Uuid,)> = sqlx::query_as(
+            "SELECT current_root_perspective_memory_id
+             FROM proxima_core.personality
+             WHERE owner_kind = $1
+               AND owner_id IS NOT DISTINCT FROM $2
+               AND personality_instance_id = $3
+               AND status <> 'tombstoned'::proxima_core.personality_status",
+        )
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(instance_id.into_inner())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(row.map(|(memory_id,)| MemoryId::new(memory_id)))
+    }
+}
+
+#[async_trait::async_trait]
+impl GoalReadPort for PgStorage {
+    async fn list_active_goals(
+        &self,
+        read_owners: &[OwnerRef],
+        self_perspective_memory_id: MemoryId,
+        limit: usize,
+    ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
+        verbs::active_goals::list_active_goals(
+            &self.pool,
+            read_owners,
+            self_perspective_memory_id,
+            limit,
+        )
+        .await
+    }
+}
+
+#[async_trait::async_trait]
+impl ChangeEventPort for PgStorage {
     async fn event_history(
         &self,
         read_owners: &[OwnerRef],
@@ -921,21 +1056,29 @@ impl Storage for PgStorage {
         verbs::event_history::event_history(&self.pool, read_owners, req).await
     }
 
-    async fn read_mcp_call_history(
+    async fn list_change_events_after(
         &self,
-        req: &McpCallHistoryRequest,
-    ) -> Result<McpCallHistoryResponse, StorageError> {
-        verbs::mcp_call_history::read_mcp_call_history(&self.pool, req).await
+        read_owners: &[OwnerRef],
+        after: uuid::Uuid,
+        limit: usize,
+    ) -> Result<Vec<ChangeEventForWake>, StorageError> {
+        verbs::consolidate::list_change_events_after(&self.pool, read_owners, after, limit).await
     }
 
-    async fn query_memories(
+    async fn list_change_events_for_replay(
         &self,
-        req: &QueryRequest,
-        schemas: &[proxima_core::verbs::schema::SchemaInfo],
-    ) -> Result<QueryResponse, StorageError> {
-        verbs::query::query_memories(&self.pool, &self.sidecars, req, schemas).await
+        owner: &Owner,
+        after: uuid::Uuid,
+        until: Option<uuid::Uuid>,
+        limit: usize,
+    ) -> Result<Vec<ChangeEventForWake>, StorageError> {
+        verbs::consolidate::list_change_events_for_replay(&self.pool, owner, after, until, limit)
+            .await
     }
+}
 
+#[async_trait::async_trait]
+impl EdgeReadPort for PgStorage {
     async fn read_edges(
         &self,
         read_owners: &[OwnerRef],
@@ -951,15 +1094,10 @@ impl Storage for PgStorage {
     ) -> Result<EdgeExistsResponse, StorageError> {
         verbs::query::edge_exists(&self.pool, read_owners, req).await
     }
+}
 
-    async fn search_memories(
-        &self,
-        req: &MemorySearchRequest,
-        projections: &[proxima_core::verbs::schema::MemorySearchProjection],
-    ) -> Result<Vec<MemorySearchResult>, StorageError> {
-        verbs::query::search_memories(&self.pool, req, projections).await
-    }
-
+#[async_trait::async_trait]
+impl CitationPort for PgStorage {
     async fn fact_entity_id_for(
         &self,
         owner: &Owner,
@@ -1007,30 +1145,67 @@ impl Storage for PgStorage {
     ) -> Result<Option<FactCitationReadback>, StorageError> {
         verbs::query::citation_of_entity_head(&self.pool, read_owners, fact_entity_id).await
     }
+}
 
-    async fn walk_memory_lineage(
+#[async_trait::async_trait]
+impl OwnerAccessReadPort for PgStorage {
+    async fn resolve_membership(
         &self,
-        read_owners: &[OwnerRef],
-        req: &MemoryLineageRequest,
-    ) -> Result<MemoryLineageResponse, StorageError> {
-        verbs::query::walk_memory_lineage(&self.pool, read_owners, req).await
+        member: &OwnerRef,
+    ) -> Result<Vec<MembershipRow>, StorageError> {
+        access::owner_columns::resolve_membership(&self.pool, member).await
     }
 
-    async fn list_active_goals(
+    async fn visible_to_any(
         &self,
+        entity: EntityId,
         read_owners: &[OwnerRef],
-        self_perspective_memory_id: MemoryId,
-        limit: usize,
-    ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
-        verbs::active_goals::list_active_goals(
+    ) -> Result<bool, StorageError> {
+        access::owner_columns::visible_to_any(&self.pool, entity, read_owners).await
+    }
+
+    async fn home_owner(&self, entity: EntityId) -> Result<Option<OwnerRef>, StorageError> {
+        access::owner_columns::home_owner(&self.pool, entity).await
+    }
+}
+
+#[async_trait::async_trait]
+impl OwnerMembershipAdminPort for PgStorage {
+    async fn add_group_member(
+        &self,
+        group_id: GroupId,
+        member_user_id: UserId,
+        relation: Relation,
+        granted_by: uuid::Uuid,
+    ) -> Result<(), StorageError> {
+        access::owner_columns::add_group_member(
             &self.pool,
-            read_owners,
-            self_perspective_memory_id,
-            limit,
+            group_id,
+            member_user_id,
+            relation,
+            granted_by,
         )
         .await
     }
 
+    async fn remove_group_member(
+        &self,
+        group_id: GroupId,
+        member_user_id: UserId,
+    ) -> Result<(), StorageError> {
+        access::owner_columns::remove_group_member(&self.pool, group_id, member_user_id).await
+    }
+
+    async fn list_group_members(
+        &self,
+        group_id: GroupId,
+    ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+        access::owner_columns::list_group_members(&self.pool, group_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl SourceBatchPort for PgStorage {
     async fn close_batch(
         &self,
         principal: &OwnerRef,
@@ -1038,7 +1213,10 @@ impl Storage for PgStorage {
     ) -> Result<CloseBatchOutcome, StorageError> {
         verbs::close_batch::close_batch(&self.pool, principal, source_batch_id).await
     }
+}
 
+#[async_trait::async_trait]
+impl PersonalityReadPort for PgStorage {
     async fn list_personality_instances(
         &self,
         owner: &Owner,
@@ -1046,7 +1224,10 @@ impl Storage for PgStorage {
     ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
         verbs::consolidate::list_personality_instances(&self.pool, owner, include_tombstoned).await
     }
+}
 
+#[async_trait::async_trait]
+impl PersonalityWritePort for PgStorage {
     async fn tombstone_personality(
         &self,
         req: &TombstonePersonalityRequest,
@@ -1082,6 +1263,16 @@ impl Storage for PgStorage {
         verbs::subject_personality::ensure_subject_personality(&self.pool, owner, subject).await
     }
 
+    async fn append_personality_memories(
+        &self,
+        req: &PersonalityWriteRequest<'_>,
+    ) -> Result<PersonalityWriteOutcome, StorageError> {
+        verbs::consolidate::append_personality_memories(&self.pool, &self.sidecars, req).await
+    }
+}
+
+#[async_trait::async_trait]
+impl WakeConfigPort for PgStorage {
     async fn set_wake_entries(
         &self,
         req: &SetWakeEntriesRequest,
@@ -1103,7 +1294,10 @@ impl Storage for PgStorage {
         )
         .await
     }
+}
 
+#[async_trait::async_trait]
+impl FactRetentionPort for PgStorage {
     async fn upsert_fact_retention(&self, owner: &Owner, seconds: i64) -> Result<(), StorageError> {
         verbs::fact_retention::upsert_fact_retention(&self.pool, owner, seconds).await
     }
@@ -1115,7 +1309,10 @@ impl Storage for PgStorage {
     async fn clear_fact_retention(&self, owner: &Owner) -> Result<bool, StorageError> {
         verbs::fact_retention::clear_fact_retention(&self.pool, owner).await
     }
+}
 
+#[async_trait::async_trait]
+impl ComplianceErasePort for PgStorage {
     async fn cleanup_due_facts(
         &self,
         owner: &Owner,
@@ -1155,27 +1352,10 @@ impl Storage for PgStorage {
         )
         .await
     }
+}
 
-    async fn list_change_events_after(
-        &self,
-        read_owners: &[OwnerRef],
-        after: uuid::Uuid,
-        limit: usize,
-    ) -> Result<Vec<ChangeEventForWake>, StorageError> {
-        verbs::consolidate::list_change_events_after(&self.pool, read_owners, after, limit).await
-    }
-
-    async fn list_change_events_for_replay(
-        &self,
-        owner: &Owner,
-        after: uuid::Uuid,
-        until: Option<uuid::Uuid>,
-        limit: usize,
-    ) -> Result<Vec<ChangeEventForWake>, StorageError> {
-        verbs::consolidate::list_change_events_for_replay(&self.pool, owner, after, until, limit)
-            .await
-    }
-
+#[async_trait::async_trait]
+impl RegistryProjectionPort for PgStorage {
     async fn load_memory_batch_facts(
         &self,
         owner: &Owner,
@@ -1236,87 +1416,5 @@ impl Storage for PgStorage {
     ) -> Result<Option<proxima_core::MemoryId>, StorageError> {
         verbs::consolidate::lookup_prior_personality_head(&self.pool, owner, instance, schema_id)
             .await
-    }
-
-    async fn append_personality_memories(
-        &self,
-        req: &PersonalityWriteRequest<'_>,
-    ) -> Result<PersonalityWriteOutcome, StorageError> {
-        verbs::consolidate::append_personality_memories(&self.pool, &self.sidecars, req).await
-    }
-
-    async fn load_memory_by_id(
-        &self,
-        memory_id: proxima_core::MemoryId,
-        reader_personality_instance_id: Option<PersonalityInstanceId>,
-        sidecars: &[SidecarSpec],
-    ) -> Result<Option<MemorySnapshot>, StorageError> {
-        verbs::consolidate::load_memory_by_id(
-            &self.pool,
-            &self.sidecars,
-            memory_id,
-            reader_personality_instance_id,
-            sidecars,
-        )
-        .await
-    }
-
-    async fn list_memory_dependencies(
-        &self,
-        owner: &Owner,
-        source_memory_id: MemoryId,
-    ) -> Result<Vec<MemoryDependency>, StorageError> {
-        verbs::consolidate::list_memory_dependencies(&self.pool, owner, source_memory_id).await
-    }
-
-    async fn resolve_membership(
-        &self,
-        member: &OwnerRef,
-    ) -> Result<Vec<MembershipRow>, StorageError> {
-        access::owner_columns::resolve_membership(&self.pool, member).await
-    }
-
-    async fn visible_to_any(
-        &self,
-        entity: EntityId,
-        read_owners: &[OwnerRef],
-    ) -> Result<bool, StorageError> {
-        access::owner_columns::visible_to_any(&self.pool, entity, read_owners).await
-    }
-
-    async fn home_owner(&self, entity: EntityId) -> Result<Option<OwnerRef>, StorageError> {
-        access::owner_columns::home_owner(&self.pool, entity).await
-    }
-
-    async fn add_group_member(
-        &self,
-        group_id: GroupId,
-        member_user_id: UserId,
-        relation: Relation,
-        granted_by: uuid::Uuid,
-    ) -> Result<(), StorageError> {
-        access::owner_columns::add_group_member(
-            &self.pool,
-            group_id,
-            member_user_id,
-            relation,
-            granted_by,
-        )
-        .await
-    }
-
-    async fn remove_group_member(
-        &self,
-        group_id: GroupId,
-        member_user_id: UserId,
-    ) -> Result<(), StorageError> {
-        access::owner_columns::remove_group_member(&self.pool, group_id, member_user_id).await
-    }
-
-    async fn list_group_members(
-        &self,
-        group_id: GroupId,
-    ) -> Result<Vec<(UserId, Relation)>, StorageError> {
-        access::owner_columns::list_group_members(&self.pool, group_id).await
     }
 }

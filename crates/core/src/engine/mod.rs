@@ -14,6 +14,8 @@ mod personality;
 mod pipeline;
 mod query;
 mod read_verbs;
+#[cfg(test)]
+mod storage_port_tests;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -26,7 +28,8 @@ use crate::access::Relation;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::llm::{AnthropicClient, EmbeddingClient};
-use crate::storage::{StorageError, StorageHandle};
+use crate::storage::StorageError;
+use crate::storage_ports::EngineStoragePorts;
 use crate::verbs::schema::FlavorRegistryFrozen;
 use crate::{Owner, OwnerRef, SetWakeEntriesRequest, SetWakeEntriesResponse, WakeEntryDraft};
 
@@ -57,7 +60,7 @@ pub use read_verbs::{
 
 pub struct Engine {
     registry: FlavorRegistryFrozen,
-    storage: StorageHandle,
+    storage: EngineStoragePorts,
     anthropic: Option<Arc<dyn AnthropicClient>>,
     embed: Arc<RwLock<Option<Arc<dyn EmbeddingClient>>>>,
     embedding_reloader: Option<Arc<dyn EmbeddingClientReloader>>,
@@ -114,7 +117,7 @@ impl Engine {
     /// makes the old "tool authorizes itself then hits storage" pattern
     /// structurally non-reintroducible (it stops compiling).
     #[must_use]
-    pub(in crate::engine) fn storage(&self) -> &StorageHandle {
+    pub(in crate::engine) fn storage(&self) -> &EngineStoragePorts {
         &self.storage
     }
 
@@ -183,6 +186,8 @@ impl Engine {
         effective.principal = *permit.owner();
         crate::personality::validate_wake_entries_detect_config(&effective.entries)?;
         self.storage
+            .personality
+            .wake_config
             .set_wake_entries(&effective)
             .await
             .map_err(|err| map_set_wake_entries_storage_err(err, &effective.entries))
@@ -203,7 +208,7 @@ impl Engine {
     }
 
     /// Upsert the shell-author personality for `master_token_id` under
-    /// `owner`. Delegates to `Storage::ensure_master_token_personality`.
+    /// `owner`. Delegates to the personality write storage port.
     /// Called by `McpToolHost::call_tool` (in the `mcp-server` crate)
     /// before dispatching master-token requests so the per-token identity
     /// is always minted before `caller_self_perspective` is defaulted.
@@ -217,12 +222,14 @@ impl Engine {
         master_token_id: uuid::Uuid,
     ) -> Result<crate::storage::MasterTokenPersonality, StorageError> {
         self.storage
+            .personality
+            .personality_write
             .ensure_master_token_personality(owner, master_token_id)
             .await
     }
 
     /// Upsert the personality for `subject` under `owner`. Delegates to
-    /// `Storage::ensure_subject_personality`.
+    /// the personality write storage port.
     ///
     /// # Errors
     ///
@@ -233,6 +240,8 @@ impl Engine {
         subject: &OwnerRef,
     ) -> Result<crate::storage::MasterTokenPersonality, StorageError> {
         self.storage
+            .personality
+            .personality_write
             .ensure_subject_personality(owner, subject)
             .await
     }
@@ -273,7 +282,7 @@ impl std::fmt::Debug for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Engine")
             .field("registry", &self.registry)
-            .field("storage", &"<dyn Storage>")
+            .field("storage", &"<storage ports>")
             .finish_non_exhaustive()
     }
 }

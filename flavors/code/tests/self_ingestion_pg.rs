@@ -17,7 +17,6 @@ mod common;
 
 use common::{migrated_db, test_owner};
 use proxima_code::{LocalGitSource, build_engine};
-use proxima_core::storage::Storage;
 use proxima_core::{Cursor, Owner};
 use proxima_pg_testkit::drop_db;
 use tempfile::TempDir;
@@ -139,7 +138,7 @@ async fn self_ingestion_streams_proxima_main() {
         let owner = test_owner();
 
         let engine = build_engine(pg.clone());
-        let _arc_storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let _storage_ports = Arc::new(pg.clone()).storage_ports();
 
         // Clone Proxima itself into a tmpdir.
         let tmp = TempDir::new()?;

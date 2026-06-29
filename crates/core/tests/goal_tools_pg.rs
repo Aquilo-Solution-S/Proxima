@@ -2,6 +2,8 @@
 
 use std::{future::Future, pin::Pin, sync::Arc};
 
+use proxima_core::storage_ports::*;
+
 mod common;
 
 use common::{drop_db, fresh_pg};
@@ -18,7 +20,7 @@ use proxima_core::{
     AuthPath, AuthzContext, CORE_DEPENDS_ON_RELATION, EntityKind, FlavorRegistry,
     FlavorRegistryFrozen, GoalId, GroupId, McpTool, McpToolError, MemoryId, MemoryOperatorKind,
     Owner, OwnerRef, OwnerRefKind, PersonalityInstanceId, PersonalityStatus, Relation, Role,
-    Storage, UserId,
+    UserId,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -899,5 +901,7 @@ fn engine_for_registry(
     registry: &Arc<FlavorRegistryFrozen>,
     pg: &proxima_storage_pg::PgStorage,
 ) -> Arc<Engine> {
-    Arc::new(Engine::new((**registry).clone()).with_storage(pg.clone().into_handle()))
+    Arc::new(
+        Engine::new((**registry).clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
+    )
 }

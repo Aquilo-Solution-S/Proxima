@@ -1,4 +1,5 @@
 use crate::common;
+use proxima_core::storage_ports::*;
 use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::verbs::goal_write::{
     CreateGoalAtomicRequest, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalState,
@@ -9,7 +10,7 @@ use proxima_core::verbs::query::{
 use proxima_core::{
     AuthPath, AuthzContext, Engine, EntityId, EntityKind, ErrorCode, FlavorRegistry, GroupId,
     MemoryId, MemoryOperatorKind, Owner, OwnerRef, OwnerRefKind, Relation, Role, SchemaId,
-    SchemaVersion, SourceBatchId, SourceId, Storage, UserId,
+    SchemaVersion, SourceBatchId, SourceId, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use std::sync::Arc;
@@ -208,7 +209,8 @@ async fn group_membership_verbs_round_trip_and_engine_gates_admin_editor() {
     pg.add_group_member(group, viewer_id, Relation::Viewer, Uuid::now_v7())
         .await
         .unwrap();
-    let engine = Engine::new(FlavorRegistry::new().freeze()).with_storage(Arc::new(pg.clone()));
+    let engine = Engine::new(FlavorRegistry::new().freeze())
+        .with_storage_ports(Arc::new(pg.clone()).storage_ports());
     let outsider_err = engine
         .add_member(&granted_authz(&outsider), group, admin_id, Relation::Viewer)
         .await
