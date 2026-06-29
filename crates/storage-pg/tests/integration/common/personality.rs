@@ -5,6 +5,8 @@
 
 #![allow(dead_code, clippy::doc_markdown, clippy::unnecessary_literal_bound)]
 
+use proxima_core::FactIngestPort;
+
 use std::sync::Arc;
 
 use proxima_core::engine::Engine;
@@ -180,7 +182,7 @@ pub fn build_test_engine(pg: PgStorage, anthropic: Arc<dyn AnthropicClient>) -> 
     registry.add_abstraction_schema::<TestAbstractionV1>();
     let frozen = registry.freeze();
     Engine::new(frozen)
-        .with_storage(Arc::new(pg))
+        .with_storage_ports(Arc::new(pg).storage_ports())
         .with_anthropic(anthropic)
         .with_embed(Arc::new(ConstantEmbedding::zero("fake-embed")))
 }
@@ -204,7 +206,6 @@ pub async fn instantiate_test_personality(
 /// Ingest one matching fact via the standard event-ingest verb. Returns
 /// the resulting memory_id.
 pub async fn ingest_test_fact(pg: &PgStorage, owner: &Owner, label: &str) -> MemoryId {
-    use proxima_core::Storage;
     let now = time::OffsetDateTime::now_utc();
     let payload = serde_json::to_vec(&TestFactV1 {
         label: label.into(),
@@ -244,7 +245,6 @@ pub async fn ingest_test_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Mem
 /// useful when you want events that don't match the test personality's
 /// wake filter.
 pub async fn ingest_other_fact(pg: &PgStorage, owner: &Owner, label: &str) -> MemoryId {
-    use proxima_core::Storage;
     let now = time::OffsetDateTime::now_utc();
     let payload = serde_json::to_vec(&TestOtherFactV1 {
         label: label.into(),

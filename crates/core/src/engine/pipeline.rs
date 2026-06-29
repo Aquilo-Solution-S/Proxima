@@ -234,6 +234,8 @@ impl Engine {
         let read = self.authorize_read(authz).await?;
         let home = self
             .storage()
+            .pipeline
+            .owner_access_read
             .home_owner(entity)
             .await
             .map_err(|err| storage_error("home_owner", &err))?
@@ -241,6 +243,8 @@ impl Engine {
 
         let readable = self
             .storage()
+            .pipeline
+            .owner_access_read
             .visible_to_any(entity, &read)
             .await
             .map_err(|err| storage_error("visible_to_any", &err))?;
@@ -382,15 +386,15 @@ mod tests {
         Engine::new(registry.freeze())
     }
 
-    fn engine_with_storage(storage: MembershipStorage) -> Engine {
-        Engine::compose(Arc::new(storage), |_| {})
+    fn engine_with_ports(storage: MembershipStorage) -> Engine {
+        Engine::compose(storage.storage_ports(), |_| {})
     }
 
     fn engine_from_registry_and_storage(
         registry: FlavorRegistry,
         storage: MembershipStorage,
     ) -> Engine {
-        Engine::new(registry.freeze()).with_storage(Arc::new(storage))
+        Engine::new(registry.freeze()).with_storage_ports(storage.storage_ports())
     }
 
     fn owner() -> Owner {
@@ -531,7 +535,7 @@ mod tests {
     async fn authorize_write_allows_self_editor() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let engine = engine_with_storage(storage(p, g1));
+        let engine = engine_with_ports(storage(p, g1));
         let authz = granted_context(&p);
 
         let permit = engine
@@ -548,7 +552,7 @@ mod tests {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
         let g1_owner = OwnerRef::Group(g1);
-        let engine = engine_with_storage(storage(p, g1));
+        let engine = engine_with_ports(storage(p, g1));
         let authz = granted_context(&p);
 
         let err = engine
@@ -564,7 +568,7 @@ mod tests {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
         let g1_owner = OwnerRef::Group(g1);
-        let engine = engine_with_storage(storage_with_relation(p, g1, Relation::Editor));
+        let engine = engine_with_ports(storage_with_relation(p, g1, Relation::Editor));
         let authz = granted_context(&p);
 
         let permit = engine
@@ -598,7 +602,7 @@ mod tests {
     async fn authorize_write_denied_context_forbidden() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let engine = engine_with_storage(storage(p, g1));
+        let engine = engine_with_ports(storage(p, g1));
         let authz = AuthzContext::denied_for_owner(&p);
 
         let err = engine
@@ -613,7 +617,7 @@ mod tests {
     async fn authorize_write_denies_world_for_every_write_relation() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let engine = engine_with_storage(storage(p, g1));
+        let engine = engine_with_ports(storage(p, g1));
         let authz = AuthzContext::scoped_access(
             p,
             [p, world()],
@@ -638,7 +642,7 @@ mod tests {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
         let g1_owner = OwnerRef::Group(g1);
-        let engine = engine_with_storage(storage(p, g1));
+        let engine = engine_with_ports(storage(p, g1));
         let authz = granted_context(&p);
 
         let read = engine
@@ -655,7 +659,7 @@ mod tests {
     async fn authorize_read_denied_forbidden() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let engine = engine_with_storage(storage(p, g1));
+        let engine = engine_with_ports(storage(p, g1));
         let authz = AuthzContext::denied_for_owner(&p);
 
         let err = engine
@@ -670,7 +674,7 @@ mod tests {
     async fn authorize_entry_read_ok_when_readable() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let engine = engine_with_storage(storage_with_entity(p, g1, Some(p), true));
+        let engine = engine_with_ports(storage_with_entity(p, g1, Some(p), true));
         let authz = granted_context(&p);
 
         let permit = engine
@@ -688,7 +692,7 @@ mod tests {
     async fn authorize_entry_read_absent_is_forbidden() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let engine = engine_with_storage(storage_with_entity(p, g1, None, true));
+        let engine = engine_with_ports(storage_with_entity(p, g1, None, true));
         let authz = granted_context(&p);
 
         let err = engine
@@ -708,7 +712,7 @@ mod tests {
         let p = owner();
         let other = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let engine = engine_with_storage(storage_with_entity(p, g1, Some(other), false));
+        let engine = engine_with_ports(storage_with_entity(p, g1, Some(other), false));
         let authz = granted_context(&p);
 
         let err = engine

@@ -78,7 +78,10 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
     // so wire one over the same PG storage (Engine::compose embedding shape).
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
-    let engine = Arc::new(Engine::compose(Arc::new(pg.clone()), |_| {}));
+    let engine = Arc::new(Engine::compose(
+        Arc::new(pg.clone()).storage_ports(),
+        |_| {},
+    ));
     let server = McpToolHost::from_pool(
         pg.pool().clone(),
         owner,

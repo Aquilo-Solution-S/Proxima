@@ -6,7 +6,6 @@
 use crate::common::{create_db, db_url, drop_db};
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
-use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
@@ -90,7 +89,7 @@ async fn close_batch_idempotent_and_owner_scoped() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
 
         let user_a = UserId::new(Uuid::now_v7());
         let owner_a = OwnerRef::Personal(user_a);
@@ -98,9 +97,9 @@ async fn close_batch_idempotent_and_owner_scoped() {
         let owner_b = OwnerRef::Personal(user_b);
 
         let engine_a = Engine::new(FlavorRegistryFrozen::with_schemas(schemas_for_test()))
-            .with_storage(storage.clone());
+            .with_storage_ports(storage.clone());
         let engine_b = Engine::new(FlavorRegistryFrozen::with_schemas(schemas_for_test()))
-            .with_storage(storage);
+            .with_storage_ports(storage);
 
         // Open a batch by ingesting one event under owner A.
         let batch_id = SourceBatchId::new(Uuid::now_v7());

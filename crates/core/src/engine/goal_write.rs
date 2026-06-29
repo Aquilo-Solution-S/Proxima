@@ -3,6 +3,7 @@ use crate::access::{EntityId, Relation};
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
+use crate::storage_ports::GoalCommandStoragePorts;
 use crate::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, GoalAtomicContext, GoalAuthorship, GoalCreateRequest, GoalDraft,
@@ -135,6 +136,8 @@ impl Engine {
         let context =
             self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
         self.storage()
+            .goal_command
+            .goal_write
             .create_goal_atomic(&CreateGoalAtomicRequest {
                 draft,
                 context,
@@ -167,17 +170,18 @@ impl Engine {
         let embedding_client = self.embed_client();
         let context =
             self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
-        self.storage()
-            .transition_goal_atomic(&TransitionGoalAtomicRequest {
+        transition_goal_authorized(
+            &self.storage().goal_command,
+            &TransitionGoalAtomicRequest {
                 owner: *permit.owner(),
                 prior_goal_id: req.prior_goal_id,
                 next_state: req.next_state,
                 authorship: req.authorship.clone(),
                 request_id: req.request_id.clone(),
                 context,
-            })
-            .await
-            .map_err(map_goal_storage_error)
+            },
+        )
+        .await
     }
 
     /// Mark a Goal head Achieved with evidence.
@@ -203,6 +207,8 @@ impl Engine {
         let context =
             self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
         self.storage()
+            .goal_command
+            .goal_write
             .achieve_goal_atomic(&AchieveGoalAtomicRequest {
                 owner: *permit.owner(),
                 prior_goal_id: req.prior_goal_id,
@@ -239,6 +245,8 @@ impl Engine {
         let context =
             self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
         self.storage()
+            .goal_command
+            .goal_write
             .modify_goal_atomic(&ModifyGoalAtomicRequest {
                 owner: *permit.owner(),
                 prior_goal_id: req.prior_goal_id,
@@ -287,6 +295,8 @@ impl Engine {
         let context =
             self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
         self.storage()
+            .goal_command
+            .goal_write
             .decompose_goal_atomic(&DecomposeGoalAtomicRequest {
                 owner: *permit.owner(),
                 parent_goal_id: req.parent_goal_id,
@@ -358,6 +368,8 @@ impl Engine {
         );
         let outcome = self
             .storage()
+            .goal_command
+            .goal_write
             .create_goal_atomic(&CreateGoalAtomicRequest {
                 draft,
                 context: GoalAtomicContext {
@@ -421,6 +433,8 @@ impl Engine {
             }
             GoalTargetSelf::Personality(instance_id) => self
                 .storage()
+                .goal_command
+                .goal_support_read
                 .active_personality_root(permit.owner(), instance_id)
                 .await
                 .map_err(map_goal_storage_error)?
@@ -456,6 +470,8 @@ impl Engine {
         };
         let home_owner = self
             .storage()
+            .goal_command
+            .owner_access_read
             .home_owner(EntityId::Memory(memory_id))
             .await
             .map_err(|err| ProtocolError::internal(format!("home_owner: {err}")))?
@@ -495,6 +511,17 @@ fn map_goal_build_error(err: GoalWriteBuildError) -> ProtocolError {
     }
 }
 
+pub(in crate::engine) async fn transition_goal_authorized(
+    ports: &GoalCommandStoragePorts,
+    req: &TransitionGoalAtomicRequest<'_>,
+) -> Result<GoalWriteOutcome, ProtocolError> {
+    ports
+        .goal_write
+        .transition_goal_atomic(req)
+        .await
+        .map_err(map_goal_storage_error)
+}
+
 fn map_goal_storage_error(err: StorageError) -> ProtocolError {
     match err {
         StorageError::NotFound => ProtocolError::not_found("goal write referenced row not found"),
@@ -519,7 +546,6 @@ fn map_goal_storage_error(err: StorageError) -> ProtocolError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     use super::super::access_sets::tests::MembershipStorage;
     use crate::error::ErrorCode;
@@ -565,8 +591,8 @@ mod tests {
         }
     }
 
-    fn engine_with_storage(storage: MembershipStorage) -> Engine {
-        Engine::compose(Arc::new(storage), |registry| {
+    fn engine_with_ports(storage: MembershipStorage) -> Engine {
+        Engine::compose(storage.storage_ports(), |registry| {
             registry.add_goal_schema::<TestGoalPayload>();
         })
     }
@@ -609,7 +635,7 @@ mod tests {
         let owner = owner();
         let foreign = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let memory_id = memory_id();
-        let engine = engine_with_storage(storage_with_memory(
+        let engine = engine_with_ports(storage_with_memory(
             owner,
             foreign,
             true,
@@ -631,7 +657,7 @@ mod tests {
     async fn author_self_perspective_allows_writable_perspective() {
         let owner = owner();
         let memory_id = memory_id();
-        let engine = engine_with_storage(storage_with_memory(
+        let engine = engine_with_ports(storage_with_memory(
             owner,
             owner,
             true,
@@ -654,7 +680,7 @@ mod tests {
         let owner = owner();
         let foreign = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let target = memory_id();
-        let engine = engine_with_storage(storage_with_memory(
+        let engine = engine_with_ports(storage_with_memory(
             owner,
             foreign,
             false,
@@ -687,7 +713,7 @@ mod tests {
         let owner = owner();
         let foreign = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let target = memory_id();
-        let engine = engine_with_storage(storage_with_memory(
+        let engine = engine_with_ports(storage_with_memory(
             owner,
             foreign,
             false,
@@ -718,7 +744,7 @@ mod tests {
     async fn target_self_perspective_allows_readable_perspective() {
         let owner = owner();
         let target = memory_id();
-        let engine = engine_with_storage(storage_with_memory(
+        let engine = engine_with_ports(storage_with_memory(
             owner,
             owner,
             true,

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use proxima_core::engine::Engine;
 use proxima_core::personality::ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID;
-use proxima_core::storage::Storage;
+use proxima_core::storage_ports::*;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
@@ -419,13 +419,13 @@ async fn query_returns_stored_schema_version() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
 
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry).with_storage(storage);
+        let engine = Engine::new(registry).with_storage_ports(storage);
 
         let mut draft = fresh_draft(owner);
         draft.schema_id = SchemaId::new("test/fact_blob_v2".into());
@@ -468,13 +468,13 @@ async fn query_active_only_filters_inactive_personality_roots() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
 
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_personality_root_test());
-        let engine = Engine::new(registry).with_storage(storage);
+        let engine = Engine::new(registry).with_storage_ports(storage);
 
         let active_root = insert_perspective_memory(
             &pg,
@@ -565,13 +565,13 @@ async fn query_returns_fact_rows() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
 
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry).with_storage(storage);
+        let engine = Engine::new(registry).with_storage_ports(storage);
 
         // Ingest two distinct Facts.
         let draft1 = fresh_draft(owner);
@@ -633,12 +633,12 @@ async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exc
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
 
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry).with_storage(storage);
+        let engine = Engine::new(registry).with_storage_ports(storage);
 
         let first = engine
             .event_ingest(
@@ -699,12 +699,12 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
 
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry).with_storage(storage);
+        let engine = Engine::new(registry).with_storage_ports(storage);
 
         let outside = engine
             .event_ingest(
@@ -781,12 +781,12 @@ async fn query_edge_id_hydration_returns_requested_edge_without_visible_nodes() 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
 
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry).with_storage(storage);
+        let engine = Engine::new(registry).with_storage_ports(storage);
 
         let a = engine
             .event_ingest(
@@ -839,12 +839,12 @@ async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
 
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry).with_storage(storage);
+        let engine = Engine::new(registry).with_storage_ports(storage);
 
         let a = engine
             .event_ingest(
@@ -900,14 +900,14 @@ async fn query_owner_scope_is_principal() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
 
         let user = UserId::new(Uuid::now_v7());
         let stored_owner = OwnerRef::Personal(user);
         let requested_owner = stored_owner;
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry).with_storage(storage);
+        let engine = Engine::new(registry).with_storage_ports(storage);
 
         let draft = fresh_draft(stored_owner);
         let outcome = engine
@@ -951,13 +951,13 @@ async fn query_filter_abstraction_returns_empty() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
 
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry).with_storage(storage);
+        let engine = Engine::new(registry).with_storage_ports(storage);
 
         // Ingest a Fact.
         let draft = fresh_draft(owner);
@@ -1011,7 +1011,7 @@ async fn query_heads_only_ignores_cross_owner_supersedes_successor() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
 
         let victim = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let attacker = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
@@ -1036,7 +1036,7 @@ async fn query_heads_only_ignores_cross_owner_supersedes_successor() {
         .await?;
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry).with_storage(storage);
+        let engine = Engine::new(registry).with_storage_ports(storage);
         let req = QueryRequest {
             principal: victim,
             read_owners: vec![victim],
@@ -1099,13 +1099,13 @@ async fn query_goals_filter_by_schema_id() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
 
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry).with_storage(storage);
+        let engine = Engine::new(registry).with_storage_ports(storage);
         let authz =
             proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
 
@@ -1202,13 +1202,13 @@ async fn query_returns_stored_goal_schema_version() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
 
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry).with_storage(storage);
+        let engine = Engine::new(registry).with_storage_ports(storage);
 
         // Seed a goal under schema_version=2.
         seed_goal(
@@ -1252,13 +1252,13 @@ async fn query_filter_nonexistent_schema_returns_empty() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
 
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry).with_storage(storage);
+        let engine = Engine::new(registry).with_storage_ports(storage);
 
         // Ingest a Fact.
         let draft = fresh_draft(owner);

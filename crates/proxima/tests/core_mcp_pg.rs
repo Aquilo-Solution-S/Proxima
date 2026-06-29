@@ -1,3 +1,4 @@
+use proxima_core::storage_ports::*;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use proxima::{
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
     CitationMappingPayload, CitedObjectPayload, FlavorRegistry, GroupId, MemoryId, Owner, OwnerRef,
-    Relation, Role, SchemaId, Storage, UserId, all_core_resources,
+    Relation, Role, SchemaId, UserId, all_core_resources,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;

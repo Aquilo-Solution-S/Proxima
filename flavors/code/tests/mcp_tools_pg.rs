@@ -17,7 +17,7 @@ use proxima_core::personality::{
     InstantiatePersonalityRequest, InstantiatePersonalityResponse, PersonalityInstanceId,
     SetWakeEntriesRequest, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
 };
-use proxima_core::storage::Storage;
+use proxima_core::storage_ports::*;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
@@ -879,8 +879,7 @@ fn run_git(repo: &std::path::Path, args: &[&str]) -> Result<(), Box<dyn std::err
 }
 
 fn engine_for_test(pg: PgStorage) -> Engine {
-    let storage: Arc<dyn Storage> = Arc::new(pg);
-    Engine::new(registry_for_engine()).with_storage(storage)
+    Engine::new(registry_for_engine()).with_storage_ports(Arc::new(pg).storage_ports())
 }
 
 fn fact_draft(owner: Owner, schema_id: &str, payload: &[u8]) -> EventDraft {

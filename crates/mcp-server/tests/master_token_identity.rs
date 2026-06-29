@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use common::{create_db, db_url, drop_db};
 use proxima_core::mcp::McpAuthorContext;
-use proxima_core::storage::Storage;
+use proxima_core::storage_ports::*;
 use proxima_core::{Engine, FlavorRegistry, OwnerRef, UserId};
 use proxima_mcp_server::McpToolHost;
 use proxima_storage_pg::PgStorage;
@@ -27,8 +27,10 @@ async fn master_token_call_mints_per_token_self_perspective()
 
     // Build an Engine wired with the live PG storage so the call_tool
     // ensure step can reach the master-token verb.
-    let engine =
-        Arc::new(Engine::new(FlavorRegistry::new().freeze()).with_storage(Arc::new(pg.clone())));
+    let engine = Arc::new(
+        Engine::new(FlavorRegistry::new().freeze())
+            .with_storage_ports(Arc::new(pg.clone()).storage_ports()),
+    );
 
     // Build McpToolHost from pool (mirrors personality_crud_e2e_pg.rs pattern).
     let server = McpToolHost::from_pool(

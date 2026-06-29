@@ -134,7 +134,7 @@ async fn query_scopes_reads_to_authz_context_not_client_principal() {
     // `QueryRequest::principal`. Unlike write/admin verbs — which reject a
     // foreign owner — a foreign principal in a read request is not an access
     // vector: it can never widen what the caller sees, so the verb returns the
-    // caller's accessible subset (empty here under NoopStorage) rather than
+    // caller's accessible subset (empty here under RejectingStorage) rather than
     // Forbidden. Cross-principal no-leak against real data is proven in the PG
     // integration suite (owner_columns_pg).
     let resp = engine
@@ -158,7 +158,7 @@ async fn tombstone_personality_rejects_noop_storage_write() {
             },
         )
         .await
-        .expect_err("NoopStorage rejects writes");
+        .expect_err("RejectingStorage rejects writes");
     assert_eq!(err.code, ErrorCode::Internal);
 }
 
@@ -294,13 +294,13 @@ async fn persist_mcp_call_authorized_context_clears_the_gate() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner);
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
-    // A context that clears the authz gate reaches storage; NoopStorage
+    // A context that clears the authz gate reaches storage; RejectingStorage
     // then rejects the write with Internal — distinguishing "gate
     // opened" from "gate blocked" (Forbidden).
     let err = engine
         .persist_mcp_call(&authz, sample_mcp_input(&owner))
         .await
-        .expect_err("NoopStorage rejects writes");
+        .expect_err("RejectingStorage rejects writes");
     assert_eq!(err.code, ErrorCode::Internal);
 }
 
@@ -418,24 +418,24 @@ async fn fact_retention_authorized_context_clears_the_gate() {
     let err = engine
         .set_fact_retention(&authz, &owner, 86_400)
         .await
-        .expect_err("NoopStorage rejects writes");
+        .expect_err("RejectingStorage rejects writes");
     assert_eq!(err.code, ErrorCode::Internal);
 
     let err = engine
         .get_fact_retention(&authz, &owner)
         .await
-        .expect_err("NoopStorage rejects writes");
+        .expect_err("RejectingStorage rejects writes");
     assert_eq!(err.code, ErrorCode::Internal);
 
     let err = engine
         .clear_fact_retention(&authz, &owner)
         .await
-        .expect_err("NoopStorage rejects writes");
+        .expect_err("RejectingStorage rejects writes");
     assert_eq!(err.code, ErrorCode::Internal);
 
     let err = engine
         .cleanup_due_facts(&authz, &owner)
         .await
-        .expect_err("NoopStorage rejects writes");
+        .expect_err("RejectingStorage rejects writes");
     assert_eq!(err.code, ErrorCode::Internal);
 }

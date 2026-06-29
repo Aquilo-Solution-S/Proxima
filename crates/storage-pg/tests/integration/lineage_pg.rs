@@ -1,7 +1,8 @@
 use crate::common::{drop_db, fresh_pg, owner_fixture};
+use proxima_core::storage_ports::*;
 
 use proxima_core::verbs::query::{MemoryLineageDirection, MemoryLineageRequest};
-use proxima_core::{MemoryId, Owner, OwnerRef, RelationClass, Storage, UserId};
+use proxima_core::{MemoryId, Owner, OwnerRef, RelationClass, UserId};
 use uuid::Uuid;
 
 #[tokio::test]

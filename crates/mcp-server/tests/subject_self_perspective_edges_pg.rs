@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use common::{create_db, db_url, drop_db};
 use proxima_core::mcp::{McpAuthorContext, PrefixedUuidClass, parse_prefixed_uuid};
-use proxima_core::storage::Storage;
+use proxima_core::storage_ports::*;
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{AuthPath, AuthzContext, Engine, FlavorRegistry, Owner, OwnerRef, UserId};
 use proxima_mcp_server::{McpAuthContext, McpToolHost};
@@ -26,7 +26,7 @@ async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
     let frozen = registry.freeze();
     let engine = Arc::new(
         Engine::new(frozen.clone())
-            .with_storage(pg.clone().into_handle())
+            .with_storage_ports(Arc::new(pg.clone()).storage_ports())
             .with_embed(Arc::new(ConstantEmbedding::prefixed(
                 "test-embed",
                 &[1.0, 0.0, 0.0],

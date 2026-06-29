@@ -80,11 +80,10 @@ is now a durable, owner-scoped, seq-ordered **pull log** (see
 > poll a harness wake loop needs ships as the
 > **`proxima://events{?since,limit}`** MCP resource — events with
 > `seq > since`, ascending, plus a `next_since` cursor and a `has_more`
-> hint — a thin owner-scoped wrapper over
-> `Storage::list_change_events_after`. There is intentionally no gRPC/engine
-> forward verb: the resource reads storage directly, the same posture as
-> `core_search_memories` and the
-> `proxima://memory/{id}/lineage{?direction,depth,limit}` resource.
+> hint — a thin owner-scoped wrapper over `Engine::list_events`, which
+> routes to `ChangeEventPort::list_change_events_after`. It is not one of
+> the five transport-level graph verbs; storage still stays behind the
+> Engine/port boundary.
 
 | Verb | Direction | Idempotency | Scope | Current status |
 |---|---|---|---|---|
@@ -154,8 +153,9 @@ Owner-scoped bounded read of `change_event`, newest-first.
 
 No `after` cursor — this verb is backward-only. Forward replay (events
 with `seq > cursor`) is served by the `proxima://events{?since,limit}`
-MCP resource over `Storage::list_change_events_after`; it is intentionally
-neither added as an `after` cursor here nor wrapped by a gRPC/engine verb.
+MCP resource over `Engine::list_events` and
+`ChangeEventPort::list_change_events_after`; it is intentionally neither
+added as an `after` cursor here nor promoted into the five graph verbs.
 
 ### GoalWrite
 
@@ -230,15 +230,15 @@ Forward poll (events after a cursor):
 ```
 client persists last_seq it processed
 on wake / reconnect:
-    read events where seq > last_seq, ascending   # Storage::list_change_events_after
+    read events where seq > last_seq, ascending   # ChangeEventPort::list_change_events_after
     process in order; persist the new high-water seq
 ```
 
 This is the harness wake path. It is exposed as the
 `proxima://events{?since,limit}` MCP resource — a thin owner-scoped
-wrapper over the `Storage::list_change_events_after` trait method that
-returns events ascending plus a `next_since` cursor and a `has_more`
-hint.
+wrapper over `Engine::list_events`, backed by
+`ChangeEventPort::list_change_events_after`, that returns events
+ascending plus a `next_since` cursor and a `has_more` hint.
 `EventHistory` is the backward-only, engine-exposed counterpart.
 
 Cold-start stitching — seed from a snapshot, then poll forward:
