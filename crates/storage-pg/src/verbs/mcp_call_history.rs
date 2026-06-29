@@ -12,7 +12,7 @@ pub(crate) async fn read_mcp_call_history(
     pool: &PgPool,
     req: &McpCallHistoryRequest,
 ) -> Result<McpCallHistoryResponse, StorageError> {
-    let (owner_kind, owner_principal_id) = req.principal.columns();
+    let (owner_kind, owner_id) = req.principal.columns();
     let limit = i64::from(req.limit.min(MAX_MCP_CALL_HISTORY_LIMIT));
 
     let rows = sqlx::query_as::<
@@ -25,7 +25,7 @@ pub(crate) async fn read_mcp_call_history(
             Option<Vec<u8>>,
             bool,
         ),
-    >(crate::access::owner_ref_compat::sql(
+    >(
         "SELECT memories.created_at,
                   fact.tool_name,
                   fact.ok,
@@ -38,18 +38,17 @@ pub(crate) async fn read_mcp_call_history(
              LEFT JOIN proxima_core.cited_mcp_call_io_v1 io USING (cited_object_id)
             WHERE EXISTS (
                     SELECT 1
-                      FROM __PROXIMA_ENTITY_OWNER__ eo
+                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                      WHERE eo.entity_id = memories.memory_id
-                       AND eo.owner_principal_kind = $1
-                       AND eo.owner_principal_id = $2
-                       AND eo.is_home
-                  )
+                       AND eo.owner_kind = $1
+                       AND eo.owner_id = $2
+)
               AND ($3::text IS NULL OR fact.actor_oid = $3)
             ORDER BY memories.created_at DESC
             LIMIT $4",
-    ))
+    )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(req.actor_oid.as_deref())
     .bind(limit)
     .fetch_all(pool)

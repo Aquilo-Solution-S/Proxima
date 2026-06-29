@@ -141,19 +141,19 @@ fn engine_for(pg: &proxima_storage_pg::PgStorage) -> Engine {
 
 async fn event_row_counts(
     pool: &sqlx::PgPool,
-    event_id: proxima_core::EventId,
+    receipt_id: proxima_core::EventId,
 ) -> Result<(i64, i64), sqlx::Error> {
-    let event_id_bytes = event_id.into_inner();
+    let receipt_id_bytes = receipt_id.into_inner();
     let memories = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) FROM proxima_core.memories WHERE event_id = $1",
+        "SELECT count(*) FROM proxima_core.memories WHERE receipt_id = $1",
     )
-    .bind(event_id_bytes.as_slice())
+    .bind(receipt_id_bytes.as_slice())
     .fetch_one(pool)
     .await?;
     let events = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) FROM proxima_core.events WHERE event_id = $1",
+        "SELECT count(*) FROM proxima_core.fact_receipts WHERE receipt_id = $1",
     )
-    .bind(event_id_bytes.as_slice())
+    .bind(receipt_id_bytes.as_slice())
     .fetch_one(pool)
     .await?;
     Ok((memories, events))
@@ -172,7 +172,7 @@ async fn authz_rejection_writes_nothing() -> Result<(), Box<dyn std::error::Erro
     let owner = group_owner();
     let engine = engine_for(&pg);
     let draft = fresh_draft(&owner);
-    let event_id = draft.event_id();
+    let receipt_id = draft.event_id();
     let bot = bot_principal();
     let authz = granted_bot_authz(&bot);
     let err = engine
@@ -182,7 +182,7 @@ async fn authz_rejection_writes_nothing() -> Result<(), Box<dyn std::error::Erro
 
     assert_eq!(err.code, ErrorCode::Forbidden);
     assert!(err.message.contains("requires ingest on this owner"));
-    assert_eq!(event_row_counts(pg.pool(), event_id).await?, (0, 0));
+    assert_eq!(event_row_counts(pg.pool(), receipt_id).await?, (0, 0));
 
     drop(engine);
     drop(pg);
@@ -242,7 +242,7 @@ async fn sidecar_failure_rolls_back_fact() -> Result<(), Box<dyn std::error::Err
             draft,
         )
         .await?;
-    let event_id = authorized.draft().event_id();
+    let receipt_id = authorized.draft().event_id();
 
     let err = event_ingest_with_sidecar_atomic(
         pg.pool(),
@@ -254,7 +254,7 @@ async fn sidecar_failure_rolls_back_fact() -> Result<(), Box<dyn std::error::Err
     .expect_err("sidecar failure must surface");
 
     assert!(err.to_string().contains("boom"));
-    assert_eq!(event_row_counts(pg.pool(), event_id).await?, (0, 0));
+    assert_eq!(event_row_counts(pg.pool(), receipt_id).await?, (0, 0));
     assert_eq!(embedding_job_count(pg.pool()).await?, 0);
 
     drop(engine);

@@ -10,7 +10,7 @@ use proxima_pg_testkit::drop_db;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-fn owner_cols(owner: &Owner) -> (proxima_core::OwnerRefKind, Uuid) {
+fn owner_cols(owner: &Owner) -> (proxima_core::OwnerRefKind, Option<Uuid>) {
     owner.columns()
 }
 
@@ -80,8 +80,8 @@ async fn fact_entity_rows(
     sqlx::query_as(
         "SELECT fact_entity_id, current_memory_id
            FROM proxima_core.fact_entities
-          WHERE owner_principal_kind = $1
-            AND owner_principal_id = $2
+          WHERE owner_kind = $1
+            AND owner_id = $2
             AND schema_id = $3
             AND schema_version = 1
             AND natural_key = $4
@@ -104,8 +104,8 @@ async fn fact_entity_count_for_schema(
     sqlx::query_scalar(
         "SELECT count(*)::bigint
            FROM proxima_core.fact_entities
-          WHERE owner_principal_kind = $1
-            AND owner_principal_id = $2
+          WHERE owner_kind = $1
+            AND owner_id = $2
             AND schema_id = $3
             AND schema_version = 1",
     )

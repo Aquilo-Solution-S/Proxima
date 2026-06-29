@@ -391,14 +391,13 @@ async fn seed_membership(
         panic!("user principal required");
     };
     sqlx::query(
-        "INSERT INTO proxima_core.group_membership
-            (group_id, member_user_id, relation, granted_by)
-         VALUES ($1, $2, $3::proxima_core.membership_relation, $4)",
+        "INSERT INTO proxima_core.group_memberships
+            (group_id, member_user_id, relation)
+         VALUES ($1, $2, $3::proxima_core.membership_relation)",
     )
     .bind(group_id.into_inner())
     .bind(member_id.into_inner())
     .bind(relation)
-    .bind(Uuid::nil())
     .execute(pool)
     .await?;
     Ok(())

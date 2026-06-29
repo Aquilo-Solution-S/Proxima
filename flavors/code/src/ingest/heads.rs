@@ -31,7 +31,7 @@ pub async fn file_revision_heads(
     // (see perf-logs/2026-05-16_14-31-40: 9 sqlx slow-statement
     // warnings, 1.5s → 26s as history accumulated).
     let rows: Vec<(uuid::Uuid, String, Vec<u8>, FileState)> =
-        sqlx::query_as(proxima_storage_pg::access::owner_ref_compat::sql(
+        sqlx::query_as(
             "SELECT memory_id, file_path, content_sha256, state \
          FROM ( \
              SELECT DISTINCT ON (s.file_path) \
@@ -40,16 +40,15 @@ pub async fn file_revision_heads(
              JOIN proxima_code.file_revision_v1 s USING (memory_id) \
             WHERE EXISTS ( \
                       SELECT 1 \
-                        FROM __PROXIMA_ENTITY_OWNER__ eo \
+                        FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
                        WHERE eo.entity_id = m.memory_id \
-                         AND eo.owner_principal_kind = $1 \
-                         AND eo.owner_principal_id = $2 \
-                         AND eo.is_home \
+                         AND eo.owner_kind = $1 \
+                         AND eo.owner_id = $2 \
                   ) \
               AND s.repo_id = $3 \
              ORDER BY s.file_path, m.created_at DESC \
          ) latest",
-        ))
+        )
         .bind(kind)
         .bind(principal_id)
         .bind(repo_id)
@@ -89,7 +88,7 @@ pub async fn present_chunk_indexes(
     // anti-join per candidate row and was the dominant slow statement
     // in long replay sessions (94s / 4145 calls in
     // perf-logs/2026-05-16_14-31-40).
-    let rows: Vec<(i32,)> = sqlx::query_as(proxima_storage_pg::access::owner_ref_compat::sql(
+    let rows: Vec<(i32,)> = sqlx::query_as(
         "SELECT chunk_index \
          FROM ( \
              SELECT DISTINCT ON (s.chunk_index) \
@@ -98,18 +97,17 @@ pub async fn present_chunk_indexes(
              JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
             WHERE EXISTS ( \
                       SELECT 1 \
-                        FROM __PROXIMA_ENTITY_OWNER__ eo \
+                        FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
                        WHERE eo.entity_id = m.memory_id \
-                         AND eo.owner_principal_kind = $1 \
-                         AND eo.owner_principal_id = $2 \
-                         AND eo.is_home \
+                         AND eo.owner_kind = $1 \
+                         AND eo.owner_id = $2 \
                   ) \
               AND s.repo_id = $3 \
                AND s.file_path = $4 \
              ORDER BY s.chunk_index, m.created_at DESC \
          ) latest \
          WHERE latest.state = 'Present'",
-    ))
+    )
     .bind(kind)
     .bind(principal_id)
     .bind(repo_id)

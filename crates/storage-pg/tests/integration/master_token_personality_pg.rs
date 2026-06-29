@@ -87,12 +87,14 @@ async fn concurrent_callers_resolve_to_single_personality() -> Result<(), Box<dy
     }
 
     // Exactly one shell-author personality minted for this owner.
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM proxima_core.personality
-         WHERE owner_principal_kind = 'User'
-           AND owner_principal_id = $1",
+         WHERE owner_kind = $1
+           AND owner_id IS NOT DISTINCT FROM $2",
     )
-    .bind(owner.columns().1)
+    .bind(owner_kind)
+    .bind(owner_id)
     .fetch_one(pg.pool())
     .await?;
     assert_eq!(count, 1, "expected exactly one personality, got {count}");

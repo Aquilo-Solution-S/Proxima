@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::engine::MemoryPermit;
 use crate::{
-    EventId, FactPayload, MemoryId, Owner, OwnerRef, PersonalityInstanceId, SchemaId,
+    EventId, FactPayload, MemoryId, Owner, OwnerRef, OwnerRefKind, PersonalityInstanceId, SchemaId,
     SchemaVersion, SidecarPayload, SourceBatchId, SourceId,
 };
 
@@ -443,7 +443,8 @@ impl EventDraft {
         let mut hasher = blake3::Hasher::new();
         hasher.update(self.source_id.as_str().as_bytes());
         hasher.update(b"\x00");
-        let (kind, id) = owner.columns();
+        let kind = OwnerRefKind::of(&owner);
+        let id = owner.stable_key_uuid();
         hasher.update(kind.as_str().as_bytes());
         hasher.update(b"\x00");
         hasher.update(id.as_bytes());
@@ -527,7 +528,7 @@ mod tests {
         };
         assert_eq!(
             hex::encode(draft.event_id().into_inner()),
-            "53524338fdad41da1d4cac66bc82ab04eeb7755fd6dd31b38cc906b0b5e11541"
+            "2469dc45f6d65917f6b3b13606ee8165330351f773bfec45c144ecabc5992da3"
         );
     }
 }

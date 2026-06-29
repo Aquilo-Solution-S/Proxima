@@ -512,6 +512,7 @@ fn map_goal_storage_error(err: StorageError) -> ProtocolError {
         StorageError::Unavailable(message) | StorageError::Internal(message) => {
             ProtocolError::internal(message)
         }
+        StorageError::V004ResetRequired { details } => ProtocolError::internal(details),
     }
 }
 

@@ -881,16 +881,16 @@ async fn unique_natural_key_guard_rejects_duplicate_entity_row() {
             &file_revision(repo_id, "src/lib.rs", "v1"),
         )
         .await?;
-        let (owner_kind, owner_principal_id) = owner.columns();
+        let (owner_kind, owner_id) = owner.columns();
         let err = sqlx::query(
             "INSERT INTO proxima_core.fact_entities
-                (fact_entity_id, owner_principal_kind, owner_principal_id,
+                (fact_entity_id, owner_kind, owner_id,
                  schema_id, schema_version, natural_key, current_memory_id, current_created_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, now())",
         )
         .bind(Uuid::now_v7())
         .bind(owner_kind)
-        .bind(owner_principal_id)
+        .bind(owner_id)
         .bind(FileRevisionV1::SCHEMA_ID)
         .bind(1_i32)
         .bind(file_revision_natural_key(repo_id, "src/lib.rs"))

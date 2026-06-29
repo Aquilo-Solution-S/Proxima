@@ -13,7 +13,6 @@ use proxima_core::{
 };
 use sqlx::PgPool;
 
-use crate::access::owner_ref_compat::insert_home;
 use crate::error::map_err;
 use crate::sidecars::{PgSidecarKey, PgSidecarRegistryFrozen};
 use crate::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
@@ -30,7 +29,7 @@ pub async fn load_memory_batch_facts(
     let batch_id: Option<uuid::Uuid> = sqlx::query_scalar(
         "SELECT e.source_batch_id
          FROM proxima_core.memories m
-         JOIN proxima_core.events e ON e.event_id = m.event_id
+         JOIN proxima_core.fact_receipts e ON e.receipt_id = m.receipt_id
          WHERE m.memory_id = $1
            AND m.tombstoned_at IS NULL",
     )
@@ -51,31 +50,30 @@ async fn load_batch_facts_by_id(
     batch_id: uuid::Uuid,
     sidecars: &[SidecarSpec],
 ) -> Result<Vec<FactRow>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     let mut rows_all = Vec::new();
     let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
     for spec in sidecars {
-        let sql = crate::access::owner_ref_compat::sql(
+        let sql =
             "SELECT m.memory_id, e.schema_version, m.wake_chain_depth
              FROM proxima_core.memories m
-             JOIN proxima_core.events e ON m.event_id = e.event_id
+             JOIN proxima_core.fact_receipts e ON m.receipt_id = e.receipt_id
              WHERE e.source_batch_id = $1
                AND EXISTS (
                     SELECT 1
-                      FROM __PROXIMA_ENTITY_OWNER__ eo
+                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                      WHERE eo.entity_id = m.memory_id
-                       AND eo.owner_principal_kind = $2
-                       AND eo.owner_principal_id = $3
-                       AND eo.is_home
-               )
+                       AND eo.owner_kind = $2
+                       AND eo.owner_id = $3
+)
                AND m.schema_id = $4
                AND e.schema_version = $5
-               AND m.tombstoned_at IS NULL",
-        );
+               AND m.tombstoned_at IS NULL"
+        ;
         let rows: Vec<(uuid::Uuid, i32, i16)> = sqlx::query_as(sql)
             .bind(batch_id)
             .bind(owner_kind)
-            .bind(owner_principal_id)
+            .bind(owner_id)
             .bind(spec.schema_id.as_str())
             .bind(i32::try_from(spec.schema_version.into_inner()).unwrap_or(i32::MAX))
             .fetch_all(pool)
@@ -122,22 +120,21 @@ pub async fn load_abstraction_heads(
     sidecars: &[SidecarSpec],
     limit: usize,
 ) -> Result<Vec<AbstractionRow>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     let mut rows_all = Vec::new();
     let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
     for spec in sidecars {
-        let sql = crate::access::owner_ref_compat::sql(
+        let sql =
             "SELECT m.memory_id, m.schema_version, m.text,
                     m.created_at, m.wake_chain_depth
              FROM proxima_core.memories m
              WHERE EXISTS (
                     SELECT 1
-                      FROM __PROXIMA_ENTITY_OWNER__ eo
+                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                      WHERE eo.entity_id = m.memory_id
-                       AND eo.owner_principal_kind = $1
-                       AND eo.owner_principal_id = $2
-                       AND eo.is_home
-               )
+                       AND eo.owner_kind = $1
+                       AND eo.owner_id = $2
+)
                AND m.kind = 'Abstraction'
                AND m.schema_id = $3
                AND m.schema_version = $4
@@ -148,11 +145,11 @@ pub async fn load_abstraction_heads(
                       AND newer.tombstoned_at IS NULL
                )
              ORDER BY m.created_at DESC, m.memory_id DESC
-             LIMIT $5",
-        );
+             LIMIT $5"
+        ;
         let rows: Vec<(uuid::Uuid, i32, String, time::OffsetDateTime, i16)> = sqlx::query_as(sql)
             .bind(owner_kind)
-            .bind(owner_principal_id)
+            .bind(owner_id)
             .bind(spec.schema_id.as_str())
             .bind(i32::try_from(spec.schema_version.into_inner()).unwrap_or(i32::MAX))
             .bind(i64::try_from(limit).unwrap_or(i64::MAX))
@@ -208,22 +205,21 @@ pub async fn load_perspective_heads(
     sidecars: &[SidecarSpec],
     limit: usize,
 ) -> Result<Vec<MemorySnapshot>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     let mut rows_all = Vec::new();
     let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
     for spec in sidecars {
-        let sql = crate::access::owner_ref_compat::sql(
+        let sql =
             "SELECT m.memory_id, m.schema_version, m.text,
                     m.created_at, m.wake_chain_depth
              FROM proxima_core.memories m
              WHERE EXISTS (
                     SELECT 1
-                      FROM __PROXIMA_ENTITY_OWNER__ eo
+                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                      WHERE eo.entity_id = m.memory_id
-                       AND eo.owner_principal_kind = $1
-                       AND eo.owner_principal_id = $2
-                       AND eo.is_home
-               )
+                       AND eo.owner_kind = $1
+                       AND eo.owner_id = $2
+)
                AND m.kind = 'Perspective'
                AND m.schema_id = $3
                AND m.schema_version = $4
@@ -237,12 +233,12 @@ pub async fn load_perspective_heads(
                       AND newer.tombstoned_at IS NULL
                )
              ORDER BY m.created_at DESC, m.memory_id DESC
-             LIMIT $7",
-        );
+             LIMIT $7"
+        ;
         let rows: Vec<(uuid::Uuid, i32, Option<String>, time::OffsetDateTime, i16)> =
             sqlx::query_as(sql)
                 .bind(owner_kind)
-                .bind(owner_principal_id)
+                .bind(owner_id)
                 .bind(spec.schema_id.as_str())
                 .bind(i32::try_from(spec.schema_version.into_inner()).unwrap_or(i32::MAX))
                 .bind(instance.into_inner())
@@ -308,16 +304,15 @@ pub async fn load_memory_by_id(
         i16,
         Option<uuid::Uuid>,
         OwnerRefKind,
-        uuid::Uuid,
+        Option<uuid::Uuid>,
     )> = sqlx::query_as(
-        crate::access::owner_ref_compat::sql("SELECT m.kind, m.schema_id, m.schema_version, m.text, m.wake_chain_depth,
-                m.personality_instance_id, home_owner.owner_principal_kind, home_owner.owner_principal_id
+        "SELECT m.kind, m.schema_id, m.schema_version, m.text, m.wake_chain_depth,
+                m.personality_instance_id, home_owner.owner_kind, home_owner.owner_id
          FROM proxima_core.memories m
-         LEFT JOIN __PROXIMA_ENTITY_OWNER__ home_owner
+         LEFT JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) home_owner
            ON home_owner.entity_id = m.memory_id
-          AND home_owner.is_home
-         WHERE m.memory_id = $1
-           AND m.tombstoned_at IS NULL"),
+WHERE m.memory_id = $1
+           AND m.tombstoned_at IS NULL",
     )
     .bind(memory_id.into_inner())
     .fetch_optional(pool)
@@ -330,23 +325,17 @@ pub async fn load_memory_by_id(
         text,
         depth,
         personality_instance_id,
-        owner_kind,
-        owner_principal_id,
+        _owner_kind,
+        _owner_id,
     )) = head
     else {
         return Ok(None);
     };
     if !memory_visible_to_reader(
-        pool,
-        owner_kind,
-        owner_principal_id,
-        memory_id,
         reader_personality_instance_id,
         kind,
         personality_instance_id,
-    )
-    .await?
-    {
+    ) {
         return Ok(None);
     }
     let kind_str = kind.unwrap_or(EntityKind::Fact).as_str().to_string();
@@ -428,54 +417,18 @@ fn decode_personality(instance_id: Option<uuid::Uuid>) -> Option<PersonalityInst
         .map(PersonalityInstanceId::new)
 }
 
-async fn memory_visible_to_reader(
-    pool: &PgPool,
-    owner_kind: OwnerRefKind,
-    owner_principal_id: uuid::Uuid,
-    memory_id: MemoryId,
+fn memory_visible_to_reader(
     reader_personality_instance_id: Option<PersonalityInstanceId>,
     kind: Option<EntityKind>,
     memory_personality_instance_id: Option<uuid::Uuid>,
-) -> Result<bool, StorageError> {
+) -> bool {
     let Some(reader) = reader_personality_instance_id else {
-        return Ok(true);
+        return true;
     };
     if kind.is_none() {
-        return Ok(true);
+        return true;
     }
-    let Some(readable_id) = memory_personality_instance_id else {
-        return Ok(false);
-    };
-    let reader_id = reader.into_inner();
-    if reader_id == readable_id {
-        return Ok(true);
-    }
-    let allowed: Option<(i32,)> = sqlx::query_as(crate::access::owner_ref_compat::sql(
-        "SELECT 1
-           FROM proxima_core.read_\
-scope_matrix r
-           JOIN __PROXIMA_ENTITY_OWNER__ home_owner
-             ON home_owner.entity_id = $5
-            AND home_owner.is_home
-            AND home_owner.owner_principal_kind = r.owner_principal_kind
-            AND home_owner.owner_principal_id = r.owner_principal_id
-   JOIN proxima_core.memories m
-     ON m.memory_id = $5
-    AND m.tombstoned_at IS NULL
-         WHERE r.owner_principal_kind = $1
-            AND r.owner_principal_id = $2
-            AND r.reader_personality_instance_id = $3
-            AND r.readable_personality_instance_id = $4",
-    ))
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(reader_id)
-    .bind(readable_id)
-    .bind(memory_id.into_inner())
-    .fetch_optional(pool)
-    .await
-    .map_err(map_err)?;
-    Ok(allowed.is_some())
+    memory_personality_instance_id.is_some_and(|readable_id| reader.into_inner() == readable_id)
 }
 
 pub async fn lookup_prior_personality_head<'e, E>(
@@ -487,18 +440,17 @@ pub async fn lookup_prior_personality_head<'e, E>(
 where
     E: sqlx::PgExecutor<'e>,
 {
-    let (owner_kind, owner_principal_id) = owner.columns();
-    let row: Option<(uuid::Uuid,)> = sqlx::query_as(crate::access::owner_ref_compat::sql(
+    let (owner_kind, owner_id) = owner.columns();
+    let row: Option<(uuid::Uuid,)> = sqlx::query_as(
         "SELECT m.memory_id
          FROM proxima_core.memories m
          WHERE EXISTS (
                 SELECT 1
-                  FROM __PROXIMA_ENTITY_OWNER__ eo
+                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                  WHERE eo.entity_id = m.memory_id
-                   AND eo.owner_principal_kind = $1
-                   AND eo.owner_principal_id = $2
-                   AND eo.is_home
-           )
+                   AND eo.owner_kind = $1
+                   AND eo.owner_id = $2
+)
            AND m.schema_id = $3
            AND m.personality_instance_id = $4
            AND m.kind = 'Perspective'
@@ -510,9 +462,9 @@ where
            )
          ORDER BY m.created_at DESC
          LIMIT 1",
-    ))
+    )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(schema_id.as_str())
     .bind(instance.personality_instance_id.into_inner())
     .fetch_optional(executor)
@@ -532,7 +484,6 @@ pub async fn append_personality_memories(
             memory_ids: Vec::new(),
         });
     }
-    let (owner_kind, owner_principal_id) = req.owner.columns();
     let mut tx = pool.begin().await.map_err(map_err)?;
     let mut memory_ids = Vec::with_capacity(req.memories.len());
     let has_perspective = req
@@ -550,6 +501,7 @@ pub async fn append_personality_memories(
 
     for memory in req.memories {
         let memory_id = uuid::Uuid::now_v7();
+        let (owner_kind, owner_id) = crate::access::owner_columns::owner_binds(&req.owner);
         // Read the head WITHIN the transaction so earlier inserts in this same
         // batch are visible. The transaction advisory lock serializes
         // cross-request Perspective appends for this personality instance.
@@ -563,13 +515,15 @@ pub async fn append_personality_memories(
         memory_ids.push(MemoryId::new(memory_id));
         sqlx::query(
             "INSERT INTO proxima_core.memories
-                (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-                 prompt_version, personality_instance_id,
+                (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+                 operator_kind, model_id, prompt_version, personality_instance_id,
                  wake_chain_depth, supersedes)
-             VALUES ($1, $2, $3, $4, $5, 'Wake',
-                     $6, $7, $8, $9, $10)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'Wake',
+                     $8, $9, $10, $11, $12)",
         )
         .bind(memory_id)
+        .bind(owner_kind)
+        .bind(owner_id)
         .bind(memory.schema_id.as_str())
         .bind(i32::try_from(memory.schema_version.into_inner()).unwrap_or(1))
         .bind(memory.kind.entity_kind())
@@ -582,14 +536,6 @@ pub async fn append_personality_memories(
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
-        insert_home(
-            &mut tx,
-            memory_id,
-            &req.owner,
-            Some(req.instance.personality_instance_id.into_inner()),
-        )
-        .await?;
-
         sidecars
             .insert_memory_sidecar(&mut tx, MemoryId::new(memory_id), &memory.sidecar_payload)
             .await?;
@@ -597,7 +543,7 @@ pub async fn append_personality_memories(
         let change_seq = uuid::Uuid::now_v7();
         sqlx::query(
             "INSERT INTO proxima_core.change_event
-                (seq, owner_principal_kind, owner_principal_id, kind,
+                (seq, owner_kind, owner_id, kind,
                  entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,
                  entity_personality_instance_id,
                  wake_chain_depth, supersedes_memory_id)
@@ -606,7 +552,7 @@ pub async fn append_personality_memories(
         )
         .bind(change_seq)
         .bind(owner_kind)
-        .bind(owner_principal_id)
+        .bind(owner_id)
         .bind(memory.kind.entity_kind())
         .bind(memory_id)
         .bind(memory.schema_id.as_str())
@@ -687,7 +633,7 @@ pub async fn append_personality_memories(
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
                 (entity_kind, entity_id, embedding_version, model_id, vec,
-                 owner_principal_kind, owner_principal_id)
+                 owner_kind, owner_id)
              VALUES ($1, $2, 1, $3, $4::vector, $5, $6)",
         )
         .bind(memory.kind.entity_kind())
@@ -695,7 +641,7 @@ pub async fn append_personality_memories(
         .bind(&memory.embedding_model_id)
         .bind(vec_literal)
         .bind(owner_kind)
-        .bind(owner_principal_id)
+        .bind(owner_id)
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;

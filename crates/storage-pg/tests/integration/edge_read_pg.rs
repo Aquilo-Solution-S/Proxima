@@ -1,4 +1,4 @@
-use crate::common::{drop_db, fresh_pg, seed_memory, seed_memory_edge, share_entity};
+use crate::common::{drop_db, fresh_pg, seed_memory, seed_memory_edge};
 use proxima_core::access::world;
 use proxima_core::verbs::query::{
     EdgeExistsRequest, EdgeFilter, EdgeReadRequest, MemoryLineageDirection, MemoryLineageRequest,
@@ -229,7 +229,6 @@ async fn seed_edge_read_fixture(
     let a = seed_memory(pg, &gp, EntityKind::Abstraction, "A").await?;
     let a_public = seed_memory(pg, &gp, EntityKind::Abstraction, "A public").await?;
     let f_private = seed_memory(pg, &private, EntityKind::Fact, "private").await?;
-    share_entity(pg, a_public.into_inner(), &world).await?;
 
     let a_to_f1 = seed_memory_edge(
         pg,

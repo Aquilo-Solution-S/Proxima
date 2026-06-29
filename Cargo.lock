@@ -2369,7 +2369,9 @@ version = "0.1.0"
 dependencies = [
  "proxima",
  "proxima-code",
+ "proxima-pg-testkit",
  "proxima-storage-pg",
+ "sqlx",
  "tokio",
 ]
 

@@ -36,11 +36,9 @@ pub(crate) use lineage::walk_memory_lineage;
 pub(crate) use memories::query_memories;
 pub(crate) use search::search_memories;
 
-/// Append the same-home-owner successor predicate: a successor row
-/// (`successor_alias`) suppresses a head row (`head_alias`) only when both
-/// share the same home owner-row. Supersession is intra-Owner
+/// Append the same-owner successor predicate. Supersession is intra-Owner
 /// (`Causa/Edges.lean` `supersession_intra_owner`), so a cross-Owner
-/// successor — corrupt or forged — never hides another Owner's head.
+/// successor never hides another Owner's head.
 pub(super) fn push_same_home_owner_successor_predicate(
     sql: &mut String,
     successor_alias: &str,
@@ -48,33 +46,16 @@ pub(super) fn push_same_home_owner_successor_predicate(
 ) {
     write!(
         sql,
-        "{}",
-        crate::access::owner_ref_compat::sql_owned(format!(
-            " AND EXISTS ( \
-            SELECT 1 FROM __PROXIMA_ENTITY_OWNER__ eo_s \
-             WHERE eo_s.entity_id = {successor_alias}.memory_id AND eo_s.is_home \
-               AND EXISTS ( \
-                   SELECT 1 FROM __PROXIMA_ENTITY_OWNER__ eo_h \
-                    WHERE eo_h.entity_id = {head_alias}.memory_id AND eo_h.is_home \
-                      AND eo_h.owner_principal_kind = eo_s.owner_principal_kind \
-                      AND eo_h.owner_principal_id = eo_s.owner_principal_id \
-               ) \
-        )"
-        ))
+        " AND {successor_alias}.owner_kind = {head_alias}.owner_kind \
+          AND {successor_alias}.owner_id IS NOT DISTINCT FROM {head_alias}.owner_id"
     )
     .expect("write to String is infallible");
 }
 
-pub(crate) fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<uuid::Uuid>) {
-    let kinds = read_owners
-        .iter()
-        .map(|principal| principal.columns().0)
-        .collect();
-    let ids = read_owners
-        .iter()
-        .map(|principal| principal.columns().1)
-        .collect();
-    (kinds, ids)
+pub(crate) fn read_owner_columns(
+    read_owners: &[OwnerRef],
+) -> (Vec<OwnerRefKind>, Vec<Option<uuid::Uuid>>) {
+    crate::access::owner_columns::owner_arrays(read_owners)
 }
 
 /// Resolve the aggregate `fact_entity_id` for an owner-scoped Fact
@@ -113,18 +94,18 @@ async fn fact_entity_id_for_executor<'e, E>(
 where
     E: Executor<'e, Database = Postgres>,
 {
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     let id = sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT fact_entity_id
            FROM proxima_core.fact_entities
-          WHERE owner_principal_kind = $1
-            AND owner_principal_id = $2
+          WHERE owner_kind = $1
+            AND owner_id = $2
             AND schema_id = $3
             AND schema_version = $4
             AND natural_key = $5::text[]",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(schema_id.as_str())
     .bind(schema_version.into_inner().cast_signed())
     .bind(natural_key)

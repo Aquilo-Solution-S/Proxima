@@ -23,19 +23,21 @@ async fn author_inspires_edge(
     source_goal_id: Uuid,
     target_memory_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     let edge_id = Uuid::now_v7();
     let mut tx = pg.pool().begin().await?;
     sqlx::query(
         "INSERT INTO proxima_core.edges
-            (edge_id, relation, relation_class,
+            (edge_id, owner_kind, owner_id, relation, relation_class,
              source_kind, source_memory_id, source_goal_id,
              target_kind, target_memory_id, target_goal_id,
              authorship_kind)
-         VALUES ($1, $2, 'Causal', 'Goal', NULL, $3, 'Perspective', $4, NULL,
+         VALUES ($1, $2, $3, $4, 'Causal', 'Goal', NULL, $5, 'Perspective', $6, NULL,
                  'User')",
     )
     .bind(edge_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(CORE_INSPIRES_RELATION)
     .bind(source_goal_id)
     .bind(target_memory_id)
@@ -45,7 +47,7 @@ async fn author_inspires_edge(
     let seq = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.change_event
-            (seq, owner_principal_kind, owner_principal_id, kind,
+            (seq, owner_kind, owner_id, kind,
              edge_id, edge_relation,
              edge_source_goal_id,
              edge_target_memory_id)
@@ -54,7 +56,7 @@ async fn author_inspires_edge(
     )
     .bind(seq)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(edge_id)
     .bind(CORE_INSPIRES_RELATION)
     .bind(source_goal_id)
@@ -69,21 +71,21 @@ async fn seed_active_goal(
     pg: &PgStorage,
     owner: &Owner,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     let goal_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.goals
-            (goal_id, schema_id, schema_version,
+            (goal_id, owner_kind, owner_id, schema_id, schema_version,
              title, text, state, authorship_kind, request_id, payload,
              idempotency_key)
-         VALUES ($1, 'core/simple-text-v1', 1,
+         VALUES ($1, $2, $3, 'core/simple-text-v1', 1,
                  'goal targeting', 'target Alice only', 'Active', 'User',
                  'goal-targeting-e2e', convert_to('{}', 'UTF8'),
                  md5($2::text || ':' || $3::text || ':' || 'goal-targeting-e2e'))",
     )
     .bind(goal_id)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .execute(pg.pool())
     .await?;
     insert_home(pg.pool(), goal_id, owner).await?;

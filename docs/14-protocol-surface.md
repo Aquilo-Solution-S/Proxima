@@ -91,12 +91,14 @@ is now a durable, owner-scoped, seq-ordered **pull log** (see
 | `Query` | client -> engine, sync | yes | Owner | current |
 | `EventHistory` | client -> engine, sync | yes | Owner | current |
 | `GoalWrite` | client -> engine, sync | `request_id` | Owner | current |
-| `EventIngest` | source -> engine, sync | `event_id` | Owner | current |
+| `EventIngest` | source -> engine, sync | public `event_id` / storage `receipt_id` | Owner | current |
 | `Schema` | client -> engine, sync | yes | binary | current |
 | `Subscribe` | (removed) | n/a | Owner | **retired** — `change_event` is a pull log |
 
 These five current verbs are the cognitive graph surface. Operational/config
-RPCs below are not graph verbs.
+RPCs below are not graph verbs. PR2 stores EventIngest idempotency in
+`fact_receipts.receipt_id` / `memories.receipt_id`; public `Event*` names are
+retained protocol vocabulary until the PR5 membrane rename.
 
 ## Owner-scoping — the primary axis
 
@@ -197,8 +199,8 @@ sources and in-app sources.
 
 | Rule | Contract |
 |---|---|
-| event id | server-computed content hash of source, Owner, payload |
-| replay | duplicate event id returns prior outcome / no new Fact |
+| receipt id | server-computed content hash of source, Owner, payload; public response field remains `event_id` until PR5 |
+| replay | duplicate receipt id returns prior outcome / no new Fact |
 | commit | returns after Fact and structural edges are committed |
 | log | success commits the corresponding `change_event` rows |
 | auth | user or source credential, depending on source type |

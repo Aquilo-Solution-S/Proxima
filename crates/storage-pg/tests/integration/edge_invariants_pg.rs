@@ -26,46 +26,51 @@ async fn insert_derived_memory(
         EntityKind::Perspective => MemoryOperatorKind::AtoP,
         _ => MemoryOperatorKind::FtoA,
     };
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id)
-         VALUES ($1, $2, 1, $3, 'derived', $4, 'test-model',
-                 'v1', $5)",
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id)
+         VALUES ($1, $2, $3, $4, 1, $5, 'derived', $6, 'test-model',
+                 'v1', $7)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(schema_id)
     .bind(kind)
     .bind(operator_kind)
     .bind(Uuid::now_v7())
     .execute(pg.pool())
     .await?;
-    crate::common::insert_home(pg, memory_id, owner).await?;
     Ok(MemoryId::new(memory_id))
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn insert_memory_edge(
     pg: &PgStorage,
-    _owner: &Owner,
+    owner: &Owner,
     relation_class: RelationClass,
     source_kind: EntityKind,
     source_memory_id: MemoryId,
     target_kind: EntityKind,
     target_memory_id: MemoryId,
 ) -> Result<(), sqlx::Error> {
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.edges
-            (edge_id, relation, relation_class,
+            (edge_id, owner_kind, owner_id, relation, relation_class,
              source_kind, source_memory_id, source_goal_id,
              target_kind, target_memory_id, target_goal_id,
              authorship_kind, authorship_owner_memory_id)
-         VALUES ($1, 'test/relation', $2,
-                 $3, $4, NULL,
+         VALUES ($1, $2, $3, 'test/relation', $4,
                  $5, $6, NULL,
+                 $7, $8, NULL,
                  'Engine', NULL)",
     )
     .bind(Uuid::now_v7())
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(relation_class)
     .bind(source_kind)
     .bind(source_memory_id.into_inner())
@@ -161,7 +166,7 @@ async fn trigger_rejects_endpoint_kind_and_allows_cross_owner_edges() {
 
         insert_memory_edge(
             &pg,
-            &other,
+            &owner,
             RelationClass::Structural,
             EntityKind::Fact,
             fact,

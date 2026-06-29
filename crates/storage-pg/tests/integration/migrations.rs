@@ -6,6 +6,54 @@ use crate::common::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
+async fn table_exists(pg: &PgStorage, table_name: &str) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM information_schema.tables
+              WHERE table_schema = 'proxima_core'
+                AND table_name = $1
+         )",
+    )
+    .bind(table_name)
+    .fetch_one(pg.pool())
+    .await
+    .expect("table inventory query should succeed")
+}
+
+async fn column_exists(pg: &PgStorage, column_name: &str) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM information_schema.columns
+              WHERE table_schema IN ('proxima_core', 'proxima_code')
+                AND column_name = $1
+         )",
+    )
+    .bind(column_name)
+    .fetch_one(pg.pool())
+    .await
+    .expect("column inventory query should succeed")
+}
+
+async fn check_constraint_exists(pg: &PgStorage, table: &str, constraint: &str) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM information_schema.table_constraints
+              WHERE table_schema = 'proxima_core'
+                AND table_name = $1
+                AND constraint_name = $2
+                AND constraint_type = 'CHECK'
+         )",
+    )
+    .bind(table)
+    .bind(constraint)
+    .fetch_one(pg.pool())
+    .await
+    .expect("constraint inventory query should succeed")
+}
+
 #[tokio::test]
 async fn migrations_apply_to_fresh_db() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -31,19 +79,19 @@ async fn migrations_apply_to_fresh_db() {
             row.0
         );
 
-        // S0 (Owner = OwnerRef collapse, Track B): owner_org_id must be GONE
+        // S0 (Owner = OwnerRef collapse, Track B): the legacy owner org column must be GONE
         // from every proxima_core table. This is the keystone gate for the
         // DDL-drop migration — a single missed column would silently keep org
         // in storage and pass the table-count check above.
         let org_cols: (i64,) = sqlx::query_as(
             "SELECT count(*)::bigint FROM information_schema.columns \
-             WHERE table_schema = 'proxima_core' AND column_name = 'owner_org_id'",
+             WHERE table_schema = 'proxima_core' AND column_name = ('owner_' || 'org_id')",
         )
         .fetch_one(pg.pool())
         .await?;
         assert_eq!(
             org_cols.0, 0,
-            "owner_org_id must be absent from proxima_core after S0; found {} column(s)",
+            "legacy owner org column must be absent from proxima_core after S0; found {} column(s)",
             org_cols.0
         );
         Ok(())
@@ -52,4 +100,246 @@ async fn migrations_apply_to_fresh_db() {
 
     let _ = drop_db(&db_name).await;
     result.expect("migrations integration test failed");
+}
+
+#[tokio::test]
+async fn fresh_v004_baseline_has_no_legacy_access_or_goal_tables() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+
+        for table_name in [
+            format!("entity_{}", "owner"),
+            format!("read_{}_matrix", "scope"),
+            format!("goal_{}", "parents"),
+            "events".to_string(),
+        ] {
+            assert!(
+                !table_exists(&pg, &table_name).await,
+                "proxima_core.{table_name} must not exist in the v0.0.4 baseline",
+            );
+        }
+
+        for column_name in [
+            format!("owner_{}", "principal_kind"),
+            format!("owner_{}", "principal_id"),
+            format!("owner_{}", "org_id"),
+        ] {
+            assert!(
+                !column_exists(&pg, &column_name).await,
+                "legacy owner column {column_name} must not exist",
+            );
+        }
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("v0.0.4 baseline inventory test failed");
+}
+
+#[tokio::test]
+async fn fresh_v004_baseline_enforces_owner_ref_shape_constraints() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+
+        for table in [
+            "change_event",
+            "citation_mappings",
+            "cited_object_uploads",
+            "cited_objects",
+            "edges",
+            "embeddings",
+            "embedding_jobs",
+            "fact_entities",
+            "fact_receipts",
+            "goals",
+            "master_token_personality",
+            "memories",
+            "owner_fact_retention",
+            "personality",
+            "personality_wake_entries",
+            "source_batches",
+            "subject_personality",
+        ] {
+            assert!(
+                check_constraint_exists(&pg, table, &format!("{table}_owner_ref_shape_chk")).await,
+                "proxima_core.{table} must enforce nullable OwnerRef shape",
+            );
+            assert!(
+                check_constraint_exists(&pg, table, &format!("{table}_world_not_write_owner_chk"))
+                    .await,
+                "proxima_core.{table} must reject world as a write owner",
+            );
+        }
+
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.memories
+                (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+                 operator_kind, model_id, prompt_version, personality_instance_id)
+             VALUES ($1, 'personal', NULL, 'test/owner-shape', 1, 'Abstraction',
+                     'bad owner', 'Wake', 'test-model', 'v1', $2)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(Uuid::nil())
+        .execute(pg.pool())
+        .await
+        .expect_err("personal owner with NULL owner_id must be rejected");
+        assert!(err.to_string().contains("owner_ref_shape"));
+
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.goals
+                (goal_id, owner_kind, owner_id, request_id, idempotency_key, state, supersedes,
+                 authorship_kind, schema_id, schema_version, payload, title, text)
+             VALUES ($1, 'world', NULL, $2, $2, 'Active', NULL,
+                     'User', 'core/simple-text-v1', 1, $3, 'bad', 'bad')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(format!("bad-world:{}", Uuid::now_v7()))
+        .bind(b"{}".as_slice())
+        .execute(pg.pool())
+        .await
+        .expect_err("world write owner must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("world_not_write_owner"),
+            "expected world_not_write_owner rejection, got: {msg}"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("owner-ref shape constraint test failed");
+}
+
+#[tokio::test]
+async fn pre_v004_database_fails_closed_before_checksum_migration() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+
+        sqlx::query("CREATE SCHEMA proxima_core")
+            .execute(pg.pool())
+            .await?;
+        sqlx::query(concat!(
+            "CREATE TABLE proxima_core.entity_",
+            "owner (entity_id uuid NOT NULL)"
+        ))
+        .execute(pg.pool())
+        .await?;
+        sqlx::query(
+            "CREATE TABLE public._sqlx_migrations (
+                 version bigint PRIMARY KEY,
+                 description text NOT NULL,
+                 installed_on timestamptz NOT NULL DEFAULT now(),
+                 success boolean NOT NULL,
+                 checksum bytea NOT NULL,
+                 execution_time bigint NOT NULL
+             )",
+        )
+        .execute(pg.pool())
+        .await?;
+        sqlx::query(
+            "INSERT INTO public._sqlx_migrations
+                 (version, description, success, checksum, execution_time)
+             VALUES
+                 (1, 'init', true, decode('00', 'hex'), 0),
+                 (5, 'group ownership access', true, decode('00', 'hex'), 0)",
+        )
+        .execute(pg.pool())
+        .await?;
+
+        let err = pg
+            .run_migrations()
+            .await
+            .expect_err("pre-v0.0.4 DB must fail closed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("v0.0.4") && msg.contains("reset"),
+            "error must explain v0.0.4 reset requirement, got: {msg}",
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("pre-v0.0.4 fail-closed test failed");
+}
+
+#[tokio::test]
+async fn pre_v004_database_with_only_old_version_one_checksum_fails_closed() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+
+        sqlx::query("CREATE SCHEMA proxima_core")
+            .execute(pg.pool())
+            .await?;
+        sqlx::query(
+            "CREATE TABLE public._sqlx_migrations (
+                 version bigint PRIMARY KEY,
+                 description text NOT NULL,
+                 installed_on timestamptz NOT NULL DEFAULT now(),
+                 success boolean NOT NULL,
+                 checksum bytea NOT NULL,
+                 execution_time bigint NOT NULL
+             )",
+        )
+        .execute(pg.pool())
+        .await?;
+        sqlx::query(
+            "INSERT INTO public._sqlx_migrations
+                 (version, description, success, checksum, execution_time)
+             VALUES (1, 'init', true, decode('00', 'hex'), 0)",
+        )
+        .execute(pg.pool())
+        .await?;
+
+        let err = pg
+            .run_migrations()
+            .await
+            .expect_err("old version-1 checksum must fail closed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("v0.0.4") && msg.contains("reset"),
+            "error must explain v0.0.4 reset requirement, got: {msg}",
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("pre-v0.0.4 checksum-only fail-closed test failed");
 }

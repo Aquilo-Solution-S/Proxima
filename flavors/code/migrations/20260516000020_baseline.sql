@@ -1,7 +1,7 @@
--- Baseline migration for the proxima_code schema. Generated with
--- `pg_dump --schema-only --no-owner --no-privileges --no-comments -n proxima_code`
--- and sanitized (psql session directives stripped).
--- Squashed from pre-2026-05-16 migration history; do not edit by hand.
+-- Proxima code-flavor schema — destructive v0.0.4 baseline.
+-- Generated from the folded proxima_code schema and hand-corrected in PR2 for
+-- direct OwnerRef columns and removal of pre-v0.0.4 owner-org compatibility.
+-- Existing pre-v0.0.4 databases must export/reset before this baseline runs.
 
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
@@ -244,9 +244,8 @@ CREATE TABLE proxima_code.file_revision_v1 (
 
 CREATE TABLE proxima_code.repo_ingestion_runs (
     run_id uuid NOT NULL,
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
     repo_id uuid NOT NULL,
     status proxima_code.repo_ingestion_run_status NOT NULL,
     stage proxima_code.repo_ingestion_run_stage NOT NULL,
@@ -263,7 +262,9 @@ CREATE TABLE proxima_code.repo_ingestion_runs (
     started_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     finished_at timestamp with time zone,
-    CONSTRAINT runs_finished_when_terminal_chk CHECK ((((status = ANY (ARRAY['succeeded'::proxima_code.repo_ingestion_run_status, 'failed'::proxima_code.repo_ingestion_run_status])) AND (finished_at IS NOT NULL)) OR ((status = ANY (ARRAY['queued'::proxima_code.repo_ingestion_run_status, 'running'::proxima_code.repo_ingestion_run_status])) AND (finished_at IS NULL))))
+    CONSTRAINT runs_finished_when_terminal_chk CHECK ((((status = ANY (ARRAY['succeeded'::proxima_code.repo_ingestion_run_status, 'failed'::proxima_code.repo_ingestion_run_status])) AND (finished_at IS NOT NULL)) OR ((status = ANY (ARRAY['queued'::proxima_code.repo_ingestion_run_status, 'running'::proxima_code.repo_ingestion_run_status])) AND (finished_at IS NULL)))),
+    CONSTRAINT repo_ingestion_runs_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT repo_ingestion_runs_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
@@ -272,16 +273,17 @@ CREATE TABLE proxima_code.repo_ingestion_runs (
 --
 
 CREATE TABLE proxima_code.repos (
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
     repo_id uuid NOT NULL,
     canonical_path text NOT NULL,
     display_name text NOT NULL,
     last_cursor bytea,
     last_polled_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    target_branch text
+    target_branch text,
+    CONSTRAINT repos_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT repos_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
@@ -370,7 +372,7 @@ ALTER TABLE ONLY proxima_code.repo_ingestion_runs
 --
 
 ALTER TABLE ONLY proxima_code.repos
-    ADD CONSTRAINT repos_pkey PRIMARY KEY (owner_principal_kind, owner_principal_id, owner_org_id, repo_id);
+    ADD CONSTRAINT repos_pkey PRIMARY KEY (owner_kind, owner_id, repo_id);
 
 
 --
@@ -378,7 +380,7 @@ ALTER TABLE ONLY proxima_code.repos
 --
 
 ALTER TABLE ONLY proxima_code.repos
-    ADD CONSTRAINT repos_unique_path UNIQUE (owner_principal_kind, owner_principal_id, owner_org_id, canonical_path);
+    ADD CONSTRAINT repos_unique_path UNIQUE (owner_kind, owner_id, canonical_path);
 
 
 --
@@ -483,14 +485,14 @@ CREATE INDEX idx_file_revision_v1_path_search ON proxima_code.file_revision_v1 U
 -- Name: repo_ingestion_runs_by_repo; Type: INDEX; Schema: proxima_code; Owner: -
 --
 
-CREATE INDEX repo_ingestion_runs_by_repo ON proxima_code.repo_ingestion_runs USING btree (owner_principal_kind, owner_principal_id, owner_org_id, repo_id, started_at DESC);
+CREATE INDEX repo_ingestion_runs_by_repo ON proxima_code.repo_ingestion_runs USING btree (owner_kind, owner_id, repo_id, started_at DESC);
 
 
 --
 -- Name: repo_ingestion_runs_one_active; Type: INDEX; Schema: proxima_code; Owner: -
 --
 
-CREATE UNIQUE INDEX repo_ingestion_runs_one_active ON proxima_code.repo_ingestion_runs USING btree (owner_principal_kind, owner_principal_id, owner_org_id, repo_id) WHERE (status = ANY (ARRAY['queued'::proxima_code.repo_ingestion_run_status, 'running'::proxima_code.repo_ingestion_run_status]));
+CREATE UNIQUE INDEX repo_ingestion_runs_one_active ON proxima_code.repo_ingestion_runs USING btree (owner_kind, owner_id, repo_id) WHERE (status = ANY (ARRAY['queued'::proxima_code.repo_ingestion_run_status, 'running'::proxima_code.repo_ingestion_run_status]));
 
 
 --
@@ -570,7 +572,7 @@ ALTER TABLE ONLY proxima_code.file_revision_v1
 --
 
 ALTER TABLE ONLY proxima_code.repo_ingestion_runs
-    ADD CONSTRAINT runs_repo_fk FOREIGN KEY (owner_principal_kind, owner_principal_id, owner_org_id, repo_id) REFERENCES proxima_code.repos(owner_principal_kind, owner_principal_id, owner_org_id, repo_id) ON DELETE CASCADE;
+    ADD CONSTRAINT runs_repo_fk FOREIGN KEY (owner_kind, owner_id, repo_id) REFERENCES proxima_code.repos(owner_kind, owner_id, repo_id) ON DELETE CASCADE;
 
 
 --

@@ -266,7 +266,7 @@ async fn cleanup_due_facts_erases_fact_and_tombstones_direct_derivative()
 
     let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
     let fact_id = ingest.memory_id.into_inner();
-    let event_id = ingest.event_id.into_inner().to_vec();
+    let receipt_id = ingest.event_id.into_inner().to_vec();
     let citation_mapping_id: Uuid = sqlx::query_scalar(
         "SELECT citation_mapping_id
            FROM proxima_core.memories
@@ -296,7 +296,7 @@ async fn cleanup_due_facts_erases_fact_and_tombstones_direct_derivative()
     assert_eq!(cleanup.facts_erased, 1);
     assert_eq!(cleanup.derivatives_tombstoned, 1);
 
-    assert_fact_erased(&pg, fact_id, &event_id, citation_mapping_id).await?;
+    assert_fact_erased(&pg, fact_id, &receipt_id, citation_mapping_id).await?;
     assert_derivative_tombstoned(&pg, derivative_id).await?;
     assert_agent_link_sidecar_erased(&pg, provenance_edge_id).await?;
     assert_embedding_artifacts_erased(&pg, fact_id).await?;
@@ -324,7 +324,7 @@ async fn cleanup_due_facts_tombstones_transitive_derivatives()
 
     let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
     let fact_id = ingest.memory_id.into_inner();
-    let event_id = ingest.event_id.into_inner().to_vec();
+    let receipt_id = ingest.event_id.into_inner().to_vec();
     let citation_mapping_id = citation_mapping_id_for_memory(&pg, fact_id).await?;
     age_fact(&pg, fact_id).await?;
 
@@ -343,7 +343,7 @@ async fn cleanup_due_facts_tombstones_transitive_derivatives()
     assert_eq!(cleanup.facts_erased, 1);
     assert_eq!(cleanup.derivatives_tombstoned, 2);
 
-    assert_fact_erased(&pg, fact_id, &event_id, citation_mapping_id).await?;
+    assert_fact_erased(&pg, fact_id, &receipt_id, citation_mapping_id).await?;
     assert_derivative_tombstoned(&pg, first_derivative_id).await?;
     assert_derivative_tombstoned(&pg, second_derivative_id).await?;
     assert_entity_delete_emitted(&pg, first_derivative_id).await?;
@@ -693,7 +693,7 @@ async fn tombstone_fact_drops_goal_evidence_edge() -> Result<(), Box<dyn std::er
 async fn assert_fact_erased(
     pg: &proxima_storage_pg::PgStorage,
     fact_id: Uuid,
-    event_id: &[u8],
+    receipt_id: &[u8],
     citation_mapping_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let fact_count: i64 = sqlx::query_scalar(
@@ -704,11 +704,12 @@ async fn assert_fact_erased(
     .await?;
     assert_eq!(fact_count, 0);
 
-    let event_count: i64 =
-        sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.events WHERE event_id = $1")
-            .bind(event_id)
-            .fetch_one(pg.pool())
-            .await?;
+    let event_count: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM proxima_core.fact_receipts WHERE receipt_id = $1",
+    )
+    .bind(receipt_id)
+    .fetch_one(pg.pool())
+    .await?;
     assert_eq!(event_count, 0);
 
     let citation_count: i64 = sqlx::query_scalar(
@@ -879,48 +880,50 @@ async fn insert_active_goal(
     owner: &Owner,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let goal_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     let request_id = format!("cleanup-goal-{}", Uuid::now_v7());
     sqlx::query(
         "INSERT INTO proxima_core.goals
-            (goal_id, schema_id, text, state, authorship_kind, request_id,
+            (goal_id, owner_kind, owner_id, schema_id, text, state, authorship_kind, request_id,
              schema_version, payload, title, idempotency_key)
-         VALUES ($1, 'core/simple-text-v1',
-                 'goal text', 'Active', 'User', $2, 1,
-                 $3, 'goal title',
-                 md5($4::text || ':' || $5::text || ':' || $2))",
+         VALUES ($1, $2, $3, 'core/simple-text-v1',
+                 'goal text', 'Active', 'User', $4, 1,
+                 $5, 'goal title',
+                 md5($2::text || ':' || $3::text || ':' || $4))",
     )
     .bind(goal_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(request_id)
     .bind(b"{}".to_vec())
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .execute(pg.pool())
     .await?;
-    insert_home(pg, goal_id, owner).await?;
     Ok(goal_id)
 }
 
 async fn insert_motivated_by_edge(
     pg: &proxima_storage_pg::PgStorage,
-    _owner: &Owner,
+    owner: &Owner,
     goal_id: Uuid,
     fact_id: Uuid,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let edge_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
 
     sqlx::query(
         "INSERT INTO proxima_core.edges
-            (edge_id, relation, relation_class,
+            (edge_id, owner_kind, owner_id, relation, relation_class,
              source_kind, source_goal_id,
              target_kind, target_memory_id,
              authorship_kind)
-         VALUES ($1, $2, 'Structural',
-                 'Goal', $3,
-                 'Fact', $4,
+         VALUES ($1, $2, $3, $4, 'Structural',
+                 'Goal', $5,
+                 'Fact', $6,
                  'User')",
     )
     .bind(edge_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(CORE_MOTIVATED_BY_RELATION)
     .bind(goal_id)
     .bind(fact_id)
@@ -1193,20 +1196,22 @@ async fn insert_derivative(
     text: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let derivative_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
 
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, 'test/cleanup-abstraction-v1', 1,
-                 'Abstraction', $2, 'FtoA', 'test-model',
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, 'test/cleanup-abstraction-v1', 1,
+                 'Abstraction', $4, 'FtoA', 'test-model',
                  'test-prompt', '00000000-0000-0000-0000-000000000000'::uuid, 0)",
     )
     .bind(derivative_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(text)
     .execute(pg.pool())
     .await?;
-    insert_home(pg, derivative_id, owner).await?;
 
     insert_provenance_edge(pg, owner, derivative_id, origin_id, origin_kind).await?;
 
@@ -1219,29 +1224,29 @@ async fn insert_embedding_artifacts(
     kind: EntityKind,
     memory_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
             (entity_kind, entity_id, embedding_version, model_id, vec,
-             owner_principal_kind, owner_principal_id)
+             owner_kind, owner_id)
          VALUES ($1, $2, 1, 'cleanup-embed', $3::vector, $4, $5)",
     )
     .bind(kind)
     .bind(memory_id)
     .bind(zero_vector_literal())
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .execute(pg.pool())
     .await?;
 
     sqlx::query(
         "INSERT INTO proxima_core.embedding_jobs
-            (owner_principal_kind, owner_principal_id,
+            (owner_kind, owner_id,
              entity_kind, entity_id, model_id)
          VALUES ($1, $2, $3, $4, 'cleanup-embed')",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(kind)
     .bind(memory_id)
     .execute(pg.pool())
@@ -1264,25 +1269,28 @@ fn zero_vector_literal() -> String {
 
 async fn insert_provenance_edge(
     pg: &proxima_storage_pg::PgStorage,
-    _owner: &Owner,
+    owner: &Owner,
     derivative_id: Uuid,
     origin_id: Uuid,
     origin_kind: EntityKind,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let edge_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
 
     sqlx::query(
         "INSERT INTO proxima_core.edges
-            (edge_id, relation, relation_class,
+            (edge_id, owner_kind, owner_id, relation, relation_class,
              source_kind, source_memory_id, source_goal_id,
              target_kind, target_memory_id, target_goal_id,
              authorship_kind, authorship_owner_memory_id)
-         VALUES ($1, 'core/derived-from', 'Provenance',
-                 'Abstraction', $2, NULL,
-                 $3, $4, NULL,
-                 'OperatorFtoA', $2)",
+         VALUES ($1, $2, $3, 'core/derived-from', 'Provenance',
+                 'Abstraction', $4, NULL,
+                 $5, $6, NULL,
+                 'OperatorFtoA', $4)",
     )
     .bind(edge_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(derivative_id)
     .bind(origin_kind)
     .bind(origin_id)
@@ -1290,25 +1298,4 @@ async fn insert_provenance_edge(
     .await?;
 
     Ok(())
-}
-
-async fn insert_home(
-    pg: &proxima_storage_pg::PgStorage,
-    entity_id: Uuid,
-    owner: &Owner,
-) -> Result<(), sqlx::Error> {
-    let (owner_kind, owner_principal_id) = owner.columns();
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1, $2, $3, true, $4)
-         ON CONFLICT DO NOTHING",
-    ))
-    .bind(entity_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(Uuid::nil())
-    .execute(pg.pool())
-    .await
-    .map(|_| ())
 }

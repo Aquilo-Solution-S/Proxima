@@ -12,18 +12,18 @@ async fn lock_active_personality_for_update(
     owner: &Owner,
     personality_instance_id: PersonalityInstanceId,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     let locked: Option<uuid::Uuid> = sqlx::query_scalar(
         "SELECT personality_instance_id
          FROM proxima_core.personality
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
+         WHERE owner_kind = $1
+           AND owner_id = $2
            AND personality_instance_id = $3
            AND status <> 'tombstoned'
          FOR UPDATE",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(personality_instance_id.into_inner())
     .fetch_optional(&mut **tx)
     .await
@@ -39,17 +39,17 @@ async fn replace_wake_entries_in_tx(
     req: &SetWakeEntriesRequest,
 ) -> Result<SetWakeEntriesResponse, StorageError> {
     let owner = req.owner();
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     let result = sqlx::query(
         "UPDATE proxima_core.personality_wake_entries
          SET tombstoned_at = now(), updated_at = now()
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
+         WHERE owner_kind = $1
+           AND owner_id = $2
            AND personality_instance_id = $3
            AND tombstoned_at IS NULL",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(req.personality_instance_id.into_inner())
     .execute(&mut **tx)
     .await
@@ -59,13 +59,13 @@ async fn replace_wake_entries_in_tx(
     let active_parent = sqlx::query(
         "UPDATE proxima_core.personality
          SET updated_at = now()
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
+         WHERE owner_kind = $1
+           AND owner_id = $2
            AND personality_instance_id = $3
            AND status <> 'tombstoned'",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(req.personality_instance_id.into_inner())
     .execute(&mut **tx)
     .await
@@ -98,19 +98,19 @@ async fn read_wake_entries_in_tx(
     owner: &Owner,
     pid: PersonalityInstanceId,
 ) -> Result<Vec<WakeEntryDraft>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     let rows = sqlx::query(
         "SELECT wake_entry_id, trigger_kind, trigger_id, label, enabled,
                 authored_by, probability_promille, goal_scope, instructions
          FROM proxima_core.personality_wake_entries
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
+         WHERE owner_kind = $1
+           AND owner_id = $2
            AND personality_instance_id = $3
            AND tombstoned_at IS NULL
          ORDER BY label, wake_entry_id",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(pid.into_inner())
     .fetch_all(&mut **tx)
     .await
@@ -165,7 +165,7 @@ pub async fn tombstone_personality(
     req: &proxima_core::TombstonePersonalityRequest,
 ) -> Result<proxima_core::TombstonePersonalityResponse, StorageError> {
     let owner = req.owner();
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     let mut tx = pool.begin().await.map_err(map_err)?;
 
     let result = sqlx::query(
@@ -173,13 +173,13 @@ pub async fn tombstone_personality(
          SET status = 'tombstoned',
              tombstoned_at = now(),
              updated_at = now()
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
+         WHERE owner_kind = $1
+           AND owner_id = $2
            AND personality_instance_id = $3
            AND status <> 'tombstoned'",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(req.personality_instance_id.into_inner())
     .execute(&mut *tx)
     .await
@@ -196,12 +196,12 @@ pub async fn tombstone_personality(
     let existing: Option<(PersonalityStatus,)> = sqlx::query_as(
         "SELECT status
          FROM proxima_core.personality
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
+         WHERE owner_kind = $1
+           AND owner_id = $2
            AND personality_instance_id = $3",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(req.personality_instance_id.into_inner())
     .fetch_optional(&mut *tx)
     .await
@@ -226,18 +226,18 @@ async fn upsert_wake_entry(
     owner: &Owner,
     entry: &WakeEntryDraft,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.personality_wake_entries
-            (owner_principal_kind, owner_principal_id,
+            (owner_kind, owner_id,
              personality_instance_id, wake_entry_id, trigger_kind, trigger_id,
              label, enabled, authored_by, probability_promille, goal_scope,
              instructions)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                  $11, $12)
          ON CONFLICT (
-             owner_principal_kind,
-             owner_principal_id,
+             owner_kind,
+             owner_id,
              personality_instance_id,
              wake_entry_id
          ) DO UPDATE SET
@@ -253,7 +253,7 @@ async fn upsert_wake_entry(
              updated_at = now()",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(entry.personality_instance_id.into_inner())
     .bind(entry.wake_entry_id)
     .bind(entry.trigger_kind)

@@ -14,7 +14,10 @@ use proxima_core::verbs::query::{
     EntityKind, PersonalityRootFilter, QueryRequest, SupersessionStatus,
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
-use proxima_core::{Owner, OwnerRef, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId};
+use proxima_core::{
+    MemoryId, Owner, OwnerRef, PersonalityInstanceId, SchemaId, SchemaVersion, SourceBatchId,
+    SourceId, UserId,
+};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
@@ -33,16 +36,18 @@ async fn seed_goal(
     payload: &[u8],
 ) -> Result<(), sqlx::Error> {
     let goal_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     let request_id = format!("seed-{}", Uuid::now_v7());
     sqlx::query(
         "INSERT INTO proxima_core.goals
-            (goal_id, schema_id, schema_version, title, text, payload, state,
+            (goal_id, owner_kind, owner_id, schema_id, schema_version, title, text, payload, state,
              authorship_kind, request_id, idempotency_key)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-                 md5($10::text || ':' || $11::text || ':' || $9))",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                 md5($2::text || ':' || $3::text || ':' || $11))",
     )
     .bind(goal_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(schema_id)
     .bind(schema_version)
     .bind(title)
@@ -52,27 +57,10 @@ async fn seed_goal(
     .bind(GoalAuthorshipKind::User)
     .bind(request_id)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .execute(pg.pool())
     .await?;
-    insert_home(pg, goal_id, owner).await
-}
-
-async fn insert_home(pg: &PgStorage, entity_id: Uuid, owner: &Owner) -> Result<(), sqlx::Error> {
-    let (owner_kind, owner_principal_id) = owner.columns();
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1, $2, $3, true, $4)
-         ON CONFLICT DO NOTHING",
-    ))
-    .bind(entity_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(Uuid::nil())
-    .execute(pg.pool())
-    .await
-    .map(|_| ())
+    Ok(())
 }
 
 async fn insert_abstraction_memory(
@@ -81,21 +69,35 @@ async fn insert_abstraction_memory(
     text: &str,
     supersedes: Option<Uuid>,
 ) -> Result<Uuid, sqlx::Error> {
+    insert_abstraction_memory_for_personality(pg, owner, text, supersedes, None).await
+}
+
+async fn insert_abstraction_memory_for_personality(
+    pg: &PgStorage,
+    owner: &Owner,
+    text: &str,
+    supersedes: Option<Uuid>,
+    personality_instance_id: Option<Uuid>,
+) -> Result<Uuid, sqlx::Error> {
     let memory_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id, wake_chain_depth, supersedes)
-         VALUES ($1, 'test/head-abstraction-v1', 1, 'Abstraction', $2, 'Wake',
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id,
+             wake_chain_depth, supersedes)
+         VALUES ($1, $2, $3, 'test/head-abstraction-v1', 1, 'Abstraction', $4, 'Wake',
                  'test-model', 'query-heads-v1',
-                 '00000000-0000-0000-0000-000000000000'::uuid, 0, $3)",
+                 COALESCE($6, '00000000-0000-0000-0000-000000000000'::uuid), 0, $5)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(text)
     .bind(supersedes)
+    .bind(personality_instance_id)
     .execute(pg.pool())
     .await?;
-    insert_home(pg, memory_id, owner).await?;
     Ok(memory_id)
 }
 
@@ -214,26 +216,29 @@ fn fresh_draft(owner: Owner) -> EventDraft {
 
 async fn insert_test_edge(
     pg: &PgStorage,
-    _owner: &Owner,
+    owner: &Owner,
     source: Uuid,
     target: Uuid,
     created_offset_seconds: i64,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let edge_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.edges
-           (edge_id, relation, relation_class,
+           (edge_id, owner_kind, owner_id, relation, relation_class,
             source_kind, source_memory_id, source_goal_id,
             target_kind, target_memory_id, target_goal_id,
             authorship_kind, authorship_owner_memory_id, created_at)
          VALUES
-           ($1, 'test/structural', 'Structural',
-            'Fact', $2, NULL,
-            'Fact', $3, NULL,
+           ($1, $2, $3, 'test/structural', 'Structural',
+            'Fact', $4, NULL,
+            'Fact', $5, NULL,
             'EventSource', NULL,
-            now() + ($4 * interval '1 second'))",
+            now() + ($6 * interval '1 second'))",
     )
     .bind(edge_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(source)
     .bind(target)
     .bind(created_offset_seconds)
@@ -244,27 +249,30 @@ async fn insert_test_edge(
 
 async fn insert_n_test_edges_bulk(
     pg: &PgStorage,
-    _owner: &Owner,
+    owner: &Owner,
     source: Uuid,
     target: Uuid,
     count: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let edge_ids: Vec<Uuid> = (0..count).map(|_| Uuid::now_v7()).collect();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.edges
-           (edge_id, relation, relation_class,
+           (edge_id, owner_kind, owner_id, relation, relation_class,
             source_kind, source_memory_id, source_goal_id,
             target_kind, target_memory_id, target_goal_id,
             authorship_kind, authorship_owner_memory_id, created_at)
-         SELECT ids.edge_id, 'test/structural', 'Structural',
+         SELECT ids.edge_id, $3, $4, 'test/structural', 'Structural',
                 'Fact', $1, NULL,
                 'Fact', $2, NULL,
                 'EventSource', NULL,
                 now() + (ids.ord * interval '1 microsecond')
-         FROM unnest($3::uuid[]) WITH ORDINALITY AS ids(edge_id, ord)",
+         FROM unnest($5::uuid[]) WITH ORDINALITY AS ids(edge_id, ord)",
     )
     .bind(source)
     .bind(target)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(edge_ids)
     .execute(pg.pool())
     .await?;
@@ -297,15 +305,17 @@ async fn insert_perspective_memory(
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
     let instance_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, 1, 'Perspective', $3, 'Wake',
-                 'substrate', 'test-v1', $4, 0)",
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, $4, 1, 'Perspective', $5, 'Wake',
+                 'substrate', 'test-v1', $6, 0)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(schema_id)
     .bind(text)
     .bind(instance_id)
@@ -320,13 +330,13 @@ async fn insert_perspective_memory(
         };
         sqlx::query(
             "INSERT INTO proxima_core.personality
-                (owner_principal_kind, owner_principal_id,
+                (owner_kind, owner_id,
                  personality_instance_id, current_root_perspective_memory_id,
                  status, tombstoned_at)
              VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(owner_kind)
-        .bind(owner_principal_id)
+        .bind(owner_id)
         .bind(instance_id)
         .bind(memory_id)
         .bind(status)
@@ -335,8 +345,69 @@ async fn insert_perspective_memory(
         .await?;
     }
 
-    insert_home(pg, memory_id, owner).await?;
     Ok(memory_id)
+}
+
+#[tokio::test]
+async fn load_memory_by_id_reader_filter_uses_same_personality_without_deleted_scope_table() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let reader = Uuid::now_v7();
+        let other = Uuid::now_v7();
+        let visible = insert_abstraction_memory_for_personality(
+            &pg,
+            &owner,
+            "reader-visible load target",
+            None,
+            Some(reader),
+        )
+        .await?;
+        let hidden = insert_abstraction_memory_for_personality(
+            &pg,
+            &owner,
+            "reader-hidden load target",
+            None,
+            Some(other),
+        )
+        .await?;
+
+        let visible_loaded = pg
+            .load_memory_by_id(
+                MemoryId::new(visible),
+                Some(PersonalityInstanceId::new(reader)),
+                &[],
+            )
+            .await?;
+        let hidden_loaded = pg
+            .load_memory_by_id(
+                MemoryId::new(hidden),
+                Some(PersonalityInstanceId::new(reader)),
+                &[],
+            )
+            .await?;
+
+        assert!(
+            visible_loaded.is_some(),
+            "same-personality memory must load"
+        );
+        assert!(
+            hidden_loaded.is_none(),
+            "other-personality memory must not load"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("load_memory_by_id reader filter regression failed");
 }
 
 #[tokio::test]

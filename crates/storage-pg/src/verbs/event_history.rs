@@ -25,7 +25,8 @@ pub(crate) async fn event_history(
         });
     }
     let (read_owner_kinds, read_owner_ids) = read_owner_columns(read_owners);
-    let (world_kind, world_id) = proxima_core::access::world().columns();
+    let (world_kind, world_id) =
+        crate::access::owner_columns::owner_binds(&proxima_core::access::world());
     let limit = i64::from(req.limit.min(MAX_EVENT_HISTORY_LIMIT));
 
     // Uses the shared edge guard over ce.edge_source_memory_id /
@@ -35,9 +36,9 @@ pub(crate) async fn event_history(
         r"SELECT ce.seq FROM proxima_core.change_event ce
              WHERE EXISTS (
                 SELECT 1
-                  FROM unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
-                 WHERE ce.owner_principal_kind = s.kind
-                   AND ce.owner_principal_id = s.id
+                  FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+                 WHERE ce.owner_kind = s.kind
+                   AND ce.owner_id IS NOT DISTINCT FROM s.id
              )
                AND ($3::uuid IS NULL OR ce.seq < $3)
                AND {edge_visibility}
@@ -62,9 +63,9 @@ pub(crate) async fn event_history(
         r"SELECT ce.seq FROM proxima_core.change_event ce
              WHERE EXISTS (
                 SELECT 1
-                  FROM unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
-                 WHERE ce.owner_principal_kind = s.kind
-                   AND ce.owner_principal_id = s.id
+                  FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+                 WHERE ce.owner_kind = s.kind
+                   AND ce.owner_id IS NOT DISTINCT FROM s.id
              )
                AND {high_water_visibility}
              ORDER BY ce.seq DESC
@@ -85,14 +86,6 @@ pub(crate) async fn event_history(
     })
 }
 
-fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<uuid::Uuid>) {
-    let kinds = read_owners
-        .iter()
-        .map(|principal| principal.columns().0)
-        .collect();
-    let ids = read_owners
-        .iter()
-        .map(|principal| principal.columns().1)
-        .collect();
-    (kinds, ids)
+fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<Option<uuid::Uuid>>) {
+    crate::access::owner_columns::owner_arrays(read_owners)
 }

@@ -15,9 +15,10 @@ use proxima_core::mcp::core_tools::goal::{
 };
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
-    AuthPath, AuthzContext, EntityKind, FlavorRegistry, FlavorRegistryFrozen, GoalId, GroupId,
-    McpTool, McpToolError, MemoryId, MemoryOperatorKind, Owner, OwnerRef, OwnerRefKind,
-    PersonalityInstanceId, PersonalityStatus, Relation, Role, Storage, UserId,
+    AuthPath, AuthzContext, CORE_DEPENDS_ON_RELATION, EntityKind, FlavorRegistry,
+    FlavorRegistryFrozen, GoalId, GroupId, McpTool, McpToolError, MemoryId, MemoryOperatorKind,
+    Owner, OwnerRef, OwnerRefKind, PersonalityInstanceId, PersonalityStatus, Relation, Role,
+    Storage, UserId,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -581,38 +582,30 @@ async fn seed_personality_self(
 ) -> Result<(PersonalityInstanceId, MemoryId), Box<dyn std::error::Error>> {
     let personality_id = PersonalityInstanceId::new(Uuid::now_v7());
     let root_memory_id = MemoryId::new(Uuid::now_v7());
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
+    let (owner_kind, owner_id) = owner_parts(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, 'test/self-perspective-v1', 1, $2,
-                 'goal tool self perspective', $3, 'codex-test', 'self-v1', $4, 0)",
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, 'test/self-perspective-v1', 1, $4,
+                 'goal tool self perspective', $5, 'codex-test', 'self-v1', $6, 0)",
     )
     .bind(root_memory_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(EntityKind::Perspective)
     .bind(MemoryOperatorKind::AtoP)
     .bind(personality_id.into_inner())
     .execute(pg.pool())
     .await?;
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1, $2, $3, true, NULL)",
-    ))
-    .bind(root_memory_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .execute(pg.pool())
-    .await?;
     sqlx::query(
         "INSERT INTO proxima_core.personality
-            (owner_principal_kind, owner_principal_id,
+            (owner_kind, owner_id,
              personality_instance_id, current_root_perspective_memory_id, status)
          VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(personality_id.into_inner())
     .bind(root_memory_id.into_inner())
     .bind(PersonalityStatus::Active)
@@ -628,52 +621,45 @@ async fn seed_fact_memory(
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
     let memory_id = MemoryId::new(Uuid::now_v7());
     let source_batch_id = Uuid::now_v7();
-    let event_id = Uuid::now_v7().as_bytes().to_vec();
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
+    let receipt_id = Uuid::now_v7().as_bytes().to_vec();
+    let (owner_kind, owner_id) = owner_parts(owner);
     let now = time::OffsetDateTime::now_utc();
     sqlx::query(
         "INSERT INTO proxima_core.source_batches
-            (id, source_id, owner_principal_kind, owner_principal_id)
+            (id, source_id, owner_kind, owner_id)
          VALUES ($1, 'test/goal-tools', $2, $3)",
     )
     .bind(source_batch_id)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .execute(pg.pool())
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.events
-            (event_id, source_id, source_batch_id, owner_principal_kind,
-             owner_principal_id, schema_id, schema_version,
+        "INSERT INTO proxima_core.fact_receipts
+            (receipt_id, source, source_batch_id, owner_kind,
+             owner_id, schema_id, schema_version,
              observed_at, occurred_at)
          VALUES ($1, 'test/goal-tools', $2, $3, $4,
                  'test/evidence-v1', 1, $5, $5)",
     )
-    .bind(&event_id)
+    .bind(&receipt_id)
     .bind(source_batch_id)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(now)
     .execute(pg.pool())
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, event_id, personality_instance_id)
-         VALUES ($1, 'test/evidence-v1', 1, $2, $3)",
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, receipt_id,
+             personality_instance_id)
+         VALUES ($1, $2, $3, 'test/evidence-v1', 1, $4, $5)",
     )
     .bind(memory_id.into_inner())
-    .bind(event_id)
-    .bind(Uuid::nil())
-    .execute(pg.pool())
-    .await?;
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1, $2, $3, true, NULL)",
-    ))
-    .bind(memory_id.into_inner())
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
+    .bind(receipt_id)
+    .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
     let _ = text;
@@ -760,10 +746,12 @@ async fn count_parent_link(
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT count(*)::bigint
-           FROM proxima_core.goal_parents
-          WHERE goal_id = $1
-            AND parent_goal_id = $2",
+           FROM proxima_core.edges
+          WHERE relation = $1
+            AND source_goal_id = $2
+            AND target_goal_id = $3",
     )
+    .bind(CORE_DEPENDS_ON_RELATION)
     .bind(child_id.into_inner())
     .bind(parent_id.into_inner())
     .fetch_one(pool)
@@ -776,9 +764,11 @@ async fn count_children_for_parent(
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT count(*)::bigint
-           FROM proxima_core.goal_parents
-          WHERE parent_goal_id = $1",
+           FROM proxima_core.edges
+          WHERE relation = $1
+            AND target_goal_id = $2",
     )
+    .bind(CORE_DEPENDS_ON_RELATION)
     .bind(parent_id.into_inner())
     .fetch_one(pool)
     .await
@@ -874,7 +864,7 @@ fn nil_owner() -> Owner {
     OwnerRef::Group(GroupId::new(Uuid::now_v7()))
 }
 
-fn owner_parts(owner: &Owner) -> (OwnerRefKind, Uuid) {
+fn owner_parts(owner: &Owner) -> (OwnerRefKind, Option<Uuid>) {
     owner.columns()
 }
 

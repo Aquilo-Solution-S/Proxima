@@ -21,8 +21,8 @@ pub async fn list_repos(
     let rows = sqlx::query_as::<_, RepoRow>(
         "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at \
          FROM proxima_code.repos \
-         WHERE owner_principal_kind = $1 \
-           AND owner_principal_id = $2 \
+         WHERE owner_kind = $1 \
+           AND owner_id = $2 \
          ORDER BY created_at ASC",
     )
     .bind(kind)
@@ -51,10 +51,10 @@ pub async fn register_repo(
 
     let row = sqlx::query_as::<_, RepoRow>(
         "INSERT INTO proxima_code.repos \
-            (owner_principal_kind, owner_principal_id, \
+            (owner_kind, owner_id, \
              repo_id, canonical_path, display_name, target_branch, created_at) \
          VALUES ($1, $2, $3, $4, $5, $6, now()) \
-         ON CONFLICT (owner_principal_kind, owner_principal_id, canonical_path) \
+         ON CONFLICT (owner_kind, owner_id, canonical_path) \
          DO NOTHING \
          RETURNING repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at",
     )
@@ -75,8 +75,8 @@ pub async fn register_repo(
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS( \
              SELECT 1 FROM proxima_code.repos \
-             WHERE owner_principal_kind = $1 \
-               AND owner_principal_id = $2 \
+             WHERE owner_kind = $1 \
+               AND owner_id = $2 \
                AND canonical_path = $3 \
          )",
     )
@@ -160,8 +160,8 @@ pub async fn delete_repo(
 
     let result = sqlx::query(
         "DELETE FROM proxima_code.repos \
-         WHERE owner_principal_kind = $1 \
-           AND owner_principal_id = $2 \
+         WHERE owner_kind = $1 \
+           AND owner_id = $2 \
            AND repo_id = $3",
     )
     .bind(kind)
@@ -197,8 +197,8 @@ pub async fn erase_repo(
     let exists: Option<(Uuid,)> = sqlx::query_as(
         "SELECT repo_id \
          FROM proxima_code.repos \
-         WHERE owner_principal_kind = $1 \
-           AND owner_principal_id = $2 \
+         WHERE owner_kind = $1 \
+           AND owner_id = $2 \
            AND repo_id = $3 \
          FOR UPDATE",
     )
@@ -222,18 +222,17 @@ pub async fn erase_repo(
     )
     .execute(&mut *tx)
     .await?;
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+    sqlx::query(
         "INSERT INTO tmp_proxima_repo_facts (memory_id) \
          SELECT m.memory_id \
          FROM proxima_core.memories m \
          JOIN proxima_code.commit_v1 s USING (memory_id) \
          WHERE EXISTS ( \
                    SELECT 1 \
-                     FROM __PROXIMA_ENTITY_OWNER__ eo \
+                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
                     WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_principal_kind = $1 \
-                      AND eo.owner_principal_id = $2 \
-                      AND eo.is_home \
+                      AND eo.owner_kind = $1 \
+                      AND eo.owner_id = $2 \
                ) \
            AND s.repo_id = $3 \
          UNION \
@@ -242,11 +241,10 @@ pub async fn erase_repo(
          JOIN proxima_code.file_revision_v1 s USING (memory_id) \
          WHERE EXISTS ( \
                    SELECT 1 \
-                     FROM __PROXIMA_ENTITY_OWNER__ eo \
+                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
                     WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_principal_kind = $1 \
-                      AND eo.owner_principal_id = $2 \
-                      AND eo.is_home \
+                      AND eo.owner_kind = $1 \
+                      AND eo.owner_id = $2 \
                ) \
            AND s.repo_id = $3 \
          UNION \
@@ -255,11 +253,10 @@ pub async fn erase_repo(
          JOIN proxima_code.work_requested_v1 s USING (memory_id) \
          WHERE EXISTS ( \
                    SELECT 1 \
-                     FROM __PROXIMA_ENTITY_OWNER__ eo \
+                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
                     WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_principal_kind = $1 \
-                      AND eo.owner_principal_id = $2 \
-                      AND eo.is_home \
+                      AND eo.owner_kind = $1 \
+                      AND eo.owner_id = $2 \
                ) \
            AND s.repo_id = $3 \
          UNION \
@@ -268,11 +265,10 @@ pub async fn erase_repo(
          JOIN proxima_code.test_requested_v1 s USING (memory_id) \
          WHERE EXISTS ( \
                    SELECT 1 \
-                     FROM __PROXIMA_ENTITY_OWNER__ eo \
+                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
                     WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_principal_kind = $1 \
-                      AND eo.owner_principal_id = $2 \
-                      AND eo.is_home \
+                      AND eo.owner_kind = $1 \
+                      AND eo.owner_id = $2 \
                ) \
            AND s.repo_id = $3 \
          UNION \
@@ -283,11 +279,10 @@ pub async fn erase_repo(
            ON r.memory_id = s.work_item_memory_id \
          WHERE EXISTS ( \
                    SELECT 1 \
-                     FROM __PROXIMA_ENTITY_OWNER__ eo \
+                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
                     WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_principal_kind = $1 \
-                      AND eo.owner_principal_id = $2 \
-                      AND eo.is_home \
+                      AND eo.owner_kind = $1 \
+                      AND eo.owner_id = $2 \
                ) \
            AND r.repo_id = $3 \
          UNION \
@@ -296,11 +291,10 @@ pub async fn erase_repo(
          JOIN proxima_code.execution_result_v1 s USING (memory_id) \
          WHERE EXISTS ( \
                    SELECT 1 \
-                     FROM __PROXIMA_ENTITY_OWNER__ eo \
+                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
                     WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_principal_kind = $1 \
-                      AND eo.owner_principal_id = $2 \
-                      AND eo.is_home \
+                      AND eo.owner_kind = $1 \
+                      AND eo.owner_id = $2 \
                ) \
            AND s.repo_id = $3 \
          UNION \
@@ -309,11 +303,10 @@ pub async fn erase_repo(
          JOIN proxima_code.test_result_v1 s USING (memory_id) \
          WHERE EXISTS ( \
                    SELECT 1 \
-                     FROM __PROXIMA_ENTITY_OWNER__ eo \
+                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
                     WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_principal_kind = $1 \
-                      AND eo.owner_principal_id = $2 \
-                      AND eo.is_home \
+                      AND eo.owner_kind = $1 \
+                      AND eo.owner_id = $2 \
                ) \
            AND s.repo_id = $3 \
          UNION \
@@ -325,14 +318,13 @@ pub async fn erase_repo(
          LEFT JOIN proxima_code.test_requested_v1 tr ON tr.memory_id = wi.memory_id \
          WHERE EXISTS ( \
                    SELECT 1 \
-                     FROM __PROXIMA_ENTITY_OWNER__ eo \
+                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
                     WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_principal_kind = $1 \
-                      AND eo.owner_principal_id = $2 \
-                      AND eo.is_home \
+                      AND eo.owner_kind = $1 \
+                      AND eo.owner_id = $2 \
                ) \
            AND COALESCE(wr.repo_id, tr.repo_id) = $3",
-    ))
+    )
     .bind(kind)
     .bind(principal_id)
     .bind(repo_id)
@@ -345,18 +337,17 @@ pub async fn erase_repo(
     )
     .execute(&mut *tx)
     .await?;
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+    sqlx::query(
         "INSERT INTO tmp_proxima_repo_abstractions (memory_id) \
          SELECT m.memory_id \
          FROM proxima_core.memories m \
          JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
          WHERE EXISTS ( \
                    SELECT 1 \
-                     FROM __PROXIMA_ENTITY_OWNER__ eo \
+                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
                     WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_principal_kind = $1 \
-                      AND eo.owner_principal_id = $2 \
-                      AND eo.is_home \
+                      AND eo.owner_kind = $1 \
+                      AND eo.owner_id = $2 \
                ) \
            AND s.repo_id = $3 \
          UNION \
@@ -365,11 +356,10 @@ pub async fn erase_repo(
          JOIN proxima_code.commit_summary_v1 s USING (memory_id) \
          WHERE EXISTS ( \
                    SELECT 1 \
-                     FROM __PROXIMA_ENTITY_OWNER__ eo \
+                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
                     WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_principal_kind = $1 \
-                      AND eo.owner_principal_id = $2 \
-                      AND eo.is_home \
+                      AND eo.owner_kind = $1 \
+                      AND eo.owner_id = $2 \
                ) \
            AND s.repo_id = $3 \
          UNION \
@@ -378,11 +368,10 @@ pub async fn erase_repo(
          JOIN proxima_code.execution_plan_v1 s USING (memory_id) \
          WHERE EXISTS ( \
                    SELECT 1 \
-                     FROM __PROXIMA_ENTITY_OWNER__ eo \
+                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
                     WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_principal_kind = $1 \
-                      AND eo.owner_principal_id = $2 \
-                      AND eo.is_home \
+                      AND eo.owner_kind = $1 \
+                      AND eo.owner_id = $2 \
                ) \
            AND s.repo_id = $3 \
          UNION \
@@ -391,14 +380,13 @@ pub async fn erase_repo(
          JOIN proxima_code.acceptance_summary_v1 s USING (memory_id) \
          WHERE EXISTS ( \
                    SELECT 1 \
-                     FROM __PROXIMA_ENTITY_OWNER__ eo \
+                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
                     WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_principal_kind = $1 \
-                      AND eo.owner_principal_id = $2 \
-                      AND eo.is_home \
+                      AND eo.owner_kind = $1 \
+                      AND eo.owner_id = $2 \
                ) \
            AND s.repo_id = $3",
-    ))
+    )
     .bind(kind)
     .bind(principal_id)
     .bind(repo_id)
@@ -421,16 +409,16 @@ pub async fn erase_repo(
     .await?;
 
     sqlx::query(
-        "CREATE TEMP TABLE tmp_proxima_repo_events \
-            (event_id bytea PRIMARY KEY, source_batch_id uuid NOT NULL) ON COMMIT DROP",
+        "CREATE TEMP TABLE tmp_proxima_repo_receipts \
+            (receipt_id bytea PRIMARY KEY, source_batch_id uuid NOT NULL) ON COMMIT DROP",
     )
     .execute(&mut *tx)
     .await?;
     sqlx::query(
-        "INSERT INTO tmp_proxima_repo_events (event_id, source_batch_id) \
-         SELECT e.event_id, e.source_batch_id \
-         FROM proxima_core.events e \
-         JOIN proxima_core.memories m ON m.event_id = e.event_id \
+        "INSERT INTO tmp_proxima_repo_receipts (receipt_id, source_batch_id) \
+         SELECT e.receipt_id, e.source_batch_id \
+         FROM proxima_core.fact_receipts e \
+         JOIN proxima_core.memories m ON m.receipt_id = e.receipt_id \
          JOIN tmp_proxima_repo_facts f ON f.memory_id = m.memory_id",
     )
     .execute(&mut *tx)
@@ -444,7 +432,7 @@ pub async fn erase_repo(
     .await?;
     sqlx::query(
         "INSERT INTO tmp_proxima_repo_batches (batch_id) \
-         SELECT DISTINCT source_batch_id FROM tmp_proxima_repo_events",
+         SELECT DISTINCT source_batch_id FROM tmp_proxima_repo_receipts",
     )
     .execute(&mut *tx)
     .await?;
@@ -533,8 +521,8 @@ pub async fn erase_repo(
     let edge_ids = sqlx::query_scalar::<_, Uuid>("SELECT edge_id FROM tmp_proxima_repo_edges")
         .fetch_all(&mut *tx)
         .await?;
-    let event_ids =
-        sqlx::query_scalar::<_, Vec<u8>>("SELECT event_id FROM tmp_proxima_repo_events")
+    let receipt_ids =
+        sqlx::query_scalar::<_, Vec<u8>>("SELECT receipt_id FROM tmp_proxima_repo_receipts")
             .fetch_all(&mut *tx)
             .await?;
 
@@ -549,7 +537,7 @@ pub async fn erase_repo(
         memories,
         edge_ids,
         fact_entity_ids: Vec::new(),
-        event_ids,
+        receipt_ids,
     };
 
     let mut memory_keyed = sidecar_tables(schemas, PayloadKind::Fact);
@@ -574,7 +562,7 @@ pub async fn erase_repo(
         "DELETE FROM proxima_core.source_batches sb \
          WHERE sb.id IN (SELECT batch_id FROM tmp_proxima_repo_batches) \
            AND NOT EXISTS ( \
-               SELECT 1 FROM proxima_core.events e WHERE e.source_batch_id = sb.id \
+               SELECT 1 FROM proxima_core.fact_receipts e WHERE e.source_batch_id = sb.id \
            )",
     )
     .execute(&mut *tx)
@@ -597,8 +585,8 @@ pub async fn erase_repo(
 
     receipt.repo_record_deleted = sqlx::query(
         "DELETE FROM proxima_code.repos \
-         WHERE owner_principal_kind = $1 \
-           AND owner_principal_id = $2 \
+         WHERE owner_kind = $1 \
+           AND owner_id = $2 \
            AND repo_id = $3",
     )
     .bind(kind)
@@ -636,8 +624,8 @@ pub async fn get_repo(
     let row = sqlx::query_as::<_, RepoRow>(
         "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at \
          FROM proxima_code.repos \
-         WHERE owner_principal_kind = $1 \
-           AND owner_principal_id = $2 \
+         WHERE owner_kind = $1 \
+           AND owner_id = $2 \
            AND repo_id = $3",
     )
     .bind(kind)
@@ -659,8 +647,8 @@ async fn update_target_branch(
     let row = sqlx::query_as::<_, RepoRow>(
         "UPDATE proxima_code.repos \
          SET target_branch = $4 \
-         WHERE owner_principal_kind = $1 \
-           AND owner_principal_id = $2 \
+         WHERE owner_kind = $1 \
+           AND owner_id = $2 \
            AND repo_id = $3 \
          RETURNING repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at",
     )
@@ -739,8 +727,8 @@ pub async fn update_cursor(
     sqlx::query(
         "UPDATE proxima_code.repos \
          SET last_cursor = $3, last_polled_at = $4 \
-         WHERE owner_principal_kind = $1 \
-           AND owner_principal_id = $2 \
+         WHERE owner_kind = $1 \
+           AND owner_id = $2 \
            AND repo_id = $5",
     )
     .bind(kind)

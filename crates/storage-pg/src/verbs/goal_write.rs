@@ -21,7 +21,6 @@ use proxima_core::{
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
-use crate::access::owner_ref_compat::insert_home;
 use crate::authorship::{AuthorshipColumns, authorship_columns};
 use crate::error::{internal, map_err};
 use crate::sidecars::{PgSidecarKey, PgSidecarRegistryFrozen};
@@ -542,7 +541,7 @@ async fn insert_or_replay_goal(
 ) -> Result<InsertedGoal, StorageError> {
     validate_goal_schema(context, draft)?;
     let owner = draft.owner();
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     let existing: Option<ExistingGoalRow> = sqlx::query_as(
         "SELECT g.goal_id, ce.seq
            FROM proxima_core.goals g
@@ -552,7 +551,7 @@ async fn insert_or_replay_goal(
           LIMIT 1",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(&draft.request_id)
     .fetch_optional(&mut **tx)
     .await
@@ -583,7 +582,7 @@ async fn insert_or_replay_goal(
         expected_prior,
     )
     .await?;
-    insert_goal_parents(tx, draft, goal_id).await?;
+    insert_goal_parent_edges(tx, context, draft, goal_id).await?;
     insert_goal_change_event(tx, draft, goal_id, change_seq, expected_prior).await?;
     Ok(InsertedGoal {
         goal_id: GoalId::new(goal_id),
@@ -821,20 +820,16 @@ async fn insert_goal_row(
     supersedes: Option<GoalId>,
 ) -> Result<(), StorageError> {
     let owner = draft.owner();
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     let authorship = authorship_columns(&draft.authorship);
-    // NOTE: $4 (owner_kind) and $5 (owner_id) are bound but intentionally absent
-    // from the column list — the goal row no longer stores its owner. They feed
-    // ONLY the computed idempotency_key, whose formula MUST stay byte-identical
-    // to the replay lookup and the 0007 backfill: md5(owner_kind || ':' ||
-    // owner_id || ':' || request_id). Do not renumber without updating both.
     sqlx::query(
         "INSERT INTO proxima_core.goals
-            (goal_id, schema_id, schema_version, title, text, payload, state, supersedes,
+            (goal_id, schema_id, schema_version, owner_kind, owner_id,
+             title, text, payload, state, supersedes,
              authorship_kind, authorship_origin, authorship_operator_id,
              authorship_tool_id, operator_kind, model_id, prompt_version,
              personality_instance_id, request_id, idempotency_key)
-         VALUES ($1, $2, $3, $6, $7, $8, $9, $10,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                  $11, $12, $13, $14, $15, $16, $17, $18, $19,
                  md5($4::text || ':' || $5::text || ':' || $19))",
     )
@@ -842,7 +837,7 @@ async fn insert_goal_row(
     .bind(draft.schema_id.as_str())
     .bind(draft.schema_version.into_inner().cast_signed())
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(&draft.title)
     .bind(&draft.text)
     .bind(&draft.payload)
@@ -860,7 +855,6 @@ async fn insert_goal_row(
     .execute(&mut **tx)
     .await
     .map_err(map_goal_insert_err)?;
-    insert_home(tx, goal_id, &owner, authorship.personality_instance_id).await?;
     Ok(())
 }
 
@@ -874,23 +868,26 @@ fn map_goal_insert_err(err: sqlx::Error) -> StorageError {
     map_err(err)
 }
 
-async fn insert_goal_parents(
+async fn insert_goal_parent_edges(
     tx: &mut Transaction<'_, Postgres>,
+    context: GoalAtomicContext<'_>,
     draft: &GoalDraft,
     goal_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
     let owner = draft.owner();
+    let relation = resolve_relation(context, proxima_core::relation::CORE_DEPENDS_ON_RELATION)?;
     for parent_id in &draft.parent_goal_ids {
-        validate_parent_owner(tx, &owner, *parent_id).await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.goal_parents (goal_id, parent_goal_id)
-             VALUES ($1, $2)",
-        )
-        .bind(goal_id)
-        .bind(parent_id.into_inner())
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?;
+        validate_active_head(tx, &owner, *parent_id).await?;
+        let edge = EdgeDraft::new(
+            uuid::Uuid::now_v7(),
+            relation,
+            crate::verbs::edge_append::Endpoint::goal(GoalId::new(goal_id)),
+            crate::verbs::edge_append::Endpoint::goal(*parent_id),
+            EdgeAuthorshipKind::Engine,
+            None,
+            &owner,
+        );
+        append_edge_in_tx(tx.as_mut(), &edge).await?;
     }
     Ok(())
 }
@@ -903,17 +900,17 @@ async fn insert_goal_change_event(
     supersedes_goal_id: Option<GoalId>,
 ) -> Result<(), StorageError> {
     let owner = draft.owner();
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.change_event
-            (seq, owner_principal_kind, owner_principal_id,
+            (seq, owner_kind, owner_id,
              kind, entity_kind, entity_goal_id, entity_schema_id,
              entity_schema_version, supersedes_goal_id)
          VALUES ($1, $2, $3, 'EntityAppend', 'Goal', $4, $5, $6, $7)",
     )
     .bind(change_seq)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(goal_id)
     .bind(draft.schema_id.as_str())
     .bind(draft.schema_version.into_inner().cast_signed())
@@ -929,23 +926,17 @@ async fn load_prior_goal(
     owner: &Owner,
     goal_id: GoalId,
 ) -> Result<StoredGoal, StorageError> {
-    let (owner_kind, owner_principal_id) = owner.columns();
-    let row: Option<StoredGoalRow> = sqlx::query_as(crate::access::owner_ref_compat::sql(
+    let (owner_kind, owner_id) = owner.columns();
+    let row: Option<StoredGoalRow> = sqlx::query_as(
         "SELECT schema_id, schema_version, title, text, payload, state
            FROM proxima_core.goals
           WHERE goal_id = $1
-            AND EXISTS (
-                SELECT 1
-                  FROM __PROXIMA_ENTITY_OWNER__ eo
-                 WHERE eo.entity_id = goal_id
-                   AND eo.owner_principal_kind = $2
-                   AND eo.owner_principal_id = $3
-                   AND eo.is_home
-            )",
-    ))
+            AND owner_kind = $2
+            AND owner_id IS NOT DISTINCT FROM $3",
+    )
     .bind(goal_id.into_inner())
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -968,52 +959,18 @@ async fn parent_goal_ids(
     goal_id: GoalId,
 ) -> Result<Vec<GoalId>, StorageError> {
     let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
-        "SELECT parent_goal_id
-           FROM proxima_core.goal_parents
-          WHERE goal_id = $1
-          ORDER BY parent_goal_id",
+        "SELECT target_goal_id
+           FROM proxima_core.edges
+          WHERE source_goal_id = $1
+            AND relation = 'core/depends-on'
+            AND target_goal_id IS NOT NULL
+          ORDER BY target_goal_id",
     )
     .bind(goal_id.into_inner())
     .fetch_all(&mut **tx)
     .await
     .map_err(map_err)?;
     Ok(rows.into_iter().map(|(id,)| GoalId::new(id)).collect())
-}
-
-async fn validate_parent_owner(
-    tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
-    parent_id: GoalId,
-) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id) = owner.columns();
-    let exists: bool = sqlx::query_scalar(crate::access::owner_ref_compat::sql(
-        "SELECT EXISTS (
-             SELECT 1
-               FROM proxima_core.goals
-              WHERE goal_id = $1
-                AND EXISTS (
-                    SELECT 1
-                      FROM __PROXIMA_ENTITY_OWNER__ eo
-                     WHERE eo.entity_id = goal_id
-                       AND eo.owner_principal_kind = $2
-                       AND eo.owner_principal_id = $3
-                       AND eo.is_home
-                )
-         )",
-    ))
-    .bind(parent_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    if exists {
-        Ok(())
-    } else {
-        Err(StorageError::ConstraintViolation(
-            "goal parent crosses Owner boundary or does not exist".into(),
-        ))
-    }
 }
 
 async fn validate_active_head(
@@ -1027,25 +984,19 @@ async fn validate_active_head(
             "parent_goal must be Active".into(),
         ));
     }
-    let (owner_kind, owner_principal_id) = owner.columns();
-    let newer_exists: bool = sqlx::query_scalar(crate::access::owner_ref_compat::sql(
+    let (owner_kind, owner_id) = owner.columns();
+    let newer_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1
                FROM proxima_core.goals
               WHERE supersedes = $1
-                AND EXISTS (
-                    SELECT 1
-                      FROM __PROXIMA_ENTITY_OWNER__ eo
-                     WHERE eo.entity_id = goal_id
-                       AND eo.owner_principal_kind = $2
-                       AND eo.owner_principal_id = $3
-                       AND eo.is_home
-                )
+                AND owner_kind = $2
+                AND owner_id IS NOT DISTINCT FROM $3
          )",
-    ))
+    )
     .bind(goal_id.into_inner())
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .fetch_one(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -1129,7 +1080,7 @@ async fn validate_evidence_in_owner(
     owner: &Owner,
     evidence: &[GoalEvidenceRef],
 ) -> Result<Vec<EvidenceTarget>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     let mut seen = HashSet::with_capacity(evidence.len());
     let mut out = Vec::with_capacity(evidence.len());
     for item in evidence {
@@ -1138,23 +1089,17 @@ async fn validate_evidence_in_owner(
                 "duplicate goal evidence".into(),
             ));
         }
-        let row: Option<EvidenceRow> = sqlx::query_as(crate::access::owner_ref_compat::sql(
+        let row: Option<EvidenceRow> = sqlx::query_as(
             "SELECT m.kind
                FROM proxima_core.memories m
               WHERE m.memory_id = $1
                 AND m.tombstoned_at IS NULL
-                AND EXISTS (
-                    SELECT 1
-                      FROM __PROXIMA_ENTITY_OWNER__ eo
-                     WHERE eo.entity_id = m.memory_id
-                       AND eo.owner_principal_kind = $2
-                       AND eo.owner_principal_id = $3
-                       AND eo.is_home
-                )",
-        ))
+                AND m.owner_kind = $2
+                AND m.owner_id IS NOT DISTINCT FROM $3",
+        )
         .bind(item.memory_id.into_inner())
         .bind(owner_kind)
-        .bind(owner_principal_id)
+        .bind(owner_id)
         .fetch_optional(&mut **tx)
         .await
         .map_err(map_err)?;
@@ -1184,27 +1129,21 @@ async fn outgoing_motivated_by_evidence(
     owner: &Owner,
     goal_id: GoalId,
 ) -> Result<Vec<EvidenceTarget>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner.columns();
-    let rows: Vec<(EntityKind, uuid::Uuid)> = sqlx::query_as(crate::access::owner_ref_compat::sql(
+    let (owner_kind, owner_id) = owner.columns();
+    let rows: Vec<(EntityKind, uuid::Uuid)> = sqlx::query_as(
         "SELECT target_kind, target_memory_id
            FROM proxima_core.edges e
           WHERE relation = $1
             AND source_goal_id = $2
-            AND EXISTS (
-                SELECT 1
-                  FROM __PROXIMA_ENTITY_OWNER__ eo
-                 WHERE eo.entity_id = e.source_goal_id
-                   AND eo.owner_principal_kind = $3
-                   AND eo.owner_principal_id = $4
-                   AND eo.is_home
-            )
+            AND e.owner_kind = $3
+            AND e.owner_id IS NOT DISTINCT FROM $4
             AND target_memory_id IS NOT NULL
           ORDER BY created_at ASC",
-    ))
+    )
     .bind(CORE_MOTIVATED_BY_RELATION)
     .bind(goal_id.into_inner())
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .fetch_all(&mut **tx)
     .await
     .map_err(map_err)?;

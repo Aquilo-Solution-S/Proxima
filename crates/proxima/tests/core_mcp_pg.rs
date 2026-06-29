@@ -199,15 +199,28 @@ async fn seed_group_membership(
         .expect("seed group membership");
 }
 
-fn space_key(current: &Owner, owner: &Owner) -> String {
-    if owner == current {
-        return "current".into();
-    }
-    match owner {
-        OwnerRef::World => "world".into(),
-        OwnerRef::Personal(user) => format!("user:{}", user.into_inner()),
-        OwnerRef::Group(group) => format!("group:{}", group.into_inner()),
-    }
+async fn server_issued_group_space_selector(
+    tools: &CoreMcpTools,
+    authz: AuthzContext,
+    owner: Owner,
+) -> String {
+    let spaces = call_test_model_tool(
+        tools,
+        authz,
+        owner,
+        "core_memory_spaces",
+        serde_json::json!({}),
+    )
+    .await
+    .expect("core_memory_spaces succeeds");
+    spaces["spaces"]
+        .as_array()
+        .expect("spaces is an array")
+        .iter()
+        .filter_map(|space| space["key"].as_str())
+        .find(|key| *key != "current" && *key != "world")
+        .expect("group space exists")
+        .to_string()
 }
 
 async fn call_test_model_tool(
@@ -250,12 +263,12 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
         let tools = built.core_mcp_tools();
         let pg = PgStorage::connect(&db_url).await?;
         seed_group_membership(&pg, &shared, Relation::Viewer, &personal).await;
-        let shared_space = space_key(&personal, &shared);
         let authz = space_authz(
             personal,
             vec![personal, shared],
             AccessScope::Granted,
         );
+        let shared_space = server_issued_group_space_selector(&tools, authz.clone(), personal).await;
 
         let spaces = call_test_model_tool(
             &tools,
@@ -318,12 +331,12 @@ async fn shared_space_include_body_uses_shared_owner() {
             .build()
             .await?;
         let tools = built.core_mcp_tools();
-        let shared_space = space_key(&personal, &shared);
         let authz = space_authz(
             personal,
             vec![personal, shared],
             AccessScope::Unrestricted,
         );
+        let shared_space = server_issued_group_space_selector(&tools, authz.clone(), personal).await;
 
         let remembered = call_test_model_tool(
             &tools,
@@ -378,12 +391,12 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
             .build()
             .await?;
         let tools = built.core_mcp_tools();
-        let shared_space = space_key(&personal, &shared);
         let authz = space_authz(
             personal,
             vec![personal, shared],
             AccessScope::Unrestricted,
         );
+        let shared_space = server_issued_group_space_selector(&tools, authz.clone(), personal).await;
 
         let personal_fact = call_test_model_tool(
             &tools,

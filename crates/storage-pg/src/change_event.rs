@@ -14,8 +14,8 @@ use crate::error::internal;
 #[derive(Debug, sqlx::FromRow)]
 struct ChangeEventRow {
     seq: Uuid,
-    owner_principal_kind: OwnerRefKind,
-    owner_principal_id: Uuid,
+    owner_kind: OwnerRefKind,
+    owner_id: Option<Uuid>,
     kind: ChangeEventKindTag,
     entity_kind: Option<EntityKind>,
     entity_memory_id: Option<Uuid>,
@@ -48,8 +48,8 @@ pub(crate) async fn hydrate_change_event(
 ) -> Result<Option<ChangeEvent>, StorageError> {
     let row = sqlx::query_as::<_, ChangeEventRow>(
         r"SELECT seq,
-                  owner_principal_kind,
-                  owner_principal_id,
+                  owner_kind,
+                  owner_id,
                   kind,
                   entity_kind,
                   entity_memory_id, entity_goal_id,
@@ -90,8 +90,8 @@ pub(crate) async fn hydrate_change_events_batch(
     }
     let rows = sqlx::query_as::<_, ChangeEventRow>(
         r"SELECT seq,
-                  owner_principal_kind,
-                  owner_principal_id,
+                  owner_kind,
+                  owner_id,
                   kind,
                   entity_kind,
                   entity_memory_id, entity_goal_id,
@@ -123,7 +123,12 @@ pub(crate) async fn hydrate_change_events_batch(
 }
 
 fn decode_change_event_row(row: &ChangeEventRow) -> Result<ChangeEvent, StorageError> {
-    let owner = row.owner_principal_kind.with_uuid(row.owner_principal_id);
+    let owner = row.owner_kind.with_uuid(row.owner_id).ok_or_else(|| {
+        StorageError::Internal(format!(
+            "invalid change_event owner_ref shape at seq {}",
+            row.seq
+        ))
+    })?;
 
     let authoring_instance = decode_personality(row.entity_personality_instance_id);
     let wake_chain_depth = u16::try_from(row.wake_chain_depth).unwrap_or(0);

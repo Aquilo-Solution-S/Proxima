@@ -10,8 +10,8 @@ pub async fn list_memory_dependencies(
     owner: &Owner,
     source_memory_id: MemoryId,
 ) -> Result<Vec<MemoryDependency>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner.columns();
-    let rows = sqlx::query(crate::access::owner_ref_compat::sql(
+    let (owner_kind, owner_id) = owner.columns();
+    let rows = sqlx::query(
         "SELECT e.target_memory_id, m.schema_id
          FROM proxima_core.edges e
          JOIN proxima_core.memories m
@@ -19,20 +19,19 @@ pub async fn list_memory_dependencies(
           AND m.tombstoned_at IS NULL
          WHERE EXISTS (
                     SELECT 1
-                      FROM __PROXIMA_ENTITY_OWNER__ eo
+                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                      WHERE eo.entity_id = e.source_memory_id
-                       AND eo.owner_principal_kind = $1
-                       AND eo.owner_principal_id = $2
-                       AND eo.is_home
-               )
+                       AND eo.owner_kind = $1
+                       AND eo.owner_id = $2
+)
            AND e.relation = $3
            AND e.source_kind IN ('Fact', 'Abstraction', 'Perspective')
            AND e.source_memory_id = $4
            AND e.target_memory_id IS NOT NULL
          ORDER BY e.created_at, e.edge_id",
-    ))
+    )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(CORE_DEPENDS_ON_RELATION)
     .bind(source_memory_id.into_inner())
     .fetch_all(pool)

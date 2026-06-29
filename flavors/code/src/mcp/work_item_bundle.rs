@@ -12,7 +12,7 @@ use crate::payloads::{
 
 use super::emit_execution_request::CODE_TARGETS_EXECUTION_REQUEST_RELATION;
 use super::pg_pool;
-use super::sql::{map_storage, owner_principal};
+use super::sql::{map_storage, owner_columns};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeWorkItemBundleArgs {
@@ -225,10 +225,10 @@ async fn load_work_item(
     ctx: &McpToolCtx,
     memory_id: MemoryId,
 ) -> Result<WorkItemRow, McpToolError> {
-    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    let (owner_kind, owner_id) = owner_columns(&ctx.owner);
     let pool = pg_pool(ctx)?;
     let row: Option<WorkItemSqlRow> =
-        sqlx::query_as(proxima_storage_pg::access::owner_ref_compat::sql(
+        sqlx::query_as(
             "SELECT m.schema_id,
                 w.repo_id AS work_repo_id,
                 w.title AS work_title,
@@ -244,17 +244,16 @@ async fn load_work_item(
           WHERE m.memory_id = $1
             AND EXISTS (
                 SELECT 1
-                  FROM __PROXIMA_ENTITY_OWNER__ eo
+                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                  WHERE eo.entity_id = m.memory_id
-                   AND eo.owner_principal_kind = $2
-                   AND eo.owner_principal_id = $3
-                   AND eo.is_home
-            )
+                   AND eo.owner_kind = $2
+                   AND eo.owner_id = $3
+)
             AND m.tombstoned_at IS NULL",
-        ))
+        )
         .bind(memory_id.into_inner())
         .bind(owner_kind)
-        .bind(owner_principal_id)
+        .bind(owner_id)
         .fetch_optional(pool.as_ref())
         .await
         .map_err(map_storage)?;
@@ -321,17 +320,17 @@ async fn load_work_item(
 }
 
 async fn load_repo(ctx: &McpToolCtx, repo_id: Uuid) -> Result<RepoBundle, McpToolError> {
-    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    let (owner_kind, owner_id) = owner_columns(&ctx.owner);
     let pool = pg_pool(ctx)?;
     let row: Option<(String, String, Option<String>)> = sqlx::query_as(
         "SELECT display_name, canonical_path, target_branch
            FROM proxima_code.repos
-          WHERE owner_principal_kind = $1
-            AND owner_principal_id = $2
+          WHERE owner_kind = $1
+            AND owner_id = $2
             AND repo_id = $3",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(repo_id)
     .fetch_optional(pool.as_ref())
     .await
