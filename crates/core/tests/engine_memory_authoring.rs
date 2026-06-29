@@ -291,7 +291,12 @@ async fn engine_author_derived_supersedes_in_same_transaction()
     assert!(lineage.edges.iter().any(|edge| {
         edge.relation == proxima_core::CORE_SUPERSEDES_RELATION
             && edge.source_memory_id == new_memory_id
-            && edge.target_memory_id == old_memory_id
+            && matches!(
+                edge.target,
+                proxima_core::EdgeTargetProjection::Visible {
+                    target: proxima_core::EntityRef::Memory(target_memory_id),
+                } if target_memory_id == old_memory_id
+            )
     }));
 
     drop(engine);

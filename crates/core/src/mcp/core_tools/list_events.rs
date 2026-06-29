@@ -120,7 +120,7 @@ fn page_rows(mut rows: Vec<ChangeEventForWake>, limit: usize) -> (Vec<ChangeEven
 fn event_item(
     ctx: &McpToolCtx,
     row: ChangeEventForWake,
-    edge_kinds: &HashMap<uuid::Uuid, (EntityKind, EntityKind)>,
+    edge_kinds: &HashMap<uuid::Uuid, (EntityKind, Option<EntityKind>)>,
 ) -> EventItem {
     let seq = row.event.seq.to_string();
     let authoring_personality = row
@@ -177,7 +177,7 @@ fn event_item(
             let (source_kind, target_kind) = edge_kinds
                 .get(&edge_id)
                 .copied()
-                .unwrap_or((EntityKind::Fact, EntityKind::Fact));
+                .unwrap_or((EntityKind::Fact, None));
             EventItem {
                 seq,
                 kind: "edge_append".into(),
@@ -191,7 +191,7 @@ fn event_item(
                 edge: Some(ctx.format_edge(EdgeId::new(edge_id))),
                 relation: Some(relation),
                 source: Some(format_ref(ctx, &source, source_kind)),
-                target: Some(format_ref(ctx, &target, target_kind)),
+                target: Some(format_target_projection(ctx, target, target_kind)),
             }
         }
         ChangeEventKind::EdgeDelete {
@@ -203,7 +203,7 @@ fn event_item(
             let (source_kind, target_kind) = edge_kinds
                 .get(&edge_id)
                 .copied()
-                .unwrap_or((kind_from_ref(&source), kind_from_ref(&target)));
+                .unwrap_or((kind_from_ref(&source), None));
             EventItem {
                 seq,
                 kind: "edge_delete".into(),
@@ -217,7 +217,7 @@ fn event_item(
                 edge: Some(ctx.format_edge(EdgeId::new(edge_id))),
                 relation: Some(relation),
                 source: Some(format_ref(ctx, &source, source_kind)),
-                target: Some(format_ref(ctx, &target, target_kind)),
+                target: Some(format_target_projection(ctx, target, target_kind)),
             }
         }
     }
@@ -227,6 +227,22 @@ fn kind_from_ref(r: &EntityRef) -> EntityKind {
     match r {
         EntityRef::Goal(_) => EntityKind::Goal,
         EntityRef::FactEntity(_) | EntityRef::Memory(_) => EntityKind::Fact,
+    }
+}
+
+fn format_target_projection(
+    ctx: &McpToolCtx,
+    target: crate::EdgeTargetProjection,
+    target_kind: Option<EntityKind>,
+) -> String {
+    match target {
+        crate::EdgeTargetProjection::Visible { target } => format_ref(
+            ctx,
+            &target,
+            target_kind.unwrap_or_else(|| kind_from_ref(&target)),
+        ),
+        crate::EdgeTargetProjection::Redacted => "redacted target".into(),
+        crate::EdgeTargetProjection::Unavailable => "unavailable target".into(),
     }
 }
 

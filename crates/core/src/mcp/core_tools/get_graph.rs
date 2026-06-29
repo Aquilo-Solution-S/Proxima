@@ -133,10 +133,7 @@ pub async fn get_graph(
         .registry
         .list_relations()
         .iter()
-        .map(|rel| EdgeTypeItem {
-            edge_type: rel.relation.clone(),
-            class: rel.class.as_str().to_string(),
-        })
+        .map(super::list_edge_types::edge_type_item)
         .collect();
 
     let substrate_tools = scoped_substrate_tools(&ctx);

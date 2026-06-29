@@ -358,8 +358,9 @@ async fn discovery_reads_filter_by_owner_read_set() {
         "edge-id hydration is source-owned and keeps a target stub"
     );
     assert_eq!(edge_by_id.edges[0].id, leaky_edge);
-    assert!(
-        !edge_by_id.edges[0].target_readable,
+    assert_eq!(
+        edge_by_id.edges[0].target,
+        proxima_core::verbs::query::EdgeTargetProjection::Redacted,
         "unreadable edge target is redacted"
     );
 

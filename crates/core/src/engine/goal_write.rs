@@ -332,7 +332,7 @@ impl Engine {
         } = request;
 
         let target_self_perspective_id = self
-            .target_self_memory_authorized(authz, target_self_perspective_id)
+            .target_self_memory_authorized(authz, permit.owner(), target_self_perspective_id)
             .await?;
         let author_self_perspective_id = self
             .author_self_perspective_authorized(authz, author_self_perspective_id)
@@ -429,7 +429,8 @@ impl Engine {
     ) -> Result<MemoryId, ProtocolError> {
         match target_self {
             GoalTargetSelf::SelfPerspective(memory_id) => {
-                self.target_self_memory_authorized(authz, memory_id).await
+                self.target_self_memory_authorized(authz, permit.owner(), memory_id)
+                    .await
             }
             GoalTargetSelf::Personality(instance_id) => self
                 .storage()
@@ -450,12 +451,26 @@ impl Engine {
     async fn target_self_memory_authorized(
         &self,
         authz: &AuthzContext,
+        goal_owner: &crate::Owner,
         memory_id: MemoryId,
     ) -> Result<MemoryId, ProtocolError> {
-        let permit = self
-            .authorize_entry_read(authz, EntityId::Memory(memory_id))
+        let home_owner = self
+            .storage()
+            .goal_command
+            .owner_access_read
+            .home_owner(EntityId::Memory(memory_id))
+            .await
+            .map_err(|err| ProtocolError::internal(format!("home_owner: {err}")))?
+            .ok_or_else(|| ProtocolError::forbidden("entry not found"))?;
+        if &home_owner != goal_owner {
+            return Err(ProtocolError::invalid_argument(
+                "target_self",
+                "core/inspires requires goal and target Self to share an owner",
+            ));
+        }
+        self.authorize_write(authz, &home_owner, Relation::Editor)
             .await?;
-        self.require_perspective_kind(permit.owner(), memory_id, "target_self")
+        self.require_perspective_kind(&home_owner, memory_id, "target_self")
             .await?;
         Ok(memory_id)
     }
@@ -676,7 +691,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_goal_from_payload_write_denies_unreadable_self_perspective_target() {
+    async fn create_goal_from_payload_write_rejects_foreign_self_perspective_target() {
         let owner = owner();
         let foreign = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let target = memory_id();
@@ -703,13 +718,13 @@ mod tests {
                 &req,
             )
             .await
-            .expect_err("unreadable target Self perspective must be rejected before write");
+            .expect_err("foreign target Self perspective must be rejected before write");
 
-        assert_forbidden(&err);
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
     }
 
     #[tokio::test]
-    async fn decompose_goal_denies_unreadable_self_perspective_target() {
+    async fn decompose_goal_rejects_foreign_self_perspective_target() {
         let owner = owner();
         let foreign = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let target = memory_id();
@@ -735,9 +750,9 @@ mod tests {
         let err = engine
             .decompose_goal(&AuthzContext::single_owner(&owner, AuthPath::System), &req)
             .await
-            .expect_err("unreadable target Self perspective must be rejected before write");
+            .expect_err("foreign target Self perspective must be rejected before write");
 
-        assert_forbidden(&err);
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
     }
 
     #[tokio::test]

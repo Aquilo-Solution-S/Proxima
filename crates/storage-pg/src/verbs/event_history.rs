@@ -56,7 +56,7 @@ pub(crate) async fn event_history(
         .await
         .map_err(internal)?;
 
-    let events: Vec<ChangeEvent> = hydrate_change_events_batch(pool, &seqs).await?;
+    let events: Vec<ChangeEvent> = hydrate_change_events_batch(pool, read_owners, &seqs).await?;
 
     let high_water_visibility = edge_event_visibility_predicate(1, 2, 3, 4);
     let high_water_sql = format!(

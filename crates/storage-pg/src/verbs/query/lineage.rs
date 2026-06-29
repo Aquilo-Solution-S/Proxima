@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use proxima_core::change_event::{EdgeTargetProjection, EntityRef};
 use proxima_core::verbs::query::{
     EntityKind, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode, MemoryLineageRequest,
     MemoryLineageResponse,
@@ -21,7 +22,6 @@ struct EdgeWalkRow {
     relation_class: RelationClass,
     source_kind: EntityKind,
     source_memory_id: uuid::Uuid,
-    target_kind: EntityKind,
     target_memory_id: uuid::Uuid,
     next_memory_id: uuid::Uuid,
     next_readable: bool,
@@ -129,8 +129,13 @@ pub(crate) async fn walk_memory_lineage(
             relation_class: row.relation_class.as_str().to_string(),
             source_kind: row.source_kind,
             source_memory_id: MemoryId::new(row.source_memory_id),
-            target_kind: row.target_kind,
-            target_memory_id: MemoryId::new(row.target_memory_id),
+            target: if row.next_readable {
+                EdgeTargetProjection::Visible {
+                    target: EntityRef::Memory(MemoryId::new(row.target_memory_id)),
+                }
+            } else {
+                EdgeTargetProjection::Redacted
+            },
             distance: u8::try_from(row.distance).unwrap_or(u8::MAX),
         })
         .collect();
@@ -301,14 +306,14 @@ edge_heads AS (
            EXISTS (
                SELECT 1 FROM readable_memories rm
                 WHERE rm.memory_id = edge_endpoints.target_memory_id
-           ) AS target_readable,
+           ) AS target_visible,
            EXISTS (
                SELECT 1
                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) weo
                 WHERE weo.entity_id = edge_endpoints.source_entity_id
                   AND weo.owner_kind = $3
-                  AND weo.owner_id = $4
-           ) AS source_world_readable
+                  AND weo.owner_id IS NOT DISTINCT FROM $4
+           ) AS source_world_visible
       FROM edge_endpoints
 ),
 walk AS (
@@ -318,13 +323,13 @@ walk AS (
            e.source_kind, e.source_memory_id,
            e.target_kind, e.target_memory_id,
            e.target_memory_id AS next_memory_id,
-           e.target_readable AS next_readable
+           e.target_visible AS next_readable
     FROM edge_heads e
     WHERE e.source_memory_id = $5
       AND e.source_readable
       AND e.target_memory_id IS NOT NULL
       AND e.relation_class IN ('Provenance', 'Supersession')
-      AND NOT (e.source_world_readable AND NOT e.target_readable)
+      AND NOT (e.source_world_visible AND NOT e.target_visible)
     UNION ALL
     SELECT w.distance + 1,
            w.path || e.target_memory_id,
@@ -332,7 +337,7 @@ walk AS (
            e.source_kind, e.source_memory_id,
            e.target_kind, e.target_memory_id,
            e.target_memory_id,
-           e.target_readable
+           e.target_visible
     FROM walk w
     JOIN edge_heads e
       ON e.source_memory_id = w.next_memory_id
@@ -342,7 +347,7 @@ walk AS (
       AND w.next_readable
       AND e.source_readable
       AND NOT e.target_memory_id = ANY(w.path)
-      AND NOT (e.source_world_readable AND NOT e.target_readable)
+      AND NOT (e.source_world_visible AND NOT e.target_visible)
 )
 SELECT distance, edge_id, relation, relation_class,
        source_kind, source_memory_id, target_kind, target_memory_id,
@@ -392,14 +397,14 @@ edge_heads AS (
            EXISTS (
                SELECT 1 FROM readable_memories rm
                 WHERE rm.memory_id = edge_endpoints.target_memory_id
-           ) AS target_readable,
+           ) AS target_visible,
            EXISTS (
                SELECT 1
                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) weo
                 WHERE weo.entity_id = edge_endpoints.source_entity_id
                   AND weo.owner_kind = $3
-                  AND weo.owner_id = $4
-           ) AS source_world_readable
+                  AND weo.owner_id IS NOT DISTINCT FROM $4
+           ) AS source_world_visible
       FROM edge_endpoints
 ),
 walk AS (
@@ -415,7 +420,7 @@ walk AS (
       AND e.source_readable
       AND e.source_memory_id IS NOT NULL
       AND e.relation_class IN ('Provenance', 'Supersession')
-      AND NOT (e.source_world_readable AND NOT e.target_readable)
+      AND NOT (e.source_world_visible AND NOT e.target_visible)
     UNION ALL
     SELECT w.distance + 1,
            w.path || e.source_memory_id,
@@ -433,7 +438,7 @@ walk AS (
       AND w.next_readable
       AND e.source_readable
       AND NOT e.source_memory_id = ANY(w.path)
-      AND NOT (e.source_world_readable AND NOT e.target_readable)
+      AND NOT (e.source_world_visible AND NOT e.target_visible)
 )
 SELECT distance, edge_id, relation, relation_class,
        source_kind, source_memory_id, target_kind, target_memory_id,

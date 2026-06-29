@@ -1,5 +1,6 @@
 use crate::{
     AuthorshipKindMask, EndpointBinding, EntityKindMask, RelationClass, RelationDescriptor,
+    RelationOwnerPolicy, RelationTargetAccessPolicy,
 };
 
 pub const CORE_MOTIVATED_BY_RELATION: &str = "core/motivated-by";
@@ -16,5 +17,9 @@ pub fn motivated_by_descriptor() -> RelationDescriptor {
         AuthorshipKindMask::user()
             .union(AuthorshipKindMask::engine())
             .union(AuthorshipKindMask::external_agent()),
+    )
+    .with_access_policies(
+        RelationOwnerPolicy::SourceOwned,
+        RelationTargetAccessPolicy::Read,
     )
 }

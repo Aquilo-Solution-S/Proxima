@@ -86,7 +86,11 @@ impl MemoryAuthoringPort for MemoryAuthoringFake {
         fake_error()
     }
 
-    async fn append_memory_edge(&self, edge: &DerivedEdgeSpec<'_>) -> Result<EdgeId, StorageError> {
+    async fn append_memory_edge(
+        &self,
+        edge: &DerivedEdgeSpec<'_>,
+        _proof: proxima_core::storage_ports::EdgeWriteProof,
+    ) -> Result<EdgeId, StorageError> {
         fake_error()
     }
 

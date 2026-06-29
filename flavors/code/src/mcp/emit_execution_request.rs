@@ -12,7 +12,7 @@ use proxima_core::{
 };
 use proxima_storage_pg::sidecars::PgMemorySidecar;
 use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_in_tx};
-use proxima_storage_pg::verbs::edge_append::{Endpoint, append_edge};
+use proxima_storage_pg::verbs::edge_write::{MemoryEndpoint, append_owner_checked_memory_edge};
 use proxima_storage_pg::verbs::event_ingest::{FactIngestContext, ingest_fact_with_sidecar};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -643,15 +643,15 @@ async fn append_plan_authored_edge(
         .resolve_relation(CORE_AUTHORED_RELATION)
         .ok_or_else(|| McpToolError::Other("core/authored relation not registered".into()))?;
     let edge_id = Uuid::now_v7();
-    append_edge(
+    append_owner_checked_memory_edge(
         tx.as_mut(),
-        edge_id,
+        &ctx.owner,
+        EdgeId::new(edge_id),
         relation,
-        Endpoint::perspective(planner_root),
-        Endpoint::abstraction(plan_memory_id),
+        MemoryEndpoint::perspective(planner_root),
+        MemoryEndpoint::abstraction(plan_memory_id),
         EdgeAuthorshipKind::ExternalAgent,
         Some(planner_root),
-        &ctx.owner,
     )
     .await
     .map_err(McpToolError::Storage)?;
@@ -669,15 +669,15 @@ async fn append_plan_derived_edge(
         .resolve_relation(CORE_DERIVED_FROM_RELATION)
         .ok_or_else(|| McpToolError::Other("core/derived-from relation not registered".into()))?;
     let edge_id = Uuid::now_v7();
-    append_edge(
+    append_owner_checked_memory_edge(
         tx.as_mut(),
-        edge_id,
+        &ctx.owner,
+        EdgeId::new(edge_id),
         relation,
-        Endpoint::abstraction(plan_memory_id),
-        Endpoint::fact(target_memory_id),
+        MemoryEndpoint::abstraction(plan_memory_id),
+        MemoryEndpoint::fact(target_memory_id),
         EdgeAuthorshipKind::ExternalAgent,
         ctx.caller_self_perspective,
-        &ctx.owner,
     )
     .await
     .map_err(McpToolError::Storage)?;
@@ -1519,15 +1519,15 @@ pub(super) async fn append_acceptance_criteria_edge(
             ))
         })?;
     let edge_id = Uuid::now_v7();
-    append_edge(
+    append_owner_checked_memory_edge(
         tx.as_mut(),
-        edge_id,
+        &ctx.owner,
+        EdgeId::new(edge_id),
         relation,
-        Endpoint::fact(request_memory_id),
-        Endpoint::fact(criteria_memory_id),
+        MemoryEndpoint::fact(request_memory_id),
+        MemoryEndpoint::fact(criteria_memory_id),
         EdgeAuthorshipKind::ExternalAgent,
         ctx.caller_self_perspective,
-        &ctx.owner,
     )
     .await
     .map_err(McpToolError::Storage)?;
@@ -1545,15 +1545,15 @@ pub(super) async fn append_authored_edge(
         .resolve_relation(CORE_AUTHORED_RELATION)
         .ok_or_else(|| McpToolError::Other("core/authored relation not registered".into()))?;
     let edge_id = Uuid::now_v7();
-    append_edge(
+    append_owner_checked_memory_edge(
         tx.as_mut(),
-        edge_id,
+        &ctx.owner,
+        EdgeId::new(edge_id),
         relation,
-        Endpoint::perspective(planner_root),
-        Endpoint::fact(request_memory_id),
+        MemoryEndpoint::perspective(planner_root),
+        MemoryEndpoint::fact(request_memory_id),
         EdgeAuthorshipKind::ExternalAgent,
         Some(planner_root),
-        &ctx.owner,
     )
     .await
     .map_err(McpToolError::Storage)?;
@@ -1575,15 +1575,15 @@ pub(super) async fn append_target_edge(
             ))
         })?;
     let edge_id = Uuid::now_v7();
-    append_edge(
+    append_owner_checked_memory_edge(
         tx.as_mut(),
-        edge_id,
+        &ctx.owner,
+        EdgeId::new(edge_id),
         relation,
-        Endpoint::perspective(target_root),
-        Endpoint::fact(request_memory_id),
+        MemoryEndpoint::perspective(target_root),
+        MemoryEndpoint::fact(request_memory_id),
         EdgeAuthorshipKind::ExternalAgent,
         ctx.caller_self_perspective,
-        &ctx.owner,
     )
     .await
     .map_err(McpToolError::Storage)?;
@@ -1601,15 +1601,15 @@ pub(super) async fn append_derived_edge(
         .resolve_relation(CORE_DERIVED_FROM_RELATION)
         .ok_or_else(|| McpToolError::Other("core/derived-from relation not registered".into()))?;
     let edge_id = Uuid::now_v7();
-    append_edge(
+    append_owner_checked_memory_edge(
         tx.as_mut(),
-        edge_id,
+        &ctx.owner,
+        EdgeId::new(edge_id),
         relation,
-        Endpoint::fact(request_memory_id),
-        Endpoint::fact(evidence_memory_id),
+        MemoryEndpoint::fact(request_memory_id),
+        MemoryEndpoint::fact(evidence_memory_id),
         EdgeAuthorshipKind::ExternalAgent,
         ctx.caller_self_perspective,
-        &ctx.owner,
     )
     .await
     .map_err(McpToolError::Storage)?;
@@ -1630,15 +1630,15 @@ async fn append_dependency_edge(
     name.extend_from_slice(dependent_memory_id.into_inner().as_bytes());
     name.extend_from_slice(dependency_memory_id.into_inner().as_bytes());
     let edge_id = Uuid::new_v5(&Uuid::NAMESPACE_OID, &name);
-    append_edge(
+    append_owner_checked_memory_edge(
         tx.as_mut(),
-        edge_id,
+        &ctx.owner,
+        EdgeId::new(edge_id),
         relation,
-        Endpoint::fact(dependent_memory_id),
-        Endpoint::fact(dependency_memory_id),
+        MemoryEndpoint::fact(dependent_memory_id),
+        MemoryEndpoint::fact(dependency_memory_id),
         EdgeAuthorshipKind::ExternalAgent,
         ctx.caller_self_perspective,
-        &ctx.owner,
     )
     .await
     .map_err(McpToolError::Storage)?;

@@ -19,8 +19,8 @@
 //! - **Extension API (flavor authors / advanced hosts):** the re-exports of
 //!   `proxima-core` payload traits + ids and of `proxima-storage-pg` typed
 //!   verbs and sidecar generators (e.g. [`pg_sidecar`], [`PgMemorySidecar`],
-//!   [`ingest_fact`], [`append_edge`], [`append_derived_in_tx`],
-//!   [`proxima_flavor`], [`CitationSpec`]). These are deliberately surfaced
+//!   [`ingest_fact`], [`append_derived_in_tx`], [`proxima_flavor`],
+//!   [`CitationSpec`]). These are deliberately surfaced
 //!   through the facade so a flavor or host can build typed sidecars, citations,
 //!   and ingest paths while **reducing or avoiding direct dependencies on
 //!   `proxima-core` / `proxima-storage-pg`**. They are part of the framework's
@@ -64,7 +64,9 @@ pub use proxima_core::verbs::query::{
     MemoryLineageRequest, MemoryLineageResponse, MemoryRow, PersonalityRootFilter, QueryRequest,
     QueryResponse, SupersessionStatus, TombstoneFilter,
 };
-pub use proxima_core::verbs::schema::PayloadKind;
+pub use proxima_core::verbs::schema::{
+    PayloadKind, RelationInfo, RelationPayloadSchemaRef, SchemaRequest, SchemaResponse,
+};
 pub use proxima_core::{
     AbstractionPayload, AccessScope, AuthPath, AuthzContext, CapabilitySet, CitationMappingPayload,
     CitedObjectPayload, Engine, EngineHandle, FactPayload, FlavorRegistry, GoalPayload, GroupId,
@@ -76,8 +78,8 @@ pub use proxima_core::{
 };
 pub use proxima_core::{
     AuthorDerivedEdgeInput, AuthorDerivedOutcome, AuthorDerivedRequestInput, AuthorshipKindMask,
-    EdgeAuthorshipKind, EdgeId, EndpointBinding, EntityKind, EntityKindMask, EntityRef,
-    FactEntityId, FlavorRegistryFrozen, GoalId, McpTool, McpToolCtx, McpToolError,
+    EdgeAuthorshipKind, EdgeId, EdgeTargetProjection, EndpointBinding, EntityKind, EntityKindMask,
+    EntityRef, FactEntityId, FlavorRegistryFrozen, GoalId, McpTool, McpToolCtx, McpToolError,
     McpToolErrorKind, MemoryOperatorKind, PayloadKeyBuilder, RegisteredRelation, RelationClass,
     RelationDescriptor, SchemaRef,
 };
@@ -99,9 +101,7 @@ pub use proxima_storage_pg::sidecars::{
 pub use proxima_storage_pg::verbs::derive_append::{
     DerivedDraft, DerivedOutcome, append_derived_in_tx,
 };
-pub use proxima_storage_pg::verbs::edge_append::{
-    EdgeDraft, Endpoint, append_edge, append_edge_in_tx,
-};
+
 pub use proxima_storage_pg::verbs::event_ingest::{
     AttachCitationOutcome, attach_citation_in_tx, ingest_fact, ingest_fact_in_tx,
     ingest_fact_with_citation_atomic, ingest_fact_with_citation_in_tx,

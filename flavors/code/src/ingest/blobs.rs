@@ -1,13 +1,13 @@
 use proxima_core::verbs::event_ingest::{CitationSpec, EventIngestOutcome};
 use proxima_core::{
-    AbstractionPayload, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind, FactPayload,
-    MemoryId, MemoryOperatorKind, Owner, SchemaVersion, SourceBatchId,
+    AbstractionPayload, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EdgeId, EntityKind,
+    FactPayload, MemoryId, MemoryOperatorKind, Owner, SchemaVersion, SourceBatchId,
 };
 use proxima_storage_pg::sidecars::PgMemorySidecar;
 use proxima_storage_pg::verbs::derive_append::{
     DerivedDraft, DerivedOutcome, append_derived_in_tx,
 };
-use proxima_storage_pg::verbs::edge_append::{Endpoint, append_edge};
+use proxima_storage_pg::verbs::edge_write::{MemoryEndpoint, append_owner_checked_memory_edge};
 use proxima_storage_pg::verbs::event_ingest::{FactIngestContext, ingest_fact_with_sidecar};
 use sqlx::PgPool;
 
@@ -204,15 +204,15 @@ async fn append_code_slice_provenance(
             ))
         })?;
     let edge_id = derived_from_edge_id(code_slice, source_fact);
-    append_edge(
+    append_owner_checked_memory_edge(
         tx.as_mut(),
-        edge_id,
+        owner,
+        EdgeId::new(edge_id),
         relation,
-        Endpoint::abstraction(code_slice),
-        Endpoint::fact(source_fact),
+        MemoryEndpoint::abstraction(code_slice),
+        MemoryEndpoint::fact(source_fact),
         EdgeAuthorshipKind::OperatorFtoA,
         Some(code_slice),
-        owner,
     )
     .await?;
     Ok(())
