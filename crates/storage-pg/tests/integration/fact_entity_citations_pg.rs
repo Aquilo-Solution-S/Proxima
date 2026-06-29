@@ -5,8 +5,8 @@ use std::sync::Arc;
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
 use proxima_core::storage_ports::*;
-use proxima_core::verbs::event_ingest::{
-    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+use proxima_core::verbs::fact_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
@@ -15,7 +15,7 @@ use proxima_core::{
     SourceBatchId, SourceId, StorageError, canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemoryPayloadFuture};
-use proxima_storage_pg::verbs::event_ingest::{EventIngestSidecarFuture, PgFactSidecar};
+use proxima_storage_pg::verbs::fact_ingest::{FactIngestSidecarFuture, PgFactSidecar};
 use proxima_storage_pg::{
     PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
 };
@@ -36,7 +36,7 @@ impl FactPayload for StatefulFactV1 {
     const SCHEMA_ID: &'static str = "test/entity-head-cited-fact-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_str("entity_key", &self.entity_key);
         key.field_str("body", &self.body);
@@ -61,7 +61,7 @@ impl PgFactSidecar for StatefulFactV1 {
         self,
         tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
         memory_id: MemoryId,
-    ) -> EventIngestSidecarFuture<'t>
+    ) -> FactIngestSidecarFuture<'t>
     where
         Self: 't,
     {
@@ -149,19 +149,20 @@ fn fact(entity_key: &str, body: &str) -> StatefulFactV1 {
     }
 }
 
-fn draft_for(owner: &Owner, payload_value: &Value) -> EventDraft {
+fn draft_for(_owner: &Owner, payload_value: &Value) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
-    EventDraft {
-        source_id: SourceId::new(format!("test/fact-entity-citation/{}", Uuid::now_v7())),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: *owner,
+    FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: StatefulFactV1::schema_id(),
         schema_version: SchemaVersion::new(StatefulFactV1::SCHEMA_VERSION),
         payload: canonical_json_bytes(payload_value),
         rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new(format!("test/fact-entity-citation/{}", Uuid::now_v7())),
+            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: Some(Citation {
             object: CitedObjectHint {
                 schema_id: SchemaId::new(CITED_OBJECT_SCHEMA.into()),
@@ -189,17 +190,17 @@ async fn ingest_fact(
     engine: &Engine,
     owner: &Owner,
     payload: &StatefulFactV1,
-) -> Result<proxima_core::EventIngestOutcome, StorageError> {
+) -> Result<proxima_core::FactIngestOutcome, StorageError> {
     let payload_value =
         serde_json::to_value(payload).map_err(|err| StorageError::Internal(err.to_string()))?;
     let draft = draft_for(owner, &payload_value);
     let authz = AuthzContext::single_owner(owner, AuthPath::System);
     let authorized = engine
-        .authorize_event_ingest(&authz, Relation::Ingest, draft)
+        .authorize_fact_ingest(&authz, Relation::Ingest, draft)
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let sidecar_payload = SidecarPayload::fact(payload.clone());
-    pg.ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
+    pg.ingest_fact_with_typed_sidecar(&authorized, &sidecar_payload, None)
         .await
 }
 

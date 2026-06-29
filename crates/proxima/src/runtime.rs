@@ -391,12 +391,16 @@ type InsecureAuthz = AuthzContext;
 
 fn insecure_single_owner_authz(owner: &Owner, auth_path: AuthPath) -> InsecureAuthz {
     match *owner {
-        OwnerRef::Personal(subject) => AuthzContext::for_subject(subject, auth_path),
+        OwnerRef::Personal(subject) => AuthzContext::for_subject(subject, auth_path)
+            .narrowed_to_owner(*owner)
+            .expect("personal owner is self-accessible"),
         OwnerRef::Group(group) => AuthzContext::for_subject_with_role(
             UserId::new(group.into_inner()),
             [(*owner, Role::admin())],
             auth_path,
-        ),
+        )
+        .narrowed_to_owner(*owner)
+        .expect("group owner role is self-accessible"),
         OwnerRef::World => AuthzContext::denied_for_owner(owner),
     }
 }

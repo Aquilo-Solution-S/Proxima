@@ -6,7 +6,9 @@ mod common;
 
 use common::{ConstantEmbedding, drop_db, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
-use proxima_core::mcp::core_tools::list_events::{ListEventsArgs, ListEventsOutput, list_events};
+use proxima_core::mcp::core_tools::list_change_events::{
+    ListChangeEventsArgs, ListChangeEventsOutput, list_change_events,
+};
 use proxima_core::mcp::core_tools::memory::derive::{DeriveArgs, DerivedKind};
 use proxima_core::mcp::core_tools::memory::link::LinkArgs;
 use proxima_core::mcp::core_tools::memory::remember::RememberArgs;
@@ -20,12 +22,12 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 type BoxTestFuture<'a> = Pin<Box<dyn Future<Output = TestResult> + 'a>>;
 
 #[tokio::test]
-async fn list_events_returns_entity_and_edge_events_in_seq_order() -> TestResult {
+async fn list_change_events_returns_entity_and_edge_events_in_seq_order() -> TestResult {
     with_harness(|harness| {
         Box::pin(async move {
             let produced = harness.seed_abstraction_fact_edge().await?;
             let page = harness
-                .list_events(ListEventsArgs {
+                .list_change_events(ListChangeEventsArgs {
                     since: None,
                     limit: Some(1000),
                 })
@@ -89,13 +91,13 @@ async fn list_events_returns_entity_and_edge_events_in_seq_order() -> TestResult
 }
 
 #[tokio::test]
-async fn list_events_pages_with_strict_cursor_and_empty_tail() -> TestResult {
+async fn list_change_events_pages_with_strict_cursor_and_empty_tail() -> TestResult {
     with_harness(|harness| {
         Box::pin(async move {
             harness.seed_abstraction_fact_edge().await?;
 
             let first = harness
-                .list_events(ListEventsArgs {
+                .list_change_events(ListChangeEventsArgs {
                     since: None,
                     limit: Some(1),
                 })
@@ -108,7 +110,7 @@ async fn list_events_pages_with_strict_cursor_and_empty_tail() -> TestResult {
 
             loop {
                 let page = harness
-                    .list_events(ListEventsArgs {
+                    .list_change_events(ListChangeEventsArgs {
                         since: Some(cursor.clone()),
                         limit: Some(1),
                     })
@@ -198,8 +200,11 @@ impl ToolHarness {
         T::call(self.ctx(), args).await
     }
 
-    async fn list_events(&self, args: ListEventsArgs) -> Result<ListEventsOutput, McpToolError> {
-        list_events(self.ctx(), args).await
+    async fn list_change_events(
+        &self,
+        args: ListChangeEventsArgs,
+    ) -> Result<ListChangeEventsOutput, McpToolError> {
+        list_change_events(self.ctx(), args).await
     }
 
     async fn seed_abstraction_fact_edge(&self) -> Result<ProducedGraph, McpToolError> {

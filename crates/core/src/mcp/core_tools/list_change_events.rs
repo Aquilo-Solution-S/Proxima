@@ -1,7 +1,7 @@
-//! `core/list_events` - forward pull-log poll over `change_event`.
+//! `core/list_change_events` - forward pull-log poll over `change_event`.
 //!
 //! This is the forward, opaque-seq-cursor mirror of backward
-//! `EventHistory`: clients pass the prior `next_since` as `since` and
+//! `ChangeHistory`: clients pass the prior `next_since` as `since` and
 //! receive owner-scoped events in ascending `seq` order. Edge endpoint
 //! memory subkind is recovered from `proxima_core.edges` in one batched
 //! lookup; if the edge row is absent, memory endpoints fall back to the
@@ -13,13 +13,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::change_event::{ChangeEventKind, EntityRef};
-use crate::engine::ListEventsReadRequest;
+use crate::engine::ListChangeEventsReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::personality::ChangeEventForWake;
 use crate::{EdgeId, EntityKind};
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct ListEventsArgs {
+pub struct ListChangeEventsArgs {
     /// Opaque cursor from a prior `next_since`. Omit to read from the beginning.
     pub since: Option<String>,
     /// Max events; clamped to 1..=1000, default 100.
@@ -27,14 +27,14 @@ pub struct ListEventsArgs {
 }
 
 #[derive(Debug, Serialize)]
-pub struct ListEventsOutput {
-    pub events: Vec<EventItem>,
+pub struct ListChangeEventsOutput {
+    pub events: Vec<ChangeEventItem>,
     pub next_since: Option<String>,
     pub has_more: bool,
 }
 
 #[derive(Debug, Serialize)]
-pub struct EventItem {
+pub struct ChangeEventItem {
     pub seq: String,
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -63,10 +63,10 @@ pub struct EventItem {
 /// # Errors
 ///
 /// Returns invalid cursor, storage, or projection failures.
-pub async fn list_events(
+pub async fn list_change_events(
     ctx: McpToolCtx,
-    args: ListEventsArgs,
-) -> Result<ListEventsOutput, McpToolError> {
+    args: ListChangeEventsArgs,
+) -> Result<ListChangeEventsOutput, McpToolError> {
     let after = match &args.since {
         None => uuid::Uuid::nil(),
         Some(since) => since.parse::<uuid::Uuid>().map_err(|err| {
@@ -78,9 +78,9 @@ pub async fn list_events(
         .engine()
         .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
     let response = engine
-        .list_events(
+        .list_change_events(
             &ctx.authz,
-            &ListEventsReadRequest {
+            &ListChangeEventsReadRequest {
                 principal: ctx.owner,
                 after,
                 limit: overfetch_limit(limit),
@@ -100,7 +100,7 @@ pub async fn list_events(
         .collect::<Vec<_>>();
     let next_since = events.last().map(|event| event.seq.clone()).or(args.since);
 
-    Ok(ListEventsOutput {
+    Ok(ListChangeEventsOutput {
         events,
         next_since,
         has_more,
@@ -121,7 +121,7 @@ fn event_item(
     ctx: &McpToolCtx,
     row: ChangeEventForWake,
     edge_kinds: &HashMap<uuid::Uuid, (EntityKind, Option<EntityKind>)>,
-) -> EventItem {
+) -> ChangeEventItem {
     let seq = row.event.seq.to_string();
     let authoring_personality = row
         .authoring_personality_instance_id
@@ -133,7 +133,7 @@ fn event_item(
             schema_id,
             schema_version,
             supersedes,
-        } => EventItem {
+        } => ChangeEventItem {
             seq,
             kind: "entity_append".into(),
             authoring_personality,
@@ -153,7 +153,7 @@ fn event_item(
             entity,
             schema_id,
             schema_version,
-        } => EventItem {
+        } => ChangeEventItem {
             seq,
             kind: "entity_delete".into(),
             authoring_personality,
@@ -178,7 +178,7 @@ fn event_item(
                 .get(&edge_id)
                 .copied()
                 .unwrap_or((EntityKind::Fact, None));
-            EventItem {
+            ChangeEventItem {
                 seq,
                 kind: "edge_append".into(),
                 authoring_personality,
@@ -204,7 +204,7 @@ fn event_item(
                 .get(&edge_id)
                 .copied()
                 .unwrap_or((kind_from_ref(&source), None));
-            EventItem {
+            ChangeEventItem {
                 seq,
                 kind: "edge_delete".into(),
                 authoring_personality,

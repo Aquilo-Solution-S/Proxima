@@ -27,6 +27,17 @@ impl AccessSets {
             .iter()
             .any(|(candidate, relation)| candidate == owner && relation.dominates(required))
     }
+
+    #[must_use]
+    pub fn write_owners_for(&self, required: Relation) -> Vec<OwnerRef> {
+        let mut owners = Vec::new();
+        for (owner, relation) in &self.write {
+            if relation.dominates(required) && !owners.iter().any(|candidate| candidate == owner) {
+                owners.push(*owner);
+            }
+        }
+        owners
+    }
 }
 
 impl Engine {
@@ -39,7 +50,7 @@ impl Engine {
         &self,
         authz: &AuthzContext,
     ) -> Result<AccessSets, ProtocolError> {
-        if authz.auth_path() == AuthPath::Denied || authz.accessible_owners().next().is_none() {
+        if authz.auth_path() == AuthPath::Denied {
             return Ok(AccessSets {
                 read: Vec::new(),
                 write: Vec::new(),
@@ -53,6 +64,10 @@ impl Engine {
 
         if authz.is_server_resolved() {
             push_role_access(&mut access, authz);
+            return Ok(access);
+        }
+
+        if authz.accessible_owners().next().is_none() {
             return Ok(access);
         }
 
@@ -148,8 +163,8 @@ fn is_world(principal: &OwnerRef) -> bool {
 pub(in crate::engine) mod tests {
     use std::sync::Arc;
 
+    use crate::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
     use crate::close_batch::CloseBatchOutcome;
-    use crate::event_history::{EventHistoryRequest, EventHistoryResponse};
     use crate::fact_cleanup::{CleanupDueFactsOutcome, TombstoneFactOutcome};
     use crate::goal_write::{
         AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
@@ -172,22 +187,23 @@ pub(in crate::engine) mod tests {
 
     #[async_trait::async_trait]
     impl FactIngestPort for MembershipStorage {
-        async fn ingest_event_atomic(
+        async fn ingest_fact_atomic(
             &self,
-            _draft: &EventDraft,
+            _owner: &OwnerRef,
+            _draft: &FactWriteCommand,
             _embedding_model_id: Option<&str>,
-        ) -> Result<EventIngestOutcome, StorageError> {
+        ) -> Result<FactIngestOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
         }
 
-        async fn ingest_event_with_typed_sidecar(
+        async fn ingest_fact_with_typed_sidecar(
             &self,
-            _authorized: &AuthorizedEventIngest,
+            _authorized: &AuthorizedFactWrite,
             _sidecar_payload: &SidecarPayload,
             _embedding_model_id: Option<&str>,
-        ) -> Result<EventIngestOutcome, StorageError> {
+        ) -> Result<FactIngestOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
@@ -198,7 +214,7 @@ pub(in crate::engine) mod tests {
             _authorized: &AuthorizedFactWithCitation,
             _sidecar_payload: &SidecarPayload,
             _embedding_model_id: Option<&str>,
-        ) -> Result<EventIngestOutcome, StorageError> {
+        ) -> Result<FactIngestOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
@@ -483,12 +499,12 @@ pub(in crate::engine) mod tests {
 
     #[async_trait::async_trait]
     impl ChangeEventPort for MembershipStorage {
-        async fn event_history(
+        async fn change_history(
             &self,
             _read_owners: &[OwnerRef],
-            _req: &EventHistoryRequest,
-        ) -> Result<EventHistoryResponse, StorageError> {
-            Ok(EventHistoryResponse {
+            _req: &ChangeHistoryRequest,
+        ) -> Result<ChangeHistoryResponse, StorageError> {
+            Ok(ChangeHistoryResponse {
                 events: Vec::new(),
                 seq_high_water: None,
             })

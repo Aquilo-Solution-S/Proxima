@@ -5,8 +5,8 @@ use proxima_core::AuthPath;
 use proxima_core::mcp::core_tools::{
     get_graph::{GetGraphArgs, get_graph},
     get_memory::{GetMemoryArgs, get_memory},
+    list_change_events::{ListChangeEventsArgs, list_change_events},
     list_edge_types::{ListEdgeTypesArgs, list_edge_types},
-    list_events::{ListEventsArgs, list_events},
     list_schemas::{ListSchemasArgs, list_schemas},
     list_substrate_tools::{ListSubstrateToolsArgs, list_substrate_tools},
     walk_memory_lineage::{
@@ -258,7 +258,9 @@ impl McpToolHost {
             ParsedResource::MemoryLineage(args) => {
                 resource_output_value(walk_memory_lineage(ctx, args).await?)
             }
-            ParsedResource::Events(args) => resource_output_value(list_events(ctx, args).await?),
+            ParsedResource::ChangeEvents(args) => {
+                resource_output_value(list_change_events(ctx, args).await?)
+            }
         }
     }
 }
@@ -300,7 +302,7 @@ enum ParsedResource {
     Graph(GetGraphArgs),
     Memory(GetMemoryArgs),
     MemoryLineage(WalkMemoryLineageArgs),
-    Events(ListEventsArgs),
+    ChangeEvents(ListChangeEventsArgs),
 }
 
 impl ParsedResource {
@@ -312,7 +314,7 @@ impl ParsedResource {
             Self::Graph(_) => "resource:graph",
             Self::Memory(_) => "resource:memory",
             Self::MemoryLineage(_) => "resource:memory-lineage",
-            Self::Events(_) => "resource:events",
+            Self::ChangeEvents(_) => "resource:change-events",
         }
     }
 }
@@ -333,7 +335,7 @@ fn parse_resource_uri(uri: &str) -> Option<ParsedResource> {
         "graph" => Some(ParsedResource::Graph(GetGraphArgs {
             include_tombstoned: query_bool(&query, "include_tombstoned"),
         })),
-        "events" => Some(ParsedResource::Events(ListEventsArgs {
+        "change-events" => Some(ParsedResource::ChangeEvents(ListChangeEventsArgs {
             since: query_value(&query, "since").map(ToOwned::to_owned),
             limit: query_parse(&query, "limit").ok()?,
         })),
@@ -473,7 +475,7 @@ mod tests {
 
         assert!(parse_resource_uri("proxima://memory//lineage").is_none());
         assert!(parse_resource_uri("proxima://memory/F:one/two/lineage").is_none());
-        assert!(parse_resource_uri("proxima://events?limit=not-a-number").is_none());
+        assert!(parse_resource_uri("proxima://change-events?limit=not-a-number").is_none());
     }
 
     #[tokio::test]

@@ -262,19 +262,20 @@ impl AuthzContext {
     #[must_use]
     pub fn narrowed_to_owner(mut self, owner: OwnerRef) -> Option<Self> {
         let roles = self.owner_roles.as_ref()?;
-        if !roles.may_read(&owner, AccessKind::Goal) {
-            return None;
-        }
         let subject = roles.subject();
         let narrowed_roles = match owner {
-            OwnerRef::Personal(user) if user == subject => OwnerRoles::for_subject(subject, []),
-            OwnerRef::Group(_) => roles
-                .role_for(&owner)
-                .map(|role| OwnerRoles::for_subject(subject, [(owner, role)]))?,
-            OwnerRef::World => OwnerRoles::for_subject(subject, []),
-            OwnerRef::Personal(_) => return None,
-        }
-        .ok()?;
+            OwnerRef::Personal(user) if user == subject => {
+                OwnerRoles::scoped_to(subject, owner, crate::access::Role::personal())
+            }
+            OwnerRef::Group(_) => {
+                let role = roles.role_for(&owner)?;
+                OwnerRoles::scoped_to(subject, owner, role)
+            }
+            OwnerRef::World if roles.role_for(&owner).is_some() => {
+                OwnerRoles::scoped_to(subject, owner, crate::access::Role::viewer())
+            }
+            OwnerRef::World | OwnerRef::Personal(_) => return None,
+        };
         let accessible_principals = narrowed_roles
             .readable_owners(AccessKind::Goal)
             .into_iter()

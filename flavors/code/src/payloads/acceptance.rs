@@ -85,7 +85,7 @@ impl FactPayload for AcceptanceCriteriaV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("acceptance-criteria-v1");
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_uuid("work_item_memory_id", self.work_item_memory_id);
         key.list("criteria", self.criteria.len());

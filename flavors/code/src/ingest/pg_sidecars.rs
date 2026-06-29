@@ -2,7 +2,7 @@ use proxima_core::{EdgeId, MemoryId, SidecarPayload, StorageError};
 use proxima_storage_pg::sidecars::{
     PgEdgeSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture,
 };
-use proxima_storage_pg::verbs::event_ingest::{EventIngestSidecarFuture, PgFactSidecar};
+use proxima_storage_pg::verbs::fact_ingest::{FactIngestSidecarFuture, PgFactSidecar};
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::payloads::{
@@ -382,7 +382,7 @@ impl PgFactSidecar for AcceptanceCriteriaV1 {
         self,
         tx: &'t mut Transaction<'_, Postgres>,
         memory_id: MemoryId,
-    ) -> EventIngestSidecarFuture<'t>
+    ) -> FactIngestSidecarFuture<'t>
     where
         Self: 't,
     {
@@ -447,7 +447,7 @@ impl PgFactSidecar for TestRequestV1 {
         self,
         tx: &'t mut Transaction<'_, Postgres>,
         memory_id: MemoryId,
-    ) -> EventIngestSidecarFuture<'t>
+    ) -> FactIngestSidecarFuture<'t>
     where
         Self: 't,
     {

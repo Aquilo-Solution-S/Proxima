@@ -10,7 +10,7 @@ use proxima_core::error::ErrorCode;
 use proxima_core::ids::{SourceBatchId, UserId};
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient};
 use proxima_core::owner::{Owner, OwnerRef};
-use proxima_core::verbs::event_history::EventHistoryRequest;
+use proxima_core::verbs::change_history::ChangeHistoryRequest;
 use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, SchemaRequest};
@@ -190,15 +190,15 @@ async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
 }
 
 #[tokio::test]
-async fn event_history_ignores_client_principal_as_access_vector() {
+async fn change_history_ignores_client_principal_as_access_vector() {
     let (principal, owner_a) = fresh_owner();
     let engine = boot_engine(principal, owner_a);
     let (_, owner_b) = fresh_owner();
     let authz = AuthzContext::single_owner(&owner_a, AuthPath::System);
     let response = engine
-        .event_history(
+        .change_history(
             &authz,
-            &EventHistoryRequest {
+            &ChangeHistoryRequest {
                 principal: owner_b,
                 limit: 1,
                 before: None,

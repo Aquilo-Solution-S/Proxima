@@ -208,6 +208,14 @@ impl OwnerRoles {
     }
 
     #[must_use]
+    pub(crate) fn scoped_to(subject: UserId, owner: OwnerRef, role: Role) -> Self {
+        let mut roles = HashMap::new();
+        roles.insert(OwnerRef::World, Role::viewer());
+        roles.insert(owner, role);
+        Self { subject, roles }
+    }
+
+    #[must_use]
     pub fn empty_for_subject(subject: UserId) -> Self {
         let mut roles = HashMap::new();
         roles.insert(OwnerRef::World, Role::viewer());

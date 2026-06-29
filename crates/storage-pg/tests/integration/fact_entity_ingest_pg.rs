@@ -2,19 +2,20 @@
 
 #![allow(clippy::too_many_lines)]
 
+use proxima_core::FactReceiptDraft;
 use std::sync::Arc;
 
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
 use proxima_core::storage_ports::*;
-use proxima_core::verbs::event_ingest::EventDraft;
+use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
     AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner,
     PayloadKeyBuilder, Relation, SchemaVersion, SidecarPayload, SourceBatchId, SourceId,
     StorageError, canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemoryPayloadFuture};
-use proxima_storage_pg::verbs::event_ingest::{EventIngestSidecarFuture, PgFactSidecar};
+use proxima_storage_pg::verbs::fact_ingest::{FactIngestSidecarFuture, PgFactSidecar};
 use proxima_storage_pg::{
     PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
 };
@@ -38,7 +39,7 @@ impl FactPayload for FileRevisionV1 {
     const SCHEMA_ID: &'static str = "proxima-code/file-revision-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         file_revision_key(Self::SCHEMA_ID, Self::SCHEMA_VERSION, self)
     }
 
@@ -60,7 +61,7 @@ impl PgFactSidecar for FileRevisionV1 {
         self,
         tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
         memory_id: MemoryId,
-    ) -> EventIngestSidecarFuture<'t>
+    ) -> FactIngestSidecarFuture<'t>
     where
         Self: 't,
     {
@@ -121,7 +122,7 @@ impl FactPayload for FileRevisionV2 {
     const SCHEMA_ID: &'static str = FileRevisionV1::SCHEMA_ID;
     const SCHEMA_VERSION: u32 = 2;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_uuid("repo_id", self.repo_id);
         key.field_str("file_path", &self.file_path);
@@ -149,7 +150,7 @@ impl PgFactSidecar for FileRevisionV2 {
         self,
         tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
         memory_id: MemoryId,
-    ) -> EventIngestSidecarFuture<'t>
+    ) -> FactIngestSidecarFuture<'t>
     where
         Self: 't,
     {
@@ -204,7 +205,7 @@ impl FactPayload for CodeChunkV1 {
     const SCHEMA_ID: &'static str = "proxima-code/code-chunk-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_uuid("repo_id", self.repo_id);
         key.field_str("file_path", &self.file_path);
@@ -234,7 +235,7 @@ impl PgFactSidecar for CodeChunkV1 {
         self,
         tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
         memory_id: MemoryId,
-    ) -> EventIngestSidecarFuture<'t>
+    ) -> FactIngestSidecarFuture<'t>
     where
         Self: 't,
     {
@@ -286,7 +287,7 @@ impl FactPayload for CommitV1 {
     const SCHEMA_ID: &'static str = "proxima-code/commit-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_uuid("repo_id", self.repo_id);
         key.field_str("sha", &self.sha);
@@ -307,7 +308,7 @@ impl PgFactSidecar for CommitV1 {
         self,
         tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
         memory_id: MemoryId,
-    ) -> EventIngestSidecarFuture<'t>
+    ) -> FactIngestSidecarFuture<'t>
     where
         Self: 't,
     {
@@ -408,19 +409,20 @@ fn engine_for(pg: &PgStorage) -> Engine {
     Engine::new(registry_for_test()).with_storage_ports(Arc::new(pg.clone()).storage_ports())
 }
 
-fn draft_for<P: FactPayload>(owner: &Owner, payload_value: &Value) -> EventDraft {
+fn draft_for<P: FactPayload>(_owner: &Owner, payload_value: &Value) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
-    EventDraft {
-        source_id: SourceId::new(format!("test/fact-entity/{}", Uuid::now_v7())),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: *owner,
+    FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: P::schema_id(),
         schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
         payload: canonical_json_bytes(payload_value),
         rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new(format!("test/fact-entity/{}", Uuid::now_v7())),
+            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: None,
     }
 }
@@ -430,7 +432,7 @@ async fn ingest_payload<P>(
     engine: &Engine,
     owner: &Owner,
     payload: &P,
-) -> Result<proxima_core::EventIngestOutcome, StorageError>
+) -> Result<proxima_core::FactIngestOutcome, StorageError>
 where
     P: FactPayload + Clone + Send + Sync + 'static,
 {
@@ -439,11 +441,11 @@ where
     let draft = draft_for::<P>(owner, &payload_value);
     let authz = AuthzContext::single_owner(owner, AuthPath::System);
     let authorized = engine
-        .authorize_event_ingest(&authz, Relation::Ingest, draft)
+        .authorize_fact_ingest(&authz, Relation::Ingest, draft)
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let sidecar_payload = SidecarPayload::fact(payload.clone());
-    pg.ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
+    pg.ingest_fact_with_typed_sidecar(&authorized, &sidecar_payload, None)
         .await
 }
 
@@ -725,7 +727,7 @@ async fn replay_is_idempotent_and_does_not_mint_or_move_entity() {
         let payload_value = serde_json::to_value(&payload)?;
         let draft = draft_for::<FileRevisionV1>(&owner, &payload_value);
         let authorized = engine
-            .authorize_event_ingest(
+            .authorize_fact_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::System),
                 Relation::Ingest,
                 draft,
@@ -734,13 +736,13 @@ async fn replay_is_idempotent_and_does_not_mint_or_move_entity() {
 
         let sidecar_payload = SidecarPayload::fact(payload.clone());
         let first = pg
-            .ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
+            .ingest_fact_with_typed_sidecar(&authorized, &sidecar_payload, None)
             .await?;
         let fact_entity_id = memory_fact_entity_id(&pg, first.memory_id)
             .await?
             .expect("first row entity");
         let replay = pg
-            .ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
+            .ingest_fact_with_typed_sidecar(&authorized, &sidecar_payload, None)
             .await?;
 
         assert!(replay.idempotent_replay);

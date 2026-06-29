@@ -509,7 +509,7 @@ fn push_heads_predicate(
     match req.entity_kind {
         None => {}
         Some(EntityKind::Fact) => {
-            sql.push_str(" AND m.receipt_id IS NOT NULL AND m.kind IS NULL");
+            sql.push_str(" AND m.kind IS NULL");
         }
         Some(EntityKind::Abstraction) => sql.push_str(" AND m.kind = 'Abstraction'"),
         Some(EntityKind::Perspective) => sql.push_str(" AND m.kind = 'Perspective'"),

@@ -20,7 +20,7 @@ pub struct MemoryPermit {
 #[derive(Debug, Clone)]
 pub enum PermitMode {
     /// Caller operates within the owner-space — the sole surviving permit mode.
-    /// The single-owner read verbs (`event_history` / `read_mcp_call_history`
+    /// The single-owner read verbs (`change_history` / `read_mcp_call_history`
     /// via `authorize_request`) mint it; the entry-scoped and public-read modes
     /// of the retired grant model are gone with their gate, replaced by
     /// `authorize_entry_read` / source-owned reads.

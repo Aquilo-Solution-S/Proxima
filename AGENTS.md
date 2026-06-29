@@ -33,7 +33,7 @@ explicit request.
 | `docs/11-citations.md` | `CitedObject` / `CitationMapping` traits; bibliographic provenance, Fact-only citation rule |
 | `docs/12-tool-manifest.md` | Tool = build-time registered call surface; tool classes (core MCP / flavor MCP); no runtime tier |
 | `docs/13-compliance.md` | Compliance primitives: owner deletion, source-scope deletion, pause/resume, export, suppression, audit |
-| `docs/14-protocol-surface.md` | Engine's contract to clients: five verbs (Query / EventHistory / GoalWrite / EventIngest / Schema), owner-scoped, transport-agnostic |
+| `docs/14-protocol-surface.md` | Engine's contract to clients: five verbs (Query / ChangeHistory / GoalWrite / FactIngest / Schema), owner-scoped, transport-agnostic |
 | `docs/15-deployment.md` | Deploying the Code-flavor MCP server: Docker, OIDC bearer auth, network exposure, tool-surface profiles |
 | `docs/dev-perf.md` | Perf reducer fixture format |
 

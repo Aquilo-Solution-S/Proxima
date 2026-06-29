@@ -1,14 +1,14 @@
-//! `EventIngest` verb — typed surface only.
+//! `FactIngest` verb — typed surface only.
 //!
-//! See docs/14-protocol-surface.md §"`EventIngest`" and
-//! docs/01-event-source.md §"Properties of an Event". The
-//! storage-side body lives in `proxima-storage-pg` (M2.4b).
+//! See docs/14-protocol-surface.md §"Fact write" and
+//! docs/01-event-source.md §"Fact membrane". The storage-side body
+//! lives in `proxima-storage-pg` (M2.4b).
 
 use uuid::Uuid;
 
 use crate::engine::MemoryPermit;
 use crate::{
-    EventId, FactPayload, MemoryId, Owner, OwnerRef, OwnerRefKind, PersonalityInstanceId, SchemaId,
+    FactPayload, FactReceiptId, MemoryId, Owner, OwnerRefKind, PersonalityInstanceId, SchemaId,
     SchemaVersion, SidecarPayload, SourceBatchId, SourceId,
 };
 
@@ -32,7 +32,7 @@ pub struct Citation {
 }
 
 /// Compact citation input for the common opaque-object / pure-link
-/// mapping path used by event-source Fact ingest.
+/// mapping path used by Fact membrane ingest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CitationSpec {
     pub cited_object_schema_id: SchemaId,
@@ -60,14 +60,14 @@ impl CitationSpec {
     }
 
     /// Build a v1 citation spec whose cited-object content hash is the
-    /// BLAKE3 hash of the Fact payload's schema-owned event key.
+    /// BLAKE3 hash of the Fact payload's schema-owned receipt key.
     #[must_use]
     pub fn v1_for_payload<P: FactPayload>(
         cited_object_schema_id: impl Into<String>,
         payload: &P,
         mapping_schema_id: impl Into<String>,
     ) -> Self {
-        let payload = payload.event_key();
+        let payload = payload.receipt_key();
         Self::v1(
             cited_object_schema_id,
             *blake3::hash(&payload).as_bytes(),
@@ -107,40 +107,45 @@ pub struct InlineCitationMappingDraft {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct EventDraft {
+pub struct FactReceiptDraft {
     pub source_id: SourceId,
     pub source_batch_id: SourceBatchId,
-    pub principal: OwnerRef,
+    pub observed_at: time::OffsetDateTime,
+    pub occurred_at: time::OffsetDateTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FactWriteCommand {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author_personality_instance_id: Option<PersonalityInstanceId>,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
-    /// Schema-owned event replay key material. The typed payload itself
+    /// Schema-owned receipt replay key material. The typed payload itself
     /// lives in the registered sidecar.
     pub payload: Vec<u8>,
     #[serde(default, skip)]
     pub rendered_text: Option<String>,
-    pub observed_at: time::OffsetDateTime,
-    pub occurred_at: time::OffsetDateTime,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<FactReceiptDraft>,
     pub citation: Option<Citation>,
 }
 
-/// Proof that an event ingest passed authorization + schema
-/// validation and had its owner stamped from the authz context.
-/// The only constructor is `Engine::authorize_event_ingest`, so a
+/// Proof that a Fact write passed authorization + schema validation
+/// and had its owner stamped from the authz context.
+/// The only constructor is `Engine::authorize_fact_ingest`, so a
 /// caller cannot reach the sidecar-ingest primitive below the gate.
 #[derive(Debug)]
-pub struct AuthorizedEventIngest {
+pub struct AuthorizedFactWrite {
     permit: MemoryPermit,
-    draft: EventDraft,
+    draft: FactWriteCommand,
     fact_sidecar_table: Option<String>,
     fact_natural_key_columns: Vec<String>,
 }
 
-impl AuthorizedEventIngest {
+impl AuthorizedFactWrite {
     pub(crate) fn new(
         permit: MemoryPermit,
-        draft: EventDraft,
+        draft: FactWriteCommand,
         fact_sidecar_table: Option<String>,
         fact_natural_key_columns: Vec<String>,
     ) -> Self {
@@ -158,7 +163,7 @@ impl AuthorizedEventIngest {
     }
 
     #[must_use]
-    pub fn draft(&self) -> &EventDraft {
+    pub fn draft(&self) -> &FactWriteCommand {
         &self.draft
     }
 
@@ -314,7 +319,7 @@ impl AuthorizedCitationAttachment {
 #[derive(Debug)]
 pub struct AuthorizedFactWithCitation {
     permit: MemoryPermit,
-    draft: EventDraft,
+    draft: FactWriteCommand,
     cited_object: AuthorizedInlineCitedObject,
     mapping: AuthorizedInlineCitationMapping,
     author_personality_instance_id: Option<PersonalityInstanceId>,
@@ -325,7 +330,7 @@ pub struct AuthorizedFactWithCitation {
 impl AuthorizedFactWithCitation {
     pub(crate) fn new(
         permit: MemoryPermit,
-        draft: EventDraft,
+        draft: FactWriteCommand,
         cited_object: AuthorizedInlineCitedObject,
         mapping: AuthorizedInlineCitationMapping,
         fact_sidecar_table: Option<String>,
@@ -349,7 +354,7 @@ impl AuthorizedFactWithCitation {
     }
 
     #[must_use]
-    pub fn draft(&self) -> &EventDraft {
+    pub fn draft(&self) -> &FactWriteCommand {
         &self.draft
     }
 
@@ -379,29 +384,29 @@ impl AuthorizedFactWithCitation {
     }
 }
 
-impl EventDraft {
-    /// Build a Fact event draft from a typed payload using the payload's
-    /// schema id/version and schema-owned event key. The caller supplies
-    /// the source and source-batch boundary explicitly; no runtime
-    /// registration or source inference happens here.
+impl FactWriteCommand {
+    /// Build a receipt-backed Fact write command from a typed payload using
+    /// the payload's schema id/version and schema-owned receipt key. The
+    /// engine stamps the owner from authorization before computing the
+    /// receipt id; no caller-supplied owner is carried in the command.
     pub fn from_payload<P: FactPayload>(
-        owner: &Owner,
         source_id: impl Into<String>,
         source_batch_id: SourceBatchId,
         payload: &P,
         observed_at: time::OffsetDateTime,
     ) -> Self {
         Self {
-            source_id: SourceId::new(source_id.into()),
-            source_batch_id,
-            principal: *owner,
             author_personality_instance_id: None,
             schema_id: P::schema_id(),
             schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
-            payload: payload.event_key(),
+            payload: payload.receipt_key(),
             rendered_text: Some(payload.render()),
-            observed_at,
-            occurred_at: observed_at,
+            receipt: Some(FactReceiptDraft {
+                source_id: SourceId::new(source_id.into()),
+                source_batch_id,
+                observed_at,
+                occurred_at: observed_at,
+            }),
             citation: None,
         }
     }
@@ -415,8 +420,10 @@ impl EventDraft {
 
     /// Override the occurrence time while preserving the observation time.
     #[must_use]
-    pub const fn occurred_at(mut self, occurred_at: time::OffsetDateTime) -> Self {
-        self.occurred_at = occurred_at;
+    pub fn occurred_at(mut self, occurred_at: time::OffsetDateTime) -> Self {
+        if let Some(receipt) = &mut self.receipt {
+            receipt.occurred_at = occurred_at;
+        }
         self
     }
 
@@ -427,21 +434,15 @@ impl EventDraft {
         self
     }
 
-    /// The storage `Owner` (= principal) for this draft.
+    /// Canonical receipt id per docs/01: BLAKE3 of `source_id` ||
+    /// `owner_components` || schema-owned receipt key, separated by 0x00
+    /// bytes. Re-receipt of the same observation produces the same hash by
+    /// construction. Receiptless commands return `None` and are not replayed.
     #[must_use]
-    pub const fn owner(&self) -> Owner {
-        self.principal
-    }
-
-    /// Canonical `event_id` per docs/01: BLAKE3 of
-    /// `source_id` || `owner_components` || schema-owned event key,
-    /// separated by 0x00 bytes. Re-receipt of the same observation
-    /// produces the same hash by construction.
-    #[must_use]
-    pub fn event_id(&self) -> EventId {
-        let owner = self.owner();
+    pub fn receipt_id_for_owner(&self, owner: Owner) -> Option<FactReceiptId> {
+        let receipt = self.receipt.as_ref()?;
         let mut hasher = blake3::Hasher::new();
-        hasher.update(self.source_id.as_str().as_bytes());
+        hasher.update(receipt.source_id.as_str().as_bytes());
         hasher.update(b"\x00");
         let kind = OwnerRefKind::of(&owner);
         let id = owner.stable_key_uuid();
@@ -450,49 +451,55 @@ impl EventDraft {
         hasher.update(id.as_bytes());
         hasher.update(b"\x00");
         hasher.update(&self.payload);
-        EventId::new(*hasher.finalize().as_bytes())
+        Some(FactReceiptId::new(*hasher.finalize().as_bytes()))
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct EventIngestOutcome {
-    pub event_id: EventId,
+pub struct FactIngestOutcome {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt_id: Option<FactReceiptId>,
     pub memory_id: MemoryId,
     pub change_event_seq: Uuid,
-    /// True iff the same `event_id` was already ingested.
-    /// docs/14 §`EventIngest`: "replay is silently a no-op."
+    /// True iff the same receipt id was already ingested.
+    /// Receiptless Facts are never receipt-replayed.
     pub idempotent_replay: bool,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::EventDraft;
+    use super::{FactReceiptDraft, FactWriteCommand};
     use crate::{
         OwnerRef, PayloadKeyBuilder, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
     };
     use uuid::Uuid;
 
-    fn draft(payload: Vec<u8>) -> EventDraft {
+    fn owner() -> OwnerRef {
+        OwnerRef::Personal(UserId::new(
+            Uuid::parse_str("018f0f4e-6b45-7c00-9bb5-b89b28d9c0a1").expect("uuid literal"),
+        ))
+    }
+
+    fn draft(payload: Vec<u8>) -> FactWriteCommand {
         let now = time::OffsetDateTime::UNIX_EPOCH;
-        EventDraft {
-            source_id: SourceId::new("test/source"),
-            source_batch_id: SourceBatchId::new(Uuid::nil()),
-            principal: OwnerRef::Personal(UserId::new(
-                Uuid::parse_str("018f0f4e-6b45-7c00-9bb5-b89b28d9c0a1").expect("uuid literal"),
-            )),
+        FactWriteCommand {
             author_personality_instance_id: None,
             schema_id: SchemaId::new("test/fact".to_string()),
             schema_version: SchemaVersion::new(1),
             payload,
             rendered_text: None,
-            observed_at: now,
-            occurred_at: now,
+            receipt: Some(FactReceiptDraft {
+                source_id: SourceId::new("test/source"),
+                source_batch_id: SourceBatchId::new(Uuid::nil()),
+                observed_at: now,
+                occurred_at: now,
+            }),
             citation: None,
         }
     }
 
     #[test]
-    fn identical_schema_owned_keys_produce_same_event_id() {
+    fn identical_schema_owned_keys_produce_same_receipt_id() {
         let mut key = PayloadKeyBuilder::new("test/fact", 1);
         key.field_str("stable_id", "same");
         let left = draft(key.finish());
@@ -502,32 +509,41 @@ mod tests {
         let right = draft(key.finish());
 
         assert_eq!(left.payload, right.payload);
-        assert_eq!(left.event_id(), right.event_id());
+        assert_eq!(
+            left.receipt_id_for_owner(owner()),
+            right.receipt_id_for_owner(owner())
+        );
     }
 
-    /// Pins the org-free `event_id` BLAKE3 against drift. Track B / S0:
+    /// Pins the org-free `receipt_id` BLAKE3 against drift. Track B / S0:
     /// the hash folds source ‖ principal kind/id ‖ payload — no org. A
     /// fixed input must reproduce exactly this hex forever.
     #[test]
-    fn event_id_golden_is_org_free() {
+    fn receipt_id_golden_is_org_free() {
         let principal = OwnerRef::Personal(UserId::new(
             Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
         ));
-        let draft = EventDraft {
-            source_id: SourceId::new("golden/source"),
-            source_batch_id: SourceBatchId::new(Uuid::nil()),
-            principal,
+        let draft = FactWriteCommand {
             author_personality_instance_id: None,
             schema_id: SchemaId::new("golden/fact".to_string()),
             schema_version: SchemaVersion::new(1),
             payload: b"golden-payload".to_vec(),
             rendered_text: None,
-            observed_at: time::OffsetDateTime::UNIX_EPOCH,
-            occurred_at: time::OffsetDateTime::UNIX_EPOCH,
+            receipt: Some(FactReceiptDraft {
+                source_id: SourceId::new("golden/source"),
+                source_batch_id: SourceBatchId::new(Uuid::nil()),
+                observed_at: time::OffsetDateTime::UNIX_EPOCH,
+                occurred_at: time::OffsetDateTime::UNIX_EPOCH,
+            }),
             citation: None,
         };
         assert_eq!(
-            hex::encode(draft.event_id().into_inner()),
+            hex::encode(
+                draft
+                    .receipt_id_for_owner(principal)
+                    .expect("receipt")
+                    .into_inner()
+            ),
             "2469dc45f6d65917f6b3b13606ee8165330351f773bfec45c144ecabc5992da3"
         );
     }

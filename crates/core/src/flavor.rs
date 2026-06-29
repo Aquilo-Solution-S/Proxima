@@ -721,7 +721,7 @@ where
     F: FactPayload + Send + Sync,
 {
     let payload = decode_protocol_payload::<F>(value)?;
-    let key_bytes = Some(payload.event_key());
+    let key_bytes = Some(payload.receipt_key());
     let rendered_text = Some(payload.render());
     Ok(ProtocolPayload {
         key_bytes,

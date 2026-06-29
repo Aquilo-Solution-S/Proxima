@@ -7,7 +7,7 @@ use proxima_core::goal::payloads::{
 };
 use proxima_core::goal::relations::CORE_MOTIVATED_BY_RELATION;
 use proxima_core::relation::{CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION};
-use proxima_core::verbs::event_ingest::EventDraft;
+use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, DecomposedGoalOutcome, GoalAtomicContext, GoalAuthorship, GoalDraft,
@@ -25,7 +25,7 @@ use crate::authorship::{AuthorshipColumns, authorship_columns};
 use crate::error::{internal, map_err};
 use crate::sidecars::{PgSidecarKey, PgSidecarRegistryFrozen};
 use crate::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
-use crate::verbs::event_ingest::ingest_event_in_tx;
+use crate::verbs::fact_ingest::ingest_fact_command_in_tx;
 
 const LIFECYCLE_SOURCE_ID: &str = "core/goal-lifecycle";
 
@@ -1212,20 +1212,21 @@ where
     T: GoalLifecyclePayload,
 {
     let now = time::OffsetDateTime::now_utc();
-    let draft = EventDraft {
-        source_id: SourceId::new(LIFECYCLE_SOURCE_ID),
-        source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
-        principal: *owner,
+    let draft = FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: SchemaId::new(T::SCHEMA_ID.to_string()),
         schema_version: SchemaVersion::new(T::SCHEMA_VERSION),
-        payload: payload.event_key(),
+        payload: payload.receipt_key(),
         rendered_text: Some(payload.render()),
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new(LIFECYCLE_SOURCE_ID),
+            source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: None,
     };
-    let outcome = ingest_event_in_tx(tx, &draft, context.embedding_model_id).await?;
+    let outcome = ingest_fact_command_in_tx(tx, owner, &draft, context.embedding_model_id).await?;
     if !outcome.idempotent_replay {
         insert_lifecycle_sidecar(tx, outcome.memory_id, payload).await?;
     }

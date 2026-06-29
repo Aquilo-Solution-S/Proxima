@@ -922,10 +922,10 @@ CREATE TABLE proxima_core.memories (
     personality_instance_id uuid NOT NULL,
     wake_chain_depth smallint DEFAULT 0 NOT NULL,
     tombstoned_at timestamp with time zone,
-    CONSTRAINT memories_fact_entity_chk CHECK ((fact_entity_id IS NULL OR (receipt_id IS NOT NULL AND kind IS NULL))),
+    CONSTRAINT memories_fact_entity_chk CHECK ((fact_entity_id IS NULL OR kind IS NULL)),
     CONSTRAINT memories_kind_values_chk CHECK (((kind IS NULL) OR (kind = ANY (ARRAY['Abstraction'::proxima_core.entity_kind, 'Perspective'::proxima_core.entity_kind])))),
     CONSTRAINT memories_schema_version_positive_chk CHECK ((schema_version > 0)),
-    CONSTRAINT memories_variant_chk CHECK ((((receipt_id IS NOT NULL) AND (kind IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (supersedes IS NULL)) OR ((kind IS NOT NULL) AND (text IS NOT NULL) AND (operator_kind IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (receipt_id IS NULL) AND (citation_mapping_id IS NULL)))),
+    CONSTRAINT memories_variant_chk CHECK (((kind IS NULL AND operator_kind IS NULL AND model_id IS NULL AND prompt_version IS NULL AND supersedes IS NULL) OR ((kind IS NOT NULL) AND (text IS NOT NULL) AND (operator_kind IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (receipt_id IS NULL) AND (citation_mapping_id IS NULL)))),
     CONSTRAINT memories_wake_chain_depth_chk CHECK ((wake_chain_depth >= 0)),
     CONSTRAINT memories_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
     CONSTRAINT memories_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
@@ -933,13 +933,13 @@ CREATE TABLE proxima_core.memories (
 
 
 COMMENT ON TABLE proxima_core.memories IS
-  'Graph nodes of kind Fact | Abstraction | Perspective (the fourth node kind, Goal, lives in goals). Discriminated by the kind column via memories_variant_chk: Fact = kind NULL + receipt_id set (an ingested fact receipt-stream entry, may carry an optional citation_mapping_id); Abstraction (FtoA operator) and Perspective (AtoP operator) = kind set, operator-derived (operator_kind/model_id/prompt_version), with no receipt_id or citation. See docs/02-memory.md for the Fact -> Abstraction -> Perspective -> Goal derivation pipeline.';
+  'Graph nodes of kind Fact | Abstraction | Perspective (the fourth node kind, Goal, lives in goals). Discriminated by the kind column via memories_variant_chk: Fact rows have kind NULL, optional receipt_id, optional citation_mapping_id, and no operator fields; Abstraction (FtoA operator) and Perspective (AtoP operator) = kind set, operator-derived (operator_kind/model_id/prompt_version), with no receipt_id or citation. See docs/02-memory.md for the Fact -> Abstraction -> Perspective -> Goal derivation pipeline.';
 
 COMMENT ON COLUMN proxima_core.memories.kind IS
   'NULL => Fact; otherwise Abstraction or Perspective (constrained by memories_kind_values_chk + memories_variant_chk).';
 
 COMMENT ON COLUMN proxima_core.memories.receipt_id IS
-  'Set only on Facts: the source fact receipt (proxima_core.fact_receipts) this Fact was ingested from. NULL on Abstractions/Perspectives.';
+  'Optional on Facts: the source fact receipt (proxima_core.fact_receipts) this Fact was ingested from when receipt metadata exists. NULL on receiptless Facts and on Abstractions/Perspectives.';
 
 COMMENT ON COLUMN proxima_core.memories.citation_mapping_id IS
   'Optional outside-proof for a Fact (-> citation_mappings). Forbidden on Abstractions/Perspectives.';
@@ -1602,7 +1602,7 @@ CREATE INDEX idx_memories_personality_instance ON proxima_core.memories USING bt
 -- Name: idx_memories_retention_due; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
-CREATE INDEX idx_memories_retention_due ON proxima_core.memories USING btree (owner_kind, owner_id, created_at) WHERE ((receipt_id IS NOT NULL) AND (citation_mapping_id IS NOT NULL) AND (tombstoned_at IS NULL));
+CREATE INDEX idx_memories_retention_due ON proxima_core.memories USING btree (owner_kind, owner_id, created_at) WHERE ((kind IS NULL) AND (citation_mapping_id IS NOT NULL) AND (tombstoned_at IS NULL));
 
 
 --

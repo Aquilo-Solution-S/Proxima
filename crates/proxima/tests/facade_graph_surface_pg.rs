@@ -62,7 +62,7 @@ impl FactPayload for FacadeFact {
     const SCHEMA_ID: &'static str = "facade-test/fact-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_uuid("note_id", self.note_id);
         key.finish()
@@ -305,7 +305,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             body: "A consumer needs a single facade crate.".to_string(),
         };
         let fact_for_sidecar = fact.clone();
-        let fact_outcome = proxima_storage_pg::verbs::event_ingest::ingest_fact_for_owner(
+        let fact_outcome = proxima_storage_pg::verbs::fact_ingest::ingest_fact_for_owner(
             &built.pool,
             built.engine.as_ref(),
             &authz,

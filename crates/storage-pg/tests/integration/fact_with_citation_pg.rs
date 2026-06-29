@@ -2,8 +2,8 @@
 
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::CitationPort;
-use proxima_core::verbs::event_ingest::{
-    EventDraft, InlineCitationMappingDraft, InlineCitedObjectDraft,
+use proxima_core::verbs::fact_ingest::{
+    FactReceiptDraft, FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, Engine, FactPayload,
@@ -15,8 +15,8 @@ use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgMemoryPayload, PgMemoryPayloadFuture,
     PgSidecarFuture,
 };
-use proxima_storage_pg::verbs::event_ingest::{
-    EventIngestSidecarFuture, PgFactSidecar, attach_citation_in_tx, ingest_fact_in_tx,
+use proxima_storage_pg::verbs::fact_ingest::{
+    FactIngestSidecarFuture, PgFactSidecar, attach_citation_in_tx, ingest_fact_in_tx,
     ingest_fact_with_citation_atomic, ingest_fact_with_citation_in_tx,
 };
 use proxima_storage_pg::{
@@ -34,7 +34,7 @@ impl FactPayload for TestFact {
     const SCHEMA_ID: &'static str = "test/inline-cited-fact";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_str("note", &self.note);
         key.finish()
@@ -54,7 +54,7 @@ impl PgFactSidecar for TestFact {
         self,
         tx: &'t mut Transaction<'_, Postgres>,
         memory_id: MemoryId,
-    ) -> EventIngestSidecarFuture<'t>
+    ) -> FactIngestSidecarFuture<'t>
     where
         Self: 't,
     {
@@ -198,12 +198,9 @@ async fn fresh_pg_with_sidecars() -> (PgStorage, String) {
     (pg.with_sidecars(pg_sidecars()), db_name)
 }
 
-fn draft(owner: &Owner, note: &str, author: Option<PersonalityInstanceId>) -> EventDraft {
+fn draft(_owner: &Owner, note: &str, author: Option<PersonalityInstanceId>) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
-    EventDraft {
-        source_id: SourceId::new("test/inline-cited-source"),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: *owner,
+    FactWriteCommand {
         author_personality_instance_id: author,
         schema_id: TestFact::schema_id(),
         schema_version: SchemaVersion::new(TestFact::SCHEMA_VERSION),
@@ -211,8 +208,12 @@ fn draft(owner: &Owner, note: &str, author: Option<PersonalityInstanceId>) -> Ev
             note: note.to_string(),
         }),
         rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new("test/inline-cited-source"),
+            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: None,
     }
 }
@@ -295,7 +296,7 @@ async fn ingest_plain_fact_for_attach(
     pg: &proxima_storage_pg::PgStorage,
     engine: &Engine,
     authz: &AuthzContext,
-) -> Result<proxima_core::EventIngestOutcome, Box<dyn std::error::Error>> {
+) -> Result<proxima_core::FactIngestOutcome, Box<dyn std::error::Error>> {
     let fact = TestFact {
         note: "plain fact".to_string(),
     };
@@ -548,13 +549,16 @@ async fn facts_citing_object_filters_by_read_owners() -> Result<(), Box<dyn std:
         let g1 = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         seed_membership(pg.pool(), &g1, &q).await?;
 
+        let group_authz = AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(g1, Role::admin())],
+            AuthPath::System,
+        )
+        .narrowed_to_owner(g1)
+        .expect("group admin narrows to target owner");
         let group_authorized = engine
             .authorize_fact_with_citation(
-                &AuthzContext::for_subject_with_role(
-                    UserId::new(Uuid::now_v7()),
-                    [(g1, Role::admin())],
-                    AuthPath::System,
-                ),
+                &group_authz,
                 Relation::Ingest,
                 draft(&g1, "group fact", None),
                 cited_object(),
@@ -660,7 +664,10 @@ async fn fact_sidecar_failure_rolls_back_whole_inline_citation_ingest()
                 citation_mapping(0, 4),
             )
             .await?;
-        let receipt_id = authorized.draft().event_id();
+        let receipt_id = authorized
+            .draft()
+            .receipt_id_for_owner(*authorized.permit().owner())
+            .expect("receipt id");
 
         let mut tx = pg.pool().begin().await?;
         let err = ingest_fact_with_citation_in_tx(
@@ -712,7 +719,7 @@ async fn count(pool: &sqlx::PgPool, table: &str) -> Result<i64, sqlx::Error> {
 
 async fn assert_written_rows_and_personality(
     pool: &sqlx::PgPool,
-    second_outcome: &proxima_core::EventIngestOutcome,
+    second_outcome: &proxima_core::FactIngestOutcome,
     personality: PersonalityInstanceId,
 ) -> Result<(), sqlx::Error> {
     assert_eq!(

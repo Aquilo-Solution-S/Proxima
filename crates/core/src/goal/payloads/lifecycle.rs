@@ -13,7 +13,7 @@ impl FactPayload for GoalActivatedV1 {
     const SCHEMA_ID: &'static str = "core/goal-activated-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         goal_lifecycle_key(
             Self::SCHEMA_ID,
             Self::SCHEMA_VERSION,
@@ -42,7 +42,7 @@ impl FactPayload for GoalPausedV1 {
     const SCHEMA_ID: &'static str = "core/goal-paused-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         goal_lifecycle_key(
             Self::SCHEMA_ID,
             Self::SCHEMA_VERSION,
@@ -71,7 +71,7 @@ impl FactPayload for GoalAchievedV1 {
     const SCHEMA_ID: &'static str = "core/goal-achieved-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         goal_lifecycle_key(
             Self::SCHEMA_ID,
             Self::SCHEMA_VERSION,
@@ -100,7 +100,7 @@ impl FactPayload for GoalAbandonedV1 {
     const SCHEMA_ID: &'static str = "core/goal-abandoned-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         goal_lifecycle_key(
             Self::SCHEMA_ID,
             Self::SCHEMA_VERSION,

@@ -62,7 +62,7 @@ Canonical substrate resources:
 | `proxima://graph{?include_tombstoned}` | graph snapshot and status fields, including `fact_retention_seconds` |
 | `proxima://memory/{id}{?expand_neighbors}` | hydrate memory by id; optional neighbor edges |
 | `proxima://memory/{id}/lineage{?direction,depth,limit}` | traverse provenance / supersession lineage |
-| `proxima://events{?since,limit}` | forward `change_event` poll, ascending, with `next_since` and `has_more` |
+| `proxima://change-events{?since,limit}` | forward `change_event` poll, ascending, with `next_since` and `has_more` |
 
 `proxima://how-to` is an instructional MCP resource outside the 7-resource
 protocol count.
@@ -76,11 +76,11 @@ is now a durable, owner-scoped, seq-ordered **pull log** (see
 [§Change Log](#change-log--pull-only)).
 
 > **Forward poll.** `change_event` is read in both directions. Backward,
-> bounded reads use the `EventHistory` engine verb. The forward seq-cursor
+> bounded reads use the `ChangeHistory` engine verb. The forward seq-cursor
 > poll a harness wake loop needs ships as the
-> **`proxima://events{?since,limit}`** MCP resource — events with
+> **`proxima://change-events{?since,limit}`** MCP resource — change records with
 > `seq > since`, ascending, plus a `next_since` cursor and a `has_more`
-> hint — a thin owner-scoped wrapper over `Engine::list_events`, which
+> hint — a thin owner-scoped wrapper over `Engine::list_change_events`, which
 > routes to `ChangeEventPort::list_change_events_after`. It is not one of
 > the five transport-level graph verbs; storage still stays behind the
 > Engine/port boundary.
@@ -88,16 +88,16 @@ is now a durable, owner-scoped, seq-ordered **pull log** (see
 | Verb | Direction | Idempotency | Scope | Current status |
 |---|---|---|---|---|
 | `Query` | client -> engine, sync | yes | Owner | current |
-| `EventHistory` | client -> engine, sync | yes | Owner | current |
+| `ChangeHistory` | client -> engine, sync | yes | Owner | current |
 | `GoalWrite` | client -> engine, sync | `request_id` | Owner | current |
-| `EventIngest` | source -> engine, sync | public `event_id` / storage `receipt_id` | Owner | current |
+| `FactIngest` | source/app -> engine, sync | optional public `receipt_id` / storage `receipt_id` | Owner | current |
 | `Schema` | client -> engine, sync | yes | binary | current |
 | `Subscribe` | (removed) | n/a | Owner | **retired** — `change_event` is a pull log |
 
 These five current verbs are the cognitive graph surface. Operational/config
-RPCs below are not graph verbs. PR2 stores EventIngest idempotency in
-`fact_receipts.receipt_id` / `memories.receipt_id`; public `Event*` names are
-retained protocol vocabulary until the PR5 membrane rename.
+RPCs below are not graph verbs. Receipt-backed FactIngest idempotency uses
+`fact_receipts.receipt_id` / `memories.receipt_id`; receiptless Fact writes
+have no receipt id and admit a fresh Fact per successful call.
 
 ## Owner-scoping — the primary axis
 
@@ -109,7 +109,7 @@ Dispatch verifies caller access to that Owner.
 |---|---|
 | single-tenant | one accessible Owner |
 | multi-tenant | same calls, different Owner per call |
-| multi-owner event reads | one `EventHistory` / poll call per Owner |
+| multi-owner event reads | one `ChangeHistory` / poll call per Owner |
 | multi-space memory search | MCP fanout over authorized single-Owner searches, merged with per-result space labels |
 | cross-owner graph data | not exposed by protocol |
 
@@ -138,7 +138,7 @@ Owner-scoped snapshot read of memories, goals, and edges.
 Returns rows plus `seq_high_water`. Clients persist the watermark as
 the seq cursor for a subsequent forward poll of `change_event`.
 
-### EventHistory
+### ChangeHistory
 
 Owner-scoped bounded read of `change_event`, newest-first.
 
@@ -152,8 +152,8 @@ Owner-scoped bounded read of `change_event`, newest-first.
 | `seq_high_water` | latest owner event seq at read time |
 
 No `after` cursor — this verb is backward-only. Forward replay (events
-with `seq > cursor`) is served by the `proxima://events{?since,limit}`
-MCP resource over `Engine::list_events` and
+with `seq > cursor`) is served by the `proxima://change-events{?since,limit}`
+MCP resource over `Engine::list_change_events` and
 `ChangeEventPort::list_change_events_after`; it is intentionally neither
 added as an `after` cursor here nor promoted into the five graph verbs.
 
@@ -192,18 +192,19 @@ Current create semantics assign every new Active Goal to an explicit
 Self Perspective by writing `Goal --core/inspires--> Perspective`.
 Unassigned owner-only Goal rows are not part of the public helper.
 
-### EventIngest
+### FactIngest
 
-EventSource path from [01](01-event-source.md), exposed for external
-sources and in-app sources.
+Fact write path for external sources and in-app sources. Receipt-backed writes
+carry EventSource receipt metadata; receiptless writes carry no source-batch
+witness.
 
 | Rule | Contract |
 |---|---|
-| receipt id | server-computed content hash of source, Owner, payload; public response field remains `event_id` until PR5 |
-| replay | duplicate receipt id returns prior outcome / no new Fact |
-| commit | returns after Fact and structural edges are committed |
+| receipt id | optional server-computed content hash of source, Owner, payload; public response field is `receipt_id` and omitted/null when receiptless |
+| replay | duplicate receipt id returns prior outcome / no new Fact; receiptless writes do not replay |
+| commit | returns after Fact, optional receipt row, optional sidecar/citation, and structural edges are committed |
 | log | success commits the corresponding `change_event` rows |
-| auth | user or source credential, depending on source type |
+| auth | user or source credential, resolved through server-built `AuthzContext` |
 
 ### Schema
 
@@ -235,11 +236,11 @@ on wake / reconnect:
 ```
 
 This is the harness wake path. It is exposed as the
-`proxima://events{?since,limit}` MCP resource — a thin owner-scoped
-wrapper over `Engine::list_events`, backed by
+`proxima://change-events{?since,limit}` MCP resource — a thin owner-scoped
+wrapper over `Engine::list_change_events`, backed by
 `ChangeEventPort::list_change_events_after`, that returns events
 ascending plus a `next_since` cursor and a `has_more` hint.
-`EventHistory` is the backward-only, engine-exposed counterpart.
+`ChangeHistory` is the backward-only, engine-exposed counterpart.
 
 Cold-start stitching — seed from a snapshot, then poll forward:
 
@@ -252,7 +253,7 @@ Cold-start stitching — seed from a snapshot, then poll forward:
 
 Events committed after `hwm` are read by the poll; events at or before
 `hwm` are already represented in the snapshot. A history-rail variant
-seeds recent context with `EventHistory(owner, limit = N)` before the
+seeds recent context with `ChangeHistory(owner, limit = N)` before the
 first forward poll.
 
 ## Consistency — Strong Write -> Log
@@ -263,9 +264,9 @@ Graph writes commit entity/edge rows and corresponding
 | Property | Contract |
 |---|---|
 | atomic write/event | no committed graph row without its `change_event` row |
-| write return | `GoalWrite` / `EventIngest` success means the event is committed and durably readable |
-| read | a committed event is visible to any subsequent forward poll / `EventHistory` read |
-| replay | `EventHistory` and the forward poll read the same `change_event` log |
+| write return | `GoalWrite` / `FactIngest` success means the graph change is committed and durably readable |
+| read | a committed event is visible to any subsequent forward poll / `ChangeHistory` read |
+| replay | `ChangeHistory` and the forward poll read the same `change_event` log |
 | broker | none; `change_event` is a pull log — no tailing broker or push delivery |
 
 `change_event` is the durable pull log (see
@@ -329,8 +330,8 @@ access.
 
 | Credential subject | Access |
 |---|---|
-| user (`OwnerRef::Personal`) | `Query`, `EventHistory`, `GoalWrite`; in-app `EventIngest` when acting as a source |
-| source | `EventIngest` for the registered source |
+| user (`OwnerRef::Personal`) | `Query`, `ChangeHistory`, `GoalWrite`; in-app `FactIngest` when acting as a source |
+| source | `FactIngest` for the registered source |
 | admin/controller | operational/config RPCs and future compliance admin operations |
 
 Per-call dispatch enforces `call.owner` inside the resolved Owner set.
@@ -400,9 +401,9 @@ Current contract:
 - `owner-scoping--the-primary-axis`
 - `graph-verbs`
 - `query`
-- `eventhistory`
+- `changehistory`
 - `goalwrite`
-- `eventingest`
+- `factingest`
 - `schema`
 - `change-log--pull-only`
 - `consistency--strong-write---log`

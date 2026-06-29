@@ -1,6 +1,6 @@
 # 04 — Consolidation
 
-Consolidation = operator runtime above EventSource Fact ingest.
+Consolidation = operator runtime above Fact ingest.
 
 Core owns scheduling, idempotency, owner isolation, registry validation, and
 append-only writes. Flavors own operators, prompts, payload schemas, wake
@@ -9,8 +9,8 @@ policy, and retrieval policy.
 ## Shape
 
 ```
-EventSource
-  -> Event + Fact + structural Edge
+EventSource receipt metadata
+  -> receipt-backed Fact + structural Edge
   -> closed source batch
   -> Abstraction + provenance Edge
 
@@ -26,7 +26,7 @@ Phase split:
 
 | Phase | Input | Output | Runtime |
 |---|---|---|---|
-| EventSource ingest | external event | Fact + structural Edge | 01 / 03 / 05 |
+| EventSource ingest | external observation + receipt metadata | receipt-backed Fact + structural Edge | 01 / 03 / 05 |
 | F->A | Fact set, source batch | Abstraction + provenance Edge | flavor-operator discipline |
 | A->P | Abstraction set, active personality instance | Perspective + provenance Edge | wake entry |
 | A->Goal | Abstraction set, active personality instance | Goal + evidence Edge | wake entry |
@@ -157,7 +157,7 @@ Idempotence keys:
 
 | Path | Key |
 |---|---|
-| Event ingest | `event_id` |
+| Fact ingest | `receipt_id` |
 | GoalWrite | client `request_id` |
 
 Reproducibility metadata:

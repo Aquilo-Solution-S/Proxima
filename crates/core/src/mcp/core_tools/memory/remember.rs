@@ -1,5 +1,7 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
-use crate::verbs::event_ingest::{EventDraft, InlineCitationMappingDraft, InlineCitedObjectDraft};
+use crate::verbs::fact_ingest::{
+    FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
+};
 use crate::{Relation, SchemaId, SchemaVersion, SourceBatchId, canonical_json_bytes};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -104,6 +106,11 @@ impl McpTool for RememberTool {
                 args.space.as_deref(),
                 super::super::memory_spaces::SpaceDefault::Current,
             )?;
+            let authz = ctx
+                .authz
+                .clone()
+                .narrowed_to_owner(space.owner)
+                .ok_or_else(|| McpToolError::NotAuthorized("memory space write".into()))?;
             let tags = normalize_tags(args.tags)?;
             let note_id = args
                 .idempotency_key
@@ -119,8 +126,7 @@ impl McpTool for RememberTool {
                 idempotency_key: args.idempotency_key,
             };
             let observed_at = time::OffsetDateTime::now_utc();
-            let mut draft = EventDraft::from_payload(
-                &space.owner,
+            let mut draft = FactWriteCommand::from_payload(
                 SOURCE_ID,
                 SourceBatchId::new(uuid::Uuid::now_v7()),
                 &payload,
@@ -139,7 +145,7 @@ impl McpTool for RememberTool {
                 let (cited_object, mapping) = remember_citation_drafts(citation);
                 let authorized = engine
                     .authorize_fact_with_citation(
-                        &ctx.authz,
+                        &authz,
                         Relation::Editor,
                         draft,
                         cited_object,
@@ -156,11 +162,11 @@ impl McpTool for RememberTool {
                     .await?
             } else {
                 let authorized = engine
-                    .authorize_event_ingest(&ctx.authz, Relation::Editor, draft)
+                    .authorize_fact_ingest(&authz, Relation::Editor, draft)
                     .await
                     .map_err(|err| McpToolError::Other(err.to_string()))?;
                 engine
-                    .ingest_event_with_typed_sidecar(
+                    .ingest_fact_with_typed_sidecar(
                         &authorized,
                         &SidecarPayload::fact(payload.clone()),
                         embedding_model_id,

@@ -16,7 +16,7 @@ impl FactPayload for WorkRequestedV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("work-requested-v1");
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_uuid("repo_id", self.repo_id);
         key.field_str("request_key", &self.request_key);

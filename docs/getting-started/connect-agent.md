@@ -34,7 +34,7 @@ For the local quickstart, use the generated `MASTER_TOKEN` as `pxm_$MASTER_TOKEN
 3. Record one observation with `core_remember`.
 4. Record a derived pattern with `core_derive` over one or more source handles.
 5. Read the created memory resource with neighbors expanded.
-6. Poll `proxima://events` for changes.
+6. Poll `proxima://change-events` for changes.
 
 `core_publish_memory` v1 copies only `core/agent-note-v1`; flavor-specific publish is a host/flavor concern until typed replay is designed.
 

@@ -4,8 +4,8 @@ use crate::access::Relation;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::storage_ports::QueryStoragePorts;
-use crate::verbs::event_history::{
-    EventHistoryRequest, EventHistoryResponse, MAX_EVENT_HISTORY_LIMIT,
+use crate::verbs::change_history::{
+    ChangeHistoryRequest, ChangeHistoryResponse, MAX_CHANGE_HISTORY_LIMIT,
 };
 use crate::verbs::mcp_call_history::{
     MAX_MCP_CALL_HISTORY_LIMIT, McpCallHistoryRequest, McpCallHistoryResponse,
@@ -108,24 +108,24 @@ impl Engine {
         walk_memory_lineage_authorized(&self.storage.query, &read_owners, req).await
     }
 
-    /// docs/14 §"`EventHistory`" — bounded change-event read scoped to the
+    /// docs/14 §"`ChangeHistory`" — bounded change-event read scoped to the
     /// authorization context's read access set (`S_read`), matching `Query` and
-    /// `read_edges`. A client-supplied [`EventHistoryRequest::principal`] is not
+    /// `read_edges`. A client-supplied [`ChangeHistoryRequest::principal`] is not
     /// an access vector and cannot widen what the caller sees. Server clamps
-    /// `limit` to `MAX_EVENT_HISTORY_LIMIT`.
+    /// `limit` to `MAX_CHANGE_HISTORY_LIMIT`.
     ///
     /// # Errors
     ///
     /// Returns `Forbidden` when the authorization context resolves to an empty
     /// read set, `InvalidArgument` when `req.limit == 0`, or `Internal` when the
     /// storage read fails.
-    pub async fn event_history(
+    pub async fn change_history(
         &self,
         authz: &AuthzContext,
-        req: &EventHistoryRequest,
-    ) -> Result<EventHistoryResponse, ProtocolError> {
+        req: &ChangeHistoryRequest,
+    ) -> Result<ChangeHistoryResponse, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
-        event_history_authorized(&self.storage.query, &read_owners, req).await
+        change_history_authorized(&self.storage.query, &read_owners, req).await
     }
 
     /// docs/14 §protocol surface — bounded MCP-call activity read for ONE owner
@@ -213,21 +213,21 @@ pub(in crate::engine) async fn walk_memory_lineage_authorized(
         .map_err(|e| ProtocolError::internal(e.to_string()))
 }
 
-pub(in crate::engine) async fn event_history_authorized(
+pub(in crate::engine) async fn change_history_authorized(
     ports: &QueryStoragePorts,
     read_owners: &[OwnerRef],
-    req: &EventHistoryRequest,
-) -> Result<EventHistoryResponse, ProtocolError> {
+    req: &ChangeHistoryRequest,
+) -> Result<ChangeHistoryResponse, ProtocolError> {
     if req.limit == 0 {
         return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
     }
     let mut effective = req.clone();
-    if effective.limit > MAX_EVENT_HISTORY_LIMIT {
-        effective.limit = MAX_EVENT_HISTORY_LIMIT;
+    if effective.limit > MAX_CHANGE_HISTORY_LIMIT {
+        effective.limit = MAX_CHANGE_HISTORY_LIMIT;
     }
     ports
         .change_event
-        .event_history(read_owners, &effective)
+        .change_history(read_owners, &effective)
         .await
         .map_err(|e| ProtocolError::internal(e.to_string()))
 }

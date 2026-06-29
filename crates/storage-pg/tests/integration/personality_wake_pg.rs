@@ -14,8 +14,8 @@ use proxima_core::relation::{
     CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, CORE_SUPERSEDES_RELATION,
 };
 use proxima_core::storage_ports::*;
-use proxima_core::verbs::event_ingest::{
-    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+use proxima_core::verbs::fact_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::{
     AbstractionPayload, EntityKind, FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner,
@@ -457,19 +457,20 @@ async fn list_personality_instances_populates_wake_entries() {
     result.expect("list_personality_instances must populate wake_entries");
 }
 
-fn fact_draft(owner: Owner) -> EventDraft {
+fn fact_draft(_owner: Owner) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
-    EventDraft {
-        source_id: SourceId::new("proxima-test/source"),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner,
+    FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: SchemaId::new("proxima-test/fact-v1".into()),
         schema_version: SchemaVersion::new(1),
         payload: b"fact".to_vec(),
         rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new("proxima-test/source"),
+            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: Some(Citation {
             object: CitedObjectHint {
                 schema_id: SchemaId::new("proxima-test/cited-v1".into()),
@@ -887,7 +888,9 @@ async fn personality_provenance_edges_use_operator_authorship() {
         let owner = owner_fixture();
         let seed = seed_test_personality(&pg, &owner).await?;
         let root_id = current_root_perspective_memory_id(&pg, seed.instance_id).await?;
-        let fact = pg.ingest_event_atomic(&fact_draft(owner), None).await?;
+        let fact = pg
+            .ingest_fact_atomic(&owner, &fact_draft(owner), None)
+            .await?;
         let registry = FlavorRegistry::new().freeze();
         let provenance_relation =
             resolve_registered_relation(&registry, CORE_DERIVED_FROM_RELATION);
@@ -979,7 +982,9 @@ async fn personality_provenance_skips_perspective_context_targets() {
         let owner = owner_fixture();
         let seed = seed_test_personality(&pg, &owner).await?;
         let root_id = current_root_perspective_memory_id(&pg, seed.instance_id).await?;
-        let fact = pg.ingest_event_atomic(&fact_draft(owner), None).await?;
+        let fact = pg
+            .ingest_fact_atomic(&owner, &fact_draft(owner), None)
+            .await?;
         let registry = FlavorRegistry::new().freeze();
         let provenance_relation =
             resolve_registered_relation(&registry, CORE_DERIVED_FROM_RELATION);
@@ -1042,7 +1047,9 @@ async fn personality_authored_edge_links_root_to_emitted_memory() {
         let owner = owner_fixture();
         let seed = seed_test_personality(&pg, &owner).await?;
         let root_id = current_root_perspective_memory_id(&pg, seed.instance_id).await?;
-        let fact = pg.ingest_event_atomic(&fact_draft(owner), None).await?;
+        let fact = pg
+            .ingest_fact_atomic(&owner, &fact_draft(owner), None)
+            .await?;
         let registry = FlavorRegistry::new().freeze();
         let provenance_relation =
             resolve_registered_relation(&registry, CORE_DERIVED_FROM_RELATION);

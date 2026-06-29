@@ -5,8 +5,8 @@ use crate::common::{drop_db, fresh_pg, owner_fixture};
 
 use proxima_core::engine::Engine;
 use proxima_core::llm::EMBEDDING_DIM;
-use proxima_core::verbs::event_ingest::{
-    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+use proxima_core::verbs::fact_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::verbs::query::{MemoryLineageDirection, MemoryLineageRequest, QueryRequest};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
@@ -17,7 +17,7 @@ use proxima_core::{
     canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemoryPayloadFuture};
-use proxima_storage_pg::verbs::event_ingest::{EventIngestSidecarFuture, PgFactSidecar};
+use proxima_storage_pg::verbs::fact_ingest::{FactIngestSidecarFuture, PgFactSidecar};
 use proxima_storage_pg::{
     PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
 };
@@ -36,7 +36,7 @@ impl FactPayload for CleanupStatefulFactV1 {
     const SCHEMA_ID: &'static str = "test/cleanup-stateful-fact-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_str("entity_key", &self.entity_key);
         key.field_str("body", &self.body);
@@ -62,7 +62,7 @@ impl PgFactSidecar for CleanupStatefulFactV1 {
         self,
         tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
         memory_id: MemoryId,
-    ) -> EventIngestSidecarFuture<'t>
+    ) -> FactIngestSidecarFuture<'t>
     where
         Self: 't,
     {
@@ -187,19 +187,20 @@ fn stateful_fact(entity_key: &str, body: &str) -> CleanupStatefulFactV1 {
     }
 }
 
-fn stateful_draft_for(owner: &Owner, payload_value: &Value) -> EventDraft {
+fn stateful_draft_for(_owner: &Owner, payload_value: &Value) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
-    EventDraft {
-        source_id: SourceId::new(format!("test/cleanup-stateful/{}", Uuid::now_v7())),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: *owner,
+    FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: CleanupStatefulFactV1::schema_id(),
         schema_version: SchemaVersion::new(CleanupStatefulFactV1::SCHEMA_VERSION),
         payload: canonical_json_bytes(payload_value),
         rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new(format!("test/cleanup-stateful/{}", Uuid::now_v7())),
+            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: None,
     }
 }
@@ -209,36 +210,37 @@ async fn ingest_stateful_fact(
     engine: &Engine,
     owner: &Owner,
     payload: &CleanupStatefulFactV1,
-) -> Result<proxima_core::EventIngestOutcome, Box<dyn std::error::Error>> {
+) -> Result<proxima_core::FactIngestOutcome, Box<dyn std::error::Error>> {
     let payload_value = serde_json::to_value(payload)?;
     let draft = stateful_draft_for(owner, &payload_value);
     let authz = AuthzContext::single_owner(owner, AuthPath::System);
     let authorized = engine
-        .authorize_event_ingest(&authz, Relation::Ingest, draft)
+        .authorize_fact_ingest(&authz, Relation::Ingest, draft)
         .await?;
     let sidecar_payload = SidecarPayload::fact(payload.clone());
     Ok(pg
-        .ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
+        .ingest_fact_with_typed_sidecar(&authorized, &sidecar_payload, None)
         .await?)
 }
 
-fn fresh_draft(owner: Owner) -> EventDraft {
+fn fresh_draft(owner: Owner) -> FactWriteCommand {
     fresh_draft_with_content_hash(owner, [9; 32])
 }
 
-fn fresh_draft_with_content_hash(owner: Owner, content_hash: [u8; 32]) -> EventDraft {
+fn fresh_draft_with_content_hash(_owner: Owner, content_hash: [u8; 32]) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
-    EventDraft {
-        source_id: SourceId::new("test/cleanup-source"),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner,
+    FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: SchemaId::new("test/cleanup-fact-v1".into()),
         schema_version: SchemaVersion::new(1),
         payload: format!("cleanup {}", Uuid::now_v7()).into_bytes(),
         rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new("test/cleanup-source"),
+            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: Some(Citation {
             object: CitedObjectHint {
                 schema_id: SchemaId::new("test/cleanup-cited-v1".into()),
@@ -264,9 +266,9 @@ async fn cleanup_due_facts_erases_fact_and_tombstones_direct_derivative()
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
-    let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
+    let ingest = engine.fact_ingest(&authz, fresh_draft(owner)).await?;
     let fact_id = ingest.memory_id.into_inner();
-    let receipt_id = ingest.event_id.into_inner().to_vec();
+    let receipt_id = ingest.receipt_id.expect("receipt id").into_inner().to_vec();
     let citation_mapping_id: Uuid = sqlx::query_scalar(
         "SELECT citation_mapping_id
            FROM proxima_core.memories
@@ -321,9 +323,9 @@ async fn cleanup_due_facts_tombstones_transitive_derivatives()
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
-    let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
+    let ingest = engine.fact_ingest(&authz, fresh_draft(owner)).await?;
     let fact_id = ingest.memory_id.into_inner();
-    let receipt_id = ingest.event_id.into_inner().to_vec();
+    let receipt_id = ingest.receipt_id.expect("receipt id").into_inner().to_vec();
     let citation_mapping_id = citation_mapping_id_for_memory(&pg, fact_id).await?;
     age_fact(&pg, fact_id).await?;
 
@@ -365,10 +367,10 @@ async fn cleanup_due_facts_aggressively_tombstones_multi_support_derivative()
     let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
     let due_fact = engine
-        .event_ingest(&authz, fresh_draft_with_content_hash(owner, [1; 32]))
+        .fact_ingest(&authz, fresh_draft_with_content_hash(owner, [1; 32]))
         .await?;
     let surviving_fact = engine
-        .event_ingest(&authz, fresh_draft_with_content_hash(owner, [2; 32]))
+        .fact_ingest(&authz, fresh_draft_with_content_hash(owner, [2; 32]))
         .await?;
     let due_fact_id = due_fact.memory_id.into_inner();
     let surviving_fact_id = surviving_fact.memory_id.into_inner();
@@ -409,8 +411,8 @@ async fn cleanup_due_facts_garbage_collects_cited_objects_by_reference_count()
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
-    let first = engine.event_ingest(&authz, fresh_draft(owner)).await?;
-    let second = engine.event_ingest(&authz, fresh_draft(owner)).await?;
+    let first = engine.fact_ingest(&authz, fresh_draft(owner)).await?;
+    let second = engine.fact_ingest(&authz, fresh_draft(owner)).await?;
     let first_fact_id = first.memory_id.into_inner();
     let second_fact_id = second.memory_id.into_inner();
     let cited_object_id = cited_object_id_for_memory(&pg, first_fact_id).await?;
@@ -448,7 +450,7 @@ async fn cleanup_due_facts_deletes_cited_object_sidecars_and_surfaces_s3_refs()
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_uploaded_blob_gc_test());
     let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
-    let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
+    let ingest = engine.fact_ingest(&authz, fresh_draft(owner)).await?;
     let fact_id = ingest.memory_id.into_inner();
     let cited_object_id = cited_object_id_for_memory(&pg, fact_id).await?;
     insert_uploaded_blob_sidecar(&pg, cited_object_id).await?;
@@ -486,7 +488,7 @@ async fn tombstone_fact_forgets_uncited_fact() -> Result<(), Box<dyn std::error:
 
     let mut draft = fresh_draft(owner);
     draft.citation = None;
-    let ingest = engine.event_ingest(&authz, draft).await?;
+    let ingest = engine.fact_ingest(&authz, draft).await?;
     let fact_id = ingest.memory_id.into_inner();
 
     let outcome = engine
@@ -556,8 +558,8 @@ async fn tombstone_fact_keeps_shared_cited_object() -> Result<(), Box<dyn std::e
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_uploaded_blob_gc_test());
     let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
-    let first = engine.event_ingest(&authz, fresh_draft(owner)).await?;
-    let second = engine.event_ingest(&authz, fresh_draft(owner)).await?;
+    let first = engine.fact_ingest(&authz, fresh_draft(owner)).await?;
+    let second = engine.fact_ingest(&authz, fresh_draft(owner)).await?;
     let first_fact_id = first.memory_id.into_inner();
     let second_fact_id = second.memory_id.into_inner();
     let cited_object_id = cited_object_id_for_memory(&pg, first_fact_id).await?;
@@ -605,7 +607,7 @@ async fn tombstone_fact_cascades_to_lineage_children() -> Result<(), Box<dyn std
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
-    let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
+    let ingest = engine.fact_ingest(&authz, fresh_draft(owner)).await?;
     let fact_id = ingest.memory_id.into_inner();
     let derivative_id = insert_direct_derivative(&pg, &owner, fact_id).await?;
 
@@ -633,7 +635,7 @@ async fn tombstone_fact_is_idempotent() -> Result<(), Box<dyn std::error::Error>
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
-    let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
+    let ingest = engine.fact_ingest(&authz, fresh_draft(owner)).await?;
 
     let first = engine
         .tombstone_fact(&authz, &owner, ingest.memory_id)
@@ -662,7 +664,7 @@ async fn tombstone_fact_drops_goal_evidence_edge() -> Result<(), Box<dyn std::er
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
-    let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
+    let ingest = engine.fact_ingest(&authz, fresh_draft(owner)).await?;
     let fact_id = ingest.memory_id.into_inner();
     let goal_id = insert_active_goal(&pg, &owner).await?;
     let edge_id = insert_motivated_by_edge(&pg, &owner, goal_id, fact_id).await?;

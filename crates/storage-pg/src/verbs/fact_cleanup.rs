@@ -17,7 +17,7 @@ use crate::verbs::hard_delete::{HardDeleteSet, HardDeleteSidecars, execute_hard_
 #[derive(Debug, sqlx::FromRow)]
 struct DueFactRow {
     memory_id: Uuid,
-    receipt_id: Vec<u8>,
+    receipt_id: Option<Vec<u8>>,
     schema_id: String,
     schema_version: i32,
 }
@@ -156,7 +156,7 @@ async fn cleanup_due_facts_in_tx(
                        AND eo.owner_kind = $1
                        AND eo.owner_id = $2
 )
-            AND m.receipt_id IS NOT NULL
+            AND m.kind IS NULL
             AND m.citation_mapping_id IS NOT NULL
             AND m.tombstoned_at IS NULL
             AND m.created_at < now() - ($3::double precision * INTERVAL '1 second')
@@ -237,7 +237,10 @@ async fn cleanup_due_facts_in_tx(
                 .collect(),
             edge_ids,
             fact_entity_ids: fact_entity_ids_to_delete,
-            receipt_ids: due.iter().map(|row| row.receipt_id.clone()).collect(),
+            receipt_ids: due
+                .iter()
+                .filter_map(|row| row.receipt_id.clone())
+                .collect(),
         },
         &HardDeleteSidecars {
             memory_keyed: fact_sidecar_tables,

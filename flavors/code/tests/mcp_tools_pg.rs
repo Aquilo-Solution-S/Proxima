@@ -18,8 +18,8 @@ use proxima_core::personality::{
     SetWakeEntriesRequest, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
 };
 use proxima_core::storage_ports::*;
-use proxima_core::verbs::event_ingest::{
-    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+use proxima_core::verbs::fact_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
@@ -882,19 +882,20 @@ fn engine_for_test(pg: PgStorage) -> Engine {
     Engine::new(registry_for_engine()).with_storage_ports(Arc::new(pg).storage_ports())
 }
 
-fn fact_draft(owner: Owner, schema_id: &str, payload: &[u8]) -> EventDraft {
+fn fact_draft(_owner: Owner, schema_id: &str, payload: &[u8]) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
-    EventDraft {
-        source_id: SourceId::new("test/source"),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner,
+    FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: SchemaId::new(schema_id.into()),
         schema_version: SchemaVersion::new(1),
         payload: payload.to_vec(),
         rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new("test/source"),
+            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: Some(Citation {
             object: CitedObjectHint {
                 schema_id: SchemaId::new("test/cited_blob".into()),
@@ -916,7 +917,7 @@ async fn fact_memory(
     payload: &[u8],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     Ok(engine
-        .event_ingest(
+        .fact_ingest(
             &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
             fact_draft(owner, schema_id, payload),
         )

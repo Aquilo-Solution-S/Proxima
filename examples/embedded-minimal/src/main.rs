@@ -4,7 +4,7 @@
 mod flavor;
 
 use proxima::Proxima;
-use proxima_core::verbs::event_ingest::{CitationSpec, EventDraft};
+use proxima_core::verbs::fact_ingest::{CitationSpec, FactWriteCommand};
 use proxima_core::verbs::query::{EntityKind, QueryRequest, QueryResponse};
 use proxima_core::{FactPayload, SchemaId, SourceBatchId, UPLOADED_BLOB_SCHEMA_ID};
 
@@ -29,8 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let citation =
         CitationSpec::v1_for_payload(UPLOADED_BLOB_SCHEMA_ID, &payload, CORE_CITATION_SCHEMA_ID);
     let now = time::OffsetDateTime::now_utc();
-    let draft = EventDraft::from_payload(
-        &booted.owner,
+    let draft = FactWriteCommand::from_payload(
         "embedded-minimal/host",
         SourceBatchId::new(uuid::Uuid::now_v7()),
         &payload,
@@ -38,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_citation(citation);
 
-    let outcome = booted.engine.event_ingest(&authz, draft).await?;
+    let outcome = booted.engine.fact_ingest(&authz, draft).await?;
     println!("ingested: {outcome:?}");
 
     let response = booted

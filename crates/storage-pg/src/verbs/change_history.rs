@@ -1,9 +1,9 @@
-//! `EventHistory` verb — bounded newest-first read of `change_event`
+//! `ChangeHistory` verb — bounded newest-first read of `change_event`
 //! rows visible to the authenticated read-owner set. See
-//! `crates/core/src/verbs/event_history.rs`.
+//! `crates/core/src/verbs/change_history.rs`.
 
-use proxima_core::verbs::event_history::{
-    EventHistoryRequest, EventHistoryResponse, MAX_EVENT_HISTORY_LIMIT,
+use proxima_core::verbs::change_history::{
+    ChangeHistoryRequest, ChangeHistoryResponse, MAX_CHANGE_HISTORY_LIMIT,
 };
 use proxima_core::{ChangeEvent, OwnerRef, OwnerRefKind, StorageError};
 use sqlx::PgPool;
@@ -13,13 +13,13 @@ use crate::change_event::hydrate_change_events_batch;
 use crate::error::internal;
 use crate::verbs::consolidate::edge_event_visibility_predicate;
 
-pub(crate) async fn event_history(
+pub(crate) async fn change_history(
     pool: &PgPool,
     read_owners: &[OwnerRef],
-    req: &EventHistoryRequest,
-) -> Result<EventHistoryResponse, StorageError> {
+    req: &ChangeHistoryRequest,
+) -> Result<ChangeHistoryResponse, StorageError> {
     if read_owners.is_empty() {
-        return Ok(EventHistoryResponse {
+        return Ok(ChangeHistoryResponse {
             events: Vec::new(),
             seq_high_water: None,
         });
@@ -27,7 +27,7 @@ pub(crate) async fn event_history(
     let (read_owner_kinds, read_owner_ids) = read_owner_columns(read_owners);
     let (world_kind, world_id) =
         crate::access::owner_columns::owner_binds(&proxima_core::access::world());
-    let limit = i64::from(req.limit.min(MAX_EVENT_HISTORY_LIMIT));
+    let limit = i64::from(req.limit.min(MAX_CHANGE_HISTORY_LIMIT));
 
     // Uses the shared edge guard over ce.edge_source_memory_id /
     // ce.edge_target_memory_id; client `req.principal` is not an access vector.
@@ -80,7 +80,7 @@ pub(crate) async fn event_history(
         .await
         .map_err(internal)?;
 
-    Ok(EventHistoryResponse {
+    Ok(ChangeHistoryResponse {
         events,
         seq_high_water: high_water,
     })

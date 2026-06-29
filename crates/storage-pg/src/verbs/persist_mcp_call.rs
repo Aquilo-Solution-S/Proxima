@@ -36,7 +36,7 @@ pub async fn persist_mcp_call_in_tx(
     input: &McpCallLogInput,
 ) -> Result<McpCallLogOutcome, StorageError> {
     let io_content_hash = input.io_content_hash();
-    let receipt_id = input.event_id();
+    let receipt_id = input.receipt_id();
     let receipt_id_bytes = receipt_id.into_inner();
 
     let (owner_kind, owner_id) = input.owner.columns();
@@ -67,7 +67,7 @@ pub async fn persist_mcp_call_in_tx(
         .map_err(map_err)?;
 
         return Ok(McpCallLogOutcome {
-            event_id: receipt_id,
+            receipt_id,
             fact_memory_id: MemoryId::new(memory_id),
             cited_object_id,
             citation_mapping_id,
@@ -224,7 +224,7 @@ pub async fn persist_mcp_call_in_tx(
     .map_err(map_err)?;
 
     Ok(McpCallLogOutcome {
-        event_id: receipt_id,
+        receipt_id,
         fact_memory_id: MemoryId::new(memory_id),
         cited_object_id,
         citation_mapping_id,

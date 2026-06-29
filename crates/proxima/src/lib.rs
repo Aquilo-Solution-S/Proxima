@@ -46,9 +46,9 @@ pub use migrations::{
 };
 pub use proxima_core::error::ProtocolError;
 pub use proxima_core::llm;
-pub use proxima_core::verbs::event_ingest::{
-    AuthorizedCitationAttachment, CitationSpec, EventDraft, EventIngestOutcome,
-    InlineCitationMappingDraft, InlineCitedObjectDraft,
+pub use proxima_core::verbs::fact_ingest::{
+    AuthorizedCitationAttachment, CitationSpec, FactIngestOutcome, FactReceiptDraft,
+    FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
 pub use proxima_core::verbs::goal_write::{
     GoalAuthorship, GoalCreateRequest, GoalEvidenceRef, GoalPayloadWrite, GoalState,
@@ -69,12 +69,12 @@ pub use proxima_core::verbs::schema::{
 };
 pub use proxima_core::{
     AbstractionPayload, AccessScope, AuthPath, AuthzContext, CapabilitySet, CitationMappingPayload,
-    CitedObjectPayload, Engine, EngineHandle, FactPayload, FlavorRegistry, GoalPayload, GroupId,
-    Identity, McpCallLogInput, McpCallLogOutcome, MemoryId, ModelId, OperatorId, Owner, OwnerRef,
-    PersonalityInstanceId, PerspectivePayload, PromptVersion, Relation, Role, SchemaId,
-    SchemaVersion, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
-    SidecarPayload, SourceBatchId, StorageError, ToolId, ToolScope, UserId, canonical_json_bytes,
-    provider_safe_tool_name, proxima_flavor,
+    CitedObjectPayload, Engine, EngineHandle, FactPayload, FactReceiptId, FlavorRegistry,
+    GoalPayload, GroupId, Identity, McpCallLogInput, McpCallLogOutcome, MemoryId, ModelId,
+    OperatorId, Owner, OwnerRef, PersonalityInstanceId, PerspectivePayload, PromptVersion,
+    Relation, Role, SchemaId, SchemaVersion, SearchProjection, SearchProjectionColumnKind,
+    SearchProjectionField, SidecarPayload, SourceBatchId, StorageError, ToolId, ToolScope, UserId,
+    canonical_json_bytes, provider_safe_tool_name, proxima_flavor,
 };
 pub use proxima_core::{
     AuthorDerivedEdgeInput, AuthorDerivedOutcome, AuthorDerivedRequestInput, AuthorshipKindMask,
@@ -102,12 +102,12 @@ pub use proxima_storage_pg::verbs::derive_append::{
     DerivedDraft, DerivedOutcome, append_derived_in_tx,
 };
 
-pub use proxima_storage_pg::verbs::event_ingest::{
-    AttachCitationOutcome, attach_citation_in_tx, ingest_fact, ingest_fact_in_tx,
-    ingest_fact_with_citation_atomic, ingest_fact_with_citation_in_tx,
-};
 pub use proxima_storage_pg::verbs::fact_embeddings::{
     list_facts_missing_embedding, load_fact_text, load_fact_text_in_tx, upsert_fact_embedding,
+};
+pub use proxima_storage_pg::verbs::fact_ingest::{
+    AttachCitationOutcome, attach_citation_in_tx, ingest_fact, ingest_fact_in_tx,
+    ingest_fact_with_citation_atomic, ingest_fact_with_citation_in_tx,
 };
 pub use proxima_storage_pg::{
     PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, register_core_pg_sidecars,

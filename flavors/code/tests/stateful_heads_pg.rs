@@ -18,8 +18,8 @@ mod common;
 use common::migrated_db;
 use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
 use proxima_core::engine::Engine;
-use proxima_core::verbs::event_ingest::{
-    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+use proxima_core::verbs::fact_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::verbs::query::{
     PersonalityRootFilter, QueryRequest, SupersessionStatus, TombstoneFilter,
@@ -41,7 +41,7 @@ fn make_owner() -> (UserId, Owner) {
 
 fn registry_for_test() -> FlavorRegistryFrozen {
     // Register the proxima-code schemas plus stub CitedObject / CitationMapping
-    // schemas that EventIngest needs.
+    // schemas that FactIngest needs.
     let mut flavor = FlavorRegistry::new();
     proxima_code::register(&mut flavor);
     flavor.freeze().with_additional_schemas([
@@ -58,19 +58,20 @@ fn registry_for_test() -> FlavorRegistryFrozen {
     ])
 }
 
-fn fresh_draft(owner: Owner, schema: &str, payload: &[u8]) -> EventDraft {
+fn fresh_draft(_owner: Owner, schema: &str, payload: &[u8]) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
-    EventDraft {
-        source_id: SourceId::new("test/source"),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner,
+    FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: SchemaId::new(schema.into()),
         schema_version: SchemaVersion::new(1),
         payload: payload.to_vec(),
         rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new("test/source"),
+            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: Some(Citation {
             object: CitedObjectHint {
                 schema_id: SchemaId::new("test/cited_blob".into()),
@@ -114,10 +115,10 @@ async fn seed_file_revision_state(
     seed: &[u8],
     state: FileState,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    // 1. EventIngest creates the memories row + supporting plumbing.
+    // 1. FactIngest creates the memories row + supporting plumbing.
     let authz = proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
     let draft = fresh_draft(owner, FileRevisionV1::SCHEMA_ID, seed);
-    let outcome = engine.event_ingest(&authz, draft).await?;
+    let outcome = engine.fact_ingest(&authz, draft).await?;
     let memory_id = outcome.memory_id.into_inner();
 
     // 2. Sidecar insert under (repo_id, file_path).
@@ -284,7 +285,7 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
         for payload in [b"c1" as &[u8], b"c2"] {
             let draft = fresh_draft(owner, CommitV1::SCHEMA_ID, payload);
             engine
-                .event_ingest(
+                .fact_ingest(
                     &proxima_core::AuthzContext::single_owner(
                         &owner,
                         proxima_core::AuthPath::System,

@@ -1,25 +1,25 @@
-//! `EventIngest` verb — atomic insert of optional citation rows,
-//! `source_batch`, `fact_receipt`, `memory`, and `change_event` rows.
+//! `FactIngest` verb — atomic insert of a Fact `memory`, optional
+//! receipt/source-batch rows, optional citation rows, and `change_event` rows.
 //!
-//! Replay is detected by the `(receipt_id)` unique on `memories`; the
-//! caller observes `idempotent_replay = true` and the original
-//! `change_event_seq`.
+//! Receipt-backed replay is detected by the `(receipt_id)` unique on
+//! `memories`; the caller observes `idempotent_replay = true` and the
+//! original `change_event_seq`. Receiptless writes never replay.
 //!
-//! [`ingest_event_in_tx`] exposes the same body inside an existing
+//! [`ingest_fact_in_tx`] exposes the same body inside an existing
 //! transaction so flavor crates can append a typed sidecar row
 //! atomically with the Fact materialization (M3.B.5+). The pool-level
-//! [`ingest_event_atomic`] is a thin wrapper that opens its own tx.
+//! [`ingest_fact_atomic`] is a thin wrapper that opens its own tx.
 
 use std::future::Future;
 use std::pin::Pin;
 
-use proxima_core::verbs::event_ingest::{
+use proxima_core::verbs::fact_ingest::{
     AuthorizedCitationAttachment, AuthorizedInlineCitationMapping, AuthorizedInlineCitedObject,
-    Citation, CitationSpec, EventDraft, EventIngestOutcome,
+    Citation, CitationSpec, FactIngestOutcome, FactWriteCommand,
 };
 use proxima_core::{
-    AuthorizedEventIngest, AuthorizedFactWithCitation, AuthzContext, Engine, EntityKind,
-    FactPayload, MemoryId, Owner, OwnerRefKind, Relation, SourceBatchId, StorageError,
+    AuthorizedFactWithCitation, AuthorizedFactWrite, AuthzContext, Engine, EntityKind, FactPayload,
+    FactReceiptId, MemoryId, Owner, OwnerRefKind, Relation, SourceBatchId, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -28,7 +28,7 @@ use crate::error::{internal, map_err};
 use crate::pg_ident::PgIdent;
 use crate::sidecars::{PgMemorySidecar, PgSidecarRegistryFrozen};
 
-pub type EventIngestSidecarFuture<'t> =
+pub type FactIngestSidecarFuture<'t> =
     Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
 
 /// Companion trait for Postgres-backed typed Fact sidecars. Flavor
@@ -40,7 +40,7 @@ pub trait PgFactSidecar: FactPayload + Sized {
         self,
         tx: &'t mut Transaction<'_, Postgres>,
         memory_id: MemoryId,
-    ) -> EventIngestSidecarFuture<'t>
+    ) -> FactIngestSidecarFuture<'t>
     where
         Self: 't;
 }
@@ -53,6 +53,17 @@ pub struct FactIngestContext<'a> {
     pub source_batch_id: SourceBatchId,
     pub observed_at: time::OffsetDateTime,
     pub embedding_model_id: Option<&'a str>,
+}
+
+fn authz_for_owner(authz: &AuthzContext, owner: &Owner) -> Result<AuthzContext, StorageError> {
+    if authz.principal() == *owner {
+        return Ok(authz.clone());
+    }
+    authz.clone().narrowed_to_owner(*owner).ok_or_else(|| {
+        StorageError::ConstraintViolation(
+            "requested owner is not available in authz context".into(),
+        )
+    })
 }
 
 impl<'a> FactIngestContext<'a> {
@@ -145,25 +156,26 @@ impl PendingCitation<'_> {
     }
 }
 
-/// Pool-scoped `EventIngest`. Opens its own transaction; commits on
+/// Pool-scoped `FactIngest`. Opens its own transaction; commits on
 /// success.
 ///
 /// # Errors
 ///
 /// Constraint violations map to `ConstraintViolation`; sqlx failures
 /// map to `Internal`.
-pub async fn ingest_event_atomic(
+pub async fn ingest_fact_atomic(
     pool: &PgPool,
-    draft: &EventDraft,
+    owner: &Owner,
+    draft: &FactWriteCommand,
     embedding_model_id: Option<&str>,
-) -> Result<EventIngestOutcome, StorageError> {
+) -> Result<FactIngestOutcome, StorageError> {
     let mut tx = pool.begin().await.map_err(internal)?;
-    let outcome = ingest_event_in_tx(&mut tx, draft, embedding_model_id).await?;
+    let outcome = ingest_fact_command_in_tx(&mut tx, owner, draft, embedding_model_id).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }
 
-/// Pool-scoped gated `EventIngest` with a caller-owned typed sidecar
+/// Pool-scoped gated `FactIngest` with a caller-owned typed sidecar
 /// insert. Opens its own transaction; commits only after the Fact and
 /// sidecar both succeed.
 ///
@@ -171,21 +183,21 @@ pub async fn ingest_event_atomic(
 ///
 /// Returns storage errors from Fact materialization, sidecar insertion,
 /// or transaction commit. A sidecar error rolls back the transaction.
-pub async fn event_ingest_with_sidecar_atomic<F>(
+pub async fn fact_ingest_with_sidecar_atomic<F>(
     pool: &PgPool,
-    authorized: &AuthorizedEventIngest,
+    authorized: &AuthorizedFactWrite,
     embedding_model_id: Option<&str>,
     sidecar: F,
-) -> Result<EventIngestOutcome, StorageError>
+) -> Result<FactIngestOutcome, StorageError>
 where
     F: for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
-        &'t EventIngestOutcome,
-    ) -> EventIngestSidecarFuture<'t>,
+        &'t FactIngestOutcome,
+    ) -> FactIngestSidecarFuture<'t>,
 {
     let mut tx = pool.begin().await.map_err(internal)?;
     let outcome =
-        ingest_event_with_sidecar_in_tx(&mut tx, authorized, embedding_model_id, sidecar).await?;
+        ingest_fact_with_sidecar_in_tx(&mut tx, authorized, embedding_model_id, sidecar).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }
@@ -205,12 +217,12 @@ pub async fn ingest_fact_with_citation_atomic<F>(
     authorized: &AuthorizedFactWithCitation,
     embedding_model_id: Option<&str>,
     fact_sidecar: F,
-) -> Result<EventIngestOutcome, StorageError>
+) -> Result<FactIngestOutcome, StorageError>
 where
     F: for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
-        &'t EventIngestOutcome,
-    ) -> EventIngestSidecarFuture<'t>,
+        &'t FactIngestOutcome,
+    ) -> FactIngestSidecarFuture<'t>,
 {
     let mut tx = pool.begin().await.map_err(internal)?;
     let outcome = ingest_fact_with_citation_in_tx(
@@ -239,13 +251,13 @@ pub async fn ingest_fact_in_tx<P, F>(
     relation: Relation,
     payload: &P,
     sidecar: F,
-) -> Result<EventIngestOutcome, StorageError>
+) -> Result<FactIngestOutcome, StorageError>
 where
     P: FactPayload,
     F: for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
-        &'t EventIngestOutcome,
-    ) -> EventIngestSidecarFuture<'t>,
+        &'t FactIngestOutcome,
+    ) -> FactIngestSidecarFuture<'t>,
 {
     let owner = authz.principal();
     ingest_fact_for_owner_in_tx(tx, engine, authz, &owner, relation, payload, sidecar).await
@@ -265,29 +277,29 @@ pub async fn ingest_fact_for_owner_in_tx<P, F>(
     relation: Relation,
     payload: &P,
     sidecar: F,
-) -> Result<EventIngestOutcome, StorageError>
+) -> Result<FactIngestOutcome, StorageError>
 where
     P: FactPayload,
     F: for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
-        &'t EventIngestOutcome,
-    ) -> EventIngestSidecarFuture<'t>,
+        &'t FactIngestOutcome,
+    ) -> FactIngestSidecarFuture<'t>,
 {
     let now = time::OffsetDateTime::now_utc();
-    let draft = EventDraft::from_payload(
-        owner,
+    let draft = FactWriteCommand::from_payload(
         "proxima/fact",
         SourceBatchId::new(uuid::Uuid::now_v7()),
         payload,
         now,
     );
+    let effective_authz = authz_for_owner(authz, owner)?;
     let authorized = engine
-        .authorize_event_ingest(authz, relation, draft)
+        .authorize_fact_ingest(&effective_authz, relation, draft)
         .await
         .map_err(internal)?;
     let embedding_client = engine.embed_client();
     let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
-    ingest_event_with_sidecar_in_tx(tx, &authorized, embedding_model_id, sidecar).await
+    ingest_fact_with_sidecar_in_tx(tx, &authorized, embedding_model_id, sidecar).await
 }
 
 /// Pool-scoped uncited Fact ingest helper. Opens its own transaction;
@@ -304,13 +316,13 @@ pub async fn ingest_fact<P, F>(
     relation: Relation,
     payload: &P,
     sidecar: F,
-) -> Result<EventIngestOutcome, StorageError>
+) -> Result<FactIngestOutcome, StorageError>
 where
     P: FactPayload,
     F: for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
-        &'t EventIngestOutcome,
-    ) -> EventIngestSidecarFuture<'t>,
+        &'t FactIngestOutcome,
+    ) -> FactIngestSidecarFuture<'t>,
 {
     let owner = authz.principal();
     ingest_fact_for_owner(pool, engine, authz, &owner, relation, payload, sidecar).await
@@ -330,13 +342,13 @@ pub async fn ingest_fact_for_owner<P, F>(
     relation: Relation,
     payload: &P,
     sidecar: F,
-) -> Result<EventIngestOutcome, StorageError>
+) -> Result<FactIngestOutcome, StorageError>
 where
     P: FactPayload,
     F: for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
-        &'t EventIngestOutcome,
-    ) -> EventIngestSidecarFuture<'t>,
+        &'t FactIngestOutcome,
+    ) -> FactIngestSidecarFuture<'t>,
 {
     let mut tx = pool.begin().await.map_err(internal)?;
     let outcome =
@@ -358,12 +370,11 @@ pub async fn ingest_fact_with_sidecar<P>(
     ctx: &FactIngestContext<'_>,
     payload: &P,
     citation: CitationSpec,
-) -> Result<EventIngestOutcome, StorageError>
+) -> Result<FactIngestOutcome, StorageError>
 where
     P: FactPayload + PgMemorySidecar + Clone,
 {
-    let draft = EventDraft::from_payload(
-        ctx.owner,
+    let draft = FactWriteCommand::from_payload(
         ctx.source_id,
         ctx.source_batch_id,
         payload,
@@ -371,8 +382,9 @@ where
     )
     .with_citation(citation);
     let sidecar_payload = payload.clone();
-    ingest_event_with_derived_sidecar_in_tx(
+    ingest_fact_with_derived_sidecar_in_tx(
         tx,
+        ctx.owner,
         &draft,
         ctx.embedding_model_id,
         P::sidecar_table(),
@@ -388,7 +400,7 @@ where
     .await
 }
 
-/// Run the `EventIngest` body inside an already-open transaction. The
+/// Run the `FactIngest` body inside an already-open transaction. The
 /// caller owns `tx` and is responsible for committing or rolling back.
 /// Flavors use this to bundle the typed sidecar insert with the core
 /// Fact materialization in a single atomic write.
@@ -397,24 +409,25 @@ where
 ///
 /// Constraint violations map to `ConstraintViolation`; sqlx failures
 /// map to `Internal`.
-pub async fn ingest_event_in_tx(
+pub async fn ingest_fact_command_in_tx(
     tx: &mut Transaction<'_, Postgres>,
-    draft: &EventDraft,
+    owner: &Owner,
+    draft: &FactWriteCommand,
     embedding_model_id: Option<&str>,
-) -> Result<EventIngestOutcome, StorageError> {
+) -> Result<FactIngestOutcome, StorageError> {
     let options = IngestCoreOptions {
         embedding_model_id,
         derive_inputs: None,
         citation_plan: CitationPlan::DraftHint,
         change_event_author_personality_instance_id: None,
     };
-    ingest_core(tx, draft, options, |_tx, _outcome| {
+    ingest_core(tx, owner, draft, options, |_tx, _outcome| {
         Box::pin(async { Ok(()) })
     })
     .await
 }
 
-/// Run raw-draft `EventIngest` plus a typed sidecar insert inside an
+/// Run raw-draft `FactIngest` plus a typed sidecar insert inside an
 /// already-open transaction, deriving a Fact-entity head from the
 /// sidecar row after the sidecar insert succeeds.
 ///
@@ -423,19 +436,20 @@ pub async fn ingest_event_in_tx(
 /// Returns storage errors from Fact materialization, sidecar
 /// insertion, Fact-entity derivation, or embedding enqueue. The caller
 /// owns transaction rollback/commit.
-pub async fn ingest_event_with_derived_sidecar_in_tx<F>(
+pub async fn ingest_fact_with_derived_sidecar_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
-    draft: &EventDraft,
+    owner: &Owner,
+    draft: &FactWriteCommand,
     embedding_model_id: Option<&str>,
     sidecar_table: Option<&str>,
     natural_key_columns: &[&str],
     sidecar: F,
-) -> Result<EventIngestOutcome, StorageError>
+) -> Result<FactIngestOutcome, StorageError>
 where
     F: for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
-        &'t EventIngestOutcome,
-    ) -> EventIngestSidecarFuture<'t>,
+        &'t FactIngestOutcome,
+    ) -> FactIngestSidecarFuture<'t>,
 {
     let natural_key_columns = natural_key_columns
         .iter()
@@ -452,7 +466,7 @@ where
         citation_plan: CitationPlan::DraftHint,
         change_event_author_personality_instance_id: None,
     };
-    ingest_core(tx, draft, options, sidecar).await
+    ingest_core(tx, owner, draft, options, sidecar).await
 }
 
 /// Run gated Fact ingest plus typed inline citation sidecars inside an
@@ -470,12 +484,12 @@ pub async fn ingest_fact_with_citation_in_tx<F>(
     authorized: &AuthorizedFactWithCitation,
     embedding_model_id: Option<&str>,
     fact_sidecar: F,
-) -> Result<EventIngestOutcome, StorageError>
+) -> Result<FactIngestOutcome, StorageError>
 where
     F: for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
-        &'t EventIngestOutcome,
-    ) -> EventIngestSidecarFuture<'t>,
+        &'t FactIngestOutcome,
+    ) -> FactIngestSidecarFuture<'t>,
 {
     let draft = authorized.draft();
     let author_personality_instance_id = authorized.author_personality_instance_id().map_or_else(
@@ -496,7 +510,14 @@ where
         },
         change_event_author_personality_instance_id: Some(author_personality_instance_id),
     };
-    ingest_core(tx, draft, options, fact_sidecar).await
+    ingest_core(
+        tx,
+        authorized.permit().owner(),
+        draft,
+        options,
+        fact_sidecar,
+    )
+    .await
 }
 
 /// Attach a typed inline citation to an existing uncited Fact inside an
@@ -689,7 +710,7 @@ async fn insert_citation_mapping_in_tx(
     Ok(())
 }
 
-/// Run gated `EventIngest` plus a typed sidecar insert inside an
+/// Run gated `FactIngest` plus a typed sidecar insert inside an
 /// already-open transaction. The witness proves the draft passed core
 /// authorization, owner stamping, and schema validation before storage
 /// saw it.
@@ -698,17 +719,17 @@ async fn insert_citation_mapping_in_tx(
 ///
 /// Returns storage errors from Fact materialization or sidecar
 /// insertion. The caller owns transaction rollback/commit.
-pub async fn ingest_event_with_sidecar_in_tx<F>(
+pub async fn ingest_fact_with_sidecar_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
-    authorized: &AuthorizedEventIngest,
+    authorized: &AuthorizedFactWrite,
     embedding_model_id: Option<&str>,
     sidecar: F,
-) -> Result<EventIngestOutcome, StorageError>
+) -> Result<FactIngestOutcome, StorageError>
 where
     F: for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
-        &'t EventIngestOutcome,
-    ) -> EventIngestSidecarFuture<'t>,
+        &'t FactIngestOutcome,
+    ) -> FactIngestSidecarFuture<'t>,
 {
     let draft = authorized.draft();
     let derive_inputs = FactEntityDeriveInputs {
@@ -721,36 +742,40 @@ where
         citation_plan: CitationPlan::DraftHint,
         change_event_author_personality_instance_id: None,
     };
-    ingest_core(tx, draft, options, sidecar).await
+    ingest_core(tx, authorized.permit().owner(), draft, options, sidecar).await
 }
 
 #[allow(clippy::too_many_lines)]
 async fn ingest_core<F>(
     tx: &mut Transaction<'_, Postgres>,
-    draft: &EventDraft,
+    owner: &Owner,
+    draft: &FactWriteCommand,
     options: IngestCoreOptions<'_>,
     sidecar: F,
-) -> Result<EventIngestOutcome, StorageError>
+) -> Result<FactIngestOutcome, StorageError>
 where
     F: for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
-        &'t EventIngestOutcome,
-    ) -> EventIngestSidecarFuture<'t>,
+        &'t FactIngestOutcome,
+    ) -> FactIngestSidecarFuture<'t>,
 {
-    let receipt_id = draft.event_id();
-    let receipt_id_bytes = receipt_id.into_inner();
-    let owner = draft.owner();
-    let (owner_kind, owner_id) = owner_binds(&owner);
+    let receipt_id = draft.receipt_id_for_owner(*owner);
+    let receipt_id_bytes = receipt_id.map(FactReceiptId::into_inner);
+    let (owner_kind, owner_id) = owner_binds(owner);
 
-    let existing = sqlx::query_scalar::<_, uuid::Uuid>(
-        "SELECT memory_id FROM proxima_core.memories
-           WHERE receipt_id = $1
-             AND tombstoned_at IS NULL",
-    )
-    .bind(&receipt_id_bytes[..])
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?;
+    let existing = if let Some(receipt_id_bytes) = receipt_id_bytes {
+        sqlx::query_scalar::<_, uuid::Uuid>(
+            "SELECT memory_id FROM proxima_core.memories
+               WHERE receipt_id = $1
+                 AND tombstoned_at IS NULL",
+        )
+        .bind(&receipt_id_bytes[..])
+        .fetch_optional(tx.as_mut())
+        .await
+        .map_err(map_err)?
+    } else {
+        None
+    };
 
     if let Some(memory_id) = existing {
         let seq = sqlx::query_scalar::<_, uuid::Uuid>(
@@ -762,8 +787,8 @@ where
         .await
         .map_err(map_err)?;
 
-        return Ok(EventIngestOutcome {
-            event_id: receipt_id,
+        return Ok(FactIngestOutcome {
+            receipt_id,
             memory_id: proxima_core::MemoryId::new(memory_id),
             change_event_seq: seq,
             idempotent_replay: true,
@@ -812,7 +837,7 @@ where
         } => {
             let citation_mapping_id = uuid::Uuid::now_v7();
             let cited_object_id =
-                upsert_cited_object_in_tx(tx, sidecars, &owner, cited_object).await?;
+                upsert_cited_object_in_tx(tx, sidecars, owner, cited_object).await?;
             Some(PendingCitation::Inline {
                 mapping,
                 sidecars,
@@ -825,40 +850,42 @@ where
         .as_ref()
         .map(|pending| (*pending).citation_mapping_id());
 
-    sqlx::query(
-        "INSERT INTO proxima_core.source_batches
-            (id, source_id, owner_kind,
-             owner_id)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (id) DO NOTHING",
-    )
-    .bind(draft.source_batch_id.into_inner())
-    .bind(draft.source_id.as_str())
-    .bind(owner_kind)
-    .bind(owner_id)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
+    if let (Some(receipt), Some(receipt_id_bytes)) = (&draft.receipt, receipt_id_bytes) {
+        sqlx::query(
+            "INSERT INTO proxima_core.source_batches
+                (id, source_id, owner_kind,
+                 owner_id)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(receipt.source_batch_id.into_inner())
+        .bind(receipt.source_id.as_str())
+        .bind(owner_kind)
+        .bind(owner_id)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
 
-    sqlx::query(
-        "INSERT INTO proxima_core.fact_receipts
-            (receipt_id, source, source_batch_id,
-             owner_kind, owner_id,
-             schema_id, schema_version, observed_at, occurred_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-    )
-    .bind(&receipt_id_bytes[..])
-    .bind(draft.source_id.as_str())
-    .bind(draft.source_batch_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(draft.schema_id.as_str())
-    .bind(draft.schema_version.into_inner().cast_signed())
-    .bind(draft.observed_at)
-    .bind(draft.occurred_at)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
+        sqlx::query(
+            "INSERT INTO proxima_core.fact_receipts
+                (receipt_id, source, source_batch_id,
+                 owner_kind, owner_id,
+                 schema_id, schema_version, observed_at, occurred_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(&receipt_id_bytes[..])
+        .bind(receipt.source_id.as_str())
+        .bind(receipt.source_batch_id.into_inner())
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(draft.schema_id.as_str())
+        .bind(draft.schema_version.into_inner().cast_signed())
+        .bind(receipt.observed_at)
+        .bind(receipt.occurred_at)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    }
 
     let author_personality_instance_id = draft.author_personality_instance_id.map_or_else(
         uuid::Uuid::nil,
@@ -876,7 +903,7 @@ where
     .bind(owner_id)
     .bind(draft.schema_id.as_str())
     .bind(draft.schema_version.into_inner().cast_signed())
-    .bind(&receipt_id_bytes[..])
+    .bind(receipt_id_bytes.as_ref().map(|bytes| &bytes[..]))
     .bind(citation_mapping_id)
     .bind(draft.rendered_text.as_deref())
     .bind(author_personality_instance_id)
@@ -884,8 +911,8 @@ where
     .await
     .map_err(map_err)?;
 
-    let outcome = EventIngestOutcome {
-        event_id: receipt_id,
+    let outcome = FactIngestOutcome {
+        receipt_id,
         memory_id: proxima_core::MemoryId::new(memory_id),
         change_event_seq: change_seq,
         idempotent_replay: false,
@@ -895,7 +922,7 @@ where
     if let Some(inputs) = options.derive_inputs {
         derive_fact_entity_after_sidecar(
             tx,
-            &owner,
+            owner,
             draft,
             memory_id,
             inputs.sidecar_table,
@@ -945,7 +972,7 @@ where
             } => {
                 insert_citation_mapping_in_tx(
                     tx,
-                    &owner,
+                    owner,
                     mapping,
                     sidecars,
                     citation_mapping_id,
@@ -982,7 +1009,7 @@ where
 async fn derive_fact_entity_after_sidecar(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
-    draft: &EventDraft,
+    draft: &FactWriteCommand,
     memory_id: uuid::Uuid,
     sidecar_table: Option<&str>,
     natural_key_columns: &[String],

@@ -21,7 +21,7 @@ impl FactPayload for MacroKindFact {
     const SCHEMA_ID: &'static str = "test/macro-kind-fact-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_str("amount", &self.amount.to_string());
         key.field_str("booked_on", &self.booked_on.to_string());

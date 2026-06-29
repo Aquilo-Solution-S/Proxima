@@ -492,7 +492,7 @@ pub async fn erase_repo(
         abstractions_deleted: 0,
         edges_deleted: 0,
         embeddings_deleted: 0,
-        events_deleted: 0,
+        receipts_deleted: 0,
         citation_mappings_deleted: 0,
         cited_objects_deleted: 0,
         source_batches_deleted: 0,
@@ -556,7 +556,7 @@ pub async fn erase_repo(
     receipt.edges_deleted = counts.edges;
     receipt.embeddings_deleted = counts.embeddings;
     receipt.citation_mappings_deleted = counts.citation_mappings;
-    receipt.events_deleted = counts.events;
+    receipt.receipts_deleted = counts.receipts;
 
     receipt.source_batches_deleted = sqlx::query(
         "DELETE FROM proxima_core.source_batches sb \

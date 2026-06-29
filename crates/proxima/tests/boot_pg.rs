@@ -6,7 +6,7 @@ use proxima::{
     ProximaBuilder, company_owner, run_core_and_flavor_migrations,
 };
 use proxima_core::test_fixtures::ConstantEmbedding;
-use proxima_core::verbs::event_ingest::EventDraft;
+use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
     FactPayload, FlavorRegistry, GoalActivatedV1, MemoryId, SchemaId, SchemaVersion, SourceBatchId,
 };
@@ -28,7 +28,7 @@ impl FactPayload for TestFact {
     const SCHEMA_ID: &'static str = "test/facade-boot-fact-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         self.label.as_bytes().to_vec()
     }
 
@@ -364,15 +364,14 @@ async fn facade_boot_exposes_pg_sidecars_and_worker_drains_embedding_jobs() {
         let payload = TestFact {
             label: "facade worker drain fact".to_string(),
         };
-        let draft = EventDraft::from_payload(
-            &owner,
+        let draft = FactWriteCommand::from_payload(
             "test/facade-worker",
             SourceBatchId::new(Uuid::now_v7()),
             &payload,
             time::OffsetDateTime::now_utc(),
         );
         let authz = built.single_owner_authz().expect("single owner authz");
-        let outcome = built.engine.event_ingest(&authz, draft).await?;
+        let outcome = built.engine.fact_ingest(&authz, draft).await?;
         assert_eq!(
             count_fact_embeddings(&built.pool, outcome.memory_id, model_id).await?,
             0

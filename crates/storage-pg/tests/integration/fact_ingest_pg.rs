@@ -1,4 +1,4 @@
-//! End-to-end `EventIngest` against a transient PG database.
+//! End-to-end `FactIngest` against a transient PG database.
 
 use crate::common::{create_db, db_url, drop_db};
 use std::sync::Arc;
@@ -6,8 +6,8 @@ use std::sync::Arc;
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
 use proxima_core::storage_ports::*;
-use proxima_core::verbs::event_ingest::{
-    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+use proxima_core::verbs::fact_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
@@ -55,21 +55,22 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
     ]
 }
 
-fn fresh_draft(owner: Owner) -> EventDraft {
-    // Event identity is blake3(source_id, owner, payload) — distinct
-    // events need distinct payloads, not just distinct batch ids.
+fn fresh_draft(_owner: Owner) -> FactWriteCommand {
+    // Receipt identity is blake3(source_id, owner, payload) — distinct
+    // receipt-backed Facts need distinct payloads, not just distinct batch ids.
     let now = time::OffsetDateTime::now_utc();
-    EventDraft {
-        source_id: SourceId::new("test/source"),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner,
+    FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
         payload: format!("hello world {}", Uuid::now_v7()).into_bytes(),
         rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new("test/source"),
+            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: Some(Citation {
             object: CitedObjectHint {
                 schema_id: SchemaId::new("test/cited_blob".into()),
@@ -85,7 +86,7 @@ fn fresh_draft(owner: Owner) -> EventDraft {
 }
 
 #[tokio::test]
-async fn event_ingest_writes_fact_and_change_event() {
+async fn fact_ingest_writes_fact_and_change_event() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
@@ -104,7 +105,7 @@ async fn event_ingest_writes_fact_and_change_event() {
         let draft = fresh_draft(owner);
 
         let outcome = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 draft.clone(),
             )
@@ -112,7 +113,7 @@ async fn event_ingest_writes_fact_and_change_event() {
         assert!(!outcome.idempotent_replay);
 
         let replay = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 draft.clone(),
             )
@@ -124,7 +125,7 @@ async fn event_ingest_writes_fact_and_change_event() {
         let mut bad = draft.clone();
         bad.schema_id = SchemaId::new("test/unregistered".into());
         let err = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 bad,
             )
@@ -149,11 +150,11 @@ async fn event_ingest_writes_fact_and_change_event() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("event_ingest_pg test failed");
+    result.expect("fact_ingest_pg test failed");
 }
 
 #[tokio::test]
-async fn event_ingest_stamps_fact_author_without_change_event_author() {
+async fn fact_ingest_stamps_fact_author_without_change_event_author() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
@@ -168,7 +169,7 @@ async fn event_ingest_stamps_fact_author_without_change_event_author() {
 
         let mut authored = fresh_draft(owner);
         authored.author_personality_instance_id = Some(personality.instance_id);
-        let authored_outcome = pg.ingest_event_atomic(&authored, None).await?;
+        let authored_outcome = pg.ingest_fact_atomic(&owner, &authored, None).await?;
 
         let stamped: Uuid = sqlx::query_scalar(
             "SELECT personality_instance_id
@@ -191,7 +192,9 @@ async fn event_ingest_stamps_fact_author_without_change_event_author() {
         .await?;
         assert_eq!(authored_change_author, None);
 
-        let system_outcome = pg.ingest_event_atomic(&fresh_draft(owner), None).await?;
+        let system_outcome = pg
+            .ingest_fact_atomic(&owner, &fresh_draft(owner), None)
+            .await?;
         let system_stamped: Uuid = sqlx::query_scalar(
             "SELECT personality_instance_id
              FROM proxima_core.memories
@@ -217,7 +220,7 @@ async fn event_ingest_stamps_fact_author_without_change_event_author() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("event_ingest author stamping test failed");
+    result.expect("fact_ingest author stamping test failed");
 }
 
 #[tokio::test]
@@ -239,18 +242,18 @@ async fn list_change_events_for_replay_respects_bounds_and_owner() {
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         let first = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 fresh_draft(owner),
             )
             .await?;
         let second = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 fresh_draft(owner),
             )
             .await?;
-        pg.ingest_event_atomic(&fresh_draft(other_owner), None)
+        pg.ingest_fact_atomic(&other_owner, &fresh_draft(other_owner), None)
             .await?;
 
         let rows = pg
@@ -300,7 +303,7 @@ async fn list_change_events_after_scopes_by_principal() {
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         let ingested = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(
                     &stored_owner,
                     proxima_core::AuthPath::System,
@@ -343,18 +346,16 @@ async fn list_change_events_after_filters_by_read_owners() {
         let g1 = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         seed_membership(pg.pool(), &g1, &q, Relation::Viewer).await?;
 
-        let group_event = engine
-            .event_ingest(
-                &proxima_core::AuthzContext::for_subject_with_role(
-                    UserId::new(Uuid::now_v7()),
-                    [(g1, Role::admin())],
-                    proxima_core::AuthPath::System,
-                ),
-                fresh_draft(g1),
-            )
-            .await?;
+        let group_authz = proxima_core::AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(g1, Role::admin())],
+            proxima_core::AuthPath::System,
+        )
+        .narrowed_to_owner(g1)
+        .expect("admin role narrows to target owner");
+        let group_event = engine.fact_ingest(&group_authz, fresh_draft(g1)).await?;
         let p_event = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&p, proxima_core::AuthPath::System),
                 fresh_draft(p),
             )

@@ -166,7 +166,7 @@ Status labels used below:
   primitive inventory**. Owner deletion, source-scope deletion, pause/resume,
   export, suppression, and audit primitives.
 - [`docs/14-protocol-surface.md`](docs/14-protocol-surface.md) — **current +
-  deferred sections**. Query, EventHistory, GoalWrite, EventIngest, and Schema
+  deferred sections**. Query, ChangeHistory, GoalWrite, FactIngest, and Schema
   verbs; owner-scoped and transport-agnostic.
 - [`docs/15-deployment.md`](docs/15-deployment.md) — **current deployment
   guide**. Code-flavor MCP deployment, Docker, OIDC bearer auth, network

@@ -19,7 +19,7 @@ impl FactPayload for DocumentFiledV1 {
     const SCHEMA_ID: &'static str = "embedded-minimal/document-filed-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_str("source_path", &self.source_path);
         key.finish()

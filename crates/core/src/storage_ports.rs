@@ -18,12 +18,12 @@ use crate::storage::{
     AuthorDerivedOutcome, AuthorDerivedRequest, EdgeEndpointKindRow, EmbeddingJobClaim,
     MemoryGraphPayloadRow, MemoryKindRow, NeighborEdgeRow, StorageError, WakeEntriesMutator,
 };
+use crate::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use crate::verbs::close_batch::CloseBatchOutcome;
-use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
-use crate::verbs::event_ingest::{
-    AuthorizedEventIngest, AuthorizedFactWithCitation, EventDraft, EventIngestOutcome,
-};
 use crate::verbs::fact_cleanup::{CleanupDueFactsOutcome, TombstoneFactOutcome};
+use crate::verbs::fact_ingest::{
+    AuthorizedFactWithCitation, AuthorizedFactWrite, FactIngestOutcome, FactWriteCommand,
+};
 use crate::verbs::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
@@ -53,25 +53,26 @@ impl EdgeWriteProof {
 
 #[async_trait::async_trait]
 pub trait FactIngestPort: Send + Sync {
-    async fn ingest_event_atomic(
+    async fn ingest_fact_atomic(
         &self,
-        draft: &EventDraft,
+        owner: &Owner,
+        draft: &FactWriteCommand,
         embedding_model_id: Option<&str>,
-    ) -> Result<EventIngestOutcome, StorageError>;
+    ) -> Result<FactIngestOutcome, StorageError>;
 
-    async fn ingest_event_with_typed_sidecar(
+    async fn ingest_fact_with_typed_sidecar(
         &self,
-        authorized: &AuthorizedEventIngest,
+        authorized: &AuthorizedFactWrite,
         sidecar_payload: &SidecarPayload,
         embedding_model_id: Option<&str>,
-    ) -> Result<EventIngestOutcome, StorageError>;
+    ) -> Result<FactIngestOutcome, StorageError>;
 
     async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,
         sidecar_payload: &SidecarPayload,
         embedding_model_id: Option<&str>,
-    ) -> Result<EventIngestOutcome, StorageError>;
+    ) -> Result<FactIngestOutcome, StorageError>;
 }
 
 #[async_trait::async_trait]
@@ -310,11 +311,11 @@ pub trait GoalReadPort: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait ChangeEventPort: Send + Sync {
-    async fn event_history(
+    async fn change_history(
         &self,
         read_owners: &[OwnerRef],
-        req: &EventHistoryRequest,
-    ) -> Result<EventHistoryResponse, StorageError>;
+        req: &ChangeHistoryRequest,
+    ) -> Result<ChangeHistoryResponse, StorageError>;
 
     async fn list_change_events_after(
         &self,
@@ -1054,22 +1055,23 @@ impl GoalSupportReadPort for RejectingStorage {}
 
 #[async_trait::async_trait]
 impl FactIngestPort for RejectingStorage {
-    async fn ingest_event_atomic(
+    async fn ingest_fact_atomic(
         &self,
-        _draft: &EventDraft,
+        _owner: &Owner,
+        _draft: &FactWriteCommand,
         _embedding_model_id: Option<&str>,
-    ) -> Result<EventIngestOutcome, StorageError> {
+    ) -> Result<FactIngestOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
         ))
     }
 
-    async fn ingest_event_with_typed_sidecar(
+    async fn ingest_fact_with_typed_sidecar(
         &self,
-        _authorized: &AuthorizedEventIngest,
+        _authorized: &AuthorizedFactWrite,
         _sidecar_payload: &SidecarPayload,
         _embedding_model_id: Option<&str>,
-    ) -> Result<EventIngestOutcome, StorageError> {
+    ) -> Result<FactIngestOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
         ))
@@ -1080,7 +1082,7 @@ impl FactIngestPort for RejectingStorage {
         _authorized: &AuthorizedFactWithCitation,
         _sidecar_payload: &SidecarPayload,
         _embedding_model_id: Option<&str>,
-    ) -> Result<EventIngestOutcome, StorageError> {
+    ) -> Result<FactIngestOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
         ))
@@ -1340,12 +1342,12 @@ impl GoalReadPort for RejectingStorage {
 
 #[async_trait::async_trait]
 impl ChangeEventPort for RejectingStorage {
-    async fn event_history(
+    async fn change_history(
         &self,
         _read_owners: &[OwnerRef],
-        _req: &EventHistoryRequest,
-    ) -> Result<EventHistoryResponse, StorageError> {
-        Ok(EventHistoryResponse {
+        _req: &ChangeHistoryRequest,
+    ) -> Result<ChangeHistoryResponse, StorageError> {
+        Ok(ChangeHistoryResponse {
             events: Vec::new(),
             seq_high_water: None,
         })
