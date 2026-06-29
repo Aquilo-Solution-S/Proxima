@@ -65,17 +65,15 @@ pub async fn insert_home(
     entity_id: Uuid,
     owner: &Owner,
 ) -> Result<(), sqlx::Error> {
-    let (owner_kind, owner_principal_id) = owner.columns();
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1, $2, $3, true, $4)
-         ON CONFLICT DO NOTHING",
-    ))
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
+    sqlx::query(
+        "UPDATE proxima_core.memories
+            SET owner_kind = $2, owner_id = $3
+          WHERE memory_id = $1",
+    )
     .bind(entity_id)
     .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(Uuid::nil())
+    .bind(owner_id)
     .execute(pool)
     .await
     .map(|_| ())

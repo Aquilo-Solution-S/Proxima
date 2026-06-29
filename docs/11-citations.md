@@ -79,7 +79,7 @@ cited_objects(
     owner_*,
     content_hash        BLAKE3,            -- from CitedObjectPayload::idempotency_key
     created_at,
-    UNIQUE (owner_principal_kind, owner_principal_id,
+    UNIQUE (owner_kind, owner_id,
             schema_id, content_hash)
 )
 -- Per-schema sidecar (one per registered CitedObjectPayload):
@@ -121,11 +121,11 @@ CitedObject:        UNIQUE (owner, schema_id, content_hash)
 CitationMapping:    UNIQUE (memory_id)
 ```
 
-Re-receipt of the same observation produces the same `event_id` (per
-01) and the same `content_hash` for the cited artefact; both inserts
-become silent no-ops. Different chunks of the same artefact land
-distinct memories with distinct mappings, all pointing at one
-CitedObject.
+Re-receipt of the same observation produces the same source receipt id
+(public `event_id`, storage `receipt_id`; see 01) and the same
+`content_hash` for the cited artefact; both inserts become silent
+no-ops. Different chunks of the same artefact land distinct memories
+with distinct mappings, all pointing at one CitedObject.
 
 ## Large artefact storage
 

@@ -256,8 +256,8 @@ async fn personality_wake_schema_replaces_legacy_tables() {
         assert_eq!(
             wake_columns,
             vec![
-                "owner_principal_kind",
-                "owner_principal_id",
+                "owner_kind",
+                "owner_id",
                 "personality_instance_id",
                 "wake_entry_id",
                 "trigger_kind",
@@ -311,15 +311,17 @@ async fn personality_wake_schema_enforces_promille() {
 
         let mut entry = sample_entry(response.instance_id, "proxima-test/fact-v1");
         entry.instructions = "Use the committed fact to decide whether to write a summary.".into();
+        let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
         let err = sqlx::query(
             "INSERT INTO proxima_core.personality_wake_entries
-                (owner_principal_kind, owner_principal_id,
+                (owner_kind, owner_id,
                  personality_instance_id, wake_entry_id, trigger_kind, trigger_id,
                  label, authored_by, probability_promille)
-             VALUES ('User', $1, $2, $3, 'on_memory', 'proxima-test/fact-v1',
+             VALUES ($1, $2, $3, $4, 'on_memory', 'proxima-test/fact-v1',
                      'bad', 'any', 1001)",
         )
-        .bind(principal_id(&owner))
+        .bind(owner_kind)
+        .bind(owner_id)
         .bind(response.instance_id.into_inner())
         .bind(entry.wake_entry_id)
         .execute(pg.pool())
@@ -350,7 +352,7 @@ async fn personality_wake_storage_round_trip() {
 
         let personality_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM proxima_core.personality
-             WHERE owner_principal_id = $1 AND personality_instance_id = $2",
+             WHERE owner_id = $1 AND personality_instance_id = $2",
         )
         .bind(principal_id(&owner))
         .bind(instance.into_inner())

@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::pg_pool;
-use super::sql::{CHUNK_HEADS_CTE, map_storage, owner_principal, resolve_repo_identifier};
+use super::sql::{CHUNK_HEADS_CTE, map_storage, owner_columns, resolve_repo_identifier};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeSearchChunksArgs {
@@ -91,7 +91,7 @@ impl McpTool for CodeSearchChunksTool {
                 ));
             }
             let limit = args.limit.unwrap_or(12).min(50);
-            let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+            let (owner_kind, owner_id) = owner_columns(&ctx.owner);
             let exact_pattern = like_pattern(query);
             let repo_id = match args.repo_handle.as_deref() {
                 Some(handle) => Some(resolve_repo_identifier(&ctx, handle).await?),
@@ -99,7 +99,7 @@ impl McpTool for CodeSearchChunksTool {
             };
             let pool = pg_pool(&ctx)?;
 
-            let sql = proxima_storage_pg::access::owner_ref_compat::sql_owned(format!(
+            let sql = format!(
                 "WITH {CHUNK_HEADS_CTE}, q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $3) AS tsq)
                  SELECT memory_id, repo_id, file_path, chunk_index, language,
                         chunk_type, line_range_start, line_range_end,
@@ -123,10 +123,10 @@ impl McpTool for CodeSearchChunksTool {
                    )
                  ORDER BY score DESC, memory_id DESC
                  LIMIT $8"
-            ));
+            );
             let rows: Vec<ChunkRow> = sqlx::query_as(&sql)
                 .bind(owner_kind)
-                .bind(owner_principal_id)
+                .bind(owner_id)
                 .bind(query)
                 .bind(repo_id)
                 .bind(args.language.as_deref())

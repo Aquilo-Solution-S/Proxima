@@ -340,31 +340,25 @@ pub struct MembershipRow {
     pub relation: Relation,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EntityOwnerRow {
-    pub owner: OwnerRef,
-    pub is_home: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RemoveOwnerOutcome {
-    Removed,
-    RefusedLastOwner,
-    NotFound,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::OwnerRefKind;
 
     #[test]
     fn owner_refs_are_stable_handles_not_resolved_roles() {
         let user = UserId::new(uuid::Uuid::now_v7());
         let group = GroupId::new(uuid::Uuid::now_v7());
 
-        assert_eq!(OwnerRef::World.stable_kind(), "world");
-        assert_eq!(OwnerRef::Personal(user).stable_kind(), "personal");
-        assert_eq!(OwnerRef::Group(group).stable_kind(), "group");
+        assert_eq!(OwnerRefKind::of(&OwnerRef::World), OwnerRefKind::World);
+        assert_eq!(
+            OwnerRefKind::of(&OwnerRef::Personal(user)),
+            OwnerRefKind::Personal
+        );
+        assert_eq!(
+            OwnerRefKind::of(&OwnerRef::Group(group)),
+            OwnerRefKind::Group
+        );
     }
 
     #[test]

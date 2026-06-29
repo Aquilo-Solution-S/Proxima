@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
-use crate::{AccessScope, Owner, OwnerRefKind};
+use crate::{AccessScope, GroupId, Owner, OwnerRef, OwnerRefKind, UserId};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MemorySpacesArgs {}
@@ -56,9 +56,9 @@ pub fn list_memory_spaces(ctx: &McpToolCtx) -> Vec<MemorySpaceOutput> {
             let current = owner == ctx.owner;
             MemorySpaceOutput {
                 key: if current {
-                    "current".into()
+                    MemorySpaceKey::Current.to_wire()
                 } else {
-                    space_key(&owner)
+                    MemorySpaceKey::owner(owner).to_wire()
                 },
                 label: if current {
                     "Current owner".into()
@@ -102,10 +102,10 @@ pub fn resolve_space_owner(
         SpaceDefault::Identity => ctx.authz.principal(),
     };
     let owner = match raw {
-        Some("current") => ctx.authz.can_access_owner(&ctx.owner).then_some(ctx.owner),
-        Some(key) => sorted_accessible_principals(ctx)
-            .into_iter()
-            .find(|owner| space_key(owner) == key),
+        Some(key) => MemorySpaceKey::parse(key).and_then(|parsed| match parsed {
+            MemorySpaceKey::Current => ctx.authz.can_access_owner(&ctx.owner).then_some(ctx.owner),
+            MemorySpaceKey::Owner(owner) => ctx.authz.can_access_owner(&owner).then_some(owner),
+        }),
         None => ctx
             .authz
             .can_access_owner(&default_owner)
@@ -116,9 +116,9 @@ pub fn resolve_space_owner(
             let current = owner == ctx.owner;
             ResolvedMemorySpace {
                 key: if current {
-                    "current".into()
+                    MemorySpaceKey::Current.to_wire()
                 } else {
-                    space_key(&owner)
+                    MemorySpaceKey::owner(owner).to_wire()
                 },
                 label: if current {
                     "Current owner".into()
@@ -140,31 +140,76 @@ fn sorted_accessible_principals(ctx: &McpToolCtx) -> Vec<Owner> {
     let mut owners = ctx.authz.accessible_owners().collect::<Vec<_>>();
     owners.sort_by_key(|owner| {
         let (kind, id) = owner.columns();
-        (owner_kind_sort_key(kind), id)
+        (*owner != ctx.owner, owner_kind_sort_key(kind), id)
     });
     owners
 }
 
 const fn owner_kind_sort_key(kind: OwnerRefKind) -> u8 {
     match kind {
-        OwnerRefKind::User => 0,
-        OwnerRefKind::Group => 1,
+        OwnerRefKind::World => 0,
+        OwnerRefKind::Personal => 1,
+        OwnerRefKind::Group => 2,
     }
 }
 
-pub(crate) fn space_key(owner: &Owner) -> String {
-    let (kind, id) = owner.columns();
-    match kind {
-        OwnerRefKind::User => format!("user:{id}"),
-        OwnerRefKind::Group => format!("group:{id}"),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MemorySpaceKey {
+    Current,
+    Owner(Owner),
+}
+
+impl MemorySpaceKey {
+    const CURRENT: &'static str = "current";
+    const WORLD: &'static str = "world";
+    const PERSONAL_PREFIX: &'static str = "personal:";
+    const GROUP_PREFIX: &'static str = "group:";
+
+    #[must_use]
+    pub const fn owner(owner: Owner) -> Self {
+        Self::Owner(owner)
+    }
+
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        if raw == Self::CURRENT {
+            return Some(Self::Current);
+        }
+        if raw == Self::WORLD {
+            return Some(Self::Owner(OwnerRef::World));
+        }
+        if let Some(id) = raw.strip_prefix(Self::PERSONAL_PREFIX) {
+            return uuid::Uuid::parse_str(id)
+                .ok()
+                .map(|id| Self::Owner(OwnerRef::Personal(UserId::new(id))));
+        }
+        raw.strip_prefix(Self::GROUP_PREFIX).and_then(|id| {
+            uuid::Uuid::parse_str(id)
+                .ok()
+                .map(|id| Self::Owner(OwnerRef::Group(GroupId::new(id))))
+        })
+    }
+
+    #[must_use]
+    pub fn to_wire(self) -> String {
+        match self {
+            Self::Current => Self::CURRENT.to_string(),
+            Self::Owner(owner) => match owner {
+                OwnerRef::World => Self::WORLD.to_string(),
+                OwnerRef::Personal(user) => {
+                    format!("{}{}", Self::PERSONAL_PREFIX, user.into_inner())
+                }
+                OwnerRef::Group(group) => format!("{}{}", Self::GROUP_PREFIX, group.into_inner()),
+            },
+        }
     }
 }
 
 pub(crate) fn space_label(owner: &Owner) -> String {
-    let (kind, id) = owner.columns();
-    match kind {
-        OwnerRefKind::User => format!("User {id}"),
-        OwnerRefKind::Group => format!("Group {id}"),
+    match owner {
+        OwnerRef::World => "World".to_string(),
+        OwnerRef::Personal(user) => format!("Personal {}", user.into_inner()),
+        OwnerRef::Group(group) => format!("Group {}", group.into_inner()),
     }
 }
 
@@ -225,7 +270,7 @@ mod tests {
     async fn memory_spaces_lists_accessible_principals_without_raw_authority() {
         let personal = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let shared = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
-        let shared_key = space_key(&shared);
+        let shared_key = MemorySpaceKey::owner(shared).to_wire();
         let ctx = make_ctx_with_accessible(vec![personal, shared], AccessScope::Unrestricted);
 
         let out = MemorySpacesTool::call(ctx, MemorySpacesArgs {})
@@ -269,7 +314,7 @@ mod tests {
         let mut accessible_principals = HashSet::new();
         accessible_principals.insert(user);
         let ctx = make_ctx(user, user, accessible_principals, AccessScope::Unrestricted);
-        let hidden_key = space_key(&hidden);
+        let hidden_key = MemorySpaceKey::owner(hidden).to_wire();
 
         let err = resolve_space_owner(&ctx, Some(&hidden_key), SpaceDefault::Current).unwrap_err();
         assert!(

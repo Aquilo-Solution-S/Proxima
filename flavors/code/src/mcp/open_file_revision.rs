@@ -7,7 +7,7 @@ use crate::payloads::FileState;
 
 use super::pg_pool;
 use super::sql::{
-    CHUNK_HEADS_CTE, FILE_REVISION_HEADS_CTE, map_storage, owner_principal, resolve_repo_identifier,
+    CHUNK_HEADS_CTE, FILE_REVISION_HEADS_CTE, map_storage, owner_columns, resolve_repo_identifier,
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -89,20 +89,20 @@ impl McpTool for CodeOpenFileRevisionTool {
             let line_window = requested_line_window(args.line_start, args.line_limit)?;
             let include_text =
                 args.include_text || line_window.is_some() || args.max_text_bytes.is_some();
-            let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+            let (owner_kind, owner_id) = owner_columns(&ctx.owner);
             let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
             let pool = pg_pool(&ctx)?;
 
-            let revision_sql = proxima_storage_pg::access::owner_ref_compat::sql_owned(format!(
+            let revision_sql = format!(
                 "WITH {FILE_REVISION_HEADS_CTE}
                  SELECT memory_id, repo_id, file_path, language, size_bytes,
                         indexed_commit_sha, state
                  FROM file_revision_heads
                  WHERE repo_id = $3 AND file_path = $4"
-            ));
+            );
             let revision = sqlx::query_as::<_, RevisionRow>(&revision_sql)
                 .bind(owner_kind)
-                .bind(owner_principal_id)
+                .bind(owner_id)
                 .bind(repo_id)
                 .bind(&args.file_path)
                 .fetch_optional(pool.as_ref())
@@ -122,7 +122,7 @@ impl McpTool for CodeOpenFileRevisionTool {
                     state: row.state,
                 });
 
-            let chunk_sql = proxima_storage_pg::access::owner_ref_compat::sql_owned(format!(
+            let chunk_sql = format!(
                 "WITH {CHUNK_HEADS_CTE}
                  SELECT memory_id, chunk_index, chunk_type,
                         line_range_start, line_range_end,
@@ -135,10 +135,10 @@ impl McpTool for CodeOpenFileRevisionTool {
                        OR (line_range_end >= $6 AND line_range_start <= $7)
                    )
                  ORDER BY chunk_index ASC"
-            ));
+            );
             let chunk_rows: Vec<ChunkSummaryRow> = sqlx::query_as(&chunk_sql)
                 .bind(owner_kind)
-                .bind(owner_principal_id)
+                .bind(owner_id)
                 .bind(repo_id)
                 .bind(&args.file_path)
                 .bind(include_text)

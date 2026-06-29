@@ -1,26 +1,11 @@
--- Proxima core schema — v0.0.1 single init.
--- Squashed 2026-06-15 from the full dev migration history; then hand-edited
--- 2026-06-15 to drop (a) the change_event outbox notify trigger + function
--- (the LISTEN/NOTIFY push path was retired — change_event is now a pull-only
--- log), (b) the citation_mcp_call_io_v1 table + its pkey/fkey (a pure-link
--- citation mapping carries no sidecar; the citation_mappings row is the whole
--- mapping), (c) the events.payload_ref column (vestigial — never written
--- or read; the payload lives in the schema sidecar, not a ref), and (d) three
--- pieces of dead weight surfaced by a per-table audit: the source_batch_f2a
--- table (retired F2A staging stage — never written by any verb), the
--- personality_config_changed_v1 fact sidecar + its pkey/indexes/fkey (the
--- audit Fact's typed payload lives in its citation cited-object, so this
--- sidecar was always empty), and the change_event.edge_source_kind /
--- edge_target_kind columns (write-only — the endpoint kind is reconstructed
--- from the populated memory_id/goal_id pair on read), and (e) the
--- root_personality_perspective_v1 table + its pkey/fkey (a write-only
--- self-perspective sidecar: display_name is duplicated into memories.text
--- and read from there, purpose was never read by anything after the
--- in-process context-builder was removed in the brain-hub contraction;
--- identity is the emergent result of authored perspectives, not a hardwired
--- charter — so the seed table and the `purpose` instantiate arg are gone).
--- Prefer regenerating from a migrated DB (pg_dump --schema-only) for broad schema
--- changes; targeted object drops like the above may be hand-applied.
+-- Proxima core schema — destructive v0.0.4 baseline.
+-- PR2 folds the pre-v0.0.4 migration stack into one corrected schema truth:
+-- direct OwnerRef columns, no legacy owner/share/read-scope compatibility
+-- tables, Goal topology through ordinary edges, Fact receipt metadata in
+-- fact_receipts, and append-heavy timestamp columns/indexes. Existing
+-- pre-v0.0.4 databases must export/reset before this baseline is applied.
+-- Prefer regenerating from a migrated DB (pg_dump --schema-only) for broad
+-- schema changes; targeted PR2 corrections may be hand-applied here.
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
@@ -34,6 +19,7 @@ CREATE SCHEMA proxima_core;
 CREATE TYPE proxima_core.change_event_kind AS ENUM (
     'EntityAppend',
     'EdgeAppend',
+    'EdgeDelete',
     'EntityDelete'
 );
 
@@ -154,12 +140,25 @@ CREATE TYPE proxima_core.memory_operator_kind AS ENUM (
 
 
 --
--- Name: owner_principal_kind; Type: TYPE; Schema: proxima_core; Owner: -
+-- Name: owner_ref_kind; Type: TYPE; Schema: proxima_core; Owner: -
 --
 
-CREATE TYPE proxima_core.owner_principal_kind AS ENUM (
-    'User',
-    'Group'
+CREATE TYPE proxima_core.owner_ref_kind AS ENUM (
+    'world',
+    'personal',
+    'group'
+);
+
+
+--
+-- Name: membership_relation; Type: TYPE; Schema: proxima_core; Owner: -
+--
+
+CREATE TYPE proxima_core.membership_relation AS ENUM (
+    'admin',
+    'editor',
+    'viewer',
+    'ingest'
 );
 
 
@@ -332,82 +331,54 @@ CREATE FUNCTION proxima_core.validate_edge_invariants() RETURNS trigger
     AS $$
 DECLARE
     source_actual_kind proxima_core.entity_kind;
-    source_owner_kind proxima_core.owner_principal_kind;
+    source_owner_kind proxima_core.owner_ref_kind;
     source_owner_id uuid;
-    source_owner_org_id uuid;
     target_actual_kind proxima_core.entity_kind;
-    target_owner_kind proxima_core.owner_principal_kind;
-    target_owner_id uuid;
-    target_owner_org_id uuid;
     source_layer int;
     target_layer int;
 BEGIN
     IF NEW.source_memory_id IS NOT NULL THEN
         SELECT proxima_core.memory_entity_kind(kind),
-               owner_principal_kind,
-               owner_principal_id,
-               owner_org_id
+               owner_kind,
+               owner_id
           INTO source_actual_kind,
                source_owner_kind,
-               source_owner_id,
-               source_owner_org_id
+               source_owner_id
          FROM proxima_core.memories
          WHERE memory_id = NEW.source_memory_id;
     ELSIF NEW.source_goal_id IS NOT NULL THEN
         SELECT 'Goal'::proxima_core.entity_kind,
-               owner_principal_kind,
-               owner_principal_id,
-               owner_org_id
+               owner_kind,
+               owner_id
           INTO source_actual_kind,
                source_owner_kind,
-               source_owner_id,
-               source_owner_org_id
+               source_owner_id
           FROM proxima_core.goals
          WHERE goal_id = NEW.source_goal_id;
     ELSE
         SELECT 'Fact'::proxima_core.entity_kind,
-               owner_principal_kind,
-               owner_principal_id,
-               owner_org_id
+               owner_kind,
+               owner_id
           INTO source_actual_kind,
                source_owner_kind,
-               source_owner_id,
-               source_owner_org_id
+               source_owner_id
           FROM proxima_core.fact_entities
          WHERE fact_entity_id = NEW.source_fact_entity_id;
     END IF;
 
     IF NEW.target_memory_id IS NOT NULL THEN
-        SELECT proxima_core.memory_entity_kind(kind),
-               owner_principal_kind,
-               owner_principal_id,
-               owner_org_id
-          INTO target_actual_kind,
-               target_owner_kind,
-               target_owner_id,
-               target_owner_org_id
+        SELECT proxima_core.memory_entity_kind(kind)
+          INTO target_actual_kind
          FROM proxima_core.memories
          WHERE memory_id = NEW.target_memory_id;
     ELSIF NEW.target_goal_id IS NOT NULL THEN
-        SELECT 'Goal'::proxima_core.entity_kind,
-               owner_principal_kind,
-               owner_principal_id,
-               owner_org_id
-          INTO target_actual_kind,
-               target_owner_kind,
-               target_owner_id,
-               target_owner_org_id
+        SELECT 'Goal'::proxima_core.entity_kind
+          INTO target_actual_kind
           FROM proxima_core.goals
          WHERE goal_id = NEW.target_goal_id;
     ELSE
-        SELECT 'Fact'::proxima_core.entity_kind,
-               owner_principal_kind,
-               owner_principal_id,
-               owner_org_id
-          INTO target_actual_kind,
-               target_owner_kind,
-               target_owner_id,
-               target_owner_org_id
+        SELECT 'Fact'::proxima_core.entity_kind
+          INTO target_actual_kind
           FROM proxima_core.fact_entities
          WHERE fact_entity_id = NEW.target_fact_entity_id;
     END IF;
@@ -427,15 +398,9 @@ BEGIN
             NEW.target_kind, target_actual_kind;
     END IF;
 
-    IF source_owner_kind <> NEW.owner_principal_kind
-       OR source_owner_id <> NEW.owner_principal_id
-       OR source_owner_org_id <> NEW.owner_org_id THEN
+    IF source_owner_kind <> NEW.owner_kind
+       OR source_owner_id IS DISTINCT FROM NEW.owner_id THEN
         RAISE EXCEPTION 'edge: source crosses Owner boundary';
-    END IF;
-    IF target_owner_kind <> NEW.owner_principal_kind
-       OR target_owner_id <> NEW.owner_principal_id
-       OR target_owner_org_id <> NEW.owner_org_id THEN
-        RAISE EXCEPTION 'edge: target crosses Owner boundary';
     END IF;
 
     source_layer := proxima_core.edge_layer(NEW.source_kind);
@@ -472,15 +437,29 @@ SET default_tablespace = '';
 SET default_table_access_method = heap;
 
 --
+-- Name: group_memberships; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.group_memberships (
+    group_id uuid NOT NULL,
+    member_user_id uuid NOT NULL,
+    relation proxima_core.membership_relation NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT group_memberships_group_not_nil_chk CHECK ((group_id <> '00000000-0000-0000-0000-000000000000'::uuid)),
+    CONSTRAINT group_memberships_member_not_nil_chk CHECK ((member_user_id <> '00000000-0000-0000-0000-000000000000'::uuid))
+);
+
+
+--
 -- Name: change_event; Type: TABLE; Schema: proxima_core; Owner: -
 --
 
 CREATE TABLE proxima_core.change_event (
     seq uuid NOT NULL,
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
     kind proxima_core.change_event_kind NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
     entity_kind proxima_core.entity_kind,
     entity_memory_id uuid,
     entity_goal_id uuid,
@@ -500,7 +479,7 @@ CREATE TABLE proxima_core.change_event (
     wake_chain_depth smallint DEFAULT 0 NOT NULL,
     CONSTRAINT change_event_endpoint_chk CHECK (
         CASE
-            WHEN kind = 'EdgeAppend' THEN
+            WHEN kind IN ('EdgeAppend', 'EdgeDelete') THEN
                 entity_kind IS NULL
                 AND entity_memory_id IS NULL AND entity_goal_id IS NULL
                 AND entity_schema_id IS NULL AND entity_schema_version IS NULL
@@ -518,12 +497,14 @@ CREATE TABLE proxima_core.change_event (
                 AND edge_target_memory_id IS NULL AND edge_target_goal_id IS NULL AND edge_target_fact_entity_id IS NULL
                 AND NOT (supersedes_memory_id IS NOT NULL AND supersedes_goal_id IS NOT NULL)
         END
-    )
+    ),
+    CONSTRAINT change_event_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT change_event_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
 COMMENT ON CONSTRAINT change_event_endpoint_chk ON proxima_core.change_event IS
-  'Endpoint XOR + not-null companions guarding the pull-read decode (change_event.rs). EdgeAppend rows carry edge_id/edge_relation and exactly one of *_memory_id/*_goal_id/*_fact_entity_id per edge endpoint, with all entity/supersedes columns NULL. EntityAppend/EntityDelete rows carry exactly one of entity_memory_id/entity_goal_id plus entity_kind/schema, at most one supersedes endpoint, and all edge columns NULL. Mirrors edges_source/target_endpoint_chk; keeps a raw INSERT from persisting an undecodable row.';
+  'Endpoint XOR + not-null companions guarding the pull-read decode (change_event.rs). EdgeAppend/EdgeDelete rows carry edge_id/edge_relation and exactly one of *_memory_id/*_goal_id/*_fact_entity_id per edge endpoint, with all entity/supersedes columns NULL. EntityAppend/EntityDelete rows carry exactly one of entity_memory_id/entity_goal_id plus entity_kind/schema, at most one supersedes endpoint, and all edge columns NULL. Mirrors edges_source/target_endpoint_chk; keeps a raw INSERT from persisting an undecodable row.';
 
 
 --
@@ -535,10 +516,11 @@ CREATE TABLE proxima_core.citation_mappings (
     schema_id text NOT NULL,
     memory_id uuid NOT NULL,
     cited_object_id uuid NOT NULL,
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT citation_mappings_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT citation_mappings_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
@@ -564,9 +546,8 @@ CREATE TABLE proxima_core.cited_mcp_call_io_v1 (
 --
 
 CREATE TABLE proxima_core.cited_object_uploads (
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
     upload_id uuid NOT NULL,
     bucket text NOT NULL,
     object_key text NOT NULL,
@@ -581,7 +562,9 @@ CREATE TABLE proxima_core.cited_object_uploads (
     aborted_at timestamp with time zone,
     error_message text,
     CONSTRAINT cited_object_uploads_expected_len_chk CHECK ((expected_byte_len >= 0)),
-    CONSTRAINT cited_object_uploads_terminal_shape_chk CHECK ((((status = 'completed'::proxima_core.cited_object_upload_status) AND (cited_object_id IS NOT NULL) AND (completed_at IS NOT NULL)) OR ((status <> 'completed'::proxima_core.cited_object_upload_status) AND (completed_at IS NULL))))
+    CONSTRAINT cited_object_uploads_terminal_shape_chk CHECK ((((status = 'completed'::proxima_core.cited_object_upload_status) AND (cited_object_id IS NOT NULL) AND (completed_at IS NOT NULL)) OR ((status <> 'completed'::proxima_core.cited_object_upload_status) AND (completed_at IS NULL)))),
+    CONSTRAINT cited_object_uploads_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT cited_object_uploads_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
@@ -592,11 +575,12 @@ CREATE TABLE proxima_core.cited_object_uploads (
 CREATE TABLE proxima_core.cited_objects (
     cited_object_id uuid NOT NULL,
     schema_id text NOT NULL,
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
     content_hash bytea NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT cited_objects_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT cited_objects_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
@@ -641,12 +625,13 @@ CREATE TABLE proxima_core.edges (
     target_fact_entity_id uuid,
     authorship_kind proxima_core.edge_authorship_kind NOT NULL,
     authorship_owner_memory_id uuid,
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT edges_source_endpoint_chk CHECK ((num_nonnulls(source_memory_id, source_goal_id, source_fact_entity_id) = 1 AND (source_fact_entity_id IS NULL OR source_kind = 'Fact'::proxima_core.entity_kind))),
-    CONSTRAINT edges_target_endpoint_chk CHECK ((num_nonnulls(target_memory_id, target_goal_id, target_fact_entity_id) = 1 AND (target_fact_entity_id IS NULL OR target_kind = 'Fact'::proxima_core.entity_kind)))
+    CONSTRAINT edges_target_endpoint_chk CHECK ((num_nonnulls(target_memory_id, target_goal_id, target_fact_entity_id) = 1 AND (target_fact_entity_id IS NULL OR target_kind = 'Fact'::proxima_core.entity_kind))),
+    CONSTRAINT edges_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT edges_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
@@ -664,10 +649,11 @@ CREATE TABLE proxima_core.embeddings (
     embedding_version integer DEFAULT 1 NOT NULL,
     model_id text NOT NULL,
     vec vector(1024) NOT NULL,
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT embeddings_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT embeddings_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
@@ -676,9 +662,8 @@ CREATE TABLE proxima_core.embeddings (
 --
 
 CREATE TABLE proxima_core.embedding_jobs (
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
     entity_kind proxima_core.entity_kind NOT NULL,
     entity_id uuid NOT NULL,
     model_id text NOT NULL,
@@ -687,25 +672,30 @@ CREATE TABLE proxima_core.embedding_jobs (
     attempts integer DEFAULT 0 NOT NULL,
     last_error text,
     enqueued_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT embedding_jobs_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT embedding_jobs_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
 --
--- Name: events; Type: TABLE; Schema: proxima_core; Owner: -
+-- Name: fact_receipts; Type: TABLE; Schema: proxima_core; Owner: -
 --
 
-CREATE TABLE proxima_core.events (
-    event_id bytea NOT NULL,
-    source_id text NOT NULL,
+CREATE TABLE proxima_core.fact_receipts (
+    receipt_id bytea NOT NULL,
+    source text NOT NULL,
     source_batch_id uuid NOT NULL,
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
     schema_id text NOT NULL,
     schema_version integer NOT NULL,
-    observed_at timestamp with time zone NOT NULL,
-    occurred_at timestamp with time zone NOT NULL
+    payload_hash bytea NOT NULL DEFAULT '\x'::bytea,
+    occurred_at timestamp with time zone NOT NULL,
+    observed_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT fact_receipts_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind) AND (owner_id IS NULL)) OR ((owner_kind = ANY (ARRAY['personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind])) AND (owner_id IS NOT NULL))),
+    CONSTRAINT fact_receipts_schema_version_positive_chk CHECK ((schema_version > 0)),
+    CONSTRAINT fact_receipts_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
@@ -715,27 +705,17 @@ CREATE TABLE proxima_core.events (
 
 CREATE TABLE proxima_core.fact_entities (
     fact_entity_id uuid NOT NULL,
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
     schema_id text NOT NULL,
     schema_version integer NOT NULL,
     natural_key text[] NOT NULL,
     current_memory_id uuid NOT NULL,
     current_created_at timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT fact_entities_schema_version_positive_chk CHECK ((schema_version > 0))
-);
-
-
---
--- Name: goal_parents; Type: TABLE; Schema: proxima_core; Owner: -
---
-
-CREATE TABLE proxima_core.goal_parents (
-    goal_id uuid NOT NULL,
-    parent_goal_id uuid NOT NULL,
-    CONSTRAINT goal_parents_no_self CHECK ((goal_id <> parent_goal_id))
+    CONSTRAINT fact_entities_schema_version_positive_chk CHECK ((schema_version > 0)),
+    CONSTRAINT fact_entities_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT fact_entities_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
@@ -746,9 +726,8 @@ CREATE TABLE proxima_core.goal_parents (
 CREATE TABLE proxima_core.goals (
     goal_id uuid NOT NULL,
     schema_id text NOT NULL,
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
     text text NOT NULL,
     state proxima_core.goal_state NOT NULL,
     supersedes uuid,
@@ -761,6 +740,7 @@ CREATE TABLE proxima_core.goals (
     prompt_version text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     request_id text NOT NULL,
+    idempotency_key text NOT NULL,
     schema_version integer NOT NULL,
     payload bytea NOT NULL,
     title text NOT NULL,
@@ -770,12 +750,14 @@ CREATE TABLE proxima_core.goals (
     CONSTRAINT goals_payload_nonempty_chk CHECK ((octet_length(payload) > 0)),
     CONSTRAINT goals_request_id_nonempty CHECK ((length(btrim(request_id)) > 0)),
     CONSTRAINT goals_text_nonempty CHECK ((length(btrim(text)) > 0)),
-    CONSTRAINT goals_title_nonempty CHECK ((length(btrim(title)) > 0))
+    CONSTRAINT goals_title_nonempty CHECK ((length(btrim(title)) > 0)),
+    CONSTRAINT goals_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT goals_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
 COMMENT ON TABLE proxima_core.goals IS
-  'The Goal node kind (desired end-states), kept out of memories because it carries a lifecycle (state), an authorship model (authorship_kind: User/System/External), and a parent DAG (goal_parents). System goals are operator-derived via the AtoGoal operator (Abstraction -> Goal). See docs/06-goals-and-self.md.';
+  'The Goal node kind (desired end-states), kept out of memories because it carries a lifecycle and authorship model. Goal topology is ordinary proxima_core.edges. See docs/06-goals-and-self.md.';
 
 
 COMMENT ON CONSTRAINT goals_payload_nonempty_chk ON proxima_core.goals IS
@@ -867,11 +849,12 @@ COMMENT ON TABLE proxima_core.task_goal_v1 IS
 
 CREATE TABLE proxima_core.master_token_personality (
     master_token_id uuid NOT NULL,
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
     personality_instance_id uuid NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT master_token_personality_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT master_token_personality_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
@@ -903,12 +886,11 @@ CREATE TABLE proxima_core.mcp_call_logged_v1 (
 CREATE TABLE proxima_core.memories (
     memory_id uuid NOT NULL,
     fact_entity_id uuid,
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
     schema_id text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    event_id bytea,
+    receipt_id bytea,
     citation_mapping_id uuid,
     kind proxima_core.entity_kind,
     text text,
@@ -920,22 +902,24 @@ CREATE TABLE proxima_core.memories (
     personality_instance_id uuid NOT NULL,
     wake_chain_depth smallint DEFAULT 0 NOT NULL,
     tombstoned_at timestamp with time zone,
-    CONSTRAINT memories_fact_entity_chk CHECK ((fact_entity_id IS NULL OR (event_id IS NOT NULL AND kind IS NULL))),
+    CONSTRAINT memories_fact_entity_chk CHECK ((fact_entity_id IS NULL OR (receipt_id IS NOT NULL AND kind IS NULL))),
     CONSTRAINT memories_kind_values_chk CHECK (((kind IS NULL) OR (kind = ANY (ARRAY['Abstraction'::proxima_core.entity_kind, 'Perspective'::proxima_core.entity_kind])))),
     CONSTRAINT memories_schema_version_positive_chk CHECK ((schema_version > 0)),
-    CONSTRAINT memories_variant_chk CHECK ((((event_id IS NOT NULL) AND (kind IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (supersedes IS NULL)) OR ((kind IS NOT NULL) AND (text IS NOT NULL) AND (operator_kind IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (event_id IS NULL) AND (citation_mapping_id IS NULL)))),
-    CONSTRAINT memories_wake_chain_depth_chk CHECK ((wake_chain_depth >= 0))
+    CONSTRAINT memories_variant_chk CHECK ((((receipt_id IS NOT NULL) AND (kind IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (supersedes IS NULL)) OR ((kind IS NOT NULL) AND (text IS NOT NULL) AND (operator_kind IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (receipt_id IS NULL) AND (citation_mapping_id IS NULL)))),
+    CONSTRAINT memories_wake_chain_depth_chk CHECK ((wake_chain_depth >= 0)),
+    CONSTRAINT memories_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT memories_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
 COMMENT ON TABLE proxima_core.memories IS
-  'Graph nodes of kind Fact | Abstraction | Perspective (the fourth node kind, Goal, lives in goals). Discriminated by the kind column via memories_variant_chk: Fact = kind NULL + event_id set (an ingested event-stream entry, may carry an optional citation_mapping_id); Abstraction (FtoA operator) and Perspective (AtoP operator) = kind set, operator-derived (operator_kind/model_id/prompt_version), with no event_id or citation. See docs/02-memory.md for the Fact -> Abstraction -> Perspective -> Goal derivation pipeline.';
+  'Graph nodes of kind Fact | Abstraction | Perspective (the fourth node kind, Goal, lives in goals). Discriminated by the kind column via memories_variant_chk: Fact = kind NULL + receipt_id set (an ingested fact receipt-stream entry, may carry an optional citation_mapping_id); Abstraction (FtoA operator) and Perspective (AtoP operator) = kind set, operator-derived (operator_kind/model_id/prompt_version), with no receipt_id or citation. See docs/02-memory.md for the Fact -> Abstraction -> Perspective -> Goal derivation pipeline.';
 
 COMMENT ON COLUMN proxima_core.memories.kind IS
   'NULL => Fact; otherwise Abstraction or Perspective (constrained by memories_kind_values_chk + memories_variant_chk).';
 
-COMMENT ON COLUMN proxima_core.memories.event_id IS
-  'Set only on Facts: the source event (proxima_core.events) this Fact was ingested from. NULL on Abstractions/Perspectives.';
+COMMENT ON COLUMN proxima_core.memories.receipt_id IS
+  'Set only on Facts: the source fact receipt (proxima_core.fact_receipts) this Fact was ingested from. NULL on Abstractions/Perspectives.';
 
 COMMENT ON COLUMN proxima_core.memories.citation_mapping_id IS
   'Optional outside-proof for a Fact (-> citation_mappings). Forbidden on Abstractions/Perspectives.';
@@ -946,12 +930,13 @@ COMMENT ON COLUMN proxima_core.memories.citation_mapping_id IS
 --
 
 CREATE TABLE proxima_core.owner_fact_retention (
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
     retention_seconds bigint NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT owner_fact_retention_retention_seconds_check CHECK ((retention_seconds > 0))
+    CONSTRAINT owner_fact_retention_retention_seconds_check CHECK ((retention_seconds > 0)),
+    CONSTRAINT owner_fact_retention_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT owner_fact_retention_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
@@ -960,9 +945,8 @@ CREATE TABLE proxima_core.owner_fact_retention (
 --
 
 CREATE TABLE proxima_core.personality (
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
     personality_instance_id uuid NOT NULL,
     current_root_perspective_memory_id uuid NOT NULL,
     max_wake_chain_depth integer DEFAULT 10 NOT NULL,
@@ -971,7 +955,9 @@ CREATE TABLE proxima_core.personality (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     tombstoned_at timestamp with time zone,
     CONSTRAINT personality_depth_chk CHECK ((max_wake_chain_depth >= 0)),
-    CONSTRAINT personality_tombstoned_at_chk CHECK (((status = 'tombstoned'::proxima_core.personality_status) = (tombstoned_at IS NOT NULL)))
+    CONSTRAINT personality_tombstoned_at_chk CHECK (((status = 'tombstoned'::proxima_core.personality_status) = (tombstoned_at IS NOT NULL))),
+    CONSTRAINT personality_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT personality_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
@@ -980,9 +966,8 @@ CREATE TABLE proxima_core.personality (
 --
 
 CREATE TABLE proxima_core.personality_wake_entries (
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
     personality_instance_id uuid NOT NULL,
     wake_entry_id uuid NOT NULL,
     trigger_kind proxima_core.wake_trigger_kind NOT NULL,
@@ -996,22 +981,9 @@ CREATE TABLE proxima_core.personality_wake_entries (
     tombstoned_at timestamp with time zone,
     goal_scope proxima_core.wake_goal_scope DEFAULT 'none'::proxima_core.wake_goal_scope NOT NULL,
     instructions text DEFAULT ''::text NOT NULL,
-    CONSTRAINT personality_wake_entries_probability_chk CHECK (((probability_promille >= 0) AND (probability_promille <= 1000)))
-);
-
-
---
--- Name: read_scope_matrix; Type: TABLE; Schema: proxima_core; Owner: -
---
-
-CREATE TABLE proxima_core.read_scope_matrix (
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
-    reader_personality_instance_id uuid NOT NULL,
-    readable_personality_instance_id uuid NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT read_scope_matrix_no_identity_chk CHECK ((reader_personality_instance_id <> readable_personality_instance_id))
+    CONSTRAINT personality_wake_entries_probability_chk CHECK (((probability_promille >= 0) AND (probability_promille <= 1000))),
+    CONSTRAINT personality_wake_entries_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT personality_wake_entries_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
@@ -1022,11 +994,12 @@ CREATE TABLE proxima_core.read_scope_matrix (
 CREATE TABLE proxima_core.source_batches (
     id uuid NOT NULL,
     source_id text NOT NULL,
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
     opened_at timestamp with time zone DEFAULT now() NOT NULL,
-    closed_at timestamp with time zone
+    closed_at timestamp with time zone,
+    CONSTRAINT source_batches_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT source_batches_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
@@ -1035,19 +1008,26 @@ CREATE TABLE proxima_core.source_batches (
 --
 
 CREATE TABLE proxima_core.subject_personality (
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
-    subject_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    subject_principal_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
+    subject_owner_kind proxima_core.owner_ref_kind NOT NULL,
+    subject_owner_id uuid NOT NULL,
     personality_instance_id uuid NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT subject_personality_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT subject_personality_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind)),
+    CONSTRAINT subject_personality_subject_owner_ref_shape_chk CHECK (((subject_owner_kind = 'world'::proxima_core.owner_ref_kind AND subject_owner_id IS NULL) OR (subject_owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND subject_owner_id IS NOT NULL))),
+    CONSTRAINT subject_personality_subject_world_not_write_owner_chk CHECK ((subject_owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
 --
 -- Name: change_event change_event_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
 --
+
+ALTER TABLE ONLY proxima_core.group_memberships
+    ADD CONSTRAINT group_memberships_pkey PRIMARY KEY (group_id, member_user_id, relation);
+
 
 ALTER TABLE ONLY proxima_core.change_event
     ADD CONSTRAINT change_event_pkey PRIMARY KEY (seq);
@@ -1082,7 +1062,7 @@ ALTER TABLE ONLY proxima_core.cited_mcp_call_io_v1
 --
 
 ALTER TABLE ONLY proxima_core.cited_object_uploads
-    ADD CONSTRAINT cited_object_uploads_pkey PRIMARY KEY (owner_principal_kind, owner_principal_id, owner_org_id, upload_id);
+    ADD CONSTRAINT cited_object_uploads_pkey PRIMARY KEY (owner_kind, owner_id, upload_id);
 
 
 --
@@ -1098,7 +1078,7 @@ ALTER TABLE ONLY proxima_core.cited_objects
 --
 
 ALTER TABLE ONLY proxima_core.cited_objects
-    ADD CONSTRAINT cited_objects_unique_per_owner UNIQUE (owner_principal_kind, owner_principal_id, owner_org_id, schema_id, content_hash);
+    ADD CONSTRAINT cited_objects_unique_per_owner UNIQUE (owner_kind, owner_id, schema_id, content_hash);
 
 
 --
@@ -1130,15 +1110,15 @@ ALTER TABLE ONLY proxima_core.embeddings
 --
 
 ALTER TABLE ONLY proxima_core.embedding_jobs
-    ADD CONSTRAINT embedding_jobs_pkey PRIMARY KEY (owner_principal_kind, owner_principal_id, owner_org_id, entity_kind, entity_id, model_id, embedding_version);
+    ADD CONSTRAINT embedding_jobs_pkey PRIMARY KEY (owner_kind, owner_id, entity_kind, entity_id, model_id, embedding_version);
 
 
 --
--- Name: events events_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+-- Name: fact_receipts fact_receipts_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
-ALTER TABLE ONLY proxima_core.events
-    ADD CONSTRAINT events_pkey PRIMARY KEY (event_id);
+ALTER TABLE ONLY proxima_core.fact_receipts
+    ADD CONSTRAINT fact_receipts_pkey PRIMARY KEY (receipt_id);
 
 
 --
@@ -1146,7 +1126,7 @@ ALTER TABLE ONLY proxima_core.events
 --
 
 ALTER TABLE ONLY proxima_core.fact_entities
-    ADD CONSTRAINT fact_entities_identity_uq UNIQUE (owner_principal_kind, owner_principal_id, owner_org_id, schema_id, schema_version, natural_key);
+    ADD CONSTRAINT fact_entities_identity_uq UNIQUE (owner_kind, owner_id, schema_id, schema_version, natural_key);
 
 
 --
@@ -1156,13 +1136,6 @@ ALTER TABLE ONLY proxima_core.fact_entities
 ALTER TABLE ONLY proxima_core.fact_entities
     ADD CONSTRAINT fact_entities_pkey PRIMARY KEY (fact_entity_id);
 
-
---
--- Name: goal_parents goal_parents_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.goal_parents
-    ADD CONSTRAINT goal_parents_pkey PRIMARY KEY (goal_id, parent_goal_id);
 
 
 --
@@ -1206,11 +1179,11 @@ ALTER TABLE ONLY proxima_core.goals
 
 
 --
--- Name: goals goals_request_id_idem; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+-- Name: goals goals_idempotency_key; Type: CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
 ALTER TABLE ONLY proxima_core.goals
-    ADD CONSTRAINT goals_request_id_idem UNIQUE (owner_principal_kind, owner_principal_id, owner_org_id, request_id);
+    ADD CONSTRAINT goals_idempotency_key UNIQUE (idempotency_key);
 
 
 --
@@ -1226,7 +1199,7 @@ ALTER TABLE ONLY proxima_core.task_goal_v1
 --
 
 ALTER TABLE ONLY proxima_core.master_token_personality
-    ADD CONSTRAINT master_token_personality_pkey PRIMARY KEY (master_token_id, owner_principal_kind, owner_principal_id, owner_org_id);
+    ADD CONSTRAINT master_token_personality_pkey PRIMARY KEY (master_token_id, owner_kind, owner_id);
 
 
 --
@@ -1238,11 +1211,11 @@ ALTER TABLE ONLY proxima_core.mcp_call_logged_v1
 
 
 --
--- Name: memories memories_one_fact_per_event; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+-- Name: memories memories_one_fact_per_receipt; Type: CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
 ALTER TABLE ONLY proxima_core.memories
-    ADD CONSTRAINT memories_one_fact_per_event UNIQUE (event_id);
+    ADD CONSTRAINT memories_one_fact_per_receipt UNIQUE (receipt_id);
 
 
 --
@@ -1258,7 +1231,7 @@ ALTER TABLE ONLY proxima_core.memories
 --
 
 ALTER TABLE ONLY proxima_core.owner_fact_retention
-    ADD CONSTRAINT owner_fact_retention_pkey PRIMARY KEY (owner_principal_kind, owner_principal_id, owner_org_id);
+    ADD CONSTRAINT owner_fact_retention_pkey PRIMARY KEY (owner_kind, owner_id);
 
 
 --
@@ -1274,7 +1247,7 @@ ALTER TABLE ONLY proxima_core.personality
 --
 
 ALTER TABLE ONLY proxima_core.personality
-    ADD CONSTRAINT personality_pkey PRIMARY KEY (owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id);
+    ADD CONSTRAINT personality_pkey PRIMARY KEY (owner_kind, owner_id, personality_instance_id);
 
 
 --
@@ -1282,15 +1255,8 @@ ALTER TABLE ONLY proxima_core.personality
 --
 
 ALTER TABLE ONLY proxima_core.personality_wake_entries
-    ADD CONSTRAINT personality_wake_entries_pkey PRIMARY KEY (owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id, wake_entry_id);
+    ADD CONSTRAINT personality_wake_entries_pkey PRIMARY KEY (owner_kind, owner_id, personality_instance_id, wake_entry_id);
 
-
---
--- Name: read_scope_matrix read_scope_matrix_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.read_scope_matrix
-    ADD CONSTRAINT read_scope_matrix_pkey PRIMARY KEY (owner_principal_kind, owner_principal_id, owner_org_id, reader_personality_instance_id, readable_personality_instance_id);
 
 
 --
@@ -1306,7 +1272,7 @@ ALTER TABLE ONLY proxima_core.source_batches
 --
 
 ALTER TABLE ONLY proxima_core.source_batches
-    ADD CONSTRAINT source_batches_unique_per_source UNIQUE (source_id, owner_principal_kind, owner_principal_id, owner_org_id, id);
+    ADD CONSTRAINT source_batches_unique_per_source UNIQUE (source_id, owner_kind, owner_id, id);
 
 
 --
@@ -1314,7 +1280,7 @@ ALTER TABLE ONLY proxima_core.source_batches
 --
 
 ALTER TABLE ONLY proxima_core.subject_personality
-    ADD CONSTRAINT subject_personality_pkey PRIMARY KEY (subject_principal_kind, subject_principal_id, owner_principal_kind, owner_principal_id, owner_org_id);
+    ADD CONSTRAINT subject_personality_pkey PRIMARY KEY (subject_owner_kind, subject_owner_id, owner_kind, owner_id);
 
 
 --
@@ -1342,7 +1308,21 @@ CREATE INDEX cited_object_uploads_upload_id_idx ON proxima_core.cited_object_upl
 -- Name: idx_change_event_owner_seq; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
-CREATE INDEX idx_change_event_owner_seq ON proxima_core.change_event USING btree (owner_principal_kind, owner_principal_id, seq);
+CREATE INDEX idx_change_event_owner_seq ON proxima_core.change_event USING btree (owner_kind, owner_id, seq);
+
+
+--
+-- Name: idx_change_event_owner_created; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_change_event_owner_created ON proxima_core.change_event USING btree (owner_kind, owner_id, created_at);
+
+
+--
+-- Name: idx_group_memberships_member; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_group_memberships_member ON proxima_core.group_memberships USING btree (member_user_id, group_id, relation);
 
 
 --
@@ -1370,7 +1350,14 @@ CREATE INDEX idx_edges_authorship_owner ON proxima_core.edges USING btree (autho
 -- Name: idx_edges_owner; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
-CREATE INDEX idx_edges_owner ON proxima_core.edges USING btree (owner_principal_kind, owner_principal_id, owner_org_id);
+CREATE INDEX idx_edges_owner ON proxima_core.edges USING btree (owner_kind, owner_id);
+
+--
+-- Name: idx_edges_owner_created; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_edges_owner_created ON proxima_core.edges USING btree (owner_kind, owner_id, created_at);
+
 
 
 --
@@ -1393,12 +1380,26 @@ CREATE INDEX idx_edges_relation ON proxima_core.edges USING btree (relation);
 
 CREATE INDEX idx_edges_source_memory ON proxima_core.edges USING btree (source_memory_id) WHERE (source_memory_id IS NOT NULL);
 
+--
+-- Name: idx_edges_source_memory_created; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_edges_source_memory_created ON proxima_core.edges USING btree (source_memory_id, created_at) WHERE (source_memory_id IS NOT NULL);
+
+
 
 --
 -- Name: idx_edges_source_goal; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
 CREATE INDEX idx_edges_source_goal ON proxima_core.edges USING btree (source_goal_id) WHERE (source_goal_id IS NOT NULL);
+
+--
+-- Name: idx_edges_source_goal_created; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_edges_source_goal_created ON proxima_core.edges USING btree (source_goal_id, created_at) WHERE (source_goal_id IS NOT NULL);
+
 
 
 --
@@ -1407,12 +1408,26 @@ CREATE INDEX idx_edges_source_goal ON proxima_core.edges USING btree (source_goa
 
 CREATE INDEX idx_edges_source_fact_entity ON proxima_core.edges USING btree (source_fact_entity_id) WHERE (source_fact_entity_id IS NOT NULL);
 
+--
+-- Name: idx_edges_source_fact_entity_created; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_edges_source_fact_entity_created ON proxima_core.edges USING btree (source_fact_entity_id, created_at) WHERE (source_fact_entity_id IS NOT NULL);
+
+
 
 --
 -- Name: idx_edges_target_memory; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
 CREATE INDEX idx_edges_target_memory ON proxima_core.edges USING btree (target_memory_id) WHERE (target_memory_id IS NOT NULL);
+
+--
+-- Name: idx_edges_target_memory_created; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_edges_target_memory_created ON proxima_core.edges USING btree (target_memory_id, created_at) WHERE (target_memory_id IS NOT NULL);
+
 
 
 --
@@ -1421,6 +1436,13 @@ CREATE INDEX idx_edges_target_memory ON proxima_core.edges USING btree (target_m
 
 CREATE INDEX idx_edges_target_goal ON proxima_core.edges USING btree (target_goal_id) WHERE (target_goal_id IS NOT NULL);
 
+--
+-- Name: idx_edges_target_goal_created; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_edges_target_goal_created ON proxima_core.edges USING btree (target_goal_id, created_at) WHERE (target_goal_id IS NOT NULL);
+
+
 
 --
 -- Name: idx_edges_target_fact_entity; Type: INDEX; Schema: proxima_core; Owner: -
@@ -1428,12 +1450,19 @@ CREATE INDEX idx_edges_target_goal ON proxima_core.edges USING btree (target_goa
 
 CREATE INDEX idx_edges_target_fact_entity ON proxima_core.edges USING btree (target_fact_entity_id) WHERE (target_fact_entity_id IS NOT NULL);
 
+--
+-- Name: idx_edges_target_fact_entity_created; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_edges_target_fact_entity_created ON proxima_core.edges USING btree (target_fact_entity_id, created_at) WHERE (target_fact_entity_id IS NOT NULL);
+
+
 
 --
 -- Name: idx_embeddings_owner; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
-CREATE INDEX idx_embeddings_owner ON proxima_core.embeddings USING btree (owner_principal_kind, owner_principal_id, owner_org_id);
+CREATE INDEX idx_embeddings_owner ON proxima_core.embeddings USING btree (owner_kind, owner_id);
 
 
 --
@@ -1451,24 +1480,18 @@ CREATE INDEX idx_embeddings_vec_hnsw ON proxima_core.embeddings USING hnsw (vec 
 
 
 --
--- Name: idx_events_owner_observed; Type: INDEX; Schema: proxima_core; Owner: -
+-- Name: idx_fact_receipts_owner_observed; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
-CREATE INDEX idx_events_owner_observed ON proxima_core.events USING btree (owner_principal_kind, owner_principal_id, owner_org_id, observed_at DESC);
-
-
---
--- Name: idx_events_source_batch; Type: INDEX; Schema: proxima_core; Owner: -
---
-
-CREATE INDEX idx_events_source_batch ON proxima_core.events USING btree (source_batch_id);
+CREATE INDEX idx_fact_receipts_owner_observed ON proxima_core.fact_receipts USING btree (owner_kind, owner_id, observed_at DESC);
 
 
 --
--- Name: idx_goal_parents_parent_goal_id; Type: INDEX; Schema: proxima_core; Owner: -
+-- Name: idx_fact_receipts_source_batch; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
-CREATE INDEX idx_goal_parents_parent_goal_id ON proxima_core.goal_parents USING btree (parent_goal_id);
+CREATE INDEX idx_fact_receipts_source_batch ON proxima_core.fact_receipts USING btree (source_batch_id);
+
 
 
 --
@@ -1503,7 +1526,14 @@ CREATE INDEX idx_goal_paused_v1_goal ON proxima_core.goal_paused_v1 USING btree 
 -- Name: idx_goals_owner_state; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
-CREATE INDEX idx_goals_owner_state ON proxima_core.goals USING btree (owner_principal_kind, owner_principal_id, owner_org_id, state);
+CREATE INDEX idx_goals_owner_state ON proxima_core.goals USING btree (owner_kind, owner_id, state);
+
+--
+-- Name: idx_goals_owner_state_created; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_goals_owner_state_created ON proxima_core.goals USING btree (owner_kind, owner_id, state, created_at);
+
 
 
 --
@@ -1524,7 +1554,7 @@ CREATE UNIQUE INDEX idx_master_token_personality_instance ON proxima_core.master
 -- Name: idx_memories_owner_kind; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
-CREATE INDEX idx_memories_owner_kind ON proxima_core.memories USING btree (owner_principal_kind, owner_principal_id, owner_org_id, kind);
+CREATE INDEX idx_memories_owner_kind ON proxima_core.memories USING btree (owner_kind, owner_id, kind);
 
 
 --
@@ -1538,7 +1568,7 @@ CREATE INDEX idx_memories_fact_entity ON proxima_core.memories USING btree (fact
 -- Name: memories owner-created lookup; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
-CREATE INDEX idx_memories_owner_created ON proxima_core.memories USING btree (owner_principal_kind, owner_principal_id, created_at);
+CREATE INDEX idx_memories_owner_created ON proxima_core.memories USING btree (owner_kind, owner_id, created_at);
 
 
 --
@@ -1552,35 +1582,29 @@ CREATE INDEX idx_memories_personality_instance ON proxima_core.memories USING bt
 -- Name: idx_memories_retention_due; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
-CREATE INDEX idx_memories_retention_due ON proxima_core.memories USING btree (owner_principal_kind, owner_principal_id, owner_org_id, created_at) WHERE ((event_id IS NOT NULL) AND (citation_mapping_id IS NOT NULL) AND (tombstoned_at IS NULL));
+CREATE INDEX idx_memories_retention_due ON proxima_core.memories USING btree (owner_kind, owner_id, created_at) WHERE ((receipt_id IS NOT NULL) AND (citation_mapping_id IS NOT NULL) AND (tombstoned_at IS NULL));
 
 
 --
--- Name: idx_memories_supersedes; Type: INDEX; Schema: proxima_core; Owner: -
+-- Name: idx_memories_supersedes_uq; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
-CREATE INDEX idx_memories_supersedes ON proxima_core.memories USING btree (supersedes) WHERE (supersedes IS NOT NULL);
+CREATE UNIQUE INDEX idx_memories_supersedes_uq ON proxima_core.memories USING btree (supersedes) WHERE (supersedes IS NOT NULL);
 
-
---
--- Name: idx_read_scope_matrix_readable; Type: INDEX; Schema: proxima_core; Owner: -
---
-
-CREATE INDEX idx_read_scope_matrix_readable ON proxima_core.read_scope_matrix USING btree (owner_principal_kind, owner_principal_id, owner_org_id, readable_personality_instance_id);
 
 
 --
 -- Name: idx_source_batches_owner; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
-CREATE INDEX idx_source_batches_owner ON proxima_core.source_batches USING btree (owner_principal_kind, owner_principal_id, owner_org_id);
+CREATE INDEX idx_source_batches_owner ON proxima_core.source_batches USING btree (owner_kind, owner_id);
 
 
 --
 -- Name: personality_wake_entries_active_trigger_uq; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
-CREATE UNIQUE INDEX personality_wake_entries_active_trigger_uq ON proxima_core.personality_wake_entries USING btree (owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id, trigger_kind, trigger_id) WHERE (tombstoned_at IS NULL);
+CREATE UNIQUE INDEX personality_wake_entries_active_trigger_uq ON proxima_core.personality_wake_entries USING btree (owner_kind, owner_id, personality_instance_id, trigger_kind, trigger_id) WHERE (tombstoned_at IS NULL);
 
 
 --
@@ -1709,11 +1733,11 @@ ALTER TABLE ONLY proxima_core.edges
 
 
 --
--- Name: events events_source_batch_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+-- Name: fact_receipts fact_receipts_source_batch_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
-ALTER TABLE ONLY proxima_core.events
-    ADD CONSTRAINT events_source_batch_id_fkey FOREIGN KEY (source_batch_id) REFERENCES proxima_core.source_batches(id);
+ALTER TABLE ONLY proxima_core.fact_receipts
+    ADD CONSTRAINT fact_receipts_source_batch_id_fkey FOREIGN KEY (source_batch_id) REFERENCES proxima_core.source_batches(id);
 
 
 --
@@ -1788,20 +1812,6 @@ ALTER TABLE ONLY proxima_core.goal_paused_v1
     ADD CONSTRAINT goal_paused_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
 
 
---
--- Name: goal_parents goal_parents_goal_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.goal_parents
-    ADD CONSTRAINT goal_parents_goal_id_fkey FOREIGN KEY (goal_id) REFERENCES proxima_core.goals(goal_id);
-
-
---
--- Name: goal_parents goal_parents_parent_goal_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.goal_parents
-    ADD CONSTRAINT goal_parents_parent_goal_id_fkey FOREIGN KEY (parent_goal_id) REFERENCES proxima_core.goals(goal_id);
 
 
 --
@@ -1845,11 +1855,11 @@ ALTER TABLE ONLY proxima_core.memories
 
 
 --
--- Name: memories memories_event_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+-- Name: memories memories_receipt_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
 ALTER TABLE ONLY proxima_core.memories
-    ADD CONSTRAINT memories_event_id_fkey FOREIGN KEY (event_id) REFERENCES proxima_core.events(event_id);
+    ADD CONSTRAINT memories_receipt_id_fkey FOREIGN KEY (receipt_id) REFERENCES proxima_core.fact_receipts(receipt_id);
 
 
 --
@@ -1877,27 +1887,13 @@ ALTER TABLE ONLY proxima_core.personality
 
 
 --
--- Name: personality_wake_entries personality_wake_entries_owner_principal_kind_owner_princi_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+-- Name: personality_wake_entries personality_wake_entries_owner_kind_owner_princi_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
 ALTER TABLE ONLY proxima_core.personality_wake_entries
-    ADD CONSTRAINT personality_wake_entries_owner_principal_kind_owner_princi_fkey FOREIGN KEY (owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id) REFERENCES proxima_core.personality(owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id);
+    ADD CONSTRAINT personality_wake_entries_owner_kind_owner_princi_fkey FOREIGN KEY (owner_kind, owner_id, personality_instance_id) REFERENCES proxima_core.personality(owner_kind, owner_id, personality_instance_id);
 
 
---
--- Name: read_scope_matrix read_scope_matrix_owner_principal_kind_owner_principal_id__fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.read_scope_matrix
-    ADD CONSTRAINT read_scope_matrix_owner_principal_kind_owner_principal_id__fkey FOREIGN KEY (owner_principal_kind, owner_principal_id, owner_org_id, reader_personality_instance_id) REFERENCES proxima_core.personality(owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id);
-
-
---
--- Name: read_scope_matrix read_scope_matrix_owner_principal_kind_owner_principal_id_fkey1; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.read_scope_matrix
-    ADD CONSTRAINT read_scope_matrix_owner_principal_kind_owner_principal_id_fkey1 FOREIGN KEY (owner_principal_kind, owner_principal_id, owner_org_id, readable_personality_instance_id) REFERENCES proxima_core.personality(owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id);
 
 
 --

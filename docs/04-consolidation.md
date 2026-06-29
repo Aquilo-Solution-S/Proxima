@@ -39,7 +39,7 @@ Phase split:
 |---|---|
 | `id` | UUIDv7 declared by the source; unique within `(source_id, owner)` |
 | `source_id` | source identity |
-| owner | `owner_principal_kind`, `owner_principal_id` |
+| owner | `owner_kind`, `owner_id` |
 | `opened_at`, `closed_at` | open vs closed lifecycle |
 
 Domain metadata belongs on `CitedObject` / `CitationMapping` sidecars, not on

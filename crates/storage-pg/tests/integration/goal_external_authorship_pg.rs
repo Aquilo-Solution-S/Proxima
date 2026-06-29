@@ -7,7 +7,7 @@ use proxima_core::{Owner, OwnerRef, OwnerRefKind, UserId};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
-fn owner_parts(owner: &Owner) -> (OwnerRefKind, Uuid) {
+fn owner_parts(owner: &Owner) -> (OwnerRefKind, Option<Uuid>) {
     owner.columns()
 }
 
@@ -17,20 +17,20 @@ async fn insert_external_seed(
     state: GoalState,
     request_id: &str,
 ) -> Result<(), sqlx::Error> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
+    let (owner_kind, owner_id) = owner_parts(owner);
     sqlx::query(
         "INSERT INTO proxima_core.goals
-            (goal_id, schema_id, schema_version,
+            (goal_id, owner_kind, owner_id, schema_id, schema_version,
              title, text, payload, state,
              authorship_kind, request_id, idempotency_key)
-         VALUES ($1, 'core/simple-text-v1', 1,
+         VALUES ($1, $2, $3, 'core/simple-text-v1', 1,
                  $4, $4, convert_to('{}', 'UTF8'), $5,
                  'External', $6,
                  md5($2::text || ':' || $3::text || ':' || $6))",
     )
     .bind(Uuid::now_v7())
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(request_id)
     .bind(state)
     .bind(request_id)

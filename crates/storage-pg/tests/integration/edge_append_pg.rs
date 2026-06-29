@@ -178,14 +178,13 @@ async fn seed_membership(
         panic!("user principal required");
     };
     sqlx::query(
-        "INSERT INTO proxima_core.group_membership
-            (group_id, member_user_id, relation, granted_by)
-         VALUES ($1, $2, $3::proxima_core.membership_relation, $4)",
+        "INSERT INTO proxima_core.group_memberships
+            (group_id, member_user_id, relation)
+         VALUES ($1, $2, $3::proxima_core.membership_relation)",
     )
     .bind(group_id.into_inner())
     .bind(member_id.into_inner())
     .bind(relation)
-    .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
     Ok(())
@@ -195,8 +194,8 @@ async fn edge_change_event_owner(
     pg: &proxima_storage_pg::PgStorage,
     edge_id: Uuid,
 ) -> Result<OwnerRef, sqlx::Error> {
-    let (kind, id): (proxima_core::OwnerRefKind, Uuid) = sqlx::query_as(
-        "SELECT owner_principal_kind, owner_principal_id
+    let (kind, id): (proxima_core::OwnerRefKind, Option<Uuid>) = sqlx::query_as(
+        "SELECT owner_kind, owner_id
            FROM proxima_core.change_event
           WHERE edge_id = $1
             AND kind = 'EdgeAppend'",
@@ -204,5 +203,5 @@ async fn edge_change_event_owner(
     .bind(edge_id)
     .fetch_one(pg.pool())
     .await?;
-    Ok(kind.with_uuid(id))
+    Ok(kind.with_uuid(id).expect("change_event owner_ref shape"))
 }

@@ -67,8 +67,7 @@ impl RelationClass {
 
 /// Rust mirror of `proxima_core.edge_authorship_kind`. Tags which
 /// operator/agent authored an edge row. See
-/// `crates/storage-pg/migrations/20260516000010_baseline.sql` for the
-/// canonical variant set.
+/// `crates/storage-pg/migrations/0001_init.sql` for the canonical variant set.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, sqlx::Type,
 )]
@@ -679,8 +678,8 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
             RelationClass::Structural,
             EndpointBinding::Pin,
             EndpointBinding::Pin,
-            EntityKindMask::memory(),
-            EntityKindMask::memory(),
+            EntityKindMask::memory().union(EntityKindMask::goal()),
+            EntityKindMask::memory().union(EntityKindMask::goal()),
             AuthorshipKindMask::engine().union(AuthorshipKindMask::external_agent()),
         ),
     ]
@@ -716,9 +715,9 @@ fn parse_required_tags(relation: &str, side: &str, tags: &[&str]) -> BTreeSet<Ca
 #[cfg(test)]
 mod tests {
     use super::{
-        CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, CORE_INSPIRES_RELATION,
-        CORE_SUPERSEDES_RELATION, EndpointBinding, EntityKindMask, RelationClass, SchemaId,
-        SchemaRef, SchemaVersion, core_relation_descriptors,
+        CORE_AUTHORED_RELATION, CORE_DEPENDS_ON_RELATION, CORE_DERIVED_FROM_RELATION,
+        CORE_INSPIRES_RELATION, CORE_SUPERSEDES_RELATION, EndpointBinding, EntityKindMask,
+        RelationClass, SchemaId, SchemaRef, SchemaVersion, core_relation_descriptors,
     };
 
     fn descriptor_for(relation: &str) -> Option<RelationClass> {
@@ -851,6 +850,24 @@ mod tests {
                 "Engine",
             )
             .expect("Perspective can frame an Abstraction");
+    }
+
+    #[test]
+    fn core_depends_on_admits_goal_to_goal_topology() {
+        let descriptor = core_relation_descriptors()
+            .into_iter()
+            .find(|d| d.relation == CORE_DEPENDS_ON_RELATION)
+            .expect("core/depends-on descriptor registered");
+
+        descriptor
+            .validate_edge_shape(
+                "Goal",
+                EndpointBinding::Pin,
+                "Goal",
+                EndpointBinding::Pin,
+                "Engine",
+            )
+            .expect("goal topology is represented by ordinary Goal-to-Goal edges");
     }
 
     #[test]

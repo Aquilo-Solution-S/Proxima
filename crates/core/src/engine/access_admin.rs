@@ -139,7 +139,7 @@ impl Engine {
 fn actor_uuid(authz: &AuthzContext) -> uuid::Uuid {
     authz
         .subject()
-        .map_or_else(|| authz.principal().columns().1, UserId::into_inner)
+        .map_or_else(|| authz.principal().stable_key_uuid(), UserId::into_inner)
 }
 
 fn storage_error(context: &str, err: &StorageError) -> ProtocolError {

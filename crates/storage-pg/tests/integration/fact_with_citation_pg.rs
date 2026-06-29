@@ -279,13 +279,12 @@ async fn seed_membership(
         panic!("user principal required");
     };
     sqlx::query(
-        "INSERT INTO proxima_core.group_membership
-            (group_id, member_user_id, relation, granted_by)
-         VALUES ($1, $2, 'viewer', $3)",
+        "INSERT INTO proxima_core.group_memberships
+            (group_id, member_user_id, relation)
+         VALUES ($1, $2, 'viewer')",
     )
     .bind(group_id.into_inner())
     .bind(member_id.into_inner())
-    .bind(Uuid::nil())
     .execute(pool)
     .await?;
     Ok(())
@@ -660,7 +659,7 @@ async fn fact_sidecar_failure_rolls_back_whole_inline_citation_ingest()
                 citation_mapping(0, 4),
             )
             .await?;
-        let event_id = authorized.draft().event_id();
+        let receipt_id = authorized.draft().event_id();
 
         let mut tx = pg.pool().begin().await?;
         let err = ingest_fact_with_citation_in_tx(
@@ -677,11 +676,11 @@ async fn fact_sidecar_failure_rolls_back_whole_inline_citation_ingest()
         drop(tx);
 
         assert!(err.to_string().contains("fact sidecar failed"));
-        let event_id_bytes = event_id.into_inner();
+        let receipt_id_bytes = receipt_id.into_inner();
         let memories = sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM proxima_core.memories WHERE event_id = $1",
+            "SELECT count(*) FROM proxima_core.memories WHERE receipt_id = $1",
         )
-        .bind(event_id_bytes.as_slice())
+        .bind(receipt_id_bytes.as_slice())
         .fetch_one(pg.pool())
         .await?;
         assert_eq!(memories, 0);
@@ -690,7 +689,7 @@ async fn fact_sidecar_failure_rolls_back_whole_inline_citation_ingest()
             count(pg.pool(), "public.inline_cited_object_sidecar").await?,
             0
         );
-        assert_eq!(count(pg.pool(), "proxima_core.events").await?, 0);
+        assert_eq!(count(pg.pool(), "proxima_core.fact_receipts").await?, 0);
         assert_eq!(count(pg.pool(), "proxima_core.citation_mappings").await?, 0);
         assert_eq!(
             count(pg.pool(), "public.inline_citation_mapping_sidecar").await?,
@@ -721,7 +720,7 @@ async fn assert_written_rows_and_personality(
         "same content hash must reuse the cited object"
     );
     assert_eq!(count(pool, "public.inline_cited_object_sidecar").await?, 1);
-    assert_eq!(count(pool, "proxima_core.events").await?, 2);
+    assert_eq!(count(pool, "proxima_core.fact_receipts").await?, 2);
     assert_eq!(count(pool, "proxima_core.memories").await?, 2);
     assert_eq!(count(pool, "public.inline_cited_fact_sidecar").await?, 2);
     assert_eq!(count(pool, "proxima_core.citation_mappings").await?, 2);

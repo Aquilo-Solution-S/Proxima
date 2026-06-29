@@ -5,14 +5,14 @@ use time::OffsetDateTime;
 
 use crate::error::map_err;
 
-fn owner_parts(owner: &Owner) -> (OwnerRefKind, uuid::Uuid) {
+fn owner_parts(owner: &Owner) -> (OwnerRefKind, Option<uuid::Uuid>) {
     owner.columns()
 }
 
 #[derive(sqlx::FromRow)]
 struct EmbeddingJobClaimRow {
-    owner_principal_kind: OwnerRefKind,
-    owner_principal_id: uuid::Uuid,
+    owner_kind: OwnerRefKind,
+    owner_id: Option<uuid::Uuid>,
     entity_kind: EntityKind,
     entity_id: uuid::Uuid,
     model_id: String,
@@ -23,7 +23,10 @@ struct EmbeddingJobClaimRow {
 impl From<EmbeddingJobClaimRow> for EmbeddingJobClaim {
     fn from(row: EmbeddingJobClaimRow) -> Self {
         Self {
-            owner: row.owner_principal_kind.with_uuid(row.owner_principal_id),
+            owner: row
+                .owner_kind
+                .with_uuid(row.owner_id)
+                .expect("embedding job row has valid owner_ref shape"),
             entity_kind: row.entity_kind,
             entity_id: MemoryId::new(row.entity_id),
             model_id: row.model_id,
@@ -73,16 +76,15 @@ const RECONCILE_EMBEDDINGS_SQL: &str = "
 WITH scoped AS MATERIALIZED (
      SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS entity_kind,
             m.memory_id,
-            home_owner.owner_principal_kind,
-            home_owner.owner_principal_id
+            home_owner.owner_kind,
+            home_owner.owner_id
        FROM proxima_core.memories m
-       LEFT JOIN __PROXIMA_ENTITY_OWNER__ home_owner
+       LEFT JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) home_owner
          ON home_owner.entity_id = m.memory_id
-        AND home_owner.is_home
-      WHERE m.text IS NOT NULL
+WHERE m.text IS NOT NULL
         AND m.tombstoned_at IS NULL
         AND (
-            (m.event_id IS NOT NULL AND m.kind IS NULL)
+            (m.receipt_id IS NOT NULL AND m.kind IS NULL)
             OR m.kind IN (
                 'Abstraction'::proxima_core.entity_kind,
                 'Perspective'::proxima_core.entity_kind
@@ -117,8 +119,8 @@ WITH scoped AS MATERIALIZED (
         AND NOT EXISTS (
             SELECT 1
               FROM proxima_core.embedding_jobs j
-             WHERE j.owner_principal_kind = s.owner_principal_kind
-               AND j.owner_principal_id = s.owner_principal_id
+             WHERE j.owner_kind = s.owner_kind
+               AND j.owner_id = s.owner_id
                AND j.entity_kind = s.entity_kind
                AND j.entity_id = s.memory_id
                AND j.model_id = $1
@@ -127,12 +129,12 @@ WITH scoped AS MATERIALIZED (
  ),
  inserted AS (
      INSERT INTO proxima_core.embedding_jobs
-         (owner_principal_kind, owner_principal_id,
+         (owner_kind, owner_id,
           entity_kind, entity_id, model_id)
-     SELECT owner_principal_kind, owner_principal_id,
+     SELECT owner_kind, owner_id,
             entity_kind, memory_id, $1
        FROM eligible
-     ON CONFLICT (owner_principal_kind, owner_principal_id,
+     ON CONFLICT (owner_kind, owner_id,
                   entity_kind, entity_id, model_id, embedding_version)
      DO NOTHING
      RETURNING 1
@@ -151,25 +153,24 @@ pub async fn load_fact_text(
     owner: &Owner,
     memory_id: MemoryId,
 ) -> Result<Option<String>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
-    sqlx::query_scalar(crate::access::owner_ref_compat::sql(
+    let (owner_kind, owner_id) = owner_parts(owner);
+    sqlx::query_scalar(
         "SELECT text
            FROM proxima_core.memories
           WHERE memory_id = $1
             AND EXISTS (
                 SELECT 1
-                  FROM __PROXIMA_ENTITY_OWNER__ eo
+                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                  WHERE eo.entity_id = memory_id
-                   AND eo.owner_principal_kind = $2
-                   AND eo.owner_principal_id = $3
-                   AND eo.is_home
-            )
-            AND event_id IS NOT NULL
+                   AND eo.owner_kind = $2
+                   AND eo.owner_id = $3
+)
+            AND receipt_id IS NOT NULL
             AND tombstoned_at IS NULL",
-    ))
+    )
     .bind(memory_id.into_inner())
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .fetch_optional(pool)
     .await
     .map_err(map_err)
@@ -189,31 +190,30 @@ pub async fn load_embedding_text(
     entity_kind: EntityKind,
     memory_id: MemoryId,
 ) -> Result<Option<String>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
-    sqlx::query_scalar(crate::access::owner_ref_compat::sql(
+    let (owner_kind, owner_id) = owner_parts(owner);
+    sqlx::query_scalar(
         "SELECT text
            FROM proxima_core.memories
           WHERE memory_id = $1
             AND EXISTS (
                 SELECT 1
-                  FROM __PROXIMA_ENTITY_OWNER__ eo
+                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                  WHERE eo.entity_id = memory_id
-                   AND eo.owner_principal_kind = $2
-                   AND eo.owner_principal_id = $3
-                   AND eo.is_home
-            )
+                   AND eo.owner_kind = $2
+                   AND eo.owner_id = $3
+)
             AND text IS NOT NULL
             AND tombstoned_at IS NULL
             AND (
                 ($4 = 'Fact'::proxima_core.entity_kind
-                 AND event_id IS NOT NULL
+                 AND receipt_id IS NOT NULL
                  AND kind IS NULL)
                 OR kind = $4
             )",
-    ))
+    )
     .bind(memory_id.into_inner())
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(entity_kind)
     .fetch_optional(pool)
     .await
@@ -230,25 +230,24 @@ pub async fn load_fact_text_in_tx(
     owner: &Owner,
     memory_id: MemoryId,
 ) -> Result<Option<String>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
-    sqlx::query_scalar(crate::access::owner_ref_compat::sql(
+    let (owner_kind, owner_id) = owner_parts(owner);
+    sqlx::query_scalar(
         "SELECT text
            FROM proxima_core.memories
           WHERE memory_id = $1
             AND EXISTS (
                 SELECT 1
-                  FROM __PROXIMA_ENTITY_OWNER__ eo
+                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                  WHERE eo.entity_id = memory_id
-                   AND eo.owner_principal_kind = $2
-                   AND eo.owner_principal_id = $3
-                   AND eo.is_home
-            )
-            AND event_id IS NOT NULL
+                   AND eo.owner_kind = $2
+                   AND eo.owner_id = $3
+)
+            AND receipt_id IS NOT NULL
             AND tombstoned_at IS NULL",
-    ))
+    )
     .bind(memory_id.into_inner())
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .fetch_optional(tx.as_mut())
     .await
     .map_err(map_err)
@@ -288,17 +287,17 @@ pub async fn upsert_memory_embedding(
     dim: usize,
     vec: &[f32],
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
+    let (owner_kind, owner_id) = owner_parts(owner);
     if dim != EMBEDDING_DIM || vec.len() != EMBEDDING_DIM {
         return Err(StorageError::ConstraintViolation(
             "embedding length must be 1024".into(),
         ));
     }
     let vec_literal = crate::pgvector::literal(vec);
-    sqlx::query(crate::access::owner_ref_compat::sql(
+    sqlx::query(
         "INSERT INTO proxima_core.embeddings
             (entity_kind, entity_id, embedding_version, model_id, vec,
-             owner_principal_kind, owner_principal_id)
+             owner_kind, owner_id)
          SELECT $1, $2, 1, $3, $4::vector, $5, $6
           WHERE EXISTS (
                 SELECT 1
@@ -306,17 +305,16 @@ pub async fn upsert_memory_embedding(
                  WHERE m.memory_id = $2
                    AND EXISTS (
                         SELECT 1
-                          FROM __PROXIMA_ENTITY_OWNER__ eo
+                          FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                          WHERE eo.entity_id = m.memory_id
-                           AND eo.owner_principal_kind = $5
-                           AND eo.owner_principal_id = $6
-                           AND eo.is_home
-                   )
+                           AND eo.owner_kind = $5
+                           AND eo.owner_id = $6
+)
                    AND m.text IS NOT NULL
                    AND m.tombstoned_at IS NULL
                    AND (
                        ($1 = 'Fact'::proxima_core.entity_kind
-                        AND m.event_id IS NOT NULL
+                        AND m.receipt_id IS NOT NULL
                         AND m.kind IS NULL)
                        OR m.kind = $1
                    )
@@ -324,15 +322,15 @@ pub async fn upsert_memory_embedding(
          ON CONFLICT (entity_kind, entity_id, embedding_version, model_id)
          DO UPDATE SET
              vec = EXCLUDED.vec,
-             owner_principal_kind = EXCLUDED.owner_principal_kind,
-             owner_principal_id = EXCLUDED.owner_principal_id",
-    ))
+             owner_kind = EXCLUDED.owner_kind,
+             owner_id = EXCLUDED.owner_id",
+    )
     .bind(entity_kind)
     .bind(memory_id.into_inner())
     .bind(model_id)
     .bind(vec_literal)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -353,21 +351,20 @@ pub async fn list_facts_missing_embedding(
     model_id: &str,
     limit: usize,
 ) -> Result<Vec<MemoryId>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
+    let (owner_kind, owner_id) = owner_parts(owner);
     let limit = i64::try_from(limit)
         .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
-    let rows = sqlx::query_scalar::<_, uuid::Uuid>(crate::access::owner_ref_compat::sql(
+    let rows = sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT m.memory_id
            FROM proxima_core.memories m
           WHERE EXISTS (
                     SELECT 1
-                      FROM __PROXIMA_ENTITY_OWNER__ eo
+                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                      WHERE eo.entity_id = m.memory_id
-                       AND eo.owner_principal_kind = $1
-                       AND eo.owner_principal_id = $2
-                       AND eo.is_home
-                )
-            AND m.event_id IS NOT NULL
+                       AND eo.owner_kind = $1
+                       AND eo.owner_id = $2
+)
+            AND m.receipt_id IS NOT NULL
             AND m.text IS NOT NULL
             AND m.tombstoned_at IS NULL
             AND NOT EXISTS (
@@ -380,9 +377,9 @@ pub async fn list_facts_missing_embedding(
             )
           ORDER BY m.created_at ASC, m.memory_id ASC
           LIMIT $4",
-    ))
+    )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(model_id)
     .bind(limit)
     .fetch_all(pool)
@@ -428,7 +425,7 @@ async fn claim_pending_embedding_jobs_excluding(
     }
     let rows = sqlx::query_as::<_, EmbeddingJobClaimRow>(
         "WITH claimed AS (
-             SELECT owner_principal_kind, owner_principal_id,
+             SELECT owner_kind, owner_id,
                     entity_kind, entity_id, model_id, embedding_version
                FROM proxima_core.embedding_jobs
               WHERE model_id = $1
@@ -437,8 +434,8 @@ async fn claim_pending_embedding_jobs_excluding(
                          AND updated_at < now() - interval '15 minutes'))
                 AND NOT (entity_id = ANY($2::uuid[]))
               ORDER BY enqueued_at ASC,
-                       owner_principal_kind ASC,
-                       owner_principal_id ASC,
+                       owner_kind ASC,
+                       owner_id ASC,
                        entity_kind ASC,
                        entity_id ASC,
                        embedding_version ASC
@@ -449,13 +446,13 @@ async fn claim_pending_embedding_jobs_excluding(
             SET status = 'processing',
                 updated_at = now()
            FROM claimed
-          WHERE j.owner_principal_kind = claimed.owner_principal_kind
-            AND j.owner_principal_id = claimed.owner_principal_id
+          WHERE j.owner_kind = claimed.owner_kind
+            AND j.owner_id = claimed.owner_id
             AND j.entity_kind = claimed.entity_kind
             AND j.entity_id = claimed.entity_id
             AND j.model_id = claimed.model_id
             AND j.embedding_version = claimed.embedding_version
-        RETURNING j.owner_principal_kind, j.owner_principal_id,
+        RETURNING j.owner_kind, j.owner_id,
                   j.entity_kind, j.entity_id, j.model_id, j.embedding_version,
                   j.attempts",
     )
@@ -477,18 +474,18 @@ pub async fn complete_embedding_job(
     pool: &PgPool,
     claim: &EmbeddingJobClaim,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id) = owner_parts(&claim.owner);
+    let (owner_kind, owner_id) = owner_parts(&claim.owner);
     sqlx::query(
         "DELETE FROM proxima_core.embedding_jobs
-          WHERE owner_principal_kind = $1
-            AND owner_principal_id = $2
+          WHERE owner_kind = $1
+            AND owner_id = $2
             AND entity_kind = $3
             AND entity_id = $4
             AND model_id = $5
             AND embedding_version = $6",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(claim.entity_kind)
     .bind(claim.entity_id.into_inner())
     .bind(&claim.model_id)
@@ -509,7 +506,7 @@ pub async fn fail_embedding_job(
     claim: &EmbeddingJobClaim,
     error: &str,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id) = owner_parts(&claim.owner);
+    let (owner_kind, owner_id) = owner_parts(&claim.owner);
     sqlx::query(
         "UPDATE proxima_core.embedding_jobs
             SET attempts = attempts + 1,
@@ -520,8 +517,8 @@ pub async fn fail_embedding_job(
                     THEN 'failed'::proxima_core.embedding_job_status
                     ELSE 'pending'::proxima_core.embedding_job_status
                 END
-          WHERE owner_principal_kind = $1
-            AND owner_principal_id = $2
+          WHERE owner_kind = $1
+            AND owner_id = $2
             AND entity_kind = $3
             AND entity_id = $4
             AND model_id = $5
@@ -529,7 +526,7 @@ pub async fn fail_embedding_job(
             AND status = 'processing'",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(claim.entity_kind)
     .bind(claim.entity_id.into_inner())
     .bind(&claim.model_id)
@@ -559,20 +556,19 @@ pub async fn enqueue_missing_embedding_jobs(
     if limit == 0 {
         return Ok(0);
     }
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
-    let result = sqlx::query(crate::access::owner_ref_compat::sql(
+    let (owner_kind, owner_id) = owner_parts(owner);
+    let result = sqlx::query(
         "WITH missing AS (
              SELECT m.memory_id
                FROM proxima_core.memories m
               WHERE EXISTS (
                         SELECT 1
-                          FROM __PROXIMA_ENTITY_OWNER__ eo
+                          FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                          WHERE eo.entity_id = m.memory_id
-                           AND eo.owner_principal_kind = $1
-                           AND eo.owner_principal_id = $2
-                           AND eo.is_home
-                    )
-                AND m.event_id IS NOT NULL
+                           AND eo.owner_kind = $1
+                           AND eo.owner_id = $2
+)
+                AND m.receipt_id IS NOT NULL
                 AND m.text IS NOT NULL
                 AND m.tombstoned_at IS NULL
                 AND NOT EXISTS (
@@ -587,16 +583,16 @@ pub async fn enqueue_missing_embedding_jobs(
               LIMIT $4
          )
          INSERT INTO proxima_core.embedding_jobs
-             (owner_principal_kind, owner_principal_id,
+             (owner_kind, owner_id,
               entity_kind, entity_id, model_id)
          SELECT $1, $2, 'Fact'::proxima_core.entity_kind, memory_id, $3
            FROM missing
-         ON CONFLICT (owner_principal_kind, owner_principal_id,
+         ON CONFLICT (owner_kind, owner_id,
                       entity_kind, entity_id, model_id, embedding_version)
          DO NOTHING",
-    ))
+    )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(model_id)
     .bind(limit)
     .execute(pool)
@@ -614,16 +610,16 @@ pub async fn count_pending_embedding_jobs(
     pool: &PgPool,
     owner: &Owner,
 ) -> Result<u64, StorageError> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
+    let (owner_kind, owner_id) = owner_parts(owner);
     let row: (i64,) = sqlx::query_as(
         "SELECT count(*)
            FROM proxima_core.embedding_jobs
-          WHERE owner_principal_kind = $1
-            AND owner_principal_id = $2
+          WHERE owner_kind = $1
+            AND owner_id = $2
             AND status IN ('pending', 'processing')",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .fetch_one(pool)
     .await
     .map_err(map_err)?;
@@ -659,16 +655,14 @@ pub async fn reconcile_embeddings(
         EmbeddingReconcileScope::Since(since) => ("since", Some(since)),
     };
 
-    let row: (i64, i64) = sqlx::query_as(crate::access::owner_ref_compat::sql(
-        RECONCILE_EMBEDDINGS_SQL,
-    ))
-    .bind(options.model_id)
-    .bind(limit)
-    .bind(scope)
-    .bind(since)
-    .fetch_one(pool)
-    .await
-    .map_err(map_err)?;
+    let row: (i64, i64) = sqlx::query_as(RECONCILE_EMBEDDINGS_SQL)
+        .bind(options.model_id)
+        .bind(limit)
+        .bind(scope)
+        .bind(since)
+        .fetch_one(pool)
+        .await
+        .map_err(map_err)?;
 
     let scanned = u64::try_from(row.0)
         .map_err(|_| StorageError::Internal("scanned count is negative".into()))?;

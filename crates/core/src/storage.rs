@@ -45,6 +45,10 @@ pub enum StorageError {
     ConstraintViolation(String),
     #[error("conflict: {0}")]
     Conflict(String),
+    #[error(
+        "database contains pre-v0.0.4 Proxima schema artifacts; export/reset is required before running the v0.0.4 baseline: {details}"
+    )]
+    V004ResetRequired { details: String },
     #[error("not found")]
     NotFound,
     #[error("internal storage error: {0}")]
@@ -556,7 +560,7 @@ pub trait Storage: Send + Sync {
         req: &ModifyGoalAtomicRequest<'_>,
     ) -> Result<GoalWriteOutcome, StorageError>;
 
-    /// Atomic child Goal creation plus `goal_parents` rows.
+    /// Atomic child Goal creation plus Goal-to-Goal dependency edges.
     async fn decompose_goal_atomic(
         &self,
         req: &DecomposeGoalAtomicRequest<'_>,

@@ -17,7 +17,7 @@ use crate::verbs::hard_delete::{HardDeleteSet, HardDeleteSidecars, execute_hard_
 #[derive(Debug, sqlx::FromRow)]
 struct DueFactRow {
     memory_id: Uuid,
-    event_id: Vec<u8>,
+    receipt_id: Vec<u8>,
     schema_id: String,
     schema_version: i32,
 }
@@ -25,7 +25,7 @@ struct DueFactRow {
 #[derive(Debug, sqlx::FromRow)]
 struct TombstoneFactRow {
     memory_id: Uuid,
-    event_id: Option<Vec<u8>>,
+    receipt_id: Option<Vec<u8>>,
     schema_id: String,
     schema_version: i32,
 }
@@ -59,7 +59,7 @@ struct OrphanedS3BlobRow {
 #[derive(Debug, Clone, Copy)]
 struct OwnerColumns {
     kind: OwnerRefKind,
-    principal_id: Uuid,
+    owner_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -141,30 +141,29 @@ async fn cleanup_due_facts_in_tx(
         return Ok(empty_outcome());
     };
 
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     let owner_columns = OwnerColumns {
         kind: owner_kind,
-        principal_id: owner_principal_id,
+        owner_id,
     };
-    let due: Vec<DueFactRow> = sqlx::query_as(crate::access::owner_ref_compat::sql(
-        "SELECT m.memory_id, m.event_id, m.schema_id, m.schema_version
+    let due: Vec<DueFactRow> = sqlx::query_as(
+        "SELECT m.memory_id, m.receipt_id, m.schema_id, m.schema_version
            FROM proxima_core.memories m
           WHERE EXISTS (
                     SELECT 1
-                      FROM __PROXIMA_ENTITY_OWNER__ eo
+                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                      WHERE eo.entity_id = m.memory_id
-                       AND eo.owner_principal_kind = $1
-                       AND eo.owner_principal_id = $2
-                       AND eo.is_home
-                )
-            AND m.event_id IS NOT NULL
+                       AND eo.owner_kind = $1
+                       AND eo.owner_id = $2
+)
+            AND m.receipt_id IS NOT NULL
             AND m.citation_mapping_id IS NOT NULL
             AND m.tombstoned_at IS NULL
             AND m.created_at < now() - ($3::double precision * INTERVAL '1 second')
           ORDER BY m.created_at ASC, m.memory_id ASC",
-    ))
+    )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(retention_seconds)
     .fetch_all(&mut **tx)
     .await
@@ -176,14 +175,12 @@ async fn cleanup_due_facts_in_tx(
 
     let due_memory_ids = due.iter().map(|row| row.memory_id).collect::<Vec<_>>();
     let fact_entity_ids_to_delete =
-        fact_entity_ids_reaching_zero(tx, owner_kind, owner_principal_id, &due_memory_ids).await?;
+        fact_entity_ids_reaching_zero(tx, owner_kind, owner_id, &due_memory_ids).await?;
     let follow_head_edge_ids =
-        repoint_or_delete_fact_entities(tx, owner_kind, owner_principal_id, &due_memory_ids)
-            .await?;
+        repoint_or_delete_fact_entities(tx, owner_kind, owner_id, &due_memory_ids).await?;
     let candidate_cited_object_ids = candidate_cited_object_ids(tx, &due_memory_ids).await?;
     let tombstoned =
-        tombstone_transitive_derivatives(tx, owner_kind, owner_principal_id, &due_memory_ids)
-            .await?;
+        tombstone_transitive_derivatives(tx, owner_kind, owner_id, &due_memory_ids).await?;
     let tombstoned_memory_ids = tombstoned
         .iter()
         .map(|row| row.memory_id)
@@ -191,8 +188,7 @@ async fn cleanup_due_facts_in_tx(
     delete_embedding_artifacts(tx, &tombstoned_memory_ids).await?;
     let affected_memory_ids = merged_memory_ids(due_memory_ids.clone(), tombstoned_memory_ids);
     let motivated_by_edges =
-        motivated_by_edges_for_evidence(tx, owner_kind, owner_principal_id, &affected_memory_ids)
-            .await?;
+        motivated_by_edges_for_evidence(tx, owner_kind, owner_id, &affected_memory_ids).await?;
     for edge in &motivated_by_edges {
         insert_edge_delete_event(tx, owner_columns, edge).await?;
     }
@@ -224,8 +220,7 @@ async fn cleanup_due_facts_in_tx(
         .await?;
     }
 
-    let edge_ids =
-        edge_ids_referencing_facts(tx, owner_kind, owner_principal_id, &due_memory_ids).await?;
+    let edge_ids = edge_ids_referencing_facts(tx, owner_kind, owner_id, &due_memory_ids).await?;
     let edge_ids = merged_edge_ids(
         edge_ids,
         merged_edge_ids(
@@ -242,7 +237,7 @@ async fn cleanup_due_facts_in_tx(
                 .collect(),
             edge_ids,
             fact_entity_ids: fact_entity_ids_to_delete,
-            event_ids: due.iter().map(|row| row.event_id.clone()).collect(),
+            receipt_ids: due.iter().map(|row| row.receipt_id.clone()).collect(),
         },
         &HardDeleteSidecars {
             memory_keyed: fact_sidecar_tables,
@@ -273,28 +268,27 @@ async fn tombstone_fact_in_tx(
     citation_mapping_sidecar_tables: &[String],
     cited_object_sidecar_tables: &[String],
 ) -> Result<TombstoneFactOutcome, StorageError> {
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     let owner_columns = OwnerColumns {
         kind: owner_kind,
-        principal_id: owner_principal_id,
+        owner_id,
     };
-    let Some(row) = sqlx::query_as::<_, TombstoneFactRow>(crate::access::owner_ref_compat::sql(
-        "SELECT m.memory_id, m.event_id, m.schema_id, m.schema_version
+    let Some(row) = sqlx::query_as::<_, TombstoneFactRow>(
+        "SELECT m.memory_id, m.receipt_id, m.schema_id, m.schema_version
            FROM proxima_core.memories m
           WHERE EXISTS (
                     SELECT 1
-                      FROM __PROXIMA_ENTITY_OWNER__ eo
+                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                      WHERE eo.entity_id = m.memory_id
-                       AND eo.owner_principal_kind = $1
-                       AND eo.owner_principal_id = $2
-                       AND eo.is_home
-                )
+                       AND eo.owner_kind = $1
+                       AND eo.owner_id = $2
+)
             AND m.memory_id = $3
             AND m.kind IS NULL
             AND m.tombstoned_at IS NULL",
-    ))
+    )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(fact_id)
     .fetch_optional(&mut **tx)
     .await
@@ -305,14 +299,12 @@ async fn tombstone_fact_in_tx(
 
     let due_memory_ids = [row.memory_id];
     let fact_entity_ids_to_delete =
-        fact_entity_ids_reaching_zero(tx, owner_kind, owner_principal_id, &due_memory_ids).await?;
+        fact_entity_ids_reaching_zero(tx, owner_kind, owner_id, &due_memory_ids).await?;
     let follow_head_edge_ids =
-        repoint_or_delete_fact_entities(tx, owner_kind, owner_principal_id, &due_memory_ids)
-            .await?;
+        repoint_or_delete_fact_entities(tx, owner_kind, owner_id, &due_memory_ids).await?;
     let candidate_cited_object_ids = candidate_cited_object_ids(tx, &due_memory_ids).await?;
     let tombstoned =
-        tombstone_transitive_derivatives(tx, owner_kind, owner_principal_id, &due_memory_ids)
-            .await?;
+        tombstone_transitive_derivatives(tx, owner_kind, owner_id, &due_memory_ids).await?;
     let tombstoned_memory_ids = tombstoned
         .iter()
         .map(|row| row.memory_id)
@@ -320,8 +312,7 @@ async fn tombstone_fact_in_tx(
     delete_embedding_artifacts(tx, &tombstoned_memory_ids).await?;
     let affected_memory_ids = merged_memory_ids(due_memory_ids.to_vec(), tombstoned_memory_ids);
     let motivated_by_edges =
-        motivated_by_edges_for_evidence(tx, owner_kind, owner_principal_id, &affected_memory_ids)
-            .await?;
+        motivated_by_edges_for_evidence(tx, owner_kind, owner_id, &affected_memory_ids).await?;
     for edge in &motivated_by_edges {
         insert_edge_delete_event(tx, owner_columns, edge).await?;
     }
@@ -351,8 +342,7 @@ async fn tombstone_fact_in_tx(
     )
     .await?;
 
-    let edge_ids =
-        edge_ids_referencing_facts(tx, owner_kind, owner_principal_id, &due_memory_ids).await?;
+    let edge_ids = edge_ids_referencing_facts(tx, owner_kind, owner_id, &due_memory_ids).await?;
     let edge_ids = merged_edge_ids(
         edge_ids,
         merged_edge_ids(
@@ -366,7 +356,7 @@ async fn tombstone_fact_in_tx(
             memories: vec![(EntityKind::Fact, row.memory_id)],
             edge_ids,
             fact_entity_ids: fact_entity_ids_to_delete,
-            event_ids: row.event_id.into_iter().collect(),
+            receipt_ids: row.receipt_id.into_iter().collect(),
         },
         &HardDeleteSidecars {
             memory_keyed: fact_sidecar_tables,
@@ -422,41 +412,40 @@ fn merged_memory_ids(mut left: Vec<Uuid>, right: Vec<Uuid>) -> Vec<Uuid> {
 pub(crate) async fn repoint_or_delete_fact_entities(
     tx: &mut Transaction<'_, Postgres>,
     owner_kind: OwnerRefKind,
-    owner_principal_id: Uuid,
+    owner_id: Option<Uuid>,
     due_memory_ids: &[Uuid],
 ) -> Result<Vec<Uuid>, StorageError> {
     if due_memory_ids.is_empty() {
         return Ok(Vec::new());
     }
 
-    repoint_fact_entity_heads(tx, owner_kind, owner_principal_id, due_memory_ids).await?;
+    repoint_fact_entity_heads(tx, owner_kind, owner_id, due_memory_ids).await?;
     let fact_entity_ids =
-        fact_entity_ids_reaching_zero(tx, owner_kind, owner_principal_id, due_memory_ids).await?;
-    follow_head_edge_ids_for_entities(tx, owner_kind, owner_principal_id, &fact_entity_ids).await
+        fact_entity_ids_reaching_zero(tx, owner_kind, owner_id, due_memory_ids).await?;
+    follow_head_edge_ids_for_entities(tx, owner_kind, owner_id, &fact_entity_ids).await
 }
 
 async fn repoint_fact_entity_heads(
     tx: &mut Transaction<'_, Postgres>,
     owner_kind: OwnerRefKind,
-    owner_principal_id: Uuid,
+    owner_id: Option<Uuid>,
     due_memory_ids: &[Uuid],
 ) -> Result<(), StorageError> {
     if due_memory_ids.is_empty() {
         return Ok(());
     }
 
-    sqlx::query(crate::access::owner_ref_compat::sql(
+    sqlx::query(
         "WITH due_entities AS (
              SELECT DISTINCT m.fact_entity_id
                FROM proxima_core.memories m
               WHERE EXISTS (
                         SELECT 1
-                          FROM __PROXIMA_ENTITY_OWNER__ eo
+                          FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                          WHERE eo.entity_id = m.memory_id
-                           AND eo.owner_principal_kind = $1
-                           AND eo.owner_principal_id = $2
-                           AND eo.is_home
-                    )
+                           AND eo.owner_kind = $1
+                           AND eo.owner_id = $2
+)
                 AND m.memory_id = ANY($3::uuid[])
                 AND m.fact_entity_id IS NOT NULL
          ),
@@ -468,12 +457,11 @@ async fn repoint_fact_entity_heads(
                  ON de.fact_entity_id = m.fact_entity_id
               WHERE EXISTS (
                         SELECT 1
-                          FROM __PROXIMA_ENTITY_OWNER__ eo
+                          FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                          WHERE eo.entity_id = m.memory_id
-                           AND eo.owner_principal_kind = $1
-                           AND eo.owner_principal_id = $2
-                           AND eo.is_home
-                    )
+                           AND eo.owner_kind = $1
+                           AND eo.owner_id = $2
+)
                 AND m.memory_id <> ALL($3::uuid[])
                 AND m.tombstoned_at IS NULL
               ORDER BY m.fact_entity_id, m.created_at DESC, m.memory_id DESC
@@ -483,12 +471,12 @@ async fn repoint_fact_entity_heads(
                 current_created_at = nv.created_at
            FROM next_versions nv
           WHERE fe.fact_entity_id = nv.fact_entity_id
-            AND fe.owner_principal_kind = $1
-            AND fe.owner_principal_id = $2
+            AND fe.owner_kind = $1
+            AND fe.owner_id = $2
             AND fe.current_memory_id = ANY($3::uuid[])",
-    ))
+    )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(due_memory_ids)
     .execute(&mut **tx)
     .await
@@ -499,25 +487,24 @@ async fn repoint_fact_entity_heads(
 async fn fact_entity_ids_reaching_zero(
     tx: &mut Transaction<'_, Postgres>,
     owner_kind: OwnerRefKind,
-    owner_principal_id: Uuid,
+    owner_id: Option<Uuid>,
     due_memory_ids: &[Uuid],
 ) -> Result<Vec<Uuid>, StorageError> {
     if due_memory_ids.is_empty() {
         return Ok(Vec::new());
     }
 
-    sqlx::query_scalar(crate::access::owner_ref_compat::sql(
+    sqlx::query_scalar(
         "WITH due_entities AS (
              SELECT DISTINCT m.fact_entity_id
                FROM proxima_core.memories m
               WHERE EXISTS (
                         SELECT 1
-                          FROM __PROXIMA_ENTITY_OWNER__ eo
+                          FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                          WHERE eo.entity_id = m.memory_id
-                           AND eo.owner_principal_kind = $1
-                           AND eo.owner_principal_id = $2
-                           AND eo.is_home
-                    )
+                           AND eo.owner_kind = $1
+                           AND eo.owner_id = $2
+)
                 AND m.memory_id = ANY($3::uuid[])
                 AND m.fact_entity_id IS NOT NULL
          )
@@ -528,20 +515,19 @@ async fn fact_entity_ids_reaching_zero(
                       FROM proxima_core.memories survivor
                      WHERE EXISTS (
                                 SELECT 1
-                                  FROM __PROXIMA_ENTITY_OWNER__ eo
+                                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                                  WHERE eo.entity_id = survivor.memory_id
-                                   AND eo.owner_principal_kind = $1
-                                   AND eo.owner_principal_id = $2
-                                   AND eo.is_home
-                            )
+                                   AND eo.owner_kind = $1
+                                   AND eo.owner_id = $2
+)
                        AND survivor.fact_entity_id = de.fact_entity_id
                        AND survivor.memory_id <> ALL($3::uuid[])
                        AND survivor.tombstoned_at IS NULL
                 )
           ORDER BY de.fact_entity_id",
-    ))
+    )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(due_memory_ids)
     .fetch_all(&mut **tx)
     .await
@@ -551,7 +537,7 @@ async fn fact_entity_ids_reaching_zero(
 async fn follow_head_edge_ids_for_entities(
     tx: &mut Transaction<'_, Postgres>,
     _owner_kind: OwnerRefKind,
-    _owner_principal_id: Uuid,
+    _owner_id: Option<Uuid>,
     fact_entity_ids: &[Uuid],
 ) -> Result<Vec<Uuid>, StorageError> {
     if fact_entity_ids.is_empty() {
@@ -575,10 +561,10 @@ async fn follow_head_edge_ids_for_entities(
 async fn tombstone_transitive_derivatives(
     tx: &mut Transaction<'_, Postgres>,
     owner_kind: OwnerRefKind,
-    owner_principal_id: Uuid,
+    owner_id: Option<Uuid>,
     due_memory_ids: &[Uuid],
 ) -> Result<Vec<TombstonedDerivativeRow>, StorageError> {
-    sqlx::query_as(crate::access::owner_ref_compat::sql(
+    sqlx::query_as(
         "WITH RECURSIVE descendants(memory_id) AS (
              SELECT e.source_memory_id
               FROM proxima_core.edges e
@@ -600,25 +586,23 @@ async fn tombstone_transitive_derivatives(
             AND (
                 EXISTS (
                     SELECT 1
-                      FROM __PROXIMA_ENTITY_OWNER__ eo
+                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                      WHERE eo.entity_id = m.memory_id
-                       AND eo.owner_principal_kind = $1
-                       AND eo.owner_principal_id = $2
-                       AND eo.is_home
-                )
+                       AND eo.owner_kind = $1
+                       AND eo.owner_id = $2
+)
                 OR NOT EXISTS (
                     SELECT 1
-                      FROM __PROXIMA_ENTITY_OWNER__ any_owner
+                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) any_owner
                      WHERE any_owner.entity_id = m.memory_id
-                       AND any_owner.is_home
-                )
+)
             )
             AND m.kind IS NOT NULL
             AND m.tombstoned_at IS NULL
           RETURNING m.memory_id, m.kind, m.schema_id, m.schema_version",
-    ))
+    )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(due_memory_ids)
     .fetch_all(&mut **tx)
     .await
@@ -632,13 +616,13 @@ async fn insert_entity_delete_event(
 ) -> Result<(), StorageError> {
     sqlx::query(
         "INSERT INTO proxima_core.change_event
-            (seq, owner_principal_kind, owner_principal_id, kind,
+            (seq, owner_kind, owner_id, kind,
              entity_kind, entity_memory_id, entity_schema_id, entity_schema_version)
          VALUES ($1, $2, $3, 'EntityDelete', $4, $5, $6, $7)",
     )
     .bind(Uuid::now_v7())
     .bind(owner.kind)
-    .bind(owner.principal_id)
+    .bind(owner.owner_id)
     .bind(entity.kind)
     .bind(entity.memory_id)
     .bind(entity.schema_id)
@@ -652,7 +636,7 @@ async fn insert_entity_delete_event(
 async fn motivated_by_edges_for_evidence(
     tx: &mut Transaction<'_, Postgres>,
     _owner_kind: OwnerRefKind,
-    _owner_principal_id: Uuid,
+    _owner_id: Option<Uuid>,
     evidence_memory_ids: &[Uuid],
 ) -> Result<Vec<MotivatedByEdgeRow>, StorageError> {
     if evidence_memory_ids.is_empty() {
@@ -687,7 +671,7 @@ async fn insert_edge_delete_event(
 ) -> Result<(), StorageError> {
     sqlx::query(
         "INSERT INTO proxima_core.change_event
-            (seq, owner_principal_kind, owner_principal_id, kind,
+            (seq, owner_kind, owner_id, kind,
              edge_id, edge_relation,
              edge_source_memory_id, edge_source_goal_id, edge_source_fact_entity_id,
              edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id)
@@ -695,7 +679,7 @@ async fn insert_edge_delete_event(
     )
     .bind(Uuid::now_v7())
     .bind(owner.kind)
-    .bind(owner.principal_id)
+    .bind(owner.owner_id)
     .bind(edge.edge_id)
     .bind(&edge.relation)
     .bind(edge.source_memory_id)
@@ -713,7 +697,7 @@ async fn insert_edge_delete_event(
 async fn edge_ids_referencing_facts(
     tx: &mut Transaction<'_, Postgres>,
     _owner_kind: OwnerRefKind,
-    _owner_principal_id: Uuid,
+    _owner_id: Option<Uuid>,
     due_memory_ids: &[Uuid],
 ) -> Result<Vec<Uuid>, StorageError> {
     sqlx::query_scalar(

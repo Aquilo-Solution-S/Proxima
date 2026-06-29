@@ -31,10 +31,10 @@ pub async fn start_run_with_created(
 
     let inserted = sqlx::query_as::<_, RunRow>(
         "INSERT INTO proxima_code.repo_ingestion_runs \
-            (run_id, owner_principal_kind, owner_principal_id, \
+            (run_id, owner_kind, owner_id, \
              repo_id, status, stage) \
          VALUES ($1, $2, $3, $4, 'queued', 'starting') \
-         ON CONFLICT (owner_principal_kind, owner_principal_id, repo_id) \
+         ON CONFLICT (owner_kind, owner_id, repo_id) \
              WHERE status IN ('queued', 'running') \
          DO NOTHING \
          RETURNING run_id, repo_id, status, stage, \
@@ -77,7 +77,7 @@ pub async fn get_active_run(
                 embeddings_landed, citations_emitted, \
                 error_message, started_at, updated_at, finished_at \
          FROM proxima_code.repo_ingestion_runs \
-         WHERE owner_principal_kind = $1 AND owner_principal_id = $2 \
+         WHERE owner_kind = $1 AND owner_id = $2 \
            AND repo_id = $3 \
            AND status IN ('queued', 'running') \
          ORDER BY started_at DESC \

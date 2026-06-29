@@ -161,7 +161,7 @@ Substrate edge row:
 | `relation_class` | closed substrate class |
 | source endpoint | Memory or Goal |
 | target endpoint | Memory or Goal |
-| owner pair (`owner_principal_kind`, `owner_principal_id`) | same owner as both endpoints |
+| owner pair (`owner_kind`, `owner_id`) | same owner as both endpoints |
 | authorship | edge author class |
 
 Payload rule:

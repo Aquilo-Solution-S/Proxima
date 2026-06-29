@@ -551,9 +551,9 @@ impl McpToolError {
                     McpToolErrorKind::InvalidInput
                 }
                 crate::StorageError::Conflict(_) => McpToolErrorKind::InvalidRequest,
-                crate::StorageError::Unavailable(_) | crate::StorageError::Internal(_) => {
-                    McpToolErrorKind::Internal
-                }
+                crate::StorageError::Unavailable(_)
+                | crate::StorageError::Internal(_)
+                | crate::StorageError::V004ResetRequired { .. } => McpToolErrorKind::Internal,
             },
             Self::Other(_) => McpToolErrorKind::Internal,
         }

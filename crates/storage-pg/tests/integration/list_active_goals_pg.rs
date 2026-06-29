@@ -1,6 +1,5 @@
-use crate::common::{drop_db, fresh_pg, owner_fixture, share_entity};
+use crate::common::{drop_db, fresh_pg, owner_fixture};
 
-use proxima_core::access::world;
 use proxima_core::relation::CORE_INSPIRES_RELATION;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::goal_write::GoalState;
@@ -12,7 +11,7 @@ use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use uuid::Uuid;
 
-fn owner_parts(owner: &Owner) -> (OwnerRefKind, Uuid) {
+fn owner_parts(owner: &Owner) -> (OwnerRefKind, Option<Uuid>) {
     owner.columns()
 }
 
@@ -25,20 +24,22 @@ async fn insert_self(
     owner: &Owner,
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id)
-         VALUES ($1, 'test/self', 1, $2,
-                 'self', $3, 'test-model', 'v1', $4)",
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id)
+         VALUES ($1, $2, $3, 'test/self', 1, $4,
+                 'self', $5, 'test-model', 'v1', $6)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(proxima_core::EntityKind::Perspective)
     .bind(proxima_core::MemoryOperatorKind::AtoP)
     .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
-    insert_home(pg, memory_id, owner).await?;
     Ok(MemoryId::new(memory_id))
 }
 
@@ -49,28 +50,27 @@ async fn insert_goal(
     supersedes: Option<GoalId>,
     request_id: &str,
 ) -> Result<GoalId, Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
+    let (owner_kind, owner_id) = owner_parts(owner);
     let goal_id = GoalId::new(Uuid::now_v7());
     sqlx::query(
         "INSERT INTO proxima_core.goals
-            (goal_id, schema_id, schema_version,
+            (goal_id, owner_kind, owner_id, schema_id, schema_version,
              title, text, payload, state, supersedes,
              authorship_kind, request_id, idempotency_key)
-         VALUES ($1, 'core/simple-text-v1', 1,
+         VALUES ($1, $2, $3, 'core/simple-text-v1', 1,
                  $4, $4, convert_to('{}', 'UTF8'), $5, $6,
                  'User', $7,
                  md5($2::text || ':' || $3::text || ':' || $7))",
     )
     .bind(goal_id.into_inner())
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(request_id)
     .bind(state)
     .bind(supersedes.map(GoalId::into_inner))
     .bind(request_id)
     .execute(pg.pool())
     .await?;
-    insert_home(pg, goal_id.into_inner(), owner).await?;
     if state == GoalState::Active {
         insert_goal_activated_fact(pg, owner, goal_id).await?;
     }
@@ -174,33 +174,33 @@ async fn insert_dummy_fact_refs(
     owner: &Owner,
     memory_id: Uuid,
 ) -> Result<(Vec<u8>, Uuid), Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
-    let event_id = Uuid::now_v7().as_bytes().to_vec();
+    let (owner_kind, owner_id) = owner_parts(owner);
+    let receipt_id = Uuid::now_v7().as_bytes().to_vec();
     let source_id = "proxima-test/source";
     let source_batch_id = Uuid::now_v7();
     let now = time::OffsetDateTime::now_utc();
     sqlx::query(
         "INSERT INTO proxima_core.source_batches
-            (id, owner_principal_kind, owner_principal_id,
+            (id, owner_kind, owner_id,
              source_id)
          VALUES ($1, $2, $3, $4)",
     )
     .bind(source_batch_id)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(source_id)
     .execute(&mut **tx)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.events
-            (event_id, owner_principal_kind, owner_principal_id,
-             source_batch_id, source_id, schema_id, schema_version,
+        "INSERT INTO proxima_core.fact_receipts
+            (receipt_id, owner_kind, owner_id,
+             source_batch_id, source, schema_id, schema_version,
              observed_at, occurred_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
-    .bind(&event_id)
+    .bind(&receipt_id)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(source_batch_id)
     .bind(source_id)
     .bind("core/goal-activated-v1")
@@ -213,21 +213,21 @@ async fn insert_dummy_fact_refs(
     let cited_object_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.cited_objects
-            (cited_object_id, schema_id, owner_principal_kind,
-             owner_principal_id, content_hash)
+            (cited_object_id, schema_id, owner_kind,
+             owner_id, content_hash)
          VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(cited_object_id)
     .bind("proxima-test/cited-object-v1")
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(Uuid::now_v7().as_bytes().repeat(2))
     .execute(&mut **tx)
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.citation_mappings
             (citation_mapping_id, schema_id, memory_id, cited_object_id,
-             owner_principal_kind, owner_principal_id)
+             owner_kind, owner_id)
          VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(citation_mapping_id)
@@ -235,10 +235,10 @@ async fn insert_dummy_fact_refs(
     .bind(memory_id)
     .bind(cited_object_id)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .execute(&mut **tx)
     .await?;
-    Ok((event_id, citation_mapping_id))
+    Ok((receipt_id, citation_mapping_id))
 }
 
 async fn insert_goal_activated_fact(
@@ -249,25 +249,28 @@ async fn insert_goal_activated_fact(
     let memory_id = Uuid::now_v7();
     let mut tx = pg.pool().begin().await?;
 
-    // Minimal Fact-shaped memory row (requires event_id + citation_mapping_id
-    // per the variant check). Insert dummy events/citation rows just so the
+    // Minimal Fact-shaped memory row (requires receipt_id + citation_mapping_id
+    // per the variant check). Insert dummy receipt/citation rows just so the
     // FK + CHECK constraints accept the row.
-    let (event_id, citation_mapping_id) = insert_dummy_fact_refs(&mut tx, owner, memory_id).await?;
+    let (owner_kind, owner_id) = owner_parts(owner);
+    let (receipt_id, citation_mapping_id) =
+        insert_dummy_fact_refs(&mut tx, owner, memory_id).await?;
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, event_id, citation_mapping_id,
-             personality_instance_id)
-         VALUES ($1, $2, $3, $4, $5,
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, receipt_id,
+             citation_mapping_id, personality_instance_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7,
                  '00000000-0000-0000-0000-000000000000'::uuid)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind("core/goal-activated-v1")
     .bind(1_i32)
-    .bind(&event_id)
+    .bind(&receipt_id)
     .bind(citation_mapping_id)
     .execute(&mut *tx)
     .await?;
-    insert_home_in_tx(&mut tx, memory_id, owner).await?;
 
     sqlx::query(
         "INSERT INTO proxima_core.goal_activated_v1
@@ -353,25 +356,30 @@ async fn list_active_goals_requires_readable_seed_target() -> Result<(), Box<dyn
 
     let result = async {
         pg.run_migrations().await?;
-        let private = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
-        let world = world();
-        let private_self = insert_self(&pg, &private).await?;
-        let goal = insert_goal(&pg, &private, GoalState::Active, None, "private-active").await?;
-        link_goal_to_self(&pg, &private, goal, private_self).await?;
-        share_entity(&pg, goal.into_inner(), &world).await?;
+        let source_owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let target_owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let private_self = insert_self(&pg, &target_owner).await?;
+        let goal = insert_goal(
+            &pg,
+            &source_owner,
+            GoalState::Active,
+            None,
+            "private-active",
+        )
+        .await?;
+        link_goal_to_self(&pg, &source_owner, goal, private_self).await?;
 
-        let world_goals = pg
-            .list_active_goals(std::slice::from_ref(&world), private_self, 100)
+        let source_only = vec![source_owner];
+        let source_only_goals = pg
+            .list_active_goals(&source_only, private_self, 100)
             .await?;
         assert!(
-            world_goals.is_empty(),
-            "World can read the source goal but not the private seed target"
+            source_only_goals.is_empty(),
+            "reader can read source goal but not the private seed target"
         );
 
-        let private_read = vec![private, world];
-        let private_goals = pg
-            .list_active_goals(&private_read, private_self, 100)
-            .await?;
+        let both_read = vec![source_owner, target_owner];
+        let private_goals = pg.list_active_goals(&both_read, private_self, 100).await?;
         assert_eq!(private_goals.len(), 1);
         assert_eq!(private_goals[0].goal_id, goal);
 
@@ -381,46 +389,6 @@ async fn list_active_goals_requires_readable_seed_target() -> Result<(), Box<dyn
 
     let _ = drop_db(&db_name).await;
     result
-}
-
-async fn insert_home(
-    pg: &PgStorage,
-    entity_id: Uuid,
-    owner: &OwnerRef,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id) = owner.columns();
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1, $2, $3, true, $4)",
-    ))
-    .bind(entity_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(Uuid::nil())
-    .execute(pg.pool())
-    .await?;
-    Ok(())
-}
-
-async fn insert_home_in_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    entity_id: Uuid,
-    owner: &OwnerRef,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id) = owner.columns();
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1, $2, $3, true, $4)",
-    ))
-    .bind(entity_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(Uuid::nil())
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
 }
 
 async fn seed_membership(
@@ -436,14 +404,13 @@ async fn seed_membership(
         panic!("seed_membership member must be a user principal");
     };
     sqlx::query(
-        "INSERT INTO proxima_core.group_membership
-            (group_id, member_user_id, relation, granted_by)
-         VALUES ($1, $2, $3::proxima_core.membership_relation, $4)",
+        "INSERT INTO proxima_core.group_memberships
+            (group_id, member_user_id, relation)
+         VALUES ($1, $2, $3::proxima_core.membership_relation)",
     )
     .bind(group_id.into_inner())
     .bind(member_id.into_inner())
     .bind(relation)
-    .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
     Ok(())

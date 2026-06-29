@@ -203,6 +203,53 @@ async fn migration_facade_runs_core_goal_schema_idempotently() {
 }
 
 #[tokio::test]
+async fn pre_v004_database_fails_closed_in_migration_facade() {
+    let db_name = unique_db_name("proxima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&db_url).await?;
+        sqlx::query("CREATE SCHEMA proxima_core")
+            .execute(pg.pool())
+            .await?;
+        sqlx::query(
+            "CREATE TABLE public._sqlx_migrations (
+                 version bigint PRIMARY KEY,
+                 description text NOT NULL,
+                 installed_on timestamptz NOT NULL DEFAULT now(),
+                 success boolean NOT NULL,
+                 checksum bytea NOT NULL,
+                 execution_time bigint NOT NULL
+             )",
+        )
+        .execute(pg.pool())
+        .await?;
+        sqlx::query(
+            "INSERT INTO public._sqlx_migrations
+                 (version, description, success, checksum, execution_time)
+             VALUES (1, 'init', true, decode('00', 'hex'), 0)",
+        )
+        .execute(pg.pool())
+        .await?;
+
+        let err = run_core_and_flavor_migrations(&pg, Vec::<NamedMigrator>::new())
+            .await
+            .expect_err("pre-v0.0.4 DB must fail closed through facade");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("v0.0.4") && msg.contains("reset"),
+            "error must explain v0.0.4 reset requirement, got: {msg}",
+        );
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("migration facade fail-closed test failed");
+}
+
+#[tokio::test]
 async fn migration_facade_keeps_tracking_public_when_flavor_creates_current_user_schema() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");

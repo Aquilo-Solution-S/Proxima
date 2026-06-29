@@ -12,7 +12,7 @@ pub(super) async fn query_goals(
     pool: &PgPool,
     req: &QueryRequest,
     read_owner_kinds: &[OwnerRefKind],
-    read_owner_ids: &[uuid::Uuid],
+    read_owner_ids: &[Option<uuid::Uuid>],
     schema_id_filter: Option<&str>,
 ) -> Result<Vec<GoalRow>, StorageError> {
     let goal_ids: Vec<uuid::Uuid> = req.goal_ids.iter().map(|id| id.into_inner()).collect();
@@ -26,28 +26,26 @@ pub(super) async fn query_goals(
     } else {
         "''::bytea"
     };
-    let mut sql = crate::access::owner_ref_compat::sql_owned(format!(
+    let mut sql = format!(
         "SELECT g.goal_id, g.schema_id, g.schema_version, \
-                home_owner.owner_principal_kind, home_owner.owner_principal_id, \
+                g.owner_kind, g.owner_id, \
                 g.title, g.text, g.state, \
                 g.supersedes, {payload_projection} AS payload, \
-                COALESCE(array_agg(gp.parent_goal_id) FILTER \
-                    (WHERE gp.parent_goal_id IS NOT NULL), '{{}}'::uuid[]) AS parent_goal_ids \
+                COALESCE(array_agg(e.target_goal_id) FILTER \
+                    (WHERE e.target_goal_id IS NOT NULL), '{{}}'::uuid[]) AS parent_goal_ids \
          FROM proxima_core.goals g \
-         LEFT JOIN __PROXIMA_ENTITY_OWNER__ home_owner \
-           ON home_owner.entity_id = g.goal_id \
-          AND home_owner.is_home \
-         LEFT JOIN proxima_core.goal_parents gp ON gp.goal_id = g.goal_id \
+         LEFT JOIN proxima_core.edges e \
+           ON e.source_goal_id = g.goal_id \
+          AND e.relation = 'core/depends-on' \
+          AND e.target_goal_id IS NOT NULL \
          WHERE EXISTS (
              SELECT 1
-               FROM __PROXIMA_ENTITY_OWNER__ eo
-               JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
-                 ON eo.owner_principal_kind = s.kind
-                AND eo.owner_principal_id = s.id
-              WHERE eo.entity_id = g.goal_id
+               FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+              WHERE g.owner_kind = s.kind
+                AND g.owner_id IS NOT DISTINCT FROM s.id
          )",
-    ));
-    // Bindings: $1=owner_kind, $2=owner_principal_id; the remaining
+    );
+    // Bindings: $1=owner_kind, $2=owner_id; the remaining
     // params are pushed in order, so $3 always lands on whichever
     // optional filter is present first.
     let schema_param = schema_id_filter.map(|_| 3);
@@ -65,7 +63,7 @@ pub(super) async fn query_goals(
         );
     }
     sql.push_str(
-        " GROUP BY g.goal_id, home_owner.owner_principal_kind, home_owner.owner_principal_id \
+        " GROUP BY g.goal_id, g.owner_kind, g.owner_id \
           ORDER BY g.created_at DESC LIMIT ",
     );
     sql.push_str(&u64::from(req.limit).to_string());

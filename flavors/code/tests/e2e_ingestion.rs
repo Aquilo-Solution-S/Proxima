@@ -14,7 +14,7 @@ use proxima_pg_testkit::drop_db;
 use tempfile::TempDir;
 use uuid::Uuid;
 
-fn owner_cols(owner: &Owner) -> (proxima_core::OwnerRefKind, Uuid) {
+fn owner_cols(owner: &Owner) -> (proxima_core::OwnerRefKind, Option<Uuid>) {
     owner.columns()
 }
 
@@ -151,7 +151,7 @@ async fn sweep_retires_orphans_and_unblocks_start_run() {
         let messages: Vec<(RunStatus, Option<String>)> = sqlx::query_as(
             "SELECT status, error_message \
              FROM proxima_code.repo_ingestion_runs \
-             WHERE owner_principal_kind = $1 AND owner_principal_id = $2 \
+             WHERE owner_kind = $1 AND owner_id = $2 \
              ORDER BY started_at ASC",
         )
         .bind(kind)
@@ -209,15 +209,14 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         assert!(facts.2 > 0, "expected chunk facts");
 
         let citation_mappings: i64 =
-            sqlx::query_scalar(proxima_storage_pg::access::owner_ref_compat::sql(
+            sqlx::query_scalar(
                 "SELECT COUNT(*)::bigint \
              FROM proxima_core.citation_mappings cm \
              JOIN proxima_core.memories m ON m.memory_id = cm.memory_id \
-             JOIN __PROXIMA_ENTITY_OWNER__ eo \
+             JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
                ON eo.entity_id = m.memory_id \
-              AND eo.is_home \
-             WHERE eo.owner_principal_kind = $1 AND eo.owner_principal_id = $2",
-            ))
+             WHERE eo.owner_kind = $1 AND eo.owner_id = $2",
+            )
             .bind(kind)
             .bind(principal_id)
             .fetch_one(pg.pool())
@@ -228,15 +227,14 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         );
 
         let cited_objects: i64 =
-            sqlx::query_scalar(proxima_storage_pg::access::owner_ref_compat::sql(
+            sqlx::query_scalar(
                 "SELECT COUNT(DISTINCT cm.cited_object_id)::bigint \
              FROM proxima_core.citation_mappings cm \
              JOIN proxima_core.memories m ON m.memory_id = cm.memory_id \
-             JOIN __PROXIMA_ENTITY_OWNER__ eo \
+             JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
                ON eo.entity_id = m.memory_id \
-              AND eo.is_home \
-             WHERE eo.owner_principal_kind = $1 AND eo.owner_principal_id = $2",
-            ))
+             WHERE eo.owner_kind = $1 AND eo.owner_id = $2",
+            )
             .bind(kind)
             .bind(principal_id)
             .fetch_one(pg.pool())

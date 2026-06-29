@@ -142,6 +142,7 @@ impl CitedBlobStore {
     ) -> Result<CitedBlobUploadPrepareOutcomeTs, BlobError> {
         validate_prepare(&req)?;
         let owner = req.owner();
+        ensure_write_owner(&owner)?;
         let upload_id = Uuid::now_v7();
         let owner_hash = owner_hash_hex(&owner);
         let object_key = pending_object_key(&owner_hash, upload_id);
@@ -159,15 +160,15 @@ impl CitedBlobStore {
             .await
             .map_err(|e| BlobError::S3(format!("prepare upload URL failed: {e}")))?;
 
-        let (owner_kind, owner_principal_id) = owner_columns(&owner);
+        let (owner_kind, owner_id) = db_owner_columns(&owner);
         sqlx::query(
             "INSERT INTO proxima_core.cited_object_uploads \
-                (owner_principal_kind, owner_principal_id, upload_id, \
+                (owner_kind, owner_id, upload_id, \
                  bucket, object_key, filename, mime, expected_byte_len, expires_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(owner_kind)
-        .bind(owner_principal_id)
+        .bind(owner_id)
         .bind(upload_id)
         .bind(&self.config.bucket)
         .bind(&object_key)
@@ -326,17 +327,17 @@ impl CitedBlobStore {
             return Ok(CitedBlobUploadAbortOutcomeTs { aborted: true });
         }
 
-        let (owner_kind, owner_principal_id) = owner_columns(&owner);
+        let (owner_kind, owner_id) = db_owner_columns(&owner);
         let rows_affected = sqlx::query(
             "UPDATE proxima_core.cited_object_uploads \
                 SET status = 'aborted', aborted_at = now() \
-              WHERE owner_principal_kind = $1 \
-                AND owner_principal_id = $2 \
+              WHERE owner_kind = $1 \
+                AND owner_id IS NOT DISTINCT FROM $2 \
                 AND upload_id = $3 \
                 AND status = 'pending'",
         )
         .bind(owner_kind)
-        .bind(owner_principal_id)
+        .bind(owner_id)
         .bind(upload_id)
         .execute(&self.pool)
         .await
@@ -437,17 +438,17 @@ async fn load_upload(
     owner: &Owner,
     upload_id: Uuid,
 ) -> Result<UploadRow, BlobError> {
-    let (owner_kind, owner_principal_id) = owner_columns(owner);
+    let (owner_kind, owner_id) = db_owner_columns(owner);
     let row = sqlx::query(
         "SELECT bucket, object_key, filename, mime, expected_byte_len, \
                 status::text AS status, cited_object_id, expires_at \
            FROM proxima_core.cited_object_uploads \
-          WHERE owner_principal_kind = $1 \
-            AND owner_principal_id = $2 \
+          WHERE owner_kind = $1 \
+            AND owner_id IS NOT DISTINCT FROM $2 \
             AND upload_id = $3",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(upload_id)
     .fetch_optional(pool)
     .await
@@ -471,17 +472,17 @@ async fn mark_upload_expired(
     owner: &Owner,
     upload_id: Uuid,
 ) -> Result<(), BlobError> {
-    let (owner_kind, owner_principal_id) = owner_columns(owner);
+    let (owner_kind, owner_id) = db_owner_columns(owner);
     sqlx::query(
         "UPDATE proxima_core.cited_object_uploads \
             SET status = 'expired', error_message = 'upload expired' \
-          WHERE owner_principal_kind = $1 \
-            AND owner_principal_id = $2 \
+          WHERE owner_kind = $1 \
+            AND owner_id IS NOT DISTINCT FROM $2 \
             AND upload_id = $3 \
             AND status = 'pending'",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(upload_id)
     .execute(pool)
     .await
@@ -538,16 +539,16 @@ async fn persist_completed_blob(
     streamed: &StreamedObject,
     etag: Option<&str>,
 ) -> Result<CompletedBlob, BlobError> {
-    let (owner_kind, owner_principal_id) = owner_columns(owner);
+    let (owner_kind, owner_id) = db_owner_columns(owner);
     let mut tx = pool.begin().await.map_err(BlobError::Db)?;
 
     let row = sqlx::query(
         "WITH ins AS ( \
              INSERT INTO proxima_core.cited_objects \
-                 (cited_object_id, schema_id, owner_principal_kind, \
-                  owner_principal_id, content_hash) \
+                 (cited_object_id, schema_id, owner_kind, \
+                  owner_id, content_hash) \
              VALUES ($1, $2, $3, $4, $5) \
-             ON CONFLICT (owner_principal_kind, owner_principal_id, schema_id, content_hash) \
+             ON CONFLICT (owner_kind, owner_id, schema_id, content_hash) \
              DO NOTHING \
              RETURNING cited_object_id \
          ) \
@@ -555,8 +556,8 @@ async fn persist_completed_blob(
          UNION ALL \
          SELECT cited_object_id, true AS idempotent_replay \
            FROM proxima_core.cited_objects \
-          WHERE owner_principal_kind = $3 \
-            AND owner_principal_id = $4 \
+          WHERE owner_kind = $3 \
+            AND owner_id IS NOT DISTINCT FROM $4 \
             AND schema_id = $2 \
             AND content_hash = $5 \
             AND NOT EXISTS (SELECT 1 FROM ins) \
@@ -565,7 +566,7 @@ async fn persist_completed_blob(
     .bind(Uuid::now_v7())
     .bind(UPLOADED_BLOB_SCHEMA_ID)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(&streamed.blake3[..])
     .fetch_one(tx.as_mut())
     .await
@@ -594,14 +595,14 @@ async fn persist_completed_blob(
     let rows_affected = sqlx::query(
         "UPDATE proxima_core.cited_object_uploads \
             SET status = 'completed', cited_object_id = $1, completed_at = now() \
-          WHERE owner_principal_kind = $2 \
-            AND owner_principal_id = $3 \
+          WHERE owner_kind = $2 \
+            AND owner_id IS NOT DISTINCT FROM $3 \
             AND upload_id = $4 \
             AND status = 'pending'",
     )
     .bind(cited_object_id)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(upload_id)
     .execute(tx.as_mut())
     .await
@@ -626,20 +627,20 @@ async fn load_completed_blob(
     cited_object_id: Uuid,
     idempotent_replay: bool,
 ) -> Result<CitedBlobUploadCompleteOutcomeTs, BlobError> {
-    let (owner_kind, owner_principal_id) = owner_columns(owner);
+    let (owner_kind, owner_id) = db_owner_columns(owner);
     let row = sqlx::query(
         "SELECT encode(co.content_hash, 'hex') AS content_hash, \
                 encode(b.sha256, 'hex') AS sha256, b.byte_len, b.mime, b.filename \
            FROM proxima_core.cited_objects co \
            JOIN proxima_core.cited_uploaded_blob_v1 b USING (cited_object_id) \
           WHERE co.cited_object_id = $1 \
-            AND co.owner_principal_kind = $2 \
-            AND co.owner_principal_id = $3 \
+            AND co.owner_kind = $2 \
+            AND co.owner_id IS NOT DISTINCT FROM $3 \
             AND co.schema_id = $4",
     )
     .bind(cited_object_id)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(UPLOADED_BLOB_SCHEMA_ID)
     .fetch_optional(pool)
     .await
@@ -663,19 +664,19 @@ async fn load_blob_location(
     owner: &Owner,
     cited_object_id: Uuid,
 ) -> Result<BlobLocation, BlobError> {
-    let (owner_kind, owner_principal_id) = owner_columns(owner);
+    let (owner_kind, owner_id) = db_owner_columns(owner);
     let row = sqlx::query(
         "SELECT b.bucket, b.object_key \
            FROM proxima_core.cited_objects co \
            JOIN proxima_core.cited_uploaded_blob_v1 b USING (cited_object_id) \
           WHERE co.cited_object_id = $1 \
-            AND co.owner_principal_kind = $2 \
-            AND co.owner_principal_id = $3 \
+            AND co.owner_kind = $2 \
+            AND co.owner_id IS NOT DISTINCT FROM $3 \
             AND co.schema_id = $4",
     )
     .bind(cited_object_id)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(UPLOADED_BLOB_SCHEMA_ID)
     .fetch_optional(pool)
     .await
@@ -709,17 +710,27 @@ fn parse_uuid(value: &str) -> Result<Uuid, BlobError> {
     Uuid::parse_str(value).map_err(|_| BlobError::State(format!("invalid uuid: {value}")))
 }
 
-fn owner_columns(owner: &Owner) -> (OwnerRefKind, Uuid) {
+fn ensure_write_owner(owner: &Owner) -> Result<(), BlobError> {
+    if matches!(owner, OwnerRef::World) {
+        return Err(BlobError::State(
+            "World is read-only and cannot own cited blobs".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn db_owner_columns(owner: &Owner) -> (OwnerRefKind, Option<Uuid>) {
     owner.columns()
 }
 
 fn owner_hash_hex(owner: &Owner) -> String {
-    let (kind, principal_id) = owner_columns(owner);
+    let kind = OwnerRefKind::of(owner);
+    let owner_key_id = owner.stable_key_uuid();
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"proxima-owner-s3-key-v1\0");
     hasher.update(kind.as_str().as_bytes());
     hasher.update(b"\0");
-    hasher.update(principal_id.as_bytes());
+    hasher.update(owner_key_id.as_bytes());
     hex::encode(hasher.finalize().as_bytes())
 }
 
@@ -773,17 +784,32 @@ mod tests {
     #[test]
     fn object_keys_do_not_embed_raw_owner_ids() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let (owner_kind, principal_id) = owner_columns(&owner);
+        let owner_kind = OwnerRefKind::of(&owner);
+        let owner_key_id = owner.stable_key_uuid();
         let owner_hash = owner_hash_hex(&owner);
         let pending = pending_object_key(&owner_hash, Uuid::now_v7());
         let canonical = canonical_object_key(&owner_hash, &"a".repeat(64));
 
         assert_eq!(owner_hash.len(), 64);
         assert!(!pending.contains(owner_kind.as_str()));
-        assert!(!pending.contains(&principal_id.to_string()));
+        assert!(!pending.contains(&owner_key_id.to_string()));
         assert!(pending.starts_with("pending/"));
         assert!(canonical.contains(UPLOADED_BLOB_SCHEMA_ID));
         assert!(canonical.starts_with("objects/"));
+    }
+
+    #[test]
+    fn db_owner_columns_use_nullable_world_shape() {
+        assert_eq!(
+            db_owner_columns(&OwnerRef::World),
+            (OwnerRefKind::World, None)
+        );
+    }
+
+    #[test]
+    fn world_cannot_prepare_cited_blob_write() {
+        let err = ensure_write_owner(&OwnerRef::World).expect_err("world write rejected");
+        assert!(err.to_string().contains("World is read-only"));
     }
 
     #[test]
@@ -804,7 +830,7 @@ mod tests {
         ));
         assert_eq!(
             owner_hash_hex(&owner),
-            "ff5a53f4084b4ac3d3d62e55ba003304c6a7cb57065c0477ff5b95fbb6a82efd"
+            "c022815b2b51727207c5f3014833f1a5c09ae92edfb752c394c9caa3d96374ce"
         );
     }
 

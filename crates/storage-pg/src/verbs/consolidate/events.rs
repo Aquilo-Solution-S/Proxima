@@ -16,16 +16,17 @@ pub async fn list_change_events_after(
         return Ok(Vec::new());
     }
     let (read_owner_kinds, read_owner_ids) = read_owner_columns(read_owners);
-    let (world_kind, world_id) = proxima_core::access::world().columns();
+    let (world_kind, world_id) =
+        crate::access::owner_columns::owner_binds(&proxima_core::access::world());
     let edge_visibility = edge_event_visibility_predicate(1, 2, 5, 6);
     let sql = format!(
         "SELECT ce.seq, ce.entity_personality_instance_id, ce.wake_chain_depth
              FROM proxima_core.change_event ce
              WHERE EXISTS (
                 SELECT 1
-                  FROM unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
-                 WHERE ce.owner_principal_kind = s.kind
-                   AND ce.owner_principal_id = s.id
+                  FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+                 WHERE ce.owner_kind = s.kind
+                   AND ce.owner_id IS NOT DISTINCT FROM s.id
              )
                AND ce.seq > $3
                AND {edge_visibility}
@@ -63,16 +64,8 @@ pub async fn list_change_events_after(
     Ok(out)
 }
 
-fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<uuid::Uuid>) {
-    let kinds = read_owners
-        .iter()
-        .map(|principal| principal.columns().0)
-        .collect();
-    let ids = read_owners
-        .iter()
-        .map(|principal| principal.columns().1)
-        .collect();
-    (kinds, ids)
+fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<Option<uuid::Uuid>>) {
+    crate::access::owner_columns::owner_arrays(read_owners)
 }
 
 pub async fn list_change_events_for_replay(
@@ -83,16 +76,17 @@ pub async fn list_change_events_for_replay(
     limit: usize,
 ) -> Result<Vec<ChangeEventForWake>, StorageError> {
     let (read_owner_kinds, read_owner_ids) = read_owner_columns(std::slice::from_ref(owner));
-    let (world_kind, world_id) = proxima_core::access::world().columns();
+    let (world_kind, world_id) =
+        crate::access::owner_columns::owner_binds(&proxima_core::access::world());
     let edge_visibility = edge_event_visibility_predicate(1, 2, 6, 7);
     let sql = format!(
         "SELECT ce.seq, ce.entity_personality_instance_id, ce.wake_chain_depth
              FROM proxima_core.change_event ce
              WHERE EXISTS (
                 SELECT 1
-                  FROM unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
-                 WHERE ce.owner_principal_kind = s.kind
-                   AND ce.owner_principal_id = s.id
+                  FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+                 WHERE ce.owner_kind = s.kind
+                   AND ce.owner_id IS NOT DISTINCT FROM s.id
              )
                AND ce.seq > $3
                AND ($4::uuid IS NULL OR ce.seq <= $4)
@@ -150,36 +144,36 @@ pub(crate) fn edge_event_visibility_predicate(
         ce.edge_target_memory_id, ce.edge_target_goal_id,
         (SELECT fe.current_memory_id FROM proxima_core.fact_entities fe
           WHERE fe.fact_entity_id = ce.edge_target_fact_entity_id))";
-    crate::access::owner_ref_compat::sql_owned(format!(
+    format!(
         "(
                     ce.edge_id IS NULL
                     OR (
                         EXISTS (
                             SELECT 1
-                              FROM __PROXIMA_ENTITY_OWNER__ seo
-                              JOIN unnest(${read_kinds_param}::proxima_core.owner_principal_kind[], ${read_ids_param}::uuid[]) AS rs(kind, id)
-                                ON seo.owner_principal_kind = rs.kind
-                               AND seo.owner_principal_id = rs.id
+                              FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) seo
+                              JOIN unnest(${read_kinds_param}::proxima_core.owner_ref_kind[], ${read_ids_param}::uuid[]) AS rs(kind, id)
+                                ON seo.owner_kind = rs.kind
+                               AND seo.owner_id IS NOT DISTINCT FROM rs.id
                              WHERE seo.entity_id = {source_entity}
                         )
                         AND NOT (
                             EXISTS (
                                 SELECT 1
-                                  FROM __PROXIMA_ENTITY_OWNER__ weo
+                                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) weo
                                  WHERE weo.entity_id = {source_entity}
-                                   AND weo.owner_principal_kind = ${world_kind_param}
-                                   AND weo.owner_principal_id = ${world_id_param}
+                                   AND weo.owner_kind = ${world_kind_param}
+                                   AND weo.owner_id IS NOT DISTINCT FROM ${world_id_param}
                             )
                             AND NOT EXISTS (
                                 SELECT 1
-                                  FROM __PROXIMA_ENTITY_OWNER__ teo
-                                  JOIN unnest(${read_kinds_param}::proxima_core.owner_principal_kind[], ${read_ids_param}::uuid[]) AS rt(kind, id)
-                                    ON teo.owner_principal_kind = rt.kind
-                                   AND teo.owner_principal_id = rt.id
+                                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) teo
+                                  JOIN unnest(${read_kinds_param}::proxima_core.owner_ref_kind[], ${read_ids_param}::uuid[]) AS rt(kind, id)
+                                    ON teo.owner_kind = rt.kind
+                                   AND teo.owner_id IS NOT DISTINCT FROM rt.id
                                  WHERE teo.entity_id = {target_entity}
                             )
                         )
                     )
                )"
-    ))
+    )
 }

@@ -15,7 +15,7 @@ part the table names hide:
 
 | Term | What it is | Schema home | Produced by |
 |---|---|---|---|
-| **Fact** | An accepted observation from an Event Source — the event stream. Never revised. | `memories` (`kind` NULL, `event_id` set) | EventSource ingest |
+| **Fact** | An accepted observation from an Event Source — the event stream. Never revised. | `memories` (`kind` NULL, `receipt_id` set) + `fact_receipts` | EventSource ingest |
 | **Abstraction** | A re-derivable interpretation over Facts. | `memories` (`kind = 'Abstraction'`) | `F→A` operator |
 | **Perspective** | A re-derivable integration over Abstractions; the lens reads are taken through. The self-perspective anchors a personality. | `memories` (`kind = 'Perspective'`) | `A→P` operator |
 | **Goal** | A desired end-state with a lifecycle (`state`). Goal↔Goal topology is ordinary Edge topology, not a Goal row field. | `goals` (its own table) | user / external / `A→Goal` operator |
@@ -95,8 +95,9 @@ Kind-specific content:
 | Perspective | Typed `PerspectivePayload` sidecar + immutable `text` | none | operator-authored | allowed |
 
 Facts are observations from Event Sources. Fact identity is the UUIDv7
-`memory_id`, not the content hash; `event_id` is the EventSource
-idempotency key.
+`memory_id`, not the content hash; `receipt_id` is the storage
+idempotency key admitted through `fact_receipts`. Public `EventIngest` /
+`EventId` naming is protocol vocabulary until the PR5 membrane rename.
 
 Abstractions and Perspectives are derived memories. Their provenance is
 edge-based, not JSON inside the memory row. Their reproducibility metadata

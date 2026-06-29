@@ -245,15 +245,12 @@ async fn engine_author_derived_supersedes_in_same_transaction()
     .await?;
     assert_eq!(supersedes_edge_count, 1);
 
-    let head_ids: Vec<Uuid> =
-        sqlx::query_scalar(proxima_storage_pg::access::owner_ref_compat::sql(
-            "SELECT m.memory_id
+    let (owner_kind, owner_id) = owner.columns();
+    let head_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT m.memory_id
            FROM proxima_core.memories m
-           JOIN __PROXIMA_ENTITY_OWNER__ eo
-             ON eo.entity_id = m.memory_id
-            AND eo.is_home
-          WHERE eo.owner_principal_kind = $1
-            AND eo.owner_principal_id = $2
+          WHERE m.owner_kind = $1
+            AND m.owner_id = $2
             AND m.schema_id = $3
             AND m.kind = 'Abstraction'
             AND m.tombstoned_at IS NULL
@@ -262,12 +259,12 @@ async fn engine_author_derived_supersedes_in_same_transaction()
                   WHERE newer.supersedes = m.memory_id
                     AND newer.tombstoned_at IS NULL
             )",
-        ))
-        .bind(owner.columns().0)
-        .bind(owner.columns().1)
-        .bind(AgentDerivationV1::SCHEMA_ID)
-        .fetch_all(pg.pool())
-        .await?;
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(AgentDerivationV1::SCHEMA_ID)
+    .fetch_all(pg.pool())
+    .await?;
     assert!(head_ids.contains(&new_memory_id.into_inner()));
     assert!(!head_ids.contains(&old_memory_id.into_inner()));
 
@@ -522,30 +519,21 @@ async fn insert_source_memory(
     text: &str,
 ) -> Result<MemoryId, sqlx::Error> {
     let memory_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, 1, $3,
-                 $4, 'ExternalAgent', 'source-model',
-                 'source-prompt', $5, 0)",
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, $4, 1, $5,
+                 $6, 'ExternalAgent', 'source-model',
+                 'source-prompt', $7, 0)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(AgentDerivationV1::SCHEMA_ID)
     .bind(kind)
     .bind(text)
-    .bind(Uuid::nil())
-    .execute(pg.pool())
-    .await?;
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1, $2, $3, true, $4)",
-    ))
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;

@@ -136,7 +136,7 @@ async fn query_scopes_reads_to_authz_context_not_client_principal() {
     // vector: it can never widen what the caller sees, so the verb returns the
     // caller's accessible subset (empty here under NoopStorage) rather than
     // Forbidden. Cross-principal no-leak against real data is proven in the PG
-    // integration suite (owner_ref_compat_pg).
+    // integration suite (owner_columns_pg).
     let resp = engine
         .query(&authz, &QueryRequest::for_principal(foreign))
         .await

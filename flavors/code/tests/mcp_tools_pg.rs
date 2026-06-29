@@ -3,7 +3,7 @@ use std::time::Duration;
 
 mod common;
 
-use common::{TestDb, insert_home, test_owner as owner_fixture};
+use common::{TestDb, test_owner as owner_fixture};
 use proxima_code::mcp::{
     CodeIngestHeadSnapshotTool, CodeListReposTool, CodeOpenFileRevisionTool, CodeRegisterRepoTool,
     CodeRetryExecutionRequestTool, CodeSearchChunksTool, CodeSearchCommitsTool,
@@ -933,20 +933,22 @@ async fn abstraction_memory(
     payload: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::new_v5(&Uuid::NAMESPACE_OID, payload.as_bytes());
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, 1, 'Abstraction', $3, 'FtoA',
+         VALUES ($1, $2, $3, $4, 1, 'Abstraction', $5, 'FtoA',
              'test/code-index', 'test', '00000000-0000-0000-0000-000000000000'::uuid, 0)
          ON CONFLICT (memory_id) DO NOTHING",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(schema_id)
     .bind(payload)
     .execute(pool)
     .await?;
-    insert_home(pool, memory_id, owner).await?;
     Ok(memory_id)
 }
 
@@ -1118,14 +1120,17 @@ async fn ingest_commit_summary(
     change_kind: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id, prompt_version,
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text, operator_kind, model_id, prompt_version,
              personality_instance_id)
-         VALUES ($1, $2, 1, $3, $4,
-             $5, 'test/0', 'test', $6)",
+         VALUES ($1, $2, $3, $4, 1, $5, $6,
+             $7, 'test/0', 'test', $8)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(proxima_code::CommitSummaryV1::schema_id().into_inner())
     .bind(proxima_core::EntityKind::Abstraction)
     .bind(summary)
@@ -1133,7 +1138,6 @@ async fn ingest_commit_summary(
     .bind(Uuid::nil())
     .execute(pool)
     .await?;
-    insert_home(pool, memory_id, owner).await?;
 
     let files: Vec<String> = key_files.iter().map(|file| (*file).to_string()).collect();
     sqlx::query(
@@ -1154,22 +1158,25 @@ async fn ingest_commit_summary(
 
 async fn ingest_calls_edge(
     pool: &PgPool,
-    _owner: &Owner,
+    owner: &Owner,
     source_chunk: Uuid,
     target_chunk: Uuid,
     callee_name: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let edge_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.edges
-            (edge_id, relation, relation_class,
+            (edge_id, owner_kind, owner_id, relation, relation_class,
              source_kind, source_memory_id, target_kind, target_memory_id,
              authorship_kind)
-         VALUES ($1, 'proxima-code/calls', 'Structural',
-             'Abstraction', $2, 'Abstraction', $3,
+         VALUES ($1, $2, $3, 'proxima-code/calls', 'Structural',
+             'Abstraction', $4, 'Abstraction', $5,
              'OperatorFtoA')",
     )
     .bind(edge_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(source_chunk)
     .bind(target_chunk)
     .execute(pool)

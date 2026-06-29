@@ -267,7 +267,7 @@ fn format_relation(relation: Relation) -> &'static str {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use crate::mcp::core_tools::memory_spaces::space_key;
+    use crate::mcp::core_tools::memory_spaces::MemorySpaceKey;
     use crate::mcp::{McpAuthorContext, McpToolExtensions, OutputMode, validate_action_args};
     use crate::{AccessScope, AuthPath, AuthzContext, FlavorRegistry, ToolScope};
 
@@ -361,7 +361,7 @@ mod tests {
             &engine,
             &ctx,
             CoreMembershipArgs::AddMember(AddMemberArgs {
-                group: space_key(&group_owner),
+                group: MemorySpaceKey::owner(group_owner).to_wire(),
                 member: member.into_inner().to_string(),
                 relation: "editor".into(),
             }),

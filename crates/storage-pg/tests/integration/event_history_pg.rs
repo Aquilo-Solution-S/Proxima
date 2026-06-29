@@ -1,11 +1,8 @@
 //! End-to-end `EventHistory` verb test against a transient PG database.
 
-use crate::common::{
-    create_db, db_url, drop_db, fresh_pg, seed_memory, seed_memory_edge, share_entity,
-};
+use crate::common::{create_db, db_url, drop_db, fresh_pg, seed_memory, seed_memory_edge};
 use std::sync::Arc;
 
-use proxima_core::access::world;
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_history::EventHistoryRequest;
@@ -209,7 +206,7 @@ async fn event_history_returns_owner_scoped_newest_first() {
 }
 
 #[tokio::test]
-async fn event_history_applies_public_source_guard_to_edge_events()
+async fn event_history_surfaces_readable_non_world_source_edge_events()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
 
@@ -217,24 +214,21 @@ async fn event_history_applies_public_source_guard_to_edge_events()
         let gp = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let private = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let world = world();
-
-        let a_public = seed_memory(&pg, &gp, EntityKind::Abstraction, "A public").await?;
+        let a_source = seed_memory(&pg, &gp, EntityKind::Abstraction, "A source").await?;
         let f_private = seed_memory(&pg, &private, EntityKind::Fact, "private").await?;
-        share_entity(&pg, a_public.into_inner(), &world).await?;
 
         let edge = seed_memory_edge(
             &pg,
             &gp,
-            (EntityKind::Abstraction, a_public),
+            (EntityKind::Abstraction, a_source),
             (EntityKind::Fact, f_private),
             CORE_DERIVED_FROM_RELATION,
             RelationClass::Provenance,
         )
         .await?;
-        insert_edge_append_event(&pg, &gp, edge, a_public, f_private).await?;
+        insert_edge_append_event(&pg, &gp, edge, a_source, f_private).await?;
 
-        let p_read = vec![p, gp, world];
+        let p_read = vec![p, gp];
         let read_edges = pg
             .read_edges(
                 &p_read,
@@ -246,9 +240,10 @@ async fn event_history_applies_public_source_guard_to_edge_events()
                 },
             )
             .await?;
+        assert_eq!(read_edges.edges.len(), 1);
         assert!(
-            read_edges.edges.is_empty(),
-            "read_edges omits the public-source/private-target edge"
+            !read_edges.edges[0].target_readable,
+            "read_edges keeps source-owned edge but redacts unreadable target"
         );
 
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
@@ -258,7 +253,7 @@ async fn event_history_applies_public_source_guard_to_edge_events()
             .event_history(
                 &authz,
                 &EventHistoryRequest {
-                    principal: private,
+                    principal: gp,
                     limit: 100,
                     before: None,
                 },
@@ -266,15 +261,15 @@ async fn event_history_applies_public_source_guard_to_edge_events()
             .await?;
 
         assert!(
-            !history.events.iter().any(|e| matches!(
+            history.events.iter().any(|e| matches!(
                 &e.kind,
                 ChangeEventKind::EdgeAppend { edge_id, .. } if *edge_id == edge.into_inner()
             )),
-            "event_history must not disclose an edge hidden by read_edges"
+            "event_history surfaces source-owned non-world edge events"
         );
         assert!(
-            history.seq_high_water.is_none(),
-            "high-water must be computed over visible events only"
+            history.seq_high_water.is_some(),
+            "high-water is computed over visible source-owned events"
         );
 
         Ok::<(), Box<dyn std::error::Error>>(())
@@ -287,7 +282,7 @@ async fn event_history_applies_public_source_guard_to_edge_events()
 }
 
 #[tokio::test]
-async fn query_high_water_applies_public_source_guard_to_edge_events()
+async fn query_high_water_includes_readable_non_world_source_edge_events()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
 
@@ -295,24 +290,21 @@ async fn query_high_water_applies_public_source_guard_to_edge_events()
         let gp = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let private = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let world = world();
-
-        let a_public = seed_memory(&pg, &gp, EntityKind::Abstraction, "A public").await?;
+        let a_source = seed_memory(&pg, &gp, EntityKind::Abstraction, "A source").await?;
         let f_private = seed_memory(&pg, &private, EntityKind::Fact, "private").await?;
-        share_entity(&pg, a_public.into_inner(), &world).await?;
 
         let edge = seed_memory_edge(
             &pg,
             &gp,
-            (EntityKind::Abstraction, a_public),
+            (EntityKind::Abstraction, a_source),
             (EntityKind::Fact, f_private),
             CORE_DERIVED_FROM_RELATION,
             RelationClass::Provenance,
         )
         .await?;
-        let hidden_seq = insert_edge_append_event(&pg, &gp, edge, a_public, f_private).await?;
+        let visible_seq = insert_edge_append_event(&pg, &gp, edge, a_source, f_private).await?;
 
-        let p_read = vec![p, gp, world];
+        let p_read = vec![p, gp];
         let query = pg
             .query_memories(
                 &QueryRequest {
@@ -335,14 +327,10 @@ async fn query_high_water_applies_public_source_guard_to_edge_events()
             )
             .await?;
 
-        assert_ne!(
+        assert_eq!(
             query.seq_high_water,
-            Some(hidden_seq),
-            "query high-water must not expose a hidden edge event seq"
-        );
-        assert!(
-            query.seq_high_water.is_none(),
-            "with only a hidden readable-owner edge event, query high-water has no visible seq"
+            Some(visible_seq),
+            "query high-water includes visible source-owned edge event seq"
         );
 
         Ok::<(), Box<dyn std::error::Error>>(())
@@ -361,11 +349,11 @@ async fn insert_edge_append_event(
     source_memory_id: MemoryId,
     target_memory_id: MemoryId,
 ) -> Result<Uuid, sqlx::Error> {
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     let seq = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.change_event \
-            (seq, owner_principal_kind, owner_principal_id, kind, \
+            (seq, owner_kind, owner_id, kind, \
              edge_id, edge_relation, \
              edge_source_memory_id, edge_source_goal_id, edge_source_fact_entity_id, \
              edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id) \
@@ -373,7 +361,7 @@ async fn insert_edge_append_event(
     )
     .bind(seq)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(edge_id.into_inner())
     .bind(CORE_DERIVED_FROM_RELATION)
     .bind(source_memory_id.into_inner())

@@ -11,9 +11,10 @@
 //! `change_event` here once a consumer needs the live signal.
 
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
-use proxima_core::{OwnerRef, OwnerRefKind, SourceBatchId, StorageError};
+use proxima_core::{OwnerRef, SourceBatchId, StorageError};
 use sqlx::PgPool;
 
+use crate::access::owner_columns::owner_binds;
 use crate::error::map_err;
 
 /// # Errors
@@ -25,19 +26,19 @@ pub async fn close_batch(
     principal: &OwnerRef,
     source_batch_id: SourceBatchId,
 ) -> Result<CloseBatchOutcome, StorageError> {
-    let (owner_kind, owner_principal_id) = principal.columns();
+    let (owner_kind, owner_id) = owner_binds(principal);
     let batch_id = source_batch_id.into_inner();
 
     // Read current closed_at under owner scope.
-    let existing = sqlx::query!(
-        r#"SELECT closed_at FROM proxima_core.source_batches
+    let existing = sqlx::query_as::<_, (Option<time::OffsetDateTime>,)>(
+        r"SELECT closed_at FROM proxima_core.source_batches
              WHERE id = $1
-               AND owner_principal_kind = $2
-               AND owner_principal_id = $3"#,
-        batch_id,
-        owner_kind as OwnerRefKind,
-        owner_principal_id,
+               AND owner_kind = $2
+               AND owner_id IS NOT DISTINCT FROM $3",
     )
+    .bind(batch_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .fetch_optional(pool)
     .await
     .map_err(map_err)?;
@@ -46,7 +47,7 @@ pub async fn close_batch(
         return Err(StorageError::NotFound);
     };
 
-    if let Some(closed_at) = row.closed_at {
+    if let Some(closed_at) = row.0 {
         return Ok(CloseBatchOutcome {
             source_batch_id,
             closed_at,
@@ -57,18 +58,18 @@ pub async fn close_batch(
     // Idempotent UPDATE: only flip when still NULL. If a concurrent
     // closer beat us, RETURNING is empty and we fall through to a
     // re-read.
-    let updated = sqlx::query!(
-        r#"UPDATE proxima_core.source_batches
+    let updated = sqlx::query_as::<_, (time::OffsetDateTime,)>(
+        r"UPDATE proxima_core.source_batches
              SET closed_at = now()
              WHERE id = $1
-               AND owner_principal_kind = $2
-               AND owner_principal_id = $3
+               AND owner_kind = $2
+               AND owner_id IS NOT DISTINCT FROM $3
                AND closed_at IS NULL
-             RETURNING closed_at AS "closed_at!""#,
-        batch_id,
-        owner_kind as OwnerRefKind,
-        owner_principal_id,
+             RETURNING closed_at",
     )
+    .bind(batch_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .fetch_optional(pool)
     .await
     .map_err(map_err)?;
@@ -76,29 +77,29 @@ pub async fn close_batch(
     if let Some(row) = updated {
         return Ok(CloseBatchOutcome {
             source_batch_id,
-            closed_at: row.closed_at,
+            closed_at: row.0,
             already_closed: false,
         });
     }
 
     // Lost the race; re-read to get the winner's closed_at.
-    let row = sqlx::query!(
+    let row = sqlx::query_as::<_, (time::OffsetDateTime,)>(
         r#"SELECT closed_at AS "closed_at!" FROM proxima_core.source_batches
              WHERE id = $1
-               AND owner_principal_kind = $2
-               AND owner_principal_id = $3
+               AND owner_kind = $2
+               AND owner_id IS NOT DISTINCT FROM $3
                AND closed_at IS NOT NULL"#,
-        batch_id,
-        owner_kind as OwnerRefKind,
-        owner_principal_id,
     )
+    .bind(batch_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .fetch_one(pool)
     .await
     .map_err(map_err)?;
 
     Ok(CloseBatchOutcome {
         source_batch_id,
-        closed_at: row.closed_at,
+        closed_at: row.0,
         already_closed: true,
     })
 }
