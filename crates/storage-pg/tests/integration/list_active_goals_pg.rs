@@ -28,16 +28,15 @@ async fn insert_self(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id)
+             operator_kind, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/self', 1, $4,
-                 'self', $5, 'test-model', 'v1', $6)",
+                 'self', $5, 'test-model', 'v1')",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_id)
     .bind(proxima_core::EntityKind::Perspective)
     .bind(proxima_core::MemoryOperatorKind::AtoP)
-    .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
     Ok(MemoryId::new(memory_id))
@@ -120,7 +119,17 @@ async fn list_active_goals_follows_inspires_and_goal_supersession()
         let active_a =
             insert_goal(&pg, &owner, GoalState::Active, Some(base_a), "a-active").await?;
 
-        let paused_pending = insert_goal(&pg, &owner, GoalState::Paused, None, "a-pending").await?;
+        let pending_base =
+            insert_goal(&pg, &owner, GoalState::Active, None, "a-pending-base").await?;
+        link_goal_to_self(&pg, &owner, pending_base, self_a).await?;
+        let paused_pending = insert_goal(
+            &pg,
+            &owner,
+            GoalState::Paused,
+            Some(pending_base),
+            "a-pending",
+        )
+        .await?;
         link_goal_to_self(&pg, &owner, paused_pending, self_a).await?;
 
         let unconnected = insert_goal(&pg, &owner, GoalState::Active, None, "a-unlinked").await?;
@@ -250,9 +259,8 @@ async fn insert_goal_activated_fact(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, receipt_id,
-             citation_mapping_id, personality_instance_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7,
-                 '00000000-0000-0000-0000-000000000000'::uuid)",
+             citation_mapping_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(memory_id)
     .bind(owner_kind)

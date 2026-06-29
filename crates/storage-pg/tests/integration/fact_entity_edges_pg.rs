@@ -460,7 +460,6 @@ fn cross_actor_fact(entity_key: &str, body: &str, state: &str) -> CrossFlavorAct
 fn draft_for_payload<F: FactPayload>(_owner: &Owner, payload_value: &Value) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
-        author_personality_instance_id: None,
         schema_id: F::schema_id(),
         schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
         payload: canonical_json_bytes(payload_value),
@@ -1218,7 +1217,6 @@ async fn change_history_and_list_change_events_preserve_fact_entity_endpoints()
                 model_id: "test".into(),
                 client_name: "test".into(),
                 client_version: "1".into(),
-                personality_instance_id: None,
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,

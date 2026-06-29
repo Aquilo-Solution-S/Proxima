@@ -2,9 +2,7 @@ use crate::access::Relation;
 use crate::authz::AuthzContext;
 use crate::change_event::{ChangeEventKind, EdgeTargetProjection};
 use crate::error::ProtocolError;
-use crate::personality::{
-    ChangeEventForWake, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow, SidecarSpec,
-};
+use crate::read_models::{ChangeEventForWake, MemorySnapshot, SidecarSpec};
 use crate::storage::{EdgeEndpointKindRow, MemoryGraphPayloadRow, NeighborEdgeRow, StorageError};
 use crate::storage_ports::ReadVerbStoragePorts;
 use crate::verbs::query::{FactCitationReadback, MemorySearchRequest, MemorySearchResult};
@@ -32,7 +30,6 @@ pub struct SearchReadResponse {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetMemoryReadRequest {
     pub memory_id: MemoryId,
-    pub reader_personality_instance_id: Option<PersonalityInstanceId>,
     pub include_neighbor_edges: bool,
 }
 
@@ -52,7 +49,6 @@ pub struct GetGraphReadRequest {
 pub struct GetGraphReadResponse {
     pub pending_embedding_jobs: u64,
     pub fact_retention_seconds: Option<i64>,
-    pub personalities: Vec<PersonalityInstanceRow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,7 +304,7 @@ pub(in crate::engine) async fn get_memory_authorized(
 ) -> Result<GetMemoryReadResponse, ProtocolError> {
     let memory = ports
         .memory_inspect
-        .load_memory_by_id(req.memory_id, req.reader_personality_instance_id, sidecars)
+        .load_memory_by_id(req.memory_id, sidecars)
         .await
         .map_err(|err| storage_error("load_memory_by_id", &err))?;
     let neighbor_edges = if req.include_neighbor_edges {
@@ -329,18 +325,13 @@ pub(in crate::engine) async fn get_memory_authorized(
 pub(in crate::engine) async fn get_graph_authorized(
     ports: &ReadVerbStoragePorts,
     owner: &OwnerRef,
-    include_tombstoned: bool,
+    _include_tombstoned: bool,
 ) -> Result<GetGraphReadResponse, ProtocolError> {
     let pending_embedding_jobs = ports
         .embedding_job
         .count_pending_embedding_jobs(owner)
         .await
         .map_err(|err| storage_error("count_pending_embedding_jobs", &err))?;
-    let personalities = ports
-        .personality_read
-        .list_personality_instances(owner, include_tombstoned)
-        .await
-        .map_err(|err| storage_error("list_personality_instances", &err))?;
     let fact_retention_seconds = ports
         .fact_retention
         .get_fact_retention(owner)
@@ -349,7 +340,6 @@ pub(in crate::engine) async fn get_graph_authorized(
     Ok(GetGraphReadResponse {
         pending_embedding_jobs,
         fact_retention_seconds,
-        personalities,
     })
 }
 
@@ -500,7 +490,6 @@ mod tests {
                 order: SearchOrder::Relevance,
                 query_embedding: None,
                 embedding_model_id: None,
-                reader_personality_instance_id: None,
             },
             include_body: false,
             include_neighbor_edges: false,
@@ -549,7 +538,6 @@ mod tests {
         let owner = owner();
         let req = GetMemoryReadRequest {
             memory_id: MemoryId::new(uuid::Uuid::now_v7()),
-            reader_personality_instance_id: None,
             include_neighbor_edges: false,
         };
         let err = engine()

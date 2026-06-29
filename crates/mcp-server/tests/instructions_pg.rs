@@ -155,8 +155,8 @@ async fn initialize_returns_instructions_and_how_to_resource()
 async fn memory_profile_instructions_omit_excluded_tools() -> Result<(), Box<dyn std::error::Error>>
 {
     // A deployment scope that keeps authoring + retrieval but drops goal tools
-    // (standing in for any execution/personality tool a `full` deployment
-    // would carry). The deployment scope is intersected into every caller's
+    // (standing in for any code execution tool a `full` deployment would
+    // carry). The deployment scope is intersected into every caller's
     // scope, so even the master token sees only this palette.
     let palette = ToolScope::Palette(
         [

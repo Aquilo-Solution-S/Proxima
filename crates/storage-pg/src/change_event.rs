@@ -32,8 +32,6 @@ struct ChangeEventRow {
     edge_target_memory_id: Option<Uuid>,
     edge_target_goal_id: Option<Uuid>,
     edge_target_fact_entity_id: Option<Uuid>,
-    entity_personality_instance_id: Option<Uuid>,
-    wake_chain_depth: i16,
     entity_memory_present: bool,
     edge_target_available: bool,
     edge_target_visible: bool,
@@ -63,8 +61,6 @@ pub(crate) async fn hydrate_change_event(
                   edge_id, edge_relation,
                   edge_source_memory_id, edge_source_goal_id, edge_source_fact_entity_id,
                   edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id,
-                  entity_personality_instance_id,
-                  wake_chain_depth,
                   (
                       entity_memory_id IS NULL
                       OR EXISTS (
@@ -130,8 +126,6 @@ pub(crate) async fn hydrate_change_events_batch(
                   edge_id, edge_relation,
                   edge_source_memory_id, edge_source_goal_id, edge_source_fact_entity_id,
                   edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id,
-                  entity_personality_instance_id,
-                  wake_chain_depth,
                   (
                       entity_memory_id IS NULL
                       OR EXISTS (
@@ -182,9 +176,6 @@ fn decode_change_event_row(row: &ChangeEventRow) -> Result<ChangeEvent, StorageE
         ))
     })?;
 
-    let authoring_instance = decode_personality(row.entity_personality_instance_id);
-    let wake_chain_depth = u16::try_from(row.wake_chain_depth).unwrap_or(0);
-
     let kind = match row.kind {
         ChangeEventKindTag::EdgeAppend => decode_edge_append(row)?,
         ChangeEventKindTag::EdgeDelete => decode_edge_delete(row)?,
@@ -196,8 +187,6 @@ fn decode_change_event_row(row: &ChangeEventRow) -> Result<ChangeEvent, StorageE
         seq: row.seq,
         owner,
         kind,
-        authoring_personality_instance_id: authoring_instance,
-        wake_chain_depth,
     })
 }
 
@@ -341,12 +330,6 @@ fn decode_entity_event(row: &ChangeEventRow) -> Result<EntityEvent, StorageError
         schema_id,
         schema_version,
     })
-}
-
-/// Map a row's optional personality instance to the public
-/// `ChangeEvent` shape. Nil uuid marks external authoring.
-fn decode_personality(instance_id: Option<Uuid>) -> Option<Uuid> {
-    instance_id.filter(|id| !id.is_nil())
 }
 
 fn decode_entity_ref(

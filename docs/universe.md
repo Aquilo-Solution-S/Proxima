@@ -85,9 +85,10 @@ Actions that attempt to move Reality. The motor of the wheel.
 ```
 
 Dreaming is the upward consolidation process in the wheel: flavor-declared
-F→A / A→P / A→Goal wakes under a personality instance. Core schedules and
-constrains it; flavors define compaction, reflection, synthesis, self-update,
-prompts, schemas, and retrieval policy. Dreams produce ordinary typed
+F→A / A→P / A→Goal operators under an active Perspective context. Core
+constrains writes; external harnesses drive wake loops. Flavors define
+compaction, reflection, synthesis, self-update, prompts, schemas, and retrieval
+policy. Dreams produce ordinary typed
 Abstractions, Perspectives, Goals, and registered edges. There is no Dream
 entity, Dream relation class, or Core dream pipeline.
 

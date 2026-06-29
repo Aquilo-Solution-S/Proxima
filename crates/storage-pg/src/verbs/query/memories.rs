@@ -2,10 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use futures_util::future::try_join_all;
-use proxima_core::personality::ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID;
 use proxima_core::verbs::query::{
-    EntityKind, PersonalityRootFilter, QueryRequest, QueryResponse, SupersessionStatus,
-    TombstoneFilter,
+    EntityKind, QueryRequest, QueryResponse, SupersessionStatus, TombstoneFilter,
 };
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{MemoryId, SchemaId, SchemaVersion, SidecarPayload, StorageError};
@@ -54,7 +52,6 @@ pub(crate) async fn query_memories(
     }
 
     let stateful = validated_stateful_filters(req)?;
-    let root_schema_ids = active_root_schema_ids(req, schemas);
 
     let mut sql = String::from(
         "SELECT m.memory_id, m.owner_kind, m.owner_id, \
@@ -76,16 +73,6 @@ pub(crate) async fn query_memories(
         param
     });
     let stateful_params = allocate_stateful_params(&stateful, &mut next_param);
-    let root_schema_ids_param = (!root_schema_ids.is_empty()).then(|| {
-        let param = next_param;
-        next_param += 1;
-        param
-    });
-    let reader_param = req.reader_personality_instance_id.map(|_| {
-        let param = next_param;
-        next_param += 1;
-        param
-    });
     // The stateful JOINs (for head-by-natural-key filtering) use
     // explicit `ON sf_i.memory_id = m.memory_id` so generated aliases
     // stay unambiguous.
@@ -116,15 +103,7 @@ pub(crate) async fn query_memories(
         sql.push_str(" AND false");
     }
 
-    push_heads_predicate(
-        &mut sql,
-        req,
-        schema,
-        &stateful,
-        &stateful_params,
-        root_schema_ids_param,
-    );
-    push_reader_visibility_filter(&mut sql, "m", reader_param);
+    push_heads_predicate(&mut sql, req, schema, &stateful, &stateful_params);
 
     sql.push_str(" ORDER BY m.created_at DESC LIMIT ");
     sql.push_str(&u64::from(req.limit).to_string());
@@ -139,12 +118,6 @@ pub(crate) async fn query_memories(
         q = q.bind(memory_ids);
     }
     q = bind_stateful_filters(q, &stateful);
-    if !root_schema_ids.is_empty() {
-        q = q.bind(root_schema_ids);
-    }
-    if let Some(reader) = req.reader_personality_instance_id {
-        q = q.bind(reader.into_inner());
-    }
 
     let rows: Vec<MemoryRowDb> = q.fetch_all(pool).await.map_err(internal)?;
 
@@ -267,13 +240,12 @@ async fn query_visible_memory_ids(
     read_owner_kinds: &[proxima_core::OwnerRefKind],
     read_owner_ids: &[Option<uuid::Uuid>],
     candidate_memory_ids: &[uuid::Uuid],
-    schemas: &[SchemaInfo],
+    _schemas: &[SchemaInfo],
 ) -> Result<HashSet<uuid::Uuid>, StorageError> {
     if candidate_memory_ids.is_empty() || matches!(req.entity_kind, Some(EntityKind::Goal)) {
         return Ok(HashSet::new());
     }
     let stateful = validated_stateful_filters(req)?;
-    let root_schema_ids = active_root_schema_ids(req, schemas);
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
 
     let mut sql = String::from(
@@ -308,26 +280,8 @@ async fn query_visible_memory_ids(
         param
     });
     let stateful_params = allocate_stateful_params(&stateful, &mut next_param);
-    let root_schema_ids_param = (!root_schema_ids.is_empty()).then(|| {
-        let param = next_param;
-        next_param += 1;
-        param
-    });
-    let reader_param = req.reader_personality_instance_id.map(|_| {
-        let param = next_param;
-        next_param += 1;
-        param
-    });
 
-    push_heads_predicate(
-        &mut sql,
-        req,
-        schema,
-        &stateful,
-        &stateful_params,
-        root_schema_ids_param,
-    );
-    push_reader_visibility_filter(&mut sql, "m", reader_param);
+    push_heads_predicate(&mut sql, req, schema, &stateful, &stateful_params);
 
     let mut q = sqlx::query_as::<_, (uuid::Uuid,)>(&sql)
         .bind(read_owner_kinds)
@@ -337,12 +291,6 @@ async fn query_visible_memory_ids(
         q = q.bind(sid.clone());
     }
     q = bind_stateful_filters(q, &stateful);
-    if !root_schema_ids.is_empty() {
-        q = q.bind(root_schema_ids);
-    }
-    if let Some(reader) = req.reader_personality_instance_id {
-        q = q.bind(reader.into_inner());
-    }
     let rows = q.fetch_all(pool).await.map_err(internal)?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
@@ -441,70 +389,12 @@ fn bind_stateful_filters<'q, O>(
     q
 }
 
-fn active_root_schema_ids(req: &QueryRequest, schemas: &[SchemaInfo]) -> Vec<String> {
-    if !matches!(req.personality_roots, PersonalityRootFilter::ActiveOnly) {
-        return Vec::new();
-    }
-    let mut ids = HashSet::from([ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID.to_string()]);
-    for schema in schemas {
-        if matches!(schema.kind, PayloadKind::Perspective)
-            && is_legacy_self_perspective_schema(schema.schema_id.as_str())
-        {
-            ids.insert(schema.schema_id.as_str().to_string());
-        }
-    }
-    ids.into_iter().collect()
-}
-
-fn is_legacy_self_perspective_schema(schema_id: &str) -> bool {
-    let Some(name) = schema_id.rsplit('/').next() else {
-        return false;
-    };
-    let Some((_, version)) = name.rsplit_once("-self-v") else {
-        return false;
-    };
-    !version.is_empty() && version.chars().all(|c| c.is_ascii_digit())
-}
-
-fn push_active_root_filter(sql: &mut String, root_schema_ids_param: Option<usize>) {
-    let Some(param) = root_schema_ids_param else {
-        return;
-    };
-    write!(
-        sql,
-        " AND (m.kind <> 'Perspective' \
-          OR NOT (m.schema_id = ANY(${param}::text[])) \
-          OR EXISTS ( \
-            SELECT 1 FROM proxima_core.personality p \
-            WHERE p.current_root_perspective_memory_id = m.memory_id \
-              AND p.owner_kind = m.owner_kind \
-              AND p.owner_id IS NOT DISTINCT FROM m.owner_id \
-              AND p.status = 'active' \
-          ))",
-    )
-    .expect("write to String is infallible");
-}
-
-fn push_reader_visibility_filter(sql: &mut String, alias: &str, reader_param: Option<usize>) {
-    if let Some(param) = reader_param {
-        write!(
-            sql,
-            " AND (
-                {alias}.kind IS NULL
-                OR {alias}.personality_instance_id = ${param}
-            )"
-        )
-        .expect("write to String is infallible");
-    }
-}
-
 fn push_heads_predicate(
     sql: &mut String,
     req: &QueryRequest,
     schema: Option<usize>,
     stateful: &[&proxima_core::verbs::query::StatefulHeadsFilter],
     stateful_params: &[StatefulSqlParams],
-    root_schema_ids_param: Option<usize>,
 ) {
     match req.entity_kind {
         None => {}
@@ -554,7 +444,6 @@ fn push_heads_predicate(
             sql.push(')');
         }
     }
-    push_active_root_filter(sql, root_schema_ids_param);
     push_tombstone_exclusion(sql, req, stateful, stateful_params);
 }
 

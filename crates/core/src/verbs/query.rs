@@ -7,7 +7,6 @@ use uuid::Uuid;
 
 pub use crate::change_event::EdgeTargetProjection;
 use crate::change_event::EntityRef;
-use crate::personality::PersonalityInstanceId;
 use crate::verbs::goal_write::GoalState;
 use crate::verbs::schema::SchemaTombstone;
 use crate::{EdgeId, GoalId, MemoryId, Owner, OwnerRef, SchemaId, SchemaVersion, SidecarPayload};
@@ -102,8 +101,6 @@ pub struct MemorySearchRequest {
     pub query_embedding: Option<Vec<f32>>,
     #[serde(skip)]
     pub embedding_model_id: Option<String>,
-    #[serde(skip)]
-    pub reader_personality_instance_id: Option<PersonalityInstanceId>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -111,13 +108,11 @@ pub struct MemorySearchResult {
     pub memory_id: MemoryId,
     pub kind: EntityKind,
     pub schema_id: SchemaId,
-    pub authoring_personality_instance_id: Option<PersonalityInstanceId>,
     pub created_at: time::OffsetDateTime,
     pub snippet: String,
     pub score: f32,
     pub lexical_score: f32,
     pub similarity_score: f32,
-    pub wake_chain_depth: crate::WakeChainDepth,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -141,7 +136,6 @@ pub struct MemoryLineageRequest {
     pub direction: MemoryLineageDirection,
     pub depth: u8,
     pub limit: u32,
-    pub reader_personality_instance_id: Option<PersonalityInstanceId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,7 +144,6 @@ pub struct MemoryLineageNode {
     pub kind: EntityKind,
     pub schema_id: SchemaId,
     pub snippet: String,
-    pub wake_chain_depth: crate::WakeChainDepth,
     pub distance: u8,
 }
 
@@ -190,20 +183,6 @@ fn default_tombstone_filter() -> TombstoneFilter {
     TombstoneFilter::PresentOnly
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum PersonalityRootFilter {
-    /// Include only active root/self Perspective rows. Non-root
-    /// Perspectives are unaffected.
-    ActiveOnly,
-    /// Include inactive, tombstoned, and orphan root/self Perspective
-    /// rows when they otherwise match the query.
-    IncludeInactive,
-}
-
-fn default_personality_root_filter() -> PersonalityRootFilter {
-    PersonalityRootFilter::IncludeInactive
-}
-
 fn default_include_payloads() -> bool {
     true
 }
@@ -235,8 +214,6 @@ pub struct QueryRequest {
     pub supersession: SupersessionStatus,
     #[serde(default = "default_tombstone_filter")]
     pub tombstones: TombstoneFilter,
-    #[serde(default = "default_personality_root_filter")]
-    pub personality_roots: PersonalityRootFilter,
     pub limit: u32,
     /// Include typed payload projections in returned rows. Broad graph snapshots can
     /// set this false and hydrate selected IDs later.
@@ -254,10 +231,6 @@ pub struct QueryRequest {
     /// populates it from the schema registry before dispatch.
     #[serde(skip)]
     pub stateful_heads: Vec<StatefulHeadsFilter>,
-    /// Engine-resolved reader personality for cross-principal space-bound reads.
-    /// Skipped over the wire — owner/unrestricted requests keep this `None`.
-    #[serde(skip)]
-    pub reader_personality_instance_id: Option<PersonalityInstanceId>,
 }
 
 impl QueryRequest {
@@ -273,14 +246,12 @@ impl QueryRequest {
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: TombstoneFilter::PresentOnly,
-            personality_roots: PersonalityRootFilter::IncludeInactive,
             limit: 100,
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
-            reader_personality_instance_id: None,
         }
     }
 }
@@ -308,7 +279,7 @@ pub struct GoalRow {
     pub title: String,
     pub text: String,
     pub state: GoalState,
-    pub parent_goal_ids: Vec<GoalId>,
+    pub dependency_goal_ids: Vec<GoalId>,
     pub supersedes: Option<GoalId>,
     pub payload: Vec<u8>,
 }

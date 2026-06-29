@@ -365,7 +365,6 @@ fn author_from_ctx(auth: Option<&McpAuthContext>) -> McpAuthorContext {
             .to_string(),
         client_name: "unknown".into(),
         client_version: "0".into(),
-        personality_instance_id: None,
         caller_self_perspective: None,
     }
 }
@@ -431,7 +430,6 @@ fn author_from_args(
         model_id,
         client_name: "unknown".into(),
         client_version: "0".into(),
-        personality_instance_id: None,
         caller_self_perspective,
     })
 }
@@ -542,13 +540,13 @@ mod tests {
     #[test]
     fn tool_scope_denials_remain_invalid_request() {
         let err = tool_invocation_error_to_error_data(
-            McpToolError::NotAuthorized("core_wake:set".into()).into(),
+            McpToolError::NotAuthorized("core_goal:set".into()).into(),
         );
 
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_REQUEST);
         assert_eq!(
             err.message,
-            "tool core_wake:set not authorized for this MCP token"
+            "tool core_goal:set not authorized for this MCP token"
         );
     }
 
@@ -596,16 +594,6 @@ mod tests {
         assert_eq!(fact.read_only, Some(false));
         assert_eq!(fact.destructive, Some(true));
         assert_eq!(fact.idempotent, Some(true));
-
-        // Personality and wake dispatchers aggregate destructive and
-        // non-replay-safe actions.
-        let personality =
-            core_tool_annotations("core_personality").expect("personality dispatcher");
-        assert_eq!(personality.destructive, Some(true));
-        assert_eq!(personality.idempotent, Some(false));
-        let wake = core_tool_annotations("core_wake").expect("wake dispatcher");
-        assert_eq!(wake.destructive, Some(true));
-        assert_eq!(wake.idempotent, Some(false));
 
         // Create-new-each-call write is not replay-safe.
         let link = core_tool_annotations("core_link").expect("create tool");

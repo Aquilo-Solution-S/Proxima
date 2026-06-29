@@ -6,7 +6,7 @@
 //! `list_tools`, `resources/list`, and `resources/templates/list` advertise —
 //! so the How-To never references a surface a given deployment profile
 //! (`PROXIMA_TOOL_PROFILE` plus allow/deny) does not expose. A `memory`
-//! deployment that drops the execution/personality tools drops their guidance
+//! deployment that drops code execution tools drops their guidance
 //! too, automatically.
 //!
 //! The generators are pure functions of the advertised canonical tool-id and
@@ -366,7 +366,7 @@ fn push_worked_example(out: &mut String, s: Surface) {
     let _ = writeln!(
         out,
         "3. **Take a stance.** When your view genuinely shifts: \
-         `core_derive(kind=\"Perspective\", source_handles=[\"A:d\"], …)` → `I:e`."
+         `core_derive(kind=\"Perspective\", source_handles=[\"A:d\"], …)` → `P:e`."
     );
     if s.goals {
         let _ = writeln!(
@@ -437,8 +437,7 @@ mod tests {
     }
 
     /// A `memory`-style profile that keeps authoring + retrieval but, for the
-    /// sake of the test, has had goal and code tools denied — standing in for
-    /// any execution/personality tools a `full` deployment would carry.
+    /// sake of the test, has had goal and code tools denied.
     fn memory_minus_goals_tool_set() -> BTreeSet<&'static str> {
         [
             RememberTool::NAME,
@@ -488,7 +487,7 @@ mod tests {
     }
 
     #[test]
-    fn instructions_never_name_execution_or_personality_tools() {
+    fn instructions_never_name_retired_or_denied_tools() {
         // Regression guard for acceptance #2: no profile's instructions may
         // reference tools outside the memory contract.
         for (tools, resources) in [
@@ -504,6 +503,8 @@ mod tests {
                 "add_wake_entry",
                 "emit_execution_request",
                 "wake_execute",
+                concat!("I", ":"),
+                concat!("W", ":"),
             ] {
                 assert!(!s.contains(forbidden), "instructions leaked {forbidden}");
             }

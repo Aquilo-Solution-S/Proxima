@@ -4,11 +4,11 @@
 
 | Surface | Contract |
 |---|---|
-| Goal | Direction: desired future state, DAG position, lifecycle head |
+| Goal | Direction: desired future state, lifecycle head, topology source |
 | Memory | Observation or interpretation; never a Goal |
 | Self | Query result, not entity |
-| Assignment | `Goal --core/inspires--> Self-Perspective` |
-| Wake policy | Explicit wake entries; never stored on Goal |
+| Assignment | `Goal --core/inspires--> Perspective` |
+| Wake policy | `Goal.wake : Option<WakeConfig>`; no wake entity |
 
 <a id="goal-entity"></a>
 
@@ -22,7 +22,7 @@ Not Memory:
 |---|---|---|
 | Fact | observation | immutable |
 | Abstraction | operator-authored synthesis | supersession |
-| Perspective | personality-relative view | supersession |
+| Perspective | query/framing view | supersession |
 | Goal | intended direction | supersession |
 
 Goal row fields:
@@ -114,33 +114,27 @@ Public Rust surface:
 an embedded product flow writes on behalf of the authenticated owner.
 System-originated host flows may override authorship explicitly; External
 authorship still cannot seed concrete Goal state. The host must pass
-`target_self_perspective_id`; assignment is explicit because
-`active_goals(instance)` is defined through `core/inspires` edges to the
-Self Perspective. Simple owner-scoped, unassigned Goal creation remains
-out-of-scope until the Self query model changes.
+`target_perspective_id`; assignment is explicit because active-goal
+projection is defined through `core/inspires` edges to a Perspective
+selector. Simple owner-scoped, unassigned Goal creation remains out-of-scope.
 
 <a id="self--flavor-projection"></a>
 
-## Self -- Flavor Projection
+## Self -- Query Projection
 
 There is no Self row.
 
-Runtime Self for one personality instance:
+Runtime Self for a Perspective selector:
 
 ```
-Self(instance) =
-  current_root_perspective(instance)
-  + active_perspective_heads(instance)
-  + active_goals(current_root_perspective(instance))
+Self(perspective_id, read_owners) =
+  Perspective row if readable
+  + active_goals(perspective_id, read_owners)
 ```
 
-The self anchor is a Perspective memory row whose schema is declared by
-the personality flavor. Self evolution is Perspective supersession plus
-the instance's current-root pointer changing to the new head.
-
-`active_perspective_heads(instance)` is a bounded wake-context projection
-of same-personality, non-root Perspective heads. It excludes superseded
-rows and Self/root identity schemas.
+The self anchor is a readable Perspective memory row. Self evolution is
+ordinary Perspective supersession and Goal topology changes; no current-root
+pointer is a runtime authority source.
 
 Self is never cached as:
 
@@ -159,7 +153,7 @@ Assignment is a typed edge:
 ```
 Goal
   --core/inspires-->
-Self-Perspective
+Perspective
 ```
 
 Storage endpoint kinds:
@@ -171,16 +165,15 @@ Storage endpoint kinds:
 
 No `GoalConnection` sidecar.
 
-`active_goals(instance)`:
+`active_goals(perspective_id, read_owners)`:
 
 ```
-self = current_root_perspective(instance)
-assigned = incoming core/inspires targets where target = self
+assigned = incoming core/inspires targets where target = perspective_id
 heads = follow Goal supersession for each assigned source
-return heads where state = Active
+return heads where state = Active and Goal owner is readable
 ```
 
-Assignment means "this Goal may inspire this Self." It is a causal
+Assignment means "this Goal may inspire this Perspective." It is a causal
 edge (`core/inspires`), not a structural membership edge. It does not
 imply execution, obligation, repository scope, or wake policy.
 
@@ -195,7 +188,7 @@ Core owns:
 | Verb | `GoalWrite` |
 | Lifecycle Facts | activated / paused / achieved / abandoned schemas |
 | Tools | `core_goal` action dispatcher: `set`, `transition` (pause / resume / abandon), `modify`, `mark_achieved`, `decompose` |
-| Relations | `core/inspires`, `core/motivated-by` |
+| Relations | `core/inspires`, `core/motivated-by`, `core/wake-motivated-by` |
 | Query | active-goal traversal |
 | Renderers | Goal and lifecycle payload views |
 
@@ -218,23 +211,33 @@ Abstraction evidence remains represented by `core/motivated-by`.
 
 Goal assignment does not create wake behavior.
 
-Goal-reactive execution requires an enabled wake entry whose policy
-matches the emitted event. The usual goal-reactive trigger:
+Wake is an optional Goal-owned config:
 
 | Field | Value |
 |---|---|
-| `trigger_kind` | `on_memory` |
-| `trigger_id` | `core/goal-activated-v1` |
-| `goal_scope` | `trigger_goal_assigned` |
+| Storage | `proxima_core.goal_wake_config(goal_id)` |
+| Trigger | `FactSchema { schema_id, schema_version }` or `FactMemory { memory_id }` |
+| Toolset | registered provider-safe tool ids or exact action leaf scope keys |
+| Prompt | nonblank planning prompt |
+| Hard memory | readable context memory ids checked at admission |
 
-`goal_scope = trigger_goal_assigned` means the wake receives the Goal
-only when the triggering lifecycle Fact refers to a Goal assigned to the
-personality's current Self-Perspective.
-
-Planner-first execution:
+Candidate admission:
 
 ```
-Goal -> planner personality -> execution-request Fact -> worker
+current Goal head
+state = Active
+wake IS SOME
+trigger Fact is readable through its actual Owner
+hard memories are readable through their actual Owners
+wake.toolset subset-of actor ToolScope intersect deployment profile
+```
+
+PR6 does not add a scheduler, executor, runtime plugin body, tool table, or
+tool invocation table. External harnesses plan and execute; emitted outputs
+must be ordinary Facts written through FactIngest and linked:
+
+```
+Goal --core/wake-motivated-by--> emitted Fact
 ```
 
 Goals do not bind repos, worktrees, commands, or workers directly.
@@ -248,9 +251,11 @@ Owner is per row.
 | Object | Scope |
 |---|---|
 | Goal | Owner columns on Goal row |
-| Self-Perspective | Owner columns on Memory row |
+| Perspective | Owner columns on Memory row |
 | `core/inspires` edge | source-owned: edge Owner = source Goal Owner; descriptor/write policy may tighten target scope |
 | `core/motivated-by` edge | source-owned: edge Owner = source Goal Owner; descriptor/write policy may tighten target scope |
+| `core/wake-motivated-by` edge | source-owned: edge Owner = source Goal Owner; emitted Fact write authority checked separately |
+| WakeConfig | Goal-owned row; no independent Owner or handle |
 | Lifecycle Fact | same Owner as Goal write |
 
 Cross-owner Goal assignment/evidence is relation/write-surface policy,
@@ -268,6 +273,6 @@ Goal authorship:
 | `System(Tool)` | tool-authored lifecycle close |
 | `System(Operator)` | A->Goal operator output |
 
-Memory authorship remains separate. Personality-authored Memory rows
-carry personality identity and wake-chain depth. Operator-invocation
-reproducibility is row metadata, not citation.
+Memory authorship remains separate. Perspective attribution is represented
+with `core/authored` edges. Operator-invocation proof carriers are deferred
+to PR7; PR6 does not preserve row-level authorship ids as substitutes.

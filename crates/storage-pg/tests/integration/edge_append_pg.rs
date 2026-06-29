@@ -137,7 +137,6 @@ async fn author_abstraction_over_target(
                 operator_kind: MemoryOperatorKind::ExternalAgent,
                 model_id: "test-model",
                 prompt_version: "edge-append-pg",
-                author_personality_instance_id: None,
                 sidecar_payload: SidecarPayload::abstraction(AgentDerivationV1 {
                     title: label.to_string(),
                     body: label.to_string(),

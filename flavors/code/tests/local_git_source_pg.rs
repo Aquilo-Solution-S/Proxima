@@ -17,7 +17,7 @@ mod common;
 
 use common::{git, migrated_db, test_owner, write_file};
 use proxima_code::{CodeChunkV1, FileRevisionV1, FileState, LocalGitSource, build_engine};
-use proxima_core::verbs::query::{PersonalityRootFilter, QueryRequest, SupersessionStatus};
+use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
 use proxima_core::{
     AbstractionPayload, CORE_DERIVED_FROM_RELATION, FactPayload, Owner, SchemaId, SchemaVersion,
 };
@@ -194,14 +194,12 @@ async fn local_git_source_full_cycle() {
             )),
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
-            personality_roots: PersonalityRootFilter::IncludeInactive,
             limit: 1000,
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
-            reader_personality_instance_id: None,
         };
         let resp = engine
             .query(
@@ -268,14 +266,12 @@ async fn local_git_source_full_cycle() {
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
             tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
-            personality_roots: PersonalityRootFilter::IncludeInactive,
             limit: 1000,
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
-            reader_personality_instance_id: None,
         };
         let resp_all = engine
             .query(

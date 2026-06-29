@@ -3,7 +3,8 @@ use proxima_core::FactReceiptDraft;
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::{
-    CreateGoalAtomicRequest, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalState,
+    CreateGoalAtomicRequest, GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft,
+    GoalState, GoalTopologyWrite,
 };
 use proxima_core::verbs::query::{
     MemorySearchRequest, QueryRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
@@ -22,7 +23,6 @@ type ResolvedAuthz = AuthzContext;
 fn fresh_fact_draft(_owner: Owner) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
-        author_personality_instance_id: None,
         schema_id: SchemaId::new("test/entity-owner-fact".into()),
         schema_version: SchemaVersion::new(1),
         payload: Uuid::now_v7().as_bytes().to_vec(),
@@ -47,7 +47,13 @@ fn fresh_goal_draft(owner: Owner) -> GoalDraft {
         payload: b"{}".to_vec(),
         sidecar_payload: None,
         state: GoalState::Active,
-        parent_goal_ids: vec![],
+        topology: GoalTopologyWrite::new(
+            GoalAssignmentTarget::perspective(MemoryId::new(Uuid::nil())),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("empty test topology is valid"),
+        wake: None,
         supersedes_goal_id: None,
         authorship: GoalAuthorship::User,
         request_id: format!("entity-owner-home:{}", Uuid::now_v7()),
@@ -103,16 +109,15 @@ async fn insert_self(pg: &PgStorage, owner: &Owner) -> MemoryId {
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id)
+             operator_kind, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/self', 1, $4,
-                 'self', $5, 'test-model', 'v1', $6)",
+                 'self', $5, 'test-model', 'v1')",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_id)
     .bind(EntityKind::Perspective)
     .bind(MemoryOperatorKind::AtoP)
-    .bind(Uuid::nil())
     .execute(pg.pool())
     .await
     .unwrap();
@@ -305,15 +310,12 @@ async fn discovery_reads_filter_by_owner_read_set() {
                 schema_id: None,
                 supersession: SupersessionStatus::HeadsOnly,
                 tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
-                personality_roots:
-                    proxima_core::verbs::query::PersonalityRootFilter::IncludeInactive,
                 limit: 50,
                 include_payloads: false,
                 memory_ids: Vec::new(),
                 goal_ids: Vec::new(),
                 edge_ids: Vec::new(),
                 stateful_heads: Vec::new(),
-                reader_personality_instance_id: None,
             },
             &[],
         )
@@ -340,15 +342,12 @@ async fn discovery_reads_filter_by_owner_read_set() {
                 schema_id: None,
                 supersession: SupersessionStatus::HeadsOnly,
                 tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
-                personality_roots:
-                    proxima_core::verbs::query::PersonalityRootFilter::IncludeInactive,
                 limit: 50,
                 include_payloads: false,
                 memory_ids: Vec::new(),
                 goal_ids: Vec::new(),
                 edge_ids: vec![leaky_edge],
                 stateful_heads: Vec::new(),
-                reader_personality_instance_id: None,
             },
             &[],
         )
@@ -384,7 +383,6 @@ async fn discovery_reads_filter_by_owner_read_set() {
                 order: SearchOrder::Relevance,
                 query_embedding: None,
                 embedding_model_id: None,
-                reader_personality_instance_id: None,
             },
             &[],
         )
@@ -422,7 +420,13 @@ async fn owner_columns_written_on_goal_create() {
     let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
     let self_id = insert_self(&pg, &owner).await;
     let registry = FlavorRegistry::new().freeze();
-    let draft = fresh_goal_draft(owner);
+    let mut draft = fresh_goal_draft(owner);
+    draft.topology = GoalTopologyWrite::new(
+        GoalAssignmentTarget::perspective(self_id),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("empty test topology is valid");
 
     let outcome = pg
         .create_goal_atomic(&CreateGoalAtomicRequest {
@@ -432,8 +436,6 @@ async fn owner_columns_written_on_goal_create() {
                 embedding_model_id: None,
                 author_self_perspective_id: Some(self_id),
             },
-            target_self_perspective_id: self_id,
-            evidence: Vec::new(),
         })
         .await
         .unwrap();
@@ -473,10 +475,9 @@ async fn seed_memory_owned(pg: &proxima_storage_pg::PgStorage, owner: OwnerRef) 
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id)
+             operator_kind, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/owned-memory-v1', 1, 'Abstraction', 'owned',
-                 'FtoA', 'test-model', 'v1',
-                 '00000000-0000-0000-0000-000000000000'::uuid)",
+                 'FtoA', 'test-model', 'v1')",
     )
     .bind(entity_id)
     .bind(owner_kind)
@@ -498,15 +499,14 @@ async fn seed_abstraction_memory(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id)
+             operator_kind, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/entity-owner-abstraction-v1', 1,
-                 'Abstraction', $4, 'FtoA', 'test-model', 'v1', $5)",
+                 'Abstraction', $4, 'FtoA', 'test-model', 'v1')",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_id)
     .bind(text)
-    .bind(uuid::Uuid::nil())
     .execute(pg.pool())
     .await
     .unwrap();

@@ -1,18 +1,13 @@
 //! End-to-end: when a `core/inspires` edge points at a specific
-//! engineer instance's `self-Perspective`, the edge targets only that
-//! root perspective. Wake execution is external to Proxima.
+//! Perspective, the edge targets only that Perspective. Wake execution is
+//! external to Proxima.
 
 #![allow(clippy::too_many_lines, clippy::unnecessary_literal_bound)]
-
-use std::sync::Arc;
 
 mod common;
 
 use common::{insert_home, migrated_db, test_owner};
-use proxima_code::{build_engine_with, register_repo};
-use proxima_core::personality::{InstantiatePersonalityRequest, PersonalityInstanceId};
-use proxima_core::test_fixtures::ConstantEmbedding;
-use proxima_core::{AuthPath, AuthzContext, CORE_INSPIRES_RELATION, Owner};
+use proxima_core::{CORE_INSPIRES_RELATION, Owner};
 use proxima_pg_testkit::drop_db;
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -92,19 +87,27 @@ async fn seed_active_goal(
     Ok(goal_id)
 }
 
-async fn self_perspective_for(
+async fn seed_perspective(
     pg: &PgStorage,
-    instance_id: PersonalityInstanceId,
+    owner: &Owner,
+    label: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let id: Uuid = sqlx::query_scalar(
-        "SELECT current_root_perspective_memory_id
-         FROM proxima_core.personality
-         WHERE personality_instance_id = $1",
+    let memory_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version)
+         VALUES ($1, $2, $3, 'test/engineer-perspective-v1', 1, 'Perspective', $4,
+                 'AtoP', 'test-model', 'test-v1')",
     )
-    .bind(instance_id.into_inner())
-    .fetch_one(pg.pool())
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(label)
+    .execute(pg.pool())
     .await?;
-    Ok(id)
+    Ok(memory_id)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -113,43 +116,11 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
-        let repo_id = Uuid::now_v7();
-        register_repo(pg.pool(), &owner, repo_id, "/tmp/goal-targeting-e2e", "e2e").await?;
-
-        // Build an engine WITHOUT auto-instantiating other personalities
-        // — we only want engineers under test. The commit-summary
-        // personality is also registered (proxima_flavor!), so we
-        // accept its inert personality row but won't author commit-fact events
-        // until needed.
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
-        let engine = build_engine_with(pg.clone(), |_registry| {})
-            .with_embed(Arc::new(ConstantEmbedding::zero("fake-embed")));
-
-        // Provision Alice + Bob (two engineer instances).
-        let alice = engine
-            .instantiate_personality(
-                &authz,
-                InstantiatePersonalityRequest {
-                    principal: owner,
-                    display_name: "Alice".into(),
-                },
-            )
-            .await?;
-        let bob = engine
-            .instantiate_personality(
-                &authz,
-                InstantiatePersonalityRequest {
-                    principal: owner,
-                    display_name: "Bob".into(),
-                },
-            )
-            .await?;
-        let alice_self = self_perspective_for(&pg, alice.instance_id).await?;
-        let bob_self = self_perspective_for(&pg, bob.instance_id).await?;
+        let alice_self = seed_perspective(&pg, &owner, "Alice").await?;
+        let bob_self = seed_perspective(&pg, &owner, "Bob").await?;
         assert_ne!(alice_self, bob_self);
 
-        // Author an inspires edge from an active Goal -> Alice's
-        // self-Perspective.
+        // Author an inspires edge from an active Goal -> Alice's Perspective.
         let goal_id = seed_active_goal(&pg, &owner).await?;
         author_inspires_edge(&pg, &owner, goal_id, alice_self).await?;
 

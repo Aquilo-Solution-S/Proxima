@@ -3,15 +3,11 @@
 
 #![allow(clippy::too_many_lines, clippy::unnecessary_literal_bound)]
 
-use std::sync::Arc;
-
 mod common;
 
 use common::{migrated_db, test_owner};
-use proxima_code::{CommitSummaryV1, CommitV1, build_engine_with, ingest_commit, register_repo};
-use proxima_core::personality::InstantiatePersonalityRequest;
-use proxima_core::test_fixtures::ConstantEmbedding;
-use proxima_core::{AuthPath, AuthzContext, SourceBatchId};
+use proxima_code::{CommitSummaryV1, CommitV1, ingest_commit, register_repo};
+use proxima_core::SourceBatchId;
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
 
@@ -21,24 +17,9 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
         let repo_id = Uuid::now_v7();
         register_repo(pg.pool(), &owner, repo_id, "/tmp/commit-summary-e2e", "e2e").await?;
 
-        let engine = build_engine_with(pg.clone(), |_registry| {})
-            .with_embed(Arc::new(ConstantEmbedding::zero("fake-embed")));
-        let inst = engine
-            .instantiate_personality(
-                &authz,
-                InstantiatePersonalityRequest {
-                    principal: owner,
-                    display_name: "Commit Summarizer".into(),
-                },
-            )
-            .await?;
-
-        // Ingest the commit AFTER instantiating so the cursor (parked
-        // at "now") will see it.
         let now = time::OffsetDateTime::now_utc();
         let commit_payload = CommitV1 {
             repo_id,
@@ -76,7 +57,6 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
             "commit ingest must not run wake execution"
         );
 
-        let _ = inst;
         let _ = commit_memory_id;
         Ok(())
     }

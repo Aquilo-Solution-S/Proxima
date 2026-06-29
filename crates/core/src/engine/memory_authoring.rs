@@ -5,8 +5,8 @@ use crate::error::ProtocolError;
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, StorageError};
 use crate::{
     CORE_SUPERSEDES_RELATION, EdgeAuthorshipKind, EdgeId, EndpointBinding, EntityId, EntityKind,
-    MemoryId, MemoryOperatorKind, Owner, PersonalityInstanceId, RegisteredRelation,
-    RelationOwnerPolicy, RelationTargetAccessPolicy, SchemaId, SchemaVersion, SidecarPayload,
+    MemoryId, MemoryOperatorKind, Owner, RegisteredRelation, RelationOwnerPolicy,
+    RelationTargetAccessPolicy, SchemaId, SchemaVersion, SidecarPayload,
 };
 
 #[derive(Debug, Clone)]
@@ -31,7 +31,6 @@ pub struct AuthorDerivedRequestInput<'a> {
     pub operator_kind: MemoryOperatorKind,
     pub model_id: &'a str,
     pub prompt_version: &'a str,
-    pub author_personality_instance_id: Option<PersonalityInstanceId>,
     pub sidecar_payload: SidecarPayload,
     /// Prior A/P memory superseded by this derived memory. The engine
     /// records both `memories.supersedes` and a same-transaction
@@ -120,7 +119,6 @@ impl Engine {
                 operator_kind: req.operator_kind,
                 model_id: req.model_id,
                 prompt_version: req.prompt_version,
-                author_personality_instance_id: req.author_personality_instance_id,
                 sidecar_payload: req.sidecar_payload,
                 supersedes: req.supersedes,
                 edges: &edges,
@@ -278,7 +276,6 @@ impl Engine {
             operator_kind: req.operator_kind,
             model_id: req.model_id,
             prompt_version: req.prompt_version,
-            author_personality_instance_id: req.author_personality_instance_id,
             sidecar_payload: req.sidecar_payload,
             supersedes: req.supersedes,
             embedding,
@@ -545,7 +542,6 @@ mod tests {
                     operator_kind: MemoryOperatorKind::ExternalAgent,
                     model_id: "test-model",
                     prompt_version: "test",
-                    author_personality_instance_id: None,
                     sidecar_payload: derivation_sidecar(),
                     supersedes: None,
                     edges: &[],

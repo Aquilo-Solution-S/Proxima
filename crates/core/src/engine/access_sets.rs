@@ -172,7 +172,7 @@ pub(in crate::engine) mod tests {
         TransitionGoalAtomicRequest,
     };
     use crate::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
-    use crate::storage_ports::{PersonalityReadPort, PersonalityWritePort, StoragePorts};
+    use crate::storage_ports::StoragePorts;
     use crate::*;
 
     #[derive(Debug)]
@@ -333,7 +333,6 @@ pub(in crate::engine) mod tests {
         async fn load_memory_by_id(
             &self,
             _memory_id: MemoryId,
-            _reader_personality_instance_id: Option<PersonalityInstanceId>,
             _sidecars: &[SidecarSpec],
         ) -> Result<Option<MemorySnapshot>, StorageError> {
             Ok(None)
@@ -483,8 +482,6 @@ pub(in crate::engine) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl GoalSupportReadPort for MembershipStorage {}
-
     #[async_trait::async_trait]
     impl GoalReadPort for MembershipStorage {
         async fn list_active_goals(
@@ -651,90 +648,6 @@ pub(in crate::engine) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl PersonalityReadPort for MembershipStorage {
-        async fn list_personality_instances(
-            &self,
-            _owner: &Owner,
-            _include_tombstoned: bool,
-        ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
-            Ok(Vec::new())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl PersonalityWritePort for MembershipStorage {
-        async fn tombstone_personality(
-            &self,
-            _req: &TombstonePersonalityRequest,
-        ) -> Result<TombstonePersonalityResponse, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn instantiate_personality(
-            &self,
-            _req: &InstantiatePersonalityRequest,
-        ) -> Result<InstantiatePersonalityResponse, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn ensure_master_token_personality(
-            &self,
-            _owner: &Owner,
-            _master_token_id: uuid::Uuid,
-        ) -> Result<MasterTokenPersonality, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn ensure_subject_personality(
-            &self,
-            _owner: &Owner,
-            _subject: &OwnerRef,
-        ) -> Result<MasterTokenPersonality, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn append_personality_memories(
-            &self,
-            _req: &PersonalityWriteRequest<'_>,
-        ) -> Result<PersonalityWriteOutcome, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl WakeConfigPort for MembershipStorage {
-        async fn set_wake_entries(
-            &self,
-            _req: &SetWakeEntriesRequest,
-        ) -> Result<SetWakeEntriesResponse, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn set_wake_entries_within(
-            &self,
-            _owner: &Owner,
-            _personality_instance_id: PersonalityInstanceId,
-            _mutate: WakeEntriesMutator,
-        ) -> Result<SetWakeEntriesResponse, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-    }
-
-    #[async_trait::async_trait]
     impl FactRetentionPort for MembershipStorage {
         async fn upsert_fact_retention(
             &self,
@@ -808,26 +721,6 @@ pub(in crate::engine) mod tests {
         ) -> Result<Vec<AbstractionRow>, StorageError> {
             Ok(Vec::new())
         }
-
-        async fn load_perspective_heads(
-            &self,
-            _owner: &Owner,
-            _instance: PersonalityInstanceId,
-            _root_perspective_memory_id: MemoryId,
-            _sidecars: &[SidecarSpec],
-            _limit: usize,
-        ) -> Result<Vec<MemorySnapshot>, StorageError> {
-            Ok(Vec::new())
-        }
-
-        async fn lookup_prior_personality_head(
-            &self,
-            _owner: &Owner,
-            _instance: &PersonalityRef,
-            _schema_id: &SchemaId,
-        ) -> Result<Option<MemoryId>, StorageError> {
-            Ok(None)
-        }
     }
 
     impl MembershipStorage {
@@ -845,7 +738,6 @@ pub(in crate::engine) mod tests {
                 .embedding_write(storage.clone())
                 .embedding_job(storage.clone())
                 .goal_write(storage.clone())
-                .goal_support_read(storage.clone())
                 .goal_read(storage.clone())
                 .change_event(storage.clone())
                 .edge_read(storage.clone())
@@ -853,9 +745,6 @@ pub(in crate::engine) mod tests {
                 .owner_access_read(storage.clone())
                 .owner_membership_admin(storage.clone())
                 .source_batch(storage.clone())
-                .personality_read(storage.clone())
-                .personality_write(storage.clone())
-                .wake_config(storage.clone())
                 .fact_retention(storage.clone())
                 .compliance_erase(storage.clone())
                 .registry_projection(storage)

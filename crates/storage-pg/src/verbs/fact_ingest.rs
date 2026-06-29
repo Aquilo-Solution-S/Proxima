@@ -113,7 +113,6 @@ struct IngestCoreOptions<'a> {
     embedding_model_id: Option<&'a str>,
     derive_inputs: Option<FactEntityDeriveInputs<'a>>,
     citation_plan: CitationPlan<'a>,
-    change_event_author_personality_instance_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -419,7 +418,6 @@ pub async fn ingest_fact_command_in_tx(
         embedding_model_id,
         derive_inputs: None,
         citation_plan: CitationPlan::DraftHint,
-        change_event_author_personality_instance_id: None,
     };
     ingest_core(tx, owner, draft, options, |_tx, _outcome| {
         Box::pin(async { Ok(()) })
@@ -464,7 +462,6 @@ where
         embedding_model_id,
         derive_inputs: Some(derive_inputs),
         citation_plan: CitationPlan::DraftHint,
-        change_event_author_personality_instance_id: None,
     };
     ingest_core(tx, owner, draft, options, sidecar).await
 }
@@ -492,10 +489,6 @@ where
     ) -> FactIngestSidecarFuture<'t>,
 {
     let draft = authorized.draft();
-    let author_personality_instance_id = authorized.author_personality_instance_id().map_or_else(
-        uuid::Uuid::nil,
-        proxima_core::PersonalityInstanceId::into_inner,
-    );
     let derive_inputs = FactEntityDeriveInputs {
         sidecar_table: authorized.fact_sidecar_table(),
         natural_key_columns: authorized.fact_natural_key_columns(),
@@ -508,7 +501,6 @@ where
             mapping: authorized.mapping(),
             sidecars,
         },
-        change_event_author_personality_instance_id: Some(author_personality_instance_id),
     };
     ingest_core(
         tx,
@@ -740,7 +732,6 @@ where
         embedding_model_id,
         derive_inputs: Some(derive_inputs),
         citation_plan: CitationPlan::DraftHint,
-        change_event_author_personality_instance_id: None,
     };
     ingest_core(tx, authorized.permit().owner(), draft, options, sidecar).await
 }
@@ -887,16 +878,11 @@ where
         .map_err(map_err)?;
     }
 
-    let author_personality_instance_id = draft.author_personality_instance_id.map_or_else(
-        uuid::Uuid::nil,
-        proxima_core::PersonalityInstanceId::into_inner,
-    );
-
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version,
-             receipt_id, citation_mapping_id, text, personality_instance_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+             receipt_id, citation_mapping_id, text)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -906,7 +892,6 @@ where
     .bind(receipt_id_bytes.as_ref().map(|bytes| &bytes[..]))
     .bind(citation_mapping_id)
     .bind(draft.rendered_text.as_deref())
-    .bind(author_personality_instance_id)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -989,8 +974,8 @@ where
             (seq, owner_kind, owner_id,
              kind, entity_kind,
              entity_memory_id, entity_schema_id,
-             entity_schema_version, entity_personality_instance_id)
-         VALUES ($1, $2, $3, 'EntityAppend', 'Fact', $4, $5, $6, $7)",
+             entity_schema_version)
+         VALUES ($1, $2, $3, 'EntityAppend', 'Fact', $4, $5, $6)",
     )
     .bind(change_seq)
     .bind(owner_kind)
@@ -998,7 +983,6 @@ where
     .bind(memory_id)
     .bind(draft.schema_id.as_str())
     .bind(draft.schema_version.into_inner().cast_signed())
-    .bind(options.change_event_author_personality_instance_id)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;

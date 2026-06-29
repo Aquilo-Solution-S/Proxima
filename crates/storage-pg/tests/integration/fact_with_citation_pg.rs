@@ -8,8 +8,8 @@ use proxima_core::verbs::fact_ingest::{
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, Engine, FactPayload,
     FlavorRegistry, FlavorRegistryFrozen, GroupId, MemoryId, Owner, OwnerRef, PayloadKeyBuilder,
-    PersonalityInstanceId, Relation, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-    StorageError, UserId, canonical_json_bytes,
+    Relation, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError, UserId,
+    canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgMemoryPayload, PgMemoryPayloadFuture,
@@ -198,10 +198,9 @@ async fn fresh_pg_with_sidecars() -> (PgStorage, String) {
     (pg.with_sidecars(pg_sidecars()), db_name)
 }
 
-fn draft(_owner: &Owner, note: &str, author: Option<PersonalityInstanceId>) -> FactWriteCommand {
+fn draft(_owner: &Owner, note: &str) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
-        author_personality_instance_id: author,
         schema_id: TestFact::schema_id(),
         schema_version: SchemaVersion::new(TestFact::SCHEMA_VERSION),
         payload: json(&TestFact {
@@ -354,12 +353,11 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
         let engine = engine();
         let owner = owner_fixture();
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
-        let personality = PersonalityInstanceId::new(Uuid::now_v7());
         let first = engine
             .authorize_fact_with_citation(
                 &authz,
                 Relation::Ingest,
-                draft(&owner, "first fact", None),
+                draft(&owner, "first fact"),
                 cited_object(),
                 citation_mapping(0, 4),
             )
@@ -368,7 +366,7 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
             .authorize_fact_with_citation(
                 &authz,
                 Relation::Ingest,
-                draft(&owner, "second fact", Some(personality)),
+                draft(&owner, "second fact"),
                 cited_object(),
                 citation_mapping(5, 9),
             )
@@ -428,7 +426,7 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
         assert!(!first_outcome.idempotent_replay);
         assert!(!second_outcome.idempotent_replay);
         assert_ne!(first_outcome.memory_id, second_outcome.memory_id);
-        assert_written_rows_and_personality(pg.pool(), &second_outcome, personality).await?;
+        assert_written_rows(pg.pool()).await?;
 
         Ok(())
     }
@@ -560,7 +558,7 @@ async fn facts_citing_object_filters_by_read_owners() -> Result<(), Box<dyn std:
             .authorize_fact_with_citation(
                 &group_authz,
                 Relation::Ingest,
-                draft(&g1, "group fact", None),
+                draft(&g1, "group fact"),
                 cited_object(),
                 citation_mapping(0, 4),
             )
@@ -569,7 +567,7 @@ async fn facts_citing_object_filters_by_read_owners() -> Result<(), Box<dyn std:
             .authorize_fact_with_citation(
                 &AuthzContext::single_owner(&p, AuthPath::System),
                 Relation::Ingest,
-                draft(&p, "p fact", None),
+                draft(&p, "p fact"),
                 cited_object(),
                 citation_mapping(0, 4),
             )
@@ -659,7 +657,7 @@ async fn fact_sidecar_failure_rolls_back_whole_inline_citation_ingest()
             .authorize_fact_with_citation(
                 &authz,
                 Relation::Ingest,
-                draft(&owner, "rollback fact", None),
+                draft(&owner, "rollback fact"),
                 cited_object(),
                 citation_mapping(0, 4),
             )
@@ -717,11 +715,7 @@ async fn count(pool: &sqlx::PgPool, table: &str) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(&sql).fetch_one(pool).await
 }
 
-async fn assert_written_rows_and_personality(
-    pool: &sqlx::PgPool,
-    second_outcome: &proxima_core::FactIngestOutcome,
-    personality: PersonalityInstanceId,
-) -> Result<(), sqlx::Error> {
+async fn assert_written_rows(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     assert_eq!(
         count(pool, "proxima_core.cited_objects").await?,
         1,
@@ -744,24 +738,5 @@ async fn assert_written_rows_and_personality(
     assert_eq!(cited_object_ids.len(), 2);
     assert_eq!(cited_object_ids[0], cited_object_ids[1]);
 
-    let stamped: Uuid = sqlx::query_scalar(
-        "SELECT personality_instance_id
-         FROM proxima_core.memories
-         WHERE memory_id = $1",
-    )
-    .bind(second_outcome.memory_id.into_inner())
-    .fetch_one(pool)
-    .await?;
-    assert_eq!(stamped, personality.into_inner());
-
-    let change_stamped: Uuid = sqlx::query_scalar(
-        "SELECT entity_personality_instance_id
-         FROM proxima_core.change_event
-         WHERE seq = $1",
-    )
-    .bind(second_outcome.change_event_seq)
-    .fetch_one(pool)
-    .await?;
-    assert_eq!(change_stamped, personality.into_inner());
     Ok(())
 }

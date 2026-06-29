@@ -36,6 +36,22 @@ async fn column_exists(pg: &PgStorage, column_name: &str) -> bool {
     .expect("column inventory query should succeed")
 }
 
+async fn enum_type_exists(pg: &PgStorage, type_name: &str) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM pg_type t
+               JOIN pg_namespace n ON n.oid = t.typnamespace
+              WHERE n.nspname = 'proxima_core'
+                AND t.typname = $1
+         )",
+    )
+    .bind(type_name)
+    .fetch_one(pg.pool())
+    .await
+    .expect("enum inventory query should succeed")
+}
+
 async fn check_constraint_exists(pg: &PgStorage, table: &str, constraint: &str) -> bool {
     sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (
@@ -119,6 +135,9 @@ async fn fresh_v004_baseline_has_no_legacy_access_or_goal_tables() {
             format!("entity_{}", "owner"),
             format!("read_{}_matrix", "scope"),
             format!("goal_{}", "parents"),
+            format!("{}_wake_entries", "personality"),
+            format!("master_token_{}", "personality"),
+            format!("subject_{}", "personality"),
             "events".to_string(),
         ] {
             assert!(
@@ -131,10 +150,23 @@ async fn fresh_v004_baseline_has_no_legacy_access_or_goal_tables() {
             format!("owner_{}", "principal_kind"),
             format!("owner_{}", "principal_id"),
             format!("owner_{}", "org_id"),
+            format!("entity_{}_instance_id", "personality"),
+            format!("{}_instance_id", "personality"),
+            format!("wake_{}_depth", "chain"),
         ] {
             assert!(
                 !column_exists(&pg, &column_name).await,
-                "legacy owner column {column_name} must not exist",
+                "legacy owner/personality column {column_name} must not exist",
+            );
+        }
+
+        for type_name in [
+            format!("wake_{}_trigger_kind", "entry"),
+            format!("wake_{}_goal_scope", "entry"),
+        ] {
+            assert!(
+                !enum_type_exists(&pg, &type_name).await,
+                "legacy enum type {type_name} must not exist",
             );
         }
 
@@ -170,13 +202,9 @@ async fn fresh_v004_baseline_enforces_owner_ref_shape_constraints() {
             "fact_entities",
             "fact_receipts",
             "goals",
-            "master_token_personality",
             "memories",
             "owner_fact_retention",
-            "personality",
-            "personality_wake_entries",
             "source_batches",
-            "subject_personality",
         ] {
             assert!(
                 check_constraint_exists(&pg, table, &format!("{table}_owner_ref_shape_chk")).await,
@@ -192,12 +220,11 @@ async fn fresh_v004_baseline_enforces_owner_ref_shape_constraints() {
         let err = sqlx::query(
             "INSERT INTO proxima_core.memories
                 (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-                 operator_kind, model_id, prompt_version, personality_instance_id)
+                 operator_kind, model_id, prompt_version)
              VALUES ($1, 'personal', NULL, 'test/owner-shape', 1, 'Abstraction',
-                     'bad owner', 'Wake', 'test-model', 'v1', $2)",
+                     'bad owner', 'Wake', 'test-model', 'v1')",
         )
         .bind(Uuid::now_v7())
-        .bind(Uuid::nil())
         .execute(pg.pool())
         .await
         .expect_err("personal owner with NULL owner_id must be rejected");

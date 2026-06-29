@@ -2,8 +2,8 @@
 
 use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::{
-    EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerRefKind, PersonalityInstanceId, SchemaId,
-    SchemaVersion, StorageError,
+    EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerRefKind, SchemaId, SchemaVersion,
+    StorageError,
 };
 use sqlx::{Postgres, Transaction};
 
@@ -15,7 +15,6 @@ pub struct DerivedDraft<'a> {
     pub memory_id: uuid::Uuid,
     pub owner: Owner,
     pub kind: EntityKind,
-    pub author_personality_instance_id: Option<PersonalityInstanceId>,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub text: String,
@@ -47,9 +46,6 @@ pub async fn append_derived_in_tx(
     ) -> PgSidecarFuture<'t>,
 ) -> Result<DerivedOutcome, StorageError> {
     let (owner_kind, owner_id) = crate::access::owner_columns::owner_binds(&draft.owner);
-    let author_personality_instance_id = draft
-        .author_personality_instance_id
-        .map_or_else(uuid::Uuid::nil, PersonalityInstanceId::into_inner);
     if let Some(prior) = draft.supersedes {
         validate_supersedes_in_owner(tx, &draft.owner, prior, draft.kind).await?;
     }
@@ -57,9 +53,8 @@ pub async fn append_derived_in_tx(
     let inserted: Option<(uuid::Uuid,)> = sqlx::query_as(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id,
-             wake_chain_depth, supersedes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 0, $12)
+             operator_kind, model_id, prompt_version, supersedes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          ON CONFLICT (memory_id) DO NOTHING
          RETURNING memory_id",
     )
@@ -73,7 +68,6 @@ pub async fn append_derived_in_tx(
     .bind(draft.operator_kind)
     .bind(draft.model_id)
     .bind(draft.prompt_version)
-    .bind(author_personality_instance_id)
     .bind(draft.supersedes.map(MemoryId::into_inner))
     .fetch_optional(&mut **tx)
     .await
@@ -98,8 +92,8 @@ pub async fn append_derived_in_tx(
         "INSERT INTO proxima_core.change_event
             (seq, owner_kind, owner_id,
              kind, entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,
-             wake_chain_depth, supersedes_memory_id)
-         VALUES ($1, $2, $3, 'EntityAppend', $4, $5, $6, $7, 0, $8)",
+             supersedes_memory_id)
+         VALUES ($1, $2, $3, 'EntityAppend', $4, $5, $6, $7, $8)",
     )
     .bind(seq)
     .bind(owner_kind)

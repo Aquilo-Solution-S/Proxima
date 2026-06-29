@@ -24,7 +24,7 @@ append-only Fact stream.
 
 ```
 Goal / Perspective / user intent
-  -> wake entry or trusted EventSource
+  -> armed Goal wake match or trusted EventSource
   -> tool / external side-effect attempt
   -> Fact(action attempt)
   -> Reality changes or refuses
@@ -41,14 +41,15 @@ Automated action selection is wake execution.
 
 | Trigger | Selector | Output |
 |---|---|---|
-| `change_event` | matching wake entry | tool call, A/P/Goal/Edge write, or no output |
+| `change_event` | matching armed Goal wake trigger | tool call, A/P/Goal/Edge write, or no output |
 | UI / chat / trusted source | user or source policy | action-attempt Fact |
 | external callback | EventSource | effect Fact |
 
-There is no standalone action-selection registry in core. Wake entries are
-detect-only. An external harness receives tool scope from token capabilities
-intersected with the deployment tool-surface profile, plus visible read scope,
-active Goals, and prompt/instructions from flavor/runtime config (see 04).
+There is no standalone action-selection registry in core. Goal wake config is
+detect/admission-only. An external harness receives tool scope from token
+capabilities intersected with the deployment tool-surface profile, plus
+server-authorized readable owners, active Goals, and Goal-owned prompt/context
+(see 04).
 
 Manual action is the same shape: a user-facing surface emits or approves a
 Fact through a trusted source. The distinction is authoring, not entity kind.

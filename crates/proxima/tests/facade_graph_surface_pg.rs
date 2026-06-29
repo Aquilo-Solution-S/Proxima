@@ -39,8 +39,8 @@ mod facade_imports_compile {
         EdgeReadRequest, EdgeReadResponse, EdgeRow, EndpointBinding, EntityKindMask,
         FactCitationReadback, FlavorRegistryFrozen, McpTool, McpToolCtx, McpToolError,
         MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode, MemoryLineageRequest,
-        MemoryLineageResponse, MemoryRow, PayloadKeyBuilder, PersonalityRootFilter, QueryRequest,
-        QueryResponse, RelationClass, RelationDescriptor, SupersessionStatus, TombstoneFilter,
+        MemoryLineageResponse, MemoryRow, PayloadKeyBuilder, QueryRequest, QueryResponse,
+        RelationClass, RelationDescriptor, SupersessionStatus, TombstoneFilter,
         append_derived_in_tx, build_instructions, fact_entity_id_for, how_to_markdown,
     };
 
@@ -360,7 +360,6 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                 operator_kind: MemoryOperatorKind::ExternalAgent,
                 model_id: "facade-test",
                 prompt_version: "v1",
-                author_personality_instance_id: None,
                 sidecar_payload: SidecarPayload::abstraction(FacadeAbstraction {
                     title: "Facade surface".to_string(),
                     body: "Single facade dependency is enough for flavor authors.".to_string(),
@@ -397,7 +396,6 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                     direction: MemoryLineageDirection::Ancestors,
                     depth: 2,
                     limit: 10,
-                    reader_personality_instance_id: None,
                 },
             )
             .await?;

@@ -24,6 +24,7 @@ pub const CORE_SUPERSEDES_RELATION: &str = "core/supersedes";
 pub const CORE_INSPIRES_RELATION: &str = "core/inspires";
 pub const CORE_AUTHORED_RELATION: &str = "core/authored";
 pub const CORE_DEPENDS_ON_RELATION: &str = "core/depends-on";
+pub const CORE_WAKE_MOTIVATED_BY_RELATION: &str = "core/wake-motivated-by";
 
 /// Closed substrate vocabulary for the abstract role an edge plays
 /// in A/P traversal. The five variants below are the only edge
@@ -835,6 +836,19 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
             RelationOwnerPolicy::SameOwner,
             RelationTargetAccessPolicy::Read,
         ),
+        RelationDescriptor::substrate(
+            CORE_WAKE_MOTIVATED_BY_RELATION,
+            RelationClass::Causal,
+            EndpointBinding::Pin,
+            EndpointBinding::Pin,
+            EntityKindMask::goal(),
+            EntityKindMask::fact(),
+            AuthorshipKindMask::perspective_goal_link(),
+        )
+        .with_access_policies(
+            RelationOwnerPolicy::SourceOwned,
+            RelationTargetAccessPolicy::None,
+        ),
     ]
 }
 
@@ -869,9 +883,9 @@ fn parse_required_tags(relation: &str, side: &str, tags: &[&str]) -> BTreeSet<Ca
 mod tests {
     use super::{
         CORE_AUTHORED_RELATION, CORE_DEPENDS_ON_RELATION, CORE_DERIVED_FROM_RELATION,
-        CORE_INSPIRES_RELATION, CORE_SUPERSEDES_RELATION, EndpointBinding, EntityKindMask,
-        RelationClass, RelationOwnerPolicy, RelationTargetAccessPolicy, SchemaId, SchemaRef,
-        SchemaVersion, core_relation_descriptors,
+        CORE_INSPIRES_RELATION, CORE_SUPERSEDES_RELATION, CORE_WAKE_MOTIVATED_BY_RELATION,
+        EndpointBinding, EntityKindMask, RelationClass, RelationOwnerPolicy,
+        RelationTargetAccessPolicy, SchemaId, SchemaRef, SchemaVersion, core_relation_descriptors,
     };
 
     fn descriptor_for(relation: &str) -> Option<RelationClass> {
@@ -1026,6 +1040,16 @@ mod tests {
         assert!(
             descriptor(CORE_INSPIRES_RELATION)
                 .authorship_mask
+                .contains(super::EdgeAuthorshipKind::PerspectiveGoalLink)
+        );
+        let wake = descriptor(CORE_WAKE_MOTIVATED_BY_RELATION);
+        assert_eq!(wake.class, RelationClass::Causal);
+        assert_eq!(wake.source_kind_mask, EntityKindMask::goal());
+        assert_eq!(wake.target_kind_mask, EntityKindMask::fact());
+        assert_eq!(wake.owner_policy, RelationOwnerPolicy::SourceOwned);
+        assert_eq!(wake.target_access_policy, RelationTargetAccessPolicy::None);
+        assert!(
+            wake.authorship_mask
                 .contains(super::EdgeAuthorshipKind::PerspectiveGoalLink)
         );
     }

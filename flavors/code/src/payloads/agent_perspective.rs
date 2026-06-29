@@ -4,11 +4,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CodeCommitSummarizerSelfV1 {
-    #[schemars(description = "Display name for this commit-summarizer personality Perspective.")]
+    #[schemars(description = "Display name for this commit-summarizer Perspective.")]
     pub display_name: String,
-    #[schemars(
-        description = "Purpose statement for this commit-summarizer personality Perspective."
-    )]
+    #[schemars(description = "Purpose statement for this commit-summarizer Perspective.")]
     pub purpose: String,
 }
 
@@ -30,9 +28,9 @@ impl PerspectivePayload for CodeCommitSummarizerSelfV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CodeEngineerSelfV1 {
-    #[schemars(description = "Display name for this code-engineer personality Perspective.")]
+    #[schemars(description = "Display name for this code-engineer Perspective.")]
     pub display_name: String,
-    #[schemars(description = "Purpose statement for this code-engineer personality Perspective.")]
+    #[schemars(description = "Purpose statement for this code-engineer Perspective.")]
     pub purpose: String,
 }
 

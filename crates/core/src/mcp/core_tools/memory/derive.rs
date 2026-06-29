@@ -199,7 +199,6 @@ impl McpTool for DeriveTool {
                         operator_kind: crate::MemoryOperatorKind::ExternalAgent,
                         model_id: &args.model_id,
                         prompt_version: "mcp-agent-v1",
-                        author_personality_instance_id: ctx.author.personality_instance_id,
                         sidecar_payload: match args.kind {
                             DerivedKind::Abstraction => SidecarPayload::abstraction(sidecar),
                             DerivedKind::Perspective => SidecarPayload::perspective(sidecar),

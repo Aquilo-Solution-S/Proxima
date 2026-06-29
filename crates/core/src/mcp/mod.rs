@@ -9,10 +9,6 @@ pub mod handles;
 pub(crate) mod schema;
 
 pub use behavior::{Next, RequestBehavior, ScopeGateBehavior, TerminalDispatch, ToolCall};
-pub use core_tools::{
-    AuditEmit, PersonalityConfigChangedCaller, PersonalityConfigChangedSubject,
-    PersonalityConfigChangedV1, PersonalityConfigChangedVerb,
-};
 pub use handles::{
     EntityKind, EntityRef, Handle, HandleTable, MemoryHandleClass, PrefixedUuidClass,
     PrefixedUuidError, ResolveError, format_prefixed_uuid, parse_prefixed_uuid,
@@ -25,16 +21,13 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 
 use crate::authz::AuthzContext;
-use crate::{
-    EdgeId, GoalId, MemoryId, Owner, PersonalityInstanceId, verbs::schema::FlavorRegistryFrozen,
-};
+use crate::{EdgeId, GoalId, MemoryId, Owner, verbs::schema::FlavorRegistryFrozen};
 
 #[derive(Debug, Clone)]
 pub struct McpAuthorContext {
     pub model_id: String,
     pub client_name: String,
     pub client_version: String,
-    pub personality_instance_id: Option<PersonalityInstanceId>,
     pub caller_self_perspective: Option<MemoryId>,
 }
 
@@ -46,8 +39,8 @@ pub struct McpAuthorContext {
 /// - `RawIds`: master-token / human-facing. Emits/parses raw UUID
 ///   strings. No `HandleTable` is consulted.
 /// - `PrefixedIds`: wire-facing. Emits/parses typed `F:<uuid>`,
-///   `A:<uuid>`, `P:<uuid>`, `G:<uuid>`, `I:<uuid>`, `E:<uuid>`,
-///   and `W:<uuid>` strings. No `HandleTable` is consulted.
+///   `A:<uuid>`, `P:<uuid>`, `G:<uuid>`, and `E:<uuid>` strings.
+///   No `HandleTable` is consulted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {
     Handles,
@@ -107,18 +100,14 @@ pub struct McpToolCtx {
     /// edge. Tools pass this to engine verbs — never a substituted
     /// engine identity (privilege-escalation guard).
     pub authz: AuthzContext,
-    /// `Some` for wake-dispatched calls (table provided by the wake);
-    /// `None` for master-token / unauthenticated calls. Must be `Some`
-    /// when `mode == OutputMode::Handles`.
+    /// `Some` for handle-projected calls. Must be `Some` when
+    /// `mode == OutputMode::Handles`.
     pub handles: Option<Arc<HandleTable>>,
     pub mode: OutputMode,
     pub registry: Arc<FlavorRegistryFrozen>,
     pub author: McpAuthorContext,
     pub caller_self_perspective: Option<MemoryId>,
-    /// Set by `McpToolHost::call_tool` for master-token requests so
-    /// downstream code (notably the audit emit path) can distinguish
-    /// master-token from wake-token callers without inspecting the
-    /// auth context. `None` for wake-token, no-auth, or test calls.
+    /// Set by `McpToolHost::call_tool` for master-token requests.
     pub master_token_id: Option<uuid::Uuid>,
     /// Backend/flavor services supplied by the host. Core does not name
     /// concrete service types; PG-aware flavors may downcast their own
@@ -234,34 +223,6 @@ impl McpToolCtx {
             OutputMode::PrefixedIds => {
                 format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Edge)
             }
-        }
-    }
-
-    #[must_use]
-    pub fn format_personality(&self, id: PersonalityInstanceId) -> String {
-        match self.mode {
-            OutputMode::Handles => self
-                .handle_table()
-                .assign_personality(id)
-                .as_str()
-                .to_string(),
-            OutputMode::RawIds => id.into_inner().to_string(),
-            OutputMode::PrefixedIds => {
-                format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Personality)
-            }
-        }
-    }
-
-    #[must_use]
-    pub fn format_wake_entry(&self, id: uuid::Uuid) -> String {
-        match self.mode {
-            OutputMode::Handles => self
-                .handle_table()
-                .assign_wake_entry(id)
-                .as_str()
-                .to_string(),
-            OutputMode::RawIds => id.to_string(),
-            OutputMode::PrefixedIds => format_prefixed_uuid(id, PrefixedUuidClass::WakeEntry),
         }
     }
 
@@ -400,46 +361,6 @@ impl McpToolCtx {
                 .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
             OutputMode::PrefixedIds => parse_prefixed_uuid(raw, PrefixedUuidClass::Edge)
                 .map(EdgeId::new)
-                .map_err(|e| McpToolError::InvalidInput(e.to_string())),
-        }
-    }
-
-    /// Parse `raw` as a personality reference under the active mode.
-    ///
-    /// # Errors
-    ///
-    /// See [`McpToolCtx::resolve_memory`].
-    pub fn resolve_personality(&self, raw: &str) -> Result<PersonalityInstanceId, McpToolError> {
-        match self.mode {
-            OutputMode::Handles => self
-                .handle_table()
-                .resolve_personality(raw)
-                .map_err(McpToolError::Resolve),
-            OutputMode::RawIds => raw
-                .parse::<uuid::Uuid>()
-                .map(PersonalityInstanceId::new)
-                .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
-            OutputMode::PrefixedIds => parse_prefixed_uuid(raw, PrefixedUuidClass::Personality)
-                .map(PersonalityInstanceId::new)
-                .map_err(|e| McpToolError::InvalidInput(e.to_string())),
-        }
-    }
-
-    /// Parse `raw` as a wake-entry reference under the active mode.
-    ///
-    /// # Errors
-    ///
-    /// See [`McpToolCtx::resolve_memory`].
-    pub fn resolve_wake_entry(&self, raw: &str) -> Result<uuid::Uuid, McpToolError> {
-        match self.mode {
-            OutputMode::Handles => self
-                .handle_table()
-                .resolve_wake_entry(raw)
-                .map_err(McpToolError::Resolve),
-            OutputMode::RawIds => raw
-                .parse::<uuid::Uuid>()
-                .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
-            OutputMode::PrefixedIds => parse_prefixed_uuid(raw, PrefixedUuidClass::WakeEntry)
                 .map_err(|e| McpToolError::InvalidInput(e.to_string())),
         }
     }
@@ -812,7 +733,7 @@ pub const CORE_RESOURCES: &[CoreResourceMeta] = &[
         name: "proxima-graph",
         title: "Proxima Graph",
         scope_key: "resource:graph",
-        description: "Owner-scoped personality graph plus schema, edge-type, and tool catalogs.",
+        description: "Owner-scoped memory graph plus schema, edge-type, and tool catalogs.",
         is_template: false,
     },
     CoreResourceMeta {
@@ -850,8 +771,6 @@ pub fn all_core_resources() -> impl Iterator<Item = &'static CoreResourceMeta> {
 pub fn all_core_actions() -> impl Iterator<Item = &'static CoreActionMeta> {
     core_tools::goal::CORE_GOAL_ACTIONS
         .iter()
-        .chain(core_tools::wake::CORE_WAKE_ACTIONS.iter())
-        .chain(core_tools::personality::CORE_PERSONALITY_ACTIONS.iter())
         .chain(core_tools::fact::CORE_FACT_ACTIONS.iter())
         .chain(core_tools::membership::CORE_MEMBERSHIP_ACTIONS.iter())
 }
@@ -879,9 +798,7 @@ pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations>
             base.read_only(false).destructive(false).idempotent(false)
         }
 
-        "core_wake" | "core_personality" | "core_membership" => {
-            base.read_only(false).destructive(true).idempotent(false)
-        }
+        "core_membership" => base.read_only(false).destructive(true).idempotent(false),
 
         "core_fact" => base.read_only(false).destructive(true).idempotent(true),
 
@@ -972,17 +889,9 @@ mod tests {
 
     #[test]
     fn core_actions_manifest_is_internally_consistent() {
-        let allowed_tools = BTreeSet::from([
-            "core_goal",
-            "core_wake",
-            "core_personality",
-            "core_fact",
-            "core_membership",
-        ]);
+        let allowed_tools = BTreeSet::from(["core_goal", "core_fact", "core_membership"]);
         let expected_counts = BTreeMap::from([
             ("core_goal", 5_usize),
-            ("core_wake", 5),
-            ("core_personality", 4),
             ("core_fact", 4),
             ("core_membership", 3),
         ]);
@@ -1075,25 +984,19 @@ mod tests {
         let abstraction = MemoryId::new(uuid::Uuid::now_v7());
         let perspective = MemoryId::new(uuid::Uuid::now_v7());
         let goal = GoalId::new(uuid::Uuid::now_v7());
-        let personality = PersonalityInstanceId::new(uuid::Uuid::now_v7());
         let edge = EdgeId::new(uuid::Uuid::now_v7());
-        let wake = uuid::Uuid::now_v7();
 
         let fact_ref = ctx.format_fact_memory(fact);
         let abstraction_ref = ctx.format_abstraction_memory(abstraction);
         let perspective_ref = ctx.format_perspective_memory(perspective);
         let goal_ref = ctx.format_goal(goal);
-        let personality_ref = ctx.format_personality(personality);
         let edge_ref = ctx.format_edge(edge);
-        let wake_ref = ctx.format_wake_entry(wake);
 
         assert_prefixed_uuid(&fact_ref, 'F');
         assert_prefixed_uuid(&abstraction_ref, 'A');
         assert_prefixed_uuid(&perspective_ref, 'P');
         assert_prefixed_uuid(&goal_ref, 'G');
-        assert_prefixed_uuid(&personality_ref, 'I');
         assert_prefixed_uuid(&edge_ref, 'E');
-        assert_prefixed_uuid(&wake_ref, 'W');
 
         assert_eq!(ctx.resolve_fact_memory(&fact_ref).expect("fact"), fact);
         assert_eq!(
@@ -1118,13 +1021,7 @@ mod tests {
             perspective
         );
         assert_eq!(ctx.resolve_goal(&goal_ref).expect("goal"), goal);
-        assert_eq!(
-            ctx.resolve_personality(&personality_ref)
-                .expect("personality"),
-            personality
-        );
         assert_eq!(ctx.resolve_edge(&edge_ref).expect("edge"), edge);
-        assert_eq!(ctx.resolve_wake_entry(&wake_ref).expect("wake"), wake);
     }
 
     #[tokio::test]
@@ -1149,7 +1046,6 @@ mod tests {
                 model_id: "t".into(),
                 client_name: "t".into(),
                 client_version: "0".into(),
-                personality_instance_id: None,
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
@@ -1187,7 +1083,6 @@ mod ctx_engine_tests {
                 model_id: "t".into(),
                 client_name: "t".into(),
                 client_version: "0".into(),
-                personality_instance_id: None,
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
@@ -1212,7 +1107,6 @@ mod ctx_engine_tests {
                 model_id: "t".into(),
                 client_name: "t".into(),
                 client_version: "0".into(),
-                personality_instance_id: None,
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,

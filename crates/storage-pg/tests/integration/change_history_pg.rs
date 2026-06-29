@@ -10,8 +10,8 @@ use proxima_core::verbs::fact_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::verbs::query::{
-    EdgeFilter, EdgeReadRequest, EdgeTargetProjection, PersonalityRootFilter, QueryRequest,
-    SupersessionStatus, TombstoneFilter,
+    EdgeFilter, EdgeReadRequest, EdgeTargetProjection, QueryRequest, SupersessionStatus,
+    TombstoneFilter,
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
@@ -65,7 +65,6 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
 fn fresh_fact_draft(_owner: Owner, payload: Vec<u8>) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
-        author_personality_instance_id: None,
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
         payload,
@@ -338,14 +337,12 @@ async fn query_high_water_includes_readable_non_world_source_edge_events()
                     schema_id: None,
                     supersession: SupersessionStatus::HeadsOnly,
                     tombstones: TombstoneFilter::PresentOnly,
-                    personality_roots: PersonalityRootFilter::IncludeInactive,
                     limit: 10,
                     include_payloads: false,
                     memory_ids: Vec::new(),
                     goal_ids: Vec::new(),
                     edge_ids: Vec::new(),
                     stateful_heads: Vec::new(),
-                    reader_personality_instance_id: None,
                 },
                 &[],
             )

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::change_event::{ChangeEventKind, EntityRef};
 use crate::engine::ListChangeEventsReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::personality::ChangeEventForWake;
+use crate::read_models::ChangeEventForWake;
 use crate::{EdgeId, EntityKind};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -37,9 +37,6 @@ pub struct ListChangeEventsOutput {
 pub struct ChangeEventItem {
     pub seq: String,
     pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub authoring_personality: Option<String>,
-    pub wake_chain_depth: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entity: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -123,9 +120,6 @@ fn event_item(
     edge_kinds: &HashMap<uuid::Uuid, (EntityKind, Option<EntityKind>)>,
 ) -> ChangeEventItem {
     let seq = row.event.seq.to_string();
-    let authoring_personality = row
-        .authoring_personality_instance_id
-        .map(|id| ctx.format_personality(id));
     match row.event.kind {
         ChangeEventKind::EntityAppend {
             entity_kind,
@@ -136,8 +130,6 @@ fn event_item(
         } => ChangeEventItem {
             seq,
             kind: "entity_append".into(),
-            authoring_personality,
-            wake_chain_depth: row.event.wake_chain_depth,
             entity: Some(format_ref(ctx, &entity, entity_kind)),
             entity_kind: Some(entity_kind.as_str().into()),
             schema_id: Some(schema_id.as_str().to_string()),
@@ -156,8 +148,6 @@ fn event_item(
         } => ChangeEventItem {
             seq,
             kind: "entity_delete".into(),
-            authoring_personality,
-            wake_chain_depth: row.event.wake_chain_depth,
             entity: Some(format_ref(ctx, &entity, entity_kind)),
             entity_kind: Some(entity_kind.as_str().into()),
             schema_id: Some(schema_id.as_str().to_string()),
@@ -181,8 +171,6 @@ fn event_item(
             ChangeEventItem {
                 seq,
                 kind: "edge_append".into(),
-                authoring_personality,
-                wake_chain_depth: row.event.wake_chain_depth,
                 entity: None,
                 entity_kind: None,
                 schema_id: None,
@@ -207,8 +195,6 @@ fn event_item(
             ChangeEventItem {
                 seq,
                 kind: "edge_delete".into(),
-                authoring_personality,
-                wake_chain_depth: row.event.wake_chain_depth,
                 entity: None,
                 entity_kind: None,
                 schema_id: None,
@@ -262,7 +248,7 @@ fn format_ref(ctx: &McpToolCtx, r: &EntityRef, kind: EntityKind) -> String {
 mod tests {
     use super::{overfetch_limit, page_rows};
     use crate::change_event::{ChangeEvent, ChangeEventKind};
-    use crate::personality::{ChangeEventForWake, WakeChainDepth};
+    use crate::read_models::ChangeEventForWake;
     use crate::{EntityKind, EntityRef, MemoryId, SchemaId, SchemaVersion};
 
     fn row(seq: uuid::Uuid) -> ChangeEventForWake {
@@ -276,11 +262,7 @@ mod tests {
                     schema_id: SchemaId::new("test/schema".into()),
                     schema_version: SchemaVersion::new(1),
                 },
-                authoring_personality_instance_id: None,
-                wake_chain_depth: 0,
             },
-            authoring_personality_instance_id: None,
-            wake_chain_depth: WakeChainDepth::new(0),
         }
     }
 

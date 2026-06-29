@@ -96,7 +96,7 @@ pub struct CodeWorkItemBundleOutput {
     pub dependency_handles: Vec<String>,
     pub dependent_handles: Vec<String>,
     pub evidence_handles: Vec<String>,
-    pub target_personality_handles: Vec<String>,
+    pub target_perspective_handles: Vec<String>,
     pub plan_handles: Vec<String>,
     pub active_goal_provenance: Vec<ActiveGoalProvenanceBundle>,
     pub result_handles: Vec<ResultBundle>,
@@ -109,7 +109,7 @@ pub struct CodeWorkItemBundleTool;
 
 impl McpTool for CodeWorkItemBundleTool {
     const NAME: &'static str = "proxima-code_work_item_bundle";
-    const DESCRIPTION: &'static str = "Read a Goal-native Code work/test item bundle: request, repo, criteria, dependencies, evidence, target personality, active-goal provenance, and results.";
+    const DESCRIPTION: &'static str = "Read a Goal-native Code work/test item bundle: request, repo, criteria, dependencies, evidence, target Perspectives, active-goal provenance, and results.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
 
     type Args = CodeWorkItemBundleArgs;
@@ -163,7 +163,7 @@ impl McpTool for CodeWorkItemBundleTool {
                     evidence_handles.push(ctx.format_fact_memory(target));
                 }
             }
-            let target_personality_handles = load_target_personalities(&ctx, memory_id)
+            let target_perspective_handles = load_target_perspectives(&ctx, memory_id)
                 .await?
                 .into_iter()
                 .map(|id| ctx.format_perspective_memory(id))
@@ -190,7 +190,7 @@ impl McpTool for CodeWorkItemBundleTool {
                 dependency_handles,
                 dependent_handles,
                 evidence_handles,
-                target_personality_handles,
+                target_perspective_handles,
                 plan_handles,
                 active_goal_provenance,
                 result_handles,
@@ -483,7 +483,7 @@ async fn load_goal_activation(
     Ok(row)
 }
 
-async fn load_target_personalities(
+async fn load_target_perspectives(
     ctx: &McpToolCtx,
     memory_id: MemoryId,
 ) -> Result<Vec<MemoryId>, McpToolError> {

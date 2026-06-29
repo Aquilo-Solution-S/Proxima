@@ -47,14 +47,13 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id, wake_chain_depth)
+             prompt_version)
          VALUES ($1, $2, $3, 'test/goal-activation', 1, 'Abstraction',
-                 'goal activation evidence', 'ExternalAgent', 'test', 'test', $4, 0)",
+                 'goal activation evidence', 'ExternalAgent', 'test', 'test')",
     )
     .bind(goal_activated_memory_id)
     .bind(owner_kind)
     .bind(owner_id)
-    .bind(Uuid::nil())
     .execute(db.pg.pool())
     .await
     .expect("insert goal activation evidence");
@@ -75,7 +74,6 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
             operator_kind: MemoryOperatorKind::ExternalAgent,
             model_id: "test-planner",
             prompt_version: "proxima-code/test-plan-v1",
-            author_personality_instance_id: None,
             sidecar_payload: SidecarPayload::abstraction(old_payload),
             supersedes: None,
             edges: &[],
@@ -96,7 +94,6 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
             operator_kind: MemoryOperatorKind::ExternalAgent,
             model_id: "test-planner",
             prompt_version: "proxima-code/test-plan-v1",
-            author_personality_instance_id: None,
             sidecar_payload: SidecarPayload::abstraction(new_payload),
             supersedes: Some(old_memory_id),
             edges: &[],

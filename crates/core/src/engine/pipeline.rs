@@ -2,7 +2,7 @@ use crate::access::{EntityId, Relation, world};
 use crate::authz::{AuthPath, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome};
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
-use crate::{Owner, OwnerRef, PersonalityInstanceId};
+use crate::{Owner, OwnerRef};
 
 use super::Engine;
 
@@ -24,9 +24,7 @@ pub enum PermitMode {
     /// via `authorize_request`) mint it; the entry-scoped and public-read modes
     /// of the retired grant model are gone with their gate, replaced by
     /// `authorize_entry_read` / source-owned reads.
-    OwnerScoped {
-        subject_personality: Option<PersonalityInstanceId>,
-    },
+    OwnerScoped,
 }
 
 /// Proof that the resolved owner passed a write gate for `relation`. Sealed:
@@ -51,7 +49,7 @@ impl WritePermit {
 
 impl From<WritePermit> for MemoryPermit {
     fn from(permit: WritePermit) -> Self {
-        Self::owner_scoped(permit.owner, permit.owner, permit.relation, None)
+        Self::owner_scoped(permit.owner, permit.owner, permit.relation)
     }
 }
 
@@ -75,16 +73,9 @@ enum AccessBasis {
 }
 
 impl MemoryPermit {
-    fn owner_scoped(
-        owner: Owner,
-        requested: Owner,
-        relation: Relation,
-        subject_personality: Option<PersonalityInstanceId>,
-    ) -> Self {
+    fn owner_scoped(owner: Owner, requested: Owner, relation: Relation) -> Self {
         Self {
-            mode: PermitMode::OwnerScoped {
-                subject_personality,
-            },
+            mode: PermitMode::OwnerScoped,
             owner,
             requested,
             relation,
@@ -107,14 +98,6 @@ impl MemoryPermit {
     #[must_use]
     pub fn relation(&self) -> Relation {
         self.relation
-    }
-
-    #[must_use]
-    pub fn subject_personality(&self) -> Option<PersonalityInstanceId> {
-        let PermitMode::OwnerScoped {
-            subject_personality,
-        } = &self.mode;
-        *subject_personality
     }
 }
 
@@ -300,18 +283,14 @@ impl Engine {
             relation,
             operation: AuthzOperation::Relation { relation },
         };
-        let basis = match self.gate_and_veto(authz, &resolved, relation, &input).await {
-            Ok(basis) => basis,
+        match self.gate_and_veto(authz, &resolved, relation, &input).await {
+            Ok(_basis) => {}
             Err((err, outcome)) => {
                 self.registry.run_authorization_observers(&input, outcome);
                 return Err(err);
             }
-        };
-        let subject_personality = match basis {
-            AccessBasis::ActingAsOwner => None,
-        };
-        let permit =
-            MemoryPermit::owner_scoped(resolved, *requested, relation, subject_personality);
+        }
+        let permit = MemoryPermit::owner_scoped(resolved, *requested, relation);
         self.registry
             .run_authorization_observers(&input, AuthzOutcome::Allowed);
         Ok(permit)
@@ -522,13 +501,7 @@ mod tests {
         assert_eq!(permit.owner(), &owner);
         assert_eq!(permit.requested(), &owner);
         assert_eq!(permit.relation(), Relation::Viewer);
-        assert!(matches!(
-            permit.mode(),
-            PermitMode::OwnerScoped {
-                subject_personality: None
-            }
-        ));
-        assert_eq!(permit.subject_personality(), None);
+        assert!(matches!(permit.mode(), PermitMode::OwnerScoped));
     }
 
     #[tokio::test]

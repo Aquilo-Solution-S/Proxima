@@ -72,7 +72,6 @@ fn fresh_draft(_owner: &Owner) -> FactWriteCommand {
     let payload = format!("sidecar gated ingest {}", Uuid::now_v7()).into_bytes();
     let content_hash = blake3::hash(&payload);
     FactWriteCommand {
-        author_personality_instance_id: None,
         schema_id: SchemaId::new("test/sidecar_fact".into()),
         schema_version: SchemaVersion::new(1),
         payload,

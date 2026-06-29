@@ -1,9 +1,8 @@
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::storage::StorageError;
-use proxima_core::storage_ports::*;
 use proxima_core::{
-    AgentDerivationV1, EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerRef,
-    PersonalityInstanceId, SchemaId, SchemaVersion, SidecarPayload, UserId,
+    AgentDerivationV1, EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerRef, SchemaId,
+    SchemaVersion, SidecarPayload, UserId,
 };
 use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_in_tx};
 use proxima_storage_pg::{PgSidecarRegistryFrozen, verbs::derive_append::DerivedOutcome};
@@ -15,13 +14,11 @@ fn agent_draft(
     kind: EntityKind,
     _title: &'static str,
     body: &'static str,
-    author: Option<PersonalityInstanceId>,
 ) -> DerivedDraft<'static> {
     DerivedDraft {
         memory_id,
         owner,
         kind,
-        author_personality_instance_id: author,
         schema_id: SchemaId::new("core/agent-derivation-v1".into()),
         schema_version: SchemaVersion::new(1),
         text: body.into(),
@@ -85,7 +82,6 @@ async fn external_agent_abstraction_persists_with_replay() -> Result<(), Box<dyn
             EntityKind::Abstraction,
             "x",
             "the agent view",
-            None,
         );
         let sidecar = agent_sidecar(EntityKind::Abstraction, "x", "the agent view");
 
@@ -128,7 +124,6 @@ async fn external_agent_perspective_persists() -> Result<(), Box<dyn std::error:
             EntityKind::Perspective,
             "p",
             "perspective body",
-            None,
         );
         let sidecar = agent_sidecar(EntityKind::Perspective, "p", "perspective body");
         let mut tx = pg.pool().begin().await?;
@@ -166,7 +161,6 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
             EntityKind::Abstraction,
             "victim",
             "victim prior",
-            None,
         );
         let victim_sidecar = agent_sidecar(EntityKind::Abstraction, "victim", "victim prior");
         let mut tx = pg.pool().begin().await?;
@@ -179,7 +173,6 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
             EntityKind::Abstraction,
             "foreign",
             "foreign successor",
-            None,
         );
         foreign.supersedes = Some(MemoryId::new(victim_prior_id));
         let foreign_sidecar =
@@ -200,7 +193,6 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
             EntityKind::Abstraction,
             "attacker",
             "attacker prior",
-            None,
         );
         let attacker_sidecar = agent_sidecar(EntityKind::Abstraction, "attacker", "attacker prior");
         let mut tx = pg.pool().begin().await?;
@@ -213,7 +205,6 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
             EntityKind::Abstraction,
             "same-owner",
             "same-owner successor",
-            None,
         );
         same_owner.supersedes = Some(MemoryId::new(attacker_prior_id));
         let same_owner_sidecar = agent_sidecar(
@@ -236,7 +227,6 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
             EntityKind::Perspective,
             "perspective",
             "attacker perspective",
-            None,
         );
         let perspective_sidecar = agent_sidecar(
             EntityKind::Perspective,
@@ -259,7 +249,6 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
             EntityKind::Abstraction,
             "wrong-kind",
             "wrong-kind successor",
-            None,
         );
         wrong_kind.supersedes = Some(MemoryId::new(attacker_perspective_id));
         let wrong_kind_sidecar = agent_sidecar(
@@ -278,98 +267,6 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
             supersedes_pointer_count(&pg, attacker_perspective_id).await?,
             0
         );
-
-        Ok::<(), Box<dyn std::error::Error>>(())
-    }
-    .await;
-
-    let _ = drop_db(&db_name).await;
-    result
-}
-
-#[tokio::test]
-async fn external_agent_abstraction_stamps_author_without_change_event_author()
--> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
-
-    let result = async {
-        pg.run_migrations().await?;
-
-        let owner = owner_fixture();
-        let subject = owner;
-        let personality = pg.ensure_subject_personality(&owner, &subject).await?;
-
-        let authored_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"derive-author-test-1");
-        let authored = agent_draft(
-            authored_id,
-            owner,
-            EntityKind::Abstraction,
-            "authored",
-            "authored abstraction",
-            Some(personality.instance_id),
-        );
-        let authored_sidecar =
-            agent_sidecar(EntityKind::Abstraction, "authored", "authored abstraction");
-
-        let mut tx = pg.pool().begin().await?;
-        append_with_sidecar(&mut tx, pg.sidecars(), &authored, &authored_sidecar).await?;
-        tx.commit().await?;
-
-        let stamped: uuid::Uuid = sqlx::query_scalar(
-            "SELECT personality_instance_id
-             FROM proxima_core.memories
-             WHERE memory_id = $1",
-        )
-        .bind(authored_id)
-        .fetch_one(pg.pool())
-        .await?;
-        assert_eq!(stamped, personality.instance_id.into_inner());
-        assert_ne!(stamped, uuid::Uuid::nil());
-
-        let authored_change_author: Option<uuid::Uuid> = sqlx::query_scalar(
-            "SELECT entity_personality_instance_id
-             FROM proxima_core.change_event
-             WHERE entity_memory_id = $1",
-        )
-        .bind(authored_id)
-        .fetch_one(pg.pool())
-        .await?;
-        assert_eq!(authored_change_author, None);
-
-        let system_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"derive-author-test-2");
-        let system = agent_draft(
-            system_id,
-            owner,
-            EntityKind::Abstraction,
-            "system",
-            "system abstraction",
-            None,
-        );
-        let system_sidecar = agent_sidecar(EntityKind::Abstraction, "system", "system abstraction");
-
-        let mut tx = pg.pool().begin().await?;
-        append_with_sidecar(&mut tx, pg.sidecars(), &system, &system_sidecar).await?;
-        tx.commit().await?;
-
-        let system_stamped: uuid::Uuid = sqlx::query_scalar(
-            "SELECT personality_instance_id
-             FROM proxima_core.memories
-             WHERE memory_id = $1",
-        )
-        .bind(system_id)
-        .fetch_one(pg.pool())
-        .await?;
-        assert_eq!(system_stamped, uuid::Uuid::nil());
-
-        let system_change_author: Option<uuid::Uuid> = sqlx::query_scalar(
-            "SELECT entity_personality_instance_id
-             FROM proxima_core.change_event
-             WHERE entity_memory_id = $1",
-        )
-        .bind(system_id)
-        .fetch_one(pg.pool())
-        .await?;
-        assert_eq!(system_change_author, None);
 
         Ok::<(), Box<dyn std::error::Error>>(())
     }

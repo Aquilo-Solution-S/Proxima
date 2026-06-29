@@ -471,22 +471,24 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         let tools = built.core_mcp_tools();
 
         let listed = tools.list_core_tools();
-        let list_personalities = listed
-            .iter()
-            .find(|tool| tool.name == "core_personality")
-            .expect("core_personality registered");
         assert!(!listed.is_empty(), "core tool registry is non-empty");
+        let retired_personality = format!("core_{}", "personality");
         assert!(
-            list_personalities
-                .args_schema
-                .as_object()
-                .is_some_and(|object| !object.is_empty()),
-            "known core tool has a non-empty args schema"
+            !listed
+                .iter()
+                .any(|tool| tool.name == retired_personality.as_str())
         );
         let search = listed
             .iter()
             .find(|tool| tool.name == "core_search_memories")
             .expect("core/search_memories registered");
+        assert!(
+            search
+                .args_schema
+                .as_object()
+                .is_some_and(|object| !object.is_empty()),
+            "known core tool has a non-empty args schema"
+        );
         assert_eq!(search.read_only, Some(true));
         assert_eq!(search.open_world, Some(false));
         let remember = listed
@@ -501,33 +503,35 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         ]));
         let palette_names: HashSet<_> = palette.into_iter().map(|tool| tool.name).collect();
         assert!(palette_names.contains("core_search_memories"));
-        assert!(!palette_names.contains("core_personality"));
+        assert!(!palette_names.contains(retired_personality.as_str()));
 
         let admin_authz = host_authz(&owner, ToolScope::All);
         let output = call_test_model_tool(
             &tools,
             admin_authz,
             owner,
-            "core_personality",
-            serde_json::json!({ "action": "list" }),
+            "core_search_memories",
+            serde_json::json!({
+                "query": "nothing yet",
+                "mode": "lexical",
+                "kind": "Fact",
+                "limit": 5
+            }),
         )
         .await?;
-        assert!(
-            output.get("personalities").is_some(),
-            "read tool returns its JSON payload"
-        );
+        assert!(output.get("memories").is_some(), "read tool returns JSON");
 
-        let denied = tools
+        let retired = tools
             .call_core_tool(
-                host_authz(&owner, ToolScope::Palette(Vec::new())),
+                host_authz(&owner, ToolScope::All),
                 owner,
                 None,
-                "core_personality",
+                &retired_personality,
                 serde_json::json!({ "action": "list" }),
             )
             .await;
         assert!(
-            matches!(denied, Err(CoreMcpError::NotAuthorized(tool)) if tool == "core_personality")
+            matches!(retired, Err(CoreMcpError::NotFound(tool)) if tool == retired_personality)
         );
 
         let invalid = tools

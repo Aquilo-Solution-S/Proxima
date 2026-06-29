@@ -108,8 +108,8 @@ normalization of action-dispatch tools described below.
 ### Action-Dispatch Tools
 
 Tools whose argument type is an internally-tagged (`action`) enum —
-`core_goal`, `core_wake`, `core_personality`, `core_fact` — are normalized
-into a client-safe shape after `schemars` generation, because MCP clients
+currently `core_goal`, `core_fact`, and `core_membership` — are normalized into a client-safe
+shape after `schemars` generation, because MCP clients
 reject an `inputSchema` whose root is not `type: object` or that carries a
 root `oneOf`/`anyOf`/`allOf`:
 
@@ -126,22 +126,17 @@ root `oneOf`/`anyOf`/`allOf`:
   `allowed_fields`, or a missing `required_field`, is rejected with
   JSON-RPC `-32602`. Unknown fields are an error, not silently dropped.
 
-## Wake-Entry Detect Config
+## Goal Wake Config
 
-Wake entry fields:
+Goal wake fields are stored on the Goal-owned wake config carrier, not as a
+standalone runtime entity:
 
 ```rust
-pub struct WakeEntryDraft {
-    pub wake_entry_id: Uuid,
-    pub personality_instance_id: PersonalityInstanceId,
-    pub trigger_kind: WakeEntryTriggerKind,
-    pub trigger_id: String,
-    pub label: String,
-    pub enabled: bool,
-    pub authored_by: WakeEntryAuthoredBy,
-    pub probability_promille: u16,
-    pub goal_scope: WakeEntryGoalScope,
-    pub instructions: String,
+pub struct GoalWakeConfigWrite {
+    trigger: GoalWakeTrigger,
+    tool_ids: Vec<GoalWakeToolId>,
+    prompt: String,
+    hard_memory_ids: Vec<MemoryId>,
 }
 ```
 
@@ -149,11 +144,12 @@ Write-time validation:
 
 | Field | Contract |
 |---|---|
-| `(trigger_kind, trigger_id)` | unique per active personality instance |
-| `trigger_id`, `label` | non-empty |
-| `probability_promille` | `0..=1000` |
+| `trigger` | exact Fact memory or Fact schema/version selector |
+| `tool_ids` | non-empty canonical provider-safe ids or exact action leaf scope keys registered in the frozen build-time registry |
+| `prompt` | non-empty bounded text |
+| `hard_memory_ids` | unique memory ids; candidate admission checks actual owner/kind readability |
 
-Wake entries carry trigger config only. Model/tool/run policy stays external.
+Goal-owned WakeConfig carries trigger, bounded toolset, prompt, and hard-memory context only. Model/run policy stays external.
 
 ## Invocation Flow
 
@@ -195,7 +191,7 @@ Not present in v1:
 | `tools` | absent |
 | per-tool invocation table | absent |
 | per-wake invocation table | absent |
-| per-wake tool allowlist storage | absent |
+| generic per-wake invocation/tool-call storage | absent |
 | runtime install API | absent |
 | runtime manifest upload | absent |
 | signed external tool body registry | deferred |

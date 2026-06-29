@@ -23,7 +23,7 @@ from the core (the minimization discipline) — a failing build is drift.
 | `Causa/Prelude.lean` | minimal `Set`, `Instant`, `Text` |
 | `Causa/Owner.lean` | OwnerRef (`world`/`personal`/`group`) and role resolution boundary (doc 01) |
 | `Causa/Identity.lean` | ids, Event, append-only/immutable/supersedable classes, vector-store independence (docs 01, 07) |
-| `Causa/Memory.lean` | F/A/P kinds, ℓ, fact↔event, text rule, supersession, personality, owner-role read context (doc 02) |
+| `Causa/Memory.lean` | F/A/P kinds, ℓ, fact text/typing rules, supersession, owner-role read context (doc 02) |
 | `Causa/Goals.lean` | Goal states, lifecycle, DAG acyclicity, active set (doc 06) |
 | `Causa/Edges.lean` | relation classes, directionality matrix, single-owner scope, masks (doc 02) |
 | `Causa/Operators.lean` | F→A / A→P / A→Goal shapes, no downward writes, provenance obligations, batch gate (docs 02, 04) |

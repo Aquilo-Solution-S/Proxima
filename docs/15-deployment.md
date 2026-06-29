@@ -46,7 +46,7 @@ a narrower DML role.
 | `PROXIMA_OIDC_JWKS_URI` | no | `https://zitadel.example.com/oauth/v2/keys` | Overrides OIDC discovery. |
 | `PROXIMA_OIDC_ALLOWED_SUBJECTS` | no | `user1,user2` | Comma-separated `sub` allowlist. |
 | `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile: `full` default, or curated `memory`. |
-| `PROXIMA_TOOL_ALLOW` | no | `core_wake:add` | Comma-separated canonical scope keys added after profile resolution. |
+| `PROXIMA_TOOL_ALLOW` | no | `core_goal:set` | Comma-separated canonical scope keys added after profile resolution. |
 | `PROXIMA_TOOL_DENY` | no | `core_fact:tombstone` | Comma-separated canonical scope keys removed after allow. |
 | `MISTRAL_API_KEY` | no | `sk-...` | Enables Mistral embeddings. |
 | `PROXIMA_EMBED_MODEL` | no | `mistral-embed` | Embedding model id. |
