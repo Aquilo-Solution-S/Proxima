@@ -55,8 +55,8 @@
 | ME-5a | Supersession same kind | THEOREM `supersession_same_kind` over `EdgeCoreValid registry` rows |
 | ME-5b | Supersession same owner | THEOREM `supersession_same_owner` over `EdgeCoreValid registry` rows, via descriptor `RelationOwnerPolicy.SameOwner` for Supersession |
 | ME-6 | Personality is not a materialized Memory author/owner slot | structural absence: no `PersonalityInstance`, no `personality_owner`, no `memory_authoring_personality`; D4 comment Memory.lean |
-| ME-7 | Facts below Perspectives; no personality read-scope matrix | theorem `principle_1_facts_below_perspective`; structural absence of `read_scope`/`personality_may_read`; wake read context deferred |
-| ME-8 | Materialized personality matrix removed | structural absence of `read_scope` and matrix-version state; wake context/read semantics deferred after D4 |
+| ME-7 | Facts below Perspectives; no personality read-scope matrix | theorem `principle_1_facts_below_perspective`; structural absence of `read_scope`/`personality_may_read`; wake trigger/context reads use `Wake.Firing.trigger_read` and `each_injected_read` over actual memory owners |
+| ME-8 | Materialized personality matrix removed | structural absence of `read_scope` and matrix-version state; wake context/read semantics are role-graded Owner checks in `Wake.Firing`, not a personality matrix |
 | ME-9 | Edge scope source-owned; Supersession intra-Owner | row-validity predicate `EdgeSourceOwned` + descriptor owner policy `RelationOwnerPolicy`; projection THEOREMs `edge_source_owned`, `supersession_intra_owner` over `EdgeCoreValid registry` |
 | ME-10 | ℓ(source) ≥ ℓ(target) for valid memory edges | THEOREM `edge_layer_rule` (from `EdgeCoreValid registry` + matrix empty upward cells); FactEntity endpoints are Fact-like through `NodeRef.memoryKind?` |
 | ME-11 | Class-legality matrix (9 cells) | def `legalClasses` + THEOREMS `edge_class_legal_for_node` / `edge_class_legal` (from `EdgeHasClass registry` + descriptor `masksTightenOnly`) |
@@ -106,7 +106,7 @@
 | GO-10 | Authorship vocabulary | inductive `GoalAuthorship` |
 | GO-11 | GoalWrite protocol (request_id idempotency, conflict detection, stream visibility) | excluded from Goal ontology: request-id/body replay is protocol/write-atom state (doc 14), not a Goal row invariant; item 10 resolved by keeping it out of `Goal`/Self |
 | GO-12 | Assignment = causal `core/inspires` edge Goal→Self-Perspective; instance-scoped active_goals query | `goalAssignedToPerspective` + `activeGoalsForSelf`: query starts at Causal Goal→Perspective assignment edges, follows `GoalSupersessionReachable`, returns Active heads; no Self row/relation-id axiom |
-| GO-13 | Goal-scoped wake policy; planner-first | excluded: engine runtime |
+| GO-13 | Goal-scoped wake policy; planner-first | `Goal.wake : Option WakeConfig` + `Wake.Firing.wake_config` bind firing to the Goal-owned config; `actor_member` is any server-resolved role/grant in the Goal owner, not owner equality or Goal-write; `trigger_read`/`each_injected_read` use actual memory owners; `each_authzd` gates emitted Facts; `each_action_allowed` pins invoked Actions to `WakeConfig.toolset`; dispatcher scheduling remains engine runtime |
 | GO-14 | Goal assignment/evidence scope | Goal rows carry Owner; assignment/evidence is Edge topology. `GoalEvidenceValid` requires `SystemOperator` Goals to have table-resolved Goal→Fact/Abstraction Structural evidence; `goal_evidence_not_perspective` excludes Perspective evidence |
 | GO-17 | Root Goal creation shape | `GoalRootValid` + THEOREM `goal_root_active`: roots (`supersedes = none`) are Active only |
 | GO-18 | Terminal close Fact table validity | `GoalTerminalCloseFactValid` + projection THEOREMS: close Fact is a memory-table Fact with same Owner as terminal Goal |
@@ -115,7 +115,7 @@
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| SR-1 | Registry frozen at startup, no runtime registration | partial: relation-descriptor admission is now a kernel parameter (`RelationRegistry`); schema/tool/source/prompt registry freeze and flavor linking remain build-time engine mechanics (Composition.lean deleted 2026-06-28, D16) |
+| SR-1 | Registry frozen at startup, no runtime registration | partial: relation-descriptor admission is now a kernel parameter (`RelationRegistry`); wake `Action` values are allowed only by the Goal's `WakeConfig.toolset` (`wake_invoked_actions_allowed`), while concrete schema/tool/source/prompt registry freeze and flavor linking remain build-time engine mechanics (Composition.lean deleted 2026-06-28, D16) |
 | SR-2 | Every memory payload schema-typed | structure field `Memory.schema : SchemaRef` (accessor totality — every row carries an opaque schema tag). Schema registration in the active registry remains engine admission, not yet a kernel rule (D16) |
 | SR-8 | Schema ids flavor-qualified | excluded: namespacing is engine id-minting (collision-freedom = "the engine mints distinct ids"), not kernel ontology (D16) |
 | SR-11/16 | F/A/P may carry optional free text; sidecars may carry opaque typed payload | structure field `Memory.text : Option Text`; `Flavor.OptionalMemorySidecar`, `OptionalGoalSidecar`, and `OptionalEdgeSidecar` are constructive optional wrappers whose payloads are forgotten by kernel invariants; no sidecar-required law |
