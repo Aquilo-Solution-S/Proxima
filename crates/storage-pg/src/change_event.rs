@@ -4,8 +4,8 @@
 //! pull-only durable log; consumers read it by `seq` cursor.
 
 use proxima_core::{
-    ChangeEvent, ChangeEventKind, ChangeEventKindTag, EntityKind, EntityRef, FactEntityId, GoalId,
-    MemoryId, OwnerRefKind, SchemaId, SchemaVersion, StorageError,
+    ChangeEvent, ChangeEventKind, ChangeEventKindTag, EdgeTargetProjection, EntityKind, EntityRef,
+    FactEntityId, GoalId, MemoryId, OwnerRef, OwnerRefKind, SchemaId, SchemaVersion, StorageError,
 };
 use uuid::Uuid;
 
@@ -35,6 +35,8 @@ struct ChangeEventRow {
     entity_personality_instance_id: Option<Uuid>,
     wake_chain_depth: i16,
     entity_memory_present: bool,
+    edge_target_available: bool,
+    edge_target_visible: bool,
 }
 
 /// Hydrate a single `change_event` row into a typed `ChangeEvent`.
@@ -44,8 +46,11 @@ struct ChangeEventRow {
 /// supersedes columns.
 pub(crate) async fn hydrate_change_event(
     pool: &sqlx::PgPool,
+    read_owners: &[OwnerRef],
     seq: Uuid,
 ) -> Result<Option<ChangeEvent>, StorageError> {
+    let (read_owner_kinds, read_owner_ids) =
+        crate::access::owner_columns::owner_arrays(read_owners);
     let row = sqlx::query_as::<_, ChangeEventRow>(
         r"SELECT seq,
                   owner_kind,
@@ -68,10 +73,32 @@ pub(crate) async fn hydrate_change_event(
                            WHERE m.memory_id = change_event.entity_memory_id
                              AND m.tombstoned_at IS NULL
                       )
-                  ) AS entity_memory_present
+                  ) AS entity_memory_present,
+                  (
+                      edge_id IS NULL OR EXISTS (
+                          SELECT 1
+                            FROM (SELECT memory_id AS entity_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id FROM proxima_core.goals UNION ALL SELECT fact_entity_id AS entity_id FROM proxima_core.fact_entities) teo
+                           WHERE teo.entity_id = COALESCE(edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id)
+                      )
+                  ) AS edge_target_available,
+                  (
+                      edge_id IS NULL OR EXISTS (
+                          SELECT 1
+                            FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) teo
+                            JOIN unnest($2::proxima_core.owner_ref_kind[], $3::uuid[]) AS rs(kind, id)
+                              ON teo.owner_kind = rs.kind
+                             AND teo.owner_id IS NOT DISTINCT FROM rs.id
+                           WHERE teo.entity_id = COALESCE(
+                               edge_target_memory_id, edge_target_goal_id,
+                               (SELECT fe.current_memory_id FROM proxima_core.fact_entities fe
+                                 WHERE fe.fact_entity_id = edge_target_fact_entity_id))
+                      )
+                  ) AS edge_target_visible
              FROM proxima_core.change_event WHERE seq = $1",
     )
     .bind(seq)
+    .bind(&read_owner_kinds)
+    .bind(&read_owner_ids)
     .fetch_optional(pool)
     .await
     .map_err(internal)?;
@@ -83,11 +110,14 @@ pub(crate) async fn hydrate_change_event(
 /// is responsible for any further reordering.
 pub(crate) async fn hydrate_change_events_batch(
     pool: &sqlx::PgPool,
+    read_owners: &[OwnerRef],
     seqs: &[Uuid],
 ) -> Result<Vec<ChangeEvent>, StorageError> {
     if seqs.is_empty() {
         return Ok(Vec::new());
     }
+    let (read_owner_kinds, read_owner_ids) =
+        crate::access::owner_columns::owner_arrays(read_owners);
     let rows = sqlx::query_as::<_, ChangeEventRow>(
         r"SELECT seq,
                   owner_kind,
@@ -110,11 +140,33 @@ pub(crate) async fn hydrate_change_events_batch(
                            WHERE m.memory_id = change_event.entity_memory_id
                              AND m.tombstoned_at IS NULL
                       )
-                  ) AS entity_memory_present
+                  ) AS entity_memory_present,
+                  (
+                      edge_id IS NULL OR EXISTS (
+                          SELECT 1
+                            FROM (SELECT memory_id AS entity_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id FROM proxima_core.goals UNION ALL SELECT fact_entity_id AS entity_id FROM proxima_core.fact_entities) teo
+                           WHERE teo.entity_id = COALESCE(edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id)
+                      )
+                  ) AS edge_target_available,
+                  (
+                      edge_id IS NULL OR EXISTS (
+                          SELECT 1
+                            FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) teo
+                            JOIN unnest($2::proxima_core.owner_ref_kind[], $3::uuid[]) AS rs(kind, id)
+                              ON teo.owner_kind = rs.kind
+                             AND teo.owner_id IS NOT DISTINCT FROM rs.id
+                           WHERE teo.entity_id = COALESCE(
+                               edge_target_memory_id, edge_target_goal_id,
+                               (SELECT fe.current_memory_id FROM proxima_core.fact_entities fe
+                                 WHERE fe.fact_entity_id = edge_target_fact_entity_id))
+                      )
+                  ) AS edge_target_visible
              FROM proxima_core.change_event
              WHERE seq = ANY($1::uuid[]) ORDER BY seq DESC",
     )
     .bind(seqs)
+    .bind(&read_owner_kinds)
+    .bind(&read_owner_ids)
     .fetch_all(pool)
     .await
     .map_err(internal)?;
@@ -174,7 +226,7 @@ struct EdgeEvent {
     edge_id: Uuid,
     relation: String,
     source: EntityRef,
-    target: EntityRef,
+    target: EdgeTargetProjection,
 }
 
 fn decode_edge_event(row: &ChangeEventRow) -> Result<EdgeEvent, StorageError> {
@@ -190,11 +242,19 @@ fn decode_edge_event(row: &ChangeEventRow) -> Result<EdgeEvent, StorageError> {
         row.edge_source_goal_id,
         row.edge_source_fact_entity_id,
     )?;
-    let target = decode_entity_ref(
-        row.edge_target_memory_id,
-        row.edge_target_goal_id,
-        row.edge_target_fact_entity_id,
-    )?;
+    let target = if !row.edge_target_available {
+        EdgeTargetProjection::Unavailable
+    } else if row.edge_target_visible {
+        EdgeTargetProjection::Visible {
+            target: decode_entity_ref(
+                row.edge_target_memory_id,
+                row.edge_target_goal_id,
+                row.edge_target_fact_entity_id,
+            )?,
+        }
+    } else {
+        EdgeTargetProjection::Redacted
+    };
     Ok(EdgeEvent {
         edge_id,
         relation,

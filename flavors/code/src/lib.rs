@@ -104,7 +104,7 @@ proxima_core::proxima_flavor! {
             EndpointBinding::Pin,
             EntityKindMask::abstraction(),
             EntityKindMask::abstraction(),
-            AuthorshipKindMask::operator_f_to_a(),
+            AuthorshipKindMask::operator_f_to_a().union(AuthorshipKindMask::operator_a_to_a()),
         ),
         RelationDescriptor::substrate(
             mcp::CODE_TARGETS_EXECUTION_REQUEST_RELATION,

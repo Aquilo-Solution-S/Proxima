@@ -56,9 +56,9 @@ impl Engine {
     /// Edge read scoped to the context's read access set (`S_read`). Same auth
     /// shape as `Query`; callers can hydrate by edge id or by
     /// relation/source/target filter. Edges are source-owned: an edge is
-    /// visible iff its source is readable; an unreadable target is stubbed (its
-    /// id is retained with `target_readable = false`, never dereferenced), and
-    /// a World-readable source with an unreadable target is omitted entirely.
+    /// visible iff its source is readable; an unreadable target is rendered as
+    /// `EdgeTargetProjection::Redacted` without id/kind leakage, and a
+    /// World-readable source with an unreadable target is omitted entirely.
     ///
     /// # Errors
     ///

@@ -13,15 +13,15 @@ use proxima_core::verbs::event_ingest::{
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthPath, AuthorshipKindMask, AuthzContext, EdgeAuthorshipKind, EdgeId, EdgePayload,
-    EndpointBinding, EntityKind, EntityKindMask, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
-    MemoryId, Owner, OwnerRef, PayloadKeyBuilder, Relation, RelationClass, RelationDescriptor,
-    SchemaId, SchemaRef, SchemaVersion, SidecarPayload, SourceBatchId, SourceId, StorageError,
-    UserId, canonical_json_bytes,
+    EndpointBinding, EntityKindMask, FactPayload, FlavorRegistry, FlavorRegistryFrozen, MemoryId,
+    Owner, OwnerRef, PayloadKeyBuilder, Relation, RelationClass, RelationDescriptor, SchemaId,
+    SchemaRef, SchemaVersion, SidecarPayload, SourceBatchId, SourceId, StorageError, UserId,
+    canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{
     PgEdgeSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgSidecarFuture,
 };
-use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_with_sidecar_in_tx};
+use proxima_storage_pg::verbs::edge_write::{CheckedEdgeEndpoint, append_owner_checked_typed_edge};
 use proxima_storage_pg::verbs::event_ingest::{EventIngestSidecarFuture, PgFactSidecar};
 use proxima_storage_pg::{
     PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
@@ -308,24 +308,16 @@ async fn append_follow_head_edge(
         confidence: 100,
     };
     let mut tx = pg.pool().begin().await?;
-    append_edge_with_sidecar_in_tx(
+    append_owner_checked_typed_edge(
         &mut tx,
-        &EdgeDraft {
-            edge_id,
-            relation,
-            source_kind: EntityKind::Fact,
-            source_memory_id: None,
-            source_goal_id: None,
-            source_fact_entity_id: Some(source_fact_entity_id),
-            target_kind: EntityKind::Fact,
-            target_memory_id: None,
-            target_goal_id: None,
-            target_fact_entity_id: Some(target_fact_entity_id),
-            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
-            authorship_owner_memory_id: None,
-            owner,
-        },
-        move |tx, edge_id| Box::pin(async move { payload.insert_edge_sidecar(tx, edge_id).await }),
+        owner,
+        EdgeId::new(edge_id),
+        relation,
+        CheckedEdgeEndpoint::fact_entity(proxima_core::FactEntityId::new(source_fact_entity_id)),
+        CheckedEdgeEndpoint::fact_entity(proxima_core::FactEntityId::new(target_fact_entity_id)),
+        EdgeAuthorshipKind::ExternalAgent,
+        None,
+        &payload,
     )
     .await?;
     tx.commit().await?;

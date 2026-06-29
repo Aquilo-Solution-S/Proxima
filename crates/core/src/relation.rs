@@ -65,6 +65,45 @@ impl RelationClass {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum RelationOwnerPolicy {
+    /// Edge row owner is source owner; target may be foreign.
+    SourceOwned,
+    /// Edge row owner is source owner and target owner must match source owner.
+    SameOwner,
+}
+
+impl RelationOwnerPolicy {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceOwned => "SourceOwned",
+            Self::SameOwner => "SameOwner",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum RelationTargetAccessPolicy {
+    /// No additional target read/write gate beyond endpoint existence and owner policy.
+    None,
+    /// Writer must be able to read the target endpoint.
+    Read,
+    /// Writer must have kind-specific write authority on the target owner.
+    Write,
+}
+
+impl RelationTargetAccessPolicy {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Read => "Read",
+            Self::Write => "Write",
+        }
+    }
+}
+
 /// Rust mirror of `proxima_core.edge_authorship_kind`. Tags which
 /// operator/agent authored an edge row. See
 /// `crates/storage-pg/migrations/0001_init.sql` for the canonical variant set.
@@ -76,8 +115,10 @@ pub enum EdgeAuthorshipKind {
     EventSource,
     OperatorFtoA,
     OperatorAtoP,
+    OperatorAtoA,
     OperatorAtoGoal,
     PerspectiveLink,
+    PerspectiveGoalLink,
     User,
     Engine,
     ExternalAgent,
@@ -90,8 +131,10 @@ impl EdgeAuthorshipKind {
             Self::EventSource => "EventSource",
             Self::OperatorFtoA => "OperatorFtoA",
             Self::OperatorAtoP => "OperatorAtoP",
+            Self::OperatorAtoA => "OperatorAtoA",
             Self::OperatorAtoGoal => "OperatorAtoGoal",
             Self::PerspectiveLink => "PerspectiveLink",
+            Self::PerspectiveGoalLink => "PerspectiveGoalLink",
             Self::User => "User",
             Self::Engine => "Engine",
             Self::ExternalAgent => "ExternalAgent",
@@ -184,6 +227,14 @@ impl EntityKindMask {
             _ => false,
         }
     }
+
+    #[must_use]
+    pub fn as_strings(self) -> Vec<&'static str> {
+        ["Fact", "Abstraction", "Perspective", "Goal"]
+            .into_iter()
+            .filter(|kind| self.contains_str(kind))
+            .collect()
+    }
 }
 
 /// Bit mask over `proxima_core.edges.authorship_kind`.
@@ -194,11 +245,13 @@ impl AuthorshipKindMask {
     const EVENT_SOURCE: u16 = 0b0000_0001;
     const OPERATOR_F_TO_A: u16 = 0b0000_0010;
     const OPERATOR_A_TO_P: u16 = 0b0000_0100;
-    const OPERATOR_A_TO_GOAL: u16 = 0b0000_1000;
-    const PERSPECTIVE_LINK: u16 = 0b0001_0000;
-    const USER: u16 = 0b0010_0000;
-    const ENGINE: u16 = 0b0100_0000;
-    const EXTERNAL_AGENT: u16 = 0b1000_0000;
+    const OPERATOR_A_TO_A: u16 = 0b0000_1000;
+    const OPERATOR_A_TO_GOAL: u16 = 0b0001_0000;
+    const PERSPECTIVE_LINK: u16 = 0b0010_0000;
+    const PERSPECTIVE_GOAL_LINK: u16 = 0b0100_0000;
+    const USER: u16 = 0b1000_0000;
+    const ENGINE: u16 = 0b0001_0000_0000;
+    const EXTERNAL_AGENT: u16 = 0b0010_0000_0000;
 
     #[must_use]
     pub const fn event_source() -> Self {
@@ -216,6 +269,11 @@ impl AuthorshipKindMask {
     }
 
     #[must_use]
+    pub const fn operator_a_to_a() -> Self {
+        Self(Self::OPERATOR_A_TO_A)
+    }
+
+    #[must_use]
     pub const fn operator_a_to_goal() -> Self {
         Self(Self::OPERATOR_A_TO_GOAL)
     }
@@ -223,6 +281,11 @@ impl AuthorshipKindMask {
     #[must_use]
     pub const fn perspective_link() -> Self {
         Self(Self::PERSPECTIVE_LINK)
+    }
+
+    #[must_use]
+    pub const fn perspective_goal_link() -> Self {
+        Self(Self::PERSPECTIVE_GOAL_LINK)
     }
 
     #[must_use]
@@ -242,7 +305,12 @@ impl AuthorshipKindMask {
 
     #[must_use]
     pub const fn operator() -> Self {
-        Self(Self::OPERATOR_F_TO_A | Self::OPERATOR_A_TO_P | Self::OPERATOR_A_TO_GOAL)
+        Self(
+            Self::OPERATOR_F_TO_A
+                | Self::OPERATOR_A_TO_P
+                | Self::OPERATOR_A_TO_A
+                | Self::OPERATOR_A_TO_GOAL,
+        )
     }
 
     #[must_use]
@@ -266,13 +334,39 @@ impl AuthorshipKindMask {
             "EventSource" => self.0 & Self::EVENT_SOURCE != 0,
             "OperatorFtoA" => self.0 & Self::OPERATOR_F_TO_A != 0,
             "OperatorAtoP" => self.0 & Self::OPERATOR_A_TO_P != 0,
+            "OperatorAtoA" => self.0 & Self::OPERATOR_A_TO_A != 0,
             "OperatorAtoGoal" => self.0 & Self::OPERATOR_A_TO_GOAL != 0,
             "PerspectiveLink" => self.0 & Self::PERSPECTIVE_LINK != 0,
+            "PerspectiveGoalLink" => self.0 & Self::PERSPECTIVE_GOAL_LINK != 0,
             "User" => self.0 & Self::USER != 0,
             "Engine" => self.0 & Self::ENGINE != 0,
             "ExternalAgent" => self.0 & Self::EXTERNAL_AGENT != 0,
             _ => false,
         }
+    }
+
+    #[must_use]
+    pub fn contains(self, kind: EdgeAuthorshipKind) -> bool {
+        self.contains_str(kind.as_str())
+    }
+
+    #[must_use]
+    pub fn as_strings(self) -> Vec<&'static str> {
+        [
+            "EventSource",
+            "OperatorFtoA",
+            "OperatorAtoP",
+            "OperatorAtoA",
+            "OperatorAtoGoal",
+            "PerspectiveLink",
+            "PerspectiveGoalLink",
+            "User",
+            "Engine",
+            "ExternalAgent",
+        ]
+        .into_iter()
+        .filter(|kind| self.contains_str(kind))
+        .collect()
     }
 }
 
@@ -340,6 +434,10 @@ pub struct RelationDescriptor {
     pub target_binding: EndpointBinding,
     /// Edge authorship kinds permitted for this relation.
     pub authorship_mask: AuthorshipKindMask,
+    /// Whether the descriptor admits a foreign target owner.
+    pub owner_policy: RelationOwnerPolicy,
+    /// Additional target-side gate required at write admission.
+    pub target_access_policy: RelationTargetAccessPolicy,
     /// Capability tags required on the source endpoint schema.
     pub source_required_tags: BTreeSet<CapabilityTag>,
     /// Capability tags required on the target endpoint schema.
@@ -371,6 +469,8 @@ impl RelationDescriptor {
             source_binding,
             target_binding,
             authorship_mask,
+            owner_policy: default_owner_policy(class),
+            target_access_policy: default_target_access_policy(class),
             source_required_tags: BTreeSet::new(),
             target_required_tags: BTreeSet::new(),
             payload_schema: None,
@@ -399,10 +499,24 @@ impl RelationDescriptor {
             source_binding,
             target_binding,
             authorship_mask,
+            owner_policy: default_owner_policy(class),
+            target_access_policy: default_target_access_policy(class),
             source_required_tags: BTreeSet::new(),
             target_required_tags: BTreeSet::new(),
             payload_schema: Some(payload_schema),
         }
+    }
+
+    /// Override descriptor owner and target-access policies.
+    #[must_use]
+    pub fn with_access_policies(
+        mut self,
+        owner_policy: RelationOwnerPolicy,
+        target_access_policy: RelationTargetAccessPolicy,
+    ) -> Self {
+        self.owner_policy = owner_policy;
+        self.target_access_policy = target_access_policy;
+        self
     }
 
     /// Add endpoint capability constraints to an existing descriptor.
@@ -631,6 +745,25 @@ impl RelationDescriptor {
     }
 }
 
+const fn default_owner_policy(class: RelationClass) -> RelationOwnerPolicy {
+    match class {
+        RelationClass::Supersession => RelationOwnerPolicy::SameOwner,
+        RelationClass::Structural
+        | RelationClass::Provenance
+        | RelationClass::Causal
+        | RelationClass::Interpretive => RelationOwnerPolicy::SourceOwned,
+    }
+}
+
+const fn default_target_access_policy(class: RelationClass) -> RelationTargetAccessPolicy {
+    match class {
+        RelationClass::Supersession | RelationClass::Causal => RelationTargetAccessPolicy::Write,
+        RelationClass::Structural | RelationClass::Provenance | RelationClass::Interpretive => {
+            RelationTargetAccessPolicy::Read
+        }
+    }
+}
+
 #[must_use]
 pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
     vec![
@@ -645,6 +778,10 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
                 .union(AuthorshipKindMask::operator())
                 .union(AuthorshipKindMask::engine())
                 .union(AuthorshipKindMask::external_agent()),
+        )
+        .with_access_policies(
+            RelationOwnerPolicy::SourceOwned,
+            RelationTargetAccessPolicy::Read,
         ),
         RelationDescriptor::substrate(
             CORE_SUPERSEDES_RELATION,
@@ -654,6 +791,10 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
             EntityKindMask::abstraction_perspective_goal(),
             EntityKindMask::abstraction_perspective_goal(),
             AuthorshipKindMask::core(),
+        )
+        .with_access_policies(
+            RelationOwnerPolicy::SameOwner,
+            RelationTargetAccessPolicy::Write,
         ),
         RelationDescriptor::substrate(
             CORE_INSPIRES_RELATION,
@@ -662,7 +803,11 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
             EndpointBinding::Pin,
             EntityKindMask::goal(),
             EntityKindMask::perspective(),
-            AuthorshipKindMask::user().union(AuthorshipKindMask::external_agent()),
+            AuthorshipKindMask::perspective_goal_link(),
+        )
+        .with_access_policies(
+            RelationOwnerPolicy::SameOwner,
+            RelationTargetAccessPolicy::Write,
         ),
         RelationDescriptor::substrate(
             CORE_AUTHORED_RELATION,
@@ -672,6 +817,10 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
             EntityKindMask::perspective(),
             EntityKindMask::memory(),
             AuthorshipKindMask::engine().union(AuthorshipKindMask::external_agent()),
+        )
+        .with_access_policies(
+            RelationOwnerPolicy::SameOwner,
+            RelationTargetAccessPolicy::None,
         ),
         RelationDescriptor::substrate(
             CORE_DEPENDS_ON_RELATION,
@@ -681,6 +830,10 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
             EntityKindMask::memory().union(EntityKindMask::goal()),
             EntityKindMask::memory().union(EntityKindMask::goal()),
             AuthorshipKindMask::engine().union(AuthorshipKindMask::external_agent()),
+        )
+        .with_access_policies(
+            RelationOwnerPolicy::SameOwner,
+            RelationTargetAccessPolicy::Read,
         ),
     ]
 }
@@ -717,7 +870,8 @@ mod tests {
     use super::{
         CORE_AUTHORED_RELATION, CORE_DEPENDS_ON_RELATION, CORE_DERIVED_FROM_RELATION,
         CORE_INSPIRES_RELATION, CORE_SUPERSEDES_RELATION, EndpointBinding, EntityKindMask,
-        RelationClass, SchemaId, SchemaRef, SchemaVersion, core_relation_descriptors,
+        RelationClass, RelationOwnerPolicy, RelationTargetAccessPolicy, SchemaId, SchemaRef,
+        SchemaVersion, core_relation_descriptors,
     };
 
     fn descriptor_for(relation: &str) -> Option<RelationClass> {
@@ -832,6 +986,57 @@ mod tests {
                 .map(super::CapabilityTag::as_str)
                 .collect::<Vec<_>>(),
             ["actor"],
+        );
+    }
+
+    #[test]
+    fn core_relation_policies_match_source_owned_kernel_contract() {
+        let descriptors = core_relation_descriptors();
+        let descriptor = |relation: &str| {
+            descriptors
+                .iter()
+                .find(|d| d.relation == relation)
+                .expect("core descriptor registered")
+        };
+
+        assert_eq!(
+            descriptor(CORE_DERIVED_FROM_RELATION).owner_policy,
+            RelationOwnerPolicy::SourceOwned
+        );
+        assert_eq!(
+            descriptor(CORE_DERIVED_FROM_RELATION).target_access_policy,
+            RelationTargetAccessPolicy::Read
+        );
+        assert_eq!(
+            descriptor(CORE_SUPERSEDES_RELATION).owner_policy,
+            RelationOwnerPolicy::SameOwner
+        );
+        assert_eq!(
+            descriptor(CORE_SUPERSEDES_RELATION).target_access_policy,
+            RelationTargetAccessPolicy::Write
+        );
+        assert_eq!(
+            descriptor(CORE_INSPIRES_RELATION).owner_policy,
+            RelationOwnerPolicy::SameOwner
+        );
+        assert_eq!(
+            descriptor(CORE_INSPIRES_RELATION).target_access_policy,
+            RelationTargetAccessPolicy::Write
+        );
+        assert!(
+            descriptor(CORE_INSPIRES_RELATION)
+                .authorship_mask
+                .contains(super::EdgeAuthorshipKind::PerspectiveGoalLink)
+        );
+    }
+
+    #[test]
+    fn motivated_by_is_source_owned_with_read_target_gate() {
+        let descriptor = crate::goal::relations::motivated_by_descriptor();
+        assert_eq!(descriptor.owner_policy, RelationOwnerPolicy::SourceOwned);
+        assert_eq!(
+            descriptor.target_access_policy,
+            RelationTargetAccessPolicy::Read
         );
     }
 

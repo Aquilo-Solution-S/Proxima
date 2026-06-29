@@ -169,7 +169,7 @@ pub fn build_instructions(
             );
         }
         if s.list_edge_types {
-            out.push_str("Read the edge-type catalog at `proxima://edge-types`. ");
+            out.push_str("Read the edge-type catalog at `proxima://edge-types`; it includes source-owned/same-owner policy and target access gates. Redacted edge targets are normal source-owned graph behavior, not corruption. ");
         }
         out.push_str("Discover reads with `resources/list` and `resources/templates/list`. ");
         out.push_str(
@@ -341,7 +341,7 @@ fn push_edges(out: &mut String, s: Surface) {
     if s.list_edge_types {
         out.push_str(
             "\nFor the authoritative, live list of edge classes in this deployment, read \
-             `proxima://edge-types`.\n",
+             `proxima://edge-types`; entries include owner policy, target access policy, endpoint bindings, masks, and payload schema. Edge rows are source-owned; target handles may be `visible`, `redacted`, or `unavailable` independently.\n",
         );
     }
     out.push('\n');
@@ -399,7 +399,7 @@ fn push_reading(out: &mut String, s: Surface) {
         );
     }
     if s.list_edge_types {
-        out.push_str("4. `proxima://edge-types` — inspect the live relation catalog.\n");
+        out.push_str("4. `proxima://edge-types` — inspect the live relation catalog, owner/access policies, and target projection semantics.\n");
     }
     out.push_str(
         "\nDiscover available reads with `resources/list` and `resources/templates/list`. \

@@ -11,9 +11,10 @@ use proxima_core::verbs::event_ingest::{
 use proxima_core::verbs::query::{MemoryLineageDirection, MemoryLineageRequest, QueryRequest};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
-    AuthPath, AuthzContext, CORE_MOTIVATED_BY_RELATION, ChangeEventKind, EntityKind, EntityRef,
-    FactPayload, FlavorRegistry, GoalId, MemoryId, Owner, PayloadKeyBuilder, Relation, SchemaId,
-    SchemaVersion, SidecarPayload, SourceBatchId, SourceId, StorageError, canonical_json_bytes,
+    AuthPath, AuthzContext, CORE_MOTIVATED_BY_RELATION, ChangeEventKind, EdgeTargetProjection,
+    EntityKind, EntityRef, FactPayload, FlavorRegistry, GoalId, MemoryId, Owner, PayloadKeyBuilder,
+    Relation, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, SourceId, StorageError,
+    canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemoryPayloadFuture};
 use proxima_storage_pg::verbs::event_ingest::{EventIngestSidecarFuture, PgFactSidecar};
@@ -673,7 +674,7 @@ async fn tombstone_fact_drops_goal_evidence_edge() -> Result<(), Box<dyn std::er
 
     assert_edge_erased(&pg, edge_id).await?;
     assert_goal_active(&pg, goal_id).await?;
-    assert_motivated_by_edge_delete_emitted(&pg, &owner, edge_id, goal_id, fact_id).await?;
+    assert_motivated_by_edge_delete_emitted(&pg, &owner, edge_id, goal_id).await?;
 
     drop(pg);
     drop_db(&db_name).await?;
@@ -993,7 +994,6 @@ async fn assert_motivated_by_edge_delete_emitted(
     owner: &Owner,
     edge_id: Uuid,
     goal_id: Uuid,
-    fact_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let delete_events = pg
         .list_change_events_after(std::slice::from_ref(owner), Uuid::nil(), 100)
@@ -1005,11 +1005,10 @@ async fn assert_motivated_by_edge_delete_emitted(
                 edge_id: seen_edge_id,
                 relation,
                 source: EntityRef::Goal(seen_goal_id),
-                target: EntityRef::Memory(seen_fact_id),
+                target: EdgeTargetProjection::Unavailable,
             } if *seen_edge_id == edge_id
                 && relation == CORE_MOTIVATED_BY_RELATION
                 && *seen_goal_id == GoalId::new(goal_id)
-                && *seen_fact_id == MemoryId::new(fact_id)
         )
     });
     assert!(

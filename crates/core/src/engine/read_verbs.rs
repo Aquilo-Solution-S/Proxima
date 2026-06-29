@@ -1,5 +1,6 @@
 use crate::access::Relation;
 use crate::authz::AuthzContext;
+use crate::change_event::{ChangeEventKind, EdgeTargetProjection};
 use crate::error::ProtocolError;
 use crate::personality::{
     ChangeEventForWake, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow, SidecarSpec,
@@ -362,16 +363,28 @@ pub(in crate::engine) async fn list_events_authorized(
         .list_change_events_after(read_owners, req.after, req.limit)
         .await
         .map_err(|err| storage_error("list_change_events_after", &err))?;
-    let edge_ids = events
+    let target_visible_by_edge = events
         .iter()
         .filter_map(|row| match &row.event.kind {
-            crate::change_event::ChangeEventKind::EdgeAppend { edge_id, .. }
-            | crate::change_event::ChangeEventKind::EdgeDelete { edge_id, .. } => {
-                Some(EdgeId::new(*edge_id))
+            ChangeEventKind::EdgeAppend {
+                edge_id,
+                target: EdgeTargetProjection::Visible { .. },
+                ..
             }
-            crate::change_event::ChangeEventKind::EntityAppend { .. }
-            | crate::change_event::ChangeEventKind::EntityDelete { .. } => None,
+            | ChangeEventKind::EdgeDelete {
+                edge_id,
+                target: EdgeTargetProjection::Visible { .. },
+                ..
+            } => Some((*edge_id, true)),
+            ChangeEventKind::EdgeAppend { edge_id, .. }
+            | ChangeEventKind::EdgeDelete { edge_id, .. } => Some((*edge_id, false)),
+            ChangeEventKind::EntityAppend { .. } | ChangeEventKind::EntityDelete { .. } => None,
         })
+        .collect::<std::collections::HashMap<_, _>>();
+    let edge_ids = target_visible_by_edge
+        .keys()
+        .copied()
+        .map(EdgeId::new)
         .collect::<Vec<_>>();
     let edge_endpoint_kinds = if edge_ids.is_empty() {
         Vec::new()
@@ -381,6 +394,18 @@ pub(in crate::engine) async fn list_events_authorized(
             .load_edge_endpoint_kinds(&edge_ids)
             .await
             .map_err(|err| storage_error("load_edge_endpoint_kinds", &err))?
+            .into_iter()
+            .map(|mut row| {
+                if !target_visible_by_edge
+                    .get(&row.edge_id.into_inner())
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    row.target_kind = None;
+                }
+                row
+            })
+            .collect()
     };
     Ok(ListEventsReadResponse {
         events,

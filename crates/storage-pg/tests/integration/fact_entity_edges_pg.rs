@@ -14,14 +14,14 @@ use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::verbs::query::{QueryRequest, TombstoneFilter};
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    AuthPath, AuthorshipKindMask, AuthzContext, ChangeEventKind, EdgeAuthorshipKind,
-    EndpointBinding, EntityKind, EntityKindMask, EntityRef, FactPayload, FactTombstone,
+    AuthPath, AuthorshipKindMask, AuthzContext, ChangeEventKind, EdgeAuthorshipKind, EdgeId,
+    EdgeTargetProjection, EndpointBinding, EntityKindMask, EntityRef, FactPayload, FactTombstone,
     FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner, OwnerRef, PayloadKeyBuilder, Relation,
     RelationClass, RelationDescriptor, SchemaVersion, SidecarPayload, SourceBatchId, SourceId,
     StorageError, UserId, canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemoryPayloadFuture};
-use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
+use proxima_storage_pg::verbs::edge_write::{CheckedEdgeEndpoint, append_owner_checked_edge};
 use proxima_storage_pg::verbs::event_ingest::{EventIngestSidecarFuture, PgFactSidecar};
 use proxima_storage_pg::{
     PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
@@ -550,23 +550,15 @@ async fn append_follow_head_edge_for_relation(
         .expect("follow relation");
     let edge_id = Uuid::now_v7();
     let mut tx = pg.pool().begin().await?;
-    append_edge_in_tx(
+    append_owner_checked_edge(
         &mut tx,
-        &EdgeDraft {
-            edge_id,
-            relation,
-            source_kind: EntityKind::Fact,
-            source_memory_id: None,
-            source_goal_id: None,
-            source_fact_entity_id: Some(source_fact_entity_id),
-            target_kind: EntityKind::Fact,
-            target_memory_id: None,
-            target_goal_id: None,
-            target_fact_entity_id: Some(target_fact_entity_id),
-            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
-            authorship_owner_memory_id: None,
-            owner,
-        },
+        owner,
+        EdgeId::new(edge_id),
+        relation,
+        CheckedEdgeEndpoint::fact_entity(proxima_core::FactEntityId::new(source_fact_entity_id)),
+        CheckedEdgeEndpoint::fact_entity(proxima_core::FactEntityId::new(target_fact_entity_id)),
+        EdgeAuthorshipKind::ExternalAgent,
+        None,
     )
     .await?;
     tx.commit().await?;
@@ -604,23 +596,15 @@ async fn append_pinned_edge_for_relation(
         .expect("pin relation");
     let edge_id = Uuid::now_v7();
     let mut tx = pg.pool().begin().await?;
-    append_edge_in_tx(
+    append_owner_checked_edge(
         &mut tx,
-        &EdgeDraft {
-            edge_id,
-            relation,
-            source_kind: EntityKind::Fact,
-            source_memory_id: Some(source_memory_id),
-            source_goal_id: None,
-            source_fact_entity_id: None,
-            target_kind: EntityKind::Fact,
-            target_memory_id: Some(target_memory_id),
-            target_goal_id: None,
-            target_fact_entity_id: None,
-            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
-            authorship_owner_memory_id: None,
-            owner,
-        },
+        owner,
+        EdgeId::new(edge_id),
+        relation,
+        CheckedEdgeEndpoint::fact(MemoryId::new(source_memory_id)),
+        CheckedEdgeEndpoint::fact(MemoryId::new(target_memory_id)),
+        EdgeAuthorshipKind::ExternalAgent,
+        None,
     )
     .await?;
     tx.commit().await?;
@@ -706,7 +690,9 @@ async fn follow_head_edge_writes_log_and_graph_resolves_to_latest_head()
         );
         assert_eq!(
             edge_event.1,
-            EntityRef::FactEntity(proxima_core::FactEntityId::new(target_entity))
+            EdgeTargetProjection::Visible {
+                target: EntityRef::FactEntity(proxima_core::FactEntityId::new(target_entity)),
+            }
         );
 
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -726,7 +712,12 @@ async fn follow_head_edge_writes_log_and_graph_resolves_to_latest_head()
             EntityRef::Memory(source_v2.memory_id),
             "graph rows resolve follow-head endpoints to the current memory"
         );
-        assert_eq!(edge.target, EntityRef::Memory(target_v1.memory_id));
+        assert_eq!(
+            edge.target,
+            EdgeTargetProjection::Visible {
+                target: EntityRef::Memory(target_v1.memory_id),
+            }
+        );
         assert!(!matches!(edge.source, EntityRef::FactEntity(_)));
         Ok(())
     }
@@ -776,7 +767,12 @@ async fn follow_head_tombstoned_head_uses_existing_visibility()
             .find(|edge| edge.id == edge_id)
             .expect("IncludeTombstoned shows follow-head edge");
         assert_eq!(edge.source, EntityRef::Memory(source.memory_id));
-        assert_eq!(edge.target, EntityRef::Memory(target_tombstone.memory_id));
+        assert_eq!(
+            edge.target,
+            EdgeTargetProjection::Visible {
+                target: EntityRef::Memory(target_tombstone.memory_id),
+            }
+        );
         Ok(())
     }
     .await;
@@ -848,23 +844,15 @@ async fn required_tag_rejects_endpoint_schema_missing_tag() -> Result<(), Box<dy
             .expect("tagged follow relation");
 
         let mut tx = pg.pool().begin().await?;
-        let err = append_edge_in_tx(
+        let err = append_owner_checked_edge(
             &mut tx,
-            &EdgeDraft {
-                edge_id: Uuid::now_v7(),
-                relation,
-                source_kind: EntityKind::Fact,
-                source_memory_id: None,
-                source_goal_id: None,
-                source_fact_entity_id: Some(source_entity),
-                target_kind: EntityKind::Fact,
-                target_memory_id: None,
-                target_goal_id: None,
-                target_fact_entity_id: Some(target_entity),
-                authorship_kind: EdgeAuthorshipKind::ExternalAgent,
-                authorship_owner_memory_id: None,
-                owner: &owner,
-            },
+            &owner,
+            EdgeId::new(Uuid::now_v7()),
+            relation,
+            CheckedEdgeEndpoint::fact_entity(proxima_core::FactEntityId::new(source_entity)),
+            CheckedEdgeEndpoint::fact_entity(proxima_core::FactEntityId::new(target_entity)),
+            EdgeAuthorshipKind::ExternalAgent,
+            None,
         )
         .await
         .expect_err("target schema lacks required actor tag");
@@ -1045,23 +1033,15 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
             .resolve_relation(TEST_FOLLOW_RELATION)
             .expect("follow relation");
         let mut tx = pg.pool().begin().await?;
-        let err = append_edge_in_tx(
+        let err = append_owner_checked_edge(
             &mut tx,
-            &EdgeDraft {
-                edge_id: Uuid::now_v7(),
-                relation: follow_relation,
-                source_kind: EntityKind::Fact,
-                source_memory_id: Some(source.memory_id.into_inner()),
-                source_goal_id: None,
-                source_fact_entity_id: None,
-                target_kind: EntityKind::Fact,
-                target_memory_id: Some(target.memory_id.into_inner()),
-                target_goal_id: None,
-                target_fact_entity_id: None,
-                authorship_kind: EdgeAuthorshipKind::ExternalAgent,
-                authorship_owner_memory_id: None,
-                owner: &owner,
-            },
+            &owner,
+            EdgeId::new(Uuid::now_v7()),
+            follow_relation,
+            CheckedEdgeEndpoint::fact(source.memory_id),
+            CheckedEdgeEndpoint::fact(target.memory_id),
+            EdgeAuthorshipKind::ExternalAgent,
+            None,
         )
         .await
         .expect_err("FollowHead relation must reject pinned endpoints");
@@ -1070,49 +1050,40 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
         let pin_relation = registry
             .resolve_relation(TEST_PIN_RELATION)
             .expect("pin relation");
-        let err = append_edge_in_tx(
+        let err = append_owner_checked_edge(
             &mut tx,
-            &EdgeDraft {
-                edge_id: Uuid::now_v7(),
-                relation: pin_relation,
-                source_kind: EntityKind::Fact,
-                source_memory_id: None,
-                source_goal_id: None,
-                source_fact_entity_id: Some(source_entity),
-                target_kind: EntityKind::Fact,
-                target_memory_id: None,
-                target_goal_id: None,
-                target_fact_entity_id: Some(target_entity),
-                authorship_kind: EdgeAuthorshipKind::ExternalAgent,
-                authorship_owner_memory_id: None,
-                owner: &owner,
-            },
+            &owner,
+            EdgeId::new(Uuid::now_v7()),
+            pin_relation,
+            CheckedEdgeEndpoint::fact_entity(proxima_core::FactEntityId::new(source_entity)),
+            CheckedEdgeEndpoint::fact_entity(proxima_core::FactEntityId::new(target_entity)),
+            EdgeAuthorshipKind::ExternalAgent,
+            None,
         )
         .await
         .expect_err("Pin relation must reject fact-entity endpoints");
         assert!(matches!(err, StorageError::ConstraintViolation(_)));
 
-        let err = append_edge_in_tx(
-            &mut tx,
-            &EdgeDraft {
-                edge_id: Uuid::now_v7(),
-                relation: follow_relation,
-                source_kind: EntityKind::Fact,
-                source_memory_id: Some(source.memory_id.into_inner()),
-                source_goal_id: None,
-                source_fact_entity_id: Some(source_entity),
-                target_kind: EntityKind::Fact,
-                target_memory_id: None,
-                target_goal_id: None,
-                target_fact_entity_id: Some(target_entity),
-                authorship_kind: EdgeAuthorshipKind::ExternalAgent,
-                authorship_owner_memory_id: None,
-                owner: &owner,
-            },
+        let (owner_kind, owner_id) = owner.columns();
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.edges
+                (edge_id, relation, relation_class, owner_kind, owner_id,
+                 source_kind, source_memory_id, source_fact_entity_id,
+                 target_kind, target_fact_entity_id, authorship_kind)
+             VALUES ($1, $2, 'Structural', $3, $4,
+                     'Fact', $5, $6, 'Fact', $7, 'ExternalAgent')",
         )
+        .bind(Uuid::now_v7())
+        .bind(TEST_FOLLOW_RELATION)
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(source.memory_id.into_inner())
+        .bind(source_entity)
+        .bind(target_entity)
+        .execute(pg.pool())
         .await
-        .expect_err("Rust exactly-one guard rejects three-way endpoint");
-        assert!(matches!(err, StorageError::ConstraintViolation(_)));
+        .expect_err("SQL exactly-one guard rejects malformed endpoint");
+        assert!(err.to_string().contains("edges_source_endpoint_chk"));
         tx.rollback().await?;
 
         let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
@@ -1228,7 +1199,9 @@ async fn event_history_and_list_events_preserve_fact_entity_endpoints()
             history_edge.kind,
             ChangeEventKind::EdgeAppend {
                 source: EntityRef::FactEntity(_),
-                target: EntityRef::FactEntity(_),
+                target: EdgeTargetProjection::Visible {
+                    target: EntityRef::FactEntity(_),
+                },
                 ..
             }
         ));
@@ -1328,7 +1301,12 @@ async fn pin_relations_still_round_trip_memory_endpoints() -> Result<(), Box<dyn
             .find(|edge| edge.id == edge_id)
             .expect("pin edge remains queryable");
         assert_eq!(edge.source, EntityRef::Memory(source.memory_id));
-        assert_eq!(edge.target, EntityRef::Memory(target.memory_id));
+        assert_eq!(
+            edge.target,
+            EdgeTargetProjection::Visible {
+                target: EntityRef::Memory(target.memory_id),
+            }
+        );
         Ok(())
     }
     .await;

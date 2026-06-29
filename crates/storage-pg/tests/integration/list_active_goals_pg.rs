@@ -4,11 +4,11 @@ use proxima_core::relation::CORE_INSPIRES_RELATION;
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
-    EdgeAuthorshipKind, EntityKind, FlavorRegistry, GoalId, GroupId, MemoryId, Owner, OwnerRef,
-    OwnerRefKind, Relation, UserId,
+    EdgeAuthorshipKind, FlavorRegistry, GoalId, GroupId, MemoryId, Owner, OwnerRef, OwnerRefKind,
+    Relation, UserId,
 };
 use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
+use proxima_storage_pg::verbs::edge_write::{CheckedEdgeEndpoint, append_owner_checked_edge};
 use uuid::Uuid;
 
 fn owner_parts(owner: &Owner) -> (OwnerRefKind, Option<Uuid>) {
@@ -88,23 +88,15 @@ async fn link_goal_to_self(
         .resolve_relation(CORE_INSPIRES_RELATION)
         .expect("core/inspires relation");
     let mut tx = pg.pool().begin().await?;
-    append_edge_in_tx(
+    append_owner_checked_edge(
         &mut tx,
-        &EdgeDraft {
-            edge_id: Uuid::now_v7(),
-            relation,
-            source_kind: EntityKind::Goal,
-            source_memory_id: None,
-            source_goal_id: Some(goal_id.into_inner()),
-            source_fact_entity_id: None,
-            target_kind: EntityKind::Perspective,
-            target_memory_id: Some(self_id.into_inner()),
-            target_goal_id: None,
-            target_fact_entity_id: None,
-            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
-            authorship_owner_memory_id: Some(self_id.into_inner()),
-            owner,
-        },
+        owner,
+        proxima_core::EdgeId::new(Uuid::now_v7()),
+        relation,
+        CheckedEdgeEndpoint::goal(goal_id),
+        CheckedEdgeEndpoint::perspective(self_id),
+        EdgeAuthorshipKind::PerspectiveGoalLink,
+        Some(self_id),
     )
     .await?;
     tx.commit().await?;
@@ -350,8 +342,8 @@ async fn list_active_goals_filters_by_read_owners() -> Result<(), Box<dyn std::e
 }
 
 #[tokio::test]
-async fn list_active_goals_requires_readable_seed_target() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn list_active_goals_rejects_cross_owner_inspires_edges()
+-> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
 
     let result = async {
@@ -367,21 +359,15 @@ async fn list_active_goals_requires_readable_seed_target() -> Result<(), Box<dyn
             "private-active",
         )
         .await?;
-        link_goal_to_self(&pg, &source_owner, goal, private_self).await?;
-
-        let source_only = vec![source_owner];
-        let source_only_goals = pg
-            .list_active_goals(&source_only, private_self, 100)
-            .await?;
+        let err = link_goal_to_self(&pg, &source_owner, goal, private_self)
+            .await
+            .expect_err("core/inspires is SameOwner in PR4");
         assert!(
-            source_only_goals.is_empty(),
-            "reader can read source goal but not the private seed target"
+            err.to_string().contains("same owner")
+                || err.to_string().contains("same Owner")
+                || err.to_string().contains("same-owner"),
+            "unexpected error: {err}"
         );
-
-        let both_read = vec![source_owner, target_owner];
-        let private_goals = pg.list_active_goals(&both_read, private_self, 100).await?;
-        assert_eq!(private_goals.len(), 1);
-        assert_eq!(private_goals[0].goal_id, goal);
 
         Ok::<(), Box<dyn std::error::Error>>(())
     }

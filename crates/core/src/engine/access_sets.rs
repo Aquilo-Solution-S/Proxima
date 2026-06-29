@@ -241,6 +241,7 @@ pub(in crate::engine) mod tests {
         async fn append_memory_edge(
             &self,
             _edge: &DerivedEdgeSpec<'_>,
+            _proof: crate::storage_ports::EdgeWriteProof,
         ) -> Result<EdgeId, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),

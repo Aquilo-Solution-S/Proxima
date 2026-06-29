@@ -44,8 +44,10 @@ CREATE TYPE proxima_core.edge_authorship_kind AS ENUM (
     'EventSource',
     'OperatorFtoA',
     'OperatorAtoP',
+    'OperatorAtoA',
     'OperatorAtoGoal',
     'PerspectiveLink',
+    'PerspectiveGoalLink',
     'User',
     'Engine',
     'ExternalAgent'
@@ -334,6 +336,8 @@ DECLARE
     source_owner_kind proxima_core.owner_ref_kind;
     source_owner_id uuid;
     target_actual_kind proxima_core.entity_kind;
+    target_owner_kind proxima_core.owner_ref_kind;
+    target_owner_id uuid;
     source_layer int;
     target_layer int;
 BEGIN
@@ -367,18 +371,30 @@ BEGIN
     END IF;
 
     IF NEW.target_memory_id IS NOT NULL THEN
-        SELECT proxima_core.memory_entity_kind(kind)
-          INTO target_actual_kind
+        SELECT proxima_core.memory_entity_kind(kind),
+               owner_kind,
+               owner_id
+          INTO target_actual_kind,
+               target_owner_kind,
+               target_owner_id
          FROM proxima_core.memories
          WHERE memory_id = NEW.target_memory_id;
     ELSIF NEW.target_goal_id IS NOT NULL THEN
-        SELECT 'Goal'::proxima_core.entity_kind
-          INTO target_actual_kind
+        SELECT 'Goal'::proxima_core.entity_kind,
+               owner_kind,
+               owner_id
+          INTO target_actual_kind,
+               target_owner_kind,
+               target_owner_id
           FROM proxima_core.goals
          WHERE goal_id = NEW.target_goal_id;
     ELSE
-        SELECT 'Fact'::proxima_core.entity_kind
-          INTO target_actual_kind
+        SELECT 'Fact'::proxima_core.entity_kind,
+               owner_kind,
+               owner_id
+          INTO target_actual_kind,
+               target_owner_kind,
+               target_owner_id
           FROM proxima_core.fact_entities
          WHERE fact_entity_id = NEW.target_fact_entity_id;
     END IF;
@@ -424,6 +440,10 @@ BEGIN
         END IF;
         IF NEW.source_kind <> NEW.target_kind THEN
             RAISE EXCEPTION 'edge: supersession requires matching endpoint kinds';
+        END IF;
+        IF source_owner_kind <> target_owner_kind
+           OR source_owner_id IS DISTINCT FROM target_owner_id THEN
+            RAISE EXCEPTION 'edge: supersession requires source and target to share Owner';
         END IF;
     END IF;
 

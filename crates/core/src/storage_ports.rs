@@ -36,6 +36,21 @@ use crate::{
     SchemaVersion, SidecarPayload, UserId,
 };
 
+/// Unforgeable witness that engine admission already enforced the relation
+/// descriptor's source-owner, owner-policy, and target-access gates before a
+/// storage backend performs the atomic edge append.
+#[derive(Debug, Clone, Copy)]
+pub struct EdgeWriteProof {
+    _private: (),
+}
+
+impl EdgeWriteProof {
+    #[must_use]
+    pub(crate) const fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
 #[async_trait::async_trait]
 pub trait FactIngestPort: Send + Sync {
     async fn ingest_event_atomic(
@@ -82,7 +97,13 @@ pub trait MemoryAuthoringPort: Send + Sync {
         req: &AuthorDerivedRequest<'_>,
     ) -> Result<AuthorDerivedOutcome, StorageError>;
 
-    async fn append_memory_edge(&self, edge: &DerivedEdgeSpec<'_>) -> Result<EdgeId, StorageError>;
+    /// Append one already-authorized memory edge. Public callers cannot forge
+    /// `EdgeWriteProof`; route through engine/checked edge-write APIs instead.
+    async fn append_memory_edge(
+        &self,
+        edge: &DerivedEdgeSpec<'_>,
+        proof: EdgeWriteProof,
+    ) -> Result<EdgeId, StorageError>;
 
     async fn load_memory_kinds(
         &self,
@@ -1102,6 +1123,7 @@ impl MemoryAuthoringPort for RejectingStorage {
     async fn append_memory_edge(
         &self,
         _edge: &DerivedEdgeSpec<'_>,
+        _proof: EdgeWriteProof,
     ) -> Result<EdgeId, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),

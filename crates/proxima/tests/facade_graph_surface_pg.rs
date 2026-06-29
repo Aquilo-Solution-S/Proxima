@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use proxima::{
     AbstractionPayload, AppInfo, AuthPath, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
     AuthorshipKindMask, AuthzContext, EdgeAuthorshipKind, EdgeExistsRequest, EdgeFilter,
-    EdgeReadRequest, Endpoint, EndpointBinding, EntityKind, EntityKindMask, EntityRef, FactPayload,
-    FlavorApp, FlavorBundle, FlavorRegistry, MemoryId, MemoryLineageDirection,
+    EdgeReadRequest, EdgeTargetProjection, EndpointBinding, EntityKind, EntityKindMask, EntityRef,
+    FactPayload, FlavorApp, FlavorBundle, FlavorRegistry, MemoryId, MemoryLineageDirection,
     MemoryLineageRequest, MemoryOperatorKind, PayloadKeyBuilder, PgMemoryPayload,
     PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarRegistry, Proxima, Relation,
     Role, SchemaId, SchemaVersion, SidecarPayload, StorageError, UserId, company_owner,
@@ -17,17 +17,31 @@ use uuid::Uuid;
 const DERIVED_FROM_FACT_RELATION: &str = "facade-test/derived-from-fact";
 const FACT_ENTITY_EDGE_RELATION: &str = "facade-test/fact-entity-edge";
 
+#[test]
+fn facade_does_not_export_raw_edge_append_surface() {
+    let facade = include_str!("../src/lib.rs");
+    assert!(
+        !facade.contains("pub use proxima_storage_pg::verbs::edge_append"),
+        "facade must not re-export raw storage edge append APIs"
+    );
+    for forbidden in ["append_edge", "append_edge_in_tx", "EdgeDraft"] {
+        assert!(
+            !facade.contains(forbidden),
+            "facade contains forbidden raw edge append surface {forbidden}"
+        );
+    }
+}
+
 #[allow(unused_imports)]
 mod facade_imports_compile {
     use proxima::{
-        AuthorshipKindMask, DerivedDraft, EdgeDraft, EdgeExistsRequest, EdgeExistsResponse,
-        EdgeFilter, EdgeReadRequest, EdgeReadResponse, EdgeRow, Endpoint, EndpointBinding,
-        EntityKindMask, FactCitationReadback, FlavorRegistryFrozen, McpTool, McpToolCtx,
-        McpToolError, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode,
-        MemoryLineageRequest, MemoryLineageResponse, MemoryRow, PayloadKeyBuilder,
-        PersonalityRootFilter, QueryRequest, QueryResponse, RelationClass, RelationDescriptor,
-        SupersessionStatus, TombstoneFilter, append_derived_in_tx, append_edge, append_edge_in_tx,
-        build_instructions, fact_entity_id_for, how_to_markdown,
+        AuthorshipKindMask, DerivedDraft, EdgeExistsRequest, EdgeExistsResponse, EdgeFilter,
+        EdgeReadRequest, EdgeReadResponse, EdgeRow, EndpointBinding, EntityKindMask,
+        FactCitationReadback, FlavorRegistryFrozen, McpTool, McpToolCtx, McpToolError,
+        MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode, MemoryLineageRequest,
+        MemoryLineageResponse, MemoryRow, PayloadKeyBuilder, PersonalityRootFilter, QueryRequest,
+        QueryResponse, RelationClass, RelationDescriptor, SupersessionStatus, TombstoneFilter,
+        append_derived_in_tx, build_instructions, fact_entity_id_for, how_to_markdown,
     };
 
     #[cfg(feature = "openai-compat-embed")]
@@ -244,9 +258,6 @@ fn facade_flavor_authoring_symbols_are_reachable() {
     );
     assert_eq!(descriptor.class, RelationClass::Provenance);
 
-    let endpoint = Endpoint::fact(MemoryId::new(Uuid::nil()));
-    assert!(matches!(endpoint, Endpoint::Memory { .. }));
-
     let advertised_tools = BTreeSet::new();
     let advertised_resources = BTreeSet::new();
     assert!(proxima::build_instructions(&advertised_tools, &advertised_resources).is_empty());
@@ -400,7 +411,12 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         assert!(
             lineage.edges.iter().any(|edge| {
                 edge.source_memory_id == derived_id
-                    && edge.target_memory_id == fact_outcome.memory_id
+                    && matches!(
+                        edge.target,
+                        EdgeTargetProjection::Visible {
+                            target: EntityRef::Memory(target_memory_id),
+                        } if target_memory_id == fact_outcome.memory_id
+                    )
             }),
             "lineage includes derived-from edge"
         );
@@ -410,16 +426,24 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .registry()
             .resolve_relation(FACT_ENTITY_EDGE_RELATION)
             .expect("fact-entity relation registered");
-        proxima::append_edge(
-            conn.as_mut(),
-            Uuid::now_v7(),
-            fact_entity_relation,
-            Endpoint::abstraction(derived_id),
-            Endpoint::fact_entity(fact_entity_id),
-            EdgeAuthorshipKind::ExternalAgent,
-            None,
-            &owner,
+        let (owner_kind, owner_id) = owner.columns();
+        sqlx::query(
+            "INSERT INTO proxima_core.edges
+                (edge_id, relation, relation_class,
+                 source_kind, source_memory_id,
+                 target_kind, target_fact_entity_id,
+                 authorship_kind, owner_kind, owner_id)
+             VALUES ($1, $2, $3, 'Abstraction', $4, 'Fact', $5, $6, $7, $8)",
         )
+        .bind(Uuid::now_v7())
+        .bind(fact_entity_relation.descriptor.relation.as_str())
+        .bind(fact_entity_relation.descriptor.class)
+        .bind(derived_id.into_inner())
+        .bind(fact_entity_id.into_inner())
+        .bind(EdgeAuthorshipKind::ExternalAgent)
+        .bind(owner_kind)
+        .bind(owner_id)
+        .execute(conn.as_mut())
         .await?;
 
         let present_filter = EdgeFilter {
@@ -474,7 +498,9 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         assert_eq!(read.edges[0].source, EntityRef::Memory(derived_id));
         assert_eq!(
             read.edges[0].target,
-            EntityRef::Memory(fact_outcome.memory_id)
+            EdgeTargetProjection::Visible {
+                target: EntityRef::Memory(fact_outcome.memory_id),
+            }
         );
 
         drop(conn);
