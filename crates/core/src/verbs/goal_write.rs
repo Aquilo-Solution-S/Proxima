@@ -4,9 +4,10 @@
 //! docs/06-goals-and-self.md §"Goal entity". The
 //! storage-side body lives in proxima-storage-pg.
 
+use crate::{FlavorRegistryFrozen, ProtocolError};
 use crate::{
-    GoalId, GoalPayload, MemoryId, ModelId, OperatorId, Owner, OwnerRef, PersonalityInstanceId,
-    PromptVersion, SchemaId, SchemaVersion, SidecarPayload, ToolId,
+    GoalId, GoalPayload, MemoryId, ModelId, OperatorId, Owner, OwnerRef, PromptVersion, SchemaId,
+    SchemaVersion, SidecarPayload, ToolId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, sqlx::Type)]
@@ -48,7 +49,6 @@ pub enum SystemOrigin {
         operator_kind: OperatorKind,
         model_id: ModelId,
         prompt_version: PromptVersion,
-        personality_instance_id: PersonalityInstanceId,
     },
     Tool {
         tool_id: ToolId,
@@ -84,7 +84,8 @@ pub struct GoalDraft {
     #[serde(skip)]
     pub sidecar_payload: Option<SidecarPayload>,
     pub state: GoalState,
-    pub parent_goal_ids: Vec<GoalId>,
+    pub topology: GoalTopologyWrite,
+    pub wake: Option<GoalWakeConfigWrite>,
     pub supersedes_goal_id: Option<GoalId>,
     pub authorship: GoalAuthorship,
     pub request_id: String,
@@ -96,7 +97,8 @@ impl GoalDraft {
     pub fn active_from_payload_write(
         principal: OwnerRef,
         payload: GoalPayloadWrite,
-        parent_goal_ids: Vec<GoalId>,
+        topology: GoalTopologyWrite,
+        wake: Option<GoalWakeConfigWrite>,
         authorship: GoalAuthorship,
         request_id: IdempotencyKey,
     ) -> Self {
@@ -109,7 +111,8 @@ impl GoalDraft {
             payload: payload.payload,
             sidecar_payload: payload.sidecar_payload,
             state: GoalState::Active,
-            parent_goal_ids,
+            topology,
+            wake,
             supersedes_goal_id: None,
             authorship,
             request_id: request_id.into_string(),
@@ -187,9 +190,274 @@ impl IdempotencyKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalEvidenceRef {
-    pub memory_id: MemoryId,
+    memory_id: MemoryId,
+}
+
+impl GoalEvidenceRef {
+    #[must_use]
+    pub const fn new(memory_id: MemoryId) -> Self {
+        Self { memory_id }
+    }
+
+    #[must_use]
+    pub const fn memory_id(self) -> MemoryId {
+        self.memory_id
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GoalAssignmentTarget {
+    perspective_id: MemoryId,
+}
+
+impl GoalAssignmentTarget {
+    #[must_use]
+    pub const fn perspective(perspective_id: MemoryId) -> Self {
+        Self { perspective_id }
+    }
+
+    #[must_use]
+    pub const fn perspective_id(self) -> MemoryId {
+        self.perspective_id
+    }
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct GoalDependencyRef {
+    goal_id: GoalId,
+}
+
+impl GoalDependencyRef {
+    #[must_use]
+    pub const fn new(goal_id: GoalId) -> Self {
+        Self { goal_id }
+    }
+
+    #[must_use]
+    pub const fn goal_id(self) -> GoalId {
+        self.goal_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GoalTopologyWrite {
+    assignment: GoalAssignmentTarget,
+    dependencies: Vec<GoalDependencyRef>,
+    evidence: Vec<GoalEvidenceRef>,
+}
+
+impl GoalTopologyWrite {
+    /// # Errors
+    ///
+    /// Returns `InvalidArgument` when dependency or evidence refs contain duplicates.
+    pub fn new(
+        assignment: GoalAssignmentTarget,
+        dependencies: Vec<GoalDependencyRef>,
+        evidence: Vec<GoalEvidenceRef>,
+    ) -> Result<Self, ProtocolError> {
+        let mut dependency_set = std::collections::BTreeSet::new();
+        for dependency in &dependencies {
+            if !dependency_set.insert(dependency.goal_id()) {
+                return Err(ProtocolError::invalid_argument(
+                    "dependencies",
+                    "duplicate goal dependency",
+                ));
+            }
+        }
+        let mut evidence_set = std::collections::BTreeSet::new();
+        for item in &evidence {
+            if !evidence_set.insert(item.memory_id().into_inner()) {
+                return Err(ProtocolError::invalid_argument(
+                    "evidence",
+                    "duplicate goal evidence",
+                ));
+            }
+        }
+        Ok(Self {
+            assignment,
+            dependencies,
+            evidence,
+        })
+    }
+
+    #[must_use]
+    pub const fn assignment(&self) -> GoalAssignmentTarget {
+        self.assignment
+    }
+
+    #[must_use]
+    pub fn dependencies(&self) -> &[GoalDependencyRef] {
+        &self.dependencies
+    }
+
+    #[must_use]
+    pub fn evidence(&self) -> &[GoalEvidenceRef] {
+        &self.evidence
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum GoalWakeTrigger {
+    FactSchema {
+        schema_id: SchemaId,
+        schema_version: SchemaVersion,
+    },
+    FactMemory {
+        memory_id: MemoryId,
+    },
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct GoalWakeToolId(String);
+
+impl GoalWakeToolId {
+    /// # Errors
+    ///
+    /// Returns `InvalidArgument` when the id is not provider-safe or does not
+    /// resolve to a registered tool/action leaf in the frozen registry.
+    pub fn parse(
+        raw: impl Into<String>,
+        registry: &FlavorRegistryFrozen,
+    ) -> Result<Self, ProtocolError> {
+        let value = raw.into().trim().to_string();
+        if value.is_empty() || value.len() > 200 {
+            return Err(ProtocolError::invalid_argument(
+                "tool_id",
+                "tool id must be 1..=200 characters",
+            ));
+        }
+        if value.contains('/') {
+            return Err(ProtocolError::invalid_argument(
+                "tool_id",
+                "tool id must be provider-safe canonical id",
+            ));
+        }
+        let registered = registry.mcp_tool_ids();
+        if let Some((tool, action)) = value.split_once(':') {
+            if value.matches(':').count() == 1
+                && crate::provider_safe_tool_name(tool) == tool
+                && crate::provider_safe_tool_name(action) == action
+                && registered.contains(tool)
+                && crate::core_action_meta(tool, action).is_some()
+            {
+                return Ok(Self(value));
+            }
+            return Err(ProtocolError::invalid_argument(
+                "tool_id",
+                "leaf action scope required and must be registered",
+            ));
+        }
+        if crate::provider_safe_tool_name(&value) != value {
+            return Err(ProtocolError::invalid_argument(
+                "tool_id",
+                "tool id must be provider-safe canonical id",
+            ));
+        }
+        if registered.contains(&value) {
+            if crate::core_tool_has_actions(&value) {
+                return Err(ProtocolError::invalid_argument(
+                    "tool_id",
+                    "leaf action scope required for grouped tools",
+                ));
+            }
+            return Ok(Self(value));
+        }
+        Err(ProtocolError::invalid_argument(
+            "tool_id",
+            "tool id is not registered",
+        ))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GoalWakeConfigWrite {
+    trigger: GoalWakeTrigger,
+    tool_ids: Vec<GoalWakeToolId>,
+    prompt: String,
+    hard_memory_ids: Vec<MemoryId>,
+}
+
+impl GoalWakeConfigWrite {
+    pub const MAX_PROMPT_CHARS: usize = 20_000;
+
+    /// # Errors
+    ///
+    /// Returns `InvalidArgument` when prompt/tool/memory shape is invalid.
+    pub fn new(
+        trigger: GoalWakeTrigger,
+        tool_ids: Vec<GoalWakeToolId>,
+        prompt: impl Into<String>,
+        hard_memory_ids: &[MemoryId],
+    ) -> Result<Self, ProtocolError> {
+        let prompt = prompt.into().trim().to_string();
+        if prompt.is_empty() || prompt.chars().count() > Self::MAX_PROMPT_CHARS {
+            return Err(ProtocolError::invalid_argument(
+                "prompt",
+                "wake prompt must be 1..=20000 chars",
+            ));
+        }
+        if tool_ids.is_empty() {
+            return Err(ProtocolError::invalid_argument(
+                "tool_ids",
+                "wake toolset must be nonempty",
+            ));
+        }
+        let mut tools = std::collections::BTreeSet::new();
+        for tool in tool_ids {
+            tools.insert(tool);
+        }
+        let mut memory_ids = std::collections::BTreeSet::new();
+        for memory_id in hard_memory_ids {
+            if !memory_ids.insert(*memory_id) {
+                return Err(ProtocolError::invalid_argument(
+                    "hard_memory_ids",
+                    "duplicate hard memory id",
+                ));
+            }
+        }
+        Ok(Self {
+            trigger,
+            tool_ids: tools.into_iter().collect(),
+            prompt,
+            hard_memory_ids: memory_ids.into_iter().collect(),
+        })
+    }
+
+    #[must_use]
+    pub const fn trigger(&self) -> &GoalWakeTrigger {
+        &self.trigger
+    }
+
+    #[must_use]
+    pub fn tool_ids(&self) -> &[GoalWakeToolId] {
+        &self.tool_ids
+    }
+
+    #[must_use]
+    pub fn prompt(&self) -> &str {
+        &self.prompt
+    }
+
+    #[must_use]
+    pub fn hard_memory_ids(&self) -> &[MemoryId] {
+        &self.hard_memory_ids
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,13 +526,12 @@ fn normalize_goal_display_field(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalCreateRequest<P> {
     pub principal: OwnerRef,
-    pub target_self_perspective_id: MemoryId,
+    pub topology: GoalTopologyWrite,
+    pub wake: Option<GoalWakeConfigWrite>,
     pub title: String,
     pub text: String,
     pub payload: P,
     pub request_id: IdempotencyKey,
-    pub evidence: Vec<GoalEvidenceRef>,
-    pub parent_goal_ids: Vec<GoalId>,
     pub authorship: GoalAuthorship,
     pub author_self_perspective_id: Option<MemoryId>,
 }
@@ -277,13 +544,18 @@ impl<P> GoalCreateRequest<P> {
     /// for the signed-in owner. Use [`Self::with_authorship`] for
     /// system-originated goals.
     ///
-    /// `target_self_perspective_id` is explicit by design: current
-    /// Proxima Goal assignment is a `Goal --core/inspires--> Self`
+    /// The assignment Perspective is explicit by design: current
+    /// Proxima Goal assignment is a `Goal --core/inspires--> Perspective`
     /// edge, not an unassigned owner-scoped row.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if an empty dependency/evidence topology is rejected,
+    /// which would be a programming error in the constructor invariant.
     #[must_use]
     pub fn product(
         principal: OwnerRef,
-        target_self_perspective_id: MemoryId,
+        assignment: GoalAssignmentTarget,
         request_id: IdempotencyKey,
         title: impl Into<String>,
         text: impl Into<String>,
@@ -291,13 +563,13 @@ impl<P> GoalCreateRequest<P> {
     ) -> Self {
         Self {
             principal,
-            target_self_perspective_id,
+            topology: GoalTopologyWrite::new(assignment, Vec::new(), Vec::new())
+                .expect("empty topology is valid"),
+            wake: None,
             title: title.into(),
             text: text.into(),
             payload,
             request_id,
-            evidence: Vec::new(),
-            parent_goal_ids: Vec::new(),
             authorship: GoalAuthorship::User,
             author_self_perspective_id: None,
         }
@@ -305,13 +577,25 @@ impl<P> GoalCreateRequest<P> {
 
     #[must_use]
     pub fn with_evidence(mut self, evidence: Vec<GoalEvidenceRef>) -> Self {
-        self.evidence = evidence;
+        self.topology.evidence = evidence;
         self
     }
 
     #[must_use]
-    pub fn with_parent_goal(mut self, parent_goal_id: GoalId) -> Self {
-        self.parent_goal_ids.push(parent_goal_id);
+    pub fn with_dependency(mut self, dependency: GoalDependencyRef) -> Self {
+        self.topology.dependencies.push(dependency);
+        self
+    }
+
+    #[must_use]
+    pub fn with_topology(mut self, topology: GoalTopologyWrite) -> Self {
+        self.topology = topology;
+        self
+    }
+
+    #[must_use]
+    pub fn with_wake(mut self, wake: Option<GoalWakeConfigWrite>) -> Self {
+        self.wake = wake;
         self
     }
 
@@ -362,8 +646,6 @@ pub struct GoalAtomicContext<'a> {
 pub struct CreateGoalAtomicRequest<'a> {
     pub draft: GoalDraft,
     pub context: GoalAtomicContext<'a>,
-    pub target_self_perspective_id: MemoryId,
-    pub evidence: Vec<GoalEvidenceRef>,
 }
 
 #[derive(Debug)]
@@ -391,6 +673,7 @@ pub struct ModifyGoalAtomicRequest<'a> {
     pub owner: Owner,
     pub prior_goal_id: GoalId,
     pub replacement: GoalPayloadWrite,
+    pub wake: Option<Option<GoalWakeConfigWrite>>,
     pub authorship: GoalAuthorship,
     pub request_id: IdempotencyKey,
     pub context: GoalAtomicContext<'a>,
@@ -401,6 +684,7 @@ pub struct ModifyGoalAtomicRequest<'a> {
 pub struct ChildGoalDraft {
     pub payload: GoalPayloadWrite,
     pub evidence: Vec<GoalEvidenceRef>,
+    pub wake: Option<GoalWakeConfigWrite>,
     pub request_id: IdempotencyKey,
 }
 
@@ -410,7 +694,7 @@ pub struct DecomposeGoalAtomicRequest<'a> {
     pub parent_goal_id: GoalId,
     pub authorship: GoalAuthorship,
     pub context: GoalAtomicContext<'a>,
-    pub target_self_perspective_id: MemoryId,
+    pub topology: GoalTopologyWrite,
     pub children: Vec<ChildGoalDraft>,
 }
 

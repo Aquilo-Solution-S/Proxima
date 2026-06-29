@@ -7,7 +7,6 @@ use std::any::{Any, TypeId};
 use std::sync::Arc;
 
 use crate::change_event::EdgeTargetProjection;
-use crate::personality::{PersonalityInstanceId, WakeEntryDraft};
 use crate::{
     AbstractionPayload, CitationMappingPayload, CitedObjectPayload, EdgePayload, FactPayload,
     GoalPayload, PerspectivePayload,
@@ -33,22 +32,6 @@ pub enum StorageError {
     NotFound,
     #[error("internal storage error: {0}")]
     Internal(String),
-}
-
-/// Boxed closure for read-modify-write on `WakeEntry` rows.
-pub type WakeEntriesMutator =
-    Box<dyn FnOnce(&[WakeEntryDraft]) -> Result<Vec<WakeEntryDraft>, String> + Send + 'static>;
-
-/// Identity row for a per-master-token shell-author personality.
-///
-/// Returned by the personality write storage port.
-/// Carries both the personality instance id and the
-/// `current_root_perspective_memory_id` so callers can populate
-/// `McpToolCtx.caller_self_perspective` without a second round trip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MasterTokenPersonality {
-    pub instance_id: crate::PersonalityInstanceId,
-    pub self_perspective_memory_id: crate::MemoryId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,7 +264,6 @@ pub struct AuthorDerivedRequest<'a> {
     pub operator_kind: MemoryOperatorKind,
     pub model_id: &'a str,
     pub prompt_version: &'a str,
-    pub author_personality_instance_id: Option<PersonalityInstanceId>,
     pub sidecar_payload: SidecarPayload,
     /// Prior A/P memory superseded by this derived memory. Storage must
     /// persist this on `memories.supersedes` in the same transaction as

@@ -6,8 +6,6 @@ use proxima_core::FactIngestPort;
 // `mod common;`. Items unused by a particular binary would otherwise trip
 // `dead_code` even though another binary uses them.
 
-pub mod personality;
-
 #[path = "../../../src/test_fixtures.rs"]
 mod storage_pg_test_fixtures;
 
@@ -85,7 +83,6 @@ pub async fn seed_memory(
     if matches!(kind, EntityKind::Fact) {
         let now = time::OffsetDateTime::now_utc();
         let draft = FactWriteCommand {
-            author_personality_instance_id: None,
             schema_id: SchemaId::new("test/edge-access-fact-v1".into()),
             schema_version: SchemaVersion::new(1),
             payload: text.as_bytes().to_vec(),
@@ -107,10 +104,9 @@ pub async fn seed_memory(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+             operator_kind, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/edge-access-v1', 1, $4, $5, 'Wake',
-                 'test-model', 'edge-access-v1',
-                 '00000000-0000-0000-0000-000000000000'::uuid, 0)",
+                 'test-model', 'edge-access-v1')",
     )
     .bind(memory_id)
     .bind(owner_kind)

@@ -1,8 +1,10 @@
 use proxima_core::verbs::goal_write::{
-    GoalAuthorship, GoalCreateRequest, GoalPayloadWrite, GoalWriteBuildError, IdempotencyKey,
+    GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalPayloadWrite, GoalWakeConfigWrite,
+    GoalWakeToolId, GoalWakeTrigger, GoalWriteBuildError, IdempotencyKey,
 };
 use proxima_core::{
-    GoalPayload, MemoryId, Owner, OwnerRef, PayloadKeyBuilder, SchemaVersion, UserId,
+    FlavorRegistry, GoalPayload, MemoryId, Owner, OwnerRef, PayloadKeyBuilder, SchemaId,
+    SchemaVersion, UserId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -73,9 +75,10 @@ fn product_goal_create_request_defaults_to_user_authorship_and_explicit_self_tar
     let target_self = MemoryId::new(uuid::Uuid::now_v7());
     let request_id = IdempotencyKey::new("onboarding:initial-goal:1").expect("stable key");
 
+    let target = GoalAssignmentTarget::perspective(target_self);
     let request = GoalCreateRequest::product(
         owner,
-        target_self,
+        target,
         request_id,
         "Initial goal",
         "Practice every weekday",
@@ -85,9 +88,66 @@ fn product_goal_create_request_defaults_to_user_authorship_and_explicit_self_tar
     );
 
     assert_eq!(request.principal, owner);
-    assert_eq!(request.target_self_perspective_id, target_self);
+    assert_eq!(request.topology.assignment(), target);
     assert_eq!(request.author_self_perspective_id, None);
-    assert!(request.evidence.is_empty());
-    assert!(request.parent_goal_ids.is_empty());
+    assert!(request.topology.evidence().is_empty());
+    assert!(request.topology.dependencies().is_empty());
     assert_eq!(request.authorship, GoalAuthorship::User);
+}
+
+#[test]
+fn goal_wake_tool_id_requires_leaf_scope_for_grouped_core_tools() {
+    let registry = FlavorRegistry::new().freeze();
+
+    let err = GoalWakeToolId::parse("core_goal", &registry)
+        .expect_err("grouped action-dispatch tool requires an exact leaf scope key");
+    assert!(err.message.contains("leaf action scope required"));
+
+    let leaf = GoalWakeToolId::parse("core_goal:set", &registry)
+        .expect("registered leaf action scope key is valid");
+    assert_eq!(leaf.as_str(), "core_goal:set");
+
+    let flat = GoalWakeToolId::parse("core_search_memories", &registry)
+        .expect("flat registered non-action tool is valid");
+    assert_eq!(flat.as_str(), "core_search_memories");
+}
+
+#[test]
+fn goal_wake_config_normalizes_tool_ids_and_rejects_duplicate_hard_memory() {
+    let registry = FlavorRegistry::new().freeze();
+    let search = GoalWakeToolId::parse("core_search_memories", &registry).expect("valid tool");
+    let goal_set = GoalWakeToolId::parse("core_goal:set", &registry).expect("valid leaf action");
+    let hard_memory = MemoryId::new(uuid::Uuid::now_v7());
+
+    let config = GoalWakeConfigWrite::new(
+        GoalWakeTrigger::FactSchema {
+            schema_id: SchemaId::new("core/agent-note-v1".into()),
+            schema_version: SchemaVersion::new(1),
+        },
+        vec![goal_set.clone(), search.clone(), search],
+        "  wake prompt  ",
+        &[hard_memory],
+    )
+    .expect("valid wake config");
+    assert_eq!(
+        config
+            .tool_ids()
+            .iter()
+            .map(GoalWakeToolId::as_str)
+            .collect::<Vec<_>>(),
+        ["core_goal:set", "core_search_memories"]
+    );
+    assert_eq!(config.prompt(), "wake prompt");
+
+    let err = GoalWakeConfigWrite::new(
+        GoalWakeTrigger::FactSchema {
+            schema_id: SchemaId::new("core/agent-note-v1".into()),
+            schema_version: SchemaVersion::new(1),
+        },
+        vec![goal_set],
+        "wake prompt",
+        &[hard_memory, hard_memory],
+    )
+    .expect_err("duplicate hard memory ids are rejected");
+    assert!(err.message.contains("duplicate hard memory id"));
 }

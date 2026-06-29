@@ -142,7 +142,6 @@ pub async fn append_code_slice(
         memory_id,
         owner: *owner,
         kind: EntityKind::Abstraction,
-        author_personality_instance_id: None,
         schema_id: <CodeChunkV1 as AbstractionPayload>::schema_id(),
         schema_version: SchemaVersion::new(CodeChunkV1::SCHEMA_VERSION),
         text,

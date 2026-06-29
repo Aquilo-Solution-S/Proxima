@@ -8,6 +8,5 @@ fn payload_modules_do_not_use_serde_json_value_fields() {
     assert_no_serde_json_value_fields(&[
         root.join("crates/core/src/citations.rs"),
         root.join("crates/core/src/memory/payloads"),
-        root.join("crates/core/src/mcp/core_tools/payload.rs"),
     ]);
 }

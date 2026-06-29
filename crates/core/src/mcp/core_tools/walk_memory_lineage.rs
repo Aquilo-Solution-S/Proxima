@@ -54,7 +54,6 @@ pub struct LineageNodeOutput {
     pub kind: String,
     pub schema_id: String,
     pub snippet: String,
-    pub wake_chain_depth: u16,
     pub distance: u8,
 }
 
@@ -101,7 +100,6 @@ pub async fn walk_memory_lineage(
                 direction,
                 depth: args.depth.clamp(1, 8),
                 limit: args.limit.clamp(1, 200),
-                reader_personality_instance_id: None,
             },
         )
         .await?;
@@ -119,7 +117,6 @@ pub async fn walk_memory_lineage(
                 kind,
                 schema_id: node.schema_id.as_str().to_string(),
                 snippet: node.snippet,
-                wake_chain_depth: node.wake_chain_depth.into_inner(),
                 distance: node.distance,
             })
         })

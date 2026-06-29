@@ -412,7 +412,6 @@ fn engine_for(pg: &PgStorage) -> Engine {
 fn draft_for<P: FactPayload>(_owner: &Owner, payload_value: &Value) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
-        author_personality_instance_id: None,
         schema_id: P::schema_id(),
         schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
         payload: canonical_json_bytes(payload_value),

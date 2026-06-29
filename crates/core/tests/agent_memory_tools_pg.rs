@@ -8,8 +8,8 @@ use proxima_core::mcp::core_tools::get_memory::{GetMemoryArgs, get_memory};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
     AgentNoteV1, AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FactPayload,
-    FlavorRegistry, FlavorRegistryFrozen, McpToolError, MemoryId, Owner, OwnerRef,
-    PersonalityInstanceId, SchemaId, UserId,
+    FlavorRegistry, FlavorRegistryFrozen, McpToolError, MemoryId, Owner, OwnerRef, SchemaId,
+    UserId,
 };
 use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgSidecarFuture,
@@ -534,16 +534,15 @@ async fn remember_reused_idempotency_key_identical_content_is_idempotent_replay(
     clippy::too_many_lines,
     reason = "PG integration fixture validates cited and uncited remember rows in one transaction shape"
 )]
-async fn remember_cited_and_uncited_persist_personality_and_citation_rows()
--> Result<(), Box<dyn std::error::Error>> {
+async fn remember_cited_and_uncited_persist_citation_rows() -> Result<(), Box<dyn std::error::Error>>
+{
     let (pg, db_name) = fresh_pg_with_remember_sidecars().await;
     create_remember_citation_sidecars(pg.pool()).await?;
 
     let frozen = registry_with_remember_test_citation();
     let owner = nil_owner();
     let handles = Arc::new(HandleTable::new());
-    let personality = PersonalityInstanceId::new(uuid::Uuid::now_v7());
-    let author = author_ctx().with_personality(personality);
+    let author = author_ctx();
 
     let cited = call_tool(
         &pg,
@@ -598,8 +597,8 @@ async fn remember_cited_and_uncited_persist_personality_and_citation_rows()
         .resolve_memory(uncited["handle"].as_str().expect("uncited handle"))?
         .into_inner();
 
-    let cited_row: (Option<uuid::Uuid>, uuid::Uuid) = sqlx::query_as(
-        "SELECT citation_mapping_id, personality_instance_id
+    let cited_row: (Option<uuid::Uuid>,) = sqlx::query_as(
+        "SELECT citation_mapping_id
          FROM proxima_core.memories
          WHERE memory_id = $1",
     )
@@ -610,10 +609,9 @@ async fn remember_cited_and_uncited_persist_personality_and_citation_rows()
         cited_row.0.is_some(),
         "cited remember must attach citation_mapping_id"
     );
-    assert_eq!(cited_row.1, personality.into_inner());
 
-    let uncited_row: (Option<uuid::Uuid>, uuid::Uuid) = sqlx::query_as(
-        "SELECT citation_mapping_id, personality_instance_id
+    let uncited_row: (Option<uuid::Uuid>,) = sqlx::query_as(
+        "SELECT citation_mapping_id
          FROM proxima_core.memories
          WHERE memory_id = $1",
     )
@@ -624,7 +622,6 @@ async fn remember_cited_and_uncited_persist_personality_and_citation_rows()
         uncited_row.0.is_none(),
         "uncited remember must remain a plain Fact"
     );
-    assert_eq!(uncited_row.1, personality.into_inner());
 
     let cited_sidecar_count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM proxima_core.agent_note_v1 WHERE memory_id = $1")
@@ -805,22 +802,19 @@ async fn search_memories_hybrid_returns_embedding_only_match()
 }
 
 #[tokio::test]
-async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility()
+async fn prefixed_search_and_open_keep_company_shared_visibility()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze());
     let owner = nil_owner();
-    let personality_a = PersonalityInstanceId::new(uuid::Uuid::now_v7());
-    let personality_b_root = MemoryId::new(uuid::Uuid::now_v7());
-    // Author a Fact AS personality_a via the real remember path (T3 stamps
-    // ctx.author.personality_instance_id into memories.personality_instance_id).
+    let caller_self_perspective = MemoryId::new(uuid::Uuid::now_v7());
     let authored_handle = call_tool_prefixed(
         &pg,
         &owner,
         &frozen,
-        author_ctx().with_personality(personality_a),
+        author_ctx(),
         "core_remember",
         json!({
             "title": "Company shared author",
@@ -855,36 +849,34 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
         &pg,
         &owner,
         &frozen,
-        author_ctx().with_self_perspective(personality_b_root),
+        author_ctx().with_self_perspective(caller_self_perspective),
         "core_search_memories",
         json!({"query": "alpha needle", "mode": "lexical", "limit": 5}),
     )
     .await?;
     assert_eq!(search["memories"][0]["memory"], authored_handle);
-    assert_eq!(
-        search["memories"][0]["authoring_personality_instance_id"],
-        format!("I:{}", personality_a.into_inner())
+    assert!(
+        search["memories"][0]
+            .get("authoring_personality_instance_id")
+            .is_none()
     );
 
     let opened = read_memory_prefixed(
         &pg,
         &owner,
         &frozen,
-        author_ctx().with_self_perspective(personality_b_root),
+        author_ctx().with_self_perspective(caller_self_perspective),
         &authored_handle,
         false,
     )
     .await?;
-    assert_eq!(
-        opened["authoring_personality_instance_id"],
-        format!("I:{}", personality_a.into_inner())
-    );
+    assert!(opened.get("authoring_personality_instance_id").is_none());
 
     let nil_opened = read_memory_prefixed(
         &pg,
         &owner,
         &frozen,
-        author_ctx().with_self_perspective(personality_b_root),
+        author_ctx().with_self_perspective(caller_self_perspective),
         &nil_handle,
         false,
     )
@@ -1216,23 +1208,17 @@ fn author_ctx() -> McpAuthorContext {
         model_id: "codex-test".into(),
         client_name: "codex".into(),
         client_version: "1".into(),
-        personality_instance_id: None,
         caller_self_perspective: None,
     }
 }
 
 trait AuthorCtxExt {
     fn with_self_perspective(self, memory_id: MemoryId) -> Self;
-    fn with_personality(self, personality: PersonalityInstanceId) -> Self;
 }
 
 impl AuthorCtxExt for McpAuthorContext {
     fn with_self_perspective(mut self, memory_id: MemoryId) -> Self {
         self.caller_self_perspective = Some(memory_id);
-        self
-    }
-    fn with_personality(mut self, personality: PersonalityInstanceId) -> Self {
-        self.personality_instance_id = Some(personality);
         self
     }
 }

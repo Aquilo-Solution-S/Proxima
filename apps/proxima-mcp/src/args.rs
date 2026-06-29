@@ -61,8 +61,6 @@ Tools:
   core_derive
   core_link
   core_goal
-  core_wake
-  core_personality
   core_fact
 ";
 

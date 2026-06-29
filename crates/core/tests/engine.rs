@@ -1,4 +1,4 @@
-//! Engine smoke tests for the personality substrate.
+//! Engine smoke tests for the core substrate.
 
 use std::sync::Arc;
 
@@ -145,24 +145,6 @@ async fn query_scopes_reads_to_authz_context_not_client_principal() {
 }
 
 #[tokio::test]
-async fn tombstone_personality_rejects_noop_storage_write() {
-    let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner);
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
-    let err = engine
-        .tombstone_personality(
-            &authz,
-            proxima_core::TombstonePersonalityRequest {
-                principal: owner,
-                personality_instance_id: proxima_core::PersonalityInstanceId::new(Uuid::now_v7()),
-            },
-        )
-        .await
-        .expect_err("RejectingStorage rejects writes");
-    assert_eq!(err.code, ErrorCode::Internal);
-}
-
-#[tokio::test]
 async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner);
@@ -176,16 +158,6 @@ async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
         ingest_err
             .to_string()
             .contains("requires ingest on this owner")
-    );
-
-    let admin_err = engine
-        .list_personality_instances(&authz, &owner, false)
-        .await
-        .expect_err("wake context must not touch config verbs");
-    assert!(
-        admin_err
-            .to_string()
-            .contains("requires admin on this owner")
     );
 }
 

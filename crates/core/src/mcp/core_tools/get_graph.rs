@@ -1,12 +1,4 @@
-//! `core/get_graph` — single-shot read of the owner's full personality
-//! graph plus the static catalogs that wake-entry config references.
-//!
-//! Composes the data that would otherwise require five round trips
-//! (`list_personalities` + `get_personality` per P, `list_schemas`,
-//! `list_edge_types`, `list_substrate_tools`) into one atomic response. The
-//! personality projection mirrors `get_personality` and the catalog
-//! projections mirror their respective `list_*` tools so the shapes
-//! already familiar to the frontend stay intact.
+//! `core/get_graph` — single-shot read of owner graph metadata plus static catalogs.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -15,7 +7,6 @@ use crate::engine::GetGraphReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::verbs::schema::PayloadKind;
 
-use super::get_personality::{GetPersonalityOutput, GetPersonalityWakeEntry};
 use super::list_edge_types::EdgeTypeItem;
 use super::list_schemas::SchemaItem;
 use super::list_substrate_tools::{
@@ -24,7 +15,7 @@ use super::list_substrate_tools::{
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct GetGraphArgs {
-    /// Include tombstoned personalities. Default: false.
+    /// Include tombstoned memories where the underlying read supports it.
     #[serde(default)]
     pub include_tombstoned: bool,
 }
@@ -42,9 +33,6 @@ pub struct GetGraphOutput {
     pub pending_embedding_jobs: u64,
     /// Owner Fact-retention duration in seconds, if configured.
     pub fact_retention_seconds: Option<i64>,
-    /// Every personality the owner owns, fully expanded — same shape as
-    /// `core/get_personality` output.
-    pub personalities: Vec<GetPersonalityOutput>,
     /// Static schema catalog from the frozen `FlavorRegistry`.
     pub schemas: Vec<SchemaItem>,
     /// Static edge-type catalog from the frozen `FlavorRegistry`.
@@ -86,38 +74,6 @@ pub async fn get_graph(
         )
         .await?;
 
-    let personalities = graph
-        .personalities
-        .into_iter()
-        .map(|row| {
-            let personality = ctx.format_personality(row.personality_instance_id);
-            let root_perspective =
-                ctx.format_perspective_memory(row.current_root_perspective_memory_id);
-            let wake_entries = row
-                .wake_entries
-                .into_iter()
-                .map(|e| GetPersonalityWakeEntry {
-                    wake_entry: ctx.format_wake_entry(e.wake_entry_id),
-                    trigger_kind: e.trigger_kind.as_str().to_string(),
-                    trigger_id: e.trigger_id,
-                    label: e.label,
-                    enabled: e.enabled,
-                    instructions: e.instructions,
-                    authored_by: e.authored_by.as_str().to_string(),
-                    probability_promille: e.probability_promille,
-                    goal_scope: e.goal_scope.as_str().to_string(),
-                })
-                .collect();
-            GetPersonalityOutput {
-                personality,
-                display_name: row.display_name,
-                status: row.status,
-                root_perspective,
-                wake_entries,
-            }
-        })
-        .collect();
-
     let schemas = ctx
         .registry
         .list()
@@ -142,7 +98,6 @@ pub async fn get_graph(
         embeddings_client_configured,
         pending_embedding_jobs: graph.pending_embedding_jobs,
         fact_retention_seconds: graph.fact_retention_seconds,
-        personalities,
         schemas,
         edge_types,
         substrate_tools,

@@ -1,8 +1,8 @@
 # 10 - Configuration
 
 Current runtime configuration contract. Build-time registration owns
-schemas, relations, prompts, tools, source types, wake filters, and
-personality types (see [08](08-core-and-flavors.md)). Runtime config
+schemas, relations, prompts, tools, source types, and wake trigger vocabulary
+(see [08](08-core-and-flavors.md)). Runtime config
 selects the Postgres connection, the MCP endpoint and its authentication,
 deployment-level artefact storage, and an optional host-injected
 embedding client for retrieval plus an optional host-injected model-seat
@@ -31,14 +31,13 @@ host injects for vector retrieval and an optional model-seat client.
 | EventSource credentials | per source instance | source-owned, not engine-owned |
 
 Not runtime configurable: schema ids, payload types, relation
-descriptors, prompts, tool definitions, source types, wake-filter kinds,
-and personality type registration.
+descriptors, prompts, tool definitions, source types, wake trigger kinds,
+and agent type registration.
 
-Wake **config** (a personality's detect rule — trigger schema_id +
-authored_by, probability, read-scope, target) is per-personality data,
-edited through the core MCP wake-config tools, not an env/boot surface.
-See [08](08-core-and-flavors.md) and the protocol surface
-[14](14-protocol-surface.md).
+Wake config is per-Goal data written through GoalWrite and stored as
+`Goal.wake`, not an env/boot surface and not a separate runtime config
+entity. See [08](08-core-and-flavors.md), [06](06-goals-and-self.md), and
+the protocol surface [14](14-protocol-surface.md).
 
 <a id="framework-facade-host-app-boot"></a>
 ## Framework facade (host-app boot)
@@ -115,7 +114,7 @@ Profiles:
 | `memory` | Curated memory-brain palette: memory authoring/retrieval, citations, graph/schema introspection, non-destructive Fact/citation actions (the destructive `core_fact:tombstone` and retention/cleanup stay host/config-only — excluded), the full goal lifecycle, and code-as-memory repository/chunk/commit reads. |
 
 Allow/deny ids use canonical scope keys: tool ids (`core_search_memories`),
-group-action leaf keys (`core_wake:add`, `core_fact:tombstone`), resource
+group-action leaf keys (`core_goal:set`, `core_fact:tombstone`), resource
 keys (`resource:memory`, `resource:change-events`), or flavor ids
 (`proxima-code_search_chunks`). Unknown profile names fail boot. Unknown
 ids in allow/deny log `warn` and do not fail boot.

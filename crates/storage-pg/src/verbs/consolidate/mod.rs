@@ -1,20 +1,12 @@
-//! Personality wake/decide/write storage helpers.
+//! Generic read-side consolidation helpers.
 
 #![allow(clippy::missing_errors_doc, clippy::type_complexity)]
 
 mod dependencies;
 mod events;
-mod instances;
 mod memories;
-mod wake_entries;
 
 pub use dependencies::list_memory_dependencies;
 pub(crate) use events::edge_event_visibility_predicate;
 pub use events::{list_change_events_after, list_change_events_for_replay};
-pub(crate) use instances::instantiate_personality_on_conn;
-pub use instances::{instantiate_personality, list_personality_instances};
-pub use memories::{
-    append_personality_memories, load_abstraction_heads, load_memory_batch_facts,
-    load_memory_by_id, load_perspective_heads, lookup_prior_personality_head,
-};
-pub use wake_entries::{set_wake_entries, set_wake_entries_within, tombstone_personality};
+pub use memories::{load_abstraction_heads, load_memory_batch_facts, load_memory_by_id};

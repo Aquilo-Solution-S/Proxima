@@ -1,15 +1,26 @@
-use crate::common::personality::{
-    TEST_ABSTRACTION_SCHEMA, TEST_PERSPECTIVE_SCHEMA, apply_test_schemas, ingest_other_fact,
-    ingest_test_fact,
-};
 use proxima_core::{
     EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerRef, RelationClass, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
+const TEST_ABSTRACTION_SCHEMA: &str = "test/edge-invariant-abstraction-v1";
+const TEST_PERSPECTIVE_SCHEMA: &str = "test/edge-invariant-perspective-v1";
+
 fn other_owner() -> Owner {
     OwnerRef::Personal(UserId::new(Uuid::now_v7()))
+}
+
+async fn ingest_test_fact(pg: &PgStorage, owner: &Owner, text: &str) -> MemoryId {
+    crate::common::seed_memory(pg, owner, EntityKind::Fact, text)
+        .await
+        .expect("seed fact")
+}
+
+async fn ingest_other_fact(pg: &PgStorage, owner: &Owner, text: &str) -> MemoryId {
+    crate::common::seed_memory(pg, owner, EntityKind::Fact, text)
+        .await
+        .expect("seed other fact")
 }
 
 async fn insert_derived_memory(
@@ -30,9 +41,9 @@ async fn insert_derived_memory(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id)
+             operator_kind, model_id, prompt_version)
          VALUES ($1, $2, $3, $4, 1, $5, 'derived', $6, 'test-model',
-                 'v1', $7)",
+                 'v1')",
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -40,7 +51,6 @@ async fn insert_derived_memory(
     .bind(schema_id)
     .bind(kind)
     .bind(operator_kind)
-    .bind(Uuid::now_v7())
     .execute(pg.pool())
     .await?;
     Ok(MemoryId::new(memory_id))
@@ -87,8 +97,6 @@ async fn trigger_rejects_upward_edges_and_semantic_fact_to_fact() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
-        apply_test_schemas(pg.pool()).await?;
-
         let owner = crate::common::owner_fixture();
         let fact_a = ingest_test_fact(&pg, &owner, "a").await;
         let fact_b = ingest_test_fact(&pg, &owner, "b").await;
@@ -144,8 +152,6 @@ async fn trigger_rejects_endpoint_kind_and_allows_cross_owner_edges() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
-        apply_test_schemas(pg.pool()).await?;
-
         let owner = crate::common::owner_fixture();
         let other = other_owner();
         let fact = ingest_test_fact(&pg, &owner, "a").await;
@@ -188,8 +194,6 @@ async fn trigger_allows_cross_domain_fact_set_abstraction() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
-        apply_test_schemas(pg.pool()).await?;
-
         let owner = crate::common::owner_fixture();
         let fact_a = ingest_test_fact(&pg, &owner, "a").await;
         let fact_b = ingest_other_fact(&pg, &owner, "b").await;

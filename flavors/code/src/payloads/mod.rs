@@ -1,4 +1,5 @@
 pub mod acceptance;
+pub mod agent_perspective;
 pub mod code_chunk;
 pub mod commit;
 pub mod commit_summary;
@@ -7,7 +8,6 @@ pub mod edge_calls;
 pub mod execution_plan;
 pub mod execution_request;
 pub mod file_revision;
-pub mod personality_self;
 pub mod test_request;
 pub mod work_results;
 
@@ -87,6 +87,7 @@ pub(crate) mod content_hash_serde {
 pub use acceptance::{
     AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1,
 };
+pub use agent_perspective::{CodeCommitSummarizerSelfV1, CodeEngineerSelfV1};
 pub use code_chunk::CodeChunkV1;
 pub use commit::CommitV1;
 pub use commit_summary::CommitSummaryV1;
@@ -95,7 +96,6 @@ pub use edge_calls::EdgeCallsV1;
 pub use execution_plan::{CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1};
 pub use execution_request::{ExecutionRequestV1, WorkRequestedV1};
 pub use file_revision::{FileRevisionV1, FileState};
-pub use personality_self::{CodeCommitSummarizerSelfV1, CodeEngineerSelfV1};
 pub use test_request::{TestRequestV1, TestRequestedV1};
 pub use work_results::{
     AcceptanceSummaryV1, AcceptanceVerificationStatus, AcceptanceVerificationV1, ExecutionResultV1,

@@ -8,15 +8,13 @@ use std::sync::Arc;
 
 use crate::SourceBatchId;
 use crate::dependency::MemoryDependency;
-use crate::personality::{
-    AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
-    InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceRow, PersonalityRef,
-    PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeEntriesRequest,
-    SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse,
+use crate::read_models::{
+    AbstractionRow, ActiveGoalSummary, ChangeEventForWake, FactRow, GoalWakeCandidate,
+    GoalWakeCandidateRequest, MemorySnapshot, SidecarSpec,
 };
 use crate::storage::{
     AuthorDerivedOutcome, AuthorDerivedRequest, EdgeEndpointKindRow, EmbeddingJobClaim,
-    MemoryGraphPayloadRow, MemoryKindRow, NeighborEdgeRow, StorageError, WakeEntriesMutator,
+    MemoryGraphPayloadRow, MemoryKindRow, NeighborEdgeRow, StorageError,
 };
 use crate::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use crate::verbs::close_batch::CloseBatchOutcome;
@@ -31,9 +29,8 @@ use crate::verbs::goal_write::{
 use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::{
-    DerivedEdgeSpec, EdgeId, EntityId, EntityKind, FactEntityId, GroupId, MasterTokenPersonality,
-    MembershipRow, MemoryId, Owner, OwnerRef, PersonalityInstanceId, Relation, SchemaId,
-    SchemaVersion, SidecarPayload, UserId,
+    DerivedEdgeSpec, EdgeId, EntityId, EntityKind, FactEntityId, GroupId, MembershipRow, MemoryId,
+    Owner, OwnerRef, Relation, SchemaId, SchemaVersion, SidecarPayload, UserId,
 };
 
 /// Unforgeable witness that engine admission already enforced the relation
@@ -182,7 +179,6 @@ pub trait MemoryInspectPort: Send + Sync {
     async fn load_memory_by_id(
         &self,
         memory_id: crate::MemoryId,
-        reader_personality_instance_id: Option<PersonalityInstanceId>,
         sidecars: &[SidecarSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError>;
 
@@ -289,17 +285,6 @@ pub trait GoalWritePort: Send + Sync {
 }
 
 #[async_trait::async_trait]
-pub trait GoalSupportReadPort: Send + Sync {
-    async fn active_personality_root(
-        &self,
-        _owner: &Owner,
-        _instance_id: PersonalityInstanceId,
-    ) -> Result<Option<MemoryId>, StorageError> {
-        Ok(None)
-    }
-}
-
-#[async_trait::async_trait]
 pub trait GoalReadPort: Send + Sync {
     async fn list_active_goals(
         &self,
@@ -307,6 +292,14 @@ pub trait GoalReadPort: Send + Sync {
         self_perspective_memory_id: crate::MemoryId,
         limit: usize,
     ) -> Result<Vec<ActiveGoalSummary>, StorageError>;
+}
+
+#[async_trait::async_trait]
+pub trait GoalWakeCandidatePort: Send + Sync {
+    async fn list_goal_wake_candidates(
+        &self,
+        req: &GoalWakeCandidateRequest<'_>,
+    ) -> Result<Vec<GoalWakeCandidate>, StorageError>;
 }
 
 #[async_trait::async_trait]
@@ -371,7 +364,7 @@ pub trait CitationPort: Send + Sync {
         read_owners: &[OwnerRef],
         cited_object_id: uuid::Uuid,
         sidecars: &[SidecarSpec],
-    ) -> Result<Vec<crate::personality::MemorySnapshot>, StorageError>;
+    ) -> Result<Vec<MemorySnapshot>, StorageError>;
 
     async fn citation_of_fact(
         &self,
@@ -432,62 +425,6 @@ pub trait SourceBatchPort: Send + Sync {
     ) -> Result<CloseBatchOutcome, StorageError>;
 }
 
-/// Current runtime personality storage boundary; PR6 owns public ontology/naming cleanup.
-#[async_trait::async_trait]
-pub trait PersonalityReadPort: Send + Sync {
-    async fn list_personality_instances(
-        &self,
-        owner: &Owner,
-        include_tombstoned: bool,
-    ) -> Result<Vec<PersonalityInstanceRow>, StorageError>;
-}
-
-/// Current runtime personality storage boundary; PR6 owns public ontology/naming cleanup.
-#[async_trait::async_trait]
-pub trait PersonalityWritePort: Send + Sync {
-    async fn tombstone_personality(
-        &self,
-        req: &TombstonePersonalityRequest,
-    ) -> Result<TombstonePersonalityResponse, StorageError>;
-
-    async fn instantiate_personality(
-        &self,
-        req: &InstantiatePersonalityRequest,
-    ) -> Result<InstantiatePersonalityResponse, StorageError>;
-
-    async fn ensure_master_token_personality(
-        &self,
-        owner: &Owner,
-        master_token_id: uuid::Uuid,
-    ) -> Result<MasterTokenPersonality, StorageError>;
-
-    async fn ensure_subject_personality(
-        &self,
-        owner: &Owner,
-        subject: &OwnerRef,
-    ) -> Result<MasterTokenPersonality, StorageError>;
-
-    async fn append_personality_memories(
-        &self,
-        req: &PersonalityWriteRequest<'_>,
-    ) -> Result<PersonalityWriteOutcome, StorageError>;
-}
-
-#[async_trait::async_trait]
-pub trait WakeConfigPort: Send + Sync {
-    async fn set_wake_entries(
-        &self,
-        req: &SetWakeEntriesRequest,
-    ) -> Result<SetWakeEntriesResponse, StorageError>;
-
-    async fn set_wake_entries_within(
-        &self,
-        owner: &Owner,
-        personality_instance_id: PersonalityInstanceId,
-        mutate: WakeEntriesMutator,
-    ) -> Result<SetWakeEntriesResponse, StorageError>;
-}
-
 #[async_trait::async_trait]
 pub trait FactRetentionPort: Send + Sync {
     async fn upsert_fact_retention(&self, owner: &Owner, seconds: i64) -> Result<(), StorageError>;
@@ -526,7 +463,7 @@ pub trait RegistryProjectionPort: Send + Sync {
         owner: &Owner,
         memory_id: crate::MemoryId,
         sidecars: &[SidecarSpec],
-    ) -> Result<Vec<crate::FactRow>, StorageError>;
+    ) -> Result<Vec<FactRow>, StorageError>;
 
     async fn load_abstraction_heads(
         &self,
@@ -534,22 +471,6 @@ pub trait RegistryProjectionPort: Send + Sync {
         sidecars: &[SidecarSpec],
         limit: usize,
     ) -> Result<Vec<AbstractionRow>, StorageError>;
-
-    async fn load_perspective_heads(
-        &self,
-        owner: &Owner,
-        instance: PersonalityInstanceId,
-        root_perspective_memory_id: crate::MemoryId,
-        sidecars: &[SidecarSpec],
-        limit: usize,
-    ) -> Result<Vec<MemorySnapshot>, StorageError>;
-
-    async fn lookup_prior_personality_head(
-        &self,
-        owner: &Owner,
-        instance: &PersonalityRef,
-        schema_id: &crate::SchemaId,
-    ) -> Result<Option<crate::MemoryId>, StorageError>;
 }
 
 pub type FactIngestHandle = Arc<dyn FactIngestPort>;
@@ -562,7 +483,6 @@ pub type EmbeddingTextHandle = Arc<dyn EmbeddingTextPort>;
 pub type EmbeddingWriteHandle = Arc<dyn EmbeddingWritePort>;
 pub type EmbeddingJobHandle = Arc<dyn EmbeddingJobPort>;
 pub type GoalWriteHandle = Arc<dyn GoalWritePort>;
-pub type GoalSupportReadHandle = Arc<dyn GoalSupportReadPort>;
 pub type GoalReadHandle = Arc<dyn GoalReadPort>;
 pub type ChangeEventHandle = Arc<dyn ChangeEventPort>;
 pub type EdgeReadHandle = Arc<dyn EdgeReadPort>;
@@ -570,9 +490,6 @@ pub type CitationHandle = Arc<dyn CitationPort>;
 pub type OwnerAccessReadHandle = Arc<dyn OwnerAccessReadPort>;
 pub type OwnerMembershipAdminHandle = Arc<dyn OwnerMembershipAdminPort>;
 pub type SourceBatchHandle = Arc<dyn SourceBatchPort>;
-pub type PersonalityReadHandle = Arc<dyn PersonalityReadPort>;
-pub type PersonalityWriteHandle = Arc<dyn PersonalityWritePort>;
-pub type WakeConfigHandle = Arc<dyn WakeConfigPort>;
 pub type FactRetentionHandle = Arc<dyn FactRetentionPort>;
 pub type ComplianceEraseHandle = Arc<dyn ComplianceErasePort>;
 pub type RegistryProjectionHandle = Arc<dyn RegistryProjectionPort>;
@@ -590,7 +507,6 @@ pub struct StoragePorts {
     embedding_write: EmbeddingWriteHandle,
     embedding_job: EmbeddingJobHandle,
     goal_write: GoalWriteHandle,
-    goal_support_read: GoalSupportReadHandle,
     goal_read: GoalReadHandle,
     change_event: ChangeEventHandle,
     edge_read: EdgeReadHandle,
@@ -598,9 +514,6 @@ pub struct StoragePorts {
     owner_access_read: OwnerAccessReadHandle,
     owner_membership_admin: OwnerMembershipAdminHandle,
     source_batch: SourceBatchHandle,
-    personality_read: PersonalityReadHandle,
-    personality_write: PersonalityWriteHandle,
-    wake_config: WakeConfigHandle,
     fact_retention: FactRetentionHandle,
     compliance_erase: ComplianceEraseHandle,
     registry_projection: RegistryProjectionHandle,
@@ -625,7 +538,6 @@ pub(crate) struct FactRetentionStoragePorts {
 #[derive(Clone)]
 pub(crate) struct GoalCommandStoragePorts {
     pub goal_write: GoalWriteHandle,
-    pub goal_support_read: GoalSupportReadHandle,
     pub owner_access_read: OwnerAccessReadHandle,
 }
 
@@ -643,13 +555,6 @@ pub(crate) struct IngestStoragePorts {
 pub(crate) struct MemoryAuthoringStoragePorts {
     pub memory_authoring: MemoryAuthoringHandle,
     pub owner_access_read: OwnerAccessReadHandle,
-}
-
-#[derive(Clone)]
-pub(crate) struct PersonalityStoragePorts {
-    pub personality_read: PersonalityReadHandle,
-    pub personality_write: PersonalityWriteHandle,
-    pub wake_config: WakeConfigHandle,
 }
 
 #[derive(Clone)]
@@ -672,7 +577,6 @@ pub(crate) struct ReadVerbStoragePorts {
     pub memory_inspect: MemoryInspectHandle,
     pub change_event: ChangeEventHandle,
     pub citation: CitationHandle,
-    pub personality_read: PersonalityReadHandle,
     pub fact_retention: FactRetentionHandle,
 }
 
@@ -684,7 +588,6 @@ pub(crate) struct EngineStoragePorts {
     pub goal_command: GoalCommandStoragePorts,
     pub ingest: IngestStoragePorts,
     pub memory_authoring: MemoryAuthoringStoragePorts,
-    pub personality: PersonalityStoragePorts,
     pub pipeline: PipelineStoragePorts,
     pub query: QueryStoragePorts,
     pub read_verb: ReadVerbStoragePorts,
@@ -702,7 +605,6 @@ pub struct StoragePortsBuilder {
     embedding_write: Option<EmbeddingWriteHandle>,
     embedding_job: Option<EmbeddingJobHandle>,
     goal_write: Option<GoalWriteHandle>,
-    goal_support_read: Option<GoalSupportReadHandle>,
     goal_read: Option<GoalReadHandle>,
     change_event: Option<ChangeEventHandle>,
     edge_read: Option<EdgeReadHandle>,
@@ -710,9 +612,6 @@ pub struct StoragePortsBuilder {
     owner_access_read: Option<OwnerAccessReadHandle>,
     owner_membership_admin: Option<OwnerMembershipAdminHandle>,
     source_batch: Option<SourceBatchHandle>,
-    personality_read: Option<PersonalityReadHandle>,
-    personality_write: Option<PersonalityWriteHandle>,
-    wake_config: Option<WakeConfigHandle>,
     fact_retention: Option<FactRetentionHandle>,
     compliance_erase: Option<ComplianceEraseHandle>,
     registry_projection: Option<RegistryProjectionHandle>,
@@ -751,7 +650,6 @@ impl StoragePorts {
             embedding_write: rejecting.clone(),
             embedding_job: rejecting.clone(),
             goal_write: rejecting.clone(),
-            goal_support_read: rejecting.clone(),
             goal_read: rejecting.clone(),
             change_event: rejecting.clone(),
             edge_read: rejecting.clone(),
@@ -759,9 +657,6 @@ impl StoragePorts {
             owner_access_read: rejecting.clone(),
             owner_membership_admin: rejecting.clone(),
             source_batch: rejecting.clone(),
-            personality_read: rejecting.clone(),
-            personality_write: rejecting.clone(),
-            wake_config: rejecting.clone(),
             fact_retention: rejecting.clone(),
             compliance_erase: rejecting.clone(),
             registry_projection: rejecting.clone(),
@@ -784,7 +679,6 @@ impl From<StoragePorts> for EngineStoragePorts {
             },
             goal_command: GoalCommandStoragePorts {
                 goal_write: ports.goal_write.clone(),
-                goal_support_read: ports.goal_support_read.clone(),
                 owner_access_read: ports.owner_access_read.clone(),
             },
             ingest: IngestStoragePorts {
@@ -798,11 +692,6 @@ impl From<StoragePorts> for EngineStoragePorts {
             memory_authoring: MemoryAuthoringStoragePorts {
                 memory_authoring: ports.memory_authoring.clone(),
                 owner_access_read: ports.owner_access_read.clone(),
-            },
-            personality: PersonalityStoragePorts {
-                personality_read: ports.personality_read.clone(),
-                personality_write: ports.personality_write.clone(),
-                wake_config: ports.wake_config.clone(),
             },
             pipeline: PipelineStoragePorts {
                 owner_access_read: ports.owner_access_read.clone(),
@@ -819,7 +708,6 @@ impl From<StoragePorts> for EngineStoragePorts {
                 memory_inspect: ports.memory_inspect.clone(),
                 change_event: ports.change_event.clone(),
                 citation: ports.citation.clone(),
-                personality_read: ports.personality_read.clone(),
                 fact_retention: ports.fact_retention.clone(),
             },
         }
@@ -888,12 +776,6 @@ impl StoragePortsBuilder {
     }
 
     #[must_use]
-    pub fn goal_support_read(mut self, handle: GoalSupportReadHandle) -> Self {
-        self.goal_support_read = Some(handle);
-        self
-    }
-
-    #[must_use]
     pub fn goal_read(mut self, handle: GoalReadHandle) -> Self {
         self.goal_read = Some(handle);
         self
@@ -932,24 +814,6 @@ impl StoragePortsBuilder {
     #[must_use]
     pub fn source_batch(mut self, handle: SourceBatchHandle) -> Self {
         self.source_batch = Some(handle);
-        self
-    }
-
-    #[must_use]
-    pub fn personality_read(mut self, handle: PersonalityReadHandle) -> Self {
-        self.personality_read = Some(handle);
-        self
-    }
-
-    #[must_use]
-    pub fn personality_write(mut self, handle: PersonalityWriteHandle) -> Self {
-        self.personality_write = Some(handle);
-        self
-    }
-
-    #[must_use]
-    pub fn wake_config(mut self, handle: WakeConfigHandle) -> Self {
-        self.wake_config = Some(handle);
         self
     }
 
@@ -1007,9 +871,6 @@ impl StoragePortsBuilder {
                 .embedding_job
                 .expect("embedding_job storage port configured"),
             goal_write: self.goal_write.expect("goal_write storage port configured"),
-            goal_support_read: self
-                .goal_support_read
-                .expect("goal_support_read storage port configured"),
             goal_read: self.goal_read.expect("goal_read storage port configured"),
             change_event: self
                 .change_event
@@ -1025,15 +886,6 @@ impl StoragePortsBuilder {
             source_batch: self
                 .source_batch
                 .expect("source_batch storage port configured"),
-            personality_read: self
-                .personality_read
-                .expect("personality_read storage port configured"),
-            personality_write: self
-                .personality_write
-                .expect("personality_write storage port configured"),
-            wake_config: self
-                .wake_config
-                .expect("wake_config storage port configured"),
             fact_retention: self
                 .fact_retention
                 .expect("fact_retention storage port configured"),
@@ -1049,9 +901,6 @@ impl StoragePortsBuilder {
 
 #[derive(Debug)]
 struct RejectingStorage;
-
-#[async_trait::async_trait]
-impl GoalSupportReadPort for RejectingStorage {}
 
 #[async_trait::async_trait]
 impl FactIngestPort for RejectingStorage {
@@ -1182,7 +1031,6 @@ impl MemoryInspectPort for RejectingStorage {
     async fn load_memory_by_id(
         &self,
         _memory_id: crate::MemoryId,
-        _reader_personality_instance_id: Option<PersonalityInstanceId>,
         _sidecars: &[SidecarSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
         Ok(None)
@@ -1341,6 +1189,16 @@ impl GoalReadPort for RejectingStorage {
 }
 
 #[async_trait::async_trait]
+impl GoalWakeCandidatePort for RejectingStorage {
+    async fn list_goal_wake_candidates(
+        &self,
+        _req: &GoalWakeCandidateRequest<'_>,
+    ) -> Result<Vec<GoalWakeCandidate>, StorageError> {
+        Ok(Vec::new())
+    }
+}
+
+#[async_trait::async_trait]
 impl ChangeEventPort for RejectingStorage {
     async fn change_history(
         &self,
@@ -1399,7 +1257,7 @@ impl CitationPort for RejectingStorage {
         _read_owners: &[OwnerRef],
         _cited_object_id: uuid::Uuid,
         _sidecars: &[SidecarSpec],
-    ) -> Result<Vec<crate::personality::MemorySnapshot>, StorageError> {
+    ) -> Result<Vec<MemorySnapshot>, StorageError> {
         Ok(Vec::new())
     }
 
@@ -1487,90 +1345,6 @@ impl SourceBatchPort for RejectingStorage {
 }
 
 #[async_trait::async_trait]
-impl PersonalityReadPort for RejectingStorage {
-    async fn list_personality_instances(
-        &self,
-        _owner: &Owner,
-        _include_tombstoned: bool,
-    ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
-        Ok(Vec::new())
-    }
-}
-
-#[async_trait::async_trait]
-impl PersonalityWritePort for RejectingStorage {
-    async fn tombstone_personality(
-        &self,
-        _req: &TombstonePersonalityRequest,
-    ) -> Result<TombstonePersonalityResponse, StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
-        ))
-    }
-
-    async fn instantiate_personality(
-        &self,
-        _req: &InstantiatePersonalityRequest,
-    ) -> Result<InstantiatePersonalityResponse, StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
-        ))
-    }
-
-    async fn ensure_master_token_personality(
-        &self,
-        _owner: &Owner,
-        _master_token_id: uuid::Uuid,
-    ) -> Result<MasterTokenPersonality, StorageError> {
-        Err(StorageError::Internal(
-            "mock: ensure_master_token_personality not stubbed".into(),
-        ))
-    }
-
-    async fn ensure_subject_personality(
-        &self,
-        _owner: &Owner,
-        _subject: &OwnerRef,
-    ) -> Result<MasterTokenPersonality, StorageError> {
-        Err(StorageError::Internal(
-            "mock: ensure_subject_personality not stubbed".into(),
-        ))
-    }
-
-    async fn append_personality_memories(
-        &self,
-        _req: &PersonalityWriteRequest<'_>,
-    ) -> Result<PersonalityWriteOutcome, StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
-        ))
-    }
-}
-
-#[async_trait::async_trait]
-impl WakeConfigPort for RejectingStorage {
-    async fn set_wake_entries(
-        &self,
-        _req: &SetWakeEntriesRequest,
-    ) -> Result<SetWakeEntriesResponse, StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
-        ))
-    }
-
-    async fn set_wake_entries_within(
-        &self,
-        _owner: &Owner,
-        _personality_instance_id: PersonalityInstanceId,
-        _mutate: WakeEntriesMutator,
-    ) -> Result<SetWakeEntriesResponse, StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
-        ))
-    }
-}
-
-#[async_trait::async_trait]
 impl FactRetentionPort for RejectingStorage {
     async fn upsert_fact_retention(
         &self,
@@ -1632,7 +1406,7 @@ impl RegistryProjectionPort for RejectingStorage {
         _owner: &Owner,
         _memory_id: crate::MemoryId,
         _sidecars: &[SidecarSpec],
-    ) -> Result<Vec<crate::FactRow>, StorageError> {
+    ) -> Result<Vec<FactRow>, StorageError> {
         Ok(Vec::new())
     }
 
@@ -1643,25 +1417,5 @@ impl RegistryProjectionPort for RejectingStorage {
         _limit: usize,
     ) -> Result<Vec<AbstractionRow>, StorageError> {
         Ok(Vec::new())
-    }
-
-    async fn load_perspective_heads(
-        &self,
-        _owner: &Owner,
-        _instance: PersonalityInstanceId,
-        _root_perspective_memory_id: crate::MemoryId,
-        _sidecars: &[SidecarSpec],
-        _limit: usize,
-    ) -> Result<Vec<MemorySnapshot>, StorageError> {
-        Ok(Vec::new())
-    }
-
-    async fn lookup_prior_personality_head(
-        &self,
-        _owner: &Owner,
-        _instance: &PersonalityRef,
-        _schema_id: &crate::SchemaId,
-    ) -> Result<Option<crate::MemoryId>, StorageError> {
-        Ok(None)
     }
 }

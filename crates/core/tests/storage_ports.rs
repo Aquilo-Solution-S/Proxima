@@ -1,6 +1,5 @@
 #![allow(unused_variables)]
 
-use proxima_core::personality::*;
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
@@ -185,7 +184,6 @@ impl MemoryInspectPort for MemoryInspectFake {
     async fn load_memory_by_id(
         &self,
         memory_id: proxima_core::MemoryId,
-        reader_personality_instance_id: Option<PersonalityInstanceId>,
         sidecars: &[SidecarSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
         fake_error()
@@ -334,20 +332,6 @@ impl GoalWritePort for GoalWriteFake {
 }
 
 #[derive(Debug)]
-struct GoalSupportReadFake;
-
-#[async_trait::async_trait]
-impl GoalSupportReadPort for GoalSupportReadFake {
-    async fn active_personality_root(
-        &self,
-        _owner: &Owner,
-        _instance_id: PersonalityInstanceId,
-    ) -> Result<Option<MemoryId>, StorageError> {
-        fake_error()
-    }
-}
-
-#[derive(Debug)]
 struct GoalReadFake;
 
 #[async_trait::async_trait]
@@ -437,7 +421,7 @@ impl CitationPort for CitationFake {
         read_owners: &[OwnerRef],
         cited_object_id: uuid::Uuid,
         sidecars: &[SidecarSpec],
-    ) -> Result<Vec<proxima_core::personality::MemorySnapshot>, StorageError> {
+    ) -> Result<Vec<MemorySnapshot>, StorageError> {
         fake_error()
     }
 
@@ -528,28 +512,6 @@ impl SourceBatchPort for SourceBatchFake {
 }
 
 #[derive(Debug)]
-struct WakeConfigFake;
-
-#[async_trait::async_trait]
-impl WakeConfigPort for WakeConfigFake {
-    async fn set_wake_entries(
-        &self,
-        req: &SetWakeEntriesRequest,
-    ) -> Result<SetWakeEntriesResponse, StorageError> {
-        fake_error()
-    }
-
-    async fn set_wake_entries_within(
-        &self,
-        owner: &Owner,
-        personality_instance_id: PersonalityInstanceId,
-        mutate: WakeEntriesMutator,
-    ) -> Result<SetWakeEntriesResponse, StorageError> {
-        fake_error()
-    }
-}
-
-#[derive(Debug)]
 struct FactRetentionFake;
 
 #[async_trait::async_trait]
@@ -618,83 +580,6 @@ impl RegistryProjectionPort for RegistryProjectionFake {
     ) -> Result<Vec<AbstractionRow>, StorageError> {
         fake_error()
     }
-
-    async fn load_perspective_heads(
-        &self,
-        owner: &Owner,
-        instance: PersonalityInstanceId,
-        root_perspective_memory_id: proxima_core::MemoryId,
-        sidecars: &[SidecarSpec],
-        limit: usize,
-    ) -> Result<Vec<MemorySnapshot>, StorageError> {
-        fake_error()
-    }
-
-    async fn lookup_prior_personality_head(
-        &self,
-        owner: &Owner,
-        instance: &PersonalityRef,
-        schema_id: &proxima_core::SchemaId,
-    ) -> Result<Option<proxima_core::MemoryId>, StorageError> {
-        fake_error()
-    }
-}
-
-#[derive(Debug)]
-struct PersonalityReadFake;
-
-#[async_trait::async_trait]
-impl PersonalityReadPort for PersonalityReadFake {
-    async fn list_personality_instances(
-        &self,
-        owner: &Owner,
-        include_tombstoned: bool,
-    ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
-        fake_error()
-    }
-}
-
-#[derive(Debug)]
-struct PersonalityWriteFake;
-
-#[async_trait::async_trait]
-impl PersonalityWritePort for PersonalityWriteFake {
-    async fn tombstone_personality(
-        &self,
-        req: &TombstonePersonalityRequest,
-    ) -> Result<TombstonePersonalityResponse, StorageError> {
-        fake_error()
-    }
-
-    async fn instantiate_personality(
-        &self,
-        req: &InstantiatePersonalityRequest,
-    ) -> Result<InstantiatePersonalityResponse, StorageError> {
-        fake_error()
-    }
-
-    async fn ensure_master_token_personality(
-        &self,
-        owner: &Owner,
-        master_token_id: uuid::Uuid,
-    ) -> Result<MasterTokenPersonality, StorageError> {
-        fake_error()
-    }
-
-    async fn ensure_subject_personality(
-        &self,
-        owner: &Owner,
-        subject: &OwnerRef,
-    ) -> Result<MasterTokenPersonality, StorageError> {
-        fake_error()
-    }
-
-    async fn append_personality_memories(
-        &self,
-        req: &PersonalityWriteRequest<'_>,
-    ) -> Result<PersonalityWriteOutcome, StorageError> {
-        fake_error()
-    }
 }
 
 fn assert_port<T: Send + Sync + 'static>() {}
@@ -711,7 +596,6 @@ fn public_storage_ports_can_be_mocked_independently() {
     assert_port::<EmbeddingWriteFake>();
     assert_port::<EmbeddingJobFake>();
     assert_port::<GoalWriteFake>();
-    assert_port::<GoalSupportReadFake>();
     assert_port::<GoalReadFake>();
     assert_port::<ChangeEventFake>();
     assert_port::<EdgeReadFake>();
@@ -719,9 +603,6 @@ fn public_storage_ports_can_be_mocked_independently() {
     assert_port::<OwnerAccessReadFake>();
     assert_port::<OwnerMembershipAdminFake>();
     assert_port::<SourceBatchFake>();
-    assert_port::<PersonalityReadFake>();
-    assert_port::<PersonalityWriteFake>();
-    assert_port::<WakeConfigFake>();
     assert_port::<FactRetentionFake>();
     assert_port::<ComplianceEraseFake>();
     assert_port::<RegistryProjectionFake>();

@@ -235,7 +235,6 @@ fn draft_for(_owner: &Owner, payload_value: &Value, cited: bool) -> FactWriteCom
         },
     });
     FactWriteCommand {
-        author_personality_instance_id: None,
         schema_id: StatefulFactV1::schema_id(),
         schema_version: SchemaVersion::new(StatefulFactV1::SCHEMA_VERSION),
         payload: canonical_json_bytes(payload_value),
@@ -692,10 +691,10 @@ async fn insert_direct_derivative(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+             operator_kind, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/cleanup-abstraction-v1', 1,
                  'Abstraction', 'derivative', 'FtoA', 'test-model',
-                 'test-prompt', '00000000-0000-0000-0000-000000000000'::uuid, 0)",
+                 'test-prompt')",
     )
     .bind(derivative_id)
     .bind(owner_kind)

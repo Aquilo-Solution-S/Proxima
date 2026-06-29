@@ -23,7 +23,7 @@ pub mod models;
 pub mod owner;
 pub mod payload;
 pub mod payload_contract;
-pub mod personality;
+pub mod read_models;
 pub mod relation;
 pub mod secrets;
 pub mod storage;
@@ -64,7 +64,7 @@ pub use models::*;
 pub use owner::*;
 pub use payload::*;
 pub use payload_contract::assert_no_serde_json_value_fields;
-pub use personality::*;
+pub use read_models::*;
 pub use relation::*;
 pub use secrets::*;
 pub use storage::*;
@@ -73,6 +73,10 @@ pub use storage::*;
 pub use verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWrite, FactIngestOutcome, FactReceiptDraft,
     FactWriteCommand,
+};
+pub use verbs::goal_write::{
+    GoalAssignmentTarget, GoalDependencyRef, GoalEvidenceRef, GoalTopologyWrite,
+    GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger,
 };
 pub use verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 pub use verbs::*;
@@ -385,8 +389,7 @@ macro_rules! proxima_flavor {
 pub use storage_ports::{
     ChangeEventPort, CitationPort, ComplianceErasePort, EdgeReadPort, EmbeddingJobPort,
     EmbeddingTextPort, EmbeddingWritePort, FactIngestPort, FactRetentionPort, GoalReadPort,
-    GoalSupportReadPort, GoalWritePort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
+    GoalWritePort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
     OperatorInvocationReadPort, OperatorInvocationWritePort, OwnerAccessReadPort,
     OwnerMembershipAdminPort, RegistryProjectionPort, SourceBatchPort, StoragePorts,
-    WakeConfigPort,
 };

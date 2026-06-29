@@ -10,7 +10,6 @@ mod goal_write;
 mod ingest;
 pub mod mcp_listener;
 mod memory_authoring;
-mod personality;
 mod pipeline;
 mod query;
 mod read_verbs;
@@ -24,32 +23,23 @@ use futures::future::BoxFuture;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
-use crate::access::Relation;
-use crate::authz::AuthzContext;
+use crate::Owner;
 use crate::error::ProtocolError;
 use crate::llm::{AnthropicClient, EmbeddingClient};
-use crate::storage::StorageError;
 use crate::storage_ports::EngineStoragePorts;
 use crate::verbs::schema::FlavorRegistryFrozen;
-use crate::{Owner, OwnerRef, SetWakeEntriesRequest, SetWakeEntriesResponse, WakeEntryDraft};
 
 #[allow(unused_imports)]
 pub(in crate::engine) use access_sets::AccessSets;
 pub use goal_write::{
     GoalCreatePayloadWriteRequest, GoalDecomposeRequest, GoalMarkAchievedRequest,
-    GoalModifyRequest, GoalTargetSelf, GoalTransitionRequest,
+    GoalModifyRequest, GoalTransitionRequest,
 };
 pub use ingest::EmbeddingDrainOutcome;
 pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
 pub use memory_authoring::{
     AppendMemoryEdgeRequestInput, AuthorDerivedAuthorizedOutcome, AuthorDerivedEdgeInput,
     AuthorDerivedRequestInput,
-};
-pub use personality::{
-    AddWakeEntryRequest, AddWakeEntryResponse, InstantiatePersonalityAdminResponse,
-    PersonalityConfigAuditEmit, PersonalityConfigChangedInput, RemoveWakeEntryRequest,
-    RemoveWakeEntryResponse, SetWakeEntriesAdminResponse, TombstonePersonalityAdminResponse,
-    UpdateWakeEntryRequest, UpdateWakeEntryResponse, WakeEntryPatchInput,
 };
 pub use pipeline::{MemoryPermit, PermitMode};
 pub use read_verbs::{
@@ -90,25 +80,6 @@ pub struct EmbeddingReloadOutcome {
 #[derive(Debug)]
 pub struct EngineHandle {
     pub mcp_join: Option<JoinHandle<()>>,
-}
-
-fn map_set_wake_entries_storage_err(
-    err: StorageError,
-    entries: &[WakeEntryDraft],
-) -> ProtocolError {
-    match err {
-        StorageError::NotFound => ProtocolError::not_found("personality instance not found"),
-        StorageError::ConstraintViolation(msg)
-            if msg.contains("personality_wake_entries_active_trigger_uq") =>
-        {
-            let first = entries.first();
-            ProtocolError::trigger_conflict(
-                first.map_or("unknown", |entry| entry.trigger_kind.as_str()),
-                first.map_or("unknown", |entry| entry.trigger_id.as_str()),
-            )
-        }
-        other => ProtocolError::internal(other.to_string()),
-    }
 }
 
 impl Engine {
@@ -158,42 +129,6 @@ impl Engine {
         Ok(outcome)
     }
 
-    /// Owner-scoped replacement of a personality instance's wake entries.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks the admin role; `InvalidArgument`,
-    /// `DuplicateTriggerInRequest` on request validation; `NotFound`
-    /// when the personality instance doesn't exist; `TriggerConflict`
-    /// or `Internal` from storage.
-    pub async fn set_wake_entries(
-        &self,
-        authz: &AuthzContext,
-        req: &SetWakeEntriesRequest,
-    ) -> Result<SetWakeEntriesResponse, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, &req.principal, Relation::Admin)
-            .await?;
-        self.set_wake_entries_authorized(&permit, req).await
-    }
-
-    async fn set_wake_entries_authorized(
-        &self,
-        permit: &MemoryPermit,
-        req: &SetWakeEntriesRequest,
-    ) -> Result<SetWakeEntriesResponse, ProtocolError> {
-        let mut effective = req.clone();
-        effective.principal = *permit.owner();
-        crate::personality::validate_wake_entries_detect_config(&effective.entries)?;
-        self.storage
-            .personality
-            .wake_config
-            .set_wake_entries(&effective)
-            .await
-            .map_err(|err| map_set_wake_entries_storage_err(err, &effective.entries))
-    }
-
     /// Bound MCP URL after [`Engine::start`] succeeds. `None` before
     /// start, or after start if no [`EngineMcpListener`] was attached.
     #[must_use]
@@ -206,45 +141,6 @@ impl Engine {
     /// listener task. Production callers go through `start` instead.
     pub async fn set_mcp_url(&self, url: String) {
         *self.mcp_url.write().await = Some(url);
-    }
-
-    /// Upsert the shell-author personality for `master_token_id` under
-    /// `owner`. Delegates to the personality write storage port.
-    /// Called by `McpToolHost::call_tool` (in the `mcp-server` crate)
-    /// before dispatching master-token requests so the per-token identity
-    /// is always minted before `caller_self_perspective` is defaulted.
-    ///
-    /// # Errors
-    ///
-    /// Propagates storage failures unchanged.
-    pub async fn ensure_master_token_personality(
-        &self,
-        owner: &Owner,
-        master_token_id: uuid::Uuid,
-    ) -> Result<crate::storage::MasterTokenPersonality, StorageError> {
-        self.storage
-            .personality
-            .personality_write
-            .ensure_master_token_personality(owner, master_token_id)
-            .await
-    }
-
-    /// Upsert the personality for `subject` under `owner`. Delegates to
-    /// the personality write storage port.
-    ///
-    /// # Errors
-    ///
-    /// Propagates storage failures unchanged.
-    pub async fn ensure_subject_personality(
-        &self,
-        owner: &Owner,
-        subject: &OwnerRef,
-    ) -> Result<crate::storage::MasterTokenPersonality, StorageError> {
-        self.storage
-            .personality
-            .personality_write
-            .ensure_subject_personality(owner, subject)
-            .await
     }
 
     /// Spawn the MCP listener if attached.

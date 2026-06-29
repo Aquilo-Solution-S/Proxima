@@ -1,6 +1,6 @@
 use proxima::{
-    GoalAuthorship, GoalCreateRequest, GoalPayload, GoalPayloadWrite, IdempotencyKey, MemoryId,
-    OwnerRef, PayloadKeyBuilder, SystemOrigin, ToolId, UserId,
+    GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalPayload, GoalPayloadWrite,
+    IdempotencyKey, MemoryId, OwnerRef, PayloadKeyBuilder, SystemOrigin, ToolId, UserId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -36,7 +36,7 @@ fn facade_reexports_typed_goalwrite_surface_for_embedded_hosts() {
 
     let request = GoalCreateRequest::product(
         owner,
-        target_self,
+        GoalAssignmentTarget::perspective(target_self),
         IdempotencyKey::new("product:daily-practice").expect("stable product request id is valid"),
         "First goal",
         "Practice daily",
@@ -45,7 +45,7 @@ fn facade_reexports_typed_goalwrite_surface_for_embedded_hosts() {
         },
     );
     assert_eq!(request.principal, owner);
-    assert_eq!(request.target_self_perspective_id, target_self);
+    assert_eq!(request.topology.assignment().perspective_id(), target_self);
 
     let system_request = request.with_authorship(GoalAuthorship::System(SystemOrigin::Tool {
         tool_id: ToolId::new("product/onboarding"),

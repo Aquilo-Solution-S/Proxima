@@ -10,7 +10,7 @@ use crate::mcp::{McpToolCtx, McpToolError};
 use crate::verbs::query::{
     EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
-use crate::{McpTool, PersonalityInstanceId, SchemaId};
+use crate::{McpTool, SchemaId};
 
 use super::memory::search::{NeighborEdge, neighbor_edges_from_rows};
 
@@ -131,11 +131,6 @@ pub struct SearchMemoriesArgs {
     #[serde(default)]
     #[schemars(description = "Result ordering: relevance or recency. Defaults to relevance.")]
     pub order: SearchOrder,
-    #[serde(default)]
-    #[schemars(
-        description = "Optional reader personality id/handle for Abstraction/Perspective visibility. Omit for no-reader owner-visible semantics."
-    )]
-    pub reader_personality: Option<String>,
     #[serde(default = "default_include_neighbor_edges")]
     #[schemars(
         description = "Include neighbor edges touching matched memories. Defaults to true; set false for lean results."
@@ -170,14 +165,11 @@ pub struct SearchMemoryOutput {
     pub space: String,
     pub kind: String,
     pub schema_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub authoring_personality_instance_id: Option<String>,
     pub created_at: String,
     pub snippet: String,
     pub score: f32,
     pub lexical_score: f32,
     pub similarity_score: f32,
-    pub wake_chain_depth: u16,
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
@@ -185,7 +177,7 @@ pub struct SearchMemoryOutput {
 
 impl McpTool for SearchMemoriesTool {
     const NAME: &'static str = "core_search_memories";
-    const DESCRIPTION: &'static str = "Search owner-scoped memories by lexical, semantic, or hybrid ranking. Defaults to current heads only; pass supersession=all for full history. Set include_body=true to hydrate body text in the same batched read. Optional reader_personality applies read-scope filtering for Abstractions/Perspectives; omitted reader uses no-reader owner-visible semantics.";
+    const DESCRIPTION: &'static str = "Search owner-scoped memories by lexical, semantic, or hybrid ranking. Defaults to current heads only; pass supersession=all for full history. Set include_body=true to hydrate body text in the same batched read.";
     type Args = SearchMemoriesArgs;
     type Output = SearchMemoriesOutput;
 
@@ -209,11 +201,6 @@ impl McpTool for SearchMemoriesTool {
                 resolve_effective_search_mode(mode, embeddings_available)?;
             let since = parse_rfc3339(args.since.as_deref(), "since")?;
             let until = parse_rfc3339(args.until.as_deref(), "until")?;
-            let reader = args
-                .reader_personality
-                .as_deref()
-                .map(|raw| ctx.resolve_personality(raw))
-                .transpose()?;
             let (query_embedding, embedding_model_id) =
                 if matches!(effective_mode, SearchMode::Semantic | SearchMode::Hybrid) {
                     let engine = ctx.engine().ok_or_else(|| {
@@ -235,7 +222,6 @@ impl McpTool for SearchMemoriesTool {
                 effective_mode,
                 since,
                 until,
-                reader,
                 query_embedding,
                 embedding_model_id,
                 body_max_chars: effective_body_max_chars(args.body_max_chars),
@@ -269,7 +255,6 @@ struct PreparedSearch {
     effective_mode: SearchMode,
     since: Option<time::OffsetDateTime>,
     until: Option<time::OffsetDateTime>,
-    reader: Option<PersonalityInstanceId>,
     query_embedding: Option<Vec<f32>>,
     embedding_model_id: Option<String>,
     body_max_chars: usize,
@@ -329,7 +314,6 @@ async fn search_one_space(
         order: args.order,
         query_embedding: prepared.query_embedding.clone(),
         embedding_model_id: prepared.embedding_model_id.clone(),
-        reader_personality_instance_id: prepared.reader,
     };
     let engine = ctx
         .engine()
@@ -420,16 +404,11 @@ fn search_memory_output(
         space: space.to_string(),
         kind: row.kind.as_str().to_string(),
         schema_id: row.schema_id.as_str().to_string(),
-        authoring_personality_instance_id: super::get_memory::format_authoring_personality(
-            ctx,
-            row.authoring_personality_instance_id,
-        ),
         created_at: format_rfc3339(row.created_at)?,
         snippet: row.snippet,
         score: row.score,
         lexical_score: row.lexical_score,
         similarity_score: row.similarity_score,
-        wake_chain_depth: row.wake_chain_depth.into_inner(),
         tags,
         body,
     })

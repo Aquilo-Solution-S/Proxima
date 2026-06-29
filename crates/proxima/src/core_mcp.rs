@@ -123,15 +123,8 @@ impl CoreMcpTools {
     /// Dispatch one registered core/flavor MCP tool under caller-supplied
     /// host authz and storage owner.
     ///
-    /// This facade entry point threads NO personality author
-    /// (`personality_instance_id: None`), so tools that emit an audit Fact
-    /// for config mutations may log a non-fatal audit-emission failure here.
-    /// This caveat is specific to direct facade dispatch and to the
-    /// `System` / no-auth path: callers reaching tools through the MCP wire
-    /// server get a subject personality auto-resolved per authenticated
-    /// identity for `HostBearer`/`MasterDev` (see `mcp-server` `server.rs`
-    /// `ensure_subject_personality`), and thus full attribution. The tool
-    /// call itself still succeeds or fails on its own verb checks.
+    /// Direct facade dispatch supplies host authz and optional caller
+    /// Perspective metadata only.
     ///
     /// # Errors
     ///
@@ -155,7 +148,6 @@ impl CoreMcpTools {
             model_id: model_id.clone().unwrap_or_else(|| "unknown".to_string()),
             client_name: "host".into(),
             client_version: "0".into(),
-            personality_instance_id: None,
             caller_self_perspective: None,
         };
         let auth = McpAuthContext {
@@ -189,7 +181,6 @@ impl CoreMcpTools {
             model_id: model_id.clone().unwrap_or_else(|| "unknown".to_string()),
             client_name: "host".into(),
             client_version: "0".into(),
-            personality_instance_id: None,
             caller_self_perspective: None,
         };
         let auth = McpAuthContext {

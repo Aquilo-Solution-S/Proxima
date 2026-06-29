@@ -9,8 +9,8 @@ use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
     AbstractionPayload, AgentDerivationV1, AgentNoteV1, AuthPath, AuthorshipKindMask, AuthzContext,
     EdgeAuthorshipKind, EntityKind, EntityKindMask, ErrorCode, FlavorRegistry, MemoryId,
-    MemoryOperatorKind, Owner, OwnerRef, PersonalityInstanceId, Relation, RelationClass,
-    RelationDescriptor, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, UserId,
+    MemoryOperatorKind, Owner, OwnerRef, Relation, RelationClass, RelationDescriptor, SchemaId,
+    SchemaVersion, SidecarPayload, SourceBatchId, UserId,
 };
 use uuid::Uuid;
 
@@ -41,7 +41,6 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
 
     let owner = owner_fixture();
     let source_abstraction = insert_source_abstraction(&pg, &owner).await?;
-    let author_personality = PersonalityInstanceId::new(Uuid::now_v7());
     let mut registry = FlavorRegistry::new();
     registry.add_relation(RelationDescriptor::substrate(
         "test/derived-from-abstraction",
@@ -94,7 +93,6 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
             operator_kind: MemoryOperatorKind::ExternalAgent,
             model_id: "agent-model",
             prompt_version: "test-prompt",
-            author_personality_instance_id: Some(author_personality),
             sidecar_payload,
             supersedes: None,
             edges: &edges,
@@ -104,8 +102,8 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
     assert!(!outcome.idempotent_replay);
     assert_eq!(outcome.edge_count, 1);
     let memory_id = outcome.memory_id.into_inner();
-    let memory_row: (EntityKind, String, Uuid) = sqlx::query_as(
-        "SELECT kind, text, personality_instance_id
+    let memory_row: (EntityKind, String) = sqlx::query_as(
+        "SELECT kind, text
            FROM proxima_core.memories
           WHERE memory_id = $1",
     )
@@ -114,7 +112,6 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
     .await?;
     assert_eq!(memory_row.0, EntityKind::Abstraction);
     assert_eq!(memory_row.1, "derived body");
-    assert_eq!(memory_row.2, author_personality.into_inner());
 
     let sidecar_title: String = sqlx::query_scalar(
         "SELECT title FROM proxima_core.agent_derivation_v1 WHERE memory_id = $1",
@@ -160,7 +157,6 @@ async fn engine_author_derived_supersedes_in_same_transaction()
             "test-embed",
             &[22.0, 1.0, 2.0],
         )));
-    let author_personality = PersonalityInstanceId::new(Uuid::now_v7());
     let old_memory_id = MemoryId::new(Uuid::now_v7());
     let new_memory_id = MemoryId::new(Uuid::now_v7());
 
@@ -185,7 +181,6 @@ async fn engine_author_derived_supersedes_in_same_transaction()
             operator_kind: MemoryOperatorKind::ExternalAgent,
             model_id: "agent-model",
             prompt_version: "test-prompt",
-            author_personality_instance_id: Some(author_personality),
             sidecar_payload: old_sidecar,
             supersedes: None,
             edges: &[],
@@ -215,7 +210,6 @@ async fn engine_author_derived_supersedes_in_same_transaction()
             operator_kind: MemoryOperatorKind::ExternalAgent,
             model_id: "agent-model",
             prompt_version: "test-prompt",
-            author_personality_instance_id: Some(author_personality),
             sidecar_payload: new_sidecar,
             supersedes: Some(old_memory_id),
             edges: &[],
@@ -278,7 +272,6 @@ async fn engine_author_derived_supersedes_in_same_transaction()
                 direction: proxima_core::verbs::query::MemoryLineageDirection::Ancestors,
                 depth: 2,
                 limit: 10,
-                reader_personality_instance_id: None,
             },
         )
         .await?;
@@ -528,10 +521,10 @@ async fn insert_source_memory(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+             operator_kind, model_id, prompt_version)
          VALUES ($1, $2, $3, $4, 1, $5,
                  $6, 'ExternalAgent', 'source-model',
-                 'source-prompt', $7, 0)",
+                 'source-prompt')",
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -539,7 +532,6 @@ async fn insert_source_memory(
     .bind(AgentDerivationV1::SCHEMA_ID)
     .bind(kind)
     .bind(text)
-    .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
     Ok(MemoryId::new(memory_id))
@@ -562,7 +554,6 @@ fn derived_authorized_request(
         operator_kind: MemoryOperatorKind::ExternalAgent,
         model_id: "agent-model",
         prompt_version: "test-prompt",
-        author_personality_instance_id: None,
         sidecar_payload: derivation_sidecar(kind, title),
         supersedes,
         edges: &[],

@@ -5,9 +5,10 @@ use crate::common::{create_db, db_url, drop_db};
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
-    DecomposeGoalOutcome, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalPayloadWrite,
-    GoalState, GoalWriteOutcome, IdempotencyKey, ModifyGoalAtomicRequest,
-    TransitionGoalAtomicRequest,
+    DecomposeGoalOutcome, GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship,
+    GoalDependencyRef, GoalDraft, GoalEvidenceRef, GoalPayloadWrite, GoalState, GoalTopologyWrite,
+    GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger, GoalWriteOutcome, IdempotencyKey,
+    ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
 use proxima_core::{
     CORE_DEPENDS_ON_RELATION, CORE_MOTIVATED_BY_RELATION, FlavorRegistry, FlavorRegistryFrozen,
@@ -47,11 +48,28 @@ fn fresh_draft(owner: &Owner, request_id: String) -> GoalDraft {
         payload: b"{}".to_vec(),
         sidecar_payload: None,
         state: GoalState::Active,
-        parent_goal_ids: vec![],
+        topology: goal_topology(MemoryId::new(Uuid::nil()), Vec::new(), Vec::new()),
+        wake: None,
         supersedes_goal_id: None,
         authorship: GoalAuthorship::User,
         request_id,
     }
+}
+
+fn goal_topology(
+    assignment: MemoryId,
+    dependencies: Vec<proxima_core::GoalId>,
+    evidence: Vec<GoalEvidenceRef>,
+) -> GoalTopologyWrite {
+    GoalTopologyWrite::new(
+        GoalAssignmentTarget::perspective(assignment),
+        dependencies
+            .into_iter()
+            .map(GoalDependencyRef::new)
+            .collect(),
+        evidence,
+    )
+    .expect("test goal topology is valid")
 }
 
 fn replacement_payload(title: &str, text: &str, payload: &[u8]) -> GoalPayloadWrite {
@@ -73,6 +91,17 @@ fn goal_context(registry: &FlavorRegistryFrozen, self_id: MemoryId) -> GoalAtomi
     }
 }
 
+fn wake_config(
+    registry: &FlavorRegistryFrozen,
+    trigger: GoalWakeTrigger,
+    hard_memory_ids: &[MemoryId],
+) -> GoalWakeConfigWrite {
+    let search =
+        GoalWakeToolId::parse("core_search_memories", registry).expect("registered search tool");
+    GoalWakeConfigWrite::new(trigger, vec![search], "wake prompt", hard_memory_ids)
+        .expect("wake config shape")
+}
+
 async fn insert_self(
     pg: &PgStorage,
     owner: &Owner,
@@ -82,16 +111,15 @@ async fn insert_self(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id)
+             operator_kind, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/self', 1, $4,
-                 'self', $5, 'test-model', 'v1', $6)",
+                 'self', $5, 'test-model', 'v1')",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_id)
     .bind(proxima_core::EntityKind::Perspective)
     .bind(proxima_core::MemoryOperatorKind::AtoP)
-    .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
     Ok(MemoryId::new(memory_id))
@@ -106,16 +134,15 @@ async fn insert_evidence_abstraction(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id)
+             operator_kind, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/evidence-abstraction', 1, $4,
-                 'evidence', $5, 'test-model', 'v1', $6)",
+                 'evidence', $5, 'test-model', 'v1')",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_id)
     .bind(proxima_core::EntityKind::Abstraction)
     .bind(proxima_core::MemoryOperatorKind::FtoA)
-    .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
     Ok(MemoryId::new(memory_id))
@@ -125,8 +152,14 @@ async fn create_goal(
     pg: &PgStorage,
     registry: &proxima_core::FlavorRegistryFrozen,
     self_id: MemoryId,
-    draft: GoalDraft,
+    mut draft: GoalDraft,
 ) -> Result<GoalWriteOutcome, proxima_core::StorageError> {
+    draft.topology = GoalTopologyWrite::new(
+        GoalAssignmentTarget::perspective(self_id),
+        draft.topology.dependencies().to_vec(),
+        draft.topology.evidence().to_vec(),
+    )
+    .map_err(|err| StorageError::ConstraintViolation(err.message))?;
     pg.create_goal_atomic(&CreateGoalAtomicRequest {
         draft,
         context: GoalAtomicContext {
@@ -134,8 +167,6 @@ async fn create_goal(
             embedding_model_id: None,
             author_self_perspective_id: Some(self_id),
         },
-        target_self_perspective_id: self_id,
-        evidence: Vec::new(),
     })
     .await
 }
@@ -193,7 +224,7 @@ async fn decompose_goal(
         parent_goal_id,
         authorship: GoalAuthorship::User,
         context: goal_context(registry, self_id),
-        target_self_perspective_id: self_id,
+        topology: goal_topology(self_id, Vec::new(), Vec::new()),
         children,
     })
     .await
@@ -262,6 +293,91 @@ async fn goal_create_atom_writes_goal_side_effects_and_replays() {
 
     let _ = drop_db(&db_name).await;
     result.expect("goal create atom test failed");
+}
+
+#[tokio::test]
+async fn goal_create_atom_rejects_invalid_wake_config_before_goal_insert() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let self_id = insert_self(&pg, &owner).await?;
+        let registry = FlavorRegistry::new().freeze();
+        let mut draft = fresh_draft(&owner, "req-invalid-wake".to_string());
+        draft.wake = Some(wake_config(
+            &registry,
+            GoalWakeTrigger::FactSchema {
+                schema_id: SchemaId::new("test/missing-fact-v1".into()),
+                schema_version: SchemaVersion::new(1),
+            },
+            &[],
+        ));
+
+        let err = create_goal(&pg, &registry, self_id, draft)
+            .await
+            .expect_err("storage rejects unregistered wake trigger Fact schema");
+        assert!(
+            err.to_string()
+                .contains("unregistered wake trigger Fact schema")
+        );
+
+        let goals: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
+            .fetch_one(pg.pool())
+            .await?;
+        assert_eq!(goals.0, 0);
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("goal wake storage validation test failed");
+}
+
+#[tokio::test]
+async fn goal_create_atom_rejects_deserialized_invalid_wake_tool_id() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let self_id = insert_self(&pg, &owner).await?;
+        let registry = FlavorRegistry::new().freeze();
+        let malformed_wake: GoalWakeConfigWrite = serde_json::from_value(serde_json::json!({
+            "trigger": {
+                "FactSchema": {
+                    "schema_id": "core/agent-note-v1",
+                    "schema_version": 1
+                }
+            },
+            "tool_ids": ["not_registered_tool"],
+            "prompt": "wake prompt",
+            "hard_memory_ids": []
+        }))?;
+        let mut draft = fresh_draft(&owner, "req-invalid-tool".to_string());
+        draft.wake = Some(malformed_wake);
+
+        let err = create_goal(&pg, &registry, self_id, draft)
+            .await
+            .expect_err("storage rejects deserialized invalid wake tool id");
+        assert!(err.to_string().contains("invalid wake tool id"));
+
+        let goals: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
+            .fetch_one(pg.pool())
+            .await?;
+        assert_eq!(goals.0, 0);
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("goal wake tool-id validation test failed");
 }
 
 #[tokio::test]
@@ -354,7 +470,7 @@ async fn goal_create_atom_with_parent_writes_goal_parent() {
         .await?;
 
         let mut child = fresh_draft(&owner, "req-child".to_string());
-        child.parent_goal_ids = vec![parent.goal_id];
+        child.topology = goal_topology(self_id, vec![parent.goal_id], Vec::new());
         let child_outcome = create_goal(&pg, &registry, self_id, child).await?;
         assert!(!child_outcome.idempotent_replay);
 
@@ -445,9 +561,7 @@ async fn goal_achieve_atom_writes_achieved_and_fact() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let evidence_id = insert_evidence_abstraction(&pg, &owner).await?;
-        let evidence = vec![proxima_core::verbs::goal_write::GoalEvidenceRef {
-            memory_id: evidence_id,
-        }];
+        let evidence = vec![GoalEvidenceRef::new(evidence_id)];
         let registry = FlavorRegistry::new().freeze();
         let prior = create_goal(
             &pg,
@@ -602,9 +716,7 @@ async fn goal_achieve_atom_rejects_evidence_without_home_owner() {
             fresh_draft(&owner, "req-no-owner-evidence-prior".to_string()),
         )
         .await?;
-        let evidence = vec![proxima_core::verbs::goal_write::GoalEvidenceRef {
-            memory_id: evidence_id,
-        }];
+        let evidence = vec![GoalEvidenceRef::new(evidence_id)];
 
         let err = achieve_goal(
             &pg,
@@ -814,9 +926,7 @@ async fn goal_decompose_atom_writes_children_and_parents() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let evidence_id = insert_evidence_abstraction(&pg, &owner).await?;
-        let evidence = vec![proxima_core::verbs::goal_write::GoalEvidenceRef {
-            memory_id: evidence_id,
-        }];
+        let evidence = vec![GoalEvidenceRef::new(evidence_id)];
         let registry = FlavorRegistry::new().freeze();
         let parent = create_goal(
             &pg,
@@ -829,12 +939,14 @@ async fn goal_decompose_atom_writes_children_and_parents() {
             ChildGoalDraft {
                 payload: replacement_payload("Child one", "Child one text", b"{}"),
                 evidence: evidence.clone(),
+                wake: None,
                 request_id: IdempotencyKey::new("req-decompose-child-1")
                     .expect("valid idempotency key"),
             },
             ChildGoalDraft {
                 payload: replacement_payload("Child two", "Child two text", b"{}"),
                 evidence: evidence.clone(),
+                wake: None,
                 request_id: IdempotencyKey::new("req-decompose-child-2")
                     .expect("valid idempotency key"),
             },
@@ -865,12 +977,14 @@ async fn goal_decompose_atom_writes_children_and_parents() {
             ChildGoalDraft {
                 payload: replacement_payload("Child one", "Child one text", b"{}"),
                 evidence: evidence.clone(),
+                wake: None,
                 request_id: IdempotencyKey::new("req-decompose-child-1")
                     .expect("valid idempotency key"),
             },
             ChildGoalDraft {
                 payload: replacement_payload("Child two", "Child two text", b"{}"),
                 evidence,
+                wake: None,
                 request_id: IdempotencyKey::new("req-decompose-child-2")
                     .expect("valid idempotency key"),
             },
@@ -934,6 +1048,7 @@ async fn goal_decompose_atom_rejects_cross_owner_parent() {
             vec![ChildGoalDraft {
                 payload: replacement_payload("Cross child", "Cross child text", b"{}"),
                 evidence: vec![],
+                wake: None,
                 request_id: IdempotencyKey::new("req-cross-owner-child")
                     .expect("valid idempotency key"),
             }],
@@ -947,7 +1062,7 @@ async fn goal_decompose_atom_rejects_cross_owner_parent() {
 
         let mut cross_parent_child =
             fresh_draft(&owner_b, "req-cross-owner-create-child".to_string());
-        cross_parent_child.parent_goal_ids = vec![parent.goal_id];
+        cross_parent_child.topology = goal_topology(self_b, vec![parent.goal_id], Vec::new());
         let err = create_goal(&pg, &registry, self_b, cross_parent_child)
             .await
             .expect_err("cross-owner parent edge rejected");
@@ -979,6 +1094,7 @@ async fn goal_decompose_atom_rejects_cross_owner_parent() {
             vec![ChildGoalDraft {
                 payload: replacement_payload("Inactive child", "Inactive child text", b"{}"),
                 evidence: vec![],
+                wake: None,
                 request_id: IdempotencyKey::new("req-inactive-child")
                     .expect("valid idempotency key"),
             }],
@@ -1030,7 +1146,7 @@ async fn goal_create_atom_rejects_inactive_or_superseded_parent() {
         )
         .await?;
         let mut inactive_child = fresh_draft(&owner, "req-direct-inactive-child".to_string());
-        inactive_child.parent_goal_ids = vec![paused_parent.goal_id];
+        inactive_child.topology = goal_topology(self_id, vec![paused_parent.goal_id], Vec::new());
         let inactive_err = create_goal(&pg, &registry, self_id, inactive_child)
             .await
             .expect_err("inactive direct create parent rejected");
@@ -1058,7 +1174,8 @@ async fn goal_create_atom_rejects_inactive_or_superseded_parent() {
         )
         .await?;
         let mut superseded_child = fresh_draft(&owner, "req-direct-superseded-child".to_string());
-        superseded_child.parent_goal_ids = vec![superseded_parent.goal_id];
+        superseded_child.topology =
+            goal_topology(self_id, vec![superseded_parent.goal_id], Vec::new());
         let superseded_err = create_goal(&pg, &registry, self_id, superseded_child)
             .await
             .expect_err("superseded direct create parent rejected");
@@ -1088,9 +1205,7 @@ async fn goal_modify_atom_writes_replacement() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let evidence_id = insert_evidence_abstraction(&pg, &owner).await?;
-        let evidence = vec![proxima_core::verbs::goal_write::GoalEvidenceRef {
-            memory_id: evidence_id,
-        }];
+        let evidence = vec![GoalEvidenceRef::new(evidence_id)];
         let registry = FlavorRegistry::new().freeze();
         let prior = create_goal(
             &pg,
@@ -1114,6 +1229,7 @@ async fn goal_modify_atom_writes_replacement() {
                 request_id: IdempotencyKey::new("req-modify").expect("valid idempotency key"),
                 context: goal_context(&registry, self_id),
                 evidence: Some(evidence.clone()),
+                wake: None,
             })
             .await?;
         assert!(!outcome.idempotent_replay);
@@ -1141,6 +1257,7 @@ async fn goal_modify_atom_writes_replacement() {
                 request_id: IdempotencyKey::new("req-modify").expect("valid idempotency key"),
                 context: goal_context(&registry, self_id),
                 evidence: Some(evidence),
+                wake: None,
             })
             .await?;
         assert!(replay.idempotent_replay);

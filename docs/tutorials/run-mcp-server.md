@@ -16,9 +16,9 @@ Expected: server listens on `http://127.0.0.1:31415/mcp`.
 
 ## Tool Surface Profiles
 
-The default substrate exposes memory, goals, personality, wake config, read scope,
-citations, fact tombstones, and introspection tools. `PROXIMA_TOOL_PROFILE=memory`
-shrinks the advertised surface for agent memory use.
+The default substrate exposes memory, goals, citations, fact tombstones,
+membership/profile-scoped administration, and introspection tools.
+`PROXIMA_TOOL_PROFILE=memory` shrinks the advertised surface for agent memory use.
 
 ```sh
 PROXIMA_TOOL_PROFILE=memory cargo run -p proxima-mcp -- --owner-user "$OWNER_USER" --master-token "$MASTER_TOKEN"

@@ -1,4 +1,4 @@
-use proxima_core::personality::{ChangeEventForWake, PersonalityInstanceId, WakeChainDepth};
+use proxima_core::read_models::ChangeEventForWake;
 use proxima_core::{Owner, OwnerRef, OwnerRefKind, StorageError};
 use sqlx::PgPool;
 use sqlx::Row;
@@ -20,7 +20,7 @@ pub async fn list_change_events_after(
         crate::access::owner_columns::owner_binds(&proxima_core::access::world());
     let edge_visibility = edge_event_visibility_predicate(1, 2, 5, 6);
     let sql = format!(
-        "SELECT ce.seq, ce.entity_personality_instance_id, ce.wake_chain_depth
+        "SELECT ce.seq
              FROM proxima_core.change_event ce
              WHERE EXISTS (
                 SELECT 1
@@ -48,17 +48,7 @@ pub async fn list_change_events_after(
     for r in rows {
         let seq: uuid::Uuid = r.try_get("seq").map_err(map_err)?;
         if let Some(event) = hydrate_change_event(pool, read_owners, seq).await? {
-            let personality_instance_id = r
-                .try_get::<Option<uuid::Uuid>, _>("entity_personality_instance_id")
-                .map_err(map_err)?;
-            let wake_chain_depth = r.try_get::<i16, _>("wake_chain_depth").map_err(map_err)?;
-            out.push(ChangeEventForWake {
-                event,
-                authoring_personality_instance_id: personality_instance_id
-                    .filter(|id| !id.is_nil())
-                    .map(PersonalityInstanceId::new),
-                wake_chain_depth: WakeChainDepth::new(u16::try_from(wake_chain_depth).unwrap_or(0)),
-            });
+            out.push(ChangeEventForWake { event });
         }
     }
     Ok(out)
@@ -80,7 +70,7 @@ pub async fn list_change_events_for_replay(
         crate::access::owner_columns::owner_binds(&proxima_core::access::world());
     let edge_visibility = edge_event_visibility_predicate(1, 2, 6, 7);
     let sql = format!(
-        "SELECT ce.seq, ce.entity_personality_instance_id, ce.wake_chain_depth
+        "SELECT ce.seq
              FROM proxima_core.change_event ce
              WHERE EXISTS (
                 SELECT 1
@@ -110,17 +100,7 @@ pub async fn list_change_events_for_replay(
     for r in rows {
         let seq: uuid::Uuid = r.try_get("seq").map_err(map_err)?;
         if let Some(event) = hydrate_change_event(pool, std::slice::from_ref(owner), seq).await? {
-            let personality_instance_id = r
-                .try_get::<Option<uuid::Uuid>, _>("entity_personality_instance_id")
-                .map_err(map_err)?;
-            let wake_chain_depth = r.try_get::<i16, _>("wake_chain_depth").map_err(map_err)?;
-            out.push(ChangeEventForWake {
-                event,
-                authoring_personality_instance_id: personality_instance_id
-                    .filter(|id| !id.is_nil())
-                    .map(PersonalityInstanceId::new),
-                wake_chain_depth: WakeChainDepth::new(u16::try_from(wake_chain_depth).unwrap_or(0)),
-            });
+            out.push(ChangeEventForWake { event });
         }
     }
     Ok(out)

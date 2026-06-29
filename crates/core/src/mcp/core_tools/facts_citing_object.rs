@@ -7,8 +7,7 @@ use crate::engine::FactsCitingObjectReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
 
 use super::get_memory::{
-    GetMemoryOutput, format_authoring_personality, memory_class, payload_string, payload_tags,
-    snapshot_payload_value,
+    GetMemoryOutput, memory_class, payload_string, payload_tags, snapshot_payload_value,
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -59,12 +58,7 @@ pub(super) async fn facts_citing_object(
                 kind: snapshot.kind,
                 schema_id: snapshot.schema_id.as_str().to_string(),
                 schema_version: snapshot.schema_version.into_inner(),
-                authoring_personality_instance_id: format_authoring_personality(
-                    &ctx,
-                    snapshot.authoring_personality_instance_id,
-                ),
                 text: snapshot.text,
-                wake_chain_depth: snapshot.wake_chain_depth.into_inner(),
                 payload,
                 title,
                 body,

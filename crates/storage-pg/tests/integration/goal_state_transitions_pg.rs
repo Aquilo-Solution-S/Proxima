@@ -124,36 +124,42 @@ async fn goal_transition_trigger_enforces_matrix() -> Result<(), Box<dyn std::er
 
         assert_seed_allowed(&pg, &owner, Active, User).await;
         assert_seed_allowed(&pg, &owner, Active, System).await;
-        assert_seed_allowed(&pg, &owner, Paused, User).await;
-        assert_seed_allowed(&pg, &owner, Paused, System).await;
-        assert_seed_allowed(&pg, &owner, Achieved, User).await;
-        assert_seed_allowed(&pg, &owner, Achieved, System).await;
-        assert_seed_allowed(&pg, &owner, Abandoned, User).await;
-        assert_seed_allowed(&pg, &owner, Abandoned, System).await;
-        assert_seed_forbidden(&pg, &owner, Active, External).await;
-        assert_seed_forbidden(&pg, &owner, Paused, External).await;
-        assert_seed_forbidden(&pg, &owner, Achieved, External).await;
-        assert_seed_forbidden(&pg, &owner, Abandoned, External).await;
+        for state in [Paused, Achieved, Abandoned] {
+            assert_seed_forbidden(&pg, &owner, state, User).await;
+            assert_seed_forbidden(&pg, &owner, state, System).await;
+        }
+        for state in [Active, Paused, Achieved, Abandoned] {
+            assert_seed_forbidden(&pg, &owner, state, External).await;
+        }
 
         assert_transition_allowed(&pg, &owner, Active, Active, User).await;
-        assert_transition_allowed(&pg, &owner, Active, Paused, User).await;
+        assert_transition_allowed(&pg, &owner, Active, Active, System).await;
+        let paused = assert_transition_allowed(&pg, &owner, Active, Paused, User).await;
+        assert_transition_allowed(&pg, &owner, Active, Paused, System).await;
         assert_transition_allowed(&pg, &owner, Active, Achieved, User).await;
         assert_transition_allowed(&pg, &owner, Active, Achieved, System).await;
         assert_transition_allowed(&pg, &owner, Active, Abandoned, User).await;
-        assert_transition_allowed(&pg, &owner, Paused, Active, User).await;
-        assert_transition_allowed(&pg, &owner, Paused, Achieved, User).await;
-        assert_transition_allowed(&pg, &owner, Paused, Achieved, System).await;
-        assert_transition_allowed(&pg, &owner, Paused, Abandoned, User).await;
+        assert_transition_allowed(&pg, &owner, Active, Abandoned, System).await;
+        insert_goal(&pg, &owner, Active, User, Some(paused))
+            .await
+            .expect("Paused -> Active/User is allowed");
+        let paused_system = assert_transition_allowed(&pg, &owner, Active, Paused, User).await;
+        insert_goal(&pg, &owner, Active, System, Some(paused_system))
+            .await
+            .expect("Paused -> Active/System is allowed");
+
+        let paused = assert_transition_allowed(&pg, &owner, Active, Paused, User).await;
+        assert_transition_forbidden(&pg, &owner, paused, Paused, User).await;
+        let paused = assert_transition_allowed(&pg, &owner, Active, Paused, User).await;
+        assert_transition_forbidden(&pg, &owner, paused, Achieved, User).await;
+        let paused = assert_transition_allowed(&pg, &owner, Active, Paused, User).await;
+        assert_transition_forbidden(&pg, &owner, paused, Abandoned, User).await;
 
         let active = insert_goal(&pg, &owner, Active, User, None).await?;
-        assert_transition_forbidden(&pg, &owner, active, Paused, System).await;
-        let active = insert_goal(&pg, &owner, Active, User, None).await?;
-        assert_transition_forbidden(&pg, &owner, active, Abandoned, System).await;
-        let paused = insert_goal(&pg, &owner, Paused, User, None).await?;
-        assert_transition_forbidden(&pg, &owner, paused, Active, System).await;
+        assert_transition_forbidden(&pg, &owner, active, Paused, External).await;
 
-        let achieved = insert_goal(&pg, &owner, Achieved, User, None).await?;
-        let abandoned = insert_goal(&pg, &owner, Abandoned, User, None).await?;
+        let achieved = assert_transition_allowed(&pg, &owner, Active, Achieved, User).await;
+        let abandoned = assert_transition_allowed(&pg, &owner, Active, Abandoned, User).await;
         assert_transition_forbidden(&pg, &owner, achieved, Active, User).await;
         assert_transition_forbidden(&pg, &owner, abandoned, Active, User).await;
 

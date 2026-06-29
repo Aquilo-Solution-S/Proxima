@@ -12,11 +12,10 @@ async fn external_agent_operator_kind_is_admitted() -> Result<(), Box<dyn std::e
         sqlx::query(
             "INSERT INTO proxima_core.memories
                 (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-                 operator_kind, model_id, prompt_version, personality_instance_id)
+                 operator_kind, model_id, prompt_version)
              VALUES ($1, $2, $3, 'core/agent-derivation-v1', 1,
                      'Abstraction', 'body', 'ExternalAgent', 'claude-opus-4.7',
-                     'mcp-agent-v1',
-                     '00000000-0000-0000-0000-000000000000'::uuid)",
+                     'mcp-agent-v1')",
         )
         .bind(memory_id)
         .bind(owner_kind)

@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
-use proxima_core::personality::{PersonalityInstanceId, PersonalityStatus};
 use proxima_core::relation::{
     CORE_AUTHORED_RELATION, CORE_DEPENDS_ON_RELATION, CORE_DERIVED_FROM_RELATION,
 };
@@ -60,7 +59,7 @@ pub struct CodeEmitExecutionRequestArgs {
     pub goal_activated_memory: String,
     #[serde(default)]
     #[schemars(
-        description = "Optional additional Fact memory handles (`F...`) used as evidence for the execution request. Use `[]` when no separate Fact evidence is needed; never `G...`, `A...`, `P...`, or `I...` handles."
+        description = "Optional additional Fact memory handles (`F...`) used as evidence for the execution request. Use `[]` when no separate Fact evidence is needed; never Goal, Abstraction, or Perspective handles."
     )]
     pub evidence: Vec<String>,
     #[serde(default)]
@@ -171,9 +170,9 @@ pub struct CodeRetryExecutionRequestArgs {
     )]
     pub prior_execution_request: String,
     #[schemars(
-        description = "`I...` Personality handle for the worker that should receive the retry assignment."
+        description = "`P...` Perspective memory handle for the worker context that should receive the retry assignment."
     )]
-    pub target_personality: String,
+    pub target_perspective: String,
     #[schemars(
         description = "Stable idempotency key for this retry request. Reuse only for exact replay."
     )]
@@ -190,7 +189,7 @@ pub struct CodeRetryExecutionRequestArgs {
     pub instructions_append: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional additional Fact memory handles (`F...`) for retry evidence. Use `[]` when no extra evidence is needed; never `G...`, `A...`, `P...`, or `I...` handles."
+        description = "Optional additional Fact memory handles (`F...`) for retry evidence. Use `[]` when no extra evidence is needed; never Goal, Abstraction, or Perspective handles."
     )]
     pub evidence: Vec<String>,
 }
@@ -595,7 +594,6 @@ async fn append_execution_plan(
         memory_id: memory_id.into_inner(),
         owner: ctx.owner,
         kind: EntityKind::Abstraction,
-        author_personality_instance_id: ctx.author.personality_instance_id,
         schema_id: <CodeExecutionPlanV1 as AbstractionPayload>::schema_id(),
         schema_version: SchemaVersion::new(CodeExecutionPlanV1::SCHEMA_VERSION),
         text: plan_summary.to_string(),
@@ -713,7 +711,8 @@ impl McpTool for CodeRetryExecutionRequestTool {
                 )
             })?;
             let prior_memory_id = ctx.resolve_fact_memory(&args.prior_execution_request)?;
-            let target_personality_id = resolve_personality_id(&ctx, &args.target_personality)?;
+            let target_perspective_id =
+                resolve_target_perspective_id(&ctx, &args.target_perspective)?;
             let request_key = normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
             let explicit_evidence = resolve_evidence(&ctx, &args.evidence)?;
 
@@ -732,9 +731,7 @@ impl McpTool for CodeRetryExecutionRequestTool {
                     idempotent_replay: true,
                 });
             }
-            let target_root =
-                validate_target_personality(&mut tx, &ctx, target_personality_id).await?;
-            validate_target_execution_wake(&mut tx, &ctx, target_personality_id).await?;
+            validate_target_perspective(&mut tx, &ctx, target_perspective_id).await?;
             validate_evidence_in_owner(&mut tx, &ctx, &explicit_evidence).await?;
 
             let title = match args.title {
@@ -763,7 +760,8 @@ impl McpTool for CodeRetryExecutionRequestTool {
                     append_authored_edge(&mut tx, &ctx, shell_author_root, outcome.memory_id)
                         .await?;
                 let target_edge_id =
-                    append_target_edge(&mut tx, &ctx, target_root, outcome.memory_id).await?;
+                    append_target_edge(&mut tx, &ctx, target_perspective_id, outcome.memory_id)
+                        .await?;
                 let mut derived_edge_ids = Vec::new();
                 let mut seen = HashSet::new();
                 push_derived_edge(
@@ -1025,11 +1023,11 @@ fn retry_instructions(
     normalize_text("instructions", &instructions, 1, 20_000)
 }
 
-pub(super) fn resolve_personality_id(
+pub(super) fn resolve_target_perspective_id(
     ctx: &McpToolCtx,
     raw: &str,
-) -> Result<PersonalityInstanceId, McpToolError> {
-    ctx.resolve_personality(raw)
+) -> Result<MemoryId, McpToolError> {
+    ctx.resolve_perspective_memory(raw)
 }
 
 fn resolve_evidence(ctx: &McpToolCtx, raw: &[String]) -> Result<Vec<MemoryId>, McpToolError> {
@@ -1136,71 +1134,33 @@ pub(super) async fn find_execution_request_by_key(
     Ok(existing.map(MemoryId::new))
 }
 
-pub(super) async fn validate_target_personality(
+pub(super) async fn validate_target_perspective(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
-    target_personality: PersonalityInstanceId,
-) -> Result<MemoryId, McpToolError> {
-    let (owner_kind, owner_id) = owner_columns(&ctx.owner);
-    let row: Option<(Uuid, PersonalityStatus)> = sqlx::query_as(
-        "SELECT current_root_perspective_memory_id, status
-         FROM proxima_core.personality
-         WHERE owner_kind = $1
-           AND owner_id = $2
-           AND personality_instance_id = $3",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(target_personality.into_inner())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_storage)?;
-    let Some((root, status)) = row else {
-        return Err(McpToolError::InvalidInput(format!(
-            "target_personality not found: {}",
-            target_personality.into_inner()
-        )));
-    };
-    if status != PersonalityStatus::Active {
-        return Err(McpToolError::InvalidInput(format!(
-            "target_personality is not active: {}",
-            status.as_str()
-        )));
-    }
-    Ok(MemoryId::new(root))
-}
-
-pub(super) async fn validate_target_execution_wake(
-    tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
-    target_personality: PersonalityInstanceId,
+    target_perspective: MemoryId,
 ) -> Result<(), McpToolError> {
     let (owner_kind, owner_id) = owner_columns(&ctx.owner);
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(
              SELECT 1
-             FROM proxima_core.personality_wake_entries
-             WHERE owner_kind = $1
-               AND owner_id = $2
-               AND personality_instance_id = $3
-               AND tombstoned_at IS NULL
-               AND enabled
-               AND trigger_kind = 'on_memory'
-               AND trigger_id = $4
+             FROM proxima_core.memories
+         WHERE owner_kind = $1
+           AND owner_id = $2
+               AND memory_id = $3
+               AND kind = 'Perspective'
          )",
     )
     .bind(owner_kind)
     .bind(owner_id)
-    .bind(target_personality.into_inner())
-    .bind(ExecutionRequestV1::SCHEMA_ID)
+    .bind(target_perspective.into_inner())
     .fetch_one(&mut **tx)
     .await
     .map_err(map_storage)?;
     if !exists {
-        return Err(McpToolError::InvalidInput(
-            "target_personality has no enabled wake entry for proxima-code/work-requested-v1"
-                .into(),
-        ));
+        return Err(McpToolError::InvalidInput(format!(
+            "target_perspective not found: {}",
+            target_perspective.into_inner()
+        )));
     }
     Ok(())
 }
@@ -1691,7 +1651,6 @@ mod tests {
                 model_id: "test/model".into(),
                 client_name: "test".into(),
                 client_version: "test".into(),
-                personality_instance_id: None,
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
