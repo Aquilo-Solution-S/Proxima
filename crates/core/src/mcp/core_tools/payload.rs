@@ -70,7 +70,7 @@ impl FactPayload for PersonalityConfigChangedV1 {
     const SCHEMA_ID: &'static str = "core/personality_config_changed_v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_str("verb", self.verb.as_str());
         self.subject.add_to_key(&mut key, "subject");

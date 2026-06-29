@@ -6,8 +6,8 @@
 use crate::common::{create_db, db_url, drop_db};
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
-use proxima_core::verbs::event_ingest::{
-    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+use proxima_core::verbs::fact_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{Owner, OwnerRef, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId};
@@ -53,19 +53,20 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
     ]
 }
 
-fn fresh_draft(owner: Owner, source_batch_id: SourceBatchId) -> EventDraft {
+fn fresh_draft(_owner: Owner, source_batch_id: SourceBatchId) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
-    EventDraft {
-        source_id: SourceId::new("test/source"),
-        source_batch_id,
-        principal: owner,
+    FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
         payload: format!("payload-{}", Uuid::now_v7()).into_bytes(),
         rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new("test/source"),
+            source_batch_id,
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: Some(Citation {
             object: CitedObjectHint {
                 schema_id: SchemaId::new("test/cited_blob".into()),
@@ -105,7 +106,7 @@ async fn close_batch_idempotent_and_owner_scoped() {
         let batch_id = SourceBatchId::new(Uuid::now_v7());
         let draft = fresh_draft(owner_a, batch_id);
         engine_a
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner_a, proxima_core::AuthPath::System),
                 draft,
             )

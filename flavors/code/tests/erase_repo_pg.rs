@@ -138,7 +138,7 @@ async fn erase_repo_deletes_registry_discovered_fact_sidecars() {
 
         let receipt = erase_repo(pg.pool(), &owner, repo_id, &schemas_for_test()).await?;
         assert_eq!(receipt.facts_deleted, 1);
-        assert_eq!(receipt.events_deleted, 1);
+        assert_eq!(receipt.receipts_deleted, 1);
         assert!(receipt.repo_record_deleted);
 
         assert_eq!(

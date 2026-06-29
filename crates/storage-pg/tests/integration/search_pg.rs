@@ -9,7 +9,7 @@ use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
 };
 use proxima_core::{
-    MemoryId, Owner, OwnerRef, PersonalityInstanceId, SchemaId, SchemaVersion,
+    FactReceiptDraft, MemoryId, Owner, OwnerRef, PersonalityInstanceId, SchemaId, SchemaVersion,
     SearchProjectionColumnKind, SourceBatchId, SourceId, UserId,
 };
 use uuid::Uuid;
@@ -860,24 +860,26 @@ async fn ingest_fact_memory(
     schema_id: &str,
     payload: &[u8],
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
-    use proxima_core::verbs::event_ingest::{
-        Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+    use proxima_core::verbs::fact_ingest::{
+        Citation, CitationMappingHint, CitedObjectHint, FactWriteCommand,
     };
 
     let now = time::OffsetDateTime::now_utc();
     let outcome = pg
-        .ingest_event_atomic(
-            &EventDraft {
-                source_id: SourceId::new("test/search"),
-                source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-                principal: *owner,
+        .ingest_fact_atomic(
+            owner,
+            &FactWriteCommand {
                 author_personality_instance_id: None,
                 schema_id: SchemaId::new(schema_id.to_string()),
                 schema_version: SchemaVersion::new(1),
                 payload: payload.to_vec(),
                 rendered_text: None,
-                observed_at: now,
-                occurred_at: now,
+                receipt: Some(FactReceiptDraft {
+                    source_id: SourceId::new("test/search"),
+                    source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+                    observed_at: now,
+                    occurred_at: now,
+                }),
                 citation: Some(Citation {
                     object: CitedObjectHint {
                         schema_id: SchemaId::new("test/search-object-v1".into()),

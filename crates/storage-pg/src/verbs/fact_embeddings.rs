@@ -84,7 +84,7 @@ WITH scoped AS MATERIALIZED (
 WHERE m.text IS NOT NULL
         AND m.tombstoned_at IS NULL
         AND (
-            (m.receipt_id IS NOT NULL AND m.kind IS NULL)
+            m.kind IS NULL
             OR m.kind IN (
                 'Abstraction'::proxima_core.entity_kind,
                 'Perspective'::proxima_core.entity_kind
@@ -165,7 +165,7 @@ pub async fn load_fact_text(
                    AND eo.owner_kind = $2
                    AND eo.owner_id = $3
 )
-            AND receipt_id IS NOT NULL
+            AND kind IS NULL
             AND tombstoned_at IS NULL",
     )
     .bind(memory_id.into_inner())
@@ -206,7 +206,6 @@ pub async fn load_embedding_text(
             AND tombstoned_at IS NULL
             AND (
                 ($4 = 'Fact'::proxima_core.entity_kind
-                 AND receipt_id IS NOT NULL
                  AND kind IS NULL)
                 OR kind = $4
             )",
@@ -242,7 +241,7 @@ pub async fn load_fact_text_in_tx(
                    AND eo.owner_kind = $2
                    AND eo.owner_id = $3
 )
-            AND receipt_id IS NOT NULL
+            AND kind IS NULL
             AND tombstoned_at IS NULL",
     )
     .bind(memory_id.into_inner())
@@ -314,7 +313,6 @@ pub async fn upsert_memory_embedding(
                    AND m.tombstoned_at IS NULL
                    AND (
                        ($1 = 'Fact'::proxima_core.entity_kind
-                        AND m.receipt_id IS NOT NULL
                         AND m.kind IS NULL)
                        OR m.kind = $1
                    )
@@ -364,7 +362,7 @@ pub async fn list_facts_missing_embedding(
                        AND eo.owner_kind = $1
                        AND eo.owner_id = $2
 )
-            AND m.receipt_id IS NOT NULL
+            AND m.kind IS NULL
             AND m.text IS NOT NULL
             AND m.tombstoned_at IS NULL
             AND NOT EXISTS (
@@ -568,7 +566,7 @@ pub async fn enqueue_missing_embedding_jobs(
                            AND eo.owner_kind = $1
                            AND eo.owner_id = $2
 )
-                AND m.receipt_id IS NOT NULL
+                AND m.kind IS NULL
                 AND m.text IS NOT NULL
                 AND m.tombstoned_at IS NULL
                 AND NOT EXISTS (

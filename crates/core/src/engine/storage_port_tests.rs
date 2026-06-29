@@ -151,13 +151,13 @@ async fn read_verb_helper_accepts_only_read_verb_handles() {
         fact_retention: Arc::new(storage_port_tests_support::FactRetentionFake),
     };
     let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
-    let req = super::read_verbs::ListEventsReadRequest {
+    let req = super::read_verbs::ListChangeEventsReadRequest {
         principal: owner,
         after: uuid::Uuid::nil(),
         limit: 1,
     };
 
-    let response = super::read_verbs::list_events_authorized(&ports, &[owner], &req)
+    let response = super::read_verbs::list_change_events_authorized(&ports, &[owner], &req)
         .await
         .expect("read helper should compile against read-verb ports only");
 
@@ -201,12 +201,12 @@ mod storage_port_tests_support {
 
     #[async_trait::async_trait]
     impl crate::ChangeEventPort for ChangeEventFake {
-        async fn event_history(
+        async fn change_history(
             &self,
             _read_owners: &[OwnerRef],
-            _req: &crate::verbs::event_history::EventHistoryRequest,
-        ) -> Result<crate::verbs::event_history::EventHistoryResponse, StorageError> {
-            Ok(crate::verbs::event_history::EventHistoryResponse {
+            _req: &crate::verbs::change_history::ChangeHistoryRequest,
+        ) -> Result<crate::verbs::change_history::ChangeHistoryResponse, StorageError> {
+            Ok(crate::verbs::change_history::ChangeHistoryResponse {
                 events: Vec::new(),
                 seq_high_water: None,
             })

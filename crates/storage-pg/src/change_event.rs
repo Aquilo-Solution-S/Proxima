@@ -1,5 +1,5 @@
 //! Hydration of `change_event` rows into typed `ChangeEvent`s for the
-//! pull-read verbs (`event_history`, `list_change_events_*`). The
+//! pull-read verbs (`change_history`, `list_change_events_*`). The
 //! LISTEN/NOTIFY outbox publisher was retired — `change_event` is a
 //! pull-only durable log; consumers read it by `seq` cursor.
 

@@ -55,7 +55,8 @@ pub use pipeline::{MemoryPermit, PermitMode};
 pub use read_verbs::{
     EntityHeadCitationReadRequest, FactCitationReadRequest, FactsCitingObjectReadRequest,
     GetGraphReadRequest, GetGraphReadResponse, GetMemoryReadRequest, GetMemoryReadResponse,
-    ListEventsReadRequest, ListEventsReadResponse, SearchReadRequest, SearchReadResponse,
+    ListChangeEventsReadRequest, ListChangeEventsReadResponse, SearchReadRequest,
+    SearchReadResponse,
 };
 
 pub struct Engine {

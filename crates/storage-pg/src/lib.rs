@@ -26,12 +26,12 @@ use proxima_core::storage_ports::{
     OwnerMembershipAdminPort, PersonalityReadPort, PersonalityWritePort, RegistryProjectionPort,
     SourceBatchPort, StoragePorts, WakeConfigPort,
 };
+use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
-use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
-use proxima_core::verbs::event_ingest::{
-    AuthorizedEventIngest, AuthorizedFactWithCitation, EventDraft, EventIngestOutcome,
-};
 use proxima_core::verbs::fact_cleanup::{CleanupDueFactsOutcome, TombstoneFactOutcome};
+use proxima_core::verbs::fact_ingest::{
+    AuthorizedFactWithCitation, AuthorizedFactWrite, FactIngestOutcome, FactWriteCommand,
+};
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
@@ -409,24 +409,25 @@ fn edge_draft_from_spec<'a>(edge: &'a DerivedEdgeSpec<'a>) -> verbs::edge_append
 
 #[async_trait::async_trait]
 impl FactIngestPort for PgStorage {
-    async fn ingest_event_atomic(
+    async fn ingest_fact_atomic(
         &self,
-        draft: &EventDraft,
+        owner: &Owner,
+        draft: &FactWriteCommand,
         embedding_model_id: Option<&str>,
-    ) -> Result<EventIngestOutcome, StorageError> {
-        verbs::event_ingest::ingest_event_atomic(&self.pool, draft, embedding_model_id).await
+    ) -> Result<FactIngestOutcome, StorageError> {
+        verbs::fact_ingest::ingest_fact_atomic(&self.pool, owner, draft, embedding_model_id).await
     }
 
-    async fn ingest_event_with_typed_sidecar(
+    async fn ingest_fact_with_typed_sidecar(
         &self,
-        authorized: &AuthorizedEventIngest,
+        authorized: &AuthorizedFactWrite,
         sidecar_payload: &SidecarPayload,
         embedding_model_id: Option<&str>,
-    ) -> Result<EventIngestOutcome, StorageError> {
+    ) -> Result<FactIngestOutcome, StorageError> {
         let mut tx = self.pool.begin().await.map_err(internal)?;
         let fact_sidecars = self.sidecars.clone();
         let payload = sidecar_payload.clone();
-        let outcome = verbs::event_ingest::ingest_event_with_sidecar_in_tx(
+        let outcome = verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
             &mut tx,
             authorized,
             embedding_model_id,
@@ -448,12 +449,12 @@ impl FactIngestPort for PgStorage {
         authorized: &AuthorizedFactWithCitation,
         sidecar_payload: &SidecarPayload,
         embedding_model_id: Option<&str>,
-    ) -> Result<EventIngestOutcome, StorageError> {
+    ) -> Result<FactIngestOutcome, StorageError> {
         let mut tx = self.pool.begin().await.map_err(internal)?;
         let sidecars = self.sidecars.clone();
         let fact_sidecars = sidecars.clone();
         let payload = sidecar_payload.clone();
-        let outcome = verbs::event_ingest::ingest_fact_with_citation_in_tx(
+        let outcome = verbs::fact_ingest::ingest_fact_with_citation_in_tx(
             &mut tx,
             &sidecars,
             authorized,
@@ -1061,12 +1062,12 @@ impl GoalReadPort for PgStorage {
 
 #[async_trait::async_trait]
 impl ChangeEventPort for PgStorage {
-    async fn event_history(
+    async fn change_history(
         &self,
         read_owners: &[OwnerRef],
-        req: &EventHistoryRequest,
-    ) -> Result<EventHistoryResponse, StorageError> {
-        verbs::event_history::event_history(&self.pool, read_owners, req).await
+        req: &ChangeHistoryRequest,
+    ) -> Result<ChangeHistoryResponse, StorageError> {
+        verbs::change_history::change_history(&self.pool, read_owners, req).await
     }
 
     async fn list_change_events_after(

@@ -352,8 +352,8 @@ Lookup:
 
 For A/P, schema migration never rewrites `Memory.text`.
 
-For Facts, schema migration never rewrites event identity or citation
-mapping.
+For Facts, schema migration never rewrites Fact `MemoryId`, optional receipt
+metadata, or citation mapping.
 
 ## Schema evolution: code + migration
 

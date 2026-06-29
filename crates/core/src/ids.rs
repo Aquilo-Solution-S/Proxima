@@ -133,9 +133,9 @@ impl SchemaVersion {
 /// Per docs/07 §"ID types" — events use `ContentHash` for
 /// re-receipt dedup, not `UUIDv7`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct EventId([u8; 32]);
+pub struct FactReceiptId([u8; 32]);
 
-impl EventId {
+impl FactReceiptId {
     #[must_use]
     pub const fn new(inner: [u8; 32]) -> Self {
         Self(inner)

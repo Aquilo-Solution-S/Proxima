@@ -1,7 +1,7 @@
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
-use proxima_core::verbs::event_ingest::{
-    EventDraft, InlineCitationMappingDraft, InlineCitedObjectDraft,
+use proxima_core::verbs::fact_ingest::{
+    FactReceiptDraft, FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
@@ -21,7 +21,7 @@ impl FactPayload for TestFact {
     const SCHEMA_ID: &'static str = "test/fact";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_str("value", &self.value);
         key.finish()
@@ -110,12 +110,9 @@ fn engine() -> Engine {
     Engine::new(registry.freeze())
 }
 
-fn draft(owner: &Owner) -> EventDraft {
+fn draft(_owner: &Owner) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
-    EventDraft {
-        source_id: SourceId::new("test/source"),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: *owner,
+    FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: TestFact::schema_id(),
         schema_version: SchemaVersion::new(TestFact::SCHEMA_VERSION),
@@ -123,8 +120,12 @@ fn draft(owner: &Owner) -> EventDraft {
             value: "fact".to_string(),
         }),
         rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new("test/source"),
+            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: None,
     }
 }

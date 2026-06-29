@@ -5,7 +5,7 @@ use proxima_core::personality::{PersonalityInstanceId, PersonalityStatus};
 use proxima_core::relation::{
     CORE_AUTHORED_RELATION, CORE_DEPENDS_ON_RELATION, CORE_DERIVED_FROM_RELATION,
 };
-use proxima_core::verbs::event_ingest::{CitationSpec, EventIngestOutcome};
+use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
 use proxima_core::{
     AbstractionPayload, EdgeAuthorshipKind, EdgeId, EntityKind, FactPayload, MemoryId,
     MemoryOperatorKind, Owner, SchemaVersion, SourceBatchId,
@@ -13,7 +13,7 @@ use proxima_core::{
 use proxima_storage_pg::sidecars::PgMemorySidecar;
 use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_in_tx};
 use proxima_storage_pg::verbs::edge_write::{MemoryEndpoint, append_owner_checked_memory_edge};
-use proxima_storage_pg::verbs::event_ingest::{FactIngestContext, ingest_fact_with_sidecar};
+use proxima_storage_pg::verbs::fact_ingest::{FactIngestContext, ingest_fact_with_sidecar};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
@@ -1442,7 +1442,7 @@ async fn ingest_mcp_fact<P>(
     cited_object_schema: &'static str,
     mapping_schema: &'static str,
     payload: &P,
-) -> Result<EventIngestOutcome, McpToolError>
+) -> Result<FactIngestOutcome, McpToolError>
 where
     P: FactPayload + PgMemorySidecar + Clone,
 {
@@ -1460,7 +1460,7 @@ pub(super) async fn ingest_execution_request(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     payload: &ExecutionRequestV1,
-) -> Result<EventIngestOutcome, McpToolError> {
+) -> Result<FactIngestOutcome, McpToolError> {
     ingest_mcp_fact(
         tx,
         ctx,
@@ -1476,7 +1476,7 @@ pub(super) async fn ingest_acceptance_criteria(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     payload: &AcceptanceCriteriaV1,
-) -> Result<EventIngestOutcome, McpToolError> {
+) -> Result<FactIngestOutcome, McpToolError> {
     ingest_mcp_fact(
         tx,
         ctx,
@@ -1492,7 +1492,7 @@ pub(super) async fn ingest_test_request(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     payload: &TestRequestV1,
-) -> Result<EventIngestOutcome, McpToolError> {
+) -> Result<FactIngestOutcome, McpToolError> {
     ingest_mcp_fact(
         tx,
         ctx,

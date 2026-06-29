@@ -13,8 +13,8 @@ use proxima_core::engine::Engine;
 use proxima_core::llm::AnthropicClient;
 use proxima_core::personality::InstantiatePersonalityResponse;
 use proxima_core::test_fixtures::ConstantEmbedding;
-use proxima_core::verbs::event_ingest::{
-    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+use proxima_core::verbs::fact_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
@@ -43,7 +43,7 @@ impl FactPayload for TestFactV1 {
     const SCHEMA_ID: &'static str = TEST_FACT_SCHEMA;
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_str("label", &self.label);
         key.finish()
@@ -67,7 +67,7 @@ impl FactPayload for TestOtherFactV1 {
     const SCHEMA_ID: &'static str = TEST_OTHER_FACT_SCHEMA;
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_str("label", &self.label);
         key.finish()
@@ -203,7 +203,7 @@ pub async fn instantiate_test_personality(
         .await
 }
 
-/// Ingest one matching fact via the standard event-ingest verb. Returns
+/// Ingest one matching fact via the standard Fact-ingest verb. Returns
 /// the resulting memory_id.
 pub async fn ingest_test_fact(pg: &PgStorage, owner: &Owner, label: &str) -> MemoryId {
     let now = time::OffsetDateTime::now_utc();
@@ -211,17 +211,18 @@ pub async fn ingest_test_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Mem
         label: label.into(),
     })
     .expect("serializes");
-    let draft = EventDraft {
-        source_id: SourceId::new(TEST_SOURCE_ID),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: *owner,
+    let draft = FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: SchemaId::new(TEST_FACT_SCHEMA.into()),
         schema_version: SchemaVersion::new(1),
         payload,
         rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new(TEST_SOURCE_ID),
+            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: Some(Citation {
             object: CitedObjectHint {
                 schema_id: SchemaId::new("proxima-test/cited-v1".into()),
@@ -235,9 +236,9 @@ pub async fn ingest_test_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Mem
         }),
     };
     let outcome = pg
-        .ingest_event_atomic(&draft, None)
+        .ingest_fact_atomic(owner, &draft, None)
         .await
-        .expect("ingest_event_atomic");
+        .expect("ingest_fact_atomic");
     outcome.memory_id
 }
 
@@ -250,17 +251,18 @@ pub async fn ingest_other_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Me
         label: label.into(),
     })
     .expect("serializes");
-    let draft = EventDraft {
-        source_id: SourceId::new(TEST_SOURCE_ID),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: *owner,
+    let draft = FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: SchemaId::new(TEST_OTHER_FACT_SCHEMA.into()),
         schema_version: SchemaVersion::new(1),
         payload,
         rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new(TEST_SOURCE_ID),
+            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: Some(Citation {
             object: CitedObjectHint {
                 schema_id: SchemaId::new("proxima-test/cited-v1".into()),
@@ -274,9 +276,9 @@ pub async fn ingest_other_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Me
         }),
     };
     let outcome = pg
-        .ingest_event_atomic(&draft, None)
+        .ingest_fact_atomic(owner, &draft, None)
         .await
-        .expect("ingest_event_atomic");
+        .expect("ingest_fact_atomic");
     outcome.memory_id
 }
 

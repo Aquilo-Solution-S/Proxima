@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    CitationMappingPayload, CitedObjectPayload, EventId, FactPayload, MemoryId, Owner,
+    CitationMappingPayload, CitedObjectPayload, FactPayload, FactReceiptId, MemoryId, Owner,
     PayloadKeyBuilder, SchemaId, SchemaVersion, SourceId,
 };
 
@@ -60,8 +60,8 @@ impl McpCallLogInput {
     /// through `content_hash`.
     ///
     #[must_use]
-    pub fn event_id(&self) -> EventId {
-        let payload_key = self.payload().event_key();
+    pub fn receipt_id(&self) -> FactReceiptId {
+        let payload_key = self.payload().receipt_key();
         let mut hasher = blake3::Hasher::new();
         hasher.update(SourceId::new(MCP_CALL_SOURCE_ID).as_str().as_bytes());
         hasher.update(b"\0");
@@ -76,7 +76,7 @@ impl McpCallLogInput {
         hasher.update(&self.observed_at.unix_timestamp_nanos().to_le_bytes());
         hasher.update(b"\0");
         hasher.update(&self.occurred_at.unix_timestamp_nanos().to_le_bytes());
-        EventId::new(*hasher.finalize().as_bytes())
+        FactReceiptId::new(*hasher.finalize().as_bytes())
     }
 
     #[must_use]
@@ -102,7 +102,7 @@ impl FactPayload for McpCallLoggedV1 {
     const SCHEMA_ID: &'static str = MCP_CALL_FACT_SCHEMA;
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_str("tool_name", &self.tool_name);
         key.field_str("actor_oid", &self.actor_oid);
@@ -167,7 +167,7 @@ impl CitationMappingPayload for McpCallIoCitationV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct McpCallLogOutcome {
-    pub event_id: EventId,
+    pub receipt_id: FactReceiptId,
     pub fact_memory_id: MemoryId,
     pub cited_object_id: Uuid,
     pub citation_mapping_id: Uuid,
@@ -185,7 +185,7 @@ mod tests {
     /// the BLAKE3 folds source ‖ principal kind/id ‖ payload key ‖
     /// timestamps — no org. A fixed input must reproduce exactly this hex.
     #[test]
-    fn mcp_call_event_id_golden_is_org_free() {
+    fn mcp_call_receipt_id_golden_is_org_free() {
         let owner = OwnerRef::Personal(UserId::new(
             Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
         ));
@@ -204,7 +204,7 @@ mod tests {
             occurred_at: time::OffsetDateTime::UNIX_EPOCH,
         };
         assert_eq!(
-            hex::encode(input.event_id().into_inner()),
+            hex::encode(input.receipt_id().into_inner()),
             "6c9590b12d7baac76048bea402909193a398018010b16b00dcd437e4dfe2d469"
         );
     }

@@ -122,7 +122,7 @@ CitationMapping:    UNIQUE (memory_id)
 ```
 
 Re-receipt of the same observation produces the same source receipt id
-(public `event_id`, storage `receipt_id`; see 01) and the same
+(public `receipt_id`, storage `receipt_id`; see 01) and the same
 `content_hash` for the cited artefact; both inserts become silent
 no-ops. Different chunks of the same artefact land distinct memories
 with distinct mappings, all pointing at one CitedObject.

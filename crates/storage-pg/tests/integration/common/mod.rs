@@ -12,7 +12,7 @@ pub mod personality;
 mod storage_pg_test_fixtures;
 
 pub use proxima_core::test_fixtures::owner_fixture;
-use proxima_core::verbs::event_ingest::EventDraft;
+use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
 use proxima_core::{
     EdgeId, EntityKind, MemoryId, Owner, RelationClass, SchemaId, SchemaVersion, SourceBatchId,
     SourceId,
@@ -84,20 +84,21 @@ pub async fn seed_memory(
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
     if matches!(kind, EntityKind::Fact) {
         let now = time::OffsetDateTime::now_utc();
-        let draft = EventDraft {
-            source_id: SourceId::new("test/edge-access"),
-            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-            principal: *owner,
+        let draft = FactWriteCommand {
             author_personality_instance_id: None,
             schema_id: SchemaId::new("test/edge-access-fact-v1".into()),
             schema_version: SchemaVersion::new(1),
             payload: text.as_bytes().to_vec(),
             rendered_text: Some(text.to_string()),
-            observed_at: now,
-            occurred_at: now,
+            receipt: Some(FactReceiptDraft {
+                source_id: SourceId::new("test/edge-access"),
+                source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+                observed_at: now,
+                occurred_at: now,
+            }),
             citation: None,
         };
-        let outcome = pg.ingest_event_atomic(&draft, None).await?;
+        let outcome = pg.ingest_fact_atomic(owner, &draft, None).await?;
         return Ok(outcome.memory_id);
     }
 

@@ -56,14 +56,14 @@ pub struct GetGraphReadResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ListEventsReadRequest {
+pub struct ListChangeEventsReadRequest {
     pub principal: OwnerRef,
     pub after: uuid::Uuid,
     pub limit: usize,
 }
 
 #[derive(Debug, Clone)]
-pub struct ListEventsReadResponse {
+pub struct ListChangeEventsReadResponse {
     pub events: Vec<ChangeEventForWake>,
     pub edge_endpoint_kinds: Vec<EdgeEndpointKindRow>,
 }
@@ -168,13 +168,13 @@ impl Engine {
     ///
     /// Returns `Forbidden` when the context authorizes no read owners, and
     /// `Internal` when storage reads fail.
-    pub async fn list_events(
+    pub async fn list_change_events(
         &self,
         authz: &AuthzContext,
-        req: &ListEventsReadRequest,
-    ) -> Result<ListEventsReadResponse, ProtocolError> {
+        req: &ListChangeEventsReadRequest,
+    ) -> Result<ListChangeEventsReadResponse, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
-        list_events_authorized(&self.storage.read_verb, &read_owners, req).await
+        list_change_events_authorized(&self.storage.read_verb, &read_owners, req).await
     }
 
     /// Confirmed-id inverse citation read for one Fact memory.
@@ -353,11 +353,11 @@ pub(in crate::engine) async fn get_graph_authorized(
     })
 }
 
-pub(in crate::engine) async fn list_events_authorized(
+pub(in crate::engine) async fn list_change_events_authorized(
     ports: &ReadVerbStoragePorts,
     read_owners: &[OwnerRef],
-    req: &ListEventsReadRequest,
-) -> Result<ListEventsReadResponse, ProtocolError> {
+    req: &ListChangeEventsReadRequest,
+) -> Result<ListChangeEventsReadResponse, ProtocolError> {
     let events = ports
         .change_event
         .list_change_events_after(read_owners, req.after, req.limit)
@@ -407,7 +407,7 @@ pub(in crate::engine) async fn list_events_authorized(
             })
             .collect()
     };
-    Ok(ListEventsReadResponse {
+    Ok(ListChangeEventsReadResponse {
         events,
         edge_endpoint_kinds,
     })
@@ -467,7 +467,7 @@ mod tests {
 
     use super::{
         EntityHeadCitationReadRequest, FactCitationReadRequest, FactsCitingObjectReadRequest,
-        GetGraphReadRequest, GetMemoryReadRequest, ListEventsReadRequest, SearchReadRequest,
+        GetGraphReadRequest, GetMemoryReadRequest, ListChangeEventsReadRequest, SearchReadRequest,
     };
 
     fn engine() -> Engine {
@@ -574,15 +574,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_events_denies_denied_context() {
+    async fn list_change_events_denies_denied_context() {
         let owner = owner();
-        let req = ListEventsReadRequest {
+        let req = ListChangeEventsReadRequest {
             principal: owner,
             after: uuid::Uuid::nil(),
             limit: 1,
         };
         let err = engine()
-            .list_events(&AuthzContext::denied_for_owner(&owner), &req)
+            .list_change_events(&AuthzContext::denied_for_owner(&owner), &req)
             .await
             .expect_err("denied context must fail");
         assert_forbidden(&err);

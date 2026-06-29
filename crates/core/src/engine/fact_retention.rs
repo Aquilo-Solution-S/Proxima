@@ -154,7 +154,7 @@ impl Engine {
     /// Hard-erase one Fact, cascade soft-tombstones through all transitive
     /// Provenance derivatives, and erase orphaned citation backing rows.
     /// Gated by `SourceIngest` because targeted forgetting is symmetric with
-    /// Fact creation by `EventIngest`.
+    /// Fact creation by `FactIngest`.
     ///
     /// # Errors
     ///

@@ -2,15 +2,16 @@
 
 #![allow(clippy::too_many_lines)]
 
+use proxima_core::FactReceiptDraft;
 use std::sync::Arc;
 
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
-use proxima_core::mcp::core_tools::list_events::{ListEventsArgs, list_events};
+use proxima_core::mcp::core_tools::list_change_events::{ListChangeEventsArgs, list_change_events};
 use proxima_core::mcp::{McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::storage_ports::*;
-use proxima_core::verbs::event_history::EventHistoryRequest;
-use proxima_core::verbs::event_ingest::EventDraft;
+use proxima_core::verbs::change_history::ChangeHistoryRequest;
+use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::query::{QueryRequest, TombstoneFilter};
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
@@ -22,7 +23,7 @@ use proxima_core::{
 };
 use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemoryPayloadFuture};
 use proxima_storage_pg::verbs::edge_write::{CheckedEdgeEndpoint, append_owner_checked_edge};
-use proxima_storage_pg::verbs::event_ingest::{EventIngestSidecarFuture, PgFactSidecar};
+use proxima_storage_pg::verbs::fact_ingest::{FactIngestSidecarFuture, PgFactSidecar};
 use proxima_storage_pg::{
     PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
 };
@@ -47,7 +48,7 @@ impl FactPayload for StatefulFactV1 {
     const SCHEMA_ID: &'static str = "test/stateful-fact-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_str("entity_key", &self.entity_key);
         key.field_str("body", &self.body);
@@ -80,7 +81,7 @@ impl PgFactSidecar for StatefulFactV1 {
         self,
         tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
         memory_id: MemoryId,
-    ) -> EventIngestSidecarFuture<'t>
+    ) -> FactIngestSidecarFuture<'t>
     where
         Self: 't,
     {
@@ -122,7 +123,7 @@ impl FactPayload for PlainFactV1 {
     const SCHEMA_ID: &'static str = "test/plain-fact-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_str("entity_key", &self.entity_key);
         key.field_str("body", &self.body);
@@ -155,7 +156,7 @@ impl PgFactSidecar for PlainFactV1 {
         self,
         tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
         memory_id: MemoryId,
-    ) -> EventIngestSidecarFuture<'t>
+    ) -> FactIngestSidecarFuture<'t>
     where
         Self: 't,
     {
@@ -197,7 +198,7 @@ impl FactPayload for CrossFlavorActorFactV1 {
     const SCHEMA_ID: &'static str = "test-flavor-b/actor-fact-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_str("entity_key", &self.entity_key);
         key.field_str("body", &self.body);
@@ -230,7 +231,7 @@ impl PgFactSidecar for CrossFlavorActorFactV1 {
         self,
         tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
         memory_id: MemoryId,
-    ) -> EventIngestSidecarFuture<'t>
+    ) -> FactIngestSidecarFuture<'t>
     where
         Self: 't,
     {
@@ -456,19 +457,20 @@ fn cross_actor_fact(entity_key: &str, body: &str, state: &str) -> CrossFlavorAct
     }
 }
 
-fn draft_for_payload<F: FactPayload>(owner: &Owner, payload_value: &Value) -> EventDraft {
+fn draft_for_payload<F: FactPayload>(_owner: &Owner, payload_value: &Value) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
-    EventDraft {
-        source_id: SourceId::new(format!("test/fact-entity-edge/{}", Uuid::now_v7())),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: *owner,
+    FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: F::schema_id(),
         schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
         payload: canonical_json_bytes(payload_value),
         rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new(format!("test/fact-entity-edge/{}", Uuid::now_v7())),
+            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: None,
     }
 }
@@ -478,7 +480,7 @@ async fn ingest_fact(
     engine: &Engine,
     owner: &Owner,
     payload: &StatefulFactV1,
-) -> Result<proxima_core::EventIngestOutcome, StorageError> {
+) -> Result<proxima_core::FactIngestOutcome, StorageError> {
     ingest_fact_payload(pg, engine, owner, payload).await
 }
 
@@ -487,7 +489,7 @@ async fn ingest_fact_payload<F>(
     engine: &Engine,
     owner: &Owner,
     payload: &F,
-) -> Result<proxima_core::EventIngestOutcome, StorageError>
+) -> Result<proxima_core::FactIngestOutcome, StorageError>
 where
     F: FactPayload + Clone,
 {
@@ -496,11 +498,11 @@ where
     let draft = draft_for_payload::<F>(owner, &payload_value);
     let authz = AuthzContext::single_owner(owner, AuthPath::System);
     let authorized = engine
-        .authorize_event_ingest(&authz, Relation::Ingest, draft)
+        .authorize_fact_ingest(&authz, Relation::Ingest, draft)
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let sidecar_payload = SidecarPayload::fact(payload.clone());
-    pg.ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
+    pg.ingest_fact_with_typed_sidecar(&authorized, &sidecar_payload, None)
         .await
 }
 
@@ -1158,7 +1160,7 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
 }
 
 #[tokio::test]
-async fn event_history_and_list_events_preserve_fact_entity_endpoints()
+async fn change_history_and_list_change_events_preserve_fact_entity_endpoints()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg_with_sidecars().await;
 
@@ -1176,9 +1178,9 @@ async fn event_history_and_list_events_preserve_fact_entity_endpoints()
             append_follow_head_edge(&pg, &registry, &owner, source_entity, target_entity).await?;
 
         let history = pg
-            .event_history(
+            .change_history(
                 std::slice::from_ref(&owner),
-                &EventHistoryRequest {
+                &ChangeHistoryRequest {
                     principal: owner,
                     limit: 100,
                     before: None,
@@ -1194,7 +1196,7 @@ async fn event_history_and_list_events_preserve_fact_entity_endpoints()
                     ChangeEventKind::EdgeAppend { edge_id: seen, .. } if seen == edge_id
                 )
             })
-            .expect("event_history fact-entity edge");
+            .expect("change_history fact-entity edge");
         assert!(matches!(
             history_edge.kind,
             ChangeEventKind::EdgeAppend {
@@ -1224,9 +1226,9 @@ async fn event_history_and_list_events_preserve_fact_entity_endpoints()
             extensions: McpToolExtensions::with(pg.pool().clone()),
             engine: Some(engine),
         };
-        let listed = list_events(
+        let listed = list_change_events(
             ctx,
-            ListEventsArgs {
+            ListChangeEventsArgs {
                 since: None,
                 limit: Some(100),
             },
@@ -1237,7 +1239,7 @@ async fn event_history_and_list_events_preserve_fact_entity_endpoints()
             .events
             .iter()
             .find(|event| event.edge.as_deref() == Some(edge_id_text.as_str()))
-            .expect("list_events fact-entity edge");
+            .expect("list_change_events fact-entity edge");
         let source_text = format!("fact_entity:{source_entity}");
         let target_text = format!("fact_entity:{target_entity}");
         assert_eq!(item.source.as_deref(), Some(source_text.as_str()));

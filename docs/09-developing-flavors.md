@@ -86,7 +86,7 @@ impl FactPayload for DocumentFiledV1 {
     const SCHEMA_ID: &'static str = "embedded-minimal/document-filed-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_str("source_path", &self.source_path);
         key.finish()
@@ -106,7 +106,7 @@ Rules:
 
 | Payload kind | Required key/text |
 |---|---|
-| Fact | `event_key()` + `render()` |
+| Fact | `receipt_key()` + `render()` |
 | Abstraction | immutable `text` on memory row + typed sidecar |
 | Perspective | immutable `text` on memory row + typed sidecar |
 | Goal | `goal_key()`; title/text live on `goals` |
@@ -303,7 +303,7 @@ impl CitationMappingPayload for BlobByteRangeV1 {
 Invocation:
 
 ```rust
-let draft = EventDraft::from_payload(
+let draft = FactWriteCommand::from_payload(
     owner,
     "acme/importer",
     source_batch_id,

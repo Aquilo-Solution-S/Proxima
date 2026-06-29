@@ -1,6 +1,7 @@
 use crate::common;
+use proxima_core::FactReceiptDraft;
 use proxima_core::storage_ports::*;
-use proxima_core::verbs::event_ingest::EventDraft;
+use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::{
     CreateGoalAtomicRequest, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalState,
 };
@@ -18,19 +19,20 @@ use uuid::Uuid;
 
 type ResolvedAuthz = AuthzContext;
 
-fn fresh_event_draft(owner: Owner) -> EventDraft {
+fn fresh_fact_draft(_owner: Owner) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
-    EventDraft {
-        source_id: SourceId::new("test/entity-owner-source"),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner,
+    FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: SchemaId::new("test/entity-owner-fact".into()),
         schema_version: SchemaVersion::new(1),
         payload: Uuid::now_v7().as_bytes().to_vec(),
         rendered_text: Some("entity owner fact".to_string()),
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new("test/entity-owner-source"),
+            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: None,
     }
 }
@@ -269,17 +271,17 @@ async fn discovery_reads_filter_by_owner_read_set() {
 
     seed_membership(&pg, g1, &q, Relation::Viewer).await;
 
-    let mut f1_draft = fresh_event_draft(OwnerRef::Group(g1));
+    let mut f1_draft = fresh_fact_draft(OwnerRef::Group(g1));
     f1_draft.rendered_text = Some("boundaryneedle group fact".to_string());
     let f1 = pg
-        .ingest_event_atomic(&f1_draft, None)
+        .ingest_fact_atomic(&OwnerRef::Group(g1), &f1_draft, None)
         .await
         .unwrap()
         .memory_id;
-    let mut hidden_target_draft = fresh_event_draft(OwnerRef::Group(g1));
+    let mut hidden_target_draft = fresh_fact_draft(OwnerRef::Group(g1));
     hidden_target_draft.rendered_text = Some("unreadable edge target".to_string());
     let hidden_target = pg
-        .ingest_event_atomic(&hidden_target_draft, None)
+        .ingest_fact_atomic(&OwnerRef::Group(g1), &hidden_target_draft, None)
         .await
         .unwrap()
         .memory_id;
@@ -399,12 +401,12 @@ async fn discovery_reads_filter_by_owner_read_set() {
 }
 
 #[tokio::test]
-async fn owner_columns_written_on_event_ingest() {
+async fn owner_columns_written_on_fact_ingest() {
     let (pg, db) = common::fresh_pg().await;
     let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
 
     let outcome = pg
-        .ingest_event_atomic(&fresh_event_draft(owner), None)
+        .ingest_fact_atomic(&owner, &fresh_fact_draft(owner), None)
         .await
         .unwrap();
 

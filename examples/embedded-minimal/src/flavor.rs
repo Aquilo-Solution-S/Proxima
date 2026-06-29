@@ -17,7 +17,7 @@ impl FactPayload for DocumentFiledV1 {
     const SCHEMA_ID: &'static str = "embedded-minimal/document-filed-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_str("source_path", &self.source_path);
         key.finish()
@@ -106,7 +106,7 @@ mod tests {
     use proxima_core::{OwnerRef, Relation, UserId};
     use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
     use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemorySidecar};
-    use proxima_storage_pg::verbs::event_ingest::ingest_fact;
+    use proxima_storage_pg::verbs::fact_ingest::ingest_fact;
 
     use super::{DocumentFiledV1, EmbeddedMinimalFlavor};
 

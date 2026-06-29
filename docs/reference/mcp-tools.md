@@ -14,7 +14,7 @@ binary/profile.
 | goals | `core_goal` | advertised only when profile includes goals |
 | citations | citation/fact resources and tools | Facts only carry citation mappings |
 | introspection | `proxima://tools`, `proxima://how-to` | generated from runtime profile |
-| events | `proxima://events{?since,limit}` | poll-only change notification |
+| change-events | `proxima://change-events{?since,limit}` | poll-only change notification |
 
 ## Offline Catalog
 

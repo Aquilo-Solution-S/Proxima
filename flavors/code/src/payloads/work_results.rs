@@ -42,7 +42,7 @@ impl FactPayload for ExecutionResultV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("execution-result-v1");
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_uuid("work_requested_memory_id", self.work_requested_memory_id);
         key.field_uuid("repo_id", self.repo_id);
@@ -83,7 +83,7 @@ impl FactPayload for TestResultV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("test-result-v1");
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_uuid("test_requested_memory_id", self.test_requested_memory_id);
         key.field_uuid("repo_id", self.repo_id);
@@ -124,7 +124,7 @@ impl FactPayload for AcceptanceVerificationV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("acceptance-verification-v1");
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_uuid("work_item_memory_id", self.work_item_memory_id);
         key.field_str("criterion_key", &self.criterion_key);

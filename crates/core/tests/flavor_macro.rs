@@ -18,7 +18,7 @@ impl FactPayload for TestFactV1 {
     // "proxima-core/test-fact".
     const SCHEMA_ID: &'static str = proxima_schema_id!("test-fact");
     const SCHEMA_VERSION: u32 = 1;
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_str("body", &self.body);
         key.finish()

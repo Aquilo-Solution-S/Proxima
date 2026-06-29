@@ -1,11 +1,11 @@
-//! Auth-gated `EventIngest` plus caller-owned sidecar transaction tests.
+//! Auth-gated `FactIngest` plus caller-owned sidecar transaction tests.
 
 use proxima_core::storage_ports::*;
 use std::sync::Arc;
 
 use crate::common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::verbs::event_ingest::{
-    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+use proxima_core::verbs::fact_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
@@ -13,7 +13,7 @@ use proxima_core::{
     OwnerRef, PayloadKeyBuilder, Relation, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
     StorageError, UserId,
 };
-use proxima_storage_pg::verbs::event_ingest::{event_ingest_with_sidecar_atomic, ingest_fact};
+use proxima_storage_pg::verbs::fact_ingest::{fact_ingest_with_sidecar_atomic, ingest_fact};
 use uuid::Uuid;
 
 type ResolvedAuthz = AuthzContext;
@@ -27,7 +27,7 @@ impl FactPayload for UncitedFactPayload {
     const SCHEMA_ID: &'static str = "test/uncited_fact";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_str("note", &self.note);
         key.finish()
@@ -67,21 +67,22 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
     ]
 }
 
-fn fresh_draft(owner: &Owner) -> EventDraft {
+fn fresh_draft(_owner: &Owner) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     let payload = format!("sidecar gated ingest {}", Uuid::now_v7()).into_bytes();
     let content_hash = blake3::hash(&payload);
-    EventDraft {
-        source_id: SourceId::new("test/sidecar-source"),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: *owner,
+    FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: SchemaId::new("test/sidecar_fact".into()),
         schema_version: SchemaVersion::new(1),
         payload,
         rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new("test/sidecar-source"),
+            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: Some(Citation {
             object: CitedObjectHint {
                 schema_id: SchemaId::new("test/sidecar_cited".into()),
@@ -102,13 +103,6 @@ fn bot_principal() -> OwnerRef {
 
 fn group_owner() -> Owner {
     OwnerRef::Group(GroupId::new(Uuid::now_v7()))
-}
-
-fn granted_bot_authz(bot: &OwnerRef) -> ResolvedAuthz {
-    let OwnerRef::Personal(user) = *bot else {
-        panic!("bot test principal must be a user");
-    };
-    AuthzContext::for_subject(user, AuthPath::HostBearer)
 }
 
 fn bot_authz_with_role(bot: &OwnerRef, owner: Owner, role: Role) -> ResolvedAuthz {
@@ -142,7 +136,7 @@ fn engine_for(pg: &proxima_storage_pg::PgStorage) -> Engine {
 
 async fn event_row_counts(
     pool: &sqlx::PgPool,
-    receipt_id: proxima_core::EventId,
+    receipt_id: proxima_core::FactReceiptId,
 ) -> Result<(i64, i64), sqlx::Error> {
     let receipt_id_bytes = receipt_id.into_inner();
     let memories = sqlx::query_scalar::<_, i64>(
@@ -173,11 +167,13 @@ async fn authz_rejection_writes_nothing() -> Result<(), Box<dyn std::error::Erro
     let owner = group_owner();
     let engine = engine_for(&pg);
     let draft = fresh_draft(&owner);
-    let receipt_id = draft.event_id();
+    let receipt_id = draft.receipt_id_for_owner(owner).expect("receipt id");
     let bot = bot_principal();
-    let authz = granted_bot_authz(&bot);
+    let authz = bot_authz_with_role(&bot, owner, Role::viewer())
+        .narrowed_to_owner(owner)
+        .expect("viewer role narrows to target owner");
     let err = engine
-        .authorize_event_ingest(&authz, Relation::Ingest, draft)
+        .authorize_fact_ingest(&authz, Relation::Ingest, draft)
         .await
         .expect_err("missing source_ingest role must reject before storage");
 
@@ -192,32 +188,36 @@ async fn authz_rejection_writes_nothing() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[tokio::test]
-async fn source_ingest_only_authorizes_event_ingest_with_write_grant()
+async fn source_ingest_only_authorizes_fact_ingest_with_write_grant()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     let owner = group_owner();
     let engine = engine_for(&pg);
     let bot = bot_principal();
-    let authz = granted_bot_authz(&bot);
+    let authz = bot_authz_with_role(&bot, owner, Role::viewer())
+        .narrowed_to_owner(owner)
+        .expect("viewer role narrows to target owner");
 
     let err = engine
-        .authorize_event_ingest(&authz, Relation::Ingest, fresh_draft(&owner))
+        .authorize_fact_ingest(&authz, Relation::Ingest, fresh_draft(&owner))
         .await
         .expect_err("missing ingest grant must reject");
     assert_eq!(err.code, ErrorCode::Forbidden);
     assert!(err.message.contains("requires ingest on this owner"));
 
     seed_group_membership(&pg, &owner, Relation::Ingest, &bot).await;
-    let authz = bot_authz_with_role(&bot, owner, Role::ingest());
+    let authz = bot_authz_with_role(&bot, owner, Role::ingest())
+        .narrowed_to_owner(owner)
+        .expect("ingest role narrows to target owner");
 
     let authorized = engine
-        .authorize_event_ingest(&authz, Relation::Ingest, fresh_draft(&owner))
+        .authorize_fact_ingest(&authz, Relation::Ingest, fresh_draft(&owner))
         .await?;
-    assert_eq!(authorized.draft().principal, owner);
+    assert_eq!(*authorized.permit().owner(), owner);
 
     let err = engine
-        .authorize_event_ingest(&authz, Relation::Editor, fresh_draft(&owner))
+        .authorize_fact_ingest(&authz, Relation::Editor, fresh_draft(&owner))
         .await
         .expect_err("ingest grant must not authorize editor writes");
     assert_eq!(err.code, ErrorCode::Forbidden);
@@ -237,15 +237,18 @@ async fn sidecar_failure_rolls_back_fact() -> Result<(), Box<dyn std::error::Err
     let engine = engine_for(&pg);
     let draft = fresh_draft(&owner);
     let authorized = engine
-        .authorize_event_ingest(
+        .authorize_fact_ingest(
             &AuthzContext::single_owner(&owner, AuthPath::System),
             Relation::Ingest,
             draft,
         )
         .await?;
-    let receipt_id = authorized.draft().event_id();
+    let receipt_id = authorized
+        .draft()
+        .receipt_id_for_owner(*authorized.permit().owner())
+        .expect("receipt id");
 
-    let err = event_ingest_with_sidecar_atomic(
+    let err = fact_ingest_with_sidecar_atomic(
         pg.pool(),
         &authorized,
         Some("rollback-test-embed"),

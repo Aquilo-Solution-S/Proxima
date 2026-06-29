@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use common::{ConstantEmbedding, drop_db, fresh_pg, owner_fixture};
 use proxima_core::llm::EMBEDDING_DIM;
-use proxima_core::verbs::event_ingest::EventDraft;
+use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
     AbstractionPayload, AgentDerivationV1, AgentNoteV1, AuthPath, AuthorshipKindMask, AuthzContext,
     EdgeAuthorshipKind, EntityKind, EntityKindMask, ErrorCode, FlavorRegistry, MemoryId,
@@ -455,7 +455,7 @@ async fn assert_embedding_row(
 }
 
 #[tokio::test]
-async fn ingest_event_with_sidecar_writes_fact_and_note_sidecar()
+async fn ingest_fact_with_sidecar_writes_fact_and_note_sidecar()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
 
@@ -471,18 +471,17 @@ async fn ingest_event_with_sidecar_writes_fact_and_note_sidecar()
         idempotency_key: Some("note-1".into()),
     };
     let sidecar_payload = SidecarPayload::fact(note.clone());
-    let draft = EventDraft::from_payload(
-        &owner,
+    let draft = FactWriteCommand::from_payload(
         "test/source",
         SourceBatchId::new(Uuid::now_v7()),
         &note,
         time::OffsetDateTime::now_utc(),
     );
     let authorized = engine
-        .authorize_event_ingest(&authz, Relation::Ingest, draft)
+        .authorize_fact_ingest(&authz, Relation::Ingest, draft)
         .await?;
     let outcome = pg
-        .ingest_event_with_typed_sidecar(&authorized, &sidecar_payload, None)
+        .ingest_fact_with_typed_sidecar(&authorized, &sidecar_payload, None)
         .await?;
 
     let memory_row: (Option<EntityKind>, String) =
