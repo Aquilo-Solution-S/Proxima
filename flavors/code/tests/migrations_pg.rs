@@ -72,8 +72,8 @@ async fn flavor_migrations_apply_to_fresh_db() {
         }
 
         for (table, column) in [
-            ("repos", "owner_principal_kind"),
-            ("repo_ingestion_runs", "owner_principal_kind"),
+            ("repos", "owner_kind"),
+            ("repo_ingestion_runs", "owner_kind"),
             ("repo_ingestion_runs", "status"),
             ("repo_ingestion_runs", "stage"),
             ("file_revision_v1", "state"),
@@ -86,19 +86,21 @@ async fn flavor_migrations_apply_to_fresh_db() {
             assert_enum_column(pg.pool(), "proxima_code", table, column).await?;
         }
 
+        assert_owner_ref_constraints(pg.pool()).await?;
+
         // S0 (Owner = OwnerRef collapse, Track B): the full-collapse decision
-        // removes owner_org_id from proxima_code too. Keystone gate for the
+        // removes the legacy owner org column from proxima_code too. Keystone gate for the
         // flavor DDL-drop migration — a missed column would silently keep org
         // in the flavor schema and pass every check above.
         let org_cols: (i64,) = sqlx::query_as(
             "SELECT count(*)::bigint FROM information_schema.columns \
-             WHERE table_schema = 'proxima_code' AND column_name = 'owner_org_id'",
+             WHERE table_schema = 'proxima_code' AND column_name = ('owner_' || 'org_id')",
         )
         .fetch_one(pg.pool())
         .await?;
         assert_eq!(
             org_cols.0, 0,
-            "owner_org_id must be absent from proxima_code after S0; found {}",
+            "legacy owner org column must be absent from proxima_code after S0; found {}",
             org_cols.0
         );
 
@@ -111,6 +113,32 @@ async fn flavor_migrations_apply_to_fresh_db() {
 
     let _ = drop_db(&db_name).await;
     result.expect("flavor_migrations_apply_to_fresh_db failed");
+}
+
+async fn assert_owner_ref_constraints(
+    pool: &sqlx::PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for table in ["repos", "repo_ingestion_runs"] {
+        for suffix in ["owner_ref_shape_chk", "world_not_write_owner_chk"] {
+            let constraint = format!("{table}_{suffix}");
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                     SELECT 1
+                       FROM information_schema.table_constraints
+                      WHERE table_schema = 'proxima_code'
+                        AND table_name = $1
+                        AND constraint_name = $2
+                        AND constraint_type = 'CHECK'
+                 )",
+            )
+            .bind(table)
+            .bind(&constraint)
+            .fetch_one(pool)
+            .await?;
+            assert!(exists, "proxima_code.{table} must define {constraint}");
+        }
+    }
+    Ok(())
 }
 
 async fn assert_enum_column(

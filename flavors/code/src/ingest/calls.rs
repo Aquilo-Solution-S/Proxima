@@ -41,7 +41,7 @@ const PROXIMA_CODE_EDGE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
 ]);
 
 /// Derive the natural-key bytes for a `proxima-code/calls` edge.
-/// Components: owner principal kind / id, the relation string, both
+/// Components: owner kind / stable key id, the relation string, both
 /// endpoint memory ids, and the **chunk-relative** callsite byte
 /// start. File-level offsets are deliberately omitted so the key is
 /// stable when chunk content is stable but the chunk has shifted in
@@ -53,10 +53,11 @@ fn calls_edge_natural_key(
     callsite_byte_start_in_source_chunk: u32,
 ) -> Vec<u8> {
     let mut k = Vec::with_capacity(128);
-    let (kind, principal_id) = owner.columns();
+    let kind = proxima_core::OwnerRefKind::of(owner);
+    let owner_key_id = owner.stable_key_uuid();
     k.extend_from_slice(kind.as_str().as_bytes());
     k.push(0);
-    k.extend_from_slice(principal_id.as_bytes());
+    k.extend_from_slice(owner_key_id.as_bytes());
     k.push(0);
     k.extend_from_slice(b"proxima-code/calls");
     k.push(0);
@@ -158,7 +159,7 @@ mod tests {
         let id = calls_edge_id(&owner, source, target, 7);
         assert_eq!(
             id,
-            Uuid::parse_str("93435b9b-6842-5914-871a-ab6e79c7c4a3").expect("uuid literal")
+            Uuid::parse_str("e375387a-61f6-5ae2-b852-0c14ab4741f4").expect("uuid literal")
         );
     }
 }

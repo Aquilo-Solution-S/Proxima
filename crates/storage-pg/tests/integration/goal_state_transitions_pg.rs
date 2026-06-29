@@ -6,7 +6,7 @@ use proxima_core::{Owner, OwnerRefKind};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
-fn owner_parts(owner: &Owner) -> (OwnerRefKind, Uuid) {
+fn owner_parts(owner: &Owner) -> (OwnerRefKind, Option<Uuid>) {
     owner.columns()
 }
 
@@ -17,7 +17,7 @@ async fn insert_goal(
     authorship_kind: GoalAuthorshipKind,
     supersedes: Option<Uuid>,
 ) -> Result<Uuid, sqlx::Error> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
+    let (owner_kind, owner_id) = owner_parts(owner);
     let goal_id = Uuid::now_v7();
     let request_id = format!("req-{}", Uuid::now_v7());
     let (authorship_origin, authorship_tool_id): (Option<GoalAuthorshipOrigin>, Option<&str>) =
@@ -29,17 +29,17 @@ async fn insert_goal(
 
     let inserted = sqlx::query_scalar(
         "INSERT INTO proxima_core.goals
-            (goal_id, schema_id, schema_version, title, text, payload, state,
+            (goal_id, owner_kind, owner_id, schema_id, schema_version, title, text, payload, state,
              supersedes, authorship_kind, authorship_origin, authorship_tool_id,
              request_id, idempotency_key)
-         VALUES ($1, 'test/goal_blob', 1, 'goal', 'goal',
+         VALUES ($1, $2, $3, 'test/goal_blob', 1, 'goal', 'goal',
                  convert_to('{}', 'UTF8'), $4, $5, $6, $7, $8, $9,
                  md5($2::text || ':' || $3::text || ':' || $9))
          RETURNING goal_id",
     )
     .bind(goal_id)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(state)
     .bind(supersedes)
     .bind(authorship_kind)
@@ -48,25 +48,7 @@ async fn insert_goal(
     .bind(request_id)
     .fetch_one(pg.pool())
     .await?;
-    insert_home(pg, inserted, owner).await?;
     Ok(inserted)
-}
-
-async fn insert_home(pg: &PgStorage, entity_id: Uuid, owner: &Owner) -> Result<(), sqlx::Error> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1, $2, $3, true, $4)
-         ON CONFLICT DO NOTHING",
-    ))
-    .bind(entity_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(Uuid::nil())
-    .execute(pg.pool())
-    .await
-    .map(|_| ())
 }
 
 async fn assert_seed_allowed(

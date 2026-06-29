@@ -1,14 +1,14 @@
 mod common;
 
-use common::{insert_home, migrated_db, test_owner};
+use common::{migrated_db, test_owner};
 use proxima_code::{CommitV1, TestRequestV1, erase_repo, register_repo};
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
-use proxima_core::{FactPayload, Owner, OwnerRefKind, SchemaId, SchemaVersion};
+use proxima_core::{FactPayload, Owner, SchemaId, SchemaVersion};
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
 
-fn owner_principal(owner: &Owner) -> (OwnerRefKind, Uuid) {
-    owner.columns()
+fn owner_parts(owner: &Owner) -> (proxima_core::OwnerRefKind, Option<Uuid>) {
+    proxima_storage_pg::access::owner_columns::owner_binds(owner)
 }
 
 fn fact_schema(schema_id: &str, sidecar_table: &str) -> SchemaInfo {
@@ -34,13 +34,13 @@ async fn insert_repo_commit_with_test_request(
     repo_id: Uuid,
     memory_id: Uuid,
 ) -> Result<(), sqlx::Error> {
-    let (owner_kind, owner_id) = owner_principal(owner);
+    let (owner_kind, owner_id) = owner_parts(owner);
     let source_batch_id = Uuid::now_v7();
-    let event_id = Uuid::now_v7().as_bytes().to_vec();
+    let receipt_id = Uuid::now_v7().as_bytes().to_vec();
 
     sqlx::query(
         "INSERT INTO proxima_core.source_batches
-            (id, source_id, owner_principal_kind, owner_principal_id)
+            (id, source_id, owner_kind, owner_id)
          VALUES ($1, 'test/erase-repo', $2, $3)",
     )
     .bind(source_batch_id)
@@ -50,13 +50,13 @@ async fn insert_repo_commit_with_test_request(
     .await?;
 
     sqlx::query(
-        "INSERT INTO proxima_core.events
-            (event_id, source_id, source_batch_id, owner_principal_kind,
-             owner_principal_id, schema_id, schema_version,
+        "INSERT INTO proxima_core.fact_receipts
+            (receipt_id, source, source_batch_id, owner_kind,
+             owner_id, schema_id, schema_version,
              observed_at, occurred_at)
          VALUES ($1, 'test/erase-repo', $2, $3, $4, $5, 1, now(), now())",
     )
-    .bind(&event_id)
+    .bind(&receipt_id)
     .bind(source_batch_id)
     .bind(owner_kind)
     .bind(owner_id)
@@ -66,16 +66,17 @@ async fn insert_repo_commit_with_test_request(
 
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, event_id, personality_instance_id)
-         VALUES ($1, $2, 1, $3,
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, receipt_id, personality_instance_id)
+         VALUES ($1, $2, $3, $4, 1, $5,
              '00000000-0000-0000-0000-000000000000'::uuid)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(CommitV1::SCHEMA_ID)
-    .bind(&event_id)
+    .bind(&receipt_id)
     .execute(pool)
     .await?;
-    insert_home(pool, memory_id, owner).await?;
 
     sqlx::query(
         "INSERT INTO proxima_code.commit_v1

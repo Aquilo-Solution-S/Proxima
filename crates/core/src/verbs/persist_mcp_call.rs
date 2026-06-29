@@ -65,7 +65,8 @@ impl McpCallLogInput {
         let mut hasher = blake3::Hasher::new();
         hasher.update(SourceId::new(MCP_CALL_SOURCE_ID).as_str().as_bytes());
         hasher.update(b"\0");
-        let (kind, id) = self.owner.columns();
+        let kind = crate::OwnerRefKind::of(&self.owner);
+        let id = self.owner.stable_key_uuid();
         hasher.update(kind.as_str().as_bytes());
         hasher.update(b"\0");
         hasher.update(id.as_bytes());
@@ -204,7 +205,7 @@ mod tests {
         };
         assert_eq!(
             hex::encode(input.event_id().into_inner()),
-            "0f51e221b23cd144968950c67e3b7143375b06e6c27f104ab6adf7f205108d03"
+            "6c9590b12d7baac76048bea402909193a398018010b16b00dcd437e4dfe2d469"
         );
     }
 }

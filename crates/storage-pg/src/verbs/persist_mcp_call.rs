@@ -8,7 +8,6 @@ use proxima_core::{MemoryId, StorageError};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::access::owner_ref_compat::insert_home;
 use crate::error::{internal, map_err};
 
 /// Persist one MCP call log in a new transaction.
@@ -37,10 +36,10 @@ pub async fn persist_mcp_call_in_tx(
     input: &McpCallLogInput,
 ) -> Result<McpCallLogOutcome, StorageError> {
     let io_content_hash = input.io_content_hash();
-    let event_id = input.event_id();
-    let event_id_bytes = event_id.into_inner();
+    let receipt_id = input.event_id();
+    let receipt_id_bytes = receipt_id.into_inner();
 
-    let (owner_kind, owner_principal_id) = input.owner.columns();
+    let (owner_kind, owner_id) = input.owner.columns();
 
     let existing = sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
         r"SELECT m.memory_id,
@@ -49,10 +48,10 @@ pub async fn persist_mcp_call_in_tx(
              FROM proxima_core.memories m
              JOIN proxima_core.citation_mappings cm
                ON cm.citation_mapping_id = m.citation_mapping_id
-             WHERE m.event_id = $1
+             WHERE m.receipt_id = $1
                AND m.tombstoned_at IS NULL",
     )
-    .bind(&event_id_bytes[..])
+    .bind(&receipt_id_bytes[..])
     .fetch_optional(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -68,7 +67,7 @@ pub async fn persist_mcp_call_in_tx(
         .map_err(map_err)?;
 
         return Ok(McpCallLogOutcome {
-            event_id,
+            event_id: receipt_id,
             fact_memory_id: MemoryId::new(memory_id),
             cited_object_id,
             citation_mapping_id,
@@ -85,10 +84,10 @@ pub async fn persist_mcp_call_in_tx(
 
     let cited_object_id = sqlx::query_scalar::<_, Uuid>(
         r"INSERT INTO proxima_core.cited_objects
-            (cited_object_id, schema_id, owner_principal_kind,
-             owner_principal_id, content_hash)
+            (cited_object_id, schema_id, owner_kind,
+             owner_id, content_hash)
          VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (owner_principal_kind, owner_principal_id,
+         ON CONFLICT (owner_kind, owner_id,
                       schema_id, content_hash)
          DO UPDATE SET schema_id = EXCLUDED.schema_id
          RETURNING cited_object_id",
@@ -96,7 +95,7 @@ pub async fn persist_mcp_call_in_tx(
     .bind(cited_object_id)
     .bind(MCP_CALL_IO_SCHEMA)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(&io_content_hash[..])
     .fetch_one(tx.as_mut())
     .await
@@ -115,38 +114,33 @@ pub async fn persist_mcp_call_in_tx(
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
-    // System-logged MCP-call Fact: no authoring personality (the memories row uses a
-    // nil sentinel because its column is NOT NULL). owner row granted_by is nullable,
-    // so record the absence honestly as NULL rather than propagating the nil sentinel.
-    insert_home(tx.as_mut(), memory_id, &input.owner, None).await?;
-
     sqlx::query(
         r"INSERT INTO proxima_core.source_batches
-            (id, source_id, owner_principal_kind,
-             owner_principal_id)
+            (id, source_id, owner_kind,
+             owner_id)
          VALUES ($1, $2, $3, $4)
          ON CONFLICT (id) DO NOTHING",
     )
     .bind(source_batch_id)
     .bind(MCP_CALL_SOURCE_ID)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
 
     sqlx::query(
-        r"INSERT INTO proxima_core.events
-            (event_id, source_id, source_batch_id,
-             owner_principal_kind, owner_principal_id,
+        r"INSERT INTO proxima_core.fact_receipts
+            (receipt_id, source, source_batch_id,
+             owner_kind, owner_id,
              schema_id, schema_version, observed_at, occurred_at)
          VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8)",
     )
-    .bind(&event_id_bytes[..])
+    .bind(&receipt_id_bytes[..])
     .bind(MCP_CALL_SOURCE_ID)
     .bind(source_batch_id)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(MCP_CALL_FACT_SCHEMA)
     .bind(input.observed_at)
     .bind(input.occurred_at)
@@ -156,14 +150,16 @@ pub async fn persist_mcp_call_in_tx(
 
     sqlx::query(
         r"INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, event_id, citation_mapping_id,
-             personality_instance_id)
-         VALUES ($1, $2, 1, $3, $4,
+            (memory_id, owner_kind, owner_id, schema_id, schema_version,
+             receipt_id, citation_mapping_id, personality_instance_id)
+         VALUES ($1, $2, $3, $4, 1, $5, $6,
                  '00000000-0000-0000-0000-000000000000'::uuid)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(MCP_CALL_FACT_SCHEMA)
-    .bind(&event_id_bytes[..])
+    .bind(&receipt_id_bytes[..])
     .bind(citation_mapping_id)
     .execute(tx.as_mut())
     .await
@@ -172,8 +168,8 @@ pub async fn persist_mcp_call_in_tx(
     sqlx::query(
         r"INSERT INTO proxima_core.citation_mappings
             (citation_mapping_id, schema_id, memory_id,
-             cited_object_id, owner_principal_kind,
-             owner_principal_id)
+             cited_object_id, owner_kind,
+             owner_id)
          VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(citation_mapping_id)
@@ -181,7 +177,7 @@ pub async fn persist_mcp_call_in_tx(
     .bind(memory_id)
     .bind(cited_object_id)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -211,7 +207,7 @@ pub async fn persist_mcp_call_in_tx(
 
     sqlx::query(
         r"INSERT INTO proxima_core.change_event
-            (seq, owner_principal_kind, owner_principal_id,
+            (seq, owner_kind, owner_id,
              kind, entity_kind,
              entity_memory_id, entity_schema_id, entity_schema_version,
              entity_personality_instance_id)
@@ -220,7 +216,7 @@ pub async fn persist_mcp_call_in_tx(
     )
     .bind(change_seq)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(memory_id)
     .bind(MCP_CALL_FACT_SCHEMA)
     .execute(&mut **tx)
@@ -228,7 +224,7 @@ pub async fn persist_mcp_call_in_tx(
     .map_err(map_err)?;
 
     Ok(McpCallLogOutcome {
-        event_id,
+        event_id: receipt_id,
         fact_memory_id: MemoryId::new(memory_id),
         cited_object_id,
         citation_mapping_id,

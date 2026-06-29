@@ -8,7 +8,8 @@
 
 use std::collections::BTreeMap;
 
-use proxima_storage_pg::{PgStorage, core_migrator};
+use proxima_core::StorageError;
+use proxima_storage_pg::{PgStorage, core_migrator, ensure_v004_baseline_compatible};
 use sqlx::PgConnection;
 use sqlx::migrate::{MigrateError, Migrator};
 
@@ -67,6 +68,8 @@ pub enum MigrationError {
     PinSearchPath(#[source] sqlx::Error),
     #[error("failed to reset migration search_path after migrations: {0}")]
     ResetSearchPath(#[source] sqlx::Error),
+    #[error("core migration preflight failed: {0}")]
+    CorePreflight(#[source] StorageError),
     #[error("core migrations failed: {0}")]
     Core(#[source] MigrateError),
     #[error("flavor migrations failed for {source}: {err}")]
@@ -91,6 +94,9 @@ pub async fn run_core_and_flavor_migrations(
 ) -> Result<MigrationRunReport, MigrationError> {
     let sources = prepare_sources(flavors)?;
     let report = MigrationRunReport::from_sources(&sources);
+    ensure_v004_baseline_compatible(pg.pool())
+        .await
+        .map_err(MigrationError::CorePreflight)?;
     let mut conn = pg
         .pool()
         .acquire()

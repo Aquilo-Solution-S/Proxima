@@ -33,20 +33,7 @@ pub async fn insert_home(
     entity_id: Uuid,
     owner: &Owner,
 ) -> Result<(), sqlx::Error> {
-    let (owner_kind, owner_principal_id) = owner.columns();
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1, $2, $3, true, $4)
-         ON CONFLICT DO NOTHING",
-    ))
-    .bind(entity_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(Uuid::nil())
-    .execute(pg.pool())
-    .await
-    .map(|_| ())
+    set_owned_row_owner(pg, entity_id, owner).await
 }
 
 pub async fn share_entity(
@@ -54,20 +41,36 @@ pub async fn share_entity(
     entity_id: Uuid,
     owner: &Owner,
 ) -> Result<(), sqlx::Error> {
-    let (owner_kind, owner_principal_id) = owner.columns();
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1, $2, $3, false, $4)
-         ON CONFLICT DO NOTHING",
-    ))
+    set_owned_row_owner(pg, entity_id, owner).await
+}
+
+async fn set_owned_row_owner(
+    pg: &PgStorage,
+    entity_id: Uuid,
+    owner: &Owner,
+) -> Result<(), sqlx::Error> {
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
+    sqlx::query(
+        "UPDATE proxima_core.memories
+            SET owner_kind = $2, owner_id = $3
+          WHERE memory_id = $1",
+    )
     .bind(entity_id)
     .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(Uuid::nil())
+    .bind(owner_id)
     .execute(pg.pool())
-    .await
-    .map(|_| ())
+    .await?;
+    sqlx::query(
+        "UPDATE proxima_core.goals
+            SET owner_kind = $2, owner_id = $3
+          WHERE goal_id = $1",
+    )
+    .bind(entity_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .execute(pg.pool())
+    .await?;
+    Ok(())
 }
 
 pub async fn seed_memory(
@@ -92,49 +95,53 @@ pub async fn seed_memory(
             citation: None,
         };
         let outcome = pg.ingest_event_atomic(&draft, None).await?;
-        insert_home(pg, outcome.memory_id.into_inner(), owner).await?;
         return Ok(outcome.memory_id);
     }
 
     let memory_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, 'test/edge-access-v1', 1, $2, $3, 'Wake',
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, 'test/edge-access-v1', 1, $4, $5, 'Wake',
                  'test-model', 'edge-access-v1',
                  '00000000-0000-0000-0000-000000000000'::uuid, 0)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(kind)
     .bind(text)
     .execute(pg.pool())
     .await?;
-    insert_home(pg, memory_id, owner).await?;
     Ok(MemoryId::new(memory_id))
 }
 
 pub async fn seed_memory_edge(
     pg: &PgStorage,
-    _owner: &Owner,
+    owner: &Owner,
     source: (EntityKind, MemoryId),
     target: (EntityKind, MemoryId),
     relation: &str,
     relation_class: RelationClass,
 ) -> Result<EdgeId, sqlx::Error> {
     let edge_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     let (source_kind, source_memory_id) = source;
     let (target_kind, target_memory_id) = target;
     sqlx::query(
         "INSERT INTO proxima_core.edges
-            (edge_id, relation, relation_class,
+            (edge_id, owner_kind, owner_id, relation, relation_class,
              source_kind, source_memory_id, source_goal_id,
              target_kind, target_memory_id, target_goal_id,
              authorship_kind, authorship_owner_memory_id)
-         VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, NULL,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8, $9, NULL,
                  'Engine', NULL)",
     )
     .bind(edge_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(relation)
     .bind(relation_class)
     .bind(source_kind)

@@ -145,23 +145,23 @@ pub(crate) async fn walk_memory_lineage(
 async fn start_memory_visible(
     pool: &PgPool,
     read_owner_kinds: &[OwnerRefKind],
-    read_owner_ids: &[uuid::Uuid],
+    read_owner_ids: &[Option<uuid::Uuid>],
     memory_id: MemoryId,
     reader_id: Option<uuid::Uuid>,
 ) -> Result<bool, StorageError> {
     let mut sql = String::from(
-        crate::access::owner_ref_compat::sql("SELECT m.memory_id
+        "SELECT m.memory_id
              FROM proxima_core.memories m
              WHERE EXISTS (
                        SELECT 1
-                         FROM __PROXIMA_ENTITY_OWNER__ eo
-                         JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
-                           ON eo.owner_principal_kind = rs.kind
-                          AND eo.owner_principal_id = rs.id
+                         FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                         JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS rs(kind, id)
+                           ON eo.owner_kind = rs.kind
+                          AND eo.owner_id IS NOT DISTINCT FROM rs.id
                         WHERE eo.entity_id = m.memory_id
                    )
                AND m.memory_id = $3
-               AND m.tombstoned_at IS NULL"),
+               AND m.tombstoned_at IS NULL",
     );
     push_reader_visibility_filter(&mut sql, "m", reader_id.map(|_| 4));
     let mut query = sqlx::query_as::<_, (uuid::Uuid,)>(&sql)
@@ -179,7 +179,7 @@ async fn walk_edges(
     pool: &PgPool,
     req: &MemoryLineageRequest,
     read_owner_kinds: &[OwnerRefKind],
-    read_owner_ids: &[uuid::Uuid],
+    read_owner_ids: &[Option<uuid::Uuid>],
     depth: u8,
     limit: u32,
     reader_id: Option<uuid::Uuid>,
@@ -191,10 +191,9 @@ async fn walk_edges(
     let reader_filter = reader_id
         .map(|_| reader_visibility_filter("m", 8))
         .unwrap_or_default();
-    let sql = crate::access::owner_ref_compat::sql_owned(
-        template.replace("{reader_filter}", &reader_filter),
-    );
-    let (world_kind, world_id) = proxima_core::access::world().columns();
+    let sql = template.replace("{reader_filter}", &reader_filter);
+    let (world_kind, world_id) =
+        crate::access::owner_columns::owner_binds(&proxima_core::access::world());
     let mut query = sqlx::query_as::<_, EdgeWalkRow>(&sql)
         .bind(read_owner_kinds)
         .bind(read_owner_ids)
@@ -212,12 +211,12 @@ async fn walk_edges(
 async fn load_nodes(
     pool: &PgPool,
     read_owner_kinds: &[OwnerRefKind],
-    read_owner_ids: &[uuid::Uuid],
+    read_owner_ids: &[Option<uuid::Uuid>],
     memory_ids: &[uuid::Uuid],
     reader_id: Option<uuid::Uuid>,
 ) -> Result<Vec<NodeRow>, StorageError> {
     let mut sql = String::from(
-        crate::access::owner_ref_compat::sql("SELECT m.memory_id,
+        "SELECT m.memory_id,
                   m.kind,
                   m.schema_id,
                   left(COALESCE(m.text, ''), 480) AS snippet,
@@ -225,14 +224,14 @@ async fn load_nodes(
              FROM proxima_core.memories m
              WHERE EXISTS (
                        SELECT 1
-                         FROM __PROXIMA_ENTITY_OWNER__ eo
-                         JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
-                           ON eo.owner_principal_kind = rs.kind
-                          AND eo.owner_principal_id = rs.id
+                         FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                         JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS rs(kind, id)
+                           ON eo.owner_kind = rs.kind
+                          AND eo.owner_id IS NOT DISTINCT FROM rs.id
                         WHERE eo.entity_id = m.memory_id
                    )
                AND m.memory_id = ANY($3::uuid[])
-               AND m.tombstoned_at IS NULL"),
+               AND m.tombstoned_at IS NULL",
     );
     push_reader_visibility_filter(&mut sql, "m", reader_id.map(|_| 4));
     let mut query = sqlx::query_as::<_, NodeRow>(&sql)
@@ -264,17 +263,17 @@ fn reader_visibility_filter(alias: &str, param: usize) -> String {
 
 const ANCESTORS_SQL: &str = "
 WITH RECURSIVE read_set(kind, id) AS (
-    SELECT * FROM unnest($1::proxima_core.owner_principal_kind[], $2::uuid[])
+    SELECT * FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[])
 ),
 readable_memories AS (
     SELECT m.memory_id
       FROM proxima_core.memories m
      WHERE EXISTS (
                SELECT 1
-                 FROM __PROXIMA_ENTITY_OWNER__ eo
+                 FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                  JOIN read_set rs
-                   ON eo.owner_principal_kind = rs.kind
-                  AND eo.owner_principal_id = rs.id
+                   ON eo.owner_kind = rs.kind
+                  AND eo.owner_id IS NOT DISTINCT FROM rs.id
                 WHERE eo.entity_id = m.memory_id
            )
        AND m.tombstoned_at IS NULL
@@ -305,10 +304,10 @@ edge_heads AS (
            ) AS target_readable,
            EXISTS (
                SELECT 1
-                 FROM __PROXIMA_ENTITY_OWNER__ weo
+                 FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) weo
                 WHERE weo.entity_id = edge_endpoints.source_entity_id
-                  AND weo.owner_principal_kind = $3
-                  AND weo.owner_principal_id = $4
+                  AND weo.owner_kind = $3
+                  AND weo.owner_id = $4
            ) AS source_world_readable
       FROM edge_endpoints
 ),
@@ -355,17 +354,17 @@ LIMIT $7
 
 const DESCENDANTS_SQL: &str = "
 WITH RECURSIVE read_set(kind, id) AS (
-    SELECT * FROM unnest($1::proxima_core.owner_principal_kind[], $2::uuid[])
+    SELECT * FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[])
 ),
 readable_memories AS (
     SELECT m.memory_id
       FROM proxima_core.memories m
      WHERE EXISTS (
                SELECT 1
-                 FROM __PROXIMA_ENTITY_OWNER__ eo
+                 FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                  JOIN read_set rs
-                   ON eo.owner_principal_kind = rs.kind
-                  AND eo.owner_principal_id = rs.id
+                   ON eo.owner_kind = rs.kind
+                  AND eo.owner_id IS NOT DISTINCT FROM rs.id
                 WHERE eo.entity_id = m.memory_id
            )
        AND m.tombstoned_at IS NULL
@@ -396,10 +395,10 @@ edge_heads AS (
            ) AS target_readable,
            EXISTS (
                SELECT 1
-                 FROM __PROXIMA_ENTITY_OWNER__ weo
+                 FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) weo
                 WHERE weo.entity_id = edge_endpoints.source_entity_id
-                  AND weo.owner_principal_kind = $3
-                  AND weo.owner_principal_id = $4
+                  AND weo.owner_kind = $3
+                  AND weo.owner_id = $4
            ) AS source_world_readable
       FROM edge_endpoints
 ),

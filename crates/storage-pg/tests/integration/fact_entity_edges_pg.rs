@@ -630,22 +630,25 @@ async fn append_pinned_edge_for_relation(
 
 async fn raw_insert_follow_edge(
     pg: &PgStorage,
-    _owner: &Owner,
+    owner: &Owner,
     source_fact_entity_id: Uuid,
     target_fact_entity_id: Uuid,
 ) -> Result<(), sqlx::Error> {
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.edges
-            (edge_id, relation, relation_class,
+            (edge_id, owner_kind, owner_id, relation, relation_class,
              source_kind, source_fact_entity_id,
              target_kind, target_fact_entity_id,
              authorship_kind, authorship_owner_memory_id)
-         VALUES ($1, 'test/raw-follow', 'Structural',
-                 'Fact', $2,
-                 'Fact', $3,
+         VALUES ($1, $2, $3, 'test/raw-follow', 'Structural',
+                 'Fact', $4,
+                 'Fact', $5,
                  'ExternalAgent', NULL)",
     )
     .bind(Uuid::now_v7())
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(source_fact_entity_id)
     .bind(target_fact_entity_id)
     .execute(pg.pool())
@@ -1113,18 +1116,21 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
         assert!(matches!(err, StorageError::ConstraintViolation(_)));
         tx.rollback().await?;
 
+        let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
         let err = sqlx::query(
             "INSERT INTO proxima_core.edges
-                (edge_id, relation, relation_class,
+                (edge_id, owner_kind, owner_id, relation, relation_class,
                  source_kind, source_memory_id, source_fact_entity_id,
                  target_kind, target_fact_entity_id,
                  authorship_kind, authorship_owner_memory_id)
-             VALUES ($1, 'test/bad-three-way', 'Structural',
-                     'Fact', $2, $3,
-                     'Fact', $4,
+             VALUES ($1, $2, $3, 'test/bad-three-way', 'Structural',
+                     'Fact', $4, $5,
+                     'Fact', $6,
                      'ExternalAgent', NULL)",
         )
         .bind(Uuid::now_v7())
+        .bind(owner_kind)
+        .bind(owner_id)
         .bind(source.memory_id.into_inner())
         .bind(source_entity)
         .bind(target_entity)
@@ -1135,16 +1141,18 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
 
         let err = sqlx::query(
             "INSERT INTO proxima_core.edges
-                (edge_id, relation, relation_class,
+                (edge_id, owner_kind, owner_id, relation, relation_class,
                  source_kind, source_fact_entity_id,
                  target_kind, target_fact_entity_id,
                  authorship_kind, authorship_owner_memory_id)
-             VALUES ($1, 'test/bad-kind', 'Structural',
-                     'Abstraction', $2,
-                     'Fact', $3,
+             VALUES ($1, $2, $3, 'test/bad-kind', 'Structural',
+                     'Abstraction', $4,
+                     'Fact', $5,
                      'ExternalAgent', NULL)",
         )
         .bind(Uuid::now_v7())
+        .bind(owner_kind)
+        .bind(owner_id)
         .bind(source_entity)
         .bind(target_entity)
         .execute(pg.pool())
@@ -1169,7 +1177,7 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
         let other_source =
             ingest_fact(&pg, &engine, &other, &fact("other", "v1", "Present")).await?;
         let other_entity = memory_fact_entity_id(&pg, other_source.memory_id).await?;
-        raw_insert_follow_edge(&pg, &other, source_entity, other_entity).await?;
+        raw_insert_follow_edge(&pg, &owner, source_entity, other_entity).await?;
 
         Ok(())
     }

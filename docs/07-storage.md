@@ -15,8 +15,8 @@ types.
 | `SourceId` | text | stable source-declared id |
 | `SchemaId` | text | flavor-qualified, binary-scoped id (03) |
 | `ToolId` | text | build-time declared tool id (05 / 12) |
-| `EventId` | content hash | hash of source, Owner, and payload for re-receipt dedup |
-| `EdgeId` | content hash or UUIDv7 | EventSource-authored edges hash; operator/user/engine edges use UUIDv7 |
+| `ReceiptId` | content hash | hash of source, Owner, and payload for re-receipt dedup |
+| `EdgeId` | UUIDv7 or descriptor-defined deterministic id | graph relation identity; no similarity-authored edges |
 | `MemoryId` | UUIDv7 | Fact, Abstraction, and Perspective identity |
 | `GoalId` | UUIDv7 | Goal identity |
 | `SourceBatchId` | UUIDv7 | source-declared batch id; unique within `(source_id, Owner)` |
@@ -29,8 +29,8 @@ UUIDv7 is the default for generated mutable identities: sortable by time,
 16 bytes, no separate ULID dependency. Content hashes are reserved for
 deterministic re-receipt dedup only.
 
-Fact identity is the UUIDv7 `MemoryId`, not the content hash. The
-content hash lives on the EventSource path as `EventId`.
+Fact identity is the UUIDv7 `MemoryId`, not the content hash. Receipt
+metadata lives in `fact_receipts`; `receipt_id` proves admission only.
 
 <a id="identity-rules"></a>
 
@@ -38,8 +38,8 @@ content hash lives on the EventSource path as `EventId`.
 
 | Entity | Identity rule | Lifecycle rule |
 |---|---|---|
-| Event | deterministic `EventId` | duplicate insert is replay |
-| Fact | fresh `MemoryId`; links to `EventId` | immutable; no supersession |
+| Fact receipt | deterministic `ReceiptId` | duplicate insert is replay |
+| Fact | fresh `MemoryId`; optional `receipt_id` | immutable; no supersession |
 | Abstraction | fresh `MemoryId` | supersession writes a new row |
 | Perspective | fresh `MemoryId` | supersession writes a new row |
 | Goal | fresh `GoalId` | supersession writes a new row |
@@ -65,14 +65,14 @@ Rows that carry an `Owner` store two identity columns:
 
 | Column | Meaning |
 |---|---|
-| `owner_principal_kind` | `User` or `Group` |
-| `owner_principal_id` | matching UserId or GroupId |
+| `owner_kind` | `world`, `personal`, or `group` |
+| `owner_id` | `NULL` for `world`; UserId or GroupId otherwise |
 
 `OwnerRef` is the storage owner handle (doc 01 §Owner; Track B / S0
 removed the tenant field from Core — no org column exists). Access
 predicates and identity comparisons (operator gates, edge scoping, dedup
-keys) use owner kind + owner id only. Cross-owner edges and cross-owner
-evidence are rejected.
+keys) use `owner_kind` + nullable `owner_id` with null-safe equality.
+Edges are source-owned; target rendering is separately redacted.
 
 <a id="storage-layout"></a>
 
@@ -114,7 +114,7 @@ paths, and payload text.
 
 | Table family | Owns | Contract |
 |---|---|---|
-| `events` | EventSource dedup and observed payload metadata | one row per accepted observation payload |
+| `fact_receipts` | source receipt and observed payload metadata | optional admission receipt for accepted Fact payloads |
 | `memories` | Fact / Abstraction / Perspective identity | common identity, Owner, schema, and lifecycle metadata |
 | `edges` | graph relations between Memories and Goals | relation id must resolve to a build-time `RelationDescriptor`; endpoints are typed entity refs; descriptor policy governs masks / owner policy / target write gate; Goal↔Goal topology lives here |
 | `goals` | Goal identity and lifecycle | distinct entity; typed GoalPayload sidecar; supersession-only lifecycle |
@@ -173,8 +173,8 @@ is explicitly defined as a content hash.
 
 | Surface | Collision behavior |
 |---|---|
-| Event re-receipt | silent replay/drop |
-| EventSource-authored edge re-receipt | silent replay/drop |
+| Fact receipt re-receipt | silent replay/drop |
+| deterministic edge re-receipt | silent replay/drop |
 | UUIDv7 entity id collision | storage error |
 
 No conflict-resolution protocol is attached to deterministic re-receipt.
@@ -186,7 +186,7 @@ The same source payload means the same observation.
 
 Time partitioning is a physical implementation concern. The abstract
 contract allows hot/cold partitioning for append-heavy tables such as
-events, memories, edges, and `change_event`.
+`fact_receipts`, `memories`, `edges`, `goals`, and `change_event`.
 
 Rules:
 
@@ -223,8 +223,8 @@ Postgres implementation:
 | column | `proxima_core.embeddings.vec vector(1024)` |
 | dimension | fixed 1024 (`mistral-embed`); no `dim` column |
 | key | `(entity_kind, entity_id, embedding_version, model_id)` |
-| Fact write | `ON CONFLICT ... DO UPDATE` refreshes vector + Owner columns |
-| derived write | memory row + typed sidecar + embedding row in one transaction |
+| Fact write | memory row + receipt/sidecar are authoritative; embedding may be absent |
+| derived write | memory row + typed sidecar are authoritative; embedding may be rebuilt |
 | index | `idx_embeddings_vec_hnsw` using `hnsw (vec vector_cosine_ops)` |
 | ranking | bind `'[...]'::vector`; score `1 - (vec <=> query)`; zero-vector NaN score clamps to `0.0` |
 

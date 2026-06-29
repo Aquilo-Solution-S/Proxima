@@ -77,6 +77,9 @@ pub use sidecars::{
 pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_dev";
 
 const NEIGHBOR_MEMORY_EDGES_SQL: &str = "
+WITH read_set(owner_kind, owner_id) AS (
+    SELECT * FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[])
+)
 SELECT e.edge_id, e.relation,
        e.source_kind,
        COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
@@ -84,56 +87,55 @@ SELECT e.edge_id, e.relation,
        COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id,
        EXISTS (
            SELECT 1
-             FROM __PROXIMA_ENTITY_OWNER__ teo
-             JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
-               ON teo.owner_principal_kind = rs.kind
-              AND teo.owner_principal_id = rs.id
-            WHERE teo.entity_id = COALESCE(e.target_memory_id, e.target_goal_id, tfe.current_memory_id)
+             FROM read_set rs
+            WHERE rs.owner_kind = COALESCE(tm.owner_kind, tg.owner_kind)
+              AND rs.owner_id IS NOT DISTINCT FROM COALESCE(tm.owner_id, tg.owner_id)
        ) AS target_readable,
-       EXISTS (
-           SELECT 1
-             FROM __PROXIMA_ENTITY_OWNER__ weo
-            WHERE weo.entity_id = COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id)
-              AND weo.owner_principal_kind = $3
-              AND weo.owner_principal_id = $4
-       ) AS source_world_readable
+       COALESCE(sm.owner_kind, sg.owner_kind) = $3
+       AND COALESCE(sm.owner_id, sg.owner_id) IS NOT DISTINCT FROM $4 AS source_world_readable
   FROM proxima_core.edges e
   LEFT JOIN proxima_core.fact_entities sfe
     ON sfe.fact_entity_id = e.source_fact_entity_id
   LEFT JOIN proxima_core.fact_entities tfe
     ON tfe.fact_entity_id = e.target_fact_entity_id
+  LEFT JOIN proxima_core.memories sm
+    ON sm.memory_id = COALESCE(e.source_memory_id, sfe.current_memory_id)
+  LEFT JOIN proxima_core.goals sg
+    ON sg.goal_id = e.source_goal_id
+  LEFT JOIN proxima_core.memories tm
+    ON tm.memory_id = COALESCE(e.target_memory_id, tfe.current_memory_id)
+  LEFT JOIN proxima_core.goals tg
+    ON tg.goal_id = e.target_goal_id
  WHERE EXISTS (
            SELECT 1
-             FROM __PROXIMA_ENTITY_OWNER__ seo
-             JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
-               ON seo.owner_principal_kind = rs.kind
-              AND seo.owner_principal_id = rs.id
-            WHERE seo.entity_id = COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id)
+             FROM read_set rs
+            WHERE rs.owner_kind = COALESCE(sm.owner_kind, sg.owner_kind)
+              AND rs.owner_id IS NOT DISTINCT FROM COALESCE(sm.owner_id, sg.owner_id)
        )
    AND (e.source_memory_id = ANY($5::uuid[])
         OR e.target_memory_id = ANY($5::uuid[])
         OR sfe.current_memory_id = ANY($5::uuid[])
         OR tfe.current_memory_id = ANY($5::uuid[]))
    AND NOT (
-        EXISTS (
-            SELECT 1
-              FROM __PROXIMA_ENTITY_OWNER__ weo
-             WHERE weo.entity_id = COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id)
-               AND weo.owner_principal_kind = $3
-               AND weo.owner_principal_id = $4
-        )
+        COALESCE(sm.owner_kind, sg.owner_kind) = $3
+        AND COALESCE(sm.owner_id, sg.owner_id) IS NOT DISTINCT FROM $4
         AND NOT EXISTS (
             SELECT 1
-              FROM __PROXIMA_ENTITY_OWNER__ teo
-              JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
-                ON teo.owner_principal_kind = rs.kind
-               AND teo.owner_principal_id = rs.id
-             WHERE teo.entity_id = COALESCE(e.target_memory_id, e.target_goal_id, tfe.current_memory_id)
+              FROM read_set rs
+             WHERE rs.owner_kind = COALESCE(tm.owner_kind, tg.owner_kind)
+               AND rs.owner_id IS NOT DISTINCT FROM COALESCE(tm.owner_id, tg.owner_id)
         )
    )
  ORDER BY e.edge_id DESC
  LIMIT $6
 ";
+
+/// Migration versions deleted from the v0.0.4 destructive baseline.
+///
+/// `SQLx` stores core and flavor migrations in one `public._sqlx_migrations`
+/// table. Keep this explicit list in sync between stale-DB preflight and the
+/// guarded local reset path; do not delete broad version ranges.
+pub const RETIRED_PRE_V004_MIGRATION_VERSIONS: &[i64] = &[2, 3, 4, 5, 6, 7, 20_260_622_000_000];
 
 /// Embedded core migration set under `crates/storage-pg/migrations/`.
 ///
@@ -144,6 +146,97 @@ pub fn core_migrator() -> sqlx::migrate::Migrator {
     let mut migrator = sqlx::migrate!("./migrations");
     migrator.set_ignore_missing(true);
     migrator
+}
+
+/// Fail closed before `SQLx` checksum/missing-file behavior when a database
+/// contains pre-v0.0.4 Proxima storage artifacts.
+///
+/// # Errors
+///
+/// Returns [`StorageError::V004ResetRequired`] for stale schema state and
+/// [`StorageError::Internal`] for catalog query failures.
+///
+/// # Panics
+///
+/// Panics if the embedded core migrator does not contain baseline version 1.
+pub async fn ensure_v004_baseline_compatible(pool: &PgPool) -> Result<(), StorageError> {
+    let migration_table_exists: bool =
+        sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
+            .fetch_one(pool)
+            .await
+            .map_err(internal)?;
+
+    let proxima_schema_objects: Vec<String> = sqlx::query_scalar(
+        "SELECT table_schema || '.' || table_name
+           FROM information_schema.tables
+          WHERE table_schema IN ('proxima_core', 'proxima_code')
+          ORDER BY table_schema, table_name
+          LIMIT 20",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(internal)?;
+
+    let mut old_versions = Vec::new();
+    let mut checksum_mismatch = false;
+    let mut current_v1_seen = false;
+    if migration_table_exists {
+        let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+            "SELECT version, checksum
+               FROM public._sqlx_migrations
+              WHERE success
+                AND version = ANY($1::bigint[])
+              ORDER BY version",
+        )
+        .bind(
+            std::iter::once(1_i64)
+                .chain(RETIRED_PRE_V004_MIGRATION_VERSIONS.iter().copied())
+                .collect::<Vec<_>>(),
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(internal)?;
+
+        let current_v1_checksum = core_migrator()
+            .iter()
+            .find(|migration| migration.version == 1)
+            .expect("core baseline migration version 1 exists")
+            .checksum
+            .as_ref()
+            .to_vec();
+        for (version, checksum) in rows {
+            if version == 1 {
+                current_v1_seen = true;
+                checksum_mismatch = checksum != current_v1_checksum;
+            } else {
+                old_versions.push(version);
+            }
+        }
+    }
+
+    let untracked_proxima_schema =
+        !proxima_schema_objects.is_empty() && (!migration_table_exists || !current_v1_seen);
+
+    if !untracked_proxima_schema && old_versions.is_empty() && !checksum_mismatch {
+        return Ok(());
+    }
+
+    let mut details = Vec::new();
+    if untracked_proxima_schema {
+        details.push(format!(
+            "pre-existing Proxima schema objects without v0.0.4 baseline marker: {}",
+            proxima_schema_objects.join(", ")
+        ));
+    }
+    if !old_versions.is_empty() {
+        details.push(format!("old migration versions: {old_versions:?}"));
+    }
+    if checksum_mismatch {
+        details.push("version 1 checksum differs from v0.0.4 baseline".to_string());
+    }
+    Err(StorageError::V004ResetRequired {
+        details: details.join("; "),
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -260,6 +353,7 @@ impl PgStorage {
     /// migration failure (broken file, conflict with the
     /// recorded checksum, etc.).
     pub async fn run_migrations(&self) -> Result<(), StorageError> {
+        ensure_v004_baseline_compatible(&self.pool).await?;
         core_migrator().run(&self.pool).await.map_err(internal)?;
         Ok(())
     }
@@ -557,27 +651,20 @@ impl Storage for PgStorage {
             .copied()
             .map(MemoryId::into_inner)
             .collect::<Vec<_>>();
-        let (owner_kind, owner_principal_id) = owner.columns();
-        let rows: Vec<(uuid::Uuid, Option<proxima_core::EntityKind>)> =
-            sqlx::query_as(crate::access::owner_ref_compat::sql(
-                "SELECT m.memory_id, m.kind
+        let (owner_kind, owner_id) = owner.columns();
+        let rows: Vec<(uuid::Uuid, Option<proxima_core::EntityKind>)> = sqlx::query_as(
+            "SELECT m.memory_id, m.kind
              FROM proxima_core.memories m
-             WHERE EXISTS (
-                    SELECT 1
-                      FROM __PROXIMA_ENTITY_OWNER__ eo
-                     WHERE eo.entity_id = m.memory_id
-                       AND eo.owner_principal_kind = $1
-                       AND eo.owner_principal_id = $2
-                       AND eo.is_home
-             )
+             WHERE m.owner_kind = $1
+               AND m.owner_id IS NOT DISTINCT FROM $2
                AND m.memory_id = ANY($3::uuid[])",
-            ))
-            .bind(owner_kind)
-            .bind(owner_principal_id)
-            .bind(&ids)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(internal)?;
+        )
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(&ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
         Ok(rows
             .into_iter()
             .map(|(memory_id, kind)| MemoryKindRow {
@@ -601,10 +688,9 @@ impl Storage for PgStorage {
             .copied()
             .map(MemoryId::into_inner)
             .collect::<Vec<_>>();
-        let (owner_kind, owner_principal_id) = owner.columns();
-        let rows: Vec<(uuid::Uuid, Option<Vec<String>>, Option<String>)> =
-            sqlx::query_as(crate::access::owner_ref_compat::sql(
-                "SELECT m.memory_id,
+        let (owner_kind, owner_id) = owner.columns();
+        let rows: Vec<(uuid::Uuid, Option<Vec<String>>, Option<String>)> = sqlx::query_as(
+            "SELECT m.memory_id,
                     COALESCE(n.tags, d.tags) AS tags,
                     CASE WHEN $4
                          THEN COALESCE(n.body, d.body, m.text)
@@ -613,23 +699,17 @@ impl Storage for PgStorage {
              FROM proxima_core.memories m
              LEFT JOIN proxima_core.agent_note_v1 n USING (memory_id)
              LEFT JOIN proxima_core.agent_derivation_v1 d USING (memory_id)
-             WHERE EXISTS (
-                    SELECT 1
-                      FROM __PROXIMA_ENTITY_OWNER__ eo
-                     WHERE eo.entity_id = m.memory_id
-                       AND eo.owner_principal_kind = $1
-                       AND eo.owner_principal_id = $2
-                       AND eo.is_home
-             )
+             WHERE m.owner_kind = $1
+               AND m.owner_id IS NOT DISTINCT FROM $2
                AND m.memory_id = ANY($3::uuid[])",
-            ))
-            .bind(owner_kind)
-            .bind(owner_principal_id)
-            .bind(&ids)
-            .bind(include_body)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(internal)?;
+        )
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(&ids)
+        .bind(include_body)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
         Ok(rows
             .into_iter()
             .map(|(memory_id, tags, body)| MemoryGraphPayloadRow {
@@ -659,7 +739,8 @@ impl Storage for PgStorage {
             .collect::<Vec<_>>();
         let limit = i64::try_from(limit).map_err(|err| StorageError::Internal(err.to_string()))?;
         let (read_owner_kinds, read_owner_ids) = verbs::query::read_owner_columns(read_owners);
-        let (world_kind, world_id) = proxima_core::access::world().columns();
+        let (world_kind, world_id) =
+            crate::access::owner_columns::owner_binds(&proxima_core::access::world());
         let rows: Vec<(
             uuid::Uuid,
             String,
@@ -669,18 +750,16 @@ impl Storage for PgStorage {
             Option<uuid::Uuid>,
             bool,
             bool,
-        )> = sqlx::query_as(crate::access::owner_ref_compat::sql(
-            NEIGHBOR_MEMORY_EDGES_SQL,
-        ))
-        .bind(&read_owner_kinds)
-        .bind(&read_owner_ids)
-        .bind(world_kind)
-        .bind(world_id)
-        .bind(&ids)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
+        )> = sqlx::query_as(NEIGHBOR_MEMORY_EDGES_SQL)
+            .bind(&read_owner_kinds)
+            .bind(&read_owner_ids)
+            .bind(world_kind)
+            .bind(world_id)
+            .bind(&ids)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(internal)?;
         Ok(rows
             .into_iter()
             .map(
@@ -785,8 +864,8 @@ impl Storage for PgStorage {
         let row: Option<(uuid::Uuid,)> = sqlx::query_as(
             "SELECT current_root_perspective_memory_id
              FROM proxima_core.personality
-             WHERE owner_principal_kind = $1
-               AND owner_principal_id = $2
+             WHERE owner_kind = $1
+               AND owner_id IS NOT DISTINCT FROM $2
                AND personality_instance_id = $3
                AND status <> 'tombstoned'::proxima_core.personality_status",
         )
@@ -1194,7 +1273,7 @@ impl Storage for PgStorage {
         &self,
         member: &OwnerRef,
     ) -> Result<Vec<MembershipRow>, StorageError> {
-        access::owner_ref_compat::resolve_membership(&self.pool, member).await
+        access::owner_columns::resolve_membership(&self.pool, member).await
     }
 
     async fn visible_to_any(
@@ -1202,11 +1281,11 @@ impl Storage for PgStorage {
         entity: EntityId,
         read_owners: &[OwnerRef],
     ) -> Result<bool, StorageError> {
-        access::owner_ref_compat::visible_to_any(&self.pool, entity, read_owners).await
+        access::owner_columns::visible_to_any(&self.pool, entity, read_owners).await
     }
 
     async fn home_owner(&self, entity: EntityId) -> Result<Option<OwnerRef>, StorageError> {
-        access::owner_ref_compat::home_owner(&self.pool, entity).await
+        access::owner_columns::home_owner(&self.pool, entity).await
     }
 
     async fn add_group_member(
@@ -1216,7 +1295,7 @@ impl Storage for PgStorage {
         relation: Relation,
         granted_by: uuid::Uuid,
     ) -> Result<(), StorageError> {
-        access::owner_ref_compat::add_group_member(
+        access::owner_columns::add_group_member(
             &self.pool,
             group_id,
             member_user_id,
@@ -1231,13 +1310,13 @@ impl Storage for PgStorage {
         group_id: GroupId,
         member_user_id: UserId,
     ) -> Result<(), StorageError> {
-        access::owner_ref_compat::remove_group_member(&self.pool, group_id, member_user_id).await
+        access::owner_columns::remove_group_member(&self.pool, group_id, member_user_id).await
     }
 
     async fn list_group_members(
         &self,
         group_id: GroupId,
     ) -> Result<Vec<(UserId, Relation)>, StorageError> {
-        access::owner_ref_compat::list_group_members(&self.pool, group_id).await
+        access::owner_columns::list_group_members(&self.pool, group_id).await
     }
 }

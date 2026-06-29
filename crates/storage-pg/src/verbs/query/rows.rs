@@ -30,7 +30,7 @@ pub(super) fn memory_row_from_db(
         kind: r.kind.unwrap_or(EntityKind::Fact),
         schema_id,
         schema_version,
-        owner: owner_from_parts(r.owner_principal_kind, r.owner_principal_id),
+        owner: owner_from_parts(r.owner_kind, r.owner_id)?,
         payload,
     })
 }
@@ -47,7 +47,7 @@ pub(super) fn goal_row_from_db(r: GoalRowDb) -> Result<GoalRow, StorageError> {
         id: GoalId::new(r.goal_id),
         schema_id: SchemaId::new(r.schema_id),
         schema_version: SchemaVersion::new(schema_version),
-        owner: owner_from_parts(r.owner_principal_kind, r.owner_principal_id),
+        owner: owner_from_parts(r.owner_kind, r.owner_id)?,
         title: r.title,
         text: r.text,
         state,
@@ -94,8 +94,12 @@ fn entity_ref_from_endpoint(
     }
 }
 
-fn owner_from_parts(kind: OwnerRefKind, principal_id: uuid::Uuid) -> Owner {
-    kind.with_uuid(principal_id)
+fn owner_from_parts(
+    kind: OwnerRefKind,
+    owner_id: Option<uuid::Uuid>,
+) -> Result<Owner, StorageError> {
+    kind.with_uuid(owner_id)
+        .ok_or_else(|| StorageError::Internal("invalid OwnerRef columns".into()))
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -103,8 +107,8 @@ pub(super) struct GoalRowDb {
     goal_id: uuid::Uuid,
     schema_id: String,
     schema_version: i32,
-    owner_principal_kind: OwnerRefKind,
-    owner_principal_id: uuid::Uuid,
+    owner_kind: OwnerRefKind,
+    owner_id: Option<uuid::Uuid>,
     title: String,
     text: String,
     state: GoalState,
@@ -131,8 +135,8 @@ pub(super) struct EdgeRowDb {
 #[derive(Debug, sqlx::FromRow)]
 pub(super) struct MemoryRowDb {
     pub(super) memory_id: uuid::Uuid,
-    owner_principal_kind: OwnerRefKind,
-    owner_principal_id: uuid::Uuid,
+    owner_kind: OwnerRefKind,
+    owner_id: Option<uuid::Uuid>,
     pub(super) schema_id: String,
     pub(super) schema_version: i32,
     pub(super) kind: Option<EntityKind>,
@@ -146,17 +150,18 @@ pub(super) struct MemoryRowDb {
 pub(super) async fn read_seq_high_water(
     pool: &PgPool,
     read_owner_kinds: &[OwnerRefKind],
-    read_owner_ids: &[uuid::Uuid],
+    read_owner_ids: &[Option<uuid::Uuid>],
 ) -> Result<Option<uuid::Uuid>, StorageError> {
-    let (world_kind, world_id) = proxima_core::access::world().columns();
+    let (world_kind, world_id) =
+        crate::access::owner_columns::owner_binds(&proxima_core::access::world());
     let edge_visibility = edge_event_visibility_predicate(1, 2, 3, 4);
     let sql = format!(
         r"SELECT ce.seq FROM proxima_core.change_event ce
          WHERE EXISTS (
              SELECT 1
-               FROM unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
-              WHERE ce.owner_principal_kind = s.kind
-                AND ce.owner_principal_id = s.id
+               FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+              WHERE ce.owner_kind = s.kind
+                AND ce.owner_id IS NOT DISTINCT FROM s.id
          )
            AND {edge_visibility}
          ORDER BY ce.seq DESC LIMIT 1"

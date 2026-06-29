@@ -82,11 +82,10 @@ should carry only durable, condensed rules and executable checks.
 
 Branch policy:
 
-1. Land PR0 / authority cleanup directly on `main`.
-2. Create `refactor/v0.0.4-kernel-alignment` from that `main` commit.
-3. Send breaking runtime/storage/API slices to that protected refactor branch.
-4. Merge back to `main` only when the slice ledger is green; tag `v0.0.4`
-   from `main` after post-merge CI passes.
+1. PR0 / authority cleanup landed directly on `main`.
+2. PR1 / access hard cut landed directly on `main` after review and green CI.
+3. Remaining v0.0.4 slices use short reviewed branches targeting `main` unless a slice is explicitly staged by Heinrich.
+4. Tag `v0.0.4` from `main` only after all required slices merge and post-merge CI passes.
 
 Breaking deletion target: remove production compatibility for `Principal` /
 `OwnerPrincipalKind`, `ReadScope`, materialized Personality/Self authz,

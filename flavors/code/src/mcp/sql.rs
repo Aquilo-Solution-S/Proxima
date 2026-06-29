@@ -21,12 +21,11 @@ chunk_heads AS (
         JOIN proxima_core.memories m USING (memory_id)
         WHERE EXISTS (
                   SELECT 1
-                    FROM __PROXIMA_ENTITY_OWNER__ eo
+                    FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                    WHERE eo.entity_id = m.memory_id
-                     AND eo.owner_principal_kind = $1
-                     AND eo.owner_principal_id = $2
-                     AND eo.is_home
-              )
+                     AND eo.owner_kind = $1
+                     AND eo.owner_id = $2
+)
         ORDER BY c.repo_id, c.file_path, c.chunk_index, m.created_at DESC
     ) latest
     WHERE state = 'Present'
@@ -43,17 +42,16 @@ file_revision_heads AS (
     JOIN proxima_core.memories m USING (memory_id)
     WHERE EXISTS (
               SELECT 1
-                FROM __PROXIMA_ENTITY_OWNER__ eo
+                FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                WHERE eo.entity_id = m.memory_id
-                 AND eo.owner_principal_kind = $1
-                 AND eo.owner_principal_id = $2
-                 AND eo.is_home
-          )
+                 AND eo.owner_kind = $1
+                 AND eo.owner_id = $2
+)
     ORDER BY f.repo_id, f.file_path, m.created_at DESC
 )
 ";
 
-pub fn owner_principal(owner: &Owner) -> (OwnerRefKind, uuid::Uuid) {
+pub fn owner_columns(owner: &Owner) -> (OwnerRefKind, Option<uuid::Uuid>) {
     owner.columns()
 }
 
@@ -72,13 +70,13 @@ pub async fn resolve_repo_identifier(
         return Ok(repo_id);
     }
 
-    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    let (owner_kind, owner_id) = owner_columns(&ctx.owner);
     let pool = pg_pool(ctx)?;
     let rows: Vec<RepoLookupRow> = sqlx::query_as(
         "SELECT repo_id
          FROM proxima_code.repos
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
+         WHERE owner_kind = $1
+           AND owner_id = $2
            AND (
                lower(display_name) = lower($3)
                OR lower(canonical_path) = lower($3)
@@ -88,7 +86,7 @@ pub async fn resolve_repo_identifier(
          LIMIT 2",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(trimmed)
     .fetch_all(pool.as_ref())
     .await

@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::pg_pool;
-use super::sql::{map_storage, owner_principal, resolve_repo_identifier};
+use super::sql::{map_storage, owner_columns, resolve_repo_identifier};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeSearchCommitsArgs {
@@ -77,24 +77,22 @@ impl McpTool for CodeSearchCommitsTool {
                 ));
             }
             let limit = args.limit.unwrap_or(10).min(50);
-            let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+            let (owner_kind, owner_id) = owner_columns(&ctx.owner);
             let repo_id = match args.repo_handle.as_deref() {
                 Some(handle) => Some(resolve_repo_identifier(&ctx, handle).await?),
                 None => None,
             };
             let pool = pg_pool(&ctx)?;
 
-            let commit_rows: Vec<CommitRow> = sqlx::query_as(
-                proxima_storage_pg::access::owner_ref_compat::sql(COMMIT_SEARCH_SQL),
-            )
-            .bind(owner_kind)
-            .bind(owner_principal_id)
-            .bind(query)
-            .bind(repo_id)
-            .bind(i64::from(limit))
-            .fetch_all(pool.as_ref())
-            .await
-            .map_err(map_storage)?;
+            let commit_rows: Vec<CommitRow> = sqlx::query_as(COMMIT_SEARCH_SQL)
+                .bind(owner_kind)
+                .bind(owner_id)
+                .bind(query)
+                .bind(repo_id)
+                .bind(i64::from(limit))
+                .fetch_all(pool.as_ref())
+                .await
+                .map_err(map_storage)?;
             let commits = commit_rows
                 .into_iter()
                 .map(|row| CommitMatch {
@@ -112,18 +110,16 @@ impl McpTool for CodeSearchCommitsTool {
                 })
                 .collect();
 
-            let summary_rows: Vec<SummaryRow> = sqlx::query_as(
-                proxima_storage_pg::access::owner_ref_compat::sql(SUMMARY_SEARCH_SQL),
-            )
-            .bind(owner_kind)
-            .bind(owner_principal_id)
-            .bind(query)
-            .bind(repo_id)
-            .bind(args.change_kind.as_deref())
-            .bind(i64::from(limit))
-            .fetch_all(pool.as_ref())
-            .await
-            .map_err(map_storage)?;
+            let summary_rows: Vec<SummaryRow> = sqlx::query_as(SUMMARY_SEARCH_SQL)
+                .bind(owner_kind)
+                .bind(owner_id)
+                .bind(query)
+                .bind(repo_id)
+                .bind(args.change_kind.as_deref())
+                .bind(i64::from(limit))
+                .fetch_all(pool.as_ref())
+                .await
+                .map_err(map_storage)?;
             let summaries = summary_rows
                 .into_iter()
                 .map(|row| SummaryMatch {
@@ -156,12 +152,11 @@ FROM q, proxima_core.memories m
 JOIN proxima_code.commit_v1 c USING (memory_id)
 WHERE EXISTS (
           SELECT 1
-            FROM __PROXIMA_ENTITY_OWNER__ eo
+            FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
            WHERE eo.entity_id = m.memory_id
-             AND eo.owner_principal_kind = $1
-             AND eo.owner_principal_id = $2
-             AND eo.is_home
-      )
+             AND eo.owner_kind = $1
+             AND eo.owner_id = $2
+)
   AND ($4::uuid IS NULL OR c.repo_id = $4)
   AND to_tsvector('pg_catalog.simple'::regconfig, c.sha || ' ' || c.message) @@ q.tsq
 ORDER BY score DESC, c.committer_time DESC
@@ -180,12 +175,11 @@ FROM q, proxima_core.memories m
 JOIN proxima_code.commit_summary_v1 s USING (memory_id)
 WHERE EXISTS (
           SELECT 1
-            FROM __PROXIMA_ENTITY_OWNER__ eo
+            FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
            WHERE eo.entity_id = m.memory_id
-             AND eo.owner_principal_kind = $1
-             AND eo.owner_principal_id = $2
-             AND eo.is_home
-      )
+             AND eo.owner_kind = $1
+             AND eo.owner_id = $2
+)
   AND ($4::uuid IS NULL OR s.repo_id = $4)
   AND ($5::text IS NULL OR s.change_kind = $5)
   AND to_tsvector(

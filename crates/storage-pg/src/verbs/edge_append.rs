@@ -519,13 +519,14 @@ async fn insert_edge_row(
     draft: &EdgeDraft<'_>,
 ) -> Result<bool, StorageError> {
     let descriptor = draft.relation.descriptor;
+    let (owner_kind, owner_id) = draft.owner.columns();
     let inserted: Option<(uuid::Uuid,)> = sqlx::query_as(
         "INSERT INTO proxima_core.edges \
             (edge_id, relation, relation_class, \
              source_kind, source_memory_id, source_goal_id, source_fact_entity_id, \
              target_kind, target_memory_id, target_goal_id, target_fact_entity_id, \
-             authorship_kind, authorship_owner_memory_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+             authorship_kind, authorship_owner_memory_id, owner_kind, owner_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
          ON CONFLICT (edge_id) DO NOTHING \
          RETURNING edge_id",
     )
@@ -542,6 +543,8 @@ async fn insert_edge_row(
     .bind(draft.target_fact_entity_id)
     .bind(draft.authorship_kind)
     .bind(draft.authorship_owner_memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(map_err)?;
@@ -552,12 +555,12 @@ async fn append_edge_change_event(
     tx: &mut sqlx::PgConnection,
     draft: &EdgeDraft<'_>,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id) = draft.owner.columns();
+    let (owner_kind, owner_id) = draft.owner.columns();
     let descriptor = draft.relation.descriptor;
     let seq = uuid::Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.change_event \
-            (seq, owner_principal_kind, owner_principal_id, kind, \
+            (seq, owner_kind, owner_id, kind, \
              edge_id, edge_relation, \
              edge_source_memory_id, edge_source_goal_id, edge_source_fact_entity_id, \
              edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id) \
@@ -565,7 +568,7 @@ async fn append_edge_change_event(
     )
     .bind(seq)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(draft.edge_id)
     .bind(descriptor.relation.as_str())
     .bind(draft.source_memory_id)

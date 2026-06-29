@@ -29,8 +29,8 @@ and dedup keys compare owner handles; the same user under two tenants is
 one identity, not two.
 
 Used identically across components 01 / 02 / 05 / 06. Storage: two
-identity columns (`owner_principal_kind`, `owner_principal_id`); there is
-no org/tenant column in Core. `owner_principal_kind` is a SQL enum.
+identity columns (`owner_kind`, `owner_id`); there is
+no org/tenant column in Core. `owner_kind` is a SQL enum.
 Schemas ([03](03-schema-registry.md)) are binary-scoped (per
 [03 §Scoping](03-schema-registry.md#scoping-one-namespace-per-binary)).
 
@@ -61,7 +61,7 @@ Owner remains the storage and graph isolation primitive. Owner-space grants are 
 
 `Owner` is a **host-resolved capability, never client-supplied.** Core
 trusts the `Owner` it is handed and filters every read and write by it
-(`owner_principal_kind`, `owner_principal_id`); it runs no membership
+(`owner_kind`, `owner_id`); it runs no membership
 check of its own. The `requester ∈ members(g)` clause in the access rule
 above is the **host's** obligation, not Core's — Core has no org column
 to cross-check against and cannot catch a mis-resolved owner.
@@ -180,14 +180,14 @@ have different retention obligations per Owner — are expressed via
 events from the same source. The source declares its *default*;
 the controller refines per Owner.
 
-**Idempotency-key constraint.** Every event's `event_id` (see
-§Properties of an Event) is the deterministic hash of
-`(source_id, owner, payload)`. The hash is content-derived and
-opaque by construction — it must remain so. Sources must not
-substitute a verbatim natural-person identifier (email address,
-national ID, phone number) for the hash, because the suppression
-list ([13 §Suppression list](13-compliance.md#suppression-list--re-ingest-rejection))
-retains `event_id` indefinitely as a re-ingest guard, and a
+**Idempotency-key constraint.** Every source receipt id (public
+`EventIngest` still calls this `event_id`; storage names it
+`receipt_id`) is the deterministic hash of `(source_id, owner,
+payload)`. The hash is content-derived and opaque by construction — it
+must remain so. Sources must not substitute a verbatim natural-person
+identifier (email address, national ID, phone number) for the hash,
+because the suppression list ([13 §Suppression list](13-compliance.md#suppression-list--re-ingest-rejection))
+retains the receipt id indefinitely as a re-ingest guard, and a
 non-opaque key would itself become PII surviving deletion.
 
 ## Properties of an Event
@@ -196,7 +196,7 @@ Every event carries:
 
 | Field | Meaning |
 |---|---|
-| `event_id` | Deterministic hash of `(source_id, owner, payload)`. Re-receipt produces the same id. |
+| `event_id` / storage `receipt_id` | Deterministic hash of `(source_id, owner, payload)`. Re-receipt produces the same id. PG stores it in `fact_receipts.receipt_id` and `memories.receipt_id`; there is no core `events` table. |
 | `source_id` | Which source emitted this. |
 | `owner` | `Owner` — scope of this event (whose Reality slice). Source sets at emit time from its config or per-event observation context. |
 | `source_batch_id` | UUIDv7 declared by the source at emit time; engine validates uniqueness within `(source_id, owner)` and rejects collisions. Groups events from the same Reality observation. |
@@ -206,10 +206,11 @@ Every event carries:
 | `occurred_at` | When the underlying Reality change happened (may differ — a webhook arrives after the commit). |
 | `payload` | Typed, source-specific data conforming to `schema_id @ schema_version`. This includes source-specific fields like `source_uri` (e.g., `forgejo://AQS/aquilo/commit/<sha>`, `telegram://chat/<id>/<msg>`) and `source_locus` (e.g., line number, message index, file path, query offset). |
 
-`event_id` determinism is what makes the system idempotent against re-receipt.
+Receipt-id determinism is what makes the system idempotent against re-receipt.
 A webhook re-fired, a poll loop overlapping its own previous cursor, a manual
-replay during debugging — all produce the same `event_id`, and the engine
-silently drops the duplicate.
+replay during debugging — all produce the same receipt id, and the engine
+silently drops the duplicate. Public `event_id` naming remains a PR5 protocol
+membrane cleanup; PR2 storage uses `receipt_id`.
 
 ## What the Event Source must not do
 

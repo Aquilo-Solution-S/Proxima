@@ -101,29 +101,20 @@ async fn insert_memory(
     personality_instance_id: Option<uuid::Uuid>,
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     let memory_id = uuid::Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, 'test/core-read-v1', 1, 'Abstraction',
-                 $2, 'Wake', 'test-model', 'test-v1',
-                 COALESCE($3, '00000000-0000-0000-0000-000000000000'::uuid), 0)",
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, 'test/core-read-v1', 1, 'Abstraction',
+                 $4, 'Wake', 'test-model', 'test-v1',
+                 COALESCE($5, '00000000-0000-0000-0000-000000000000'::uuid), 0)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(text)
     .bind(personality_instance_id)
-    .execute(pg.pool())
-    .await?;
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1, $2, $3, true, $4)",
-    ))
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(personality_instance_id.unwrap_or_else(uuid::Uuid::nil))
     .execute(pg.pool())
     .await?;
     Ok(memory_id)
@@ -131,23 +122,26 @@ async fn insert_memory(
 
 async fn insert_edge(
     pg: &PgStorage,
-    _owner: &Owner,
+    owner: &Owner,
     source: uuid::Uuid,
     target: uuid::Uuid,
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     let edge_id = uuid::Uuid::now_v7();
+    let (owner_kind, owner_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.edges
-            (edge_id, relation, relation_class,
+            (edge_id, owner_kind, owner_id, relation, relation_class,
              source_kind, source_memory_id, source_goal_id,
              target_kind, target_memory_id, target_goal_id,
              authorship_kind, authorship_owner_memory_id)
-         VALUES ($1, 'core/derived-from', $2,
-                 'Abstraction', $3, NULL,
-                 'Abstraction', $4, NULL,
+         VALUES ($1, $2, $3, 'core/derived-from', $4,
+                 'Abstraction', $5, NULL,
+                 'Abstraction', $6, NULL,
                  'Engine', NULL)",
     )
     .bind(edge_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(RelationClass::Provenance)
     .bind(source)
     .bind(target)

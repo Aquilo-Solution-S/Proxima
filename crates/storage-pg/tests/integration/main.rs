@@ -29,7 +29,7 @@ mod list_active_goals_pg;
 mod master_token_personality_pg;
 mod migrations;
 mod neighbor_redaction_pg;
-mod owner_ref_compat_pg;
+mod owner_columns_pg;
 mod persist_mcp_call;
 mod personality_wake_pg;
 mod query_pg;

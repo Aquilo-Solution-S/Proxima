@@ -52,32 +52,30 @@ fn fixture_repo() -> TempDir {
 
 async fn count_present_chunks(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) -> i64 {
     let (kind, principal_id) = owner.columns();
-    let row = sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
+    let row = sqlx::query(
         "SELECT COUNT(*)::bigint AS c \
          FROM proxima_core.memories m \
          JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
-         JOIN __PROXIMA_ENTITY_OWNER__ eo \
+         JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
            ON eo.entity_id = m.memory_id \
-          AND eo.is_home \
-         WHERE eo.owner_principal_kind = $1 \
-           AND eo.owner_principal_id = $2 \
+         WHERE eo.owner_kind = $1 \
+           AND eo.owner_id = $2 \
            AND s.repo_id = $3 \
            AND s.state = 'Present' \
            AND NOT EXISTS ( \
                  SELECT 1 FROM proxima_core.memories m2 \
                  JOIN proxima_code.code_chunk_v1 s2 USING (memory_id) \
-                 JOIN __PROXIMA_ENTITY_OWNER__ eo2 \
+                 JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo2 \
                    ON eo2.entity_id = m2.memory_id \
-                  AND eo2.is_home \
                  WHERE m2.schema_id = m.schema_id \
-                   AND eo2.owner_principal_kind = eo.owner_principal_kind \
-                   AND eo2.owner_principal_id = eo.owner_principal_id \
+                   AND eo2.owner_kind = eo.owner_kind \
+                   AND eo2.owner_id = eo.owner_id \
                    AND s2.repo_id = s.repo_id \
                    AND s2.file_path = s.file_path \
                    AND s2.chunk_index = s.chunk_index \
                    AND m2.created_at > m.created_at \
            )",
-    ))
+    )
     .bind(kind)
     .bind(principal_id)
     .bind(repo_id)
@@ -94,39 +92,36 @@ async fn fetch_file_revision_state(
     file_path: &str,
 ) -> Option<FileState> {
     let (kind, principal_id) = owner.columns();
-    let row: Option<(FileState,)> =
-        sqlx::query_as(proxima_storage_pg::access::owner_ref_compat::sql(
-            "SELECT s.state \
+    let row: Option<(FileState,)> = sqlx::query_as(
+        "SELECT s.state \
          FROM proxima_core.memories m \
          JOIN proxima_code.file_revision_v1 s USING (memory_id) \
-         JOIN __PROXIMA_ENTITY_OWNER__ eo \
+         JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
            ON eo.entity_id = m.memory_id \
-          AND eo.is_home \
-         WHERE eo.owner_principal_kind = $1 \
-           AND eo.owner_principal_id = $2 \
+         WHERE eo.owner_kind = $1 \
+           AND eo.owner_id = $2 \
            AND s.repo_id = $3 \
            AND s.file_path = $4 \
            AND NOT EXISTS ( \
                  SELECT 1 FROM proxima_core.memories m2 \
                  JOIN proxima_code.file_revision_v1 s2 USING (memory_id) \
-                 JOIN __PROXIMA_ENTITY_OWNER__ eo2 \
+                 JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo2 \
                    ON eo2.entity_id = m2.memory_id \
-                  AND eo2.is_home \
                  WHERE m2.schema_id = m.schema_id \
-                   AND eo2.owner_principal_kind = eo.owner_principal_kind \
-                   AND eo2.owner_principal_id = eo.owner_principal_id \
+                   AND eo2.owner_kind = eo.owner_kind \
+                   AND eo2.owner_id = eo.owner_id \
                    AND s2.repo_id = s.repo_id \
                    AND s2.file_path = s.file_path \
                    AND m2.created_at > m.created_at \
            )",
-        ))
-        .bind(kind)
-        .bind(principal_id)
-        .bind(repo_id)
-        .bind(file_path)
-        .fetch_optional(pool)
-        .await
-        .expect("fetch state");
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(repo_id)
+    .bind(file_path)
+    .fetch_optional(pool)
+    .await
+    .expect("fetch state");
     row.map(|(s,)| s)
 }
 

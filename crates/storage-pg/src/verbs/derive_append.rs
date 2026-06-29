@@ -7,7 +7,6 @@ use proxima_core::{
 };
 use sqlx::{Postgres, Transaction};
 
-use crate::access::owner_ref_compat::insert_home;
 use crate::error::map_err;
 use crate::sidecars::PgSidecarFuture;
 
@@ -47,7 +46,7 @@ pub async fn append_derived_in_tx(
         &'t DerivedOutcome,
     ) -> PgSidecarFuture<'t>,
 ) -> Result<DerivedOutcome, StorageError> {
-    let (owner_kind, owner_principal_id) = draft.owner.columns();
+    let (owner_kind, owner_id) = crate::access::owner_columns::owner_binds(&draft.owner);
     let author_personality_instance_id = draft
         .author_personality_instance_id
         .map_or_else(uuid::Uuid::nil, PersonalityInstanceId::into_inner);
@@ -57,14 +56,16 @@ pub async fn append_derived_in_tx(
 
     let inserted: Option<(uuid::Uuid,)> = sqlx::query_as(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id,
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id,
              wake_chain_depth, supersedes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $10)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 0, $12)
          ON CONFLICT (memory_id) DO NOTHING
          RETURNING memory_id",
     )
     .bind(draft.memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(draft.schema_id.as_str())
     .bind(i32::try_from(draft.schema_version.into_inner()).unwrap_or(1))
     .bind(draft.kind)
@@ -84,33 +85,25 @@ pub async fn append_derived_in_tx(
             idempotent_replay: true,
         });
     }
-    insert_home(
-        tx,
-        draft.memory_id,
-        &draft.owner,
-        Some(author_personality_instance_id),
-    )
-    .await?;
-
     let outcome = DerivedOutcome {
         memory_id: MemoryId::new(draft.memory_id),
         idempotent_replay: false,
     };
     sidecar(tx, &outcome).await?;
 
-    insert_embedding_in_tx(tx, draft, owner_kind, owner_principal_id).await?;
+    insert_embedding_in_tx(tx, draft, owner_kind, owner_id).await?;
 
     let seq = uuid::Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.change_event
-            (seq, owner_principal_kind, owner_principal_id,
+            (seq, owner_kind, owner_id,
              kind, entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,
              wake_chain_depth, supersedes_memory_id)
          VALUES ($1, $2, $3, 'EntityAppend', $4, $5, $6, $7, 0, $8)",
     )
     .bind(seq)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(draft.kind)
     .bind(draft.memory_id)
     .bind(draft.schema_id.as_str())
@@ -129,8 +122,8 @@ async fn validate_supersedes_in_owner(
     prior: MemoryId,
     kind: EntityKind,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id) = owner.columns();
-    let exists: bool = sqlx::query_scalar(crate::access::owner_ref_compat::sql(
+    let (owner_kind, owner_id) = owner.columns();
+    let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1
                FROM proxima_core.memories m
@@ -139,17 +132,16 @@ async fn validate_supersedes_in_owner(
                 AND m.kind = $4
                 AND EXISTS (
                     SELECT 1
-                      FROM __PROXIMA_ENTITY_OWNER__ eo
+                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                      WHERE eo.entity_id = m.memory_id
-                       AND eo.owner_principal_kind = $2
-                       AND eo.owner_principal_id = $3
-                       AND eo.is_home
-                )
+                       AND eo.owner_kind = $2
+                       AND eo.owner_id = $3
+)
          )",
-    ))
+    )
     .bind(prior.into_inner())
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(kind)
     .fetch_one(&mut **tx)
     .await
@@ -167,7 +159,7 @@ async fn insert_embedding_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
     owner_kind: OwnerRefKind,
-    owner_principal_id: uuid::Uuid,
+    owner_id: Option<uuid::Uuid>,
 ) -> Result<(), StorageError> {
     let (Some(embedding), Some(embedding_model_id)) = (&draft.embedding, draft.embedding_model_id)
     else {
@@ -182,7 +174,7 @@ async fn insert_embedding_in_tx(
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
             (entity_kind, entity_id, embedding_version, model_id, vec,
-             owner_principal_kind, owner_principal_id)
+             owner_kind, owner_id)
          VALUES ($1, $2, 1, $3, $4::vector, $5, $6)",
     )
     .bind(draft.kind)
@@ -190,7 +182,7 @@ async fn insert_embedding_in_tx(
     .bind(embedding_model_id)
     .bind(vec_literal)
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;

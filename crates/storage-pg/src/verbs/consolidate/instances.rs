@@ -6,7 +6,7 @@ use proxima_core::personality::{
 use proxima_core::{MemoryId, Owner, OwnerRefKind, StorageError};
 use sqlx::{Connection, PgConnection, PgPool};
 
-use crate::access::owner_ref_compat::insert_home;
+use crate::access::owner_columns::owner_binds;
 use crate::error::map_err;
 
 pub async fn list_personality_instances(
@@ -14,7 +14,7 @@ pub async fn list_personality_instances(
     owner: &Owner,
     include_tombstoned: bool,
 ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner_binds(owner);
     let rows: Vec<(uuid::Uuid, uuid::Uuid, String, PersonalityStatus)> = sqlx::query_as(
         "SELECT p.personality_instance_id,
                 p.current_root_perspective_memory_id,
@@ -23,14 +23,14 @@ pub async fn list_personality_instances(
          FROM proxima_core.personality p
          JOIN proxima_core.memories m
            ON m.memory_id = p.current_root_perspective_memory_id
-         WHERE p.owner_principal_kind = $1
-           AND p.owner_principal_id = $2
+         WHERE p.owner_kind = $1
+           AND p.owner_id = $2
            AND m.tombstoned_at IS NULL
            AND ($3::bool OR p.status <> 'tombstoned'::proxima_core.personality_status)
          ORDER BY p.created_at, p.personality_instance_id",
     )
     .bind(owner_kind as OwnerRefKind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(include_tombstoned)
     .fetch_all(pool)
     .await
@@ -48,14 +48,14 @@ pub async fn list_personality_instances(
                 goal_scope,
                 instructions
            FROM proxima_core.personality_wake_entries
-           WHERE owner_principal_kind = $1
-             AND owner_principal_id = $2
+           WHERE owner_kind = $1
+             AND owner_id = $2
              AND personality_instance_id = ANY($3::uuid[])
              AND tombstoned_at IS NULL
            ORDER BY label, wake_entry_id",
     )
     .bind(owner_kind as OwnerRefKind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(&instance_ids[..])
     .fetch_all(pool)
     .await
@@ -125,54 +125,54 @@ pub(crate) async fn instantiate_personality_on_conn(
     req: &InstantiatePersonalityRequest,
 ) -> Result<InstantiatePersonalityResponse, StorageError> {
     let owner = req.owner();
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     let instance_id = uuid::Uuid::now_v7();
     let memory_id = uuid::Uuid::now_v7();
     let mut tx = conn.begin().await.map_err(map_err)?;
 
     sqlx::query(
         r"INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, 1, 'Perspective', $3, 'Wake', 'substrate',
-                 'self-v1', $4, 0)",
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, $4, 1, 'Perspective', $5, 'Wake', 'substrate',
+                 'self-v1', $6, 0)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID)
     .bind(&req.display_name)
     .bind(instance_id)
     .execute(&mut *tx)
     .await
     .map_err(map_err)?;
-    insert_home(&mut tx, memory_id, &owner, Some(instance_id)).await?;
-
     let change_seq = uuid::Uuid::now_v7();
-    sqlx::query!(
-        r#"INSERT INTO proxima_core.change_event
-            (seq, owner_principal_kind, owner_principal_id, kind,
+    sqlx::query(
+        r"INSERT INTO proxima_core.change_event
+            (seq, owner_kind, owner_id, kind,
              entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,
              entity_personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, 'EntityAppend', 'Perspective', $4, $5, 1, $6, 0)"#,
-        change_seq,
-        owner_kind as OwnerRefKind,
-        owner_principal_id,
-        memory_id,
-        ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
-        instance_id,
+         VALUES ($1, $2, $3, 'EntityAppend', 'Perspective', $4, $5, 1, $6, 0)",
     )
+    .bind(change_seq)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(memory_id)
+    .bind(ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID)
+    .bind(instance_id)
     .execute(&mut *tx)
     .await
     .map_err(map_err)?;
 
     sqlx::query(
         "INSERT INTO proxima_core.personality
-            (owner_principal_kind, owner_principal_id,
+            (owner_kind, owner_id,
              personality_instance_id, current_root_perspective_memory_id,
              max_wake_chain_depth, status)
          VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .bind(instance_id)
     .bind(memory_id)
     .bind(i32::from(proxima_core::personality::MAX_WAKE_CHAIN_DEPTH))

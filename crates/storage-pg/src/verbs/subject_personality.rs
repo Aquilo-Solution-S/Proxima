@@ -32,16 +32,16 @@ pub async fn ensure_subject_personality(
     owner: &Owner,
     subject: &OwnerRef,
 ) -> Result<MasterTokenPersonality, StorageError> {
-    let (owner_kind, owner_principal_id) = owner.columns();
-    let (subject_kind, subject_principal_id) = subject.columns();
+    let (owner_kind, owner_id) = owner.columns();
+    let (subject_owner_kind, subject_owner_id) = subject.columns();
 
     // Fast path: lock-free read. Hits on every call after the first.
     if let Some(found) = lookup_pool(
         pool,
         owner_kind,
-        owner_principal_id,
-        subject_kind,
-        subject_principal_id,
+        owner_id,
+        subject_owner_kind,
+        subject_owner_id,
     )
     .await?
     {
@@ -51,7 +51,7 @@ pub async fn ensure_subject_personality(
     // Slow path: take a transaction-scoped advisory lock so concurrent
     // first-connects can't both mint.
     let mut tx = pool.begin().await.map_err(map_err)?;
-    let key = lock_key(subject_kind, subject_principal_id);
+    let key = lock_key(subject_owner_kind, subject.stable_key_uuid());
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
         .bind(key)
         .fetch_one(&mut *tx)
@@ -62,9 +62,9 @@ pub async fn ensure_subject_personality(
         &mut tx,
         owner,
         owner_kind,
-        owner_principal_id,
-        subject_kind,
-        subject_principal_id,
+        owner_id,
+        subject_owner_kind,
+        subject_owner_id,
     )
     .await?;
     tx.commit().await.map_err(map_err)?;
@@ -76,17 +76,17 @@ async fn mint_under_lock(
     conn: &mut PgConnection,
     owner: &Owner,
     owner_kind: OwnerRefKind,
-    owner_principal_id: Uuid,
-    subject_kind: OwnerRefKind,
-    subject_principal_id: Uuid,
+    owner_id: Option<Uuid>,
+    subject_owner_kind: OwnerRefKind,
+    subject_owner_id: Option<Uuid>,
 ) -> Result<MasterTokenPersonality, StorageError> {
     // Re-check inside the lock: a peer may have minted while we waited.
     if let Some(found) = lookup_conn(
         conn,
         owner_kind,
-        owner_principal_id,
-        subject_kind,
-        subject_principal_id,
+        owner_id,
+        subject_owner_kind,
+        subject_owner_id,
     )
     .await?
     {
@@ -102,15 +102,15 @@ async fn mint_under_lock(
 
     sqlx::query(
         r"INSERT INTO proxima_core.subject_personality (
-             owner_principal_kind, owner_principal_id,
-             subject_principal_kind, subject_principal_id,
+             owner_kind, owner_id,
+             subject_owner_kind, subject_owner_id,
              personality_instance_id
          ) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(subject_kind)
-    .bind(subject_principal_id)
+    .bind(owner_id)
+    .bind(subject_owner_kind)
+    .bind(subject_owner_id)
     .bind(instance_id.into_inner())
     .execute(&mut *conn)
     .await
@@ -136,9 +136,9 @@ async fn mint_under_lock(
 async fn lookup_pool(
     pool: &PgPool,
     owner_kind: OwnerRefKind,
-    owner_principal_id: Uuid,
-    subject_kind: OwnerRefKind,
-    subject_principal_id: Uuid,
+    owner_id: Option<Uuid>,
+    subject_owner_kind: OwnerRefKind,
+    subject_owner_id: Option<Uuid>,
 ) -> Result<Option<MasterTokenPersonality>, StorageError> {
     let row = sqlx::query(
         r"SELECT sp.personality_instance_id,
@@ -146,16 +146,16 @@ async fn lookup_pool(
              FROM proxima_core.subject_personality sp
              JOIN proxima_core.personality p
                ON p.personality_instance_id = sp.personality_instance_id
-             WHERE sp.owner_principal_kind = $1
-               AND sp.owner_principal_id = $2
-               AND sp.subject_principal_kind = $3
-               AND sp.subject_principal_id = $4
+             WHERE sp.owner_kind = $1
+               AND sp.owner_id = $2
+               AND sp.subject_owner_kind = $3
+               AND sp.subject_owner_id = $4
              LIMIT 1",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(subject_kind)
-    .bind(subject_principal_id)
+    .bind(owner_id)
+    .bind(subject_owner_kind)
+    .bind(subject_owner_id)
     .fetch_optional(pool)
     .await
     .map_err(map_err)?;
@@ -165,9 +165,9 @@ async fn lookup_pool(
 async fn lookup_conn(
     conn: &mut PgConnection,
     owner_kind: OwnerRefKind,
-    owner_principal_id: Uuid,
-    subject_kind: OwnerRefKind,
-    subject_principal_id: Uuid,
+    owner_id: Option<Uuid>,
+    subject_owner_kind: OwnerRefKind,
+    subject_owner_id: Option<Uuid>,
 ) -> Result<Option<MasterTokenPersonality>, StorageError> {
     let row = sqlx::query(
         r"SELECT sp.personality_instance_id,
@@ -175,16 +175,16 @@ async fn lookup_conn(
              FROM proxima_core.subject_personality sp
              JOIN proxima_core.personality p
                ON p.personality_instance_id = sp.personality_instance_id
-             WHERE sp.owner_principal_kind = $1
-               AND sp.owner_principal_id = $2
-               AND sp.subject_principal_kind = $3
-               AND sp.subject_principal_id = $4
+             WHERE sp.owner_kind = $1
+               AND sp.owner_id = $2
+               AND sp.subject_owner_kind = $3
+               AND sp.subject_owner_id = $4
              LIMIT 1",
     )
     .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(subject_kind)
-    .bind(subject_principal_id)
+    .bind(owner_id)
+    .bind(subject_owner_kind)
+    .bind(subject_owner_id)
     .fetch_optional(&mut *conn)
     .await
     .map_err(map_err)?;
@@ -198,10 +198,10 @@ fn into_personality(row: &sqlx::postgres::PgRow) -> MasterTokenPersonality {
     }
 }
 
-fn lock_key(subject_kind: OwnerRefKind, subject_id: Uuid) -> i64 {
+fn lock_key(subject_owner_kind: OwnerRefKind, subject_id: Uuid) -> i64 {
     let mut hasher = blake3::Hasher::new();
     hasher.update(LOCK_KEY_DOMAIN);
-    hasher.update(subject_kind.as_str().as_bytes());
+    hasher.update(subject_owner_kind.as_str().as_bytes());
     hasher.update(subject_id.as_bytes());
     let hash = hasher.finalize();
     let bytes: [u8; 8] = hash.as_bytes()[..8]

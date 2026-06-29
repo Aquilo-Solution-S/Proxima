@@ -244,7 +244,8 @@ fn map_derive_authoring_error(err: crate::error::ProtocolError) -> McpToolError 
 }
 
 fn derived_memory_id(owner: &crate::Owner, kind: &str, key: &str) -> uuid::Uuid {
-    let (principal_kind, principal_id) = owner.columns();
+    let principal_kind = crate::OwnerRefKind::of(owner);
+    let principal_id = owner.stable_key_uuid();
     let mut buf = Vec::with_capacity(96 + key.len());
     buf.extend_from_slice(principal_kind.as_str().as_bytes());
     buf.push(0);
@@ -273,7 +274,7 @@ mod tests {
         let id = derived_memory_id(&owner, "Abstraction", "golden-key");
         assert_eq!(
             id,
-            Uuid::parse_str("cb6d3947-82cc-52be-b0f2-2368ec9c7288").expect("uuid literal")
+            Uuid::parse_str("b12eb286-ac4d-5eea-9854-ff88dd16e42c").expect("uuid literal")
         );
     }
 

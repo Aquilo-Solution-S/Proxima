@@ -271,8 +271,8 @@ async fn run_semantic(
           JOIN proxima_core.embeddings emb
             ON emb.entity_kind = c.kind
            AND emb.entity_id = c.memory_id
-           AND emb.owner_principal_kind = c.owner_principal_kind
-           AND emb.owner_principal_id = c.owner_principal_id
+           AND emb.owner_kind = c.owner_kind
+           AND emb.owner_id = c.owner_id
            AND emb.embedding_version = 1
            AND emb.model_id = ${model_param}
           ORDER BY {order_by}
@@ -335,13 +335,13 @@ fn common_candidates_sql(
 
     let mut sql = String::from("WITH candidates AS (");
     push_candidate_branch_prefix(&mut sql);
-    sql.push_str(crate::access::owner_ref_compat::sql(
+    sql.push_str(
         "NULL::text[] AS tags, COALESCE(m.text, '') AS search_text \
          FROM proxima_core.memories m \
-         LEFT JOIN __PROXIMA_ENTITY_OWNER__ home_owner \
+         LEFT JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) home_owner \
            ON home_owner.entity_id = m.memory_id \
-          AND home_owner.is_home",
-    ));
+",
+    );
     push_base_memory_filters(&mut sql, req, filters);
     sql.push_str(" AND NULLIF(m.text, '') IS NOT NULL");
 
@@ -355,19 +355,15 @@ fn common_candidates_sql(
         push_candidate_branch_prefix(&mut sql);
         write!(
             sql,
-            "{}",
-            crate::access::owner_ref_compat::sql_owned(format!(
-                "{tag_expr} AS tags,
+            "{tag_expr} AS tags,
              NULLIF(concat_ws(' ', {projection_expr}), '') AS search_text
              FROM proxima_core.memories m
-             LEFT JOIN __PROXIMA_ENTITY_OWNER__ home_owner
+             LEFT JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) home_owner
                ON home_owner.entity_id = m.memory_id
-              AND home_owner.is_home
-             JOIN {table} s ON s.memory_id = m.memory_id",
-                tag_expr = tag_expr.as_str(),
-                projection_expr = projection_expr,
-                table = table.as_str()
-            ))
+JOIN {table} s ON s.memory_id = m.memory_id",
+            tag_expr = tag_expr.as_str(),
+            projection_expr = projection_expr,
+            table = table.as_str()
         )
         .expect("write to String is infallible");
         push_sidecar_memory_filters(
@@ -412,7 +408,7 @@ fn projection_tag_expr(projection: &MemorySearchProjection) -> Result<String, St
 
 fn push_candidate_branch_prefix(sql: &mut String) {
     sql.push_str(
-        "SELECT m.memory_id, home_owner.owner_principal_kind, home_owner.owner_principal_id, \
+        "SELECT m.memory_id, home_owner.owner_kind, home_owner.owner_id, \
          COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, \
          m.schema_id, m.personality_instance_id AS authoring_personality_instance_id, \
          m.wake_chain_depth, m.created_at, ",
@@ -430,17 +426,17 @@ fn push_base_memory_filters(
     req: &MemorySearchRequest,
     filters: CandidateFilterParams,
 ) {
-    sql.push_str(crate::access::owner_ref_compat::sql(
+    sql.push_str(
         " WHERE EXISTS (
               SELECT 1
-                FROM __PROXIMA_ENTITY_OWNER__ eo
-                JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
-                  ON eo.owner_principal_kind = s.kind
-                 AND eo.owner_principal_id = s.id
+                FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+                  ON eo.owner_kind = s.kind
+                 AND eo.owner_id IS NOT DISTINCT FROM s.id
                WHERE eo.entity_id = m.memory_id
            )
            AND m.tombstoned_at IS NULL",
-    ));
+    );
     match req.kind {
         None => {}
         Some(EntityKind::Fact) => sql.push_str(" AND m.kind IS NULL"),
@@ -468,20 +464,17 @@ fn push_sidecar_memory_filters(
 ) {
     write!(
         sql,
-        "{}",
-        crate::access::owner_ref_compat::sql_owned(format!(
-            " WHERE EXISTS (
+        " WHERE EXISTS (
               SELECT 1
-                FROM __PROXIMA_ENTITY_OWNER__ eo
-                JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS s(kind, id)
-                  ON eo.owner_principal_kind = s.kind
-                 AND eo.owner_principal_id = s.id
+                FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+                  ON eo.owner_kind = s.kind
+                 AND eo.owner_id IS NOT DISTINCT FROM s.id
                WHERE eo.entity_id = m.memory_id
            )
            AND m.tombstoned_at IS NULL
            AND m.schema_id = ${schema_param}
            AND m.schema_version = ${version_param}"
-        ))
     )
     .expect("write to String is infallible");
     push_payload_kind_filter(sql, kind);
@@ -561,15 +554,6 @@ fn push_reader_visibility_filter(sql: &mut String, reader_param: Option<usize>) 
             " AND (
                 m.kind IS NULL
                 OR m.personality_instance_id = ${param}
-                OR EXISTS (
-                    SELECT 1
-                  FROM proxima_core.read_\
-scope_matrix r
-                     WHERE r.owner_principal_kind = home_owner.owner_principal_kind
-                       AND r.owner_principal_id = home_owner.owner_principal_id
-                       AND r.reader_personality_instance_id = ${param}
-                       AND r.readable_personality_instance_id = m.personality_instance_id
-                )
             )"
         )
         .expect("write to String is infallible");
@@ -593,16 +577,8 @@ fn bind_common<'q>(
     q
 }
 
-fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<uuid::Uuid>) {
-    let kinds = read_owners
-        .iter()
-        .map(|principal| principal.columns().0)
-        .collect();
-    let ids = read_owners
-        .iter()
-        .map(|principal| principal.columns().1)
-        .collect();
-    (kinds, ids)
+fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<Option<uuid::Uuid>>) {
+    crate::access::owner_columns::owner_arrays(read_owners)
 }
 
 fn bind_filter_params<'q>(

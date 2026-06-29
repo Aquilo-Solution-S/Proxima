@@ -63,6 +63,71 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
 }
 
 #[tokio::test]
+async fn search_reader_personality_filter_uses_same_personality_without_deleted_scope_table()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let reader = Uuid::now_v7();
+    let other = Uuid::now_v7();
+    let visible = insert_text_memory(
+        &pg,
+        &owner,
+        "reader-visible abstraction unique needle",
+        Some(reader),
+    )
+    .await?;
+    let hidden = insert_text_memory(
+        &pg,
+        &owner,
+        "reader-hidden abstraction unique needle",
+        Some(other),
+    )
+    .await?;
+    let rows = pg
+        .search_memories(
+            &MemorySearchRequest {
+                principal: owner,
+                read_owners: vec![owner],
+                query: "unique needle".into(),
+                mode: SearchMode::Lexical,
+                supersession: SupersessionStatus::IncludeSuperseded,
+                limit: 10,
+                kind: None,
+                schema_id: None,
+                tags: Vec::new(),
+                tag_match: TagMatch::Any,
+                since: None,
+                until: None,
+                order: SearchOrder::Relevance,
+                query_embedding: None,
+                embedding_model_id: None,
+                reader_personality_instance_id: Some(PersonalityInstanceId::new(reader)),
+            },
+            &[],
+        )
+        .await?;
+    let ids = rows
+        .iter()
+        .map(|row| row.memory_id.into_inner())
+        .collect::<Vec<_>>();
+
+    assert!(
+        ids.contains(&visible),
+        "same-personality memory must be visible: {ids:#?}"
+    );
+    assert!(
+        !ids.contains(&hidden),
+        "other-personality memory must be hidden: {ids:#?}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn search_heads_only_ignores_cross_owner_supersedes_successor()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
@@ -643,16 +708,19 @@ async fn insert_tagged_abstraction(
     owner: &Owner,
     input: TaggedAbstractionInsert<'_>,
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, created_at, kind, text, operator_kind,
-             model_id, prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, 'proxima-test/tagged-abstraction-v1', 1,
-                 $2, 'Abstraction', $3, 'Wake', 'test-model', 'test-v1',
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, created_at,
+             kind, text, operator_kind, model_id, prompt_version, personality_instance_id,
+             wake_chain_depth)
+         VALUES ($1, $2, $3, 'proxima-test/tagged-abstraction-v1', 1,
+                 $4, 'Abstraction', $5, 'Wake', 'test-model', 'test-v1',
                  '00000000-0000-0000-0000-000000000000'::uuid, 2)",
     )
     .bind(input.memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(input.created_at)
     .bind(input.body)
     .execute(pg.pool())
@@ -672,17 +740,16 @@ async fn insert_tagged_abstraction(
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
                 (entity_kind, entity_id, embedding_version, model_id, vec,
-                 owner_principal_kind, owner_principal_id)
+                 owner_kind, owner_id)
              VALUES ('Abstraction', $1, 1, 'test-embed', $2::vector, $3, $4)",
         )
         .bind(input.memory_id)
         .bind(vector_literal(&padded_embedding(embedding)))
         .bind(owner_kind)
-        .bind(owner_principal_id)
+        .bind(owner_id)
         .execute(pg.pool())
         .await?;
     }
-    insert_home(pg, input.memory_id, owner).await?;
     Ok(MemoryId::new(input.memory_id))
 }
 
@@ -703,32 +770,33 @@ async fn insert_embedded_memory_with_vec(
     embedding: &[f32],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, 'test/search-abstraction-v1', 1,
-                 'Abstraction', $2, 'Wake', 'test-model', 'test-v1',
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, 'test/search-abstraction-v1', 1,
+                 'Abstraction', $4, 'Wake', 'test-model', 'test-v1',
                  '00000000-0000-0000-0000-000000000000'::uuid, 2)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(text)
     .execute(pg.pool())
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
             (entity_kind, entity_id, embedding_version, model_id, vec,
-             owner_principal_kind, owner_principal_id)
+             owner_kind, owner_id)
          VALUES ('Abstraction', $1, 1, 'test-embed', $2::vector, $3, $4)",
     )
     .bind(memory_id)
     .bind(vector_literal(embedding))
     .bind(owner_kind)
-    .bind(owner_principal_id)
+    .bind(owner_id)
     .execute(pg.pool())
     .await?;
-    insert_home(pg, memory_id, owner).await?;
     Ok(memory_id)
 }
 
@@ -739,20 +807,22 @@ async fn insert_text_memory(
     personality_instance_id: Option<Uuid>,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, 'test/search-attribution-v1', 1,
-                 'Abstraction', $2, 'Wake', 'test-model', 'test-v1',
-                 COALESCE($3, '00000000-0000-0000-0000-000000000000'::uuid), 2)",
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, 'test/search-attribution-v1', 1,
+                 'Abstraction', $4, 'Wake', 'test-model', 'test-v1',
+                 COALESCE($5, '00000000-0000-0000-0000-000000000000'::uuid), 2)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(text)
     .bind(personality_instance_id)
     .execute(pg.pool())
     .await?;
-    insert_home(pg, memory_id, owner).await?;
     Ok(memory_id)
 }
 
@@ -763,42 +833,24 @@ async fn insert_search_abstraction(
     supersedes: Option<Uuid>,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id, wake_chain_depth, supersedes)
-         VALUES ($1, 'test/search-abstraction-v1', 1,
-                 'Abstraction', $2, 'Wake', 'test-model', 'test-v1',
-                 '00000000-0000-0000-0000-000000000000'::uuid, 2, $3)",
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id,
+             wake_chain_depth, supersedes)
+         VALUES ($1, $2, $3, 'test/search-abstraction-v1', 1,
+                 'Abstraction', $4, 'Wake', 'test-model', 'test-v1',
+                 '00000000-0000-0000-0000-000000000000'::uuid, 2, $5)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(text)
     .bind(supersedes)
     .execute(pg.pool())
     .await?;
-    insert_home(pg, memory_id, owner).await?;
     Ok(memory_id)
-}
-
-async fn insert_home(
-    pg: &proxima_storage_pg::PgStorage,
-    entity_id: Uuid,
-    owner: &Owner,
-) -> Result<(), sqlx::Error> {
-    let (owner_kind, owner_principal_id) = owner.columns();
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1, $2, $3, true, $4)
-         ON CONFLICT DO NOTHING",
-    ))
-    .bind(entity_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(Uuid::nil())
-    .execute(pg.pool())
-    .await
-    .map(|_| ())
 }
 
 async fn ingest_fact_memory(

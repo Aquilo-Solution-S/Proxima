@@ -44,26 +44,26 @@ visible AS (
     SELECT edge_heads.*,
            EXISTS (
                SELECT 1
-                 FROM __PROXIMA_ENTITY_OWNER__ seo
-                 JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
-                   ON seo.owner_principal_kind = rs.kind
-                  AND seo.owner_principal_id = rs.id
+                 FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) seo
+                 JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS rs(kind, id)
+                   ON seo.owner_kind = rs.kind
+                  AND seo.owner_id IS NOT DISTINCT FROM rs.id
                 WHERE seo.entity_id = edge_heads.source_entity_id
            ) AS source_readable,
            EXISTS (
                SELECT 1
-                 FROM __PROXIMA_ENTITY_OWNER__ teo
-                 JOIN unnest($1::proxima_core.owner_principal_kind[], $2::uuid[]) AS rs(kind, id)
-                   ON teo.owner_principal_kind = rs.kind
-                  AND teo.owner_principal_id = rs.id
+                 FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) teo
+                 JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS rs(kind, id)
+                   ON teo.owner_kind = rs.kind
+                  AND teo.owner_id IS NOT DISTINCT FROM rs.id
                 WHERE teo.entity_id = edge_heads.target_entity_id
            ) AS target_readable,
            EXISTS (
                SELECT 1
-                 FROM __PROXIMA_ENTITY_OWNER__ weo
+                 FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) weo
                 WHERE weo.entity_id = edge_heads.source_entity_id
-                  AND weo.owner_principal_kind = $3
-                  AND weo.owner_principal_id = $4
+                  AND weo.owner_kind = $3
+                  AND weo.owner_id IS NOT DISTINCT FROM $4
            ) AS source_world_readable
       FROM edge_heads
 )
@@ -117,7 +117,8 @@ pub(crate) async fn read_edges(
         return Ok(EdgeReadResponse { edges: Vec::new() });
     }
     let (read_owner_kinds, read_owner_ids) = read_owner_columns(read_owners);
-    let (world_kind, world_id) = proxima_core::access::world().columns();
+    let (world_kind, world_id) =
+        crate::access::owner_columns::owner_binds(&proxima_core::access::world());
     let edge_ids = req
         .edge_ids
         .iter()
@@ -131,25 +132,24 @@ pub(crate) async fn read_edges(
         req.limit
             .min(u32::try_from(MAX_SNAPSHOT_EDGES).expect("MAX_SNAPSHOT_EDGES fits in u32")),
     );
-    let mut rows =
-        sqlx::query_as::<_, EdgeRowDb>(crate::access::owner_ref_compat::sql(READ_EDGES_SQL))
-            .bind(&read_owner_kinds)
-            .bind(&read_owner_ids)
-            .bind(world_kind)
-            .bind(world_id)
-            .bind(edge_ids_filter)
-            .bind(&edge_ids)
-            .bind(req.filter.relation.as_deref())
-            .bind(source.memory)
-            .bind(source.goal)
-            .bind(source.fact_entity)
-            .bind(target.memory)
-            .bind(target.goal)
-            .bind(target.fact_entity)
-            .bind(limit)
-            .fetch_all(pool)
-            .await
-            .map_err(internal)?;
+    let mut rows = sqlx::query_as::<_, EdgeRowDb>(READ_EDGES_SQL)
+        .bind(&read_owner_kinds)
+        .bind(&read_owner_ids)
+        .bind(world_kind)
+        .bind(world_id)
+        .bind(edge_ids_filter)
+        .bind(&edge_ids)
+        .bind(req.filter.relation.as_deref())
+        .bind(source.memory)
+        .bind(source.goal)
+        .bind(source.fact_entity)
+        .bind(target.memory)
+        .bind(target.goal)
+        .bind(target.fact_entity)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(internal)?;
     hydrate_fact_entity_heads(pool, &mut rows).await?;
     let edges = rows
         .into_iter()
@@ -179,7 +179,7 @@ pub(super) async fn query_edges(
     pool: &PgPool,
     req: &QueryRequest,
     read_owner_kinds: &[OwnerRefKind],
-    read_owner_ids: &[uuid::Uuid],
+    read_owner_ids: &[Option<uuid::Uuid>],
     visible_memory_ids: &[uuid::Uuid],
     visible_goal_ids: &[uuid::Uuid],
     schemas: &[SchemaInfo],
@@ -215,14 +215,17 @@ async fn query_edges_by_id(
     req: &QueryRequest,
     edge_ids: &[uuid::Uuid],
     read_owner_kinds: &[OwnerRefKind],
-    read_owner_ids: &[uuid::Uuid],
+    read_owner_ids: &[Option<uuid::Uuid>],
     schemas: &[SchemaInfo],
 ) -> Result<Vec<EdgeRow>, StorageError> {
     let read_owners = read_owner_kinds
         .iter()
         .zip(read_owner_ids.iter())
-        .map(|(kind, id)| kind.with_uuid(*id))
-        .collect::<Vec<_>>();
+        .map(|(kind, id)| {
+            kind.with_uuid(*id)
+                .ok_or_else(|| StorageError::Internal("invalid read owner_ref shape".to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let edge_ids = edge_ids.iter().copied().map(EdgeId::new).collect();
     // Access dimension: source-owned visibility with target redaction.
     let response = read_edges(
@@ -286,9 +289,10 @@ async fn query_edges_between_visible_nodes(
     visible_memory_ids: &[uuid::Uuid],
     visible_goal_ids: &[uuid::Uuid],
 ) -> Result<Vec<EdgeRow>, StorageError> {
-    let (world_kind, world_id) = proxima_core::access::world().columns();
+    let (world_kind, world_id) =
+        crate::access::owner_columns::owner_binds(&proxima_core::access::world());
     let rows = sqlx::query_as::<_, EdgeRowDb>(
-        crate::access::owner_ref_compat::sql("SELECT e.edge_id, e.relation, e.relation_class,
+        "SELECT e.edge_id, e.relation, e.relation_class,
                 COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
                 e.source_goal_id, e.source_fact_entity_id,
                 COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id,
@@ -296,10 +300,10 @@ async fn query_edges_between_visible_nodes(
                 true AS target_readable,
                 EXISTS (
                     SELECT 1
-                      FROM __PROXIMA_ENTITY_OWNER__ weo
+                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) weo
                      WHERE weo.entity_id = COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id)
-                       AND weo.owner_principal_kind = $3
-                       AND weo.owner_principal_id = $4
+                       AND weo.owner_kind = $3
+                       AND weo.owner_id IS NOT DISTINCT FROM $4
                 ) AS source_world_readable
          FROM proxima_core.edges e
          LEFT JOIN proxima_core.fact_entities sfe
@@ -313,7 +317,7 @@ async fn query_edges_between_visible_nodes(
                 OR e.target_goal_id = ANY($2::uuid[])
                 OR tfe.current_memory_id = ANY($1::uuid[]))
          ORDER BY e.created_at DESC
-         LIMIT $5"),
+         LIMIT $5",
     )
     .bind(visible_memory_ids)
     .bind(visible_goal_ids)

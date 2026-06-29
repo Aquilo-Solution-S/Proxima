@@ -47,7 +47,7 @@ async fn insert_memory(
     owner: &Owner,
     kind: proxima_core::EntityKind,
 ) -> Result<MemoryId, sqlx::Error> {
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     let memory_id = Uuid::now_v7();
     let (schema_id, text, operator_kind) = match kind {
         proxima_core::EntityKind::Perspective => (
@@ -66,26 +66,18 @@ async fn insert_memory(
     };
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id)
-         VALUES ($1, $2, 1, $3, $4, $5, 'test-model', 'v1', $6)",
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id)
+         VALUES ($1, $2, $3, $4, 1, $5, $6, $7, 'test-model', 'v1', $8)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(schema_id)
     .bind(kind)
     .bind(text)
     .bind(operator_kind)
     .bind(Uuid::nil())
-    .execute(pg.pool())
-    .await?;
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1, $2, $3, true, NULL)",
-    ))
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .execute(pg.pool())
     .await?;
     Ok(MemoryId::new(memory_id))

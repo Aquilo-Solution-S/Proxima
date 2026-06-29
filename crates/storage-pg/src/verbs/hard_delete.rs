@@ -19,8 +19,8 @@ pub struct HardDeleteSet {
     /// Fact-entity rows to delete after follow-head edges are gone and
     /// before their current head memories are deleted.
     pub fact_entity_ids: Vec<Uuid>,
-    /// Event rows to delete (bytea event ids), deleted after memories.
-    pub event_ids: Vec<Vec<u8>>,
+    /// Fact receipt rows to delete (bytea receipt ids), deleted after memories.
+    pub receipt_ids: Vec<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -39,7 +39,7 @@ pub struct HardDeleteCounts {
     pub events: u64,
 }
 
-/// Fan-out hard deletion of memory/edge/event rows and their registered
+/// Fan-out hard deletion of memory/edge/receipt rows and their registered
 /// sidecars, returning per-table deleted counts.
 ///
 /// # Errors
@@ -75,7 +75,7 @@ pub async fn execute_hard_delete(
 
     counts.citation_mappings = delete_citation_mappings(tx, &memory_ids).await?;
     counts.memories = delete_memories(tx, &memory_ids).await?;
-    counts.events = delete_events(tx, &set.event_ids).await?;
+    counts.events = delete_receipts(tx, &set.receipt_ids).await?;
 
     Ok(counts)
 }
@@ -307,18 +307,19 @@ async fn delete_memories(
     Ok(deleted.rows_affected())
 }
 
-async fn delete_events(
+async fn delete_receipts(
     tx: &mut Transaction<'_, Postgres>,
-    event_ids: &[Vec<u8>],
+    receipt_ids: &[Vec<u8>],
 ) -> Result<u64, StorageError> {
-    if event_ids.is_empty() {
+    if receipt_ids.is_empty() {
         return Ok(0);
     }
 
-    let deleted = sqlx::query("DELETE FROM proxima_core.events WHERE event_id = ANY($1::bytea[])")
-        .bind(event_ids)
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?;
+    let deleted =
+        sqlx::query("DELETE FROM proxima_core.fact_receipts WHERE receipt_id = ANY($1::bytea[])")
+            .bind(receipt_ids)
+            .execute(&mut **tx)
+            .await
+            .map_err(map_err)?;
     Ok(deleted.rows_affected())
 }

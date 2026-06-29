@@ -40,7 +40,7 @@ fn fresh_goal_draft(owner: Owner) -> GoalDraft {
         schema_id: SchemaId::new("core/simple-text-v1".into()),
         schema_version: SchemaVersion::new(1),
         title: "Home-row goal".to_string(),
-        text: "Goal created by owner_ref_compat_pg".to_string(),
+        text: "Goal created by owner_columns_pg".to_string(),
         payload: b"{}".to_vec(),
         sidecar_payload: None,
         state: GoalState::Active,
@@ -52,73 +52,63 @@ fn fresh_goal_draft(owner: Owner) -> GoalDraft {
 }
 
 async fn assert_single_home(pg: &PgStorage, entity_id: Uuid, owner: &OwnerRef) -> Option<Uuid> {
-    let rows: Vec<(OwnerRefKind, Uuid, bool, Option<Uuid>)> =
-        sqlx::query_as(proxima_storage_pg::access::owner_ref_compat::sql(
-            "SELECT owner_principal_kind, owner_principal_id, is_home, granted_by
-           FROM __PROXIMA_ENTITY_OWNER__
-          WHERE entity_id = $1",
-        ))
-        .bind(entity_id)
-        .fetch_all(pg.pool())
-        .await
-        .unwrap();
+    let rows: Vec<(OwnerRefKind, Option<Uuid>)> = sqlx::query_as(
+        "SELECT owner_kind, owner_id
+           FROM proxima_core.memories
+          WHERE memory_id = $1
+         UNION ALL
+         SELECT owner_kind, owner_id
+           FROM proxima_core.goals
+          WHERE goal_id = $1",
+    )
+    .bind(entity_id)
+    .fetch_all(pg.pool())
+    .await
+    .unwrap();
 
-    assert_eq!(rows.len(), 1, "entity must have exactly one owner row");
-    let (owner_kind, owner_principal_id, is_home, granted_by) = rows[0];
-    let expected = owner.columns();
-    assert_eq!((owner_kind, owner_principal_id), expected);
-    assert!(is_home, "owner row must be home");
-    granted_by
+    assert_eq!(rows.len(), 1, "entity must have exactly one owned row");
+    let expected = proxima_storage_pg::access::owner_columns::owner_binds(owner);
+    assert_eq!(rows[0], expected);
+    None
 }
 
 async fn assert_no_live_entity_lacks_home(pg: &PgStorage) {
-    let missing: i64 = sqlx::query_scalar(proxima_storage_pg::access::owner_ref_compat::sql(
+    let missing: i64 = sqlx::query_scalar(
         "SELECT (
              SELECT count(*) FROM proxima_core.memories m
               WHERE m.tombstoned_at IS NULL
-                AND NOT EXISTS (
-                    SELECT 1 FROM __PROXIMA_ENTITY_OWNER__ eo
-                     WHERE eo.entity_id = m.memory_id AND eo.is_home
-                )
+                AND NOT ((m.owner_kind = 'world' AND m.owner_id IS NULL)
+                     OR (m.owner_kind IN ('personal', 'group') AND m.owner_id IS NOT NULL))
          ) + (
              SELECT count(*) FROM proxima_core.goals g
-              WHERE NOT EXISTS (
-                    SELECT 1 FROM __PROXIMA_ENTITY_OWNER__ eo
-                     WHERE eo.entity_id = g.goal_id AND eo.is_home
-              )
+              WHERE NOT ((g.owner_kind = 'world' AND g.owner_id IS NULL)
+                     OR (g.owner_kind IN ('personal', 'group') AND g.owner_id IS NOT NULL))
          )",
-    ))
+    )
     .fetch_one(pg.pool())
     .await
     .unwrap();
-    assert_eq!(missing, 0, "live memories/goals must have a home row");
+    assert_eq!(
+        missing, 0,
+        "live memories/goals must have valid owner columns"
+    );
 }
 
 async fn insert_self(pg: &PgStorage, owner: &Owner) -> MemoryId {
-    let (owner_kind, owner_principal_id) = owner.columns();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     let memory_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id)
-         VALUES ($1, 'test/self', 1, $2,
-                 'self', $3, 'test-model', 'v1', $4)",
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id)
+         VALUES ($1, $2, $3, 'test/self', 1, $4,
+                 'self', $5, 'test-model', 'v1', $6)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(EntityKind::Perspective)
     .bind(MemoryOperatorKind::AtoP)
-    .bind(Uuid::nil())
-    .execute(pg.pool())
-    .await
-    .unwrap();
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1, $2, $3, true, $4)",
-    ))
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .bind(Uuid::nil())
     .execute(pg.pool())
     .await
@@ -127,39 +117,25 @@ async fn insert_self(pg: &PgStorage, owner: &Owner) -> MemoryId {
 }
 
 #[tokio::test]
-async fn migration_creates_owner_rows_and_membership() {
+async fn migration_creates_owner_columns_and_membership() {
     let (pg, db) = common::fresh_pg().await;
     let pool = pg.pool();
 
     let (n,): (i64,) = sqlx::query_as(
         "SELECT count(*) FROM information_schema.tables
           WHERE table_schema='proxima_core'
-            AND table_name IN ('entity_' || 'owner','group_membership')",
+            AND table_name IN ('group_memberships')",
     )
     .fetch_one(pool)
     .await
     .unwrap();
-    assert_eq!(n, 2, "both access tables exist");
-
-    let eid = uuid::Uuid::now_v7();
-    let ins = |kind: &str, home: bool| {
-        sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-            "INSERT INTO __PROXIMA_ENTITY_OWNER__
-                (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-             VALUES ($1,$2::proxima_core.owner_principal_kind,$3,$4,$5)",
-        ))
-        .bind(eid)
-        .bind(kind.to_string())
-        .bind(uuid::Uuid::now_v7())
-        .bind(home)
-        .bind(uuid::Uuid::now_v7())
-    };
-    ins("User", true).execute(pool).await.unwrap();
-    let dup = ins("Group", true).execute(pool).await;
-    assert!(
-        dup.is_err(),
-        "second home row must violate home-owner uniqueness"
-    );
+    assert_eq!(n, 1, "group membership table exists");
+    let stale_owner_table: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('proxima_core.' || 'entity_' || 'owner')::text")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(stale_owner_table, None);
 
     common::drop_db(&db).await.unwrap();
 }
@@ -420,7 +396,7 @@ async fn discovery_reads_filter_by_owner_read_set() {
 }
 
 #[tokio::test]
-async fn home_row_created_on_event_ingest() {
+async fn owner_columns_written_on_event_ingest() {
     let (pg, db) = common::fresh_pg().await;
     let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
 
@@ -429,15 +405,14 @@ async fn home_row_created_on_event_ingest() {
         .await
         .unwrap();
 
-    let granted_by = assert_single_home(&pg, outcome.memory_id.into_inner(), &owner).await;
-    assert_eq!(granted_by, Some(Uuid::nil()));
+    assert_single_home(&pg, outcome.memory_id.into_inner(), &owner).await;
     assert_no_live_entity_lacks_home(&pg).await;
 
     common::drop_db(&db).await.unwrap();
 }
 
 #[tokio::test]
-async fn home_row_created_on_goal_create() {
+async fn owner_columns_written_on_goal_create() {
     let (pg, db) = common::fresh_pg().await;
     let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
     let self_id = insert_self(&pg, &owner).await;
@@ -458,8 +433,7 @@ async fn home_row_created_on_goal_create() {
         .await
         .unwrap();
 
-    let granted_by = assert_single_home(&pg, outcome.goal_id.into_inner(), &owner).await;
-    assert_eq!(granted_by, None);
+    assert_single_home(&pg, outcome.goal_id.into_inner(), &owner).await;
     assert_no_live_entity_lacks_home(&pg).await;
 
     common::drop_db(&db).await.unwrap();
@@ -476,14 +450,13 @@ async fn seed_membership(
     };
 
     sqlx::query(
-        "INSERT INTO proxima_core.group_membership
-            (group_id, member_user_id, relation, granted_by)
-         VALUES ($1,$2,$3::proxima_core.membership_relation,$4)",
+        "INSERT INTO proxima_core.group_memberships
+            (group_id, member_user_id, relation)
+         VALUES ($1,$2,$3::proxima_core.membership_relation)",
     )
     .bind(group.into_inner())
     .bind(user.into_inner())
     .bind(relation)
-    .bind(uuid::Uuid::now_v7())
     .execute(pg.pool())
     .await
     .unwrap();
@@ -491,16 +464,18 @@ async fn seed_membership(
 
 async fn seed_memory_owned(pg: &proxima_storage_pg::PgStorage, owner: OwnerRef) -> EntityId {
     let entity_id = uuid::Uuid::now_v7();
-    let (owner_kind, owner_id) = owner.columns();
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1,$2::proxima_core.owner_principal_kind,$3,true,$4)",
-    ))
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id)
+         VALUES ($1, $2, $3, 'test/owned-memory-v1', 1, 'Abstraction', 'owned',
+                 'FtoA', 'test-model', 'v1',
+                 '00000000-0000-0000-0000-000000000000'::uuid)",
+    )
     .bind(entity_id)
     .bind(owner_kind)
     .bind(owner_id)
-    .bind(uuid::Uuid::now_v7())
     .execute(pg.pool())
     .await
     .unwrap();
@@ -514,28 +489,18 @@ async fn seed_abstraction_memory(
     text: &str,
 ) -> MemoryId {
     let memory_id = uuid::Uuid::now_v7();
-    let (owner_kind, owner_id) = owner.columns();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id)
-         VALUES ($1, 'test/entity-owner-abstraction-v1', 1,
-                 'Abstraction', $2, 'FtoA', 'test-model', 'v1', $3)",
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id)
+         VALUES ($1, $2, $3, 'test/entity-owner-abstraction-v1', 1,
+                 'Abstraction', $4, 'FtoA', 'test-model', 'v1', $5)",
     )
-    .bind(memory_id)
-    .bind(text)
-    .bind(uuid::Uuid::nil())
-    .execute(pg.pool())
-    .await
-    .unwrap();
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1,$2::proxima_core.owner_principal_kind,$3,true,$4)",
-    ))
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_id)
+    .bind(text)
     .bind(uuid::Uuid::nil())
     .execute(pg.pool())
     .await
@@ -544,13 +509,13 @@ async fn seed_abstraction_memory(
 }
 
 async fn move_home_row(pg: &proxima_storage_pg::PgStorage, memory_id: MemoryId, owner: &OwnerRef) {
-    let (owner_kind, owner_id) = owner.columns();
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "UPDATE __PROXIMA_ENTITY_OWNER__
-            SET owner_principal_kind = $2::proxima_core.owner_principal_kind,
-                owner_principal_id = $3
-          WHERE entity_id = $1 AND is_home",
-    ))
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
+    sqlx::query(
+        "UPDATE proxima_core.memories
+            SET owner_kind = $2::proxima_core.owner_ref_kind,
+                owner_id = $3
+          WHERE memory_id = $1",
+    )
     .bind(memory_id.into_inner())
     .bind(owner_kind)
     .bind(owner_id)
@@ -561,24 +526,27 @@ async fn move_home_row(pg: &proxima_storage_pg::PgStorage, memory_id: MemoryId, 
 
 async fn seed_edge_between_memories(
     pg: &proxima_storage_pg::PgStorage,
-    _owner: OwnerRef,
+    owner: OwnerRef,
     source: MemoryId,
     target: MemoryId,
 ) -> uuid::Uuid {
     let edge_id = uuid::Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
     sqlx::query(
         "INSERT INTO proxima_core.edges
-           (edge_id, relation, relation_class,
+           (edge_id, owner_kind, owner_id, relation, relation_class,
             source_kind, source_memory_id, source_goal_id,
             target_kind, target_memory_id, target_goal_id,
             authorship_kind, authorship_owner_memory_id)
          VALUES
-           ($1, 'test/leaky-edge', 'Structural',
-            'Fact', $2, NULL,
-            'Fact', $3, NULL,
+           ($1, $2, $3, 'test/leaky-edge', 'Structural',
+            'Fact', $4, NULL,
+            'Fact', $5, NULL,
             'EventSource', NULL)",
     )
     .bind(edge_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(source.into_inner())
     .bind(target.into_inner())
     .execute(pg.pool())

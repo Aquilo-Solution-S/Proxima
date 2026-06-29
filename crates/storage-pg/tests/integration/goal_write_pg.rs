@@ -10,8 +10,9 @@ use proxima_core::verbs::goal_write::{
     TransitionGoalAtomicRequest,
 };
 use proxima_core::{
-    CORE_MOTIVATED_BY_RELATION, FlavorRegistry, FlavorRegistryFrozen, GoalPayload, MemoryId, Owner,
-    OwnerRef, OwnerRefKind, PayloadKeyBuilder, SchemaId, SchemaVersion, StorageError, UserId,
+    CORE_DEPENDS_ON_RELATION, CORE_MOTIVATED_BY_RELATION, FlavorRegistry, FlavorRegistryFrozen,
+    GoalPayload, MemoryId, Owner, OwnerRef, OwnerRefKind, PayloadKeyBuilder, SchemaId,
+    SchemaVersion, StorageError, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -32,7 +33,7 @@ impl GoalPayload for TestCustomGoalPayload {
     }
 }
 
-fn owner_parts(owner: &Owner) -> (OwnerRefKind, Uuid) {
+fn owner_parts(owner: &Owner) -> (OwnerRefKind, Option<Uuid>) {
     owner.columns()
 }
 
@@ -76,22 +77,23 @@ async fn insert_self(
     pg: &PgStorage,
     owner: &Owner,
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
+    let (owner_kind, owner_id) = owner_parts(owner);
     let memory_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id)
-         VALUES ($1, 'test/self', 1, $2,
-                 'self', $3, 'test-model', 'v1', $4)",
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id)
+         VALUES ($1, $2, $3, 'test/self', 1, $4,
+                 'self', $5, 'test-model', 'v1', $6)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(proxima_core::EntityKind::Perspective)
     .bind(proxima_core::MemoryOperatorKind::AtoP)
     .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
-    insert_home(pg, memory_id, owner, owner_kind, owner_principal_id).await?;
     Ok(MemoryId::new(memory_id))
 }
 
@@ -99,45 +101,24 @@ async fn insert_evidence_abstraction(
     pg: &PgStorage,
     owner: &Owner,
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
+    let (owner_kind, owner_id) = owner_parts(owner);
     let memory_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id)
-         VALUES ($1, 'test/evidence-abstraction', 1, $2,
-                 'evidence', $3, 'test-model', 'v1', $4)",
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, model_id, prompt_version, personality_instance_id)
+         VALUES ($1, $2, $3, 'test/evidence-abstraction', 1, $4,
+                 'evidence', $5, 'test-model', 'v1', $6)",
     )
     .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .bind(proxima_core::EntityKind::Abstraction)
     .bind(proxima_core::MemoryOperatorKind::FtoA)
     .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
-    insert_home(pg, memory_id, owner, owner_kind, owner_principal_id).await?;
     Ok(MemoryId::new(memory_id))
-}
-
-async fn insert_home(
-    pg: &PgStorage,
-    entity_id: Uuid,
-    _owner: &Owner,
-    owner_kind: OwnerRefKind,
-    owner_principal_id: Uuid,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-        "INSERT INTO __PROXIMA_ENTITY_OWNER__
-            (entity_id, owner_principal_kind, owner_principal_id, is_home, granted_by)
-         VALUES ($1, $2, $3, true, $4)
-         ON CONFLICT DO NOTHING",
-    ))
-    .bind(entity_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(Uuid::nil())
-    .execute(pg.pool())
-    .await
-    .map(|_| ())
 }
 
 async fn create_goal(
@@ -378,8 +359,12 @@ async fn goal_create_atom_with_parent_writes_goal_parent() {
         assert!(!child_outcome.idempotent_replay);
 
         let parents: (i64,) = sqlx::query_as(
-            "SELECT count(*)::bigint FROM proxima_core.goal_parents WHERE goal_id = $1",
+            "SELECT count(*)::bigint
+               FROM proxima_core.edges
+              WHERE relation = $1
+                AND source_goal_id = $2",
         )
+        .bind(CORE_DEPENDS_ON_RELATION)
         .bind(child_outcome.goal_id.into_inner())
         .fetch_one(pg.pool())
         .await?;
@@ -418,20 +403,20 @@ async fn goal_create_atom_rejects_empty_payload_bytes() {
             .await?;
         assert_eq!(goals.0, 0);
 
-        let (owner_kind, owner_principal_id) = owner_parts(&owner);
+        let (owner_kind, owner_id) = owner_parts(&owner);
         let raw = sqlx::query(
             "INSERT INTO proxima_core.goals
-                (goal_id, schema_id, schema_version,
+                (goal_id, owner_kind, owner_id, schema_id, schema_version,
                  title, text, payload, state, authorship_kind, request_id,
                  idempotency_key)
-             VALUES ($1, 'core/simple-text-v1', 1,
-                     'raw', 'raw', $2, 'Active', 'User', 'req-raw',
-                     md5($3::text || ':' || $4::text || ':' || 'req-raw'))",
+             VALUES ($1, $2, $3, 'core/simple-text-v1', 1,
+                     'raw', 'raw', $4, 'Active', 'User', 'req-raw',
+                     md5($2::text || ':' || $3::text || ':' || 'req-raw'))",
         )
         .bind(Uuid::now_v7())
-        .bind(Vec::<u8>::new())
         .bind(owner_kind)
-        .bind(owner_principal_id)
+        .bind(owner_id)
+        .bind(Vec::<u8>::new())
         .execute(pg.pool())
         .await;
         assert!(
@@ -595,10 +580,17 @@ async fn goal_achieve_atom_rejects_evidence_without_home_owner() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let evidence_id = insert_evidence_abstraction(&pg, &owner).await?;
-        sqlx::query(proxima_storage_pg::access::owner_ref_compat::sql(
-            "DELETE FROM __PROXIMA_ENTITY_OWNER__ WHERE entity_id = $1",
-        ))
+        let inaccessible_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let (inaccessible_kind, inaccessible_id) =
+            proxima_storage_pg::access::owner_columns::owner_binds(&inaccessible_owner);
+        sqlx::query(
+            "UPDATE proxima_core.memories
+                SET owner_kind = $2, owner_id = $3
+              WHERE memory_id = $1",
+        )
         .bind(evidence_id.into_inner())
+        .bind(inaccessible_kind)
+        .bind(inaccessible_id)
         .execute(pg.pool())
         .await?;
 
@@ -855,9 +847,13 @@ async fn goal_decompose_atom_writes_children_and_parents() {
 
         for child in &outcome.children {
             let parents: (i64,) = sqlx::query_as(
-                "SELECT count(*)::bigint FROM proxima_core.goal_parents
-                 WHERE goal_id = $1 AND parent_goal_id = $2",
+                "SELECT count(*)::bigint
+                   FROM proxima_core.edges
+                  WHERE relation = $1
+                    AND source_goal_id = $2
+                    AND target_goal_id = $3",
             )
+            .bind(CORE_DEPENDS_ON_RELATION)
             .bind(child.outcome.goal_id.into_inner())
             .bind(parent.goal_id.into_inner())
             .fetch_one(pg.pool())
@@ -955,7 +951,7 @@ async fn goal_decompose_atom_rejects_cross_owner_parent() {
         let err = create_goal(&pg, &registry, self_b, cross_parent_child)
             .await
             .expect_err("cross-owner parent edge rejected");
-        assert!(err.to_string().contains("crosses Owner boundary"));
+        assert!(matches!(err, proxima_core::StorageError::NotFound));
 
         let active_parent = create_goal(
             &pg,
@@ -1001,6 +997,83 @@ async fn goal_decompose_atom_rejects_cross_owner_parent() {
 
     let _ = drop_db(&db_name).await;
     result.expect("cross-owner parent test failed");
+}
+
+#[tokio::test]
+async fn goal_create_atom_rejects_inactive_or_superseded_parent() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let self_id = insert_self(&pg, &owner).await?;
+        let registry = FlavorRegistry::new().freeze();
+
+        let active_parent = create_goal(
+            &pg,
+            &registry,
+            self_id,
+            fresh_draft(&owner, "req-direct-inactive-parent".to_string()),
+        )
+        .await?;
+        let paused_parent = transition_goal(
+            &pg,
+            &registry,
+            self_id,
+            owner,
+            active_parent.goal_id,
+            GoalState::Paused,
+            "req-direct-inactive-parent-paused",
+        )
+        .await?;
+        let mut inactive_child = fresh_draft(&owner, "req-direct-inactive-child".to_string());
+        inactive_child.parent_goal_ids = vec![paused_parent.goal_id];
+        let inactive_err = create_goal(&pg, &registry, self_id, inactive_child)
+            .await
+            .expect_err("inactive direct create parent rejected");
+        assert!(
+            inactive_err
+                .to_string()
+                .contains("parent_goal must be Active")
+        );
+
+        let superseded_parent = create_goal(
+            &pg,
+            &registry,
+            self_id,
+            fresh_draft(&owner, "req-direct-superseded-parent".to_string()),
+        )
+        .await?;
+        let _newer_parent = transition_goal(
+            &pg,
+            &registry,
+            self_id,
+            owner,
+            superseded_parent.goal_id,
+            GoalState::Active,
+            "req-direct-superseded-parent-newer",
+        )
+        .await?;
+        let mut superseded_child = fresh_draft(&owner, "req-direct-superseded-child".to_string());
+        superseded_child.parent_goal_ids = vec![superseded_parent.goal_id];
+        let superseded_err = create_goal(&pg, &registry, self_id, superseded_child)
+            .await
+            .expect_err("superseded direct create parent rejected");
+        assert!(
+            superseded_err
+                .to_string()
+                .contains("parent_goal is not current head")
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("direct parent validation test failed");
 }
 
 #[tokio::test]
