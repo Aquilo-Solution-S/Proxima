@@ -2,7 +2,7 @@
 
 use crate::common::{create_db, db_url, drop_db};
 
-use proxima_core::storage::Storage;
+use proxima_core::storage_ports::*;
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalPayloadWrite,

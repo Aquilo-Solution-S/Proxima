@@ -1,4 +1,4 @@
-//! `core/add_wake_entry` — granular append via `Storage::set_wake_entries_within`.
+//! `core/add_wake_entry` — granular append via the wake-config storage port.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};

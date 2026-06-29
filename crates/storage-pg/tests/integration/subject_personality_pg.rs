@@ -2,7 +2,7 @@
 
 use crate::common::{drop_db, fresh_pg};
 use proxima_core::personality::ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID;
-use proxima_core::storage::Storage;
+use proxima_core::storage_ports::*;
 use proxima_core::{GroupId, OwnerRef, UserId};
 use uuid::Uuid;
 

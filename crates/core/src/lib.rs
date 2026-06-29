@@ -27,6 +27,7 @@ pub mod personality;
 pub mod relation;
 pub mod secrets;
 pub mod storage;
+pub mod storage_ports;
 #[cfg(feature = "test-fixtures")]
 pub mod test_fixtures;
 pub mod verbs;
@@ -379,3 +380,12 @@ macro_rules! proxima_flavor {
         }
     };
 }
+
+pub use storage_ports::{
+    ChangeEventPort, CitationPort, ComplianceErasePort, EdgeReadPort, EmbeddingJobPort,
+    EmbeddingTextPort, EmbeddingWritePort, FactIngestPort, FactRetentionPort, GoalReadPort,
+    GoalSupportReadPort, GoalWritePort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
+    OperatorInvocationReadPort, OperatorInvocationWritePort, OwnerAccessReadPort,
+    OwnerMembershipAdminPort, RegistryProjectionPort, SourceBatchPort, StoragePorts,
+    WakeConfigPort,
+};

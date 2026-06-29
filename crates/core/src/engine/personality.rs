@@ -127,6 +127,8 @@ impl Engine {
         include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, ProtocolError> {
         self.storage
+            .personality
+            .personality_read
             .list_personality_instances(permit.owner(), include_tombstoned)
             .await
             .map_err(|e| ProtocolError::internal(format!("list_personality_instances: {e}")))
@@ -172,6 +174,8 @@ impl Engine {
             .await?;
         let response = self
             .storage
+            .personality
+            .personality_write
             .tombstone_personality(&effective)
             .await
             .map_err(|e| match e {
@@ -201,6 +205,8 @@ impl Engine {
         let mut effective = req;
         effective.principal = *permit.owner();
         self.storage
+            .personality
+            .personality_write
             .tombstone_personality(&effective)
             .await
             .map_err(|e| match e {
@@ -282,6 +288,8 @@ impl Engine {
         let mut effective = req;
         effective.principal = *permit.owner();
         self.storage
+            .personality
+            .personality_write
             .instantiate_personality(&effective)
             .await
             .map_err(|e| ProtocolError::internal(format!("instantiate_personality: {e}")))
@@ -312,6 +320,8 @@ impl Engine {
         crate::personality::validate_wake_entries_detect_config(&effective.entries)?;
         let response = self
             .storage
+            .personality
+            .wake_config
             .set_wake_entries(&effective)
             .await
             .map_err(|err| map_granular_wake_storage_err(err, &effective.entries))?;
@@ -370,6 +380,8 @@ impl Engine {
             Ok(next)
         });
         self.storage
+            .personality
+            .wake_config
             .set_wake_entries_within(permit.owner(), req.personality_instance_id, mutator)
             .await
             .map_err(|err| map_granular_wake_storage_err(err, std::slice::from_ref(&req.entry)))?;
@@ -413,6 +425,8 @@ impl Engine {
             Ok(next)
         });
         self.storage
+            .personality
+            .wake_config
             .set_wake_entries_within(permit.owner(), pid, mutator)
             .await
             .map_err(|err| map_granular_wake_storage_err(err, &[]))?;
@@ -456,6 +470,8 @@ impl Engine {
                 .collect())
         });
         self.storage
+            .personality
+            .wake_config
             .set_wake_entries_within(permit.owner(), pid, mutator)
             .await
             .map_err(|err| map_granular_wake_storage_err(err, &[]))?;
@@ -524,6 +540,8 @@ impl Engine {
         let embedding_client = self.embed_client();
         let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
         self.storage()
+            .ingest
+            .fact_ingest
             .ingest_event_atomic(&draft, embedding_model_id)
             .await
             .map_err(|err| {
@@ -540,6 +558,8 @@ impl Engine {
     ) -> Result<PersonalityConfigChangedCaller, ProtocolError> {
         let instances = self
             .storage()
+            .personality
+            .personality_read
             .list_personality_instances(owner, false)
             .await
             .map_err(|err| ProtocolError::internal(format!("list_personality_instances: {err}")))?;
@@ -570,6 +590,8 @@ impl Engine {
     ) -> Result<Option<PersonalityConfigChangeSnapshot>, ProtocolError> {
         let rows = self
             .storage
+            .personality
+            .personality_read
             .list_personality_instances(owner, true)
             .await
             .map_err(|err| ProtocolError::internal(format!("list_personality_instances: {err}")))?;
@@ -593,6 +615,8 @@ impl Engine {
     ) -> Result<Option<PersonalityConfigChangeSnapshot>, ProtocolError> {
         let rows = self
             .storage
+            .personality
+            .personality_read
             .list_personality_instances(owner, true)
             .await
             .map_err(|err| ProtocolError::internal(format!("list_personality_instances: {err}")))?;
@@ -626,6 +650,8 @@ impl Engine {
     ) -> Result<Option<crate::PersonalityInstanceId>, ProtocolError> {
         let rows = self
             .storage
+            .personality
+            .personality_read
             .list_personality_instances(owner, true)
             .await
             .map_err(|err| ProtocolError::internal(format!("list_personality_instances: {err}")))?;

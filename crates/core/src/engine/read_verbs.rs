@@ -5,8 +5,9 @@ use crate::personality::{
     ChangeEventForWake, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow, SidecarSpec,
 };
 use crate::storage::{EdgeEndpointKindRow, MemoryGraphPayloadRow, NeighborEdgeRow, StorageError};
+use crate::storage_ports::ReadVerbStoragePorts;
 use crate::verbs::query::{FactCitationReadback, MemorySearchRequest, MemorySearchResult};
-use crate::verbs::schema::PayloadKind;
+use crate::verbs::schema::{MemorySearchProjection, PayloadKind};
 use crate::{EdgeId, EntityId, FactEntityId, MemoryId, OwnerRef, SchemaId, SchemaVersion};
 
 use super::Engine;
@@ -106,44 +107,17 @@ impl Engine {
             None
         };
 
-        let mut effective = req.search.clone();
-        effective.read_owners = read_owners.clone();
-        let memories = self
-            .storage
-            .search_memories(&effective, self.registry.search_projections())
-            .await
-            .map_err(|err| storage_error("search_memories", &err))?;
-
-        let memory_ids = memories.iter().map(|row| row.memory_id).collect::<Vec<_>>();
-        let payloads = if memory_ids.is_empty() {
-            Vec::new()
-        } else {
-            let owner = hydration_permit
-                .as_ref()
-                .map_or(&req.search.principal, |permit| permit.owner());
-            self.storage
-                .load_memory_graph_payloads(owner, &memory_ids, req.include_body)
-                .await
-                .map_err(|err| storage_error("load_memory_graph_payloads", &err))?
-        };
-        let neighbor_edges = if req.include_neighbor_edges {
-            if memory_ids.is_empty() {
-                Vec::new()
-            } else {
-                self.storage
-                    .load_neighbor_memory_edges(&read_owners, &memory_ids, NEIGHBOR_EDGE_LIMIT)
-                    .await
-                    .map_err(|err| storage_error("load_neighbor_memory_edges", &err))?
-            }
-        } else {
-            Vec::new()
-        };
-
-        Ok(SearchReadResponse {
-            memories,
-            payloads,
-            neighbor_edges,
-        })
+        let hydration_owner = hydration_permit
+            .as_ref()
+            .map_or(&req.search.principal, |permit| permit.owner());
+        search_authorized(
+            &self.storage.read_verb,
+            self.registry.search_projections(),
+            &read_owners,
+            hydration_owner,
+            req,
+        )
+        .await
     }
 
     /// Single-memory read plus optional neighbor-edge domain rows.
@@ -162,23 +136,7 @@ impl Engine {
             .await?;
         let read_owners = self.authorize_read(authz).await?;
         let sidecars = self.sidecar_specs();
-        let memory = self
-            .storage
-            .load_memory_by_id(req.memory_id, req.reader_personality_instance_id, &sidecars)
-            .await
-            .map_err(|err| storage_error("load_memory_by_id", &err))?;
-        let neighbor_edges = if req.include_neighbor_edges {
-            self.storage
-                .load_neighbor_memory_edges(&read_owners, &[req.memory_id], NEIGHBOR_EDGE_LIMIT)
-                .await
-                .map_err(|err| storage_error("load_neighbor_memory_edges", &err))?
-        } else {
-            Vec::new()
-        };
-        Ok(GetMemoryReadResponse {
-            memory,
-            neighbor_edges,
-        })
+        get_memory_authorized(&self.storage.read_verb, &read_owners, &sidecars, req).await
     }
 
     /// Owner-scoped graph overview domain read.
@@ -195,26 +153,12 @@ impl Engine {
         let permit = self
             .authorize_request(authz, &req.principal, Relation::Admin)
             .await?;
-        let pending_embedding_jobs = self
-            .storage
-            .count_pending_embedding_jobs(permit.owner())
-            .await
-            .map_err(|err| storage_error("count_pending_embedding_jobs", &err))?;
-        let personalities = self
-            .storage
-            .list_personality_instances(permit.owner(), req.include_tombstoned)
-            .await
-            .map_err(|err| storage_error("list_personality_instances", &err))?;
-        let fact_retention_seconds = self
-            .storage
-            .get_fact_retention(permit.owner())
-            .await
-            .map_err(|err| storage_error("get_fact_retention", &err))?;
-        Ok(GetGraphReadResponse {
-            pending_embedding_jobs,
-            fact_retention_seconds,
-            personalities,
-        })
+        get_graph_authorized(
+            &self.storage.read_verb,
+            permit.owner(),
+            req.include_tombstoned,
+        )
+        .await
     }
 
     /// Read-set-scoped forward change-event read plus edge endpoint-kind domain rows.
@@ -229,34 +173,7 @@ impl Engine {
         req: &ListEventsReadRequest,
     ) -> Result<ListEventsReadResponse, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
-        let events = self
-            .storage
-            .list_change_events_after(&read_owners, req.after, req.limit)
-            .await
-            .map_err(|err| storage_error("list_change_events_after", &err))?;
-        let edge_ids = events
-            .iter()
-            .filter_map(|row| match &row.event.kind {
-                crate::change_event::ChangeEventKind::EdgeAppend { edge_id, .. }
-                | crate::change_event::ChangeEventKind::EdgeDelete { edge_id, .. } => {
-                    Some(EdgeId::new(*edge_id))
-                }
-                crate::change_event::ChangeEventKind::EntityAppend { .. }
-                | crate::change_event::ChangeEventKind::EntityDelete { .. } => None,
-            })
-            .collect::<Vec<_>>();
-        let edge_endpoint_kinds = if edge_ids.is_empty() {
-            Vec::new()
-        } else {
-            self.storage
-                .load_edge_endpoint_kinds(&edge_ids)
-                .await
-                .map_err(|err| storage_error("load_edge_endpoint_kinds", &err))?
-        };
-        Ok(ListEventsReadResponse {
-            events,
-            edge_endpoint_kinds,
-        })
+        list_events_authorized(&self.storage.read_verb, &read_owners, req).await
     }
 
     /// Confirmed-id inverse citation read for one Fact memory.
@@ -272,10 +189,7 @@ impl Engine {
     ) -> Result<Option<FactCitationReadback>, ProtocolError> {
         self.authorize_entry_read(authz, EntityId::Memory(req.fact_memory_id))
             .await?;
-        self.storage
-            .citation_of_fact(req.fact_memory_id)
-            .await
-            .map_err(|err| storage_error("citation_of_fact", &err))
+        read_fact_citation_authorized(&self.storage.read_verb, req.fact_memory_id).await
     }
 
     /// Read-set-scoped inverse citation read for a stateful Fact entity head.
@@ -290,10 +204,12 @@ impl Engine {
         req: &EntityHeadCitationReadRequest,
     ) -> Result<Option<FactCitationReadback>, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
-        self.storage
-            .citation_of_entity_head(&read_owners, req.fact_entity_id)
-            .await
-            .map_err(|err| storage_error("citation_of_entity_head", &err))
+        read_entity_head_citation_authorized(
+            &self.storage.read_verb,
+            &read_owners,
+            req.fact_entity_id,
+        )
+        .await
     }
 
     /// Read-set-scoped citation-to-Fact read-back.
@@ -309,10 +225,13 @@ impl Engine {
     ) -> Result<Vec<MemorySnapshot>, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
         let sidecars = self.sidecar_specs();
-        self.storage
-            .facts_citing_object(&read_owners, req.cited_object_id, &sidecars)
-            .await
-            .map_err(|err| storage_error("facts_citing_object", &err))
+        facts_citing_object_authorized(
+            &self.storage.read_verb,
+            &read_owners,
+            req.cited_object_id,
+            &sidecars,
+        )
+        .await
     }
 
     pub(in crate::engine) fn sidecar_specs(&self) -> Vec<SidecarSpec> {
@@ -332,6 +251,177 @@ impl Engine {
             })
             .collect()
     }
+}
+
+pub(in crate::engine) async fn search_authorized(
+    ports: &ReadVerbStoragePorts,
+    search_projections: &[MemorySearchProjection],
+    read_owners: &[OwnerRef],
+    hydration_owner: &OwnerRef,
+    req: &SearchReadRequest,
+) -> Result<SearchReadResponse, ProtocolError> {
+    let mut effective = req.search.clone();
+    effective.read_owners = read_owners.to_vec();
+    let memories = ports
+        .memory_read
+        .search_memories(&effective, search_projections)
+        .await
+        .map_err(|err| storage_error("search_memories", &err))?;
+
+    let memory_ids = memories.iter().map(|row| row.memory_id).collect::<Vec<_>>();
+    let payloads = if memory_ids.is_empty() {
+        Vec::new()
+    } else {
+        ports
+            .memory_read
+            .load_memory_graph_payloads(hydration_owner, &memory_ids, req.include_body)
+            .await
+            .map_err(|err| storage_error("load_memory_graph_payloads", &err))?
+    };
+    let neighbor_edges = if req.include_neighbor_edges {
+        if memory_ids.is_empty() {
+            Vec::new()
+        } else {
+            ports
+                .memory_read
+                .load_neighbor_memory_edges(read_owners, &memory_ids, NEIGHBOR_EDGE_LIMIT)
+                .await
+                .map_err(|err| storage_error("load_neighbor_memory_edges", &err))?
+        }
+    } else {
+        Vec::new()
+    };
+
+    Ok(SearchReadResponse {
+        memories,
+        payloads,
+        neighbor_edges,
+    })
+}
+
+pub(in crate::engine) async fn get_memory_authorized(
+    ports: &ReadVerbStoragePorts,
+    read_owners: &[OwnerRef],
+    sidecars: &[SidecarSpec],
+    req: &GetMemoryReadRequest,
+) -> Result<GetMemoryReadResponse, ProtocolError> {
+    let memory = ports
+        .memory_inspect
+        .load_memory_by_id(req.memory_id, req.reader_personality_instance_id, sidecars)
+        .await
+        .map_err(|err| storage_error("load_memory_by_id", &err))?;
+    let neighbor_edges = if req.include_neighbor_edges {
+        ports
+            .memory_read
+            .load_neighbor_memory_edges(read_owners, &[req.memory_id], NEIGHBOR_EDGE_LIMIT)
+            .await
+            .map_err(|err| storage_error("load_neighbor_memory_edges", &err))?
+    } else {
+        Vec::new()
+    };
+    Ok(GetMemoryReadResponse {
+        memory,
+        neighbor_edges,
+    })
+}
+
+pub(in crate::engine) async fn get_graph_authorized(
+    ports: &ReadVerbStoragePorts,
+    owner: &OwnerRef,
+    include_tombstoned: bool,
+) -> Result<GetGraphReadResponse, ProtocolError> {
+    let pending_embedding_jobs = ports
+        .embedding_job
+        .count_pending_embedding_jobs(owner)
+        .await
+        .map_err(|err| storage_error("count_pending_embedding_jobs", &err))?;
+    let personalities = ports
+        .personality_read
+        .list_personality_instances(owner, include_tombstoned)
+        .await
+        .map_err(|err| storage_error("list_personality_instances", &err))?;
+    let fact_retention_seconds = ports
+        .fact_retention
+        .get_fact_retention(owner)
+        .await
+        .map_err(|err| storage_error("get_fact_retention", &err))?;
+    Ok(GetGraphReadResponse {
+        pending_embedding_jobs,
+        fact_retention_seconds,
+        personalities,
+    })
+}
+
+pub(in crate::engine) async fn list_events_authorized(
+    ports: &ReadVerbStoragePorts,
+    read_owners: &[OwnerRef],
+    req: &ListEventsReadRequest,
+) -> Result<ListEventsReadResponse, ProtocolError> {
+    let events = ports
+        .change_event
+        .list_change_events_after(read_owners, req.after, req.limit)
+        .await
+        .map_err(|err| storage_error("list_change_events_after", &err))?;
+    let edge_ids = events
+        .iter()
+        .filter_map(|row| match &row.event.kind {
+            crate::change_event::ChangeEventKind::EdgeAppend { edge_id, .. }
+            | crate::change_event::ChangeEventKind::EdgeDelete { edge_id, .. } => {
+                Some(EdgeId::new(*edge_id))
+            }
+            crate::change_event::ChangeEventKind::EntityAppend { .. }
+            | crate::change_event::ChangeEventKind::EntityDelete { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    let edge_endpoint_kinds = if edge_ids.is_empty() {
+        Vec::new()
+    } else {
+        ports
+            .memory_read
+            .load_edge_endpoint_kinds(&edge_ids)
+            .await
+            .map_err(|err| storage_error("load_edge_endpoint_kinds", &err))?
+    };
+    Ok(ListEventsReadResponse {
+        events,
+        edge_endpoint_kinds,
+    })
+}
+
+pub(in crate::engine) async fn read_fact_citation_authorized(
+    ports: &ReadVerbStoragePorts,
+    fact_memory_id: MemoryId,
+) -> Result<Option<FactCitationReadback>, ProtocolError> {
+    ports
+        .citation
+        .citation_of_fact(fact_memory_id)
+        .await
+        .map_err(|err| storage_error("citation_of_fact", &err))
+}
+
+pub(in crate::engine) async fn read_entity_head_citation_authorized(
+    ports: &ReadVerbStoragePorts,
+    read_owners: &[OwnerRef],
+    fact_entity_id: FactEntityId,
+) -> Result<Option<FactCitationReadback>, ProtocolError> {
+    ports
+        .citation
+        .citation_of_entity_head(read_owners, fact_entity_id)
+        .await
+        .map_err(|err| storage_error("citation_of_entity_head", &err))
+}
+
+pub(in crate::engine) async fn facts_citing_object_authorized(
+    ports: &ReadVerbStoragePorts,
+    read_owners: &[OwnerRef],
+    cited_object_id: uuid::Uuid,
+    sidecars: &[SidecarSpec],
+) -> Result<Vec<MemorySnapshot>, ProtocolError> {
+    ports
+        .citation
+        .facts_citing_object(read_owners, cited_object_id, sidecars)
+        .await
+        .map_err(|err| storage_error("facts_citing_object", &err))
 }
 
 fn storage_error(context: &str, err: &StorageError) -> ProtocolError {

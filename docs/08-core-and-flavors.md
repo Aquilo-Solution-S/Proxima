@@ -6,7 +6,7 @@
 Core is the Rust runtime framework core. It owns graph contracts,
 build-time flavor registry, protocol verbs, wake/personality runtime,
 agent long-term memory substrate, substrate MCP tools, inference config
-vocabulary, and storage traits. Flavor crates contribute build-time
+vocabulary, and storage ports. Flavor crates contribute build-time
 vocabulary. Composite binaries choose flavor crates at build time and
 freeze the registry at startup.
 
@@ -27,7 +27,7 @@ runtime framework core (`proxima-core`)
   core GoalPayload schemas + lifecycle Fact schemas
   relation descriptor validation
   frozen registry
-  storage traits
+  storage ports
   agent long-term memory sidecars + tools
   GoalWrite, active-goal queries, core Goal tools
   personality runtime rows + wake-entry contracts

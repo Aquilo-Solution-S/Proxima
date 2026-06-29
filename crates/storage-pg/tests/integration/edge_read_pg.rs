@@ -1,11 +1,12 @@
 use crate::common::{drop_db, fresh_pg, seed_memory, seed_memory_edge};
 use proxima_core::access::world;
+use proxima_core::storage_ports::*;
 use proxima_core::verbs::query::{
     EdgeExistsRequest, EdgeFilter, EdgeReadRequest, MemoryLineageDirection, MemoryLineageRequest,
 };
 use proxima_core::{
     CORE_DERIVED_FROM_RELATION, EdgeId, EntityKind, GroupId, MemoryId, OwnerRef, RelationClass,
-    Storage, UserId,
+    UserId,
 };
 use uuid::Uuid;
 

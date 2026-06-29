@@ -78,7 +78,9 @@ impl McpToolHost {
         let pg = proxima_storage_pg::PgStorage::connect(database_url).await?;
         pg.run_migrations().await?;
         let frozen = registry.freeze();
-        let engine = Arc::new(Engine::new(frozen.clone()).with_storage(Arc::new(pg.clone())));
+        let engine = Arc::new(
+            Engine::new(frozen.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
+        );
         Ok(Self::from_pool(pg.pool().clone(), owner, Arc::new(frozen)).with_engine(engine))
     }
 

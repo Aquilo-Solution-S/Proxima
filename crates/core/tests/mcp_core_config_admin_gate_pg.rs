@@ -11,7 +11,7 @@ use proxima_core::mcp::core_tools::wake::{CoreWakeArgs, CoreWakeOutput, CoreWake
 use proxima_core::mcp::core_tools::wake_entry_input::WakeEntryDraftInput;
 use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::personality::{InstantiatePersonalityRequest, SetWakeEntriesRequest};
-use proxima_core::storage::Storage;
+use proxima_core::storage_ports::*;
 use proxima_core::{
     Engine, FlavorRegistry, GroupId, Owner, OwnerRef, PersonalityInstanceId, Relation, Role,
     UserId, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
@@ -64,7 +64,8 @@ fn test_owner() -> Owner {
 
 fn ctx(owner: &Owner, pg: &proxima_storage_pg::PgStorage, authz: AuthzContext) -> McpToolCtx {
     let registry = FlavorRegistry::default().freeze();
-    let engine = Engine::new(registry.clone()).with_storage(pg.clone().into_handle());
+    let engine =
+        Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports());
     McpToolCtx {
         owner: *owner,
         authz,

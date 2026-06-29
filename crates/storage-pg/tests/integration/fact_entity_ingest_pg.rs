@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
-use proxima_core::storage::Storage;
+use proxima_core::storage_ports::*;
 use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::{
     AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner,
@@ -405,8 +405,7 @@ async fn create_code_sidecars(pg: &PgStorage) -> Result<(), sqlx::Error> {
 }
 
 fn engine_for(pg: &PgStorage) -> Engine {
-    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    Engine::new(registry_for_test()).with_storage(storage)
+    Engine::new(registry_for_test()).with_storage_ports(Arc::new(pg.clone()).storage_ports())
 }
 
 fn draft_for<P: FactPayload>(owner: &Owner, payload_value: &Value) -> EventDraft {

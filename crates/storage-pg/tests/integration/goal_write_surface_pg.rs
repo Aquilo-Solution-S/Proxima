@@ -1,5 +1,6 @@
 //! Public typed `GoalWrite` surface for embedded product hosts.
 
+use proxima_core::storage_ports::*;
 use std::sync::Arc;
 
 use crate::common::{create_db, db_url, drop_db};
@@ -9,7 +10,7 @@ use proxima_core::error::ErrorCode;
 use proxima_core::verbs::goal_write::{GoalCreateRequest, GoalEvidenceRef, IdempotencyKey};
 use proxima_core::{
     AuthzContext, Engine, GoalPayload, GroupId, MemoryId, Owner, OwnerRef, PayloadKeyBuilder,
-    Relation, Role, Storage, UserId,
+    Relation, Role, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -137,7 +138,7 @@ async fn boot_registered(
     pg.run_migrations().await?;
     let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
     let target_self = insert_self(&pg, &owner).await?;
-    let engine = Engine::compose(Arc::new(pg.clone()), |registry| {
+    let engine = Engine::compose(Arc::new(pg.clone()).storage_ports(), |registry| {
         registry.add_goal_schema::<ProductInitialGoal>();
     });
     let authz = AuthzContext::for_subject_with_role(
@@ -333,7 +334,7 @@ async fn engine_goalwrite_rejects_unregistered_goal_schema() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let target_self = insert_self(&pg, &owner).await?;
-        let engine = Engine::compose(Arc::new(pg), |_registry| {});
+        let engine = Engine::compose(Arc::new(pg).storage_ports(), |_registry| {});
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
 
         let err = engine

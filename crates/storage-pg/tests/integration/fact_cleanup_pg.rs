@@ -1,3 +1,4 @@
+use proxima_core::storage_ports::*;
 use std::sync::Arc;
 
 use crate::common::{drop_db, fresh_pg, owner_fixture};
@@ -12,8 +13,7 @@ use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo}
 use proxima_core::{
     AuthPath, AuthzContext, CORE_MOTIVATED_BY_RELATION, ChangeEventKind, EntityKind, EntityRef,
     FactPayload, FlavorRegistry, GoalId, MemoryId, Owner, PayloadKeyBuilder, Relation, SchemaId,
-    SchemaVersion, SidecarPayload, SourceBatchId, SourceId, Storage, StorageError,
-    canonical_json_bytes,
+    SchemaVersion, SidecarPayload, SourceBatchId, SourceId, StorageError, canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemoryPayloadFuture};
 use proxima_storage_pg::verbs::event_ingest::{EventIngestSidecarFuture, PgFactSidecar};
@@ -174,8 +174,8 @@ async fn create_stateful_sidecar(pg: &PgStorage) -> Result<(), sqlx::Error> {
 }
 
 fn stateful_engine_for(pg: &PgStorage) -> Engine {
-    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    Engine::new(stateful_registry_for_test()).with_storage(storage)
+    Engine::new(stateful_registry_for_test())
+        .with_storage_ports(Arc::new(pg.clone()).storage_ports())
 }
 
 fn stateful_fact(entity_key: &str, body: &str) -> CleanupStatefulFactV1 {
@@ -261,8 +261,7 @@ async fn cleanup_due_facts_erases_fact_and_tombstones_direct_derivative()
     let owner = owner_fixture();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry).with_storage(storage);
+    let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
     let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
     let fact_id = ingest.memory_id.into_inner();
@@ -319,8 +318,7 @@ async fn cleanup_due_facts_tombstones_transitive_derivatives()
     let owner = owner_fixture();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry).with_storage(storage);
+    let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
     let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
     let fact_id = ingest.memory_id.into_inner();
@@ -363,8 +361,7 @@ async fn cleanup_due_facts_aggressively_tombstones_multi_support_derivative()
     let owner = owner_fixture();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry).with_storage(storage);
+    let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
     let due_fact = engine
         .event_ingest(&authz, fresh_draft_with_content_hash(owner, [1; 32]))
@@ -409,8 +406,7 @@ async fn cleanup_due_facts_garbage_collects_cited_objects_by_reference_count()
     let owner = owner_fixture();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry).with_storage(storage);
+    let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
     let first = engine.event_ingest(&authz, fresh_draft(owner)).await?;
     let second = engine.event_ingest(&authz, fresh_draft(owner)).await?;
@@ -449,8 +445,7 @@ async fn cleanup_due_facts_deletes_cited_object_sidecars_and_surfaces_s3_refs()
     let owner = owner_fixture();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_uploaded_blob_gc_test());
-    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry).with_storage(storage);
+    let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
     let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
     let fact_id = ingest.memory_id.into_inner();
@@ -486,8 +481,7 @@ async fn tombstone_fact_forgets_uncited_fact() -> Result<(), Box<dyn std::error:
     let owner = owner_fixture();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry).with_storage(storage);
+    let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
     let mut draft = fresh_draft(owner);
     draft.citation = None;
@@ -559,8 +553,7 @@ async fn tombstone_fact_keeps_shared_cited_object() -> Result<(), Box<dyn std::e
     let owner = owner_fixture();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_uploaded_blob_gc_test());
-    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry).with_storage(storage);
+    let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
     let first = engine.event_ingest(&authz, fresh_draft(owner)).await?;
     let second = engine.event_ingest(&authz, fresh_draft(owner)).await?;
@@ -609,8 +602,7 @@ async fn tombstone_fact_cascades_to_lineage_children() -> Result<(), Box<dyn std
     let owner = owner_fixture();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry).with_storage(storage);
+    let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
     let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
     let fact_id = ingest.memory_id.into_inner();
@@ -638,8 +630,7 @@ async fn tombstone_fact_is_idempotent() -> Result<(), Box<dyn std::error::Error>
     let owner = owner_fixture();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry).with_storage(storage);
+    let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
     let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
 
@@ -668,8 +659,7 @@ async fn tombstone_fact_drops_goal_evidence_edge() -> Result<(), Box<dyn std::er
     let owner = owner_fixture();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry).with_storage(storage);
+    let engine = Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
     let ingest = engine.event_ingest(&authz, fresh_draft(owner)).await?;
     let fact_id = ingest.memory_id.into_inner();

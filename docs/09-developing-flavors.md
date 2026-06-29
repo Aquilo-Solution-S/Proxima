@@ -16,7 +16,7 @@ Flavor = build-time vocabulary crate.
 | Migrations | One per flavor migrator, global SQLx version namespace |
 
 Core owns substrate invariants, entity rows, owner scope, registry freeze,
-storage traits, protocol verbs, wake runtime, Goal lifecycle, and core
+storage ports, protocol verbs, wake runtime, Goal lifecycle, and core
 tools (see 08).
 
 ## Layout

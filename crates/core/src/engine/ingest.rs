@@ -51,6 +51,8 @@ impl Engine {
         let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
         let outcome = self
             .storage
+            .ingest
+            .fact_ingest
             .ingest_event_atomic(authorized.draft(), embedding_model_id)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))?;
@@ -154,6 +156,8 @@ impl Engine {
         embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, ProtocolError> {
         self.storage()
+            .ingest
+            .fact_ingest
             .ingest_event_with_typed_sidecar(authorized, sidecar, embedding_model_id)
             .await
             .map_err(|err| ProtocolError::internal(err.to_string()))
@@ -171,6 +175,8 @@ impl Engine {
         embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, ProtocolError> {
         self.storage()
+            .ingest
+            .fact_ingest
             .ingest_fact_with_citation_and_typed_sidecar(authorized, sidecar, embedding_model_id)
             .await
             .map_err(|err| ProtocolError::internal(err.to_string()))
@@ -347,6 +353,8 @@ impl Engine {
     ) -> Result<EmbedStep, StorageError> {
         let Some(text) = self
             .storage
+            .ingest
+            .embedding_text
             .load_embedding_text(owner, entity_kind, memory_id)
             .await?
         else {
@@ -364,6 +372,8 @@ impl Engine {
             )));
         }
         self.storage
+            .ingest
+            .embedding_write
             .upsert_memory_embedding(
                 owner,
                 entity_kind,
@@ -394,6 +404,8 @@ impl Engine {
             .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
         let enqueued = self
             .storage
+            .ingest
+            .embedding_job
             .enqueue_missing_embedding_jobs(owner, client.model_id(), limit)
             .await?;
         usize::try_from(enqueued)
@@ -424,6 +436,8 @@ impl Engine {
         for _ in 0..limit {
             let Some(claim) = self
                 .storage
+                .ingest
+                .embedding_job
                 .claim_pending_embedding_jobs(client.model_id(), 1)
                 .await?
                 .into_iter()
@@ -437,11 +451,17 @@ impl Engine {
                 .await
             {
                 Ok(EmbedStep::Embedded | EmbedStep::NothingToEmbed) => {
-                    self.storage.complete_embedding_job(&claim).await?;
+                    self.storage
+                        .ingest
+                        .embedding_job
+                        .complete_embedding_job(&claim)
+                        .await?;
                 }
                 Err(err) => {
                     outcome.failed += 1;
                     self.storage
+                        .ingest
+                        .embedding_job
                         .fail_embedding_job(&claim, &err.to_string())
                         .await?;
                     break;
@@ -499,6 +519,8 @@ impl Engine {
             .await?;
         input.owner = *permit.owner();
         self.storage
+            .ingest
+            .operator_invocation_write
             .persist_mcp_call_atomic(&input)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
@@ -526,6 +548,8 @@ impl Engine {
             .await?;
         let outcome = self
             .storage
+            .ingest
+            .source_batch
             .close_batch(permit.owner(), source_batch_id)
             .await
             .map_err(|e| match e {
@@ -709,7 +733,7 @@ mod tests {
                 MemoryId::new(uuid::Uuid::now_v7()),
             )
             .await
-            .expect("NoopStorage returns no text without error");
+            .expect("RejectingStorage returns no text without error");
 
         assert_eq!(step, EmbedStep::NothingToEmbed);
     }

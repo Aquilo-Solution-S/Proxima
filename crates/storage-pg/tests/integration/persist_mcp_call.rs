@@ -1,9 +1,10 @@
 //! Integration tests for the `persist_mcp_call` verb.
 
+use proxima_core::OperatorInvocationWritePort;
+use proxima_core::Owner;
 use proxima_core::verbs::persist_mcp_call::{
     MCP_CALL_FACT_SCHEMA, MCP_CALL_IO_SCHEMA, McpCallLogInput,
 };
-use proxima_core::{Owner, Storage};
 use proxima_storage_pg::verbs::persist_mcp_call::persist_mcp_call_atomic;
 
 #[tokio::test]
@@ -230,7 +231,7 @@ async fn storage_trait_exposes_mcp_call_persist() {
     .await;
 
     let _ = crate::common::drop_db(&db_name).await;
-    result.expect("Storage trait exposes MCP call persist");
+    result.expect("storage port exposes MCP call persist");
 }
 
 fn sample_input(

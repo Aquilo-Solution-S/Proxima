@@ -1,6 +1,7 @@
 //! Auth-gated Fact ingest with typed inline citation sidecars.
 
 use crate::common::{drop_db, fresh_pg, owner_fixture};
+use proxima_core::CitationPort;
 use proxima_core::verbs::event_ingest::{
     EventDraft, InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
@@ -8,7 +9,7 @@ use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, Engine, FactPayload,
     FlavorRegistry, FlavorRegistryFrozen, GroupId, MemoryId, Owner, OwnerRef, PayloadKeyBuilder,
     PersonalityInstanceId, Relation, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-    Storage, StorageError, UserId, canonical_json_bytes,
+    StorageError, UserId, canonical_json_bytes,
 };
 use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgMemoryPayload, PgMemoryPayloadFuture,

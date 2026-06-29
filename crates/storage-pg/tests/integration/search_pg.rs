@@ -1,4 +1,5 @@
 use crate::common::{drop_db, fresh_pg, owner_fixture};
+use proxima_core::storage_ports::*;
 
 use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::query::{
@@ -9,7 +10,7 @@ use proxima_core::verbs::schema::{
 };
 use proxima_core::{
     MemoryId, Owner, OwnerRef, PersonalityInstanceId, SchemaId, SchemaVersion,
-    SearchProjectionColumnKind, SourceBatchId, SourceId, Storage, UserId,
+    SearchProjectionColumnKind, SourceBatchId, SourceId, UserId,
 };
 use uuid::Uuid;
 

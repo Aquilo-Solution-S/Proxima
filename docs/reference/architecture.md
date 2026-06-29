@@ -15,7 +15,7 @@ proxima facade (`crates/proxima`)
 core engine (`crates/core`)
         |
         +--> flavor bundle(s) (`flavors/*`)
-        +--> storage trait -> `crates/storage-pg` -> Postgres + pgvector
+        +--> storage ports -> `crates/storage-pg` -> Postgres + pgvector
         +--> optional embedding client (`crates/llm-openai-compat`)
         +--> optional cited blob service (`crates/blob-s3`)
 ```

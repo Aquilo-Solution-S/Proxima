@@ -1,5 +1,6 @@
 //! Auth-gated `EventIngest` plus caller-owned sidecar transaction tests.
 
+use proxima_core::storage_ports::*;
 use std::sync::Arc;
 
 use crate::common::{drop_db, fresh_pg, owner_fixture};
@@ -10,7 +11,7 @@ use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
     AuthPath, AuthzContext, Engine, ErrorCode, FactPayload, FlavorRegistryFrozen, GroupId, Owner,
     OwnerRef, PayloadKeyBuilder, Relation, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-    Storage, StorageError, UserId,
+    StorageError, UserId,
 };
 use proxima_storage_pg::verbs::event_ingest::{event_ingest_with_sidecar_atomic, ingest_fact};
 use uuid::Uuid;
@@ -135,8 +136,8 @@ async fn seed_group_membership(
 }
 
 fn engine_for(pg: &proxima_storage_pg::PgStorage) -> Engine {
-    let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    Engine::new(FlavorRegistryFrozen::with_schemas(schemas_for_test())).with_storage(storage)
+    Engine::new(FlavorRegistryFrozen::with_schemas(schemas_for_test()))
+        .with_storage_ports(Arc::new(pg.clone()).storage_ports())
 }
 
 async fn event_row_counts(

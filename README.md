@@ -82,7 +82,7 @@ Agent-specific setup and copy/paste prompts live in
 
 proxima-core is the Rust runtime framework core: the domainless graph contracts,
 build-time flavor registry, protocol verbs, wake/personality runtime, MCP tool
-substrate, and storage traits. Applications normally embed it through the
+substrate, and storage ports. Applications normally embed it through the
 `proxima` crate and add domains via flavor crates.
 
 The formal kernel is [`docs/lean/Causa`](docs/lean/Causa): the

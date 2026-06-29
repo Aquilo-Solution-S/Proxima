@@ -1,7 +1,7 @@
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 
 use proxima_core::relation::CORE_INSPIRES_RELATION;
-use proxima_core::storage::Storage;
+use proxima_core::storage_ports::*;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
     EdgeAuthorshipKind, EntityKind, FlavorRegistry, GoalId, GroupId, MemoryId, Owner, OwnerRef,

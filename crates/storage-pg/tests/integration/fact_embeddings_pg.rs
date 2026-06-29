@@ -1,14 +1,14 @@
 //! Fact render-text and embedding coverage. Compiled by default; live
 //! PG execution is left to the orchestrator.
 
+use proxima_core::storage_ports::*;
 use std::sync::Arc;
 
 use proxima_core::llm::{EMBEDDING_DIM, EMBEDDING_JOB_MAX_ATTEMPTS, EmbeddingClient, LlmError};
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::{
-    AuthPath, AuthzContext, EntityKind, FlavorRegistry, Owner, OwnerRef, SourceBatchId, Storage,
-    UserId,
+    AuthPath, AuthzContext, EntityKind, FlavorRegistry, Owner, OwnerRef, SourceBatchId, UserId,
 };
 use proxima_storage_pg::{
     EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
@@ -42,7 +42,8 @@ fn engine_for(
 ) -> proxima_core::Engine {
     let mut registry = FlavorRegistry::new();
     registry.add_fact_schema::<TestFactV1>();
-    let engine = proxima_core::Engine::new(registry.freeze()).with_storage(pg.into_handle());
+    let engine = proxima_core::Engine::new(registry.freeze())
+        .with_storage_ports(Arc::new(pg).storage_ports());
     if let Some(embed) = embed {
         engine.with_embed(embed)
     } else {

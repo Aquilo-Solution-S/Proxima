@@ -1,5 +1,6 @@
 use crate::common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::storage::{Storage, StorageError};
+use proxima_core::storage::StorageError;
+use proxima_core::storage_ports::*;
 use proxima_core::{
     AgentDerivationV1, EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerRef,
     PersonalityInstanceId, SchemaId, SchemaVersion, SidecarPayload, UserId,

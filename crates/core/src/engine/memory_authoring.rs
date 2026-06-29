@@ -80,6 +80,8 @@ impl Engine {
         if let Some(prior) = req.supersedes {
             let prior_home = self
                 .storage()
+                .memory_authoring
+                .owner_access_read
                 .home_owner(EntityId::Memory(prior))
                 .await
                 .map_err(|err| ProtocolError::internal(err.to_string()))?;
@@ -130,6 +132,8 @@ impl Engine {
             Vec::new()
         } else if let Some(relation) = relation {
             self.storage()
+                .memory_authoring
+                .memory_authoring
                 .load_memory_edge_ids(&owner, relation, outcome.memory_id, &target_ids)
                 .await
                 .map_err(|err| ProtocolError::internal(err.to_string()))?
@@ -190,6 +194,8 @@ impl Engine {
             sidecar_payload: req.sidecar_payload,
         };
         self.storage()
+            .memory_authoring
+            .memory_authoring
             .append_memory_edge(&edge)
             .await
             .map_err(|err| ProtocolError::internal(err.to_string()))
@@ -285,7 +291,11 @@ impl Engine {
             embedding_model_id: embedding_model_id.as_deref(),
             edges: &edges,
         };
-        self.storage().author_derived(&storage_req).await
+        self.storage()
+            .memory_authoring
+            .memory_authoring
+            .author_derived(&storage_req)
+            .await
     }
 
     async fn validated_author_derived_edges<'a>(
@@ -303,6 +313,8 @@ impl Engine {
             } else {
                 let source_owner = self
                     .storage()
+                    .memory_authoring
+                    .owner_access_read
                     .home_owner(EntityId::Memory(edge.source_memory_id))
                     .await
                     .map_err(|err| ProtocolError::internal(err.to_string()))?
@@ -360,6 +372,8 @@ impl Engine {
         }
         let rows = self
             .storage()
+            .memory_authoring
+            .memory_authoring
             .load_memory_kinds(owner, memory_ids)
             .await
             .map_err(|err| ProtocolError::internal(err.to_string()))?;

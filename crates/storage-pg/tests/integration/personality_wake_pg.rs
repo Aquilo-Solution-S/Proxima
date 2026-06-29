@@ -13,7 +13,7 @@ use proxima_core::personality::{
 use proxima_core::relation::{
     CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, CORE_SUPERSEDES_RELATION,
 };
-use proxima_core::storage::Storage;
+use proxima_core::storage_ports::*;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };

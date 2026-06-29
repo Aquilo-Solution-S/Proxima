@@ -5,7 +5,7 @@ use tokio::sync::RwLock;
 
 use super::{EmbeddingClientReloader, Engine, EngineMcpListener};
 use crate::llm::{AnthropicClient, EmbeddingClient};
-use crate::storage::{NoopStorage, StorageHandle};
+use crate::storage_ports::{EngineStoragePorts, StoragePorts};
 use crate::verbs::schema::FlavorRegistryFrozen;
 
 const DEFAULT_MCP_LISTEN_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
@@ -15,7 +15,7 @@ impl Engine {
     pub fn new(registry: FlavorRegistryFrozen) -> Self {
         Self {
             registry,
-            storage: Arc::new(NoopStorage),
+            storage: EngineStoragePorts::from(StoragePorts::rejecting()),
             anthropic: None,
             embed: Arc::new(RwLock::new(None)),
             embedding_reloader: None,
@@ -35,12 +35,12 @@ impl Engine {
     /// per-flavor migrators against its pool before composing.
     #[must_use]
     pub fn compose(
-        storage: StorageHandle,
+        storage: StoragePorts,
         register: impl FnOnce(&mut crate::FlavorRegistry),
     ) -> Self {
         let mut registry = crate::FlavorRegistry::new();
         register(&mut registry);
-        Self::new(registry.freeze()).with_storage(storage)
+        Self::new(registry.freeze()).with_storage_ports(storage)
     }
 
     /// Get a reference to the schema registry.
@@ -50,8 +50,8 @@ impl Engine {
     }
 
     #[must_use]
-    pub fn with_storage(mut self, storage: StorageHandle) -> Self {
-        self.storage = storage;
+    pub fn with_storage_ports(mut self, storage: StoragePorts) -> Self {
+        self.storage = EngineStoragePorts::from(storage);
         self
     }
 
@@ -93,14 +93,12 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::Engine;
-    use crate::storage::NoopStorage;
+    use crate::StoragePorts;
 
     #[test]
     fn compose_assembles_engine_over_registry_closure() {
-        let engine = Engine::compose(Arc::new(NoopStorage), |_registry| {});
+        let engine = Engine::compose(StoragePorts::rejecting(), |_registry| {});
         assert!(engine.mcp_url().is_none());
         assert!(engine.embed_client().is_none());
     }

@@ -1,7 +1,10 @@
+#![allow(dead_code)]
+
+use proxima_core::FactIngestPort;
+
 // Each integration-test binary independently includes this module via
 // `mod common;`. Items unused by a particular binary would otherwise trip
 // `dead_code` even though another binary uses them.
-#![allow(dead_code)]
 
 pub mod personality;
 
@@ -12,7 +15,7 @@ pub use proxima_core::test_fixtures::owner_fixture;
 use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::{
     EdgeId, EntityKind, MemoryId, Owner, RelationClass, SchemaId, SchemaVersion, SourceBatchId,
-    SourceId, Storage,
+    SourceId,
 };
 #[allow(unused_imports)]
 pub use proxima_pg_testkit::{

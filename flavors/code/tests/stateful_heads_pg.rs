@@ -18,7 +18,6 @@ mod common;
 use common::migrated_db;
 use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
 use proxima_core::engine::Engine;
-use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
@@ -173,10 +172,10 @@ async fn heads_only_returns_latest_per_natural_key() {
     let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
         let (_user, owner) = make_owner();
 
-        let engine = Engine::new(registry_for_test()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage_ports(storage);
 
         let repo_id = Uuid::now_v7();
 
@@ -276,10 +275,10 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
     let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
         let (_user, owner) = make_owner();
 
-        let engine = Engine::new(registry_for_test()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage_ports(storage);
 
         // Two distinct commit Facts.
         for payload in [b"c1" as &[u8], b"c2"] {
@@ -336,10 +335,10 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
     let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
         let user = UserId::new(Uuid::now_v7());
         let owner: Owner = OwnerRef::Personal(user);
-        let engine = Engine::new(registry_for_test()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage_ports(storage);
         let repo_id = Uuid::now_v7();
 
         let first_memory = seed_file_revision_state(
@@ -414,9 +413,9 @@ async fn owner_snapshot_heads_only_folds_stateful_fact_schemas() {
     let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
         let (_user, owner) = make_owner();
-        let engine = Engine::new(registry_for_test()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage_ports(storage);
         let repo_id = Uuid::now_v7();
 
         let a_v1 = seed_file_revision_state(
@@ -468,11 +467,11 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
     let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
         let (_user, owner) = make_owner();
         let authz =
             proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
-        let engine = Engine::new(registry_for_test()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage_ports(storage);
         let repo_id = Uuid::now_v7();
 
         let present = seed_file_revision_state(
@@ -563,9 +562,9 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
     let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
         let (_user, owner) = make_owner();
-        let engine = Engine::new(registry_for_test()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage_ports(storage);
         let repo_id = Uuid::now_v7();
         let active = seed_file_revision_state(
             pg.pool(),
@@ -623,9 +622,9 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
     let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let storage = Arc::new(pg.clone()).storage_ports();
         let (_user, owner) = make_owner();
-        let engine = Engine::new(registry_for_test()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage_ports(storage);
         let repo_id = Uuid::now_v7();
         let active = seed_file_revision_state(
             pg.pool(),

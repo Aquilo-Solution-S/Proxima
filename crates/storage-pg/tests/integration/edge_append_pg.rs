@@ -4,7 +4,6 @@ use crate::common::{drop_db, fresh_pg};
 use proxima_core::engine::{
     AuthorDerivedAuthorizedOutcome, AuthorDerivedEdgeInput, AuthorDerivedRequestInput, Engine,
 };
-use proxima_core::storage::Storage;
 use proxima_core::{
     AbstractionPayload, AgentDerivationV1, AgentNoteV1, AuthPath, AuthzContext,
     CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind, ErrorCode, FlavorRegistry, GroupId,
@@ -21,8 +20,8 @@ async fn cross_owner_derived_edge_requires_source_write_and_target_read()
     let (pg, db_name) = fresh_pg().await;
 
     let result = async {
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-        let engine = Engine::new(FlavorRegistry::new().freeze()).with_storage(storage);
+        let engine = Engine::new(FlavorRegistry::new().freeze())
+            .with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
         let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let no_read = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
