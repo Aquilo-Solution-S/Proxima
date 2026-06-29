@@ -151,9 +151,8 @@ pub async fn persist_mcp_call_in_tx(
     sqlx::query(
         r"INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version,
-             receipt_id, citation_mapping_id, personality_instance_id)
-         VALUES ($1, $2, $3, $4, 1, $5, $6,
-                 '00000000-0000-0000-0000-000000000000'::uuid)",
+             receipt_id, citation_mapping_id)
+         VALUES ($1, $2, $3, $4, 1, $5, $6)",
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -209,10 +208,8 @@ pub async fn persist_mcp_call_in_tx(
         r"INSERT INTO proxima_core.change_event
             (seq, owner_kind, owner_id,
              kind, entity_kind,
-             entity_memory_id, entity_schema_id, entity_schema_version,
-             entity_personality_instance_id)
-         VALUES ($1, $2, $3, 'EntityAppend', 'Fact', $4, $5, 1,
-                 '00000000-0000-0000-0000-000000000000'::uuid)",
+             entity_memory_id, entity_schema_id, entity_schema_version)
+         VALUES ($1, $2, $3, 'EntityAppend', 'Fact', $4, $5, 1)",
     )
     .bind(change_seq)
     .bind(owner_kind)

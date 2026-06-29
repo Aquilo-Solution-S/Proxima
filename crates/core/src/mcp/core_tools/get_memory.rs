@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::GetMemoryReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::personality::PersonalityInstanceId;
 use crate::{MemoryHandleClass, MemoryId};
 
 use super::memory::search::{NeighborEdge, neighbor_edges_from_rows};
@@ -30,10 +29,7 @@ pub struct GetMemoryOutput {
     pub kind: String,
     pub schema_id: String,
     pub schema_version: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub authoring_personality_instance_id: Option<String>,
     pub text: Option<String>,
-    pub wake_chain_depth: u16,
     pub payload: serde_json::Value,
     pub title: Option<String>,
     pub body: Option<String>,
@@ -59,7 +55,6 @@ pub async fn get_memory(
             &ctx.authz,
             &GetMemoryReadRequest {
                 memory_id,
-                reader_personality_instance_id: None,
                 include_neighbor_edges: args.expand_neighbors,
             },
         )
@@ -88,12 +83,7 @@ pub async fn get_memory(
         kind: snapshot.kind,
         schema_id: snapshot.schema_id.as_str().to_string(),
         schema_version: snapshot.schema_version.into_inner(),
-        authoring_personality_instance_id: format_authoring_personality(
-            &ctx,
-            snapshot.authoring_personality_instance_id,
-        ),
         text: snapshot.text,
-        wake_chain_depth: snapshot.wake_chain_depth.into_inner(),
         payload,
         title,
         body,
@@ -129,13 +119,6 @@ pub(super) fn snapshot_payload_value(
 pub(super) fn memory_class(kind: &str) -> Result<MemoryHandleClass, McpToolError> {
     MemoryHandleClass::from_memory_kind(kind)
         .ok_or_else(|| McpToolError::Other(format!("unknown memory kind: {kind}")))
-}
-
-pub(super) fn format_authoring_personality(
-    ctx: &McpToolCtx,
-    instance_id: Option<PersonalityInstanceId>,
-) -> Option<String> {
-    instance_id.map(|id| ctx.format_personality(id))
 }
 
 pub(super) fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {

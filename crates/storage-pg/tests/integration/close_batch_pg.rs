@@ -56,7 +56,6 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
 fn fresh_draft(_owner: Owner, source_batch_id: SourceBatchId) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
-        author_personality_instance_id: None,
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
         payload: format!("payload-{}", Uuid::now_v7()).into_bytes(),

@@ -16,7 +16,7 @@ operational RPCs.
 | Surface | Status | Contract |
 |---|---|---|
 | graph verbs | current | cognitive graph reads/writes/events |
-| operational/config RPCs | current | runtime personality config |
+| operational/config RPCs | current | deployment profiles and auth surfaces |
 | compliance admin operations | design intent | compliance primitives in [13](13-compliance.md), admin surface deferred |
 | operators / wake / tools / LLM calls | internal | clients read committed graph effects from the `change_event` pull log |
 
@@ -26,7 +26,7 @@ No runtime schema/source/tool/flavor registration surface exists.
 
 Agent long-term memory is core substrate. MCP tools are thin callers of
 Engine verbs; MCP resources expose read-only graph and registry views.
-Storage stays behind the Engine. The substrate surface is 11 tools + 7
+Storage stays behind the Engine. The substrate surface is 9 tools + 7
 resources; `proxima://tools` returns the live tool catalog only, and
 resources are discovered through MCP `resources/list` and
 `resources/templates/list`.
@@ -45,8 +45,6 @@ Canonical substrate tools:
 | `core_memory_spaces` | list server-issued memory-space keys and the per-space `search/read/write/publish/admin` actions available to the caller |
 | `core_publish_memory` | copy/re-ingest a core AgentNote Fact from one authorized owner-space to another; v1 never mutates Owner and never creates cross-owner edges |
 | `core_goal` | goal action dispatcher: `set`, `transition`, `modify`, `mark_achieved`, `decompose` |
-| `core_wake` | wake-config action dispatcher: `add`, `update`, `remove`, `set`, `list` |
-| `core_personality` | personality action dispatcher: `instantiate`, `tombstone`, `set_owner_role_scope`, `list`, `get`, `list_owner_role_scope` |
 | `core_fact` | Fact action dispatcher: `citation_of_fact`, `citation_of_entity_head`, `facts_citing_object`, `tombstone` |
 
 Graph search is unified into `core_search_memories`; there is no
@@ -128,7 +126,7 @@ Owner-scoped snapshot read of memories, goals, and edges.
 | schema id | optional |
 | supersession | heads-only or include superseded |
 | tombstones | present-only or include tombstoned |
-| personality roots | include/exclude inactive root Perspectives |
+| Goal/Perspective selectors | explicit ids; selectors never authorize by themselves |
 | pagination | `limit`; cursor pagination deferred |
 | payloads | optional typed payload projections; identity hydration by memory/goal/edge ids |
 | stateful Facts | heads by registered natural key; tombstone heads suppress prior present rows |
@@ -178,7 +176,7 @@ let outcome = engine
         &authz,
         GoalCreateRequest::product(
             owner,
-            target_self_perspective_id,
+            target_perspective_id,
             IdempotencyKey::new("product:onboarding:initial-goal:1")?,
             "Practice goal",
             "Practice every weekday.",
@@ -189,7 +187,7 @@ let outcome = engine
 ```
 
 Current create semantics assign every new Active Goal to an explicit
-Self Perspective by writing `Goal --core/inspires--> Perspective`.
+Perspective by writing `Goal --core/inspires--> Perspective`.
 Unassigned owner-only Goal rows are not part of the public helper.
 
 ### FactIngest
@@ -279,25 +277,11 @@ Current RPCs outside the five graph verbs:
 
 | Family | RPCs | Contract |
 |---|---|---|
-| personality lifecycle | `core_personality` actions: `instantiate`, `tombstone`, `set_owner_role_scope`, `list`, `get`, `list_owner_role_scope`; `core_wake` actions: `add`, `update`, `remove`, `set`, `list` | mutate runtime personality config and wake entries; not graph verbs |
+| deployment profiles | environment-derived `ToolScope` | narrows advertised/callable MCP tools and resources; never grants graph authority |
 
-`core_personality` action `instantiate` writes the root self-Perspective and commits
-one Perspective `change_event` row. Other personality config mutations
-do not emit cognitive `change_event`s; personality list UIs refresh
-with `core_personality` action `list`, not by polling the event log.
-
-### Personality Lifecycle
-
-| Operation | Contract |
-|---|---|
-| instantiate | creates a runtime personality instance and root self-Perspective |
-| set wake entries | replaces wake-entry config for one personality instance |
-| list | returns active instances by default; tombstoned rows opt-in |
-| tombstone | removes instance from default listings and dispatcher selection |
-
-`core_personality` action `tombstone` is idempotent for an existing instance.
-Operations against missing or tombstoned rows return `NotFound` where
-the UI must distinguish stale state from backend failure.
+Goal wake configuration is part of `GoalWrite`/Goal storage, not a separate
+runtime config entity. Self is queried from authorized active Goal heads and
+Perspective rows; no materialized Self row authorizes access.
 
 ## Compliance Admin Surface
 
@@ -408,7 +392,6 @@ Current contract:
 - `change-log--pull-only`
 - `consistency--strong-write---log`
 - `operational--config-rpcs`
-- `personality-lifecycle`
 - `compliance-admin-surface`
 - `auth-model`
 - `error-envelope`

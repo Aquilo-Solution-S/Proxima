@@ -9,7 +9,7 @@ use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
 };
 use proxima_core::{
-    FactReceiptDraft, MemoryId, Owner, OwnerRef, PersonalityInstanceId, SchemaId, SchemaVersion,
+    FactReceiptDraft, MemoryId, Owner, OwnerRef, SchemaId, SchemaVersion,
     SearchProjectionColumnKind, SourceBatchId, SourceId, UserId,
 };
 use uuid::Uuid;
@@ -45,7 +45,6 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
                 order: SearchOrder::Relevance,
                 query_embedding: Some(padded_embedding([1.0, 0.0, 0.0])),
                 embedding_model_id: Some("test-embed".into()),
-                reader_personality_instance_id: None,
             },
             &[],
         )
@@ -57,71 +56,6 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
     );
     assert!(rows.iter().any(|row| row.memory_id.into_inner() == far));
     assert!(!rows.iter().any(|row| row.memory_id.into_inner() == other));
-
-    drop(pg);
-    drop_db(&db_name).await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn search_reader_personality_filter_uses_same_personality_without_deleted_scope_table()
--> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
-    pg.run_migrations().await?;
-
-    let owner = owner_fixture();
-    let reader = Uuid::now_v7();
-    let other = Uuid::now_v7();
-    let visible = insert_text_memory(
-        &pg,
-        &owner,
-        "reader-visible abstraction unique needle",
-        Some(reader),
-    )
-    .await?;
-    let hidden = insert_text_memory(
-        &pg,
-        &owner,
-        "reader-hidden abstraction unique needle",
-        Some(other),
-    )
-    .await?;
-    let rows = pg
-        .search_memories(
-            &MemorySearchRequest {
-                principal: owner,
-                read_owners: vec![owner],
-                query: "unique needle".into(),
-                mode: SearchMode::Lexical,
-                supersession: SupersessionStatus::IncludeSuperseded,
-                limit: 10,
-                kind: None,
-                schema_id: None,
-                tags: Vec::new(),
-                tag_match: TagMatch::Any,
-                since: None,
-                until: None,
-                order: SearchOrder::Relevance,
-                query_embedding: None,
-                embedding_model_id: None,
-                reader_personality_instance_id: Some(PersonalityInstanceId::new(reader)),
-            },
-            &[],
-        )
-        .await?;
-    let ids = rows
-        .iter()
-        .map(|row| row.memory_id.into_inner())
-        .collect::<Vec<_>>();
-
-    assert!(
-        ids.contains(&visible),
-        "same-personality memory must be visible: {ids:#?}"
-    );
-    assert!(
-        !ids.contains(&hidden),
-        "other-personality memory must be hidden: {ids:#?}"
-    );
 
     drop(pg);
     drop_db(&db_name).await?;
@@ -178,7 +112,6 @@ async fn search_heads_only_ignores_cross_owner_supersedes_successor()
                 order: SearchOrder::Relevance,
                 query_embedding: None,
                 embedding_model_id: None,
-                reader_personality_instance_id: None,
             },
             &[],
         )
@@ -331,86 +264,6 @@ async fn lexical_search_ignores_unprojected_code_chunk_text()
 }
 
 #[tokio::test]
-async fn search_projects_authoring_personality_and_nil_as_none()
--> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
-    pg.run_migrations().await?;
-
-    let owner = owner_fixture();
-    let author = PersonalityInstanceId::new(Uuid::now_v7());
-    let authored = insert_text_memory(
-        &pg,
-        &owner,
-        "authored attribution needle",
-        Some(author.into_inner()),
-    )
-    .await?;
-    let nil_authored = insert_text_memory(&pg, &owner, "nil attribution needle", None).await?;
-
-    let authored_rows = pg
-        .search_memories(
-            &MemorySearchRequest {
-                principal: owner,
-                read_owners: vec![owner],
-                query: "authored attribution".into(),
-                mode: SearchMode::Lexical,
-                supersession: SupersessionStatus::HeadsOnly,
-                limit: 10,
-                kind: Some(EntityKind::Abstraction),
-                schema_id: Some(SchemaId::new("test/search-attribution-v1".into())),
-                tags: Vec::new(),
-                tag_match: TagMatch::Any,
-                since: None,
-                until: None,
-                order: SearchOrder::Relevance,
-                query_embedding: None,
-                embedding_model_id: None,
-                reader_personality_instance_id: None,
-            },
-            &[],
-        )
-        .await?;
-    let authored_row = authored_rows
-        .iter()
-        .find(|row| row.memory_id.into_inner() == authored)
-        .expect("authored row");
-    assert_eq!(authored_row.authoring_personality_instance_id, Some(author));
-
-    let nil_rows = pg
-        .search_memories(
-            &MemorySearchRequest {
-                principal: owner,
-                read_owners: vec![owner],
-                query: "nil attribution".into(),
-                mode: SearchMode::Lexical,
-                supersession: SupersessionStatus::HeadsOnly,
-                limit: 10,
-                kind: Some(EntityKind::Abstraction),
-                schema_id: Some(SchemaId::new("test/search-attribution-v1".into())),
-                tags: Vec::new(),
-                tag_match: TagMatch::Any,
-                since: None,
-                until: None,
-                order: SearchOrder::Relevance,
-                query_embedding: None,
-                embedding_model_id: None,
-                reader_personality_instance_id: None,
-            },
-            &[],
-        )
-        .await?;
-    let nil_row = nil_rows
-        .iter()
-        .find(|row| row.memory_id.into_inner() == nil_authored)
-        .expect("nil-author row");
-    assert_eq!(nil_row.authoring_personality_instance_id, None);
-
-    drop(pg);
-    drop_db(&db_name).await?;
-    Ok(())
-}
-
-#[tokio::test]
 async fn lexical_search_ignores_sidecar_without_projection()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
@@ -494,13 +347,7 @@ async fn search_filters_tags_across_modes_and_excludes_untagged()
         },
     )
     .await?;
-    let unprojected = insert_text_memory(
-        &pg,
-        &owner,
-        "tagged filter needle unprojected",
-        Some(Uuid::nil()),
-    )
-    .await?;
+    let unprojected = insert_text_memory(&pg, &owner, "tagged filter needle unprojected").await?;
     let projections = vec![tagged_abstraction_projection()];
 
     let mut any_req = tagged_search_request(&owner, "tagged filter", SearchMode::Lexical);
@@ -713,11 +560,9 @@ async fn insert_tagged_abstraction(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, created_at,
-             kind, text, operator_kind, model_id, prompt_version, personality_instance_id,
-             wake_chain_depth)
+             kind, text, operator_kind, model_id, prompt_version)
          VALUES ($1, $2, $3, 'proxima-test/tagged-abstraction-v1', 1,
-                 $4, 'Abstraction', $5, 'Wake', 'test-model', 'test-v1',
-                 '00000000-0000-0000-0000-000000000000'::uuid, 2)",
+                 $4, 'Abstraction', $5, 'Wake', 'test-model', 'test-v1')",
     )
     .bind(input.memory_id)
     .bind(owner_kind)
@@ -775,10 +620,9 @@ async fn insert_embedded_memory_with_vec(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+             operator_kind, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/search-abstraction-v1', 1,
-                 'Abstraction', $4, 'Wake', 'test-model', 'test-v1',
-                 '00000000-0000-0000-0000-000000000000'::uuid, 2)",
+                 'Abstraction', $4, 'Wake', 'test-model', 'test-v1')",
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -805,23 +649,20 @@ async fn insert_text_memory(
     pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,
     text: &str,
-    personality_instance_id: Option<Uuid>,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+             operator_kind, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/search-attribution-v1', 1,
-                 'Abstraction', $4, 'Wake', 'test-model', 'test-v1',
-                 COALESCE($5, '00000000-0000-0000-0000-000000000000'::uuid), 2)",
+                 'Abstraction', $4, 'Wake', 'test-model', 'test-v1')",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_id)
     .bind(text)
-    .bind(personality_instance_id)
     .execute(pg.pool())
     .await?;
     Ok(memory_id)
@@ -838,11 +679,9 @@ async fn insert_search_abstraction(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id,
-             wake_chain_depth, supersedes)
+             operator_kind, model_id, prompt_version, supersedes)
          VALUES ($1, $2, $3, 'test/search-abstraction-v1', 1,
-                 'Abstraction', $4, 'Wake', 'test-model', 'test-v1',
-                 '00000000-0000-0000-0000-000000000000'::uuid, 2, $5)",
+                 'Abstraction', $4, 'Wake', 'test-model', 'test-v1', $5)",
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -869,7 +708,6 @@ async fn ingest_fact_memory(
         .ingest_fact_atomic(
             owner,
             &FactWriteCommand {
-                author_personality_instance_id: None,
                 schema_id: SchemaId::new(schema_id.to_string()),
                 schema_version: SchemaVersion::new(1),
                 payload: payload.to_vec(),
@@ -915,7 +753,6 @@ fn lexical_request(owner: &Owner, query: &str) -> MemorySearchRequest {
         order: SearchOrder::Relevance,
         query_embedding: None,
         embedding_model_id: None,
-        reader_personality_instance_id: None,
     }
 }
 
@@ -936,7 +773,6 @@ fn semantic_request(owner: &Owner, query_embedding: Vec<f32>) -> MemorySearchReq
         order: SearchOrder::Relevance,
         query_embedding: Some(query_embedding),
         embedding_model_id: Some("test-embed".into()),
-        reader_personality_instance_id: None,
     }
 }
 
@@ -957,7 +793,6 @@ fn tagged_search_request(owner: &Owner, query: &str, mode: SearchMode) -> Memory
         order: SearchOrder::Relevance,
         query_embedding: None,
         embedding_model_id: None,
-        reader_personality_instance_id: None,
     }
 }
 

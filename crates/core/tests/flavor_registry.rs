@@ -1,58 +1,5 @@
 use proxima_core::flavor::FlavorRegistry;
 
-#[test]
-fn core_wake_update_patch_schema_is_object() {
-    fn contains_key(value: &serde_json::Value, key: &str) -> bool {
-        match value {
-            serde_json::Value::Object(map) => {
-                map.contains_key(key) || map.values().any(|v| contains_key(v, key))
-            }
-            serde_json::Value::Array(items) => items.iter().any(|v| contains_key(v, key)),
-            _ => false,
-        }
-    }
-    fn property_schema<'a>(
-        value: &'a serde_json::Value,
-        property: &str,
-    ) -> Option<&'a serde_json::Value> {
-        match value {
-            serde_json::Value::Object(map) => map
-                .get("properties")
-                .and_then(|properties| properties.get(property))
-                .or_else(|| map.values().find_map(|v| property_schema(v, property))),
-            serde_json::Value::Array(items) => {
-                items.iter().find_map(|v| property_schema(v, property))
-            }
-            _ => None,
-        }
-    }
-    let frozen = FlavorRegistry::default().freeze();
-    let schema = &frozen
-        .list_mcp_tools()
-        .iter()
-        .find(|tool| tool.name == "core_wake")
-        .expect("core_wake registered")
-        .args_schema;
-    assert!(
-        !contains_key(schema, "$defs"),
-        "core_wake schema must be fully inlined, no $defs: {schema:#}",
-    );
-    let patch = property_schema(schema, "patch").expect("patch property schema present");
-    assert_eq!(
-        patch.get("type").and_then(serde_json::Value::as_str),
-        Some("object"),
-        "patch schema should be exposed as an object, not a string or unresolved ref: {patch:#}",
-    );
-    assert!(
-        patch.get("$ref").is_none(),
-        "patch schema must be inline for MCP clients that do not resolve refs: {patch:#}",
-    );
-    assert!(
-        patch.pointer("/properties/probability_promille").is_some(),
-        "patch schema should expose WakeEntryPatch fields: {patch:#}",
-    );
-}
-
 /// Every registered MCP tool's argument schema must be a JSON object schema at
 /// the root. MCP clients reject `tools/list` if any `inputSchema` omits the
 /// top-level `type: object`, even when inner `oneOf` variants are object-shaped.
@@ -97,8 +44,6 @@ fn all_mcp_tool_arg_schemas_avoid_root_combinators() {
 
 const CORE_GOAL_ACTION_NAMES: &[&str] =
     &["set", "transition", "modify", "mark_achieved", "decompose"];
-const CORE_WAKE_ACTION_NAMES: &[&str] = &["add", "update", "remove", "set", "list"];
-const CORE_PERSONALITY_ACTION_NAMES: &[&str] = &["instantiate", "tombstone", "list", "get"];
 const CORE_FACT_ACTION_NAMES: &[&str] = &[
     "citation_of_fact",
     "citation_of_entity_head",
@@ -108,11 +53,28 @@ const CORE_FACT_ACTION_NAMES: &[&str] = &[
 const CORE_MEMBERSHIP_ACTION_NAMES: &[&str] = &["add_member", "remove_member", "list_members"];
 const DISPATCHER_TOOL_ACTIONS: &[(&str, &[&str])] = &[
     ("core_goal", CORE_GOAL_ACTION_NAMES),
-    ("core_wake", CORE_WAKE_ACTION_NAMES),
-    ("core_personality", CORE_PERSONALITY_ACTION_NAMES),
     ("core_fact", CORE_FACT_ACTION_NAMES),
     ("core_membership", CORE_MEMBERSHIP_ACTION_NAMES),
 ];
+
+#[test]
+fn pr6_retired_wake_and_personality_dispatchers_are_absent() {
+    let frozen = FlavorRegistry::default().freeze();
+    let names = frozen
+        .list_mcp_tools()
+        .iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+    for retired in [
+        format!("core_{}", "wake"),
+        format!("core_{}", "personality"),
+    ] {
+        assert!(
+            !names.contains(&retired.as_str()),
+            "retired PR6 dispatcher remains registered: {retired}",
+        );
+    }
+}
 
 #[test]
 fn dispatcher_tool_arg_schemas_expose_action_enum() {
@@ -308,13 +270,7 @@ fn action_arg_specs_match_schema_derived_action_fields() {
         }
     }
 
-    for expected in [
-        "core_goal",
-        "core_wake",
-        "core_personality",
-        "core_fact",
-        "core_membership",
-    ] {
+    for expected in ["core_goal", "core_fact", "core_membership"] {
         assert!(
             dispatchers_seen.contains(expected),
             "expected dispatcher {expected} to carry ACTION_ARG_SPECS; saw {dispatchers_seen:?}",

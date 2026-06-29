@@ -94,8 +94,6 @@ impl Default for FlavorRegistry {
             owner_resolver: None,
             authorization_hooks: Vec::new(),
         };
-        // Substrate-shipped Fact schema for MCP-CRUD audit.
-        registry.add_fact_schema::<crate::mcp::core_tools::PersonalityConfigChangedV1>();
         registry.add_cited_object_schema::<crate::citations::UploadedBlobPayload>();
         registry.add_fact_schema::<crate::verbs::persist_mcp_call::McpCallLoggedV1>();
         registry.add_cited_object_schema::<crate::verbs::persist_mcp_call::McpCallIoV1>();
@@ -444,7 +442,7 @@ impl FlavorRegistry {
 
     /// Register a substrate-shipped MCP tool. Asserts the name starts
     /// with `"core/"` (no flavor prefix). Used in `Default::default()`
-    /// to wire the personality-config-CRUD tools into every composite
+    /// to wire the substrate tools into every composite
     /// binary. Same registration path as `add_mcp_tool`, pinned to the
     /// `core` prefix.
     pub(crate) fn add_substrate_mcp_tool<T: McpTool>(&mut self) {
@@ -966,21 +964,7 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_includes_personality_config_changed_schema() {
-        let frozen = FlavorRegistry::new().freeze();
-        let info = frozen.lookup(
-            &crate::SchemaId::new("core/personality_config_changed_v1".into()),
-            crate::SchemaVersion::new(1),
-        );
-        assert!(
-            info.is_some(),
-            "schema must be registered in default registry"
-        );
-        assert_eq!(info.unwrap().kind, PayloadKind::Fact);
-    }
-
-    #[test]
-    fn default_registry_includes_all_11_substrate_mcp_tools() {
+    fn default_registry_includes_all_9_substrate_mcp_tools() {
         let frozen = FlavorRegistry::new().freeze();
         let names: std::collections::HashSet<_> =
             frozen.list_mcp_tools().iter().map(|d| d.name).collect();
@@ -992,8 +976,6 @@ mod tests {
             "core_derive",
             "core_link",
             "core_goal",
-            "core_wake",
-            "core_personality",
             "core_fact",
             "core_membership",
         ];
@@ -1004,7 +986,7 @@ mod tests {
             !names.contains("core/emit_budget_decision"),
             "retired tool name must not remain registered"
         );
-        assert_eq!(names.len(), 11, "exactly 11 substrate tools registered");
+        assert_eq!(names.len(), 9, "exactly 9 substrate tools registered");
         for desc in frozen.list_mcp_tools() {
             assert!(
                 matches!(desc.origin, McpToolOrigin::Substrate),

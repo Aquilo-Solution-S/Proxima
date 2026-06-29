@@ -111,13 +111,4 @@ pub struct ChangeEvent {
     pub seq: Uuid,
     pub owner: Owner,
     pub kind: ChangeEventKind,
-    /// `Some(...)` when an in-process personality authored this event;
-    /// `None` for external/event-source ingestions.
-    #[serde(default)]
-    pub authoring_personality_instance_id: Option<Uuid>,
-    /// Wake-chain depth at the time the row was authored. `0` for
-    /// external events; `max(provenance.depth) + 1` for personality
-    /// authoring (capped per `MAX_WAKE_CHAIN_DEPTH`).
-    #[serde(default)]
-    pub wake_chain_depth: u16,
 }

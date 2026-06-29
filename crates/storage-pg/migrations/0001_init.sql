@@ -118,6 +118,16 @@ CREATE TYPE proxima_core.goal_state AS ENUM (
     'Abandoned'
 );
 
+
+--
+-- Name: goal_wake_trigger_kind; Type: TYPE; Schema: proxima_core; Owner: -
+--
+
+CREATE TYPE proxima_core.goal_wake_trigger_kind AS ENUM (
+    'fact_schema',
+    'fact_memory'
+);
+
 --
 -- Name: task_priority; Type: TYPE; Schema: proxima_core; Owner: -
 --
@@ -164,16 +174,6 @@ CREATE TYPE proxima_core.membership_relation AS ENUM (
 );
 
 
---
--- Name: personality_status; Type: TYPE; Schema: proxima_core; Owner: -
---
-
-CREATE TYPE proxima_core.personality_status AS ENUM (
-    'active',
-    'needs_repair',
-    'tombstoned'
-);
-
 
 --
 -- Name: relation_class; Type: TYPE; Schema: proxima_core; Owner: -
@@ -188,35 +188,7 @@ CREATE TYPE proxima_core.relation_class AS ENUM (
 );
 
 
---
--- Name: wake_authored_by; Type: TYPE; Schema: proxima_core; Owner: -
---
 
-CREATE TYPE proxima_core.wake_authored_by AS ENUM (
-    'any',
-    'self',
-    'other'
-);
-
-
---
--- Name: wake_goal_scope; Type: TYPE; Schema: proxima_core; Owner: -
---
-
-CREATE TYPE proxima_core.wake_goal_scope AS ENUM (
-    'none',
-    'trigger_goal_assigned'
-);
-
-
---
--- Name: wake_trigger_kind; Type: TYPE; Schema: proxima_core; Owner: -
---
-
-CREATE TYPE proxima_core.wake_trigger_kind AS ENUM (
-    'on_memory',
-    'on_edge'
-);
 
 
 --
@@ -259,14 +231,16 @@ CREATE FUNCTION proxima_core.goals_pair_allowed(prior_state proxima_core.goal_st
     LANGUAGE sql IMMUTABLE
     AS $$
     SELECT (prior_state, next_state, authorship_kind) IN (
+        ('Active'::proxima_core.goal_state, 'Active'::proxima_core.goal_state, 'User'::proxima_core.goal_authorship_kind),
+        ('Active'::proxima_core.goal_state, 'Active'::proxima_core.goal_state, 'System'::proxima_core.goal_authorship_kind),
         ('Active'::proxima_core.goal_state, 'Paused'::proxima_core.goal_state, 'User'::proxima_core.goal_authorship_kind),
+        ('Active'::proxima_core.goal_state, 'Paused'::proxima_core.goal_state, 'System'::proxima_core.goal_authorship_kind),
         ('Active'::proxima_core.goal_state, 'Achieved'::proxima_core.goal_state, 'User'::proxima_core.goal_authorship_kind),
         ('Active'::proxima_core.goal_state, 'Achieved'::proxima_core.goal_state, 'System'::proxima_core.goal_authorship_kind),
         ('Active'::proxima_core.goal_state, 'Abandoned'::proxima_core.goal_state, 'User'::proxima_core.goal_authorship_kind),
+        ('Active'::proxima_core.goal_state, 'Abandoned'::proxima_core.goal_state, 'System'::proxima_core.goal_authorship_kind),
         ('Paused'::proxima_core.goal_state, 'Active'::proxima_core.goal_state, 'User'::proxima_core.goal_authorship_kind),
-        ('Paused'::proxima_core.goal_state, 'Achieved'::proxima_core.goal_state, 'User'::proxima_core.goal_authorship_kind),
-        ('Paused'::proxima_core.goal_state, 'Achieved'::proxima_core.goal_state, 'System'::proxima_core.goal_authorship_kind),
-        ('Paused'::proxima_core.goal_state, 'Abandoned'::proxima_core.goal_state, 'User'::proxima_core.goal_authorship_kind)
+        ('Paused'::proxima_core.goal_state, 'Active'::proxima_core.goal_state, 'System'::proxima_core.goal_authorship_kind)
     );
 $$;
 
@@ -282,9 +256,11 @@ DECLARE
     prior_state proxima_core.goal_state;
 BEGIN
     IF NEW.supersedes IS NULL THEN
-        IF NEW.state IN ('Active', 'Paused', 'Achieved', 'Abandoned')
-           AND NEW.authorship_kind NOT IN ('User', 'System') THEN
+        IF NEW.authorship_kind NOT IN ('User', 'System') THEN
             RAISE EXCEPTION 'goal: only User/System may seed state=%', NEW.state;
+        END IF;
+        IF NEW.state <> 'Active' THEN
+            RAISE EXCEPTION 'goal: root rows must be Active';
         END IF;
         RETURN NEW;
     END IF;
@@ -495,8 +471,6 @@ CREATE TABLE proxima_core.change_event (
     edge_target_memory_id uuid,
     edge_target_goal_id uuid,
     edge_target_fact_entity_id uuid,
-    entity_personality_instance_id uuid,
-    wake_chain_depth smallint DEFAULT 0 NOT NULL,
     CONSTRAINT change_event_endpoint_chk CHECK (
         CASE
             WHEN kind IN ('EdgeAppend', 'EdgeDelete') THEN
@@ -764,8 +738,7 @@ CREATE TABLE proxima_core.goals (
     schema_version integer NOT NULL,
     payload bytea NOT NULL,
     title text NOT NULL,
-    personality_instance_id uuid,
-    CONSTRAINT goals_authorship_shape_chk CHECK ((((authorship_kind = 'User'::proxima_core.goal_authorship_kind) AND (authorship_origin IS NULL) AND (authorship_operator_id IS NULL) AND (authorship_tool_id IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (personality_instance_id IS NULL)) OR ((authorship_kind = 'System'::proxima_core.goal_authorship_kind) AND (authorship_origin = 'Operator'::proxima_core.goal_authorship_origin) AND (authorship_operator_id IS NOT NULL) AND (operator_kind IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (personality_instance_id IS NOT NULL) AND (authorship_tool_id IS NULL)) OR ((authorship_kind = 'System'::proxima_core.goal_authorship_kind) AND (authorship_origin = 'Tool'::proxima_core.goal_authorship_origin) AND (authorship_tool_id IS NOT NULL) AND (authorship_operator_id IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (personality_instance_id IS NULL)) OR ((authorship_kind = 'External'::proxima_core.goal_authorship_kind) AND (authorship_origin IS NULL) AND (authorship_operator_id IS NULL) AND (authorship_tool_id IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (personality_instance_id IS NULL)))),
+    CONSTRAINT goals_authorship_shape_chk CHECK ((((authorship_kind = 'User'::proxima_core.goal_authorship_kind) AND (authorship_origin IS NULL) AND (authorship_operator_id IS NULL) AND (authorship_tool_id IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL)) OR ((authorship_kind = 'System'::proxima_core.goal_authorship_kind) AND (authorship_origin = 'Operator'::proxima_core.goal_authorship_origin) AND (authorship_operator_id IS NOT NULL) AND (operator_kind IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (authorship_tool_id IS NULL)) OR ((authorship_kind = 'System'::proxima_core.goal_authorship_kind) AND (authorship_origin = 'Tool'::proxima_core.goal_authorship_origin) AND (authorship_tool_id IS NOT NULL) AND (authorship_operator_id IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL)) OR ((authorship_kind = 'External'::proxima_core.goal_authorship_kind) AND (authorship_origin IS NULL) AND (authorship_operator_id IS NULL) AND (authorship_tool_id IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL)))),
     CONSTRAINT goals_schema_version_positive_chk CHECK ((schema_version > 0)),
     CONSTRAINT goals_payload_nonempty_chk CHECK ((octet_length(payload) > 0)),
     CONSTRAINT goals_request_id_nonempty CHECK ((length(btrim(request_id)) > 0)),
@@ -791,6 +764,32 @@ COMMENT ON CONSTRAINT goals_text_nonempty ON proxima_core.goals IS
 
 COMMENT ON CONSTRAINT goals_title_nonempty ON proxima_core.goals IS
   'Goal title is the compact display label for the Goal node and must be nonblank.';
+
+
+--
+-- Name: goal_wake_config; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.goal_wake_config (
+    goal_id uuid NOT NULL,
+    trigger_kind proxima_core.goal_wake_trigger_kind NOT NULL,
+    trigger_schema_id text,
+    trigger_schema_version integer,
+    trigger_memory_id uuid,
+    tool_ids text[] NOT NULL,
+    prompt text NOT NULL,
+    hard_memory_ids uuid[] NOT NULL,
+    CONSTRAINT goal_wake_config_trigger_shape_chk CHECK ((((trigger_kind = 'fact_schema'::proxima_core.goal_wake_trigger_kind) AND (trigger_schema_id IS NOT NULL) AND (trigger_schema_version IS NOT NULL) AND (trigger_memory_id IS NULL)) OR ((trigger_kind = 'fact_memory'::proxima_core.goal_wake_trigger_kind) AND (trigger_schema_id IS NULL) AND (trigger_schema_version IS NULL) AND (trigger_memory_id IS NOT NULL)))),
+    CONSTRAINT goal_wake_config_trigger_schema_version_positive_chk CHECK (((trigger_schema_version IS NULL) OR (trigger_schema_version > 0))),
+    CONSTRAINT goal_wake_config_prompt_nonempty_chk CHECK ((length(btrim(prompt)) > 0)),
+    CONSTRAINT goal_wake_config_tool_ids_nonempty_chk CHECK ((cardinality(tool_ids) > 0)),
+    CONSTRAINT goal_wake_config_tool_ids_no_null_chk CHECK ((array_position(tool_ids, NULL::text) IS NULL)),
+    CONSTRAINT goal_wake_config_hard_memory_ids_no_null_chk CHECK ((array_position(hard_memory_ids, NULL::uuid) IS NULL))
+);
+
+
+COMMENT ON TABLE proxima_core.goal_wake_config IS
+  'Goal-owned optional WakeConfig. One row per armed Goal; no independent wake identity, handle, owner, executor, or plugin table.';
 
 
 --
@@ -863,20 +862,6 @@ COMMENT ON TABLE proxima_core.task_goal_v1 IS
   'Typed sidecar for core/task-v1 Goal payloads. core/simple-text-v1 has no sidecar table.';
 
 
---
--- Name: master_token_personality; Type: TABLE; Schema: proxima_core; Owner: -
---
-
-CREATE TABLE proxima_core.master_token_personality (
-    master_token_id uuid NOT NULL,
-    owner_kind proxima_core.owner_ref_kind NOT NULL,
-    owner_id uuid,
-    personality_instance_id uuid NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT master_token_personality_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
-    CONSTRAINT master_token_personality_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
-);
-
 
 --
 -- Name: mcp_call_logged_v1; Type: TABLE; Schema: proxima_core; Owner: -
@@ -919,14 +904,11 @@ CREATE TABLE proxima_core.memories (
     prompt_version text,
     supersedes uuid,
     schema_version integer NOT NULL,
-    personality_instance_id uuid NOT NULL,
-    wake_chain_depth smallint DEFAULT 0 NOT NULL,
     tombstoned_at timestamp with time zone,
     CONSTRAINT memories_fact_entity_chk CHECK ((fact_entity_id IS NULL OR kind IS NULL)),
     CONSTRAINT memories_kind_values_chk CHECK (((kind IS NULL) OR (kind = ANY (ARRAY['Abstraction'::proxima_core.entity_kind, 'Perspective'::proxima_core.entity_kind])))),
     CONSTRAINT memories_schema_version_positive_chk CHECK ((schema_version > 0)),
     CONSTRAINT memories_variant_chk CHECK (((kind IS NULL AND operator_kind IS NULL AND model_id IS NULL AND prompt_version IS NULL AND supersedes IS NULL) OR ((kind IS NOT NULL) AND (text IS NOT NULL) AND (operator_kind IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (receipt_id IS NULL) AND (citation_mapping_id IS NULL)))),
-    CONSTRAINT memories_wake_chain_depth_chk CHECK ((wake_chain_depth >= 0)),
     CONSTRAINT memories_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
     CONSTRAINT memories_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
@@ -960,51 +942,6 @@ CREATE TABLE proxima_core.owner_fact_retention (
 );
 
 
---
--- Name: personality; Type: TABLE; Schema: proxima_core; Owner: -
---
-
-CREATE TABLE proxima_core.personality (
-    owner_kind proxima_core.owner_ref_kind NOT NULL,
-    owner_id uuid,
-    personality_instance_id uuid NOT NULL,
-    current_root_perspective_memory_id uuid NOT NULL,
-    max_wake_chain_depth integer DEFAULT 10 NOT NULL,
-    status proxima_core.personality_status DEFAULT 'active'::proxima_core.personality_status NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    tombstoned_at timestamp with time zone,
-    CONSTRAINT personality_depth_chk CHECK ((max_wake_chain_depth >= 0)),
-    CONSTRAINT personality_tombstoned_at_chk CHECK (((status = 'tombstoned'::proxima_core.personality_status) = (tombstoned_at IS NOT NULL))),
-    CONSTRAINT personality_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
-    CONSTRAINT personality_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
-);
-
-
---
--- Name: personality_wake_entries; Type: TABLE; Schema: proxima_core; Owner: -
---
-
-CREATE TABLE proxima_core.personality_wake_entries (
-    owner_kind proxima_core.owner_ref_kind NOT NULL,
-    owner_id uuid,
-    personality_instance_id uuid NOT NULL,
-    wake_entry_id uuid NOT NULL,
-    trigger_kind proxima_core.wake_trigger_kind NOT NULL,
-    trigger_id text NOT NULL,
-    label text NOT NULL,
-    enabled boolean DEFAULT true NOT NULL,
-    authored_by proxima_core.wake_authored_by DEFAULT 'any'::proxima_core.wake_authored_by NOT NULL,
-    probability_promille integer DEFAULT 1000 NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    tombstoned_at timestamp with time zone,
-    goal_scope proxima_core.wake_goal_scope DEFAULT 'none'::proxima_core.wake_goal_scope NOT NULL,
-    instructions text DEFAULT ''::text NOT NULL,
-    CONSTRAINT personality_wake_entries_probability_chk CHECK (((probability_promille >= 0) AND (probability_promille <= 1000))),
-    CONSTRAINT personality_wake_entries_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
-    CONSTRAINT personality_wake_entries_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
-);
 
 
 --
@@ -1022,23 +959,6 @@ CREATE TABLE proxima_core.source_batches (
     CONSTRAINT source_batches_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
-
---
--- Name: subject_personality; Type: TABLE; Schema: proxima_core; Owner: -
---
-
-CREATE TABLE proxima_core.subject_personality (
-    owner_kind proxima_core.owner_ref_kind NOT NULL,
-    owner_id uuid,
-    subject_owner_kind proxima_core.owner_ref_kind NOT NULL,
-    subject_owner_id uuid NOT NULL,
-    personality_instance_id uuid NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT subject_personality_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
-    CONSTRAINT subject_personality_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind)),
-    CONSTRAINT subject_personality_subject_owner_ref_shape_chk CHECK (((subject_owner_kind = 'world'::proxima_core.owner_ref_kind AND subject_owner_id IS NULL) OR (subject_owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND subject_owner_id IS NOT NULL))),
-    CONSTRAINT subject_personality_subject_world_not_write_owner_chk CHECK ((subject_owner_kind <> 'world'::proxima_core.owner_ref_kind))
-);
 
 
 --
@@ -1207,19 +1127,20 @@ ALTER TABLE ONLY proxima_core.goals
 
 
 --
+-- Name: goal_wake_config goal_wake_config_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.goal_wake_config
+    ADD CONSTRAINT goal_wake_config_pkey PRIMARY KEY (goal_id);
+
+
+--
 -- Name: task_goal_v1 task_goal_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
 ALTER TABLE ONLY proxima_core.task_goal_v1
     ADD CONSTRAINT task_goal_v1_pkey PRIMARY KEY (goal_id);
 
-
---
--- Name: master_token_personality master_token_personality_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.master_token_personality
-    ADD CONSTRAINT master_token_personality_pkey PRIMARY KEY (master_token_id, owner_kind, owner_id);
 
 
 --
@@ -1255,31 +1176,6 @@ ALTER TABLE ONLY proxima_core.owner_fact_retention
 
 
 --
--- Name: personality personality_instance_id_uq; Type: CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.personality
-    ADD CONSTRAINT personality_instance_id_uq UNIQUE (personality_instance_id);
-
-
---
--- Name: personality personality_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.personality
-    ADD CONSTRAINT personality_pkey PRIMARY KEY (owner_kind, owner_id, personality_instance_id);
-
-
---
--- Name: personality_wake_entries personality_wake_entries_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.personality_wake_entries
-    ADD CONSTRAINT personality_wake_entries_pkey PRIMARY KEY (owner_kind, owner_id, personality_instance_id, wake_entry_id);
-
-
-
---
 -- Name: source_batches source_batches_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
@@ -1294,13 +1190,6 @@ ALTER TABLE ONLY proxima_core.source_batches
 ALTER TABLE ONLY proxima_core.source_batches
     ADD CONSTRAINT source_batches_unique_per_source UNIQUE (source_id, owner_kind, owner_id, id);
 
-
---
--- Name: subject_personality subject_personality_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.subject_personality
-    ADD CONSTRAINT subject_personality_pkey PRIMARY KEY (subject_owner_kind, subject_owner_id, owner_kind, owner_id);
 
 
 --
@@ -1564,10 +1453,18 @@ CREATE UNIQUE INDEX goals_supersedes_unique ON proxima_core.goals USING btree (s
 
 
 --
--- Name: idx_master_token_personality_instance; Type: INDEX; Schema: proxima_core; Owner: -
+-- Name: idx_goal_wake_config_fact_schema; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
-CREATE UNIQUE INDEX idx_master_token_personality_instance ON proxima_core.master_token_personality USING btree (personality_instance_id);
+CREATE INDEX idx_goal_wake_config_fact_schema ON proxima_core.goal_wake_config USING btree (trigger_schema_id, trigger_schema_version) WHERE (trigger_kind = 'fact_schema'::proxima_core.goal_wake_trigger_kind);
+
+
+--
+-- Name: idx_goal_wake_config_fact_memory; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_goal_wake_config_fact_memory ON proxima_core.goal_wake_config USING btree (trigger_memory_id) WHERE (trigger_kind = 'fact_memory'::proxima_core.goal_wake_trigger_kind);
+
 
 
 --
@@ -1591,12 +1488,6 @@ CREATE INDEX idx_memories_fact_entity ON proxima_core.memories USING btree (fact
 CREATE INDEX idx_memories_owner_created ON proxima_core.memories USING btree (owner_kind, owner_id, created_at);
 
 
---
--- Name: idx_memories_personality_instance; Type: INDEX; Schema: proxima_core; Owner: -
---
-
-CREATE INDEX idx_memories_personality_instance ON proxima_core.memories USING btree (personality_instance_id);
-
 
 --
 -- Name: idx_memories_retention_due; Type: INDEX; Schema: proxima_core; Owner: -
@@ -1618,20 +1509,6 @@ CREATE UNIQUE INDEX idx_memories_supersedes_uq ON proxima_core.memories USING bt
 --
 
 CREATE INDEX idx_source_batches_owner ON proxima_core.source_batches USING btree (owner_kind, owner_id);
-
-
---
--- Name: personality_wake_entries_active_trigger_uq; Type: INDEX; Schema: proxima_core; Owner: -
---
-
-CREATE UNIQUE INDEX personality_wake_entries_active_trigger_uq ON proxima_core.personality_wake_entries USING btree (owner_kind, owner_id, personality_instance_id, trigger_kind, trigger_id) WHERE (tombstoned_at IS NULL);
-
-
---
--- Name: personality_wake_entries_trigger_idx; Type: INDEX; Schema: proxima_core; Owner: -
---
-
-CREATE INDEX personality_wake_entries_trigger_idx ON proxima_core.personality_wake_entries USING btree (trigger_kind, trigger_id) WHERE (enabled AND (tombstoned_at IS NULL));
 
 
 --
@@ -1843,19 +1720,28 @@ ALTER TABLE ONLY proxima_core.goals
 
 
 --
+-- Name: goal_wake_config goal_wake_config_goal_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.goal_wake_config
+    ADD CONSTRAINT goal_wake_config_goal_id_fkey FOREIGN KEY (goal_id) REFERENCES proxima_core.goals(goal_id) ON DELETE CASCADE;
+
+
+--
+-- Name: goal_wake_config goal_wake_config_trigger_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.goal_wake_config
+    ADD CONSTRAINT goal_wake_config_trigger_memory_id_fkey FOREIGN KEY (trigger_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
 -- Name: task_goal_v1 task_goal_v1_goal_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
 ALTER TABLE ONLY proxima_core.task_goal_v1
     ADD CONSTRAINT task_goal_v1_goal_id_fkey FOREIGN KEY (goal_id) REFERENCES proxima_core.goals(goal_id) ON DELETE CASCADE;
 
-
---
--- Name: master_token_personality master_token_personality_personality_instance_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.master_token_personality
-    ADD CONSTRAINT master_token_personality_personality_instance_id_fkey FOREIGN KEY (personality_instance_id) REFERENCES proxima_core.personality(personality_instance_id);
 
 
 --
@@ -1896,32 +1782,6 @@ ALTER TABLE ONLY proxima_core.memories
 
 ALTER TABLE ONLY proxima_core.memories
     ADD CONSTRAINT memories_supersedes_fkey FOREIGN KEY (supersedes) REFERENCES proxima_core.memories(memory_id);
-
-
---
--- Name: personality personality_current_root_perspective_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.personality
-    ADD CONSTRAINT personality_current_root_perspective_memory_id_fkey FOREIGN KEY (current_root_perspective_memory_id) REFERENCES proxima_core.memories(memory_id);
-
-
---
--- Name: personality_wake_entries personality_wake_entries_owner_kind_owner_princi_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.personality_wake_entries
-    ADD CONSTRAINT personality_wake_entries_owner_kind_owner_princi_fkey FOREIGN KEY (owner_kind, owner_id, personality_instance_id) REFERENCES proxima_core.personality(owner_kind, owner_id, personality_instance_id);
-
-
-
-
---
--- Name: subject_personality subject_personality_personality_instance_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.subject_personality
-    ADD CONSTRAINT subject_personality_personality_instance_id_fkey FOREIGN KEY (personality_instance_id) REFERENCES proxima_core.personality(personality_instance_id);
 
 
 CREATE TABLE proxima_core.agent_derivation_v1 (

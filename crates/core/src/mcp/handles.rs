@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use crate::{EdgeId, GoalId, MemoryId, PersonalityInstanceId};
+use crate::{EdgeId, GoalId, MemoryId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MemoryHandleClass {
@@ -48,8 +48,6 @@ pub enum PrefixedUuidClass {
     Perspective,
     Edge,
     Goal,
-    Personality,
-    WakeEntry,
 }
 
 impl PrefixedUuidClass {
@@ -61,8 +59,6 @@ impl PrefixedUuidClass {
             Self::Perspective => MemoryHandleClass::Perspective.prefix(),
             Self::Edge => 'E',
             Self::Goal => 'G',
-            Self::Personality => 'I',
-            Self::WakeEntry => 'W',
         }
     }
 }
@@ -75,8 +71,6 @@ impl std::fmt::Display for PrefixedUuidClass {
             Self::Perspective => write!(f, "Perspective"),
             Self::Edge => write!(f, "Edge"),
             Self::Goal => write!(f, "Goal"),
-            Self::Personality => write!(f, "Personality"),
-            Self::WakeEntry => write!(f, "WakeEntry"),
         }
     }
 }
@@ -167,8 +161,6 @@ pub enum EntityRef {
         kind: String,
         id: uuid::Uuid,
     },
-    Personality(PersonalityInstanceId),
-    WakeEntry(uuid::Uuid),
 }
 
 impl EntityRef {
@@ -179,8 +171,6 @@ impl EntityRef {
             EntityRef::Edge(_) => EntityKind::Edge,
             EntityRef::Goal(_) => EntityKind::Goal,
             EntityRef::FlavorObject { kind, .. } => EntityKind::FlavorObject { kind: kind.clone() },
-            EntityRef::Personality(_) => EntityKind::Personality,
-            EntityRef::WakeEntry(_) => EntityKind::WakeEntry,
         }
     }
 }
@@ -195,14 +185,12 @@ pub enum EntityKind {
     Edge,
     Goal,
     FlavorObject { kind: String },
-    Personality,
-    WakeEntry,
 }
 
 impl EntityKind {
-    /// Stable handle prefix for this kind (`F`, `A`, `P`, `E`, `G`, `I`, `W`).
-    /// Flavor objects use flavor-defined prefixes — `<flavor>` is a
-    /// placeholder for messages.
+    /// Stable handle prefix for this kind (`F`, `A`, `P`, `E`, `G`). Flavor
+    /// objects use flavor-defined prefixes — `<flavor>` is a placeholder for
+    /// messages.
     #[must_use]
     pub fn prefix(&self) -> &'static str {
         match self {
@@ -213,8 +201,6 @@ impl EntityKind {
             EntityKind::Edge => "E",
             EntityKind::Goal => "G",
             EntityKind::FlavorObject { .. } => "<flavor>",
-            EntityKind::Personality => "I",
-            EntityKind::WakeEntry => "W",
         }
     }
 }
@@ -227,8 +213,6 @@ impl std::fmt::Display for EntityKind {
             EntityKind::Edge => write!(f, "Edge"),
             EntityKind::Goal => write!(f, "Goal"),
             EntityKind::FlavorObject { kind } => write!(f, "FlavorObject({kind})"),
-            EntityKind::Personality => write!(f, "Personality"),
-            EntityKind::WakeEntry => write!(f, "WakeEntry"),
         }
     }
 }
@@ -292,8 +276,6 @@ struct HandleTableInner {
     edge_counter: u32,
     goal_counter: u32,
     flavor_counters: HashMap<char, u32>,
-    personality_counter: u32,
-    wake_entry_counter: u32,
     by_memory: HashMap<MemoryId, (MemoryHandleClass, Handle)>,
     by_entity: HashMap<EntityRef, Handle>,
     by_handle: HashMap<String, EntityRef>,
@@ -409,18 +391,6 @@ impl HandleTable {
             prefix,
             |inner| inner.flavor_counters.entry(prefix).or_insert(0),
         )
-    }
-
-    pub fn assign_personality(&self, id: PersonalityInstanceId) -> Handle {
-        self.assign(EntityRef::Personality(id), 'I', |inner| {
-            &mut inner.personality_counter
-        })
-    }
-
-    pub fn assign_wake_entry(&self, id: uuid::Uuid) -> Handle {
-        self.assign(EntityRef::WakeEntry(id), 'W', |inner| {
-            &mut inner.wake_entry_counter
-        })
     }
 
     fn assign(
@@ -588,40 +558,6 @@ impl HandleTable {
             }),
         }
     }
-
-    /// Resolve a handle to a personality instance id.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ResolveError::Unknown` for unassigned handles and
-    /// `ResolveError::WrongKind` when the handle names a non-personality entity.
-    pub fn resolve_personality(&self, raw: &str) -> Result<PersonalityInstanceId, ResolveError> {
-        match self.resolve_entity(raw)? {
-            EntityRef::Personality(id) => Ok(id),
-            other => Err(ResolveError::WrongKind {
-                input: raw.to_string(),
-                got: other.kind(),
-                expected: EntityKind::Personality,
-            }),
-        }
-    }
-
-    /// Resolve a handle to a wake entry id.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ResolveError::Unknown` for unassigned handles and
-    /// `ResolveError::WrongKind` when the handle names a non-wake-entry entity.
-    pub fn resolve_wake_entry(&self, raw: &str) -> Result<uuid::Uuid, ResolveError> {
-        match self.resolve_entity(raw)? {
-            EntityRef::WakeEntry(id) => Ok(id),
-            other => Err(ResolveError::WrongKind {
-                input: raw.to_string(),
-                got: other.kind(),
-                expected: EntityKind::WakeEntry,
-            }),
-        }
-    }
 }
 
 fn is_valid_handle_shape(raw: &str) -> bool {
@@ -691,9 +627,7 @@ mod tests {
             PrefixedUuidClass::Abstraction,
             PrefixedUuidClass::Perspective,
             PrefixedUuidClass::Goal,
-            PrefixedUuidClass::Personality,
             PrefixedUuidClass::Edge,
-            PrefixedUuidClass::WakeEntry,
         ] {
             let id = Uuid::now_v7();
             let raw = format_prefixed_uuid(id, class);
@@ -735,59 +669,6 @@ mod tests {
         let table = HandleTable::new();
         for raw in ["nope", "F", "Ffoo", "X1"] {
             let err = table.resolve_entity(raw).unwrap_err();
-            assert_eq!(
-                err,
-                ResolveError::Unknown {
-                    input: raw.to_string()
-                },
-                "input {raw}"
-            );
-        }
-    }
-
-    #[test]
-    fn personality_handles_use_i_prefix() {
-        let table = HandleTable::new();
-        let p1 = PersonalityInstanceId::new(uuid::Uuid::now_v7());
-        let p2 = PersonalityInstanceId::new(uuid::Uuid::now_v7());
-        assert_eq!(table.assign_personality(p1).as_str(), "I1");
-        assert_eq!(table.assign_personality(p2).as_str(), "I2");
-        assert_eq!(table.assign_personality(p1).as_str(), "I1", "idempotent");
-    }
-
-    #[test]
-    fn wake_entry_handles_use_w_prefix() {
-        let table = HandleTable::new();
-        let w1 = uuid::Uuid::now_v7();
-        let w2 = uuid::Uuid::now_v7();
-        assert_eq!(table.assign_wake_entry(w1).as_str(), "W1");
-        assert_eq!(table.assign_wake_entry(w2).as_str(), "W2");
-        assert_eq!(table.assign_wake_entry(w1).as_str(), "W1", "idempotent");
-    }
-
-    #[test]
-    fn resolve_personality_rejects_non_i_handle() {
-        let table = HandleTable::new();
-        let p = PersonalityInstanceId::new(uuid::Uuid::now_v7());
-        let _ = table.assign_personality(p);
-        let m = MemoryId::new(uuid::Uuid::now_v7());
-        let mh = table.assign_memory(m);
-        let err = table.resolve_personality(mh.as_str()).unwrap_err();
-        assert_eq!(
-            err,
-            ResolveError::WrongKind {
-                input: mh.as_str().to_string(),
-                got: EntityKind::Memory(MemoryHandleClass::Fact),
-                expected: EntityKind::Personality,
-            }
-        );
-    }
-
-    #[test]
-    fn malformed_personality_handle_rejected() {
-        let table = HandleTable::new();
-        for raw in ["Ifoo", "I", "i1"] {
-            let err = table.resolve_personality(raw).unwrap_err();
             assert_eq!(
                 err,
                 ResolveError::Unknown {

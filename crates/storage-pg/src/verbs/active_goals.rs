@@ -1,4 +1,4 @@
-use proxima_core::personality::ActiveGoalSummary;
+use proxima_core::read_models::ActiveGoalSummary;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{GoalId, MemoryId, OwnerRef, OwnerRefKind, StorageError};
 use sqlx::PgPool;

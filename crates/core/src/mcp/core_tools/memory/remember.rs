@@ -126,15 +126,12 @@ impl McpTool for RememberTool {
                 idempotency_key: args.idempotency_key,
             };
             let observed_at = time::OffsetDateTime::now_utc();
-            let mut draft = FactWriteCommand::from_payload(
+            let draft = FactWriteCommand::from_payload(
                 SOURCE_ID,
                 SourceBatchId::new(uuid::Uuid::now_v7()),
                 &payload,
                 observed_at,
             );
-            if let Some(author) = ctx.author.personality_instance_id {
-                draft = draft.author_personality(author);
-            }
 
             let engine = ctx
                 .engine()

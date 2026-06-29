@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::storage_ports::{
-    GoalCommandStoragePorts, GoalSupportReadPort, GoalWritePort, OwnerAccessReadPort,
-    QueryStoragePorts, ReadVerbStoragePorts,
+    GoalCommandStoragePorts, GoalWritePort, OwnerAccessReadPort, QueryStoragePorts,
+    ReadVerbStoragePorts,
 };
 use crate::{OwnerRef, StorageError};
 
@@ -95,9 +95,6 @@ impl GoalWritePort for GoalFake {
 }
 
 #[async_trait::async_trait]
-impl GoalSupportReadPort for GoalFake {}
-
-#[async_trait::async_trait]
 impl OwnerAccessReadPort for GoalFake {
     async fn resolve_membership(
         &self,
@@ -147,7 +144,6 @@ async fn read_verb_helper_accepts_only_read_verb_handles() {
         memory_inspect: Arc::new(storage_port_tests_support::MemoryInspectFake),
         change_event: Arc::new(storage_port_tests_support::ChangeEventFake),
         citation: Arc::new(storage_port_tests_support::CitationFake),
-        personality_read: Arc::new(storage_port_tests_support::PersonalityReadFake),
         fact_retention: Arc::new(storage_port_tests_support::FactRetentionFake),
     };
     let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
@@ -169,7 +165,6 @@ async fn goal_helper_accepts_only_goal_command_handles() {
     let goal = Arc::new(GoalFake);
     let ports = GoalCommandStoragePorts {
         goal_write: goal.clone(),
-        goal_support_read: goal.clone(),
         owner_access_read: goal,
     };
     let registry = crate::FlavorRegistry::new().freeze();
@@ -217,7 +212,7 @@ mod storage_port_tests_support {
             _read_owners: &[OwnerRef],
             _after: uuid::Uuid,
             _limit: usize,
-        ) -> Result<Vec<crate::personality::ChangeEventForWake>, StorageError> {
+        ) -> Result<Vec<crate::read_models::ChangeEventForWake>, StorageError> {
             Ok(Vec::new())
         }
     }
@@ -243,9 +238,8 @@ mod storage_port_tests_support {
         async fn load_memory_by_id(
             &self,
             _memory_id: crate::MemoryId,
-            _reader_personality_instance_id: Option<crate::personality::PersonalityInstanceId>,
-            _sidecars: &[crate::personality::SidecarSpec],
-        ) -> Result<Option<crate::personality::MemorySnapshot>, StorageError> {
+            _sidecars: &[crate::read_models::SidecarSpec],
+        ) -> Result<Option<crate::read_models::MemorySnapshot>, StorageError> {
             Ok(None)
         }
     }
@@ -314,8 +308,8 @@ mod storage_port_tests_support {
             &self,
             _read_owners: &[OwnerRef],
             _cited_object_id: uuid::Uuid,
-            _sidecars: &[crate::personality::SidecarSpec],
-        ) -> Result<Vec<crate::personality::MemorySnapshot>, StorageError> {
+            _sidecars: &[crate::read_models::SidecarSpec],
+        ) -> Result<Vec<crate::read_models::MemorySnapshot>, StorageError> {
             Ok(Vec::new())
         }
 
@@ -332,20 +326,6 @@ mod storage_port_tests_support {
             _fact_entity_id: crate::FactEntityId,
         ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
             Ok(None)
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct PersonalityReadFake;
-
-    #[async_trait::async_trait]
-    impl crate::storage_ports::PersonalityReadPort for PersonalityReadFake {
-        async fn list_personality_instances(
-            &self,
-            _owner: &crate::Owner,
-            _include_tombstoned: bool,
-        ) -> Result<Vec<crate::personality::PersonalityInstanceRow>, StorageError> {
-            Ok(Vec::new())
         }
     }
 

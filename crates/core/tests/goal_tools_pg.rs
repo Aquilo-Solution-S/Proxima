@@ -19,8 +19,7 @@ use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtens
 use proxima_core::{
     AuthPath, AuthzContext, CORE_DEPENDS_ON_RELATION, EntityKind, FlavorRegistry,
     FlavorRegistryFrozen, GoalId, GroupId, McpTool, McpToolError, MemoryId, MemoryOperatorKind,
-    Owner, OwnerRef, OwnerRefKind, PersonalityInstanceId, PersonalityStatus, Relation, Role,
-    UserId,
+    Owner, OwnerRef, OwnerRefKind, Relation, Role, UserId,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -45,7 +44,7 @@ async fn goal_set_tool_creates_active_goal() -> TestResult {
             assert!(!first.idempotent_replay);
 
             let goal_id = harness.goal_id(&first.handle)?;
-            let (state, authorship_kind, authorship_origin, operator_kind, model_id, prompt, pid) =
+            let (state, authorship_kind, authorship_origin, operator_kind, model_id, prompt) =
                 goal_set_authorship_row(harness.pg.pool(), goal_id).await?;
             assert_eq!(state, "Active");
             assert_eq!(authorship_kind, "System");
@@ -53,7 +52,6 @@ async fn goal_set_tool_creates_active_goal() -> TestResult {
             assert_eq!(operator_kind.as_deref(), Some("AtoGoal"));
             assert_eq!(model_id.as_deref(), Some("codex-test"));
             assert_eq!(prompt.as_deref(), Some("goal_set"));
-            assert_eq!(pid, Some(harness.personality_id.into_inner()));
             assert_eq!(count_goals(harness.pg.pool()).await?, 1);
             assert_eq!(count_goal_activated(harness.pg.pool()).await?, 1);
 
@@ -168,7 +166,7 @@ async fn goal_full_lifecycle_accepts_structured_body_payload() -> TestResult {
                         "Child goal with a structured body object.",
                         "Low",
                     )],
-                    target_personality: None,
+                    target_perspective: None,
                     idempotency_key: "structured-lifecycle-decompose".into(),
                 })
                 .await?;
@@ -314,7 +312,7 @@ async fn goal_decompose_tool_writes_children() -> TestResult {
                         child_goal("Child one", "First child goal."),
                         child_goal("Child two", "Second child goal."),
                     ],
-                    target_personality: None,
+                    target_perspective: None,
                     idempotency_key: "goal-decompose-children".into(),
                 })
                 .await?;
@@ -397,7 +395,6 @@ struct ToolHarness {
     registry: Arc<FlavorRegistryFrozen>,
     author: McpAuthorContext,
     engine: Arc<Engine>,
-    personality_id: PersonalityInstanceId,
 }
 
 impl ToolHarness {
@@ -405,10 +402,8 @@ impl ToolHarness {
         let owner = nil_owner();
         let registry = Arc::new(FlavorRegistry::new().freeze());
         let handles = Arc::new(HandleTable::new());
-        let (personality_id, root_memory_id) = seed_personality_self(&pg, &owner).await?;
-        let author = author_ctx()
-            .with_personality(personality_id)
-            .with_self_perspective(root_memory_id);
+        let root_memory_id = seed_assignment_perspective(&pg, &owner).await?;
+        let author = author_ctx().with_self_perspective(root_memory_id);
         let engine = engine_for_registry(&registry, &pg);
         Ok(Self {
             pg,
@@ -417,7 +412,6 @@ impl ToolHarness {
             registry,
             author,
             engine,
-            personality_id,
         })
     }
 
@@ -522,7 +516,7 @@ fn goal_set_args(title: &str, text: &str, idempotency_key: &str) -> GoalSetArgs 
     GoalSetArgs {
         payload: simple_payload(title, text),
         evidence: Vec::new(),
-        target_personality: None,
+        target_perspective: None,
         idempotency_key: Some(idempotency_key.into()),
     }
 }
@@ -536,7 +530,7 @@ fn task_goal_set_args(
     GoalSetArgs {
         payload: task_payload(title, text, priority),
         evidence: Vec::new(),
-        target_personality: None,
+        target_perspective: None,
         idempotency_key: Some(idempotency_key.into()),
     }
 }
@@ -578,42 +572,27 @@ fn task_payload(title: &str, text: &str, priority: &str) -> GoalPayloadArgs {
     }
 }
 
-async fn seed_personality_self(
+async fn seed_assignment_perspective(
     pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,
-) -> Result<(PersonalityInstanceId, MemoryId), Box<dyn std::error::Error>> {
-    let personality_id = PersonalityInstanceId::new(Uuid::now_v7());
+) -> Result<MemoryId, Box<dyn std::error::Error>> {
     let root_memory_id = MemoryId::new(Uuid::now_v7());
     let (owner_kind, owner_id) = owner_parts(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+             operator_kind, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/self-perspective-v1', 1, $4,
-                 'goal tool self perspective', $5, 'codex-test', 'self-v1', $6, 0)",
+                 'goal tool self perspective', $5, 'codex-test', 'self-v1')",
     )
     .bind(root_memory_id.into_inner())
     .bind(owner_kind)
     .bind(owner_id)
     .bind(EntityKind::Perspective)
     .bind(MemoryOperatorKind::AtoP)
-    .bind(personality_id.into_inner())
     .execute(pg.pool())
     .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.personality
-            (owner_kind, owner_id,
-             personality_instance_id, current_root_perspective_memory_id, status)
-         VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(personality_id.into_inner())
-    .bind(root_memory_id.into_inner())
-    .bind(PersonalityStatus::Active)
-    .execute(pg.pool())
-    .await?;
-    Ok((personality_id, root_memory_id))
+    Ok(root_memory_id)
 }
 
 async fn seed_fact_memory(
@@ -653,15 +632,13 @@ async fn seed_fact_memory(
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_kind, owner_id, schema_id, schema_version, receipt_id,
-             personality_instance_id)
-         VALUES ($1, $2, $3, 'test/evidence-v1', 1, $4, $5)",
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, receipt_id)
+         VALUES ($1, $2, $3, 'test/evidence-v1', 1, $4)",
     )
     .bind(memory_id.into_inner())
     .bind(owner_kind)
     .bind(owner_id)
     .bind(receipt_id)
-    .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
     let _ = text;
@@ -798,13 +775,12 @@ async fn goal_set_authorship_row(
         Option<String>,
         Option<String>,
         Option<String>,
-        Option<Uuid>,
     ),
     sqlx::Error,
 > {
     sqlx::query_as(
         "SELECT state::text, authorship_kind::text, authorship_origin::text,
-                operator_kind::text, model_id, prompt_version, personality_instance_id
+                operator_kind::text, model_id, prompt_version
            FROM proxima_core.goals
           WHERE goal_id = $1",
     )
@@ -875,24 +851,17 @@ fn author_ctx() -> McpAuthorContext {
         model_id: "codex-test".into(),
         client_name: "codex".into(),
         client_version: "1".into(),
-        personality_instance_id: None,
         caller_self_perspective: None,
     }
 }
 
 trait AuthorCtxExt {
     fn with_self_perspective(self, memory_id: MemoryId) -> Self;
-    fn with_personality(self, personality: PersonalityInstanceId) -> Self;
 }
 
 impl AuthorCtxExt for McpAuthorContext {
     fn with_self_perspective(mut self, memory_id: MemoryId) -> Self {
         self.caller_self_perspective = Some(memory_id);
-        self
-    }
-
-    fn with_personality(mut self, personality: PersonalityInstanceId) -> Self {
-        self.personality_instance_id = Some(personality);
         self
     }
 }

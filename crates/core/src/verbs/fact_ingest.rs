@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use crate::engine::MemoryPermit;
 use crate::{
-    FactPayload, FactReceiptId, MemoryId, Owner, OwnerRefKind, PersonalityInstanceId, SchemaId,
-    SchemaVersion, SidecarPayload, SourceBatchId, SourceId,
+    FactPayload, FactReceiptId, MemoryId, Owner, OwnerRefKind, SchemaId, SchemaVersion,
+    SidecarPayload, SourceBatchId, SourceId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -116,8 +116,6 @@ pub struct FactReceiptDraft {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FactWriteCommand {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub author_personality_instance_id: Option<PersonalityInstanceId>,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     /// Schema-owned receipt replay key material. The typed payload itself
@@ -322,7 +320,6 @@ pub struct AuthorizedFactWithCitation {
     draft: FactWriteCommand,
     cited_object: AuthorizedInlineCitedObject,
     mapping: AuthorizedInlineCitationMapping,
-    author_personality_instance_id: Option<PersonalityInstanceId>,
     fact_sidecar_table: Option<String>,
     fact_natural_key_columns: Vec<String>,
 }
@@ -336,13 +333,11 @@ impl AuthorizedFactWithCitation {
         fact_sidecar_table: Option<String>,
         fact_natural_key_columns: Vec<String>,
     ) -> Self {
-        let author_personality_instance_id = draft.author_personality_instance_id;
         Self {
             permit,
             draft,
             cited_object,
             mapping,
-            author_personality_instance_id,
             fact_sidecar_table,
             fact_natural_key_columns,
         }
@@ -369,11 +364,6 @@ impl AuthorizedFactWithCitation {
     }
 
     #[must_use]
-    pub const fn author_personality_instance_id(&self) -> Option<PersonalityInstanceId> {
-        self.author_personality_instance_id
-    }
-
-    #[must_use]
     pub fn fact_sidecar_table(&self) -> Option<&str> {
         self.fact_sidecar_table.as_deref()
     }
@@ -396,7 +386,6 @@ impl FactWriteCommand {
         observed_at: time::OffsetDateTime,
     ) -> Self {
         Self {
-            author_personality_instance_id: None,
             schema_id: P::schema_id(),
             schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
             payload: payload.receipt_key(),
@@ -424,13 +413,6 @@ impl FactWriteCommand {
         if let Some(receipt) = &mut self.receipt {
             receipt.occurred_at = occurred_at;
         }
-        self
-    }
-
-    /// Stamp the authoring personality instance for agent-authored Facts.
-    #[must_use]
-    pub const fn author_personality(mut self, author: PersonalityInstanceId) -> Self {
-        self.author_personality_instance_id = Some(author);
         self
     }
 
@@ -483,7 +465,6 @@ mod tests {
     fn draft(payload: Vec<u8>) -> FactWriteCommand {
         let now = time::OffsetDateTime::UNIX_EPOCH;
         FactWriteCommand {
-            author_personality_instance_id: None,
             schema_id: SchemaId::new("test/fact".to_string()),
             schema_version: SchemaVersion::new(1),
             payload,
@@ -524,7 +505,6 @@ mod tests {
             Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
         ));
         let draft = FactWriteCommand {
-            author_personality_instance_id: None,
             schema_id: SchemaId::new("golden/fact".to_string()),
             schema_version: SchemaVersion::new(1),
             payload: b"golden-payload".to_vec(),

@@ -10,8 +10,7 @@ use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
 };
 use proxima_core::{
-    MemoryId, OwnerRef, OwnerRefKind, PersonalityInstanceId, SchemaId, SearchProjectionColumnKind,
-    StorageError, WakeChainDepth,
+    MemoryId, OwnerRef, OwnerRefKind, SchemaId, SearchProjectionColumnKind, StorageError,
 };
 use sqlx::PgPool;
 
@@ -23,12 +22,10 @@ struct SearchRow {
     memory_id: uuid::Uuid,
     kind: EntityKind,
     schema_id: String,
-    authoring_personality_instance_id: Option<PersonalityInstanceId>,
     created_at: time::OffsetDateTime,
     snippet: String,
     lexical_score: f32,
     similarity_score: f32,
-    wake_chain_depth: i16,
 }
 
 impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for SearchRow {
@@ -39,14 +36,10 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for SearchRow {
             memory_id: row.try_get("memory_id")?,
             kind: row.try_get("kind")?,
             schema_id: row.try_get("schema_id")?,
-            authoring_personality_instance_id: decode_personality(
-                row.try_get("authoring_personality_instance_id")?,
-            ),
             created_at: row.try_get("created_at")?,
             snippet: row.try_get("snippet")?,
             lexical_score: row.try_get("lexical_score")?,
             similarity_score: row.try_get("similarity_score")?,
-            wake_chain_depth: row.try_get("wake_chain_depth")?,
         })
     }
 }
@@ -56,18 +49,15 @@ struct Candidate {
     memory_id: uuid::Uuid,
     kind: EntityKind,
     schema_id: SchemaId,
-    authoring_personality_instance_id: Option<PersonalityInstanceId>,
     created_at: time::OffsetDateTime,
     snippet: String,
     lexical_score: f32,
     similarity_score: f32,
-    wake_chain_depth: WakeChainDepth,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct CandidateFilterParams {
     schema_filter: Option<usize>,
-    reader: Option<usize>,
     since: Option<usize>,
     until: Option<usize>,
     tags: Option<usize>,
@@ -111,13 +101,11 @@ pub(crate) async fn search_memories(
                 memory_id: MemoryId::new(candidate.memory_id),
                 kind: candidate.kind,
                 schema_id: candidate.schema_id,
-                authoring_personality_instance_id: candidate.authoring_personality_instance_id,
                 created_at: candidate.created_at,
                 snippet: candidate.snippet,
                 score,
                 lexical_score: candidate.lexical_score,
                 similarity_score: candidate.similarity_score,
-                wake_chain_depth: candidate.wake_chain_depth,
             }
         })
         .collect();
@@ -145,12 +133,10 @@ fn merge_row(candidates: &mut BTreeMap<uuid::Uuid, Candidate>, row: SearchRow) {
             memory_id: row.memory_id,
             kind: row.kind,
             schema_id: SchemaId::new(row.schema_id.clone()),
-            authoring_personality_instance_id: row.authoring_personality_instance_id,
             created_at: row.created_at,
             snippet: row.snippet.clone(),
             lexical_score: 0.0,
             similarity_score: 0.0,
-            wake_chain_depth: WakeChainDepth::new(u16::try_from(row.wake_chain_depth).unwrap_or(0)),
         });
     entry.lexical_score = entry.lexical_score.max(row.lexical_score.max(0.0));
     entry.similarity_score = entry
@@ -185,16 +171,14 @@ async fn run_lexical(
                      ) AS index_text
                 FROM candidates c
           )
-          SELECT c.memory_id, c.kind, c.schema_id, c.authoring_personality_instance_id,
-                 c.created_at,
+          SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
                  left(c.search_text, 480) AS snippet,
                  GREATEST(
                      LEAST(ts_rank_cd(to_tsvector('simple', c.index_text), q.tsq) * 10.0, 1.0),
                      CASE WHEN lower(c.search_text) LIKE '%' || lower(${query_param}) || '%'
                           THEN 0.25 ELSE 0.0 END
                  )::real AS lexical_score,
-                 0.0::real AS similarity_score,
-                 c.wake_chain_depth
+                 0.0::real AS similarity_score
           FROM indexed c,
                (SELECT websearch_to_tsquery(
                    'simple',
@@ -258,15 +242,13 @@ async fn run_semantic(
 
     write!(
         sql,
-        " SELECT c.memory_id, c.kind, c.schema_id, c.authoring_personality_instance_id,
-                 c.created_at,
+        " SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
                  left(c.search_text, 480) AS snippet,
                  0.0::real AS lexical_score,
                  CASE
                      WHEN (1 - (emb.vec <=> ${vec_param}::vector)) = 'NaN'::float8 THEN 0.0
                      ELSE GREATEST(0.0, (1 - (emb.vec <=> ${vec_param}::vector)))
-                 END::real AS similarity_score,
-                 c.wake_chain_depth
+                 END::real AS similarity_score
           FROM candidates c
           JOIN proxima_core.embeddings emb
             ON emb.entity_kind = c.kind
@@ -305,11 +287,6 @@ fn common_candidates_sql(
         *next_param += 1;
         param
     });
-    let reader_param = req.reader_personality_instance_id.map(|_| {
-        let param = *next_param;
-        *next_param += 1;
-        param
-    });
     let since_param = req.since.map(|_| {
         let param = *next_param;
         *next_param += 1;
@@ -327,7 +304,6 @@ fn common_candidates_sql(
     });
     let filters = CandidateFilterParams {
         schema_filter: schema_filter_param,
-        reader: reader_param,
         since: since_param,
         until: until_param,
         tags: tags_param,
@@ -410,15 +386,8 @@ fn push_candidate_branch_prefix(sql: &mut String) {
     sql.push_str(
         "SELECT m.memory_id, home_owner.owner_kind, home_owner.owner_id, \
          COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, \
-         m.schema_id, m.personality_instance_id AS authoring_personality_instance_id, \
-         m.wake_chain_depth, m.created_at, ",
+         m.schema_id, m.created_at, ",
     );
-}
-
-fn decode_personality(instance_id: Option<uuid::Uuid>) -> Option<PersonalityInstanceId> {
-    instance_id
-        .filter(|id| !id.is_nil())
-        .map(PersonalityInstanceId::new)
 }
 
 fn push_base_memory_filters(
@@ -450,7 +419,6 @@ fn push_base_memory_filters(
     push_time_filters(sql, filters);
     push_tag_filter(sql, req, filters.tags, "NULL::text[]");
     push_search_head_filter(sql, req);
-    push_reader_visibility_filter(sql, filters.reader);
 }
 
 fn push_sidecar_memory_filters(
@@ -481,7 +449,6 @@ fn push_sidecar_memory_filters(
     push_time_filters(sql, filters);
     push_tag_filter(sql, req, filters.tags, tag_expr);
     push_search_head_filter(sql, req);
-    push_reader_visibility_filter(sql, filters.reader);
 }
 
 fn push_payload_kind_filter(sql: &mut String, kind: PayloadKind) {
@@ -547,19 +514,6 @@ fn push_tag_filter(
     write!(sql, " AND {tag_expr} {op} ${param}::text[]").expect("write to String is infallible");
 }
 
-fn push_reader_visibility_filter(sql: &mut String, reader_param: Option<usize>) {
-    if let Some(param) = reader_param {
-        write!(
-            sql,
-            " AND (
-                m.kind IS NULL
-                OR m.personality_instance_id = ${param}
-            )"
-        )
-        .expect("write to String is infallible");
-    }
-}
-
 fn branch_order_by(req: &MemorySearchRequest, relevance_score_column: &str) -> String {
     match req.order {
         SearchOrder::Relevance => format!("{relevance_score_column} DESC, c.memory_id DESC"),
@@ -587,9 +541,6 @@ fn bind_filter_params<'q>(
 ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, SearchRow, sqlx::postgres::PgArguments> {
     if let Some(schema_id) = &req.schema_id {
         q = q.bind(schema_id.as_str().to_string());
-    }
-    if let Some(reader) = req.reader_personality_instance_id {
-        q = q.bind(reader.into_inner());
     }
     if let Some(since) = req.since {
         q = q.bind(since);

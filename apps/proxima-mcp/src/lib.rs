@@ -49,7 +49,7 @@ fn memory_keep_set() -> Vec<&'static str> {
     ];
     // The memory profile carries the full goal lifecycle plus non-destructive
     // fact/citation actions. Retention/cleanup are host/config-only.
-    // Wake/personality admin stays out.
+    // Retention/cleanup stay out.
     ids.extend(
         all_core_actions()
             .filter(|action| {
@@ -548,8 +548,7 @@ mod tests {
             "core_fact:citation_of_entity_head",
             "core_fact:facts_citing_object",
             "core_fact:tombstone",
-            "core_personality:instantiate",
-            "core_wake:add",
+            "core_goal:set",
             "proxima-code_register_repo",
             "proxima-code_emit_execution_request",
         ];
@@ -571,19 +570,18 @@ mod tests {
         // consts under the same cfg).
         #[cfg(feature = "code")]
         assert!(memory.allows("proxima-code_register_repo"));
-        assert!(!memory.allows("core_personality:instantiate"));
-        assert!(!memory.allows("core_wake:add"));
+        assert!(memory.allows("core_goal:set"));
         assert!(!memory.allows("proxima-code_emit_execution_request"));
 
         let overridden = resolve_tool_scope(
             Some("memory"),
-            Some("core_wake:add"),
+            Some("proxima-code_emit_execution_request"),
             Some("resource:memory"),
             &registered_ids,
         )
         .expect("overridden memory profile");
         assert!(!overridden.allows("resource:memory"));
-        assert!(overridden.allows("core_wake:add"));
+        assert!(overridden.allows("proxima-code_emit_execution_request"));
     }
 
     #[test]

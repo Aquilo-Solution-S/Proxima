@@ -256,7 +256,6 @@ mod tests {
                 model_id: "test".into(),
                 client_name: "test".into(),
                 client_version: "0".into(),
-                personality_instance_id: None,
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,

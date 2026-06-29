@@ -9,7 +9,6 @@ use uuid::Uuid;
 fn fresh_command() -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
-        author_personality_instance_id: None,
         schema_id: SchemaId::new("test/fact_blob".to_string()),
         schema_version: SchemaVersion::new(1),
         payload: b"hello".to_vec(),

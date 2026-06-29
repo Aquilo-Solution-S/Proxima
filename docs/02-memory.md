@@ -17,7 +17,7 @@ part the table names hide:
 |---|---|---|---|
 | **Fact** | An accepted observation. Never revised. Receipt metadata may link it to an Event Source, but receiptless Facts are valid. | `memories` (`kind` NULL, optional `receipt_id`) + optional `fact_receipts` | Fact write / receipt-backed EventSource ingest |
 | **Abstraction** | A re-derivable interpretation over Facts. | `memories` (`kind = 'Abstraction'`) | `F→A` operator |
-| **Perspective** | A re-derivable integration over Abstractions; the lens reads are taken through. The self-perspective anchors a personality. | `memories` (`kind = 'Perspective'`) | `A→P` operator |
+| **Perspective** | A re-derivable integration over Abstractions; the lens reads are taken through. Self is a query over Perspective rows and active Goal heads, not a row or authz carrier. | `memories` (`kind = 'Perspective'`) | `A→P` operator |
 | **Goal** | A desired end-state with a lifecycle (`state`). Goal↔Goal topology is ordinary Edge topology, not a Goal row field. | `goals` (its own table) | user / external / `A→Goal` operator |
 | **Citation** | *Not a node.* An immutable, content-addressed outside-proof attached to a Fact ("I assert this because of that source"). | `cited_objects` + a `cited_<schema>` byte sidecar, linked to a Fact by `citation_mappings` | attached at Fact ingest |
 
@@ -49,14 +49,15 @@ Production rules:
 | Operator | Signature | Rule |
 |---|---|---|
 | F→A | `2^F × Π → A` | Facts become a typed Abstraction. Cross-domain input is legal only when the output schema is an explicit cross-domain Abstraction. |
-| A→P | `2^A × Π → P` | Abstractions become a typed Perspective under the active personality instance. |
+| A→P | `2^A × Π → P` | Abstractions become a typed Perspective under the active Perspective context. |
 | frame | `P × A_cross → Edge` | Perspective may frame a cross-domain Abstraction. Facts stay unchanged. |
 | A→Goal | `2^A × Π → Goal` | Core derives / updates Goals from visible evidence (see 06). |
 
-`Π` = active personality instance. Runtime identity is
-`personality_instance_id`; type-level behavior comes from the registered
-flavor. Load-bearing type evolution is a new flavor/type id; load-bearing
-runtime lineage evolution is a new instance.
+`Π` = active Perspective context selected by an authorized query or write.
+Runtime identity is the Perspective memory row; type-level behavior comes from
+the registered flavor. Load-bearing type evolution is a new flavor/type id;
+load-bearing runtime lineage evolution is a new Perspective row linked by
+registered edges.
 
 Forbidden:
 
@@ -73,7 +74,7 @@ Rules:
 - Facts are Reality observations. They are accepted, not revised.
 - Abstractions are re-derivable interpretations over Facts.
 - Perspectives are re-derivable integrations over Abstractions.
-- Personality changes affect future derivations, not existing Facts.
+- Perspective context/type changes affect future derivations, not existing Facts.
 
 ## The Core Entity
 
@@ -101,8 +102,8 @@ UUIDv7 `memory_id`, not the content hash or optional `receipt_id`.
 
 Abstractions and Perspectives are derived memories. Their provenance is
 edge-based, not JSON inside the memory row. Their reproducibility metadata
-lives inline on the memory row: operator kind, model id, prompt version,
-personality instance, wake depth.
+lives inline on the memory row: operator kind, model id, prompt version, and
+edge-backed declared inputs/provenance.
 
 There is no `description` field. Facts render from payload. A/P text is
 the authored cognitive surface. Typed sidecars are the query surface.
@@ -269,13 +270,13 @@ No Dream entity, Dream relation class, or Core dream pipeline.
 
 ```
 change_event
-  -> wake entry match
-  -> personality / tool decision
+  -> armed Active Goal wake match
+  -> actor/tool-scope admission
   -> typed Memory / Goal / Edge writes
   -> registry + edge invariant enforcement
 ```
 
-Wake entries live in `personality_wake_entries`.
+Wake configuration is Goal-owned (`Goal.wake`) and not a separate wake entity.
 
 Dream forms:
 
@@ -313,8 +314,8 @@ Rules:
 - Hard delete exists only as compliance erasure (see 13), outside cognitive
   graph semantics.
 
-Default lineage scope is the personality instance that authored the derived
-memory. Cross-personality supersession is an explicit user/API editorial
+Default lineage scope is the owner plus the derived memory's registered
+provenance edges. Cross-context supersession is an explicit user/API editorial
 gesture, never an operator decision.
 
 ## Assertion Lifecycle Pattern
@@ -352,51 +353,30 @@ Do not add edge citation/status fields, runtime relation vocabularies, a
 core `RelationAssertion` entity, or authoritative materialized relation
 edges for this pattern.
 
-## Personality
+## Perspective context and wake
 
-Personality is a flavor-declared decider type plus runtime instances.
+Perspective is a typed memory row. It may serve as an assignment, authorship,
+or query context, but it is not an authz carrier. Server-resolved Owner roles
+control reads and writes.
 
 Substrate responsibilities:
 
-- store personality instances and Root Perspective pointers;
-- store detect-only wake entries;
+- store typed Perspective rows and provenance edges;
+- store Goal-owned wake config for armed Active Goals;
 - expose pull reads over `change_event`;
-- enforce Owner, read-scope, schema, relation, and tool-scope gates;
-- record produced A/P rows with personality instance and wake depth;
+- enforce Owner roles, schema, relation, and tool-scope gates;
+- record produced A/P rows with edge-backed provenance;
 - enforce registry and edge invariants.
 
 Flavor responsibilities:
 
 - prompt / instructions;
-- self schema and default self payload;
+- Perspective schemas and default payloads;
 - writeable schemas and relations;
-- wake entry defaults;
 - external harness decision policy.
 
-Multiple personality instances may be active for one Owner. Same Facts or
-Abstractions under different instances produce parallel lineages.
-
-## Read-scope Matrix
-
-Cross-personality retrieval is governed by a per-Owner boolean adjacency
-matrix over personality instances:
-
-```
-M[self][other] = 1  => self may read other's A/P/Goals
-M[self][other] = 0  => self excludes other's A/P/Goals
-```
-
-Rules:
-
-- Identity diagonal: `M[p][p] = 1`.
-- Facts are below the matrix: every personality sees every Fact in the Owner.
-- A/P/Goals are gated by the matrix.
-- Matrix asymmetry is valid.
-- Matrix controls direct retrieval only. Transitive influence is represented
-  by authored memories and provenance edges.
-- Changing the matrix affects future reads only. Existing memories remain.
-- Load-bearing read-scope evolution that needs separate lineage uses a new
-  personality instance.
+Multiple Perspective contexts may be active for one Owner. Same Facts or
+Abstractions under different contexts produce parallel lineages.
 
 ## What's Settled
 
@@ -424,6 +404,4 @@ Rules:
 - `causal-chain-query`
 - `wake-dream-write`
 - `re-derivation-and-supersession`
-- `personality`
-- `read-scope-matrix`
 - `whats-settled`

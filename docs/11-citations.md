@@ -189,8 +189,8 @@ encoded by the authoring memory's own citation chain.
 
 Bibliographic citation is artefact-only. The reproducibility metadata
 for an operator-derived memory — `(operator_kind, model_id,
-prompt_version, personality_id)` — are inline columns
-on `memories`, NULL for Facts and NOT NULL for A/P. There is no
+prompt_version)` plus edge-backed input/context provenance — are inline columns
+and relations, NULL for Facts where not applicable and present for A/P. There is no
 separate `citations` table for them; the F→A / A→P invocation key
 (see [04 §Idempotence and reproducibility](04-consolidation.md#idempotence-and-reproducibility)) is built from those columns directly.
 

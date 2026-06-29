@@ -1,17 +1,14 @@
 use crate::engine::{
     GoalCreatePayloadWriteRequest, GoalDecomposeRequest, GoalMarkAchievedRequest,
-    GoalModifyRequest, GoalTargetSelf, GoalTransitionRequest,
+    GoalModifyRequest, GoalTransitionRequest,
 };
 use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 use crate::verbs::goal_write::{
-    ChildGoalDraft, GoalAuthorship, GoalEvidenceRef, GoalPayloadWrite, GoalState, GoalWriteOutcome,
-    IdempotencyKey, OperatorKind, SystemOrigin,
+    ChildGoalDraft, GoalAssignmentTarget, GoalAuthorship, GoalEvidenceRef, GoalPayloadWrite,
+    GoalState, GoalTopologyWrite, GoalWriteOutcome, IdempotencyKey, OperatorKind, SystemOrigin,
 };
 use crate::verbs::schema::PayloadKind;
-use crate::{
-    EdgeId, ModelId, OperatorId, PersonalityInstanceId, PromptVersion, SchemaId, SchemaVersion,
-    ToolId,
-};
+use crate::{EdgeId, ModelId, OperatorId, PromptVersion, SchemaId, SchemaVersion, ToolId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +20,9 @@ const CORE_GOAL_TRANSITION_SCOPE_KEY: &str = "core_goal:transition";
 const CORE_GOAL_MODIFY_SCOPE_KEY: &str = "core_goal:modify";
 const CORE_GOAL_MARK_ACHIEVED_SCOPE_KEY: &str = "core_goal:mark_achieved";
 const CORE_GOAL_DECOMPOSE_SCOPE_KEY: &str = "core_goal:decompose";
+const MCP_OPERATOR_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+    0x3f, 0x61, 0xde, 0x85, 0x4e, 0x09, 0x45, 0x62, 0x97, 0xc4, 0x8a, 0x74, 0xaa, 0xf9, 0x4a, 0x2c,
+]);
 const GOAL_ACTIVATED_SCHEMA_IDS: &[&str] =
     &[<crate::GoalActivatedV1 as crate::FactPayload>::SCHEMA_ID];
 const GOAL_ACHIEVED_SCHEMA_IDS: &[&str] =
@@ -36,7 +36,7 @@ pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
         tool: CoreGoalTool::NAME,
         action: "set",
         scope_key: CORE_GOAL_SET_SCOPE_KEY,
-        description: "Set an Active Goal for the calling or target personality.",
+        description: "Set an Active Goal assigned to a Perspective.",
         produces_schema_ids: GOAL_ACTIVATED_SCHEMA_IDS,
         annotations: WRITE_NON_IDEMPOTENT,
     },
@@ -110,9 +110,9 @@ pub struct GoalSetArgs {
     )]
     pub evidence: Vec<String>,
     #[schemars(
-        description = "Optional `I`-handle to set the goal on another personality; omit to target the calling personality."
+        description = "Optional Perspective memory handle to assign the goal to; omit to use the caller Perspective context."
     )]
-    pub target_personality: Option<String>,
+    pub target_perspective: Option<String>,
     #[schemars(
         description = "Optional stable idempotency key so a replayed call is a no-op, not a duplicate goal."
     )]
@@ -162,7 +162,7 @@ impl McpTool for CoreGoalTool {
                 "text",
                 "body",
                 "evidence",
-                "target_personality",
+                "target_perspective",
                 "idempotency_key",
             ],
             required_fields: &["schema_id", "title", "text"],
@@ -196,7 +196,7 @@ impl McpTool for CoreGoalTool {
             allowed_fields: &[
                 "parent_goal",
                 "children",
-                "target_personality",
+                "target_perspective",
                 "idempotency_key",
             ],
             required_fields: &["parent_goal", "children", "idempotency_key"],
@@ -232,10 +232,12 @@ impl McpTool for CoreGoalTool {
 async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput, McpToolError> {
     let payload = encode_goal_payload(&ctx, args.payload)?;
     let evidence = resolve_evidence(&ctx, &args.evidence)?;
-    let target_self = target_self_perspective(&ctx, args.target_personality.as_deref())?;
+    let assignment = target_perspective(&ctx, args.target_perspective.as_deref())?;
+    let topology =
+        GoalTopologyWrite::new(assignment, Vec::new(), evidence).map_err(McpToolError::Protocol)?;
     let request_id = IdempotencyKey::optional_or_generated("goal_set", args.idempotency_key)
         .map_err(McpToolError::InvalidInput)?;
-    let authorship = system_operator_authorship(&ctx, "goal_set")?;
+    let authorship = system_operator_authorship(&ctx, "goal_set");
     let engine = ctx
         .engine()
         .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
@@ -244,11 +246,10 @@ async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput,
             &ctx.authz,
             &GoalCreatePayloadWriteRequest {
                 principal: ctx.owner,
-                target_self,
+                topology,
+                wake: None,
                 payload,
                 request_id,
-                evidence,
-                parent_goal_ids: Vec::new(),
                 authorship,
                 author_self_perspective_id: ctx.caller_self_perspective,
             },
@@ -399,6 +400,7 @@ async fn goal_modify(
                 principal: ctx.owner,
                 prior_goal_id: prior,
                 replacement: payload,
+                wake: None,
                 authorship: GoalAuthorship::User,
                 request_id,
                 evidence,
@@ -421,9 +423,9 @@ pub struct GoalDecomposeArgs {
     )]
     pub children: Vec<ChildGoalInput>,
     #[schemars(
-        description = "Optional `I`-handle to create the children on another personality; omit for the caller."
+        description = "Optional Perspective memory handle to assign children to; omit to use the caller Perspective context."
     )]
-    pub target_personality: Option<String>,
+    pub target_perspective: Option<String>,
     #[schemars(
         description = "Required stable idempotency key; each child's key derives from it deterministically, so replays are no-ops."
     )]
@@ -463,13 +465,16 @@ async fn goal_decompose(
         )));
     }
     let parent = ctx.resolve_goal(&args.parent_goal)?;
-    let target_self = target_self_perspective(&ctx, args.target_personality.as_deref())?;
+    let assignment = target_perspective(&ctx, args.target_perspective.as_deref())?;
+    let topology = GoalTopologyWrite::new(assignment, Vec::new(), Vec::new())
+        .map_err(McpToolError::Protocol)?;
     let root_key = IdempotencyKey::new(args.idempotency_key).map_err(McpToolError::InvalidInput)?;
     let mut children = Vec::with_capacity(args.children.len());
     for (index, child) in args.children.into_iter().enumerate() {
         children.push(ChildGoalDraft {
             payload: encode_goal_payload(&ctx, child.payload)?,
             evidence: resolve_evidence(&ctx, &child.evidence)?,
+            wake: None,
             request_id: root_key
                 .child("goal_decompose", index)
                 .map_err(McpToolError::InvalidInput)?,
@@ -487,7 +492,7 @@ async fn goal_decompose(
                 authorship: GoalAuthorship::System(SystemOrigin::Tool {
                     tool_id: ToolId::new(CORE_GOAL_DECOMPOSE_SCOPE_KEY),
                 }),
-                target_self,
+                topology,
                 children,
                 author_self_perspective_id: ctx.caller_self_perspective,
             },
@@ -571,52 +576,41 @@ fn resolve_evidence(
 ) -> Result<Vec<GoalEvidenceRef>, McpToolError> {
     evidence
         .iter()
-        .map(|handle| {
-            ctx.resolve_memory(handle)
-                .map(|memory_id| GoalEvidenceRef { memory_id })
-        })
+        .map(|handle| ctx.resolve_memory(handle).map(GoalEvidenceRef::new))
         .collect()
 }
 
-fn target_self_perspective(
+fn target_perspective(
     ctx: &McpToolCtx,
-    target_personality: Option<&str>,
-) -> Result<GoalTargetSelf, McpToolError> {
-    match target_personality {
-        Some(handle) => {
-            let instance_id = ctx.resolve_personality(handle)?;
-            Ok(GoalTargetSelf::Personality(instance_id))
-        }
+    target_perspective: Option<&str>,
+) -> Result<GoalAssignmentTarget, McpToolError> {
+    match target_perspective {
+        Some(handle) => ctx
+            .resolve_perspective_memory(handle)
+            .map(GoalAssignmentTarget::perspective),
         None => ctx
             .caller_self_perspective
-            .map(GoalTargetSelf::SelfPerspective)
+            .map(GoalAssignmentTarget::perspective)
             .ok_or_else(|| {
                 McpToolError::InvalidInput(
-                    "target_personality or caller_self_perspective is required".into(),
+                    "target_perspective or caller Perspective context is required".into(),
                 )
             }),
     }
 }
 
-fn system_operator_authorship(
-    ctx: &McpToolCtx,
-    prompt_version: &str,
-) -> Result<GoalAuthorship, McpToolError> {
-    let personality_instance_id = ctx.author.personality_instance_id.ok_or_else(|| {
-        McpToolError::InvalidInput("goal_set requires personality author context".into())
-    })?;
-    // operator_id is the authoring personality instance — a deterministic value,
-    // not a fresh random id. The goal-write idempotency check compares authorship,
-    // so a per-call random id would make every same-key retry conflict instead of
-    // replaying, defeating the tools' `idempotency_key`.
-    let pid = personality_instance_id.into_inner();
-    Ok(GoalAuthorship::System(SystemOrigin::Operator {
-        operator_id: OperatorId::new(pid),
+fn system_operator_authorship(ctx: &McpToolCtx, prompt_version: &str) -> GoalAuthorship {
+    let operator_key = format!(
+        "{}\0{}\0{}\0{}",
+        ctx.author.client_name, ctx.author.client_version, ctx.author.model_id, prompt_version
+    );
+    let operator_id = uuid::Uuid::new_v5(&MCP_OPERATOR_NAMESPACE, operator_key.as_bytes());
+    GoalAuthorship::System(SystemOrigin::Operator {
+        operator_id: OperatorId::new(operator_id),
         operator_kind: OperatorKind::AtoGoal,
         model_id: ModelId::new(ctx.author.model_id.clone()),
         prompt_version: PromptVersion::new(prompt_version),
-        personality_instance_id: PersonalityInstanceId::new(pid),
-    }))
+    })
 }
 
 fn format_goal_write_output(ctx: &McpToolCtx, outcome: GoalWriteOutcome) -> GoalWriteOutput {

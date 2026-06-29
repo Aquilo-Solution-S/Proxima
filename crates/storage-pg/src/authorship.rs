@@ -19,7 +19,6 @@ pub(crate) struct AuthorshipColumns {
     pub(crate) operator_kind: Option<OperatorKind>,
     pub(crate) model_id: Option<String>,
     pub(crate) prompt_version: Option<String>,
-    pub(crate) personality_instance_id: Option<uuid::Uuid>,
 }
 
 /// Project a `GoalAuthorship` into the flat column tuple.
@@ -33,14 +32,12 @@ pub(crate) fn authorship_columns(authorship: &GoalAuthorship) -> AuthorshipColum
             operator_kind: None,
             model_id: None,
             prompt_version: None,
-            personality_instance_id: None,
         },
         GoalAuthorship::System(SystemOrigin::Operator {
             operator_id,
             operator_kind,
             model_id,
             prompt_version,
-            personality_instance_id,
         }) => AuthorshipColumns {
             authorship_kind: GoalAuthorshipKind::System,
             authorship_origin: Some(GoalAuthorshipOrigin::Operator),
@@ -49,7 +46,6 @@ pub(crate) fn authorship_columns(authorship: &GoalAuthorship) -> AuthorshipColum
             operator_kind: Some(*operator_kind),
             model_id: Some(model_id.as_str().to_string()),
             prompt_version: Some(prompt_version.as_str().to_string()),
-            personality_instance_id: Some(personality_instance_id.into_inner()),
         },
         GoalAuthorship::System(SystemOrigin::Tool { tool_id }) => AuthorshipColumns {
             authorship_kind: GoalAuthorshipKind::System,
@@ -59,7 +55,6 @@ pub(crate) fn authorship_columns(authorship: &GoalAuthorship) -> AuthorshipColum
             operator_kind: None,
             model_id: None,
             prompt_version: None,
-            personality_instance_id: None,
         },
         GoalAuthorship::External => AuthorshipColumns {
             authorship_kind: GoalAuthorshipKind::External,
@@ -69,7 +64,6 @@ pub(crate) fn authorship_columns(authorship: &GoalAuthorship) -> AuthorshipColum
             operator_kind: None,
             model_id: None,
             prompt_version: None,
-            personality_instance_id: None,
         },
     }
 }

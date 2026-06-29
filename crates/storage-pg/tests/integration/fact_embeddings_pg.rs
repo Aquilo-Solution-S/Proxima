@@ -8,15 +8,35 @@ use proxima_core::llm::{EMBEDDING_DIM, EMBEDDING_JOB_MAX_ATTEMPTS, EmbeddingClie
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
-    AuthPath, AuthzContext, EntityKind, FlavorRegistry, Owner, OwnerRef, SourceBatchId, UserId,
+    AuthPath, AuthzContext, EntityKind, FactPayload, FlavorRegistry, Owner, OwnerRef,
+    PayloadKeyBuilder, SourceBatchId, UserId,
 };
 use proxima_storage_pg::{
     EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
 };
 use uuid::Uuid;
 
-use crate::common::personality::TestFactV1;
 use crate::common::{drop_db, fresh_pg, owner_fixture};
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct TestFactV1 {
+    label: String,
+}
+
+impl FactPayload for TestFactV1 {
+    const SCHEMA_ID: &'static str = "proxima-test/fact-embedding-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn receipt_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("label", &self.label);
+        key.finish()
+    }
+
+    fn render(&self) -> String {
+        self.label.clone()
+    }
+}
 
 #[derive(Debug)]
 struct FailingEmbedding;

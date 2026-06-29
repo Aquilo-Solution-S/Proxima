@@ -131,8 +131,8 @@ Physical SQL encoding: the kernel `.Fact` branch is represented by `memories.kin
 | Kind | Parent row | Sidecar | Supersession |
 |---|---|---|---|
 | Fact | `memories` Fact branch | required `FactPayload` sidecar | forbidden |
-| Abstraction | `memories` derived branch | required `AbstractionPayload` sidecar | same-personality lineage |
-| Perspective | `memories` derived branch | required `PerspectivePayload` sidecar | same-personality lineage |
+| Abstraction | `memories` derived branch | required `AbstractionPayload` sidecar | schema/owner lineage |
+| Perspective | `memories` derived branch | required `PerspectivePayload` sidecar | schema/owner lineage |
 
 Goal-specific rules live in [06](06-goals-and-self.md#goal-entity).
 Citation rules live in [11](11-citations.md). Edge layering rules live

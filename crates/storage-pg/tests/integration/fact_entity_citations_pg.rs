@@ -152,7 +152,6 @@ fn fact(entity_key: &str, body: &str) -> StatefulFactV1 {
 fn draft_for(_owner: &Owner, payload_value: &Value) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
-        author_personality_instance_id: None,
         schema_id: StatefulFactV1::schema_id(),
         schema_version: SchemaVersion::new(StatefulFactV1::SCHEMA_VERSION),
         payload: canonical_json_bytes(payload_value),

@@ -6,11 +6,13 @@ use std::sync::Arc;
 use crate::common::{create_db, db_url, drop_db};
 
 use proxima_core::authz::AuthPath;
-use proxima_core::error::ErrorCode;
-use proxima_core::verbs::goal_write::{GoalCreateRequest, GoalEvidenceRef, IdempotencyKey};
+use proxima_core::verbs::goal_write::{
+    GoalAssignmentTarget, GoalCreateRequest, GoalEvidenceRef, GoalWakeConfigWrite, GoalWakeToolId,
+    GoalWakeTrigger, IdempotencyKey,
+};
 use proxima_core::{
-    AuthzContext, Engine, GoalPayload, GroupId, MemoryId, Owner, OwnerRef, PayloadKeyBuilder,
-    Relation, Role, UserId,
+    AuthzContext, Engine, ErrorCode, FlavorRegistry, GoalPayload, GroupId, MemoryId, Owner,
+    OwnerRef, PayloadKeyBuilder, Relation, Role, SchemaId, SchemaVersion, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -68,8 +70,8 @@ async fn insert_memory(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id)
-         VALUES ($1, $2, $3, $4, 1, $5, $6, $7, 'test-model', 'v1', $8)",
+             operator_kind, model_id, prompt_version)
+         VALUES ($1, $2, $3, $4, 1, $5, $6, $7, 'test-model', 'v1')",
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -78,7 +80,6 @@ async fn insert_memory(
     .bind(kind)
     .bind(text)
     .bind(operator_kind)
-    .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
     Ok(MemoryId::new(memory_id))
@@ -91,7 +92,7 @@ fn product_request(
 ) -> GoalCreateRequest<ProductInitialGoal> {
     GoalCreateRequest::product(
         *owner,
-        target_self,
+        GoalAssignmentTarget::perspective(target_self),
         IdempotencyKey::new(REQUEST_ID).expect("stable request id is valid"),
         "Practice goal",
         text,
@@ -99,6 +100,22 @@ fn product_request(
             external_goal_id: "weekday-practice".to_string(),
         },
     )
+}
+
+fn wake_config(trigger: GoalWakeTrigger, hard_memory_ids: &[MemoryId]) -> GoalWakeConfigWrite {
+    let registry = FlavorRegistry::new().freeze();
+    let search =
+        GoalWakeToolId::parse("core_search_memories", &registry).expect("registered search tool");
+    GoalWakeConfigWrite::new(trigger, vec![search], "wake prompt", hard_memory_ids)
+        .expect("wake config shape")
+}
+
+async fn assert_no_goal_rows(pg: &PgStorage) -> Result<(), sqlx::Error> {
+    let goal_count: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
+        .fetch_one(pg.pool())
+        .await?;
+    assert_eq!(goal_count.0, 0);
+    Ok(())
 }
 
 fn assert_idempotency_conflict(err: &proxima_core::error::ProtocolError) {
@@ -254,11 +271,8 @@ async fn engine_goalwrite_conflicts_on_same_request_id_with_changed_side_effects
         let changed_evidence = engine
             .create_goal(
                 &authz,
-                product_request(&owner, target_self, "Practice every weekday.").with_evidence(
-                    vec![GoalEvidenceRef {
-                        memory_id: evidence,
-                    }],
-                ),
+                product_request(&owner, target_self, "Practice every weekday.")
+                    .with_evidence(vec![GoalEvidenceRef::new(evidence)]),
             )
             .await
             .expect_err("same request id with changed evidence conflicts");
@@ -296,12 +310,8 @@ async fn engine_goalwrite_rejects_duplicate_evidence_before_write() {
                 &authz,
                 product_request(&owner, target_self, "Practice every weekday.").with_evidence(
                     vec![
-                        GoalEvidenceRef {
-                            memory_id: evidence,
-                        },
-                        GoalEvidenceRef {
-                            memory_id: evidence,
-                        },
+                        GoalEvidenceRef::new(evidence),
+                        GoalEvidenceRef::new(evidence),
                     ],
                 ),
             )
@@ -321,6 +331,104 @@ async fn engine_goalwrite_rejects_duplicate_evidence_before_write() {
 
     let _ = drop_db(&db_name).await;
     result.expect("typed product GoalWrite duplicate-evidence test failed");
+}
+
+#[tokio::test]
+async fn engine_goalwrite_rejects_unknown_wake_trigger_schema_before_write() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let (pg, owner, target_self, engine, authz) = boot_registered(&url).await?;
+        let request = product_request(&owner, target_self, "Practice every weekday.").with_wake(
+            Some(wake_config(
+                GoalWakeTrigger::FactSchema {
+                    schema_id: SchemaId::new("test/missing-fact-v1".into()),
+                    schema_version: SchemaVersion::new(1),
+                },
+                &[],
+            )),
+        );
+
+        let err = engine
+            .create_goal(&authz, request)
+            .await
+            .expect_err("unknown wake trigger Fact schema rejects before write");
+        assert_eq!(err.code, ErrorCode::UnknownSchema);
+        assert!(err.message.contains("test/missing-fact-v1"));
+        assert_no_goal_rows(&pg).await?;
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("wake trigger schema validation test failed");
+}
+
+#[tokio::test]
+async fn engine_goalwrite_rejects_non_fact_wake_trigger_memory_before_write() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let (pg, owner, target_self, engine, authz) = boot_registered(&url).await?;
+        let request = product_request(&owner, target_self, "Practice every weekday.").with_wake(
+            Some(wake_config(
+                GoalWakeTrigger::FactMemory {
+                    memory_id: target_self,
+                },
+                &[],
+            )),
+        );
+
+        let err = engine
+            .create_goal(&authz, request)
+            .await
+            .expect_err("non-Fact wake trigger memory rejects before write");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        assert!(err.message.contains("wake_trigger"));
+        assert_no_goal_rows(&pg).await?;
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("wake trigger memory validation test failed");
+}
+
+#[tokio::test]
+async fn engine_goalwrite_rejects_unreadable_wake_hard_memory_before_write() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let (pg, owner, target_self, engine, authz) = boot_registered(&url).await?;
+        let missing_hard_memory = MemoryId::new(Uuid::now_v7());
+        let request = product_request(&owner, target_self, "Practice every weekday.").with_wake(
+            Some(wake_config(
+                GoalWakeTrigger::FactSchema {
+                    schema_id: SchemaId::new("core/agent-note-v1".into()),
+                    schema_version: SchemaVersion::new(1),
+                },
+                &[missing_hard_memory],
+            )),
+        );
+
+        let err = engine
+            .create_goal(&authz, request)
+            .await
+            .expect_err("missing hard memory rejects before write");
+        assert_eq!(err.code, ErrorCode::Forbidden);
+        assert_no_goal_rows(&pg).await?;
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("wake hard-memory validation test failed");
 }
 
 #[tokio::test]

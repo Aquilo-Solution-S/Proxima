@@ -113,7 +113,6 @@ fn engine() -> Engine {
 fn draft(_owner: &Owner) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
-        author_personality_instance_id: None,
         schema_id: TestFact::schema_id(),
         schema_version: SchemaVersion::new(TestFact::SCHEMA_VERSION),
         payload: json(&TestFact {

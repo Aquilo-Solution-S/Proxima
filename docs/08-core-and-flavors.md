@@ -4,7 +4,7 @@
 ## Decision
 
 Core is the Rust runtime framework core. It owns graph contracts,
-build-time flavor registry, protocol verbs, wake/personality runtime,
+build-time flavor registry, protocol verbs, Goal/Self/WakeConfig runtime,
 agent long-term memory substrate, substrate MCP tools, inference config
 vocabulary, and storage ports. Flavor crates contribute build-time
 vocabulary. Composite binaries choose flavor crates at build time and
@@ -30,7 +30,7 @@ runtime framework core (`proxima-core`)
   storage ports
   agent long-term memory sidecars + tools
   GoalWrite, active-goal queries, core Goal tools
-  personality runtime rows + wake-entry contracts
+  Goal-owned WakeConfig + candidate reads
   substrate MCP config tools
 
 flavor crate
@@ -117,29 +117,29 @@ Every macro invocation adds one `FlavorDescriptor`:
 
 The frozen registry exposes `list_flavors()` and `flavor(flavor_id)`.
 Flavor metadata describes linked vocabulary; it does not define runtime
-personality classes.
+agent classes.
 
-## Runtime Personality Boundary
+## Runtime Self/Wake Boundary
 
-Personality is runtime substrate state:
+Self is a query over existing rows:
 
 ```
-PersonalityInstance
-  root Perspective
-  wake entries:
-    trigger kind + id
-    goal scope
-    probability
-    label
-    instructions
+Self(perspective_id, read_owners)
+  readable Perspective selector
+  active Goal heads assigned by core/inspires
 ```
 
-There is no flavor-owned runtime personality trait. A flavor may provide
-payload schemas, MCP tools, and dependency rules, but
-personality instances remain substrate rows.
+Wake is Goal-owned config:
 
-Wake entries are detect config. External harnesses drive model, tool,
-and execution decisions.
+```
+Goal.wake = none | some WakeConfig
+WakeConfig.toolset subset-of actor ToolScope intersect deployment profile
+```
+
+There is no flavor-owned runtime agent trait. A flavor may provide payload
+schemas, relation descriptors, MCP tools, and dependency rules. External
+harnesses drive model and execution decisions; PR6 core exposes candidate
+reads only, not an executor.
 
 ## Substrate MCP Surface
 
@@ -153,14 +153,15 @@ Default substrate memory surface:
 |  | `core_link` |
 
 Substrate MCP config tools are core-registered flat tools plus action
-dispatchers for goals, wake entries, personalities, and Facts. Schema,
+dispatchers for goals and Facts. Schema,
 edge, tool, graph, memory-hydration, lineage, and event reads are MCP
 resources.
 
-Flavor MCP tools extend the MCP catalog. Wake-entry validation checks
-trigger uniqueness and detect-config shape only.
+Flavor MCP tools extend the MCP catalog. Goal WakeConfig validation checks
+registered trigger/tool shape; candidate reads apply actor and deployment
+tool-scope narrowing.
 
-Core exposes no generic `create_edge` personality tool. Relation creation
+Core exposes no generic `create_edge` tool. Relation creation
 is relation-specific because typed relations require descriptor masks and
 payload validation.
 
@@ -173,7 +174,7 @@ Core owns:
 | Entity | Goal identity and 4-state lifecycle (`Active`, `Paused`, `Achieved`, `Abandoned`) |
 | Verb | `GoalWrite` create / supersede semantics |
 | Query | active-goal heads and assignment traversal |
-| Relations | `core/inspires`, `core/motivated-by` |
+| Relations | `core/inspires`, `core/motivated-by`, `core/wake-motivated-by` |
 | Payloads | core `GoalPayload` schemas |
 | Tools | `core_goal` action dispatcher: `set`, `transition`, `mark_achieved`, `modify`, `decompose` |
 
@@ -222,6 +223,6 @@ per flavor id:
 
 1. Each schema, relation, MCP tool, and dependency rule keeps its flavor
    prefix.
-2. Cross-flavor reads obey owner/read-scope rules.
+2. Cross-flavor reads obey Owner role resolution and authorized read-owner sets.
 3. Cross-flavor edges must use registered relation descriptors.
 4. Composite binaries do not introduce ad-hoc runtime vocabulary.

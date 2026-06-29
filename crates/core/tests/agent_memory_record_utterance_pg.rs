@@ -5,22 +5,19 @@ mod common;
 use common::{ConstantEmbedding, drop_db, fresh_pg};
 use proxima_core::engine::Engine;
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
-use proxima_core::{
-    AuthPath, AuthzContext, FlavorRegistry, Owner, OwnerRef, PersonalityInstanceId, UserId,
-};
+use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, Owner, OwnerRef, UserId};
 use serde_json::json;
 use sqlx::Row;
 
 #[tokio::test]
-async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn record_utterance_persists_sidecar_and_embedding_job()
+-> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
     let frozen_inner = registry.freeze();
     let frozen = Arc::new(frozen_inner.clone());
     let owner: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::nil()));
-    let personality = PersonalityInstanceId::new(uuid::Uuid::now_v7());
     let engine = Arc::new(
         Engine::new(frozen_inner)
             .with_storage_ports(Arc::new(pg.clone()).storage_ports())
@@ -43,7 +40,6 @@ async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn
                 model_id: "codex-test".into(),
                 client_name: "codex".into(),
                 client_version: "1".into(),
-                personality_instance_id: Some(personality),
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
@@ -55,7 +51,7 @@ async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn
             "speaker": "user",
             "conversation_id": "thread-1",
             "text": "The citation phase needs utterance Facts.",
-            "idempotency_key": "utterance-pg-personality"
+            "idempotency_key": "utterance-pg-sidecar"
         }),
     )
     .await?;
@@ -64,17 +60,13 @@ async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn
     assert!(handle.starts_with('F'));
 
     let row = sqlx::query(
-        r"SELECT m.personality_instance_id, u.speaker, u.conversation_id, u.text
+        r"SELECT u.speaker, u.conversation_id, u.text
            FROM proxima_core.memories m
            JOIN proxima_core.utterance_v1 u USING (memory_id)
            WHERE m.schema_id = 'core/utterance-v1'",
     )
     .fetch_one(pg.pool())
     .await?;
-    assert_eq!(
-        row.get::<uuid::Uuid, _>("personality_instance_id"),
-        personality.into_inner()
-    );
     assert_eq!(row.get::<String, _>("speaker"), "user");
     assert_eq!(row.get::<String, _>("conversation_id"), "thread-1");
     assert_eq!(

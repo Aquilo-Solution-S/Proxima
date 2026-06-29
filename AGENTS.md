@@ -87,9 +87,9 @@ Branch policy:
 3. Remaining v0.0.4 slices use short reviewed branches targeting `main` unless a slice is explicitly staged by Heinrich.
 4. Tag `v0.0.4` from `main` only after all required slices merge and post-merge CI passes.
 
-Breaking deletion target: remove production compatibility for `Principal` /
-`OwnerPrincipalKind`, `ReadScope`, materialized Personality/Self authz,
-`entity_owner` reachability, core Event/EventSource identity, `goal_parents`,
+Breaking deletion target: remove production compatibility for legacy principal/read-scope APIs,
+materialized Personality/Self authz, owner-reachability compatibility,
+core Event/EventSource identity, legacy Goal parent tables,
 public aggregate `Storage`, raw flavor `PgPool` / core-table SQL capability,
 and stale MCP/wire names. Do not weaken the Lean guardrails: server-resolved
 `OwnerRef`, source-owned descriptor-admitted edges with target redaction,
@@ -175,8 +175,8 @@ runtime checklist most likely to prevent regressions.
   edges. Similarity is query-time only.
 - **Ownership/authz:** rows carry stable `OwnerRef`; the host resolves through
   `OwnerState` / `OwnerAccessPort` into roles. No org predicate, ACL/share set,
-  `ReadScope`, materialized Personality/Self, or caller-supplied resolved owner
-  may authorize access.
+  retired read-scope API, materialized Personality/Self, or caller-supplied
+  resolved owner may authorize access.
 - **Facts:** Facts are admitted `Memory` rows; receipts prove admission only,
   not external truth. Fact identity is the row id, not content hash, source id,
   or receipt id.

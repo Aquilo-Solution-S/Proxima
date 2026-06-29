@@ -163,41 +163,6 @@ impl McpToolHost {
         author: McpAuthorContext,
         auth: Option<McpAuthContext>,
     ) -> Result<serde_json::Value, ToolInvocationError> {
-        // M0: For master-token calls without an explicit caller_self_perspective,
-        // ensure the per-token shell-author personality and default the field
-        // to its Self-Perspective. Subject-authorized calls below resolve
-        // the subject personality and become authoritative unless the caller
-        // supplied an explicit Self-Perspective.
-        let mut author = author;
-        let caller_supplied_self = author.caller_self_perspective.is_some();
-        let master_token_id = auth.as_ref().and_then(|c| c.master_token_id);
-        if author.caller_self_perspective.is_none()
-            && let (Some(token_id), Some(engine), Some(auth_ctx)) =
-                (master_token_id, self.engine.as_ref(), auth.as_ref())
-        {
-            let identity = engine
-                .ensure_master_token_personality(&auth_ctx.owner, token_id)
-                .await
-                .map_err(|err| ToolInvocationError::Tool(McpToolError::Other(err.to_string())))?;
-            author.caller_self_perspective = Some(identity.self_perspective_memory_id);
-        }
-
-        if let (Some(engine), Some(auth_ctx)) = (self.engine.as_ref(), auth.as_ref())
-            && matches!(
-                auth_ctx.authz.auth_path(),
-                proxima_core::AuthPath::HostBearer | proxima_core::AuthPath::MasterDev
-            )
-        {
-            let identity = engine
-                .ensure_subject_personality(&auth_ctx.owner, &auth_ctx.authz.principal())
-                .await
-                .map_err(|err| ToolInvocationError::Tool(McpToolError::Other(err.to_string())))?;
-            author.personality_instance_id = Some(identity.instance_id);
-            if !caller_supplied_self {
-                author.caller_self_perspective = Some(identity.self_perspective_memory_id);
-            }
-        }
-
         if let Some(descriptor) = self
             .registry
             .list_mcp_tools()
@@ -485,7 +450,6 @@ mod tests {
             model_id: "test-model".into(),
             client_name: "test-client".into(),
             client_version: "0.1.0".into(),
-            personality_instance_id: None,
             caller_self_perspective: None,
         };
         let token = uuid::Uuid::now_v7();

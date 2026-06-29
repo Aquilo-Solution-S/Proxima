@@ -32,7 +32,7 @@ pub(super) async fn query_goals(
                 g.title, g.text, g.state, \
                 g.supersedes, {payload_projection} AS payload, \
                 COALESCE(array_agg(e.target_goal_id) FILTER \
-                    (WHERE e.target_goal_id IS NOT NULL), '{{}}'::uuid[]) AS parent_goal_ids \
+                    (WHERE e.target_goal_id IS NOT NULL), '{{}}'::uuid[]) AS dependency_goal_ids \
          FROM proxima_core.goals g \
          LEFT JOIN proxima_core.edges e \
            ON e.source_goal_id = g.goal_id \

@@ -14,11 +14,11 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
     let owner = owner_fixture();
     let other_owner = OwnerRef::Personal(UserId::new(Uuid::from_u128(99)));
 
-    let old = insert_memory(&pg, &owner, "old abstraction", 1).await?;
-    let new = insert_memory(&pg, &owner, "new abstraction", 2).await?;
-    let perspective = insert_memory(&pg, &owner, "perspective", 3).await?;
-    let other_old = insert_memory(&pg, &other_owner, "other owner old", 5).await?;
-    let other = insert_memory(&pg, &other_owner, "other owner", 4).await?;
+    let old = insert_memory(&pg, &owner, "old abstraction").await?;
+    let new = insert_memory(&pg, &owner, "new abstraction").await?;
+    let perspective = insert_memory(&pg, &owner, "perspective").await?;
+    let other_old = insert_memory(&pg, &other_owner, "other owner old").await?;
+    let other = insert_memory(&pg, &other_owner, "other owner").await?;
 
     insert_edge(
         &pg,
@@ -58,7 +58,6 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
                 direction: MemoryLineageDirection::Ancestors,
                 depth: 3,
                 limit: 10,
-                reader_personality_instance_id: None,
             },
         )
         .await?;
@@ -86,7 +85,6 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
                 direction: MemoryLineageDirection::Descendants,
                 depth: 3,
                 limit: 10,
-                reader_personality_instance_id: None,
             },
         )
         .await?;
@@ -107,23 +105,20 @@ async fn insert_memory(
     pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,
     text: &str,
-    wake_chain_depth: i16,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+             operator_kind, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/lineage-v1', 1, 'Abstraction',
-                 $4, 'Wake', 'test-model', 'test-v1',
-                 '00000000-0000-0000-0000-000000000000'::uuid, $5)",
+                 $4, 'Wake', 'test-model', 'test-v1')",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_id)
     .bind(text)
-    .bind(wake_chain_depth)
     .execute(pg.pool())
     .await?;
     Ok(memory_id)

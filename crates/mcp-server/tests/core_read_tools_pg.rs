@@ -17,9 +17,8 @@ async fn core_read_resources_return_prefixed_ids_and_author()
     pg.run_migrations().await?;
 
     let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-    let author = uuid::Uuid::now_v7();
-    let source = insert_memory(&pg, &owner, "source lineage memory", Some(author)).await?;
-    let derived = insert_memory(&pg, &owner, "derived lineage memory", Some(author)).await?;
+    let source = insert_memory(&pg, &owner, "source lineage memory").await?;
+    let derived = insert_memory(&pg, &owner, "derived lineage memory").await?;
     let edge = insert_edge(&pg, &owner, derived, source).await?;
 
     let registry = FlavorRegistry::new().freeze();
@@ -42,10 +41,6 @@ async fn core_read_resources_return_prefixed_ids_and_author()
         .await?;
     assert_eq!(fetched["memory"], format!("A:{derived}"));
     assert_eq!(fetched["kind"], "Abstraction");
-    assert_eq!(
-        fetched["authoring_personality_instance_id"],
-        format!("I:{author}")
-    );
     assert_eq!(fetched["handle"], format!("A:{derived}"));
     assert_eq!(fetched["body"], "derived lineage memory");
     assert!(
@@ -100,23 +95,20 @@ async fn insert_memory(
     pg: &PgStorage,
     owner: &Owner,
     text: &str,
-    personality_instance_id: Option<uuid::Uuid>,
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     let memory_id = uuid::Uuid::now_v7();
     let (owner_kind, owner_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+             operator_kind, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/core-read-v1', 1, 'Abstraction',
-                 $4, 'Wake', 'test-model', 'test-v1',
-                 COALESCE($5, '00000000-0000-0000-0000-000000000000'::uuid), 0)",
+                 $4, 'Wake', 'test-model', 'test-v1')",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_id)
     .bind(text)
-    .bind(personality_instance_id)
     .execute(pg.pool())
     .await?;
     Ok(memory_id)
@@ -157,7 +149,6 @@ fn author_ctx() -> McpAuthorContext {
         model_id: "codex-test".into(),
         client_name: "codex".into(),
         client_version: "1".into(),
-        personality_instance_id: None,
         caller_self_perspective: None,
     }
 }

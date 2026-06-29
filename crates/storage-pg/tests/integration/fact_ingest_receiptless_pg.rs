@@ -30,7 +30,6 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
 
 fn receiptless_command() -> FactWriteCommand {
     FactWriteCommand {
-        author_personality_instance_id: None,
         schema_id: SchemaId::new("test/receiptless_fact".into()),
         schema_version: SchemaVersion::new(1),
         payload: format!("receiptless {}", Uuid::now_v7()).into_bytes(),

@@ -12,19 +12,16 @@ use std::time::Duration;
 
 use proxima_core::SidecarPayload;
 use proxima_core::change_event::{EdgeTargetProjection, EntityRef};
-use proxima_core::personality::{
-    AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
-    InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
-    PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeEntriesRequest,
-    SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse,
+use proxima_core::read_models::{
+    AbstractionRow, ActiveGoalSummary, ChangeEventForWake, FactRow, GoalWakeCandidate,
+    GoalWakeCandidateRequest, MemorySnapshot, SidecarSpec,
 };
 use proxima_core::storage_ports::{
     ChangeEventPort, CitationPort, ComplianceErasePort, EdgeReadPort, EmbeddingJobPort,
     EmbeddingTextPort, EmbeddingWritePort, FactIngestPort, FactRetentionPort, GoalReadPort,
-    GoalSupportReadPort, GoalWritePort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
+    GoalWakeCandidatePort, GoalWritePort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
     OperatorInvocationReadPort, OperatorInvocationWritePort, OwnerAccessReadPort,
-    OwnerMembershipAdminPort, PersonalityReadPort, PersonalityWritePort, RegistryProjectionPort,
-    SourceBatchPort, StoragePorts, WakeConfigPort,
+    OwnerMembershipAdminPort, RegistryProjectionPort, SourceBatchPort, StoragePorts,
 };
 use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
@@ -45,9 +42,9 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EdgeEndpointKindRow, EdgeId,
-    EmbeddingJobClaim, EntityId, FactEntityId, GroupId, MasterTokenPersonality, MembershipRow,
-    MemoryDependency, MemoryGraphPayloadRow, MemoryId, MemoryKindRow, NeighborEdgeRow, Owner,
-    OwnerRef, Relation, SchemaId, SchemaVersion, SourceBatchId, StorageError, UserId,
+    EmbeddingJobClaim, EntityId, FactEntityId, GroupId, MembershipRow, MemoryDependency,
+    MemoryGraphPayloadRow, MemoryId, MemoryKindRow, NeighborEdgeRow, Owner, OwnerRef, Relation,
+    SchemaId, SchemaVersion, SourceBatchId, StorageError, UserId,
 };
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -322,7 +319,6 @@ impl PgStorage {
             .embedding_write(self.clone())
             .embedding_job(self.clone())
             .goal_write(self.clone())
-            .goal_support_read(self.clone())
             .goal_read(self.clone())
             .change_event(self.clone())
             .edge_read(self.clone())
@@ -330,9 +326,6 @@ impl PgStorage {
             .owner_access_read(self.clone())
             .owner_membership_admin(self.clone())
             .source_batch(self.clone())
-            .personality_read(self.clone())
-            .personality_write(self.clone())
-            .wake_config(self.clone())
             .fact_retention(self.clone())
             .compliance_erase(self.clone())
             .registry_projection(self)
@@ -504,7 +497,6 @@ impl MemoryAuthoringPort for PgStorage {
             memory_id: req.memory_id.into_inner(),
             owner: req.owner,
             kind: req.kind,
-            author_personality_instance_id: req.author_personality_instance_id,
             schema_id: req.schema_id.clone(),
             schema_version: req.schema_version,
             text: req.text.clone(),
@@ -851,17 +843,9 @@ impl MemoryInspectPort for PgStorage {
     async fn load_memory_by_id(
         &self,
         memory_id: proxima_core::MemoryId,
-        reader_personality_instance_id: Option<PersonalityInstanceId>,
         sidecars: &[SidecarSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
-        verbs::consolidate::load_memory_by_id(
-            &self.pool,
-            &self.sidecars,
-            memory_id,
-            reader_personality_instance_id,
-            sidecars,
-        )
-        .await
+        verbs::consolidate::load_memory_by_id(&self.pool, &self.sidecars, memory_id, sidecars).await
     }
 
     async fn list_memory_dependencies(
@@ -1017,32 +1001,6 @@ impl GoalWritePort for PgStorage {
 }
 
 #[async_trait::async_trait]
-impl GoalSupportReadPort for PgStorage {
-    async fn active_personality_root(
-        &self,
-        owner: &Owner,
-        instance_id: PersonalityInstanceId,
-    ) -> Result<Option<MemoryId>, StorageError> {
-        let (owner_kind, owner_id) = owner.columns();
-        let row: Option<(uuid::Uuid,)> = sqlx::query_as(
-            "SELECT current_root_perspective_memory_id
-             FROM proxima_core.personality
-             WHERE owner_kind = $1
-               AND owner_id IS NOT DISTINCT FROM $2
-               AND personality_instance_id = $3
-               AND status <> 'tombstoned'::proxima_core.personality_status",
-        )
-        .bind(owner_kind)
-        .bind(owner_id)
-        .bind(instance_id.into_inner())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(internal)?;
-        Ok(row.map(|(memory_id,)| MemoryId::new(memory_id)))
-    }
-}
-
-#[async_trait::async_trait]
 impl GoalReadPort for PgStorage {
     async fn list_active_goals(
         &self,
@@ -1057,6 +1015,16 @@ impl GoalReadPort for PgStorage {
             limit,
         )
         .await
+    }
+}
+
+#[async_trait::async_trait]
+impl GoalWakeCandidatePort for PgStorage {
+    async fn list_goal_wake_candidates(
+        &self,
+        req: &GoalWakeCandidateRequest<'_>,
+    ) -> Result<Vec<GoalWakeCandidate>, StorageError> {
+        verbs::goal_wake_candidates::list_goal_wake_candidates(&self.pool, req).await
     }
 }
 
@@ -1230,87 +1198,6 @@ impl SourceBatchPort for PgStorage {
 }
 
 #[async_trait::async_trait]
-impl PersonalityReadPort for PgStorage {
-    async fn list_personality_instances(
-        &self,
-        owner: &Owner,
-        include_tombstoned: bool,
-    ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
-        verbs::consolidate::list_personality_instances(&self.pool, owner, include_tombstoned).await
-    }
-}
-
-#[async_trait::async_trait]
-impl PersonalityWritePort for PgStorage {
-    async fn tombstone_personality(
-        &self,
-        req: &TombstonePersonalityRequest,
-    ) -> Result<TombstonePersonalityResponse, StorageError> {
-        verbs::consolidate::tombstone_personality(&self.pool, req).await
-    }
-
-    async fn instantiate_personality(
-        &self,
-        req: &InstantiatePersonalityRequest,
-    ) -> Result<InstantiatePersonalityResponse, StorageError> {
-        verbs::consolidate::instantiate_personality(&self.pool, req).await
-    }
-
-    async fn ensure_master_token_personality(
-        &self,
-        owner: &Owner,
-        master_token_id: uuid::Uuid,
-    ) -> Result<MasterTokenPersonality, StorageError> {
-        verbs::master_token_personality::ensure_master_token_personality(
-            &self.pool,
-            owner,
-            master_token_id,
-        )
-        .await
-    }
-
-    async fn ensure_subject_personality(
-        &self,
-        owner: &Owner,
-        subject: &OwnerRef,
-    ) -> Result<MasterTokenPersonality, StorageError> {
-        verbs::subject_personality::ensure_subject_personality(&self.pool, owner, subject).await
-    }
-
-    async fn append_personality_memories(
-        &self,
-        req: &PersonalityWriteRequest<'_>,
-    ) -> Result<PersonalityWriteOutcome, StorageError> {
-        verbs::consolidate::append_personality_memories(&self.pool, &self.sidecars, req).await
-    }
-}
-
-#[async_trait::async_trait]
-impl WakeConfigPort for PgStorage {
-    async fn set_wake_entries(
-        &self,
-        req: &SetWakeEntriesRequest,
-    ) -> Result<SetWakeEntriesResponse, StorageError> {
-        verbs::consolidate::set_wake_entries(&self.pool, req).await
-    }
-
-    async fn set_wake_entries_within(
-        &self,
-        owner: &Owner,
-        personality_instance_id: PersonalityInstanceId,
-        mutate: proxima_core::WakeEntriesMutator,
-    ) -> Result<SetWakeEntriesResponse, StorageError> {
-        verbs::consolidate::set_wake_entries_within(
-            &self.pool,
-            owner,
-            personality_instance_id,
-            mutate,
-        )
-        .await
-    }
-}
-
-#[async_trait::async_trait]
 impl FactRetentionPort for PgStorage {
     async fn upsert_fact_retention(&self, owner: &Owner, seconds: i64) -> Result<(), StorageError> {
         verbs::fact_retention::upsert_fact_retention(&self.pool, owner, seconds).await
@@ -1375,7 +1262,7 @@ impl RegistryProjectionPort for PgStorage {
         owner: &Owner,
         memory_id: proxima_core::MemoryId,
         sidecars: &[SidecarSpec],
-    ) -> Result<Vec<proxima_core::FactRow>, StorageError> {
+    ) -> Result<Vec<FactRow>, StorageError> {
         verbs::consolidate::load_memory_batch_facts(
             &self.pool,
             &self.sidecars,
@@ -1400,35 +1287,5 @@ impl RegistryProjectionPort for PgStorage {
             limit,
         )
         .await
-    }
-
-    async fn load_perspective_heads(
-        &self,
-        owner: &Owner,
-        instance: PersonalityInstanceId,
-        root_perspective_memory_id: proxima_core::MemoryId,
-        sidecars: &[SidecarSpec],
-        limit: usize,
-    ) -> Result<Vec<MemorySnapshot>, StorageError> {
-        verbs::consolidate::load_perspective_heads(
-            &self.pool,
-            &self.sidecars,
-            owner,
-            instance,
-            root_perspective_memory_id,
-            sidecars,
-            limit,
-        )
-        .await
-    }
-
-    async fn lookup_prior_personality_head(
-        &self,
-        owner: &Owner,
-        instance: &PersonalityRef,
-        schema_id: &proxima_core::SchemaId,
-    ) -> Result<Option<proxima_core::MemoryId>, StorageError> {
-        verbs::consolidate::lookup_prior_personality_head(&self.pool, owner, instance, schema_id)
-            .await
     }
 }

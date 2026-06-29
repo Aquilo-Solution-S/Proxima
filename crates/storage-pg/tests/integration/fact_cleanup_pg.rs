@@ -190,7 +190,6 @@ fn stateful_fact(entity_key: &str, body: &str) -> CleanupStatefulFactV1 {
 fn stateful_draft_for(_owner: &Owner, payload_value: &Value) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
-        author_personality_instance_id: None,
         schema_id: CleanupStatefulFactV1::schema_id(),
         schema_version: SchemaVersion::new(CleanupStatefulFactV1::SCHEMA_VERSION),
         payload: canonical_json_bytes(payload_value),
@@ -230,7 +229,6 @@ fn fresh_draft(owner: Owner) -> FactWriteCommand {
 fn fresh_draft_with_content_hash(_owner: Owner, content_hash: [u8; 32]) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
-        author_personality_instance_id: None,
         schema_id: SchemaId::new("test/cleanup-fact-v1".into()),
         schema_version: SchemaVersion::new(1),
         payload: format!("cleanup {}", Uuid::now_v7()).into_bytes(),
@@ -1070,7 +1068,6 @@ async fn assert_tombstoned_derivative_filtered(
                 direction: MemoryLineageDirection::Ancestors,
                 depth: 2,
                 limit: 10,
-                reader_personality_instance_id: None,
             },
         )
         .await?;
@@ -1192,10 +1189,10 @@ async fn insert_derivative(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, personality_instance_id, wake_chain_depth)
+             operator_kind, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/cleanup-abstraction-v1', 1,
                  'Abstraction', $4, 'FtoA', 'test-model',
-                 'test-prompt', '00000000-0000-0000-0000-000000000000'::uuid, 0)",
+                 'test-prompt')",
     )
     .bind(derivative_id)
     .bind(owner_kind)

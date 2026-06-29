@@ -39,7 +39,7 @@ pub struct RecordUtteranceTool;
 
 impl McpTool for RecordUtteranceTool {
     const NAME: &'static str = "core_record_utterance";
-    const DESCRIPTION: &'static str = "Append one raw conversation turn (utterance) as a personality-authored Fact. Use `core_remember` for distilled observations rather than verbatim transcript.";
+    const DESCRIPTION: &'static str = "Append one raw conversation turn (utterance) as a Fact. Use `core_remember` for distilled observations rather than verbatim transcript.";
     type Args = RecordUtteranceArgs;
     type Output = RecordUtteranceOutput;
 
@@ -85,15 +85,12 @@ impl McpTool for RecordUtteranceTool {
             let source_id = format!("{SOURCE_ID}/{source_instance_id}");
 
             let observed_at = time::OffsetDateTime::now_utc();
-            let mut draft = FactWriteCommand::from_payload(
+            let draft = FactWriteCommand::from_payload(
                 source_id,
                 SourceBatchId::new(uuid::Uuid::now_v7()),
                 &payload,
                 observed_at,
             );
-            if let Some(author) = ctx.author.personality_instance_id {
-                draft = draft.author_personality(author);
-            }
 
             let engine = ctx
                 .engine()

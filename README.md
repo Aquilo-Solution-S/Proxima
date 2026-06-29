@@ -81,7 +81,7 @@ Agent-specific setup and copy/paste prompts live in
 ## What `proxima-core` Means
 
 proxima-core is the Rust runtime framework core: the domainless graph contracts,
-build-time flavor registry, protocol verbs, wake/personality runtime, MCP tool
+build-time flavor registry, protocol verbs, Goal/Self/WakeConfig runtime, MCP tool
 substrate, and storage ports. Applications normally embed it through the
 `proxima` crate and add domains via flavor crates.
 
@@ -133,8 +133,8 @@ Status labels used below:
   rationale**. Event sources, owner scoping, and the membrane between Reality
   and the agent.
 - [`docs/02-memory.md`](docs/02-memory.md) — **current + design rationale**.
-  Core memory entity, strict Facts → Abstraction → Perspective layering, edge
-  directionality, operator scope, and read-scope matrix.
+  Core memory entity, strict Facts → Abstraction → Perspective layering,
+  source-owned edges, operator provenance, and owner-role scoped reads.
 - [`docs/03-schema-registry.md`](docs/03-schema-registry.md) — **current +
   design rationale**. Compile-time payload traits, sidecars, registrations,
   renderers, and migration discipline.
@@ -160,7 +160,7 @@ Status labels used below:
   rationale**. CitedObject/CitationMapping traits, bibliographic provenance,
   and Fact-only citation rule.
 - [`docs/12-tool-manifest.md`](docs/12-tool-manifest.md) — **current + deferred
-  sections**. Build-time tool vocabulary, MCP dispatch, wake-entry detection,
+  sections**. Build-time tool vocabulary, MCP dispatch, Goal wake toolsets,
   and deferred compliance enforcement.
 - [`docs/13-compliance.md`](docs/13-compliance.md) — **design intent + current
   primitive inventory**. Owner deletion, source-scope deletion, pause/resume,

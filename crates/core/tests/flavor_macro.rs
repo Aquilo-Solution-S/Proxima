@@ -200,9 +200,8 @@ fn flavor_macro_accepts_empty_goal_schemas() {
     let mut registry = FlavorRegistry::new();
     empty_goal_schemas::register(&mut registry);
     let frozen = registry.freeze();
-    // The default registry now ships substrate-managed schemas (e.g.
-    // core/personality_config_changed_v1). Asserting absence of the
-    // macro-targeted schemas is what this test cares about.
+    // The default registry may ship substrate-managed schemas. Asserting
+    // absence of the macro-targeted schemas is what this test cares about.
     assert!(
         frozen
             .list()

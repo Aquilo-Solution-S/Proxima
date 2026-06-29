@@ -5,9 +5,7 @@ use proxima_core::verbs::query::{
     EntityKind, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode, MemoryLineageRequest,
     MemoryLineageResponse,
 };
-use proxima_core::{
-    MemoryId, OwnerRef, OwnerRefKind, RelationClass, SchemaId, StorageError, WakeChainDepth,
-};
+use proxima_core::{MemoryId, OwnerRef, OwnerRefKind, RelationClass, SchemaId, StorageError};
 use sqlx::PgPool;
 
 use crate::error::internal;
@@ -33,7 +31,6 @@ struct NodeRow {
     kind: Option<EntityKind>,
     schema_id: String,
     snippet: Option<String>,
-    wake_chain_depth: i16,
 }
 
 pub(crate) async fn walk_memory_lineage(
@@ -52,16 +49,11 @@ pub(crate) async fn walk_memory_lineage(
     let depth = req.depth.min(8);
     let (read_owner_kinds, read_owner_ids) = read_owner_columns(read_owners);
 
-    let reader_id = req
-        .reader_personality_instance_id
-        .map(proxima_core::PersonalityInstanceId::into_inner);
-
     if !start_memory_visible(
         pool,
         &read_owner_kinds,
         &read_owner_ids,
         req.start_memory_id,
-        reader_id,
     )
     .await?
     {
@@ -79,7 +71,6 @@ pub(crate) async fn walk_memory_lineage(
         &read_owner_ids,
         depth,
         limit.saturating_add(1),
-        reader_id,
     )
     .await?;
     let truncated = edge_rows.len() > usize::try_from(limit).unwrap_or(200);
@@ -99,14 +90,7 @@ pub(crate) async fn walk_memory_lineage(
         }
     }
     let memory_ids: Vec<_> = distances.keys().copied().collect();
-    let node_rows = load_nodes(
-        pool,
-        &read_owner_kinds,
-        &read_owner_ids,
-        &memory_ids,
-        reader_id,
-    )
-    .await?;
+    let node_rows = load_nodes(pool, &read_owner_kinds, &read_owner_ids, &memory_ids).await?;
     let visible_ids: BTreeSet<_> = node_rows.iter().map(|row| row.memory_id).collect();
     let nodes = node_rows
         .into_iter()
@@ -115,7 +99,6 @@ pub(crate) async fn walk_memory_lineage(
             kind: row.kind.unwrap_or(EntityKind::Fact),
             schema_id: SchemaId::new(row.schema_id),
             snippet: row.snippet.unwrap_or_default(),
-            wake_chain_depth: WakeChainDepth::new(u16::try_from(row.wake_chain_depth).unwrap_or(0)),
             distance: *distances.get(&row.memory_id).unwrap_or(&0),
         })
         .collect();
@@ -152,9 +135,8 @@ async fn start_memory_visible(
     read_owner_kinds: &[OwnerRefKind],
     read_owner_ids: &[Option<uuid::Uuid>],
     memory_id: MemoryId,
-    reader_id: Option<uuid::Uuid>,
 ) -> Result<bool, StorageError> {
-    let mut sql = String::from(
+    let sql = String::from(
         "SELECT m.memory_id
              FROM proxima_core.memories m
              WHERE EXISTS (
@@ -168,14 +150,10 @@ async fn start_memory_visible(
                AND m.memory_id = $3
                AND m.tombstoned_at IS NULL",
     );
-    push_reader_visibility_filter(&mut sql, "m", reader_id.map(|_| 4));
-    let mut query = sqlx::query_as::<_, (uuid::Uuid,)>(&sql)
+    let query = sqlx::query_as::<_, (uuid::Uuid,)>(&sql)
         .bind(read_owner_kinds)
         .bind(read_owner_ids)
         .bind(memory_id.into_inner());
-    if let Some(reader_id) = reader_id {
-        query = query.bind(reader_id);
-    }
     let present = query.fetch_optional(pool).await.map_err(internal)?;
     Ok(present.is_some())
 }
@@ -187,19 +165,14 @@ async fn walk_edges(
     read_owner_ids: &[Option<uuid::Uuid>],
     depth: u8,
     limit: u32,
-    reader_id: Option<uuid::Uuid>,
 ) -> Result<Vec<EdgeWalkRow>, StorageError> {
-    let template = match req.direction {
+    let sql = match req.direction {
         MemoryLineageDirection::Ancestors => ANCESTORS_SQL,
         MemoryLineageDirection::Descendants => DESCENDANTS_SQL,
     };
-    let reader_filter = reader_id
-        .map(|_| reader_visibility_filter("m", 8))
-        .unwrap_or_default();
-    let sql = template.replace("{reader_filter}", &reader_filter);
     let (world_kind, world_id) =
         crate::access::owner_columns::owner_binds(&proxima_core::access::world());
-    let mut query = sqlx::query_as::<_, EdgeWalkRow>(&sql)
+    let query = sqlx::query_as::<_, EdgeWalkRow>(sql)
         .bind(read_owner_kinds)
         .bind(read_owner_ids)
         .bind(world_kind)
@@ -207,9 +180,6 @@ async fn walk_edges(
         .bind(req.start_memory_id.into_inner())
         .bind(i32::from(depth))
         .bind(i64::from(limit));
-    if let Some(reader_id) = reader_id {
-        query = query.bind(reader_id);
-    }
     query.fetch_all(pool).await.map_err(internal)
 }
 
@@ -218,14 +188,12 @@ async fn load_nodes(
     read_owner_kinds: &[OwnerRefKind],
     read_owner_ids: &[Option<uuid::Uuid>],
     memory_ids: &[uuid::Uuid],
-    reader_id: Option<uuid::Uuid>,
 ) -> Result<Vec<NodeRow>, StorageError> {
-    let mut sql = String::from(
+    let sql = String::from(
         "SELECT m.memory_id,
                   m.kind,
                   m.schema_id,
-                  left(COALESCE(m.text, ''), 480) AS snippet,
-                  m.wake_chain_depth
+                  left(COALESCE(m.text, ''), 480) AS snippet
              FROM proxima_core.memories m
              WHERE EXISTS (
                        SELECT 1
@@ -238,32 +206,13 @@ async fn load_nodes(
                AND m.memory_id = ANY($3::uuid[])
                AND m.tombstoned_at IS NULL",
     );
-    push_reader_visibility_filter(&mut sql, "m", reader_id.map(|_| 4));
-    let mut query = sqlx::query_as::<_, NodeRow>(&sql)
+    let query = sqlx::query_as::<_, NodeRow>(&sql)
         .bind(read_owner_kinds)
         .bind(read_owner_ids)
         .bind(memory_ids);
-    if let Some(reader_id) = reader_id {
-        query = query.bind(reader_id);
-    }
     let rows = query.fetch_all(pool).await.map_err(internal)?;
 
     Ok(rows)
-}
-
-fn push_reader_visibility_filter(sql: &mut String, alias: &str, reader_param: Option<usize>) {
-    if let Some(param) = reader_param {
-        sql.push_str(&reader_visibility_filter(alias, param));
-    }
-}
-
-fn reader_visibility_filter(alias: &str, param: usize) -> String {
-    format!(
-        " AND (
-            {alias}.kind IS NULL
-            OR {alias}.personality_instance_id = ${param}
-        )"
-    )
 }
 
 const ANCESTORS_SQL: &str = "
@@ -282,7 +231,6 @@ readable_memories AS (
                 WHERE eo.entity_id = m.memory_id
            )
        AND m.tombstoned_at IS NULL
-       {reader_filter}
 ),
 edge_endpoints AS (
     SELECT e.edge_id, e.relation, e.relation_class,
@@ -373,7 +321,6 @@ readable_memories AS (
                 WHERE eo.entity_id = m.memory_id
            )
        AND m.tombstoned_at IS NULL
-       {reader_filter}
 ),
 edge_endpoints AS (
     SELECT e.edge_id, e.relation, e.relation_class,
