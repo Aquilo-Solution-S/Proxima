@@ -4,11 +4,11 @@ The Event Source is the **membrane between Reality and the agent**. Reality is
 unknowable in itself; the agent only ever sees what an Event Source surfaces.
 This is the *only* path by which Reality enters the wheel.
 
-Every Fact in the system traces back to an Event Source. No exceptions.
+Receipt-backed Facts trace to an Event Source. Receiptless Fact writes are valid membrane admissions without source-batch receipt metadata; they remain Facts, but are not source-batch eligible.
 
 ## Owner — scoping primitive
 
-Every Event, Memory, and Goal carries an `OwnerRef`: the stable owner handle.
+Every Memory and Goal carries an `OwnerRef`: the stable owner handle.
 Roles are resolved by the host and passed to Core as server-built access context.
 
 ```rust
@@ -181,7 +181,7 @@ events from the same source. The source declares its *default*;
 the controller refines per Owner.
 
 **Idempotency-key constraint.** Every source receipt id (public
-`EventIngest` still calls this `event_id`; storage names it
+`FactIngest` still calls this `receipt_id`; storage names it
 `receipt_id`) is the deterministic hash of `(source_id, owner,
 payload)`. The hash is content-derived and opaque by construction — it
 must remain so. Sources must not substitute a verbatim natural-person
@@ -196,7 +196,7 @@ Every event carries:
 
 | Field | Meaning |
 |---|---|
-| `event_id` / storage `receipt_id` | Deterministic hash of `(source_id, owner, payload)`. Re-receipt produces the same id. PG stores it in `fact_receipts.receipt_id` and `memories.receipt_id`; there is no core `events` table. |
+| `receipt_id` / storage `receipt_id` | Deterministic hash of `(source_id, owner, payload)`. Re-receipt produces the same id. PG stores it in `fact_receipts.receipt_id` and `memories.receipt_id`; there is no core `events` table. |
 | `source_id` | Which source emitted this. |
 | `owner` | `Owner` — scope of this event (whose Reality slice). Source sets at emit time from its config or per-event observation context. |
 | `source_batch_id` | UUIDv7 declared by the source at emit time; engine validates uniqueness within `(source_id, owner)` and rejects collisions. Groups events from the same Reality observation. |
@@ -206,11 +206,11 @@ Every event carries:
 | `occurred_at` | When the underlying Reality change happened (may differ — a webhook arrives after the commit). |
 | `payload` | Typed, source-specific data conforming to `schema_id @ schema_version`. This includes source-specific fields like `source_uri` (e.g., `forgejo://AQS/aquilo/commit/<sha>`, `telegram://chat/<id>/<msg>`) and `source_locus` (e.g., line number, message index, file path, query offset). |
 
-Receipt-id determinism is what makes the system idempotent against re-receipt.
+Receipt-id determinism is what makes receipt-backed ingest idempotent.
 A webhook re-fired, a poll loop overlapping its own previous cursor, a manual
 replay during debugging — all produce the same receipt id, and the engine
-silently drops the duplicate. Public `event_id` naming remains a PR5 protocol
-membrane cleanup; PR2 storage uses `receipt_id`.
+silently returns the prior Fact outcome. Receiptless Fact writes have no
+receipt id and do not replay.
 
 ## What the Event Source must not do
 
@@ -283,7 +283,7 @@ immutable; their typing is frozen at insert time.
 
 The engine itself has no founding goal. Per-flavor onboarding is the
 bootstrap mechanism (see [06](06-goals-and-self.md)): the flavor's signup flow asks the user
-flavor-specific founding-letter questions and writes Goals + Events
+flavor-specific founding-letter questions and writes Goals + Facts
 under that user's `Owner`.
 
 Engine-level config registers source *instances* with their default

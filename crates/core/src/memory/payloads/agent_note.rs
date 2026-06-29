@@ -17,7 +17,7 @@ impl FactPayload for AgentNoteV1 {
     const SCHEMA_ID: &'static str = "core/agent-note-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn event_key(&self) -> Vec<u8> {
+    fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_uuid("note_id", self.note_id);
         key.field_str("title", &self.title);

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use proxima_core::llm::{EMBEDDING_DIM, EMBEDDING_JOB_MAX_ATTEMPTS, EmbeddingClient, LlmError};
 use proxima_core::test_fixtures::ConstantEmbedding;
-use proxima_core::verbs::event_ingest::EventDraft;
+use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
     AuthPath, AuthzContext, EntityKind, FlavorRegistry, Owner, OwnerRef, SourceBatchId, UserId,
 };
@@ -51,13 +51,12 @@ fn engine_for(
     }
 }
 
-fn fact_draft(owner: &Owner, label: &str) -> EventDraft {
+fn fact_draft(_owner: &Owner, label: &str) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     let payload = TestFactV1 {
         label: label.to_string(),
     };
-    EventDraft::from_payload(
-        owner,
+    FactWriteCommand::from_payload(
         "proxima-test/fact-embedding",
         SourceBatchId::new(Uuid::now_v7()),
         &payload,
@@ -164,13 +163,13 @@ async fn fact_ingest_with_embed_client_enqueues_pending_embedding_job_once()
         );
         let draft = fact_draft(&owner, "rendered fact");
         let outcome = engine
-            .event_ingest(
+            .fact_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::System),
                 draft.clone(),
             )
             .await?;
         let replay = engine
-            .event_ingest(&AuthzContext::single_owner(&owner, AuthPath::System), draft)
+            .fact_ingest(&AuthzContext::single_owner(&owner, AuthPath::System), draft)
             .await?;
 
         assert!(!outcome.idempotent_replay);
@@ -207,7 +206,7 @@ async fn drain_embedding_jobs_writes_embedding_and_deletes_job()
             ))),
         );
         let outcome = engine
-            .event_ingest(
+            .fact_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::System),
                 fact_draft(&owner, "drained fact"),
             )
@@ -249,7 +248,7 @@ async fn upsert_memory_embedding_noops_after_source_memory_deleted()
             ))),
         );
         let outcome = engine
-            .event_ingest(
+            .fact_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::System),
                 fact_draft(&owner, "deleted before embedding write"),
             )
@@ -313,7 +312,7 @@ async fn failed_embedding_jobs_retry_until_attempt_cap() -> Result<(), Box<dyn s
         let owner = owner_fixture();
         let engine = engine_for(pg.clone(), Some(Arc::new(FailingEmbedding)));
         let outcome = engine
-            .event_ingest(
+            .fact_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::System),
                 fact_draft(&owner, "failing fact"),
             )
@@ -373,7 +372,7 @@ async fn claimed_embedding_job_is_not_claimed_again() -> Result<(), Box<dyn std:
             ))),
         );
         let outcome = engine
-            .event_ingest(
+            .fact_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::System),
                 fact_draft(&owner, "skip locked fact"),
             )
@@ -416,7 +415,7 @@ async fn stale_processing_embedding_job_is_reclaimed() -> Result<(), Box<dyn std
             ))),
         );
         let outcome = engine
-            .event_ingest(
+            .fact_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::System),
                 fact_draft(&owner, "stale processing fact"),
             )
@@ -462,13 +461,13 @@ async fn fact_embedding_backfill_heals_no_client_ingest() -> Result<(), Box<dyn 
         let owner = owner_fixture();
         let engine = engine_for(pg.clone(), None);
         let first = engine
-            .event_ingest(
+            .fact_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::System),
                 fact_draft(&owner, "backfill fact one"),
             )
             .await?;
         let second = engine
-            .event_ingest(
+            .fact_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::System),
                 fact_draft(&owner, "backfill fact two"),
             )
@@ -540,14 +539,14 @@ async fn reconcile_embeddings_enqueues_missing_facts_idempotently()
             "reconcile fact three",
         ] {
             engine
-                .event_ingest(
+                .fact_ingest(
                     &AuthzContext::single_owner(&owner, AuthPath::System),
                     fact_draft(&owner, label),
                 )
                 .await?;
         }
         let stale = engine
-            .event_ingest(
+            .fact_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::System),
                 fact_draft(&owner, "reconcile stale fact"),
             )
@@ -625,7 +624,7 @@ async fn reconcile_embedding_drain_writes_fact_embeddings() -> Result<(), Box<dy
         let owner = owner_fixture();
         let engine = engine_for(pg.clone(), None);
         let outcome = engine
-            .event_ingest(
+            .fact_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::System),
                 fact_draft(&owner, "reconcile drain fact"),
             )
@@ -665,14 +664,14 @@ async fn count_pending_embedding_jobs_counts_outstanding() -> Result<(), Box<dyn
         );
         for label in ["pending count one", "pending count two"] {
             engine
-                .event_ingest(
+                .fact_ingest(
                     &AuthzContext::single_owner(&owner, AuthPath::System),
                     fact_draft(&owner, label),
                 )
                 .await?;
         }
         engine
-            .event_ingest(
+            .fact_ingest(
                 &AuthzContext::single_owner(&other_owner, AuthPath::System),
                 fact_draft(&other_owner, "other owner pending count"),
             )
@@ -702,7 +701,7 @@ async fn fact_ingest_without_embed_client_still_succeeds() -> Result<(), Box<dyn
         let owner = owner_fixture();
         let engine = engine_for(pg.clone(), None);
         let outcome = engine
-            .event_ingest(
+            .fact_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::System),
                 fact_draft(&owner, "no client fact"),
             )

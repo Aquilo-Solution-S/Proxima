@@ -99,7 +99,7 @@ Registered schemas:
 Invariant:
 
 - Call audit is Fact-only; I/O bytes are cited as bibliographic payload.
-- Idempotency is `McpCallLogInput::event_id`.
+- Idempotency is `McpCallLogInput::receipt_id`.
 - Vendor LLM-call / embedding-call families, price books, tier accounting,
   token-count accounting, and cost tables are deferred.
 
@@ -122,8 +122,8 @@ Same rule as any EventSource:
 
 | Path | Key |
 |---|---|
-| action-attempt Fact | source-defined `event_id` |
-| effect Fact | observing source's `event_id` |
+| action-attempt Fact | source-defined `receipt_id` |
+| effect Fact | observing source's `receipt_id` |
 | tool result persistence | tool/source request id inside its Fact payload when needed |
 
 No `ActionId`. Re-receipt dedups at the EventSource boundary.

@@ -2,8 +2,8 @@
 
 use proxima_core::personality::*;
 use proxima_core::storage_ports::*;
+use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
-use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use proxima_core::verbs::fact_cleanup::{CleanupDueFactsOutcome, TombstoneFactOutcome};
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
@@ -21,20 +21,21 @@ struct FactIngestFake;
 
 #[async_trait::async_trait]
 impl FactIngestPort for FactIngestFake {
-    async fn ingest_event_atomic(
+    async fn ingest_fact_atomic(
         &self,
-        draft: &EventDraft,
+        owner: &Owner,
+        draft: &FactWriteCommand,
         embedding_model_id: Option<&str>,
-    ) -> Result<EventIngestOutcome, StorageError> {
+    ) -> Result<FactIngestOutcome, StorageError> {
         fake_error()
     }
 
-    async fn ingest_event_with_typed_sidecar(
+    async fn ingest_fact_with_typed_sidecar(
         &self,
-        authorized: &AuthorizedEventIngest,
+        authorized: &AuthorizedFactWrite,
         sidecar_payload: &SidecarPayload,
         embedding_model_id: Option<&str>,
-    ) -> Result<EventIngestOutcome, StorageError> {
+    ) -> Result<FactIngestOutcome, StorageError> {
         fake_error()
     }
 
@@ -43,7 +44,7 @@ impl FactIngestPort for FactIngestFake {
         authorized: &AuthorizedFactWithCitation,
         sidecar_payload: &SidecarPayload,
         embedding_model_id: Option<&str>,
-    ) -> Result<EventIngestOutcome, StorageError> {
+    ) -> Result<FactIngestOutcome, StorageError> {
         fake_error()
     }
 }
@@ -366,11 +367,11 @@ struct ChangeEventFake;
 
 #[async_trait::async_trait]
 impl ChangeEventPort for ChangeEventFake {
-    async fn event_history(
+    async fn change_history(
         &self,
         read_owners: &[OwnerRef],
-        req: &EventHistoryRequest,
-    ) -> Result<EventHistoryResponse, StorageError> {
+        req: &ChangeHistoryRequest,
+    ) -> Result<ChangeHistoryResponse, StorageError> {
         fake_error()
     }
 

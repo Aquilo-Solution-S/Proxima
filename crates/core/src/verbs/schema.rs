@@ -214,7 +214,7 @@ pub struct SchemaResponse {
 /// the whole index after extending `schemas`.
 ///
 /// Only the collections that scale with *schema* count and sit on the
-/// `EventIngest` / `GoalWrite` / edge-write paths are indexed. `flavors`
+/// `FactIngest` / `GoalWrite` / edge-write paths are indexed. `flavors`
 /// and `dependency_satisfaction_rules` scale with *flavor* count (bounded
 /// by linked crates) and stay linear scans — indexing a handful of
 /// entries would not earn its keep.
@@ -564,7 +564,7 @@ impl FlavorRegistryFrozen {
     }
 
     /// Lookup by `(schema_id, schema_version)`. Used by
-    /// `EventIngest` / `GoalWrite` to validate incoming payloads.
+    /// `FactIngest` / `GoalWrite` to validate incoming payloads.
     #[must_use]
     pub fn lookup(&self, schema_id: &SchemaId, version: SchemaVersion) -> Option<&SchemaInfo> {
         let position = *self

@@ -1,5 +1,5 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
-use crate::verbs::event_ingest::EventDraft;
+use crate::verbs::fact_ingest::FactWriteCommand;
 use crate::{Relation, SourceBatchId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -66,6 +66,11 @@ impl McpTool for RecordUtteranceTool {
                 args.space.as_deref(),
                 super::super::memory_spaces::SpaceDefault::Current,
             )?;
+            let authz = ctx
+                .authz
+                .clone()
+                .narrowed_to_owner(space.owner)
+                .ok_or_else(|| McpToolError::NotAuthorized("memory space write".into()))?;
             let payload = UtteranceV1 {
                 speaker: args.speaker,
                 conversation_id: conversation_id.to_string(),
@@ -80,8 +85,7 @@ impl McpTool for RecordUtteranceTool {
             let source_id = format!("{SOURCE_ID}/{source_instance_id}");
 
             let observed_at = time::OffsetDateTime::now_utc();
-            let mut draft = EventDraft::from_payload(
-                &space.owner,
+            let mut draft = FactWriteCommand::from_payload(
                 source_id,
                 SourceBatchId::new(uuid::Uuid::now_v7()),
                 &payload,
@@ -97,11 +101,11 @@ impl McpTool for RecordUtteranceTool {
             let embedding_client = engine.embed_client();
             let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
             let authorized = engine
-                .authorize_event_ingest(&ctx.authz, Relation::Editor, draft)
+                .authorize_fact_ingest(&authz, Relation::Editor, draft)
                 .await
                 .map_err(|err| McpToolError::Other(err.to_string()))?;
             let outcome = engine
-                .ingest_event_with_typed_sidecar(
+                .ingest_fact_with_typed_sidecar(
                     &authorized,
                     &SidecarPayload::fact(payload.clone()),
                     embedding_model_id,

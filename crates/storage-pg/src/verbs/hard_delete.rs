@@ -36,7 +36,7 @@ pub struct HardDeleteCounts {
     pub embeddings: u64,
     pub citation_mappings: u64,
     pub memories: u64,
-    pub events: u64,
+    pub receipts: u64,
 }
 
 /// Fan-out hard deletion of memory/edge/receipt rows and their registered
@@ -75,7 +75,7 @@ pub async fn execute_hard_delete(
 
     counts.citation_mappings = delete_citation_mappings(tx, &memory_ids).await?;
     counts.memories = delete_memories(tx, &memory_ids).await?;
-    counts.events = delete_receipts(tx, &set.receipt_ids).await?;
+    counts.receipts = delete_receipts(tx, &set.receipt_ids).await?;
 
     Ok(counts)
 }

@@ -212,10 +212,10 @@ pub trait FactPayload:
     /// override to `true`. See docs/03 §Special-category declaration
     /// and docs/13 §Compliance vocabulary.
     const SPECIAL_CATEGORY: bool = false;
-    /// Schema-owned event replay key material. This is not a payload
+    /// Schema-owned receipt replay key material. This is not a payload
     /// serialization format; the typed sidecar remains the payload.
     #[must_use]
-    fn event_key(&self) -> Vec<u8>;
+    fn receipt_key(&self) -> Vec<u8>;
     fn render(&self) -> String;
     /// Per-schema typed Fact sidecar table, or `None` when the Fact
     /// carries no sidecar of its own (its typed payload lives elsewhere,

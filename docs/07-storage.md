@@ -126,6 +126,8 @@ paths, and payload text.
 
 Memory-specific rules:
 
+Physical SQL encoding: the kernel `.Fact` branch is represented by `memories.kind IS NULL`; derived branches store `Abstraction` / `Perspective` enum values. `receipt_id` is optional metadata and is never the Fact discriminator.
+
 | Kind | Parent row | Sidecar | Supersession |
 |---|---|---|---|
 | Fact | `memories` Fact branch | required `FactPayload` sidecar | forbidden |

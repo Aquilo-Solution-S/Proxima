@@ -79,8 +79,7 @@ async fn ingest_note_fact(
         tags: Vec::new(),
         idempotency_key: None,
     };
-    let draft = proxima_core::verbs::event_ingest::EventDraft::from_payload(
-        owner,
+    let draft = proxima_core::verbs::fact_ingest::FactWriteCommand::from_payload(
         "edge-append-pg",
         SourceBatchId::new(Uuid::now_v7()),
         &note,
@@ -92,11 +91,13 @@ async fn ingest_note_fact(
             UserId::new(Uuid::now_v7()),
             [(*owner, Role::admin())],
             AuthPath::System,
-        ),
+        )
+        .narrowed_to_owner(*owner)
+        .expect("group admin narrows to target owner"),
         OwnerRef::World => AuthzContext::denied_for_owner(owner),
     };
     engine
-        .event_ingest(&authz, draft)
+        .fact_ingest(&authz, draft)
         .await
         .map(|outcome| outcome.memory_id)
 }

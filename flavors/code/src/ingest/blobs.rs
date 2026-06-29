@@ -1,4 +1,4 @@
-use proxima_core::verbs::event_ingest::{CitationSpec, EventIngestOutcome};
+use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
 use proxima_core::{
     AbstractionPayload, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EdgeId, EntityKind,
     FactPayload, MemoryId, MemoryOperatorKind, Owner, SchemaVersion, SourceBatchId,
@@ -8,7 +8,7 @@ use proxima_storage_pg::verbs::derive_append::{
     DerivedDraft, DerivedOutcome, append_derived_in_tx,
 };
 use proxima_storage_pg::verbs::edge_write::{MemoryEndpoint, append_owner_checked_memory_edge};
-use proxima_storage_pg::verbs::event_ingest::{FactIngestContext, ingest_fact_with_sidecar};
+use proxima_storage_pg::verbs::fact_ingest::{FactIngestContext, ingest_fact_with_sidecar};
 use sqlx::PgPool;
 
 use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1};
@@ -60,7 +60,7 @@ async fn ingest_local_git_fact<P>(
     payload: &P,
     citation: CitationSpec,
     observed_at: time::OffsetDateTime,
-) -> Result<EventIngestOutcome, IngestError>
+) -> Result<FactIngestOutcome, IngestError>
 where
     P: FactPayload + PgMemorySidecar + Clone,
 {
@@ -80,7 +80,7 @@ pub async fn ingest_commit(
     source_batch_id: SourceBatchId,
     payload: &CommitV1,
     observed_at: time::OffsetDateTime,
-) -> Result<EventIngestOutcome, IngestError> {
+) -> Result<FactIngestOutcome, IngestError> {
     ingest_local_git_fact(
         pool,
         owner,
@@ -105,7 +105,7 @@ pub async fn ingest_file_revision(
     source_batch_id: SourceBatchId,
     payload: &FileRevisionV1,
     observed_at: time::OffsetDateTime,
-) -> Result<EventIngestOutcome, IngestError> {
+) -> Result<FactIngestOutcome, IngestError> {
     ingest_local_git_fact(
         pool,
         owner,

@@ -19,7 +19,7 @@ use proxima_core::{
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
 use crate::pg_ident::PgIdent;
-use crate::verbs::event_ingest::PgFactSidecar;
+use crate::verbs::fact_ingest::PgFactSidecar;
 
 pub type PgSidecarFuture<'t> = Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
 pub type PgMemoryPayloadFuture<'t> =

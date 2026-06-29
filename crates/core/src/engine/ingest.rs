@@ -8,10 +8,10 @@ use crate::error::ProtocolError;
 use crate::llm::EmbeddingClient;
 use crate::storage::StorageError;
 use crate::verbs::close_batch::CloseBatchOutcome;
-use crate::verbs::event_ingest::{
-    AuthorizedCitationAttachment, AuthorizedEventIngest, AuthorizedFactWithCitation,
-    AuthorizedInlineCitationMapping, AuthorizedInlineCitedObject, EventDraft, EventIngestOutcome,
-    InlineCitationMappingDraft, InlineCitedObjectDraft,
+use crate::verbs::fact_ingest::{
+    AuthorizedCitationAttachment, AuthorizedFactWithCitation, AuthorizedFactWrite,
+    AuthorizedInlineCitationMapping, AuthorizedInlineCitedObject, FactIngestOutcome,
+    FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::verbs::schema::{PayloadKind, ProtocolPayload, SchemaInfo};
@@ -30,22 +30,22 @@ enum EmbedStep {
 }
 
 impl Engine {
-    /// docs/14 §"`EventIngest`" — Owner-scoped write. Validates
+    /// docs/14 §"`FactIngest`" — Owner-scoped write. Validates
     /// schemas and delegates to storage.
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `draft.principal` or
-    /// lacks [`Relation::Ingest`] on the owner space; `UnknownSchema` when the
+    /// Returns `Forbidden` when the context cannot resolve exactly one writable owner or
+    /// lacks [`Relation::Ingest`] on that owner space; `UnknownSchema` when the
     /// Fact schema or provided citation schemas are not registered; or
     /// `Internal` when the atomic ingest fails.
-    pub async fn event_ingest(
+    pub async fn fact_ingest(
         &self,
         authz: &AuthzContext,
-        draft: EventDraft,
-    ) -> Result<EventIngestOutcome, ProtocolError> {
+        draft: FactWriteCommand,
+    ) -> Result<FactIngestOutcome, ProtocolError> {
         let authorized = self
-            .authorize_event_ingest(authz, Relation::Ingest, draft)
+            .authorize_fact_ingest(authz, Relation::Ingest, draft)
             .await?;
         let embedding_client = self.embed_client();
         let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
@@ -53,47 +53,48 @@ impl Engine {
             .storage
             .ingest
             .fact_ingest
-            .ingest_event_atomic(authorized.draft(), embedding_model_id)
+            .ingest_fact_atomic(
+                authorized.permit().owner(),
+                authorized.draft(),
+                embedding_model_id,
+            )
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))?;
         Ok(outcome)
     }
 
-    /// Authorize + schema-validate + owner-stamp an event ingest,
+    /// Authorize + schema-validate + owner-stamp a Fact write,
     /// returning a witness required by the sidecar-ingest primitive.
     /// Does NOT write. `relation` is the relation the caller's operation
     /// requires.
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `draft.principal`,
-    /// lacks `relation`;
-    /// `UnknownSchema` when the Fact schema or provided citation schemas are
-    /// not registered.
-    pub async fn authorize_event_ingest(
+    /// Returns `Forbidden` when the context cannot resolve exactly one writable owner
+    /// for `relation`; `UnknownSchema` when the Fact schema or provided citation schemas
+    /// are not registered.
+    pub async fn authorize_fact_ingest(
         &self,
         authz: &AuthzContext,
         relation: Relation,
-        mut draft: EventDraft,
-    ) -> Result<AuthorizedEventIngest, ProtocolError> {
-        let permit = self
-            .authorize_write(authz, &draft.principal, relation)
-            .await?;
-        draft.principal = *permit.owner();
+        draft: FactWriteCommand,
+    ) -> Result<AuthorizedFactWrite, ProtocolError> {
+        let owner = self.single_write_owner_for(authz, relation).await?;
+        let permit = self.authorize_write(authz, &owner, relation).await?;
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
         if let Some(citation) = &draft.citation {
-            self.ensure_event_ingest_schema(
+            self.ensure_fact_ingest_schema(
                 &citation.object.schema_id,
                 citation.object.schema_version,
             )?;
-            self.ensure_event_ingest_schema(
+            self.ensure_fact_ingest_schema(
                 &citation.mapping.schema_id,
                 citation.mapping.schema_version,
             )?;
         }
-        Ok(AuthorizedEventIngest::new(
+        Ok(AuthorizedFactWrite::new(
             permit.into(),
             draft,
             fact_sidecar_table,
@@ -106,7 +107,7 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `draft.principal`,
+    /// Returns `Forbidden` when the context cannot resolve exactly one writable owner,
     /// lacks `relation`, or the
     /// citation mapping targets a different cited-object
     /// schema; `UnknownSchema` when any schema is absent for the required kind;
@@ -116,17 +117,15 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         relation: Relation,
-        mut draft: EventDraft,
+        draft: FactWriteCommand,
         cited_object: InlineCitedObjectDraft,
         mapping: InlineCitationMappingDraft,
     ) -> Result<AuthorizedFactWithCitation, ProtocolError> {
-        let permit = self
-            .authorize_write(authz, &draft.principal, relation)
-            .await?;
-        draft.principal = *permit.owner();
+        let owner = self.single_write_owner_for(authz, relation).await?;
+        let permit = self.authorize_write(authz, &owner, relation).await?;
 
         // Validate the Fact only by schema-existence, matching
-        // `authorize_event_ingest`. The Fact payload is built from a
+        // `authorize_fact_ingest`. The Fact payload is built from a
         // trusted typed struct. The untrusted citation payloads are
         // agent-supplied JSON, so they stay fully validated below.
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
@@ -144,21 +143,38 @@ impl Engine {
         ))
     }
 
-    /// Persist an already-authorized typed-sidecar event ingest.
+    async fn single_write_owner_for(
+        &self,
+        authz: &AuthzContext,
+        relation: Relation,
+    ) -> Result<Owner, ProtocolError> {
+        let access = self.resolve_access(authz).await?;
+        let owners = access.write_owners_for(relation);
+        match owners.as_slice() {
+            [owner] => Ok(*owner),
+            [] => Err(ProtocolError::forbidden(relation.denied_message())),
+            _ => Err(ProtocolError::invalid_argument(
+                "owner",
+                "FactWriteCommand is ownerless; authorization must resolve exactly one writable owner",
+            )),
+        }
+    }
+
+    /// Persist an already-authorized typed-sidecar Fact ingest.
     ///
     /// # Errors
     ///
     /// Returns `Internal` when the atomic storage write fails.
-    pub async fn ingest_event_with_typed_sidecar(
+    pub async fn ingest_fact_with_typed_sidecar(
         &self,
-        authorized: &AuthorizedEventIngest,
+        authorized: &AuthorizedFactWrite,
         sidecar: &SidecarPayload,
         embedding_model_id: Option<&str>,
-    ) -> Result<EventIngestOutcome, ProtocolError> {
+    ) -> Result<FactIngestOutcome, ProtocolError> {
         self.storage()
             .ingest
             .fact_ingest
-            .ingest_event_with_typed_sidecar(authorized, sidecar, embedding_model_id)
+            .ingest_fact_with_typed_sidecar(authorized, sidecar, embedding_model_id)
             .await
             .map_err(|err| ProtocolError::internal(err.to_string()))
     }
@@ -173,7 +189,7 @@ impl Engine {
         authorized: &AuthorizedFactWithCitation,
         sidecar: &SidecarPayload,
         embedding_model_id: Option<&str>,
-    ) -> Result<EventIngestOutcome, ProtocolError> {
+    ) -> Result<FactIngestOutcome, ProtocolError> {
         self.storage()
             .ingest
             .fact_ingest
@@ -284,7 +300,7 @@ impl Engine {
         ))
     }
 
-    fn ensure_event_ingest_schema(
+    fn ensure_fact_ingest_schema(
         &self,
         schema_id: &crate::SchemaId,
         schema_version: SchemaVersion,
@@ -499,7 +515,7 @@ impl Engine {
     ///
     /// Authorizes the caller against the log's Owner and derives that
     /// Owner from the authenticated identity — never trusting a
-    /// caller-supplied Owner — mirroring [`Self::event_ingest`]. The
+    /// caller-supplied Owner — mirroring [`Self::fact_ingest`]. The
     /// per-user actor (`actor_oid` / `actor_upn`) is recorded as Fact
     /// data; the graph Owner is what gets authorized here.
     ///
@@ -616,7 +632,7 @@ mod tests {
         const SCHEMA_ID: &'static str = "test/ingest-stamp-fact";
         const SCHEMA_VERSION: u32 = 1;
 
-        fn event_key(&self) -> Vec<u8> {
+        fn receipt_key(&self) -> Vec<u8> {
             let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
             key.field_str("fact_id", &self.fact_id);
             key.finish()
@@ -628,14 +644,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authorize_event_ingest_stamps_draft_owner_from_permit() {
+    async fn authorize_fact_ingest_stamps_draft_owner_from_permit() {
         let owner = test_owner();
         let mut registry = FlavorRegistry::new();
         registry.add_fact_schema::<TestFact>();
         let engine = Engine::new(registry.freeze());
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
-        let draft = EventDraft::from_payload(
-            &owner,
+        let draft = FactWriteCommand::from_payload(
             "test/source",
             SourceBatchId::new(uuid::Uuid::now_v7()),
             &TestFact {
@@ -645,21 +660,20 @@ mod tests {
         );
 
         let authorized = engine
-            .authorize_event_ingest(&authz, Relation::Ingest, draft)
+            .authorize_fact_ingest(&authz, Relation::Ingest, draft)
             .await
             .expect("single-owner System context should authorize ingest");
 
-        assert_eq!(&authorized.draft().principal, authorized.permit().owner());
+        assert_eq!(authorized.permit().owner(), &owner);
     }
 
     #[tokio::test]
-    async fn authorize_event_ingest_denies_denied_context() {
+    async fn authorize_fact_ingest_denies_denied_context() {
         let owner = test_owner();
         let mut registry = FlavorRegistry::new();
         registry.add_fact_schema::<TestFact>();
         let engine = Engine::new(registry.freeze());
-        let draft = EventDraft::from_payload(
-            &owner,
+        let draft = FactWriteCommand::from_payload(
             "test/source",
             SourceBatchId::new(uuid::Uuid::now_v7()),
             &TestFact {
@@ -669,7 +683,7 @@ mod tests {
         );
 
         let err = engine
-            .authorize_event_ingest(
+            .authorize_fact_ingest(
                 &AuthzContext::denied_for_owner(&owner),
                 Relation::Editor,
                 draft,
@@ -686,8 +700,7 @@ mod tests {
         let mut registry = FlavorRegistry::new();
         registry.add_fact_schema::<TestFact>();
         let engine = Engine::new(registry.freeze());
-        let draft = EventDraft::from_payload(
-            &owner,
+        let draft = FactWriteCommand::from_payload(
             "test/source",
             SourceBatchId::new(uuid::Uuid::now_v7()),
             &TestFact {

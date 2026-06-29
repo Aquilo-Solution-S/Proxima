@@ -12,7 +12,7 @@ use crate::personality::{
     WakeEntryGoalScope,
 };
 use crate::storage::StorageError;
-use crate::verbs::event_ingest::{Citation, CitationMappingHint, CitedObjectHint, EventDraft};
+use crate::verbs::fact_ingest::{Citation, CitationMappingHint, CitedObjectHint, FactWriteCommand};
 use crate::{
     MemoryId, OwnerRef, SchemaId, SchemaVersion, SetWakeEntriesRequest, SetWakeEntriesResponse,
     SourceBatchId, WakeEntriesMutator, WakeEntryDraft,
@@ -518,8 +518,7 @@ impl Engine {
             caller,
         };
         let observed_at = time::OffsetDateTime::now_utc();
-        let mut draft = EventDraft::from_payload(
-            permit.owner(),
+        let mut draft = FactWriteCommand::from_payload(
             "core/mcp-crud",
             SourceBatchId::new(uuid::Uuid::now_v7()),
             &payload,
@@ -542,7 +541,7 @@ impl Engine {
         self.storage()
             .ingest
             .fact_ingest
-            .ingest_event_atomic(&draft, embedding_model_id)
+            .ingest_fact_atomic(permit.owner(), &draft, embedding_model_id)
             .await
             .map_err(|err| {
                 ProtocolError::internal(format!("ingest personality config audit: {err}"))

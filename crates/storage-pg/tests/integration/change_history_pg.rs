@@ -1,13 +1,13 @@
-//! End-to-end `EventHistory` verb test against a transient PG database.
+//! End-to-end `ChangeHistory` verb test against a transient PG database.
 
 use crate::common::{create_db, db_url, drop_db, fresh_pg, seed_memory, seed_memory_edge};
 use std::sync::Arc;
 
-use proxima_core::engine::{Engine, ListEventsReadRequest};
+use proxima_core::engine::{Engine, ListChangeEventsReadRequest};
 use proxima_core::storage_ports::*;
-use proxima_core::verbs::event_history::EventHistoryRequest;
-use proxima_core::verbs::event_ingest::{
-    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+use proxima_core::verbs::change_history::ChangeHistoryRequest;
+use proxima_core::verbs::fact_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::verbs::query::{
     EdgeFilter, EdgeReadRequest, EdgeTargetProjection, PersonalityRootFilter, QueryRequest,
@@ -62,19 +62,20 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
     ]
 }
 
-fn fresh_event_draft(owner: Owner, payload: Vec<u8>) -> EventDraft {
+fn fresh_fact_draft(_owner: Owner, payload: Vec<u8>) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
-    EventDraft {
-        source_id: SourceId::new("test/source"),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner,
+    FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
         payload,
         rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new("test/source"),
+            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: Some(Citation {
             object: CitedObjectHint {
                 schema_id: SchemaId::new("test/cited_blob".into()),
@@ -109,7 +110,7 @@ fn read_set_authz(
 }
 
 #[tokio::test]
-async fn event_history_returns_owner_scoped_newest_first() {
+async fn change_history_returns_owner_scoped_newest_first() {
     let db_name = format!("proxima_test_eh_{}", Uuid::now_v7().simple());
     create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
@@ -132,17 +133,17 @@ async fn event_history_returns_owner_scoped_newest_first() {
 
         for body in [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()] {
             engine1
-                .event_ingest(&authz1, fresh_event_draft(owner1, body))
+                .fact_ingest(&authz1, fresh_fact_draft(owner1, body))
                 .await?;
         }
         engine2
-            .event_ingest(&authz2, fresh_event_draft(owner2, b"z".to_vec()))
+            .fact_ingest(&authz2, fresh_fact_draft(owner2, b"z".to_vec()))
             .await?;
 
         let resp1 = engine1
-            .event_history(
+            .change_history(
                 &authz1,
-                &EventHistoryRequest {
+                &ChangeHistoryRequest {
                     principal: owner1,
                     limit: 100,
                     before: None,
@@ -161,9 +162,9 @@ async fn event_history_returns_owner_scoped_newest_first() {
         );
 
         let resp2 = engine2
-            .event_history(
+            .change_history(
                 &authz2,
-                &EventHistoryRequest {
+                &ChangeHistoryRequest {
                     principal: owner2,
                     limit: 100,
                     before: None,
@@ -173,9 +174,9 @@ async fn event_history_returns_owner_scoped_newest_first() {
         assert_eq!(resp2.events.len(), 1, "owner2 is isolated from owner1");
 
         let page1 = engine1
-            .event_history(
+            .change_history(
                 &authz1,
-                &EventHistoryRequest {
+                &ChangeHistoryRequest {
                     principal: owner1,
                     limit: 2,
                     before: None,
@@ -185,9 +186,9 @@ async fn event_history_returns_owner_scoped_newest_first() {
         assert_eq!(page1.events.len(), 2);
 
         let page2 = engine1
-            .event_history(
+            .change_history(
                 &authz1,
-                &EventHistoryRequest {
+                &ChangeHistoryRequest {
                     principal: owner1,
                     limit: 2,
                     before: Some(page1.events[1].seq),
@@ -202,11 +203,11 @@ async fn event_history_returns_owner_scoped_newest_first() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("event_history_returns_owner_scoped_newest_first failed");
+    result.expect("change_history_returns_owner_scoped_newest_first failed");
 }
 
 #[tokio::test]
-async fn event_history_surfaces_readable_non_world_source_edge_events()
+async fn change_history_surfaces_readable_non_world_source_edge_events()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
 
@@ -251,9 +252,9 @@ async fn event_history_surfaces_readable_non_world_source_edge_events()
         let engine = build_engine(storage, p, p);
         let authz = read_set_authz(p, p_read);
         let history = engine
-            .event_history(
+            .change_history(
                 &authz,
-                &EventHistoryRequest {
+                &ChangeHistoryRequest {
                     principal: gp,
                     limit: 100,
                     before: None,
@@ -267,7 +268,7 @@ async fn event_history_surfaces_readable_non_world_source_edge_events()
                 ChangeEventKind::EdgeAppend { edge_id, target, .. }
                     if *edge_id == edge.into_inner() && *target == EdgeTargetProjection::Redacted
             )),
-            "event_history surfaces source-owned non-world edge events with redacted target"
+            "change_history surfaces source-owned non-world edge events with redacted target"
         );
         assert!(
             history.seq_high_water.is_some(),
@@ -275,9 +276,9 @@ async fn event_history_surfaces_readable_non_world_source_edge_events()
         );
 
         let listed = engine
-            .list_events(
+            .list_change_events(
                 &authz,
-                &ListEventsReadRequest {
+                &ListChangeEventsReadRequest {
                     principal: gp,
                     after: Uuid::nil(),
                     limit: 100,
@@ -292,7 +293,7 @@ async fn event_history_surfaces_readable_non_world_source_edge_events()
         assert_eq!(endpoint_kind.source_kind, EntityKind::Abstraction);
         assert_eq!(
             endpoint_kind.target_kind, None,
-            "redacted target kind must not be exposed through ListEventsReadResponse"
+            "redacted target kind must not be exposed through ListChangeEventsReadResponse"
         );
 
         Ok::<(), Box<dyn std::error::Error>>(())

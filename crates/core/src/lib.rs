@@ -70,8 +70,9 @@ pub use secrets::*;
 pub use storage::*;
 
 // Re-export verb modules for convenience.
-pub use verbs::event_ingest::{
-    AuthorizedEventIngest, AuthorizedFactWithCitation, EventDraft, EventIngestOutcome,
+pub use verbs::fact_ingest::{
+    AuthorizedFactWithCitation, AuthorizedFactWrite, FactIngestOutcome, FactReceiptDraft,
+    FactWriteCommand,
 };
 pub use verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 pub use verbs::*;

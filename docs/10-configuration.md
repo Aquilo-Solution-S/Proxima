@@ -116,7 +116,7 @@ Profiles:
 
 Allow/deny ids use canonical scope keys: tool ids (`core_search_memories`),
 group-action leaf keys (`core_wake:add`, `core_fact:tombstone`), resource
-keys (`resource:memory`, `resource:events`), or flavor ids
+keys (`resource:memory`, `resource:change-events`), or flavor ids
 (`proxima-code_search_chunks`). Unknown profile names fail boot. Unknown
 ids in allow/deny log `warn` and do not fail boot.
 

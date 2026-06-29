@@ -1,7 +1,7 @@
 #![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 //! Typed atomic Fact + sidecar writes for the proxima-code flavor.
 //!
-//! Each helper wraps `proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx`
+//! Each helper wraps `proxima_storage_pg::verbs::fact_ingest::ingest_fact_in_tx`
 //! and the matching sidecar `INSERT` in a single Postgres transaction. On
 //! idempotent replay (receipt collision) the sidecar insert is skipped —
 //! the prior transaction already wrote it, and the natural-key uniqueness

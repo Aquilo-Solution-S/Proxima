@@ -6,8 +6,8 @@ use std::sync::Arc;
 use proxima_core::engine::Engine;
 use proxima_core::personality::ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID;
 use proxima_core::storage_ports::*;
-use proxima_core::verbs::event_ingest::{
-    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+use proxima_core::verbs::fact_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::verbs::goal_write::{GoalAuthorshipKind, GoalState};
 use proxima_core::verbs::query::{
@@ -187,19 +187,20 @@ fn schemas_for_personality_root_test() -> Vec<SchemaInfo> {
     schemas
 }
 
-fn fresh_draft(owner: Owner) -> EventDraft {
+fn fresh_draft(_owner: Owner) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
-    EventDraft {
-        source_id: SourceId::new("test/source"),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        principal: owner,
+    FactWriteCommand {
         author_personality_instance_id: None,
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
         payload: b"hello world".to_vec(),
         rendered_text: None,
-        observed_at: now,
-        occurred_at: now,
+        receipt: Some(FactReceiptDraft {
+            source_id: SourceId::new("test/source"),
+            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+            observed_at: now,
+            occurred_at: now,
+        }),
         citation: Some(Citation {
             object: CitedObjectHint {
                 schema_id: SchemaId::new("test/cited_blob".into()),
@@ -431,7 +432,7 @@ async fn query_returns_stored_schema_version() {
         draft.schema_id = SchemaId::new("test/fact_blob_v2".into());
         draft.schema_version = SchemaVersion::new(2);
         engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 draft,
             )
@@ -578,18 +579,19 @@ async fn query_returns_fact_rows() {
         let draft2 = {
             let mut d = fresh_draft(owner);
             d.payload = b"another fact".to_vec();
-            d.source_batch_id = SourceBatchId::new(Uuid::now_v7());
+            d.receipt.as_mut().expect("receipt").source_batch_id =
+                SourceBatchId::new(Uuid::now_v7());
             d
         };
 
         let outcome1 = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 draft1.clone(),
             )
             .await?;
         let outcome2 = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 draft2.clone(),
             )
@@ -641,19 +643,20 @@ async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exc
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         let first = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 fresh_draft(owner),
             )
             .await?
             .memory_id;
         let second = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 {
                     let mut draft = fresh_draft(owner);
                     draft.payload = b"second".to_vec();
-                    draft.source_batch_id = SourceBatchId::new(Uuid::now_v7());
+                    draft.receipt.as_mut().expect("receipt").source_batch_id =
+                        SourceBatchId::new(Uuid::now_v7());
                     draft
                 },
             )
@@ -707,31 +710,33 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         let outside = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 fresh_draft(owner),
             )
             .await?
             .memory_id;
         let inside_a = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 {
                     let mut draft = fresh_draft(owner);
                     draft.payload = b"inside-a".to_vec();
-                    draft.source_batch_id = SourceBatchId::new(Uuid::now_v7());
+                    draft.receipt.as_mut().expect("receipt").source_batch_id =
+                        SourceBatchId::new(Uuid::now_v7());
                     draft
                 },
             )
             .await?
             .memory_id;
         let inside_b = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 {
                     let mut draft = fresh_draft(owner);
                     draft.payload = b"inside-b".to_vec();
-                    draft.source_batch_id = SourceBatchId::new(Uuid::now_v7());
+                    draft.receipt.as_mut().expect("receipt").source_batch_id =
+                        SourceBatchId::new(Uuid::now_v7());
                     draft
                 },
             )
@@ -789,19 +794,20 @@ async fn query_edge_id_hydration_returns_requested_edge_without_visible_nodes() 
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         let a = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 fresh_draft(owner),
             )
             .await?
             .memory_id;
         let b = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 {
                     let mut draft = fresh_draft(owner);
                     draft.payload = b"target".to_vec();
-                    draft.source_batch_id = SourceBatchId::new(Uuid::now_v7());
+                    draft.receipt.as_mut().expect("receipt").source_batch_id =
+                        SourceBatchId::new(Uuid::now_v7());
                     draft
                 },
             )
@@ -847,19 +853,20 @@ async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         let a = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 fresh_draft(owner),
             )
             .await?
             .memory_id;
         let b = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 {
                     let mut draft = fresh_draft(owner);
                     draft.payload = b"second".to_vec();
-                    draft.source_batch_id = SourceBatchId::new(Uuid::now_v7());
+                    draft.receipt.as_mut().expect("receipt").source_batch_id =
+                        SourceBatchId::new(Uuid::now_v7());
                     draft
                 },
             )
@@ -911,7 +918,7 @@ async fn query_owner_scope_is_principal() {
 
         let draft = fresh_draft(stored_owner);
         let outcome = engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(
                     &stored_owner,
                     proxima_core::AuthPath::System,
@@ -962,7 +969,7 @@ async fn query_filter_abstraction_returns_empty() {
         // Ingest a Fact.
         let draft = fresh_draft(owner);
         engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 draft,
             )
@@ -1263,7 +1270,7 @@ async fn query_filter_nonexistent_schema_returns_empty() {
         // Ingest a Fact.
         let draft = fresh_draft(owner);
         engine
-            .event_ingest(
+            .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 draft,
             )

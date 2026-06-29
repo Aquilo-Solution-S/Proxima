@@ -95,7 +95,7 @@ async fn neighbor_edges_are_source_owned_and_targets_redact()
     result
 }
 
-/// H1 regression: `proxima://events` / `list_change_events_after` must apply
+/// H1 regression: `proxima://change-events` / `list_change_events_after` must apply
 /// the same source-owned visibility + source-owned visibility as `read_edges`,
 /// or it leaks a private edge target the redacted edge-read surface hides.
 #[tokio::test]

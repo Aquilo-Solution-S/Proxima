@@ -119,8 +119,8 @@ async fn fact_entity_schema_matches_task_1_contract() {
         column_exists(&pg, "memories", "fact_entity_id", "uuid").await?;
         let memories_chk = constraint_def(&pg, "memories", "memories_fact_entity_chk").await?;
         assert!(memories_chk.contains("fact_entity_id IS NULL"));
-        assert!(memories_chk.contains("receipt_id IS NOT NULL"));
         assert!(memories_chk.contains("kind IS NULL"));
+        assert!(!memories_chk.contains(&format!("{} IS NOT NULL", "receipt_id")));
         let memories_fk = constraint_def(&pg, "memories", "memories_fact_entity_id_fkey").await?;
         assert!(memories_fk.contains("REFERENCES proxima_core.fact_entities(fact_entity_id)"));
         assert!(memories_fk.contains("ON DELETE SET NULL"));
