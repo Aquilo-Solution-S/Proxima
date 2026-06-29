@@ -5,8 +5,8 @@ use crate::error::ProtocolError;
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, StorageError};
 use crate::{
     CORE_SUPERSEDES_RELATION, EdgeAuthorshipKind, EdgeId, EndpointBinding, EntityId, EntityKind,
-    MemoryId, MemoryOperatorKind, Owner, PersonalityInstanceId, RegisteredRelation, SchemaId,
-    SchemaVersion, SidecarPayload,
+    MemoryId, MemoryOperatorKind, Owner, PersonalityInstanceId, RegisteredRelation,
+    RelationOwnerPolicy, RelationTargetAccessPolicy, SchemaId, SchemaVersion, SidecarPayload,
 };
 
 #[derive(Debug, Clone)]
@@ -161,19 +161,13 @@ impl Engine {
         authz: &AuthzContext,
         req: AppendMemoryEdgeRequestInput<'_>,
     ) -> Result<EdgeId, ProtocolError> {
-        let write_permit = self
-            .authorize_write(authz, &req.owner, Relation::Editor)
+        let (owner, source_kind) = self.load_memory_owner_kind(req.source_memory_id).await?;
+        self.authorize_write(authz, &owner, write_relation_for_entity_kind(source_kind))
             .await?;
-        let owner = *write_permit.owner();
-        let source_kind = self
-            .load_required_memory_kind(&owner, req.source_memory_id)
+        let (target_owner, target_kind) = self
+            .authorize_edge_target_policy(authz, req.relation, req.target_memory_id)
             .await?;
-        let target_read = self
-            .authorize_entry_read(authz, EntityId::Memory(req.target_memory_id))
-            .await?;
-        let target_kind = self
-            .load_required_memory_kind(target_read.owner(), req.target_memory_id)
-            .await?;
+        validate_relation_owner_policy(req.relation, &owner, &target_owner, "edge")?;
         validate_relation_shape(
             req.relation,
             source_kind,
@@ -196,7 +190,7 @@ impl Engine {
         self.storage()
             .memory_authoring
             .memory_authoring
-            .append_memory_edge(&edge)
+            .append_memory_edge(&edge, crate::storage_ports::EdgeWriteProof::new())
             .await
             .map_err(|err| ProtocolError::internal(err.to_string()))
     }
@@ -311,28 +305,34 @@ impl Engine {
             let source_kind = if edge.source_memory_id == req.memory_id {
                 req.kind
             } else {
-                let source_owner = self
-                    .storage()
+                let (source_owner, source_kind) =
+                    self.load_memory_owner_kind(edge.source_memory_id).await?;
+                self.authorize_write(
+                    authz,
+                    &source_owner,
+                    write_relation_for_entity_kind(source_kind),
+                )
+                .await?;
+                source_kind
+            };
+            let source_owner = if edge.source_memory_id == req.memory_id {
+                req.owner
+            } else {
+                self.storage()
                     .memory_authoring
                     .owner_access_read
                     .home_owner(EntityId::Memory(edge.source_memory_id))
                     .await
                     .map_err(|err| ProtocolError::internal(err.to_string()))?
-                    .ok_or_else(|| ProtocolError::invalid_argument("edges", "memory not found"))?;
-                self.authorize_write(authz, &source_owner, Relation::Editor)
-                    .await?;
-                self.load_required_memory_kind(&source_owner, edge.source_memory_id)
-                    .await?
+                    .ok_or_else(|| ProtocolError::invalid_argument("edges", "memory not found"))?
             };
-            let target_kind = if edge.target_memory_id == req.memory_id {
-                req.kind
+            let (target_owner, target_kind) = if edge.target_memory_id == req.memory_id {
+                (req.owner, req.kind)
             } else {
-                let target_read = self
-                    .authorize_entry_read(authz, EntityId::Memory(edge.target_memory_id))
-                    .await?;
-                self.load_required_memory_kind(target_read.owner(), edge.target_memory_id)
+                self.authorize_edge_target_policy(authz, edge.relation, edge.target_memory_id)
                     .await?
             };
+            validate_relation_owner_policy(edge.relation, &source_owner, &target_owner, "edges")?;
             validate_relation_shape(
                 edge.relation,
                 source_kind,
@@ -351,6 +351,53 @@ impl Engine {
             });
         }
         Ok(out)
+    }
+
+    async fn load_memory_owner_kind(
+        &self,
+        memory_id: MemoryId,
+    ) -> Result<(Owner, EntityKind), ProtocolError> {
+        let owner = self
+            .storage()
+            .memory_authoring
+            .owner_access_read
+            .home_owner(EntityId::Memory(memory_id))
+            .await
+            .map_err(|err| ProtocolError::internal(err.to_string()))?
+            .ok_or_else(|| ProtocolError::invalid_argument("memory_id", "memory not found"))?;
+        let kind = self.load_required_memory_kind(&owner, memory_id).await?;
+        Ok((owner, kind))
+    }
+
+    async fn authorize_edge_target_policy(
+        &self,
+        authz: &AuthzContext,
+        relation: RegisteredRelation<'_>,
+        target_memory_id: MemoryId,
+    ) -> Result<(Owner, EntityKind), ProtocolError> {
+        match relation.descriptor.target_access_policy {
+            RelationTargetAccessPolicy::None => self.load_memory_owner_kind(target_memory_id).await,
+            RelationTargetAccessPolicy::Read => {
+                let target_read = self
+                    .authorize_entry_read(authz, EntityId::Memory(target_memory_id))
+                    .await?;
+                let target_kind = self
+                    .load_required_memory_kind(target_read.owner(), target_memory_id)
+                    .await?;
+                Ok((*target_read.owner(), target_kind))
+            }
+            RelationTargetAccessPolicy::Write => {
+                let (target_owner, target_kind) =
+                    self.load_memory_owner_kind(target_memory_id).await?;
+                self.authorize_write(
+                    authz,
+                    &target_owner,
+                    write_relation_for_entity_kind(target_kind),
+                )
+                .await?;
+                Ok((target_owner, target_kind))
+            }
+        }
     }
 
     pub(in crate::engine) async fn load_required_memory_kind(
@@ -392,6 +439,33 @@ impl Engine {
                 })
             })
             .collect()
+    }
+}
+
+fn write_relation_for_entity_kind(kind: EntityKind) -> Relation {
+    match kind {
+        EntityKind::Fact => Relation::Ingest,
+        EntityKind::Abstraction | EntityKind::Perspective => Relation::Editor,
+        EntityKind::Goal => Relation::Admin,
+    }
+}
+
+fn validate_relation_owner_policy(
+    relation: RegisteredRelation<'_>,
+    source_owner: &Owner,
+    target_owner: &Owner,
+    field: &str,
+) -> Result<(), ProtocolError> {
+    match relation.descriptor.owner_policy {
+        RelationOwnerPolicy::SourceOwned => Ok(()),
+        RelationOwnerPolicy::SameOwner if source_owner == target_owner => Ok(()),
+        RelationOwnerPolicy::SameOwner => Err(ProtocolError::invalid_argument(
+            field,
+            format!(
+                "relation {} requires source and target to have the same owner",
+                relation.descriptor.relation
+            ),
+        )),
     }
 }
 
@@ -484,7 +558,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn append_memory_edge_authorized_denies_denied_context() {
+    async fn append_memory_edge_authorized_rejects_missing_source_before_authz() {
         let engine = engine();
         let owner = owner();
         let relation = engine
@@ -499,14 +573,14 @@ mod tests {
                     relation,
                     source_memory_id: MemoryId::new(uuid::Uuid::now_v7()),
                     target_memory_id: MemoryId::new(uuid::Uuid::now_v7()),
-                    authorship_kind: EdgeAuthorshipKind::ExternalAgent,
+                    authorship_kind: EdgeAuthorshipKind::OperatorFtoA,
                     authorship_owner_memory_id: None,
                     sidecar_payload: None,
                 },
             )
             .await
-            .expect_err("denied context must fail before storage");
+            .expect_err("source-owned admission must load an existing source owner");
 
-        assert_eq!(err.code, ErrorCode::Forbidden);
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
     }
 }

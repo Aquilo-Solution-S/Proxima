@@ -3,15 +3,15 @@
 use crate::common::{create_db, db_url, drop_db, fresh_pg, seed_memory, seed_memory_edge};
 use std::sync::Arc;
 
-use proxima_core::engine::Engine;
+use proxima_core::engine::{Engine, ListEventsReadRequest};
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::event_history::EventHistoryRequest;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
 use proxima_core::verbs::query::{
-    EdgeFilter, EdgeReadRequest, PersonalityRootFilter, QueryRequest, SupersessionStatus,
-    TombstoneFilter,
+    EdgeFilter, EdgeReadRequest, EdgeTargetProjection, PersonalityRootFilter, QueryRequest,
+    SupersessionStatus, TombstoneFilter,
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
@@ -241,8 +241,9 @@ async fn event_history_surfaces_readable_non_world_source_edge_events()
             )
             .await?;
         assert_eq!(read_edges.edges.len(), 1);
-        assert!(
-            !read_edges.edges[0].target_readable,
+        assert_eq!(
+            read_edges.edges[0].target,
+            EdgeTargetProjection::Redacted,
             "read_edges keeps source-owned edge but redacts unreadable target"
         );
 
@@ -263,13 +264,35 @@ async fn event_history_surfaces_readable_non_world_source_edge_events()
         assert!(
             history.events.iter().any(|e| matches!(
                 &e.kind,
-                ChangeEventKind::EdgeAppend { edge_id, .. } if *edge_id == edge.into_inner()
+                ChangeEventKind::EdgeAppend { edge_id, target, .. }
+                    if *edge_id == edge.into_inner() && *target == EdgeTargetProjection::Redacted
             )),
-            "event_history surfaces source-owned non-world edge events"
+            "event_history surfaces source-owned non-world edge events with redacted target"
         );
         assert!(
             history.seq_high_water.is_some(),
             "high-water is computed over visible source-owned events"
+        );
+
+        let listed = engine
+            .list_events(
+                &authz,
+                &ListEventsReadRequest {
+                    principal: gp,
+                    after: Uuid::nil(),
+                    limit: 100,
+                },
+            )
+            .await?;
+        let endpoint_kind = listed
+            .edge_endpoint_kinds
+            .iter()
+            .find(|row| row.edge_id == edge)
+            .expect("edge endpoint kind row");
+        assert_eq!(endpoint_kind.source_kind, EntityKind::Abstraction);
+        assert_eq!(
+            endpoint_kind.target_kind, None,
+            "redacted target kind must not be exposed through ListEventsReadResponse"
         );
 
         Ok::<(), Box<dyn std::error::Error>>(())

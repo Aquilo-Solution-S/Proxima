@@ -878,15 +878,21 @@ async fn insert_goal_parent_edges(
     let relation = resolve_relation(context, proxima_core::relation::CORE_DEPENDS_ON_RELATION)?;
     for parent_id in &draft.parent_goal_ids {
         validate_active_head(tx, &owner, *parent_id).await?;
-        let edge = EdgeDraft::new(
-            uuid::Uuid::now_v7(),
+        let edge = EdgeDraft {
+            edge_id: uuid::Uuid::now_v7(),
             relation,
-            crate::verbs::edge_append::Endpoint::goal(GoalId::new(goal_id)),
-            crate::verbs::edge_append::Endpoint::goal(*parent_id),
-            EdgeAuthorshipKind::Engine,
-            None,
-            &owner,
-        );
+            source_kind: EntityKind::Goal,
+            source_memory_id: None,
+            source_goal_id: Some(goal_id),
+            source_fact_entity_id: None,
+            target_kind: EntityKind::Goal,
+            target_memory_id: None,
+            target_goal_id: Some(parent_id.into_inner()),
+            target_fact_entity_id: None,
+            authorship_kind: EdgeAuthorshipKind::Engine,
+            authorship_owner_memory_id: None,
+            owner: &owner,
+        };
         append_edge_in_tx(tx.as_mut(), &edge).await?;
     }
     Ok(())
@@ -1383,7 +1389,7 @@ async fn append_goal_to_self_edge(
         target_memory_id: Some(self_memory_id.into_inner()),
         target_goal_id: None,
         target_fact_entity_id: None,
-        authorship_kind: EdgeAuthorshipKind::ExternalAgent,
+        authorship_kind: EdgeAuthorshipKind::PerspectiveGoalLink,
         authorship_owner_memory_id: Some(self_memory_id.into_inner()),
         owner,
     };

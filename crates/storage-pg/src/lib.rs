@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proxima_core::SidecarPayload;
+use proxima_core::change_event::{EdgeTargetProjection, EntityRef};
 use proxima_core::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
@@ -94,9 +95,9 @@ SELECT e.edge_id, e.relation,
              FROM read_set rs
             WHERE rs.owner_kind = COALESCE(tm.owner_kind, tg.owner_kind)
               AND rs.owner_id IS NOT DISTINCT FROM COALESCE(tm.owner_id, tg.owner_id)
-       ) AS target_readable,
+       ) AS target_visible,
        COALESCE(sm.owner_kind, sg.owner_kind) = $3
-       AND COALESCE(sm.owner_id, sg.owner_id) IS NOT DISTINCT FROM $4 AS source_world_readable
+       AND COALESCE(sm.owner_id, sg.owner_id) IS NOT DISTINCT FROM $4 AS source_world_visible
   FROM proxima_core.edges e
   LEFT JOIN proxima_core.fact_entities sfe
     ON sfe.fact_entity_id = e.source_fact_entity_id
@@ -555,7 +556,11 @@ impl MemoryAuthoringPort for PgStorage {
         })
     }
 
-    async fn append_memory_edge(&self, edge: &DerivedEdgeSpec<'_>) -> Result<EdgeId, StorageError> {
+    async fn append_memory_edge(
+        &self,
+        edge: &DerivedEdgeSpec<'_>,
+        _proof: proxima_core::storage_ports::EdgeWriteProof,
+    ) -> Result<EdgeId, StorageError> {
         let mut tx = self.pool.begin().await.map_err(internal)?;
         let draft = edge_draft_from_spec(edge);
         let edge_id = EdgeId::new(draft.edge_id);
@@ -754,18 +759,26 @@ impl MemoryReadPort for PgStorage {
                     source_memory_id,
                     target_kind,
                     target_memory_id,
-                    target_readable,
-                    source_world_readable,
+                    target_visible,
+                    _source_world_visible,
                 )| {
+                    let target_memory_kind = target_visible.then_some(target_kind);
+                    let target = if target_visible {
+                        target_memory_id.map_or(EdgeTargetProjection::Unavailable, |id| {
+                            EdgeTargetProjection::Visible {
+                                target: EntityRef::Memory(MemoryId::new(id)),
+                            }
+                        })
+                    } else {
+                        EdgeTargetProjection::Redacted
+                    };
                     NeighborEdgeRow {
                         edge_id: EdgeId::new(edge_id),
                         relation,
                         source_kind,
                         source_memory_id: source_memory_id.map(MemoryId::new),
-                        target_kind,
-                        target_memory_id: target_memory_id.map(MemoryId::new),
-                        target_readable,
-                        source_world_readable,
+                        target_memory_kind,
+                        target,
                     }
                 },
             )
@@ -802,7 +815,7 @@ impl MemoryReadPort for PgStorage {
             .map(|(edge_id, source_kind, target_kind)| EdgeEndpointKindRow {
                 edge_id: EdgeId::new(edge_id),
                 source_kind,
-                target_kind,
+                target_kind: Some(target_kind),
             })
             .collect())
     }

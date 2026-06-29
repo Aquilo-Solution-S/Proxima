@@ -1,5 +1,7 @@
-use proxima_core::{EdgeAuthorshipKind, MemoryId, Owner};
-use proxima_storage_pg::verbs::edge_append::{Endpoint, append_typed_edge};
+use proxima_core::{EdgeAuthorshipKind, EdgeId, MemoryId, Owner};
+use proxima_storage_pg::verbs::edge_write::{
+    MemoryEndpoint, append_owner_checked_typed_memory_edge,
+};
 use sqlx::PgPool;
 
 use super::IngestError;
@@ -122,15 +124,15 @@ pub async fn ingest_calls_edge(
     };
 
     let mut tx = pool.begin().await?;
-    append_typed_edge(
+    append_owner_checked_typed_memory_edge(
         tx.as_mut(),
-        edge_id,
-        relation,
-        Endpoint::abstraction(MemoryId::new(edge.source_memory_id)),
-        Endpoint::abstraction(MemoryId::new(edge.target_memory_id)),
-        EdgeAuthorshipKind::OperatorFtoA,
-        Some(MemoryId::new(edge.source_memory_id)),
         owner,
+        EdgeId::new(edge_id),
+        relation,
+        MemoryEndpoint::abstraction(MemoryId::new(edge.source_memory_id)),
+        MemoryEndpoint::abstraction(MemoryId::new(edge.target_memory_id)),
+        EdgeAuthorshipKind::OperatorAtoA,
+        Some(MemoryId::new(edge.source_memory_id)),
         &payload,
     )
     .await?;

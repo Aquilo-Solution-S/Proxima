@@ -159,9 +159,10 @@ Substrate edge row:
 |---|---|
 | `relation` | flavor-qualified relation id |
 | `relation_class` | closed substrate class |
-| source endpoint | Memory or Goal |
-| target endpoint | Memory or Goal |
-| owner pair (`owner_kind`, `owner_id`) | same owner as both endpoints |
+| source endpoint | Memory / Goal / Fact entity |
+| target endpoint | Memory / Goal / Fact entity |
+| owner pair (`owner_kind`, `owner_id`) | source endpoint Owner |
+| relation policy | descriptor `SourceOwned` / `SameOwner` plus target gate `None` / `Read` / `Write` |
 | authorship | edge author class |
 
 Payload rule:

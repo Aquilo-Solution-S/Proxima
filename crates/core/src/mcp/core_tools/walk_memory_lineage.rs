@@ -133,7 +133,7 @@ pub async fn walk_memory_lineage(
             relation: edge.relation,
             relation_class: edge.relation_class,
             source: format_lineage_memory(&ctx, &classes, edge.source_memory_id, edge.source_kind),
-            target: format_lineage_memory(&ctx, &classes, edge.target_memory_id, edge.target_kind),
+            target: format_lineage_target(&ctx, &classes, edge.target),
             distance: edge.distance,
         })
         .collect();
@@ -145,6 +145,32 @@ pub async fn walk_memory_lineage(
         edges,
         truncated: response.truncated,
     })
+}
+
+fn format_lineage_target(
+    ctx: &McpToolCtx,
+    classes: &HashMap<MemoryId, MemoryHandleClass>,
+    target: crate::EdgeTargetProjection,
+) -> String {
+    match target {
+        crate::EdgeTargetProjection::Visible {
+            target: crate::EntityRef::Memory(memory_id),
+        } => {
+            let class = classes
+                .get(&memory_id)
+                .copied()
+                .unwrap_or(MemoryHandleClass::Fact);
+            ctx.format_memory_with_class(memory_id, class)
+        }
+        crate::EdgeTargetProjection::Visible {
+            target: crate::EntityRef::Goal(goal_id),
+        } => ctx.format_goal(goal_id),
+        crate::EdgeTargetProjection::Visible {
+            target: crate::EntityRef::FactEntity(fact_entity_id),
+        } => format!("fact_entity:{}", fact_entity_id.into_inner()),
+        crate::EdgeTargetProjection::Redacted => "redacted target".into(),
+        crate::EdgeTargetProjection::Unavailable => "unavailable target".into(),
+    }
 }
 
 fn format_lineage_memory(

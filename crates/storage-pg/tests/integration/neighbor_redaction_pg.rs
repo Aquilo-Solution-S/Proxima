@@ -1,8 +1,9 @@
 use crate::common::{drop_db, fresh_pg, seed_memory, seed_memory_edge};
 use proxima_core::access::world;
+use proxima_core::verbs::query::EdgeTargetProjection;
 use proxima_core::{
-    CORE_DERIVED_FROM_RELATION, ChangeEventKind, EdgeId, EntityKind, GroupId, MemoryId, OwnerRef,
-    RelationClass, UserId,
+    CORE_DERIVED_FROM_RELATION, ChangeEventKind, EdgeId, EntityKind, EntityRef, GroupId, MemoryId,
+    OwnerRef, RelationClass, UserId,
 };
 use proxima_core::{ChangeEventPort, MemoryReadPort};
 use uuid::Uuid;
@@ -48,10 +49,14 @@ async fn neighbor_edges_are_source_owned_and_targets_redact()
             .iter()
             .find(|edge| edge.edge_id == fixture.a_to_f2)
             .expect("P sees A to F2");
-        assert!(a_to_f1.target_readable);
-        assert!(a_to_f2.target_readable);
-        assert_eq!(a_to_f1.target_memory_id, Some(fixture.f1));
-        assert_eq!(a_to_f2.target_memory_id, Some(fixture.f2));
+        assert!(matches!(
+            a_to_f1.target,
+            EdgeTargetProjection::Visible { target } if target == EntityRef::Memory(fixture.f1)
+        ));
+        assert!(matches!(
+            a_to_f2.target,
+            EdgeTargetProjection::Visible { target } if target == EntityRef::Memory(fixture.f2)
+        ));
 
         let p_without_g1_from_a = pg
             .load_neighbor_memory_edges(&fixture.p_without_g1_read, &[fixture.a], 100)
@@ -60,13 +65,14 @@ async fn neighbor_edges_are_source_owned_and_targets_redact()
             .iter()
             .find(|edge| edge.edge_id == fixture.a_to_f1)
             .expect("readable source keeps target handle");
-        assert!(!redacted.target_readable);
-        assert_eq!(redacted.target_memory_id, Some(fixture.f1));
-        assert!(!redacted.source_world_readable);
+        assert_eq!(redacted.target, EdgeTargetProjection::Redacted);
         assert!(
-            p_without_g1_from_a
-                .iter()
-                .any(|edge| edge.edge_id == fixture.a_to_f2 && edge.target_readable),
+            p_without_g1_from_a.iter().any(|edge| matches!(
+                edge.target,
+                EdgeTargetProjection::Visible { target }
+                    if edge.edge_id == fixture.a_to_f2
+                        && target == EntityRef::Memory(fixture.f2)
+            )),
             "same-source readable target remains full"
         );
 

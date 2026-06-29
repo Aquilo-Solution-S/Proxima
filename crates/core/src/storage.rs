@@ -6,6 +6,7 @@
 use std::any::{Any, TypeId};
 use std::sync::Arc;
 
+use crate::change_event::EdgeTargetProjection;
 use crate::personality::{PersonalityInstanceId, WakeEntryDraft};
 use crate::{
     AbstractionPayload, CitationMappingPayload, CitedObjectPayload, EdgePayload, FactPayload,
@@ -70,17 +71,18 @@ pub struct NeighborEdgeRow {
     pub relation: String,
     pub source_kind: EntityKind,
     pub source_memory_id: Option<MemoryId>,
-    pub target_kind: EntityKind,
-    pub target_memory_id: Option<MemoryId>,
-    pub target_readable: bool,
-    pub source_world_readable: bool,
+    /// Kind of a visible memory target. `None` for redacted/unavailable targets
+    /// and non-memory targets to avoid leaking redacted target kind.
+    pub target_memory_kind: Option<EntityKind>,
+    pub target: EdgeTargetProjection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeEndpointKindRow {
     pub edge_id: EdgeId,
     pub source_kind: EntityKind,
-    pub target_kind: EntityKind,
+    /// Present only when the already-projected event target is visible.
+    pub target_kind: Option<EntityKind>,
 }
 
 #[derive(Clone)]

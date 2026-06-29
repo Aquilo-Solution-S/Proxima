@@ -1,4 +1,4 @@
-use proxima_core::change_event::EntityRef;
+use proxima_core::change_event::{EdgeTargetProjection, EntityRef};
 use proxima_core::verbs::query::{
     EdgeExistsRequest, EdgeExistsResponse, EdgeFilter, EdgeReadRequest, EdgeReadResponse, EdgeRow,
     QueryRequest,
@@ -57,23 +57,24 @@ visible AS (
                    ON teo.owner_kind = rs.kind
                   AND teo.owner_id IS NOT DISTINCT FROM rs.id
                 WHERE teo.entity_id = edge_heads.target_entity_id
-           ) AS target_readable,
+           ) AS target_visible,
            EXISTS (
                SELECT 1
                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) weo
                 WHERE weo.entity_id = edge_heads.source_entity_id
                   AND weo.owner_kind = $3
                   AND weo.owner_id IS NOT DISTINCT FROM $4
-           ) AS source_world_readable
+           ) AS source_world_visible
       FROM edge_heads
 )
 SELECT edge_id, relation, relation_class,
        source_memory_id, source_goal_id, source_fact_entity_id,
        target_memory_id, target_goal_id, target_fact_entity_id,
-       target_readable, source_world_readable
+       target_visible
   FROM visible
  WHERE source_readable
-   AND NOT (source_world_readable AND NOT target_readable)
+   AND NOT (source_world_visible AND NOT target_visible)
+   AND (($11::uuid IS NULL AND $12::uuid IS NULL AND $13::uuid IS NULL) OR target_visible)
  ORDER BY created_at DESC
  LIMIT $14
 ";
@@ -252,8 +253,8 @@ async fn query_edges_by_id(
     };
     for edge in &response.edges {
         push_endpoint(&edge.source);
-        if edge.target_readable {
-            push_endpoint(&edge.target);
+        if let EdgeTargetProjection::Visible { target } = edge.target {
+            push_endpoint(&target);
         }
     }
     let (visible_memory_ids, visible_goal_ids) = super::memories::visible_ids_for(
@@ -278,7 +279,10 @@ async fn query_edges_by_id(
         .into_iter()
         .filter(|edge| {
             endpoint_present(&edge.source)
-                && (!edge.target_readable || endpoint_present(&edge.target))
+                && match edge.target {
+                    EdgeTargetProjection::Visible { target } => endpoint_present(&target),
+                    EdgeTargetProjection::Redacted | EdgeTargetProjection::Unavailable => true,
+                }
         })
         .collect();
     Ok(edges)
@@ -289,22 +293,13 @@ async fn query_edges_between_visible_nodes(
     visible_memory_ids: &[uuid::Uuid],
     visible_goal_ids: &[uuid::Uuid],
 ) -> Result<Vec<EdgeRow>, StorageError> {
-    let (world_kind, world_id) =
-        crate::access::owner_columns::owner_binds(&proxima_core::access::world());
     let rows = sqlx::query_as::<_, EdgeRowDb>(
         "SELECT e.edge_id, e.relation, e.relation_class,
                 COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
                 e.source_goal_id, e.source_fact_entity_id,
                 COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id,
                 e.target_goal_id, e.target_fact_entity_id,
-                true AS target_readable,
-                EXISTS (
-                    SELECT 1
-                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) weo
-                     WHERE weo.entity_id = COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id)
-                       AND weo.owner_kind = $3
-                       AND weo.owner_id IS NOT DISTINCT FROM $4
-                ) AS source_world_readable
+                true AS target_visible
          FROM proxima_core.edges e
          LEFT JOIN proxima_core.fact_entities sfe
            ON sfe.fact_entity_id = e.source_fact_entity_id
@@ -317,12 +312,10 @@ async fn query_edges_between_visible_nodes(
                 OR e.target_goal_id = ANY($2::uuid[])
                 OR tfe.current_memory_id = ANY($1::uuid[]))
          ORDER BY e.created_at DESC
-         LIMIT $5",
+         LIMIT $3",
     )
     .bind(visible_memory_ids)
     .bind(visible_goal_ids)
-    .bind(world_kind)
-    .bind(world_id)
     .bind(i64::try_from(MAX_SNAPSHOT_EDGES).expect("MAX_SNAPSHOT_EDGES fits in i64"))
     .fetch_all(pool)
     .await

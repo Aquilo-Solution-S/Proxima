@@ -569,7 +569,7 @@ pub async fn append_personality_memories(
             if !should_append_personality_provenance_edge(target_kind) {
                 continue;
             }
-            let authorship_kind = provenance_edge_authorship_kind(memory.kind);
+            let authorship_kind = provenance_edge_authorship_kind(memory.kind, target_kind);
             let draft = EdgeDraft {
                 edge_id: uuid::Uuid::now_v7(),
                 relation: req.provenance_relation,
@@ -657,11 +657,18 @@ fn should_append_personality_provenance_edge(target_kind: EntityKind) -> bool {
 
 fn provenance_edge_authorship_kind(
     kind: proxima_core::PersonalityMemoryKind,
+    target_kind: EntityKind,
 ) -> proxima_core::EdgeAuthorshipKind {
     use proxima_core::EdgeAuthorshipKind;
-    match kind {
-        proxima_core::PersonalityMemoryKind::Abstraction => EdgeAuthorshipKind::OperatorFtoA,
-        proxima_core::PersonalityMemoryKind::Perspective => EdgeAuthorshipKind::OperatorAtoP,
+    match (kind, target_kind) {
+        (proxima_core::PersonalityMemoryKind::Abstraction, EntityKind::Fact) => {
+            EdgeAuthorshipKind::OperatorFtoA
+        }
+        (proxima_core::PersonalityMemoryKind::Abstraction, EntityKind::Abstraction) => {
+            EdgeAuthorshipKind::OperatorAtoA
+        }
+        (proxima_core::PersonalityMemoryKind::Abstraction, _) => EdgeAuthorshipKind::OperatorFtoA,
+        (proxima_core::PersonalityMemoryKind::Perspective, _) => EdgeAuthorshipKind::OperatorAtoP,
     }
 }
 

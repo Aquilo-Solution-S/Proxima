@@ -55,7 +55,7 @@ v1 constraints:
 Per-memory ACL (`AccessGrant` table) is a v2+ extension layered above
 `Owner`; not in v1.
 
-Owner remains the storage and graph isolation primitive. Owner-space grants are an authorization layer above Owner: the host resolves which `(subject, Owner, action)` grants exist, and Core enforces the resolved grants at verb/tool entry. Grants never add org semantics to Core and never permit cross-owner edges.
+Owner remains the storage and graph isolation primitive. Owner-space grants are an authorization layer above Owner: the host resolves which `(subject, Owner, action)` grants exist, and Core enforces the resolved grants at verb/tool entry. Grants never add org semantics to Core. Edge rows are owned by their source endpoint; a registered descriptor may admit a foreign target only with its declared target gate (`None`, `Read`, or `Write`).
 
 ### Owner resolution — the host's trust boundary
 

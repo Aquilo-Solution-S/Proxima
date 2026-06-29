@@ -47,7 +47,7 @@ pub async fn list_change_events_after(
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
         let seq: uuid::Uuid = r.try_get("seq").map_err(map_err)?;
-        if let Some(event) = hydrate_change_event(pool, seq).await? {
+        if let Some(event) = hydrate_change_event(pool, read_owners, seq).await? {
             let personality_instance_id = r
                 .try_get::<Option<uuid::Uuid>, _>("entity_personality_instance_id")
                 .map_err(map_err)?;
@@ -109,7 +109,7 @@ pub async fn list_change_events_for_replay(
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
         let seq: uuid::Uuid = r.try_get("seq").map_err(map_err)?;
-        if let Some(event) = hydrate_change_event(pool, seq).await? {
+        if let Some(event) = hydrate_change_event(pool, std::slice::from_ref(owner), seq).await? {
             let personality_instance_id = r
                 .try_get::<Option<uuid::Uuid>, _>("entity_personality_instance_id")
                 .map_err(map_err)?;

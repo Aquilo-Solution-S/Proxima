@@ -69,6 +69,14 @@ pub enum EntityRef {
     FactEntity(FactEntityId),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum EdgeTargetProjection {
+    Visible { target: EntityRef },
+    Redacted,
+    Unavailable,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ChangeEventKind {
     EntityAppend {
@@ -88,13 +96,13 @@ pub enum ChangeEventKind {
         edge_id: Uuid,
         relation: String,
         source: EntityRef,
-        target: EntityRef,
+        target: EdgeTargetProjection,
     },
     EdgeDelete {
         edge_id: Uuid,
         relation: String,
         source: EntityRef,
-        target: EntityRef,
+        target: EdgeTargetProjection,
     },
 }
 

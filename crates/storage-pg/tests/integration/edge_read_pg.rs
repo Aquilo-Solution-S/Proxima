@@ -2,11 +2,12 @@ use crate::common::{drop_db, fresh_pg, seed_memory, seed_memory_edge};
 use proxima_core::access::world;
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::query::{
-    EdgeExistsRequest, EdgeFilter, EdgeReadRequest, MemoryLineageDirection, MemoryLineageRequest,
+    EdgeExistsRequest, EdgeFilter, EdgeReadRequest, EdgeTargetProjection, MemoryLineageDirection,
+    MemoryLineageRequest,
 };
 use proxima_core::{
-    CORE_DERIVED_FROM_RELATION, EdgeId, EntityKind, GroupId, MemoryId, OwnerRef, RelationClass,
-    UserId,
+    CORE_DERIVED_FROM_RELATION, EdgeId, EntityKind, EntityRef, GroupId, MemoryId, OwnerRef,
+    RelationClass, UserId,
 };
 use uuid::Uuid;
 
@@ -38,13 +39,28 @@ async fn direct_edge_reads_are_source_owned_with_redaction_and_guard()
 
         let p_read = read_edge_by_id(&pg, &fixture.p_read, &fixture.p, fixture.a_to_f1).await?;
         assert_eq!(p_read.edges.len(), 1);
-        assert!(p_read.edges[0].target_readable);
-        assert!(!p_read.edges[0].source_world_readable);
+        assert!(matches!(
+            p_read.edges[0].target,
+            EdgeTargetProjection::Visible { target } if target == EntityRef::Memory(fixture.f1)
+        ));
 
         let p_without_g1 =
             read_edge_by_id(&pg, &fixture.p_without_g1_read, &fixture.p, fixture.a_to_f1).await?;
         assert_eq!(p_without_g1.edges.len(), 1);
-        assert!(!p_without_g1.edges[0].target_readable);
+        assert_eq!(p_without_g1.edges[0].target, EdgeTargetProjection::Redacted);
+
+        let p_target_probe = read_edge_by_target_filter(
+            &pg,
+            &fixture.p_without_g1_read,
+            &fixture.p,
+            fixture.a_to_f1,
+            EntityRef::Memory(fixture.f1),
+        )
+        .await?;
+        assert!(
+            p_target_probe.edges.is_empty(),
+            "target-id filters must not confirm an unreadable redacted target"
+        );
 
         let world_read = read_edge_by_id(
             &pg,
@@ -211,6 +227,29 @@ async fn edge_exists_by_id(
             principal: *principal,
             edge_ids: vec![edge_id],
             filter: EdgeFilter::default(),
+        },
+    )
+    .await
+}
+
+async fn read_edge_by_target_filter(
+    pg: &proxima_storage_pg::PgStorage,
+    read_owners: &[OwnerRef],
+    principal: &OwnerRef,
+    edge_id: EdgeId,
+    target: EntityRef,
+) -> Result<proxima_core::verbs::query::EdgeReadResponse, proxima_core::StorageError> {
+    pg.read_edges(
+        read_owners,
+        &EdgeReadRequest {
+            principal: *principal,
+            edge_ids: vec![edge_id],
+            filter: EdgeFilter {
+                relation: None,
+                source: None,
+                target: Some(target),
+            },
+            limit: 10,
         },
     )
     .await

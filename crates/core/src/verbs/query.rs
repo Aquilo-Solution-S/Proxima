@@ -5,6 +5,7 @@
 
 use uuid::Uuid;
 
+pub use crate::change_event::EdgeTargetProjection;
 use crate::change_event::EntityRef;
 use crate::personality::PersonalityInstanceId;
 use crate::verbs::goal_write::GoalState;
@@ -160,8 +161,7 @@ pub struct MemoryLineageEdge {
     pub relation_class: String,
     pub source_kind: EntityKind,
     pub source_memory_id: MemoryId,
-    pub target_kind: EntityKind,
-    pub target_memory_id: MemoryId,
+    pub target: EdgeTargetProjection,
     pub distance: u8,
 }
 
@@ -319,9 +319,7 @@ pub struct EdgeRow {
     pub relation: String,
     pub relation_class: String,
     pub source: EntityRef,
-    pub target: EntityRef,
-    pub target_readable: bool,
-    pub source_world_readable: bool,
+    pub target: EdgeTargetProjection,
     pub payload: Vec<u8>,
 }
 

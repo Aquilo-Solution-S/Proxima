@@ -72,7 +72,7 @@ Hard deletion must not reopen ingest.
 
 Audit survives `delete_owner` for the same Owner.
 
-Owner remains the storage and graph isolation primitive. Owner-space grants are an authorization layer above Owner: the host resolves which `(subject, Owner, action)` grants exist, and Core enforces the resolved grants at verb/tool entry. Grants never add org semantics to Core and never permit cross-owner edges.
+Owner remains the storage and graph isolation primitive. Owner-space grants are an authorization layer above Owner: the host resolves which `(subject, Owner, action)` grants exist, and Core enforces the resolved grants at verb/tool entry. Grants never add org semantics to Core. Edge rows are source-owned; descriptor policy and target gates control cross-owner target admission. Compliance export/delete redacts or omits unreadable targets independently from source-readable edge rows.
 
 ## External side effects
 

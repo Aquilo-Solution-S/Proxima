@@ -9,220 +9,29 @@
 
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    CapabilityTag, EdgeAuthorshipKind, EdgeId, EdgePayload, EndpointBinding, EntityKind,
-    FactEntityId, GoalId, MemoryId, Owner, RegisteredRelation, SchemaId, SchemaVersion,
-    StorageError,
+    CapabilityTag, EdgeAuthorshipKind, EdgeId, EndpointBinding, EntityKind, Owner, OwnerRefKind,
+    RegisteredRelation, RelationOwnerPolicy, SchemaId, SchemaVersion, StorageError,
 };
 
 use crate::error::map_err;
-use crate::sidecars::{PgEdgeSidecar, PgSidecarFuture};
-
-/// Durable edge endpoint with exactly one backing id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Endpoint {
-    Memory {
-        kind: EntityKind,
-        memory_id: MemoryId,
-    },
-    Goal(GoalId),
-    FactEntity(FactEntityId),
-}
-
-impl Endpoint {
-    #[must_use]
-    pub const fn fact(memory_id: MemoryId) -> Self {
-        Self::Memory {
-            kind: EntityKind::Fact,
-            memory_id,
-        }
-    }
-
-    #[must_use]
-    pub const fn abstraction(memory_id: MemoryId) -> Self {
-        Self::Memory {
-            kind: EntityKind::Abstraction,
-            memory_id,
-        }
-    }
-
-    #[must_use]
-    pub const fn perspective(memory_id: MemoryId) -> Self {
-        Self::Memory {
-            kind: EntityKind::Perspective,
-            memory_id,
-        }
-    }
-
-    #[must_use]
-    pub const fn goal(goal_id: GoalId) -> Self {
-        Self::Goal(goal_id)
-    }
-
-    #[must_use]
-    pub const fn fact_entity(fact_entity_id: FactEntityId) -> Self {
-        Self::FactEntity(fact_entity_id)
-    }
-
-    const fn kind(self) -> EntityKind {
-        match self {
-            Self::Memory { kind, .. } => kind,
-            Self::Goal(_) => EntityKind::Goal,
-            Self::FactEntity(_) => EntityKind::Fact,
-        }
-    }
-
-    const fn memory_id(self) -> Option<uuid::Uuid> {
-        match self {
-            Self::Memory { memory_id, .. } => Some(memory_id.into_inner()),
-            Self::Goal(_) | Self::FactEntity(_) => None,
-        }
-    }
-
-    const fn goal_id(self) -> Option<uuid::Uuid> {
-        match self {
-            Self::Goal(goal_id) => Some(goal_id.into_inner()),
-            Self::Memory { .. } | Self::FactEntity(_) => None,
-        }
-    }
-
-    const fn fact_entity_id(self) -> Option<uuid::Uuid> {
-        match self {
-            Self::FactEntity(fact_entity_id) => Some(fact_entity_id.into_inner()),
-            Self::Memory { .. } | Self::Goal(_) => None,
-        }
-    }
-}
+use crate::sidecars::PgSidecarFuture;
 
 /// Draft of an edge to be written.
 #[derive(Debug, Clone)]
-pub struct EdgeDraft<'a> {
-    pub edge_id: uuid::Uuid,
-    pub relation: RegisteredRelation<'a>,
-    pub source_kind: EntityKind,
-    pub source_memory_id: Option<uuid::Uuid>,
-    pub source_goal_id: Option<uuid::Uuid>,
-    pub source_fact_entity_id: Option<uuid::Uuid>,
-    pub target_kind: EntityKind,
-    pub target_memory_id: Option<uuid::Uuid>,
-    pub target_goal_id: Option<uuid::Uuid>,
-    pub target_fact_entity_id: Option<uuid::Uuid>,
-    pub authorship_kind: EdgeAuthorshipKind,
-    pub authorship_owner_memory_id: Option<uuid::Uuid>,
-    pub owner: &'a Owner,
-}
-
-impl<'a> EdgeDraft<'a> {
-    #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        edge_id: uuid::Uuid,
-        relation: RegisteredRelation<'a>,
-        source: Endpoint,
-        target: Endpoint,
-        authorship_kind: EdgeAuthorshipKind,
-        authorship_owner_memory_id: Option<MemoryId>,
-        owner: &'a Owner,
-    ) -> Self {
-        Self {
-            edge_id,
-            relation,
-            source_kind: source.kind(),
-            source_memory_id: source.memory_id(),
-            source_goal_id: source.goal_id(),
-            source_fact_entity_id: source.fact_entity_id(),
-            target_kind: target.kind(),
-            target_memory_id: target.memory_id(),
-            target_goal_id: target.goal_id(),
-            target_fact_entity_id: target.fact_entity_id(),
-            authorship_kind,
-            authorship_owner_memory_id: authorship_owner_memory_id.map(MemoryId::into_inner),
-            owner,
-        }
-    }
-}
-
-/// Write an untyped/substrate edge row and the EdgeAppend change_event.
-///
-/// # Errors
-///
-/// Returns storage errors from edge validation, row insertion, or change
-/// event insertion.
-#[allow(clippy::too_many_arguments)]
-pub async fn append_edge(
-    tx: &mut sqlx::PgConnection,
-    edge_id: uuid::Uuid,
-    relation: RegisteredRelation<'_>,
-    source: Endpoint,
-    target: Endpoint,
-    authorship_kind: EdgeAuthorshipKind,
-    authorship_owner_memory_id: Option<MemoryId>,
-    owner: &Owner,
-) -> Result<uuid::Uuid, StorageError> {
-    let draft = EdgeDraft::new(
-        edge_id,
-        relation,
-        source,
-        target,
-        authorship_kind,
-        authorship_owner_memory_id,
-        owner,
-    );
-    append_edge_in_tx(tx, &draft).await?;
-    Ok(edge_id)
-}
-
-/// Write a typed edge row, its `EdgePayload` sidecar, and the
-/// EdgeAppend change_event.
-///
-/// # Errors
-///
-/// Returns storage errors from schema mismatch, edge validation, row
-/// insertion, sidecar insertion, or change event insertion.
-#[allow(clippy::too_many_arguments)]
-pub async fn append_typed_edge<E: EdgePayload + PgEdgeSidecar + Clone>(
-    tx: &mut sqlx::PgConnection,
-    edge_id: uuid::Uuid,
-    relation: RegisteredRelation<'_>,
-    source: Endpoint,
-    target: Endpoint,
-    authorship_kind: EdgeAuthorshipKind,
-    authorship_owner_memory_id: Option<MemoryId>,
-    owner: &Owner,
-    payload: &E,
-) -> Result<uuid::Uuid, StorageError> {
-    let payload_schema = relation.descriptor.payload_schema.as_ref().ok_or_else(|| {
-        StorageError::ConstraintViolation(format!(
-            "typed EdgePayload supplied for substrate relation {}",
-            relation.descriptor.relation,
-        ))
-    })?;
-    if payload_schema.schema_id != E::schema_id()
-        || payload_schema.schema_version.into_inner() != E::SCHEMA_VERSION
-    {
-        return Err(StorageError::ConstraintViolation(format!(
-            "EdgePayload {} v{} does not match relation {} payload schema {} v{}",
-            E::SCHEMA_ID,
-            E::SCHEMA_VERSION,
-            relation.descriptor.relation,
-            payload_schema.schema_id.as_str(),
-            payload_schema.schema_version.into_inner(),
-        )));
-    }
-    let draft = EdgeDraft::new(
-        edge_id,
-        relation,
-        source,
-        target,
-        authorship_kind,
-        authorship_owner_memory_id,
-        owner,
-    );
-    let sidecar_payload = payload.clone();
-    append_edge_with_sidecar_in_tx(tx, &draft, move |tx, edge_id| {
-        Box::pin(async move { sidecar_payload.insert_edge_sidecar(tx, edge_id).await })
-    })
-    .await?;
-    Ok(edge_id)
+pub(crate) struct EdgeDraft<'a> {
+    pub(crate) edge_id: uuid::Uuid,
+    pub(crate) relation: RegisteredRelation<'a>,
+    pub(crate) source_kind: EntityKind,
+    pub(crate) source_memory_id: Option<uuid::Uuid>,
+    pub(crate) source_goal_id: Option<uuid::Uuid>,
+    pub(crate) source_fact_entity_id: Option<uuid::Uuid>,
+    pub(crate) target_kind: EntityKind,
+    pub(crate) target_memory_id: Option<uuid::Uuid>,
+    pub(crate) target_goal_id: Option<uuid::Uuid>,
+    pub(crate) target_fact_entity_id: Option<uuid::Uuid>,
+    pub(crate) authorship_kind: EdgeAuthorshipKind,
+    pub(crate) authorship_owner_memory_id: Option<uuid::Uuid>,
+    pub(crate) owner: &'a Owner,
 }
 
 /// Write a substrate edge row + the EdgeAppend change_event in one
@@ -232,12 +41,13 @@ pub async fn append_typed_edge<E: EdgePayload + PgEdgeSidecar + Clone>(
 ///
 /// Returns `ConstraintViolation` on FK / check failures; `Internal`
 /// on sqlx failure.
-pub async fn append_edge_in_tx(
+pub(crate) async fn append_edge_in_tx(
     tx: &mut sqlx::PgConnection,
     draft: &EdgeDraft<'_>,
 ) -> Result<(), StorageError> {
     validate_edge_draft(draft, false)?;
     validate_endpoint_required_tags(tx, draft).await?;
+    validate_descriptor_owner_policy(tx, draft).await?;
 
     if !insert_edge_row(tx, draft).await? {
         return Ok(());
@@ -253,13 +63,14 @@ pub async fn append_edge_in_tx(
 ///
 /// Returns `ConstraintViolation` on shape failures; `Internal` on sqlx or
 /// concrete sidecar insertion failure.
-pub async fn append_edge_with_sidecar_in_tx(
+pub(crate) async fn append_edge_with_sidecar_in_tx(
     tx: &mut sqlx::PgConnection,
     draft: &EdgeDraft<'_>,
     sidecar: impl for<'t> FnOnce(&'t mut sqlx::PgConnection, EdgeId) -> PgSidecarFuture<'t>,
 ) -> Result<(), StorageError> {
     validate_edge_draft(draft, true)?;
     validate_endpoint_required_tags(tx, draft).await?;
+    validate_descriptor_owner_policy(tx, draft).await?;
 
     if !insert_edge_row(tx, draft).await? {
         return Ok(());
@@ -323,6 +134,73 @@ fn validate_edge_draft(draft: &EdgeDraft<'_>, payload_present: bool) -> Result<(
         )
         .map_err(StorageError::ConstraintViolation)?;
     Ok(())
+}
+
+async fn validate_descriptor_owner_policy(
+    tx: &mut sqlx::PgConnection,
+    draft: &EdgeDraft<'_>,
+) -> Result<(), StorageError> {
+    if draft.relation.descriptor.owner_policy == RelationOwnerPolicy::SourceOwned {
+        return Ok(());
+    }
+    let source = endpoint_owner(
+        tx,
+        draft.source_memory_id,
+        draft.source_goal_id,
+        draft.source_fact_entity_id,
+    )
+    .await?;
+    let target = endpoint_owner(
+        tx,
+        draft.target_memory_id,
+        draft.target_goal_id,
+        draft.target_fact_entity_id,
+    )
+    .await?;
+    if source == target {
+        Ok(())
+    } else {
+        Err(StorageError::ConstraintViolation(format!(
+            "relation {} requires source and target to have the same owner",
+            draft.relation.descriptor.relation
+        )))
+    }
+}
+
+async fn endpoint_owner(
+    tx: &mut sqlx::PgConnection,
+    memory_id: Option<uuid::Uuid>,
+    goal_id: Option<uuid::Uuid>,
+    fact_entity_id: Option<uuid::Uuid>,
+) -> Result<Owner, StorageError> {
+    let row: Option<(OwnerRefKind, Option<uuid::Uuid>)> = match (memory_id, goal_id, fact_entity_id)
+    {
+        (Some(id), None, None | Some(_)) => sqlx::query_as(
+            "SELECT owner_kind, owner_id FROM proxima_core.memories WHERE memory_id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(map_err)?,
+        (None, Some(id), None) => {
+            sqlx::query_as("SELECT owner_kind, owner_id FROM proxima_core.goals WHERE goal_id = $1")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(map_err)?
+        }
+        (None, None, Some(id)) => sqlx::query_as(
+            "SELECT owner_kind, owner_id FROM proxima_core.fact_entities WHERE fact_entity_id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(map_err)?,
+        _ => None,
+    };
+    let (kind, id) = row.ok_or(StorageError::NotFound)?;
+    kind.with_uuid(id)
+        .ok_or_else(|| StorageError::Internal("invalid OwnerRef columns".into()))
 }
 
 async fn validate_endpoint_required_tags(

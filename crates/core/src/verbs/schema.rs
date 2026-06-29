@@ -143,9 +143,67 @@ pub struct MemorySearchProjection {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SchemaRequest;
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RelationPayloadSchemaRef {
+    pub schema_id: SchemaId,
+    pub schema_version: SchemaVersion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RelationInfo {
+    pub relation: String,
+    pub class: String,
+    pub owner_policy: String,
+    pub target_access_policy: String,
+    pub source_binding: String,
+    pub target_binding: String,
+    pub source_kind_mask: Vec<String>,
+    pub target_kind_mask: Vec<String>,
+    pub authorship_mask: Vec<String>,
+    pub payload_schema: Option<RelationPayloadSchemaRef>,
+}
+
+impl From<&RelationDescriptor> for RelationInfo {
+    fn from(relation: &RelationDescriptor) -> Self {
+        Self {
+            relation: relation.relation.clone(),
+            class: relation.class.as_str().to_string(),
+            owner_policy: relation.owner_policy.as_str().to_string(),
+            target_access_policy: relation.target_access_policy.as_str().to_string(),
+            source_binding: relation.source_binding.as_str().to_string(),
+            target_binding: relation.target_binding.as_str().to_string(),
+            source_kind_mask: relation
+                .source_kind_mask
+                .as_strings()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            target_kind_mask: relation
+                .target_kind_mask
+                .as_strings()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            authorship_mask: relation
+                .authorship_mask
+                .as_strings()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            payload_schema: relation.payload_schema.as_ref().map(|schema| {
+                RelationPayloadSchemaRef {
+                    schema_id: schema.schema_id.clone(),
+                    schema_version: schema.schema_version,
+                }
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SchemaResponse {
     pub schemas: Vec<SchemaInfo>,
+    pub relations: Vec<RelationInfo>,
 }
 
 /// Build-time lookup acceleration for `FlavorRegistryFrozen`. Each map
@@ -468,6 +526,11 @@ impl FlavorRegistryFrozen {
         &self.relations
     }
 
+    #[must_use]
+    pub fn list_relation_info(&self) -> Vec<RelationInfo> {
+        self.relations.iter().map(RelationInfo::from).collect()
+    }
+
     /// Lookup a `RelationDescriptor` by its flavor-qualified
     /// relation id (`"proxima-code/calls"`, etc.).
     #[must_use]
@@ -609,6 +672,7 @@ impl FlavorRegistryFrozen {
     pub fn handle(&self, _req: &SchemaRequest) -> SchemaResponse {
         SchemaResponse {
             schemas: self.list(),
+            relations: self.list_relation_info(),
         }
     }
 }

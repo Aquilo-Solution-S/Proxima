@@ -1,4 +1,4 @@
-use proxima_core::change_event::{EntityKind, EntityRef};
+use proxima_core::change_event::{EdgeTargetProjection, EntityKind, EntityRef};
 use proxima_core::relation::RelationClass;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{EdgeRow, GoalRow, MemoryRow, StatefulHeadsFilter};
@@ -63,19 +63,23 @@ pub(super) fn edge_row_from_db(r: EdgeRowDb) -> Result<EdgeRow, StorageError> {
         r.source_goal_id,
         r.source_fact_entity_id,
     )?;
-    let target = entity_ref_from_endpoint(
-        r.target_memory_id,
-        r.target_goal_id,
-        r.target_fact_entity_id,
-    )?;
+    let target = if r.target_visible {
+        EdgeTargetProjection::Visible {
+            target: entity_ref_from_endpoint(
+                r.target_memory_id,
+                r.target_goal_id,
+                r.target_fact_entity_id,
+            )?,
+        }
+    } else {
+        EdgeTargetProjection::Redacted
+    };
     Ok(EdgeRow {
         id: r.edge_id,
         relation: r.relation,
         relation_class: r.relation_class.as_str().to_string(),
         source,
         target,
-        target_readable: r.target_readable,
-        source_world_readable: r.source_world_readable,
         payload: Vec::new(),
     })
 }
@@ -128,8 +132,7 @@ pub(super) struct EdgeRowDb {
     pub(super) target_memory_id: Option<uuid::Uuid>,
     pub(super) target_goal_id: Option<uuid::Uuid>,
     pub(super) target_fact_entity_id: Option<uuid::Uuid>,
-    pub(super) target_readable: bool,
-    pub(super) source_world_readable: bool,
+    pub(super) target_visible: bool,
 }
 
 #[derive(Debug, sqlx::FromRow)]

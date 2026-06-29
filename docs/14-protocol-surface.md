@@ -31,7 +31,7 @@ resources; `proxima://tools` returns the live tool catalog only, and
 resources are discovered through MCP `resources/list` and
 `resources/templates/list`.
 
-Owner remains the storage and graph isolation primitive. Owner-space grants are an authorization layer above Owner: the host resolves which `(subject, Owner, action)` grants exist, and Core enforces the resolved grants at verb/tool entry. Grants never add org semantics to Core and never permit cross-owner edges.
+Owner remains the storage and graph isolation primitive. Owner-space grants are an authorization layer above Owner: the host resolves which `(subject, Owner, action)` grants exist, and Core enforces the resolved grants at verb/tool entry. Grants never add org semantics to Core. Edge rows are source-owned; registered relation descriptors decide whether a foreign target is admitted and whether target read/write is required. Read projection is source-local for the edge row with independent target `Visible` / `Redacted` / `Unavailable` rendering.
 
 Canonical substrate tools:
 
