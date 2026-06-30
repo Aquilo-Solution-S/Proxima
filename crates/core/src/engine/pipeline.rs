@@ -358,22 +358,23 @@ mod tests {
     type ResolvedAuthz = AuthzContext;
 
     fn engine() -> Engine {
-        Engine::new(FlavorRegistry::new().freeze())
+        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
     }
 
     fn engine_from_registry(registry: FlavorRegistry) -> Engine {
-        Engine::new(registry.freeze())
+        Engine::new(registry.freeze_or_panic_for_tests())
     }
 
     fn engine_with_ports(storage: MembershipStorage) -> Engine {
-        Engine::compose(storage.storage_ports(), |_| {})
+        Engine::compose_or_panic_for_tests(storage.storage_ports(), |_| {})
     }
 
     fn engine_from_registry_and_storage(
         registry: FlavorRegistry,
         storage: MembershipStorage,
     ) -> Engine {
-        Engine::new(registry.freeze()).with_storage_ports(storage.storage_ports())
+        Engine::new(registry.freeze_or_panic_for_tests())
+            .with_storage_ports(storage.storage_ports())
     }
 
     fn owner() -> Owner {
@@ -756,7 +757,8 @@ mod tests {
         let requested = owner();
         let hidden = owner();
         let mut registry = FlavorRegistry::new();
-        registry.set_owner_resolver(Arc::new(StaticResolver { resolved: hidden }));
+        registry
+            .set_owner_resolver_or_panic_for_tests(Arc::new(StaticResolver { resolved: hidden }));
         let engine = engine_from_registry(registry);
         let authz = AuthzContext::single_owner(&requested, AuthPath::System);
 

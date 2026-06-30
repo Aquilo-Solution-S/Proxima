@@ -90,7 +90,7 @@ impl PgFactSidecar for FileRevisionV1 {
 
 impl PgMemoryPayload for FileRevisionV1 {
     fn load_memory_payload(
-        _pool: &sqlx::PgPool,
+        _ctx: proxima_storage_pg::sidecars::PgSidecarReadCtx<'_>,
         _memory_id: MemoryId,
     ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async { Ok(None) })
@@ -179,7 +179,7 @@ impl PgFactSidecar for FileRevisionV2 {
 
 impl PgMemoryPayload for FileRevisionV2 {
     fn load_memory_payload(
-        _pool: &sqlx::PgPool,
+        _ctx: proxima_storage_pg::sidecars::PgSidecarReadCtx<'_>,
         _memory_id: MemoryId,
     ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async { Ok(None) })
@@ -269,7 +269,7 @@ impl PgFactSidecar for CodeChunkV1 {
 
 impl PgMemoryPayload for CodeChunkV1 {
     fn load_memory_payload(
-        _pool: &sqlx::PgPool,
+        _ctx: proxima_storage_pg::sidecars::PgSidecarReadCtx<'_>,
         _memory_id: MemoryId,
     ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async { Ok(None) })
@@ -332,7 +332,7 @@ impl PgFactSidecar for CommitV1 {
 
 impl PgMemoryPayload for CommitV1 {
     fn load_memory_payload(
-        _pool: &sqlx::PgPool,
+        _ctx: proxima_storage_pg::sidecars::PgSidecarReadCtx<'_>,
         _memory_id: MemoryId,
     ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async { Ok(None) })
@@ -341,11 +341,11 @@ impl PgMemoryPayload for CommitV1 {
 
 fn registry_for_test() -> FlavorRegistryFrozen {
     let mut registry = FlavorRegistry::new();
-    registry.add_fact_schema::<FileRevisionV1>();
-    registry.add_fact_schema::<FileRevisionV2>();
-    registry.add_fact_schema::<CodeChunkV1>();
-    registry.add_fact_schema::<CommitV1>();
-    registry.freeze()
+    registry.add_fact_schema_or_panic_for_tests::<FileRevisionV1>();
+    registry.add_fact_schema_or_panic_for_tests::<FileRevisionV2>();
+    registry.add_fact_schema_or_panic_for_tests::<CodeChunkV1>();
+    registry.add_fact_schema_or_panic_for_tests::<CommitV1>();
+    registry.freeze_or_panic_for_tests()
 }
 
 fn pg_sidecars_for_test() -> PgSidecarRegistryFrozen {
@@ -400,7 +400,7 @@ async fn create_code_sidecars(pg: &PgStorage) -> Result<(), sqlx::Error> {
             message text NOT NULL
         )",
     ] {
-        sqlx::query(sql).execute(pg.pool()).await?;
+        sqlx::query(sql).execute(pg.pool_for_tests()).await?;
     }
     Ok(())
 }
@@ -518,7 +518,7 @@ async fn memory_fact_entity_id(
           WHERE memory_id = $1",
     )
     .bind(memory_id.into_inner())
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await
 }
 
@@ -529,13 +529,13 @@ async fn entity_head(pg: &PgStorage, fact_entity_id: Uuid) -> Result<Uuid, sqlx:
           WHERE fact_entity_id = $1",
     )
     .bind(fact_entity_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await
 }
 
 async fn entity_count(pg: &PgStorage) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.fact_entities")
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await
 }
 
@@ -561,7 +561,7 @@ async fn stateful_ingest_derives_entity_and_sets_memory_fk() {
               WHERE fact_entity_id = $1",
         )
         .bind(fact_entity_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         let natural_key = file_revision_natural_key(repo_id, "src/lib.rs");
         assert_eq!(row.0, natural_key);
@@ -677,7 +677,7 @@ async fn guarded_upsert_does_not_regress_to_older_created_at() {
         sqlx::query("UPDATE proxima_core.memories SET created_at = $2 WHERE memory_id = $1")
             .bind(first.memory_id.into_inner())
             .bind(future)
-            .execute(pg.pool())
+            .execute(pg.pool_for_tests())
             .await?;
         sqlx::query(
             "UPDATE proxima_core.fact_entities
@@ -686,7 +686,7 @@ async fn guarded_upsert_does_not_regress_to_older_created_at() {
         )
         .bind(fact_entity_id)
         .bind(future)
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
 
         let older = ingest_payload(
@@ -753,7 +753,7 @@ async fn replay_is_idempotent_and_does_not_mint_or_move_entity() {
         );
         let memories =
             sqlx::query_scalar::<_, i64>("SELECT count(*)::bigint FROM proxima_core.memories")
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(memories, 1);
         Ok(())
@@ -895,7 +895,7 @@ async fn unique_natural_key_guard_rejects_duplicate_entity_row() {
         .bind(1_i32)
         .bind(file_revision_natural_key(repo_id, "src/lib.rs"))
         .bind(outcome.memory_id.into_inner())
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await
         .expect_err("duplicate natural key must hit unique guard");
         let Some(db_err) = err.as_database_error() else {

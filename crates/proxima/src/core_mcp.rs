@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
+use proxima_core::mcp::McpToolExtensions;
 use proxima_core::{
     AuthzContext, Engine, FlavorRegistryFrozen, McpAuthorContext, McpToolDescriptor,
     McpToolErrorKind, Owner, ToolScope, core_tool_annotations, provider_safe_tool_name,
     tool_name_matches,
 };
 use proxima_mcp_server::{McpAuthContext, McpToolHost, ToolInvocationError};
-use sqlx::PgPool;
 
 /// Facade handle for listing and dispatching the composed engine MCP tools
 /// from an embedding host's own authenticated endpoint.
@@ -83,13 +83,13 @@ impl CoreMcpError {
 impl CoreMcpTools {
     #[must_use]
     pub fn new(
-        pool: PgPool,
         company_owner: Owner,
         registry: Arc<FlavorRegistryFrozen>,
         engine: Arc<Engine>,
+        extensions: McpToolExtensions,
     ) -> Self {
         Self {
-            host: McpToolHost::from_pool(pool, company_owner, registry).with_engine(engine),
+            host: McpToolHost::from_parts(company_owner, registry, extensions).with_engine(engine),
         }
     }
 

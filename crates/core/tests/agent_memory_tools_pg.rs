@@ -115,7 +115,7 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
     let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
-    let frozen = Arc::new(registry.freeze());
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
     let owner = nil_owner();
     let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
@@ -209,7 +209,7 @@ async fn remember_enqueues_one_embedding_job_and_replay_does_not_duplicate()
     let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
-    let frozen = Arc::new(registry.freeze());
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
     let owner = nil_owner();
     let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
@@ -246,7 +246,7 @@ async fn remember_enqueues_one_embedding_job_and_replay_does_not_duplicate()
     assert_eq!(replay["handle"], first["handle"]);
     let memory_id = handles.resolve_memory(first["handle"].as_str().expect("handle"))?;
     assert_eq!(
-        embedding_job_count(pg.pool(), memory_id, "test-embed").await?,
+        embedding_job_count(pg.pool_for_tests(), memory_id, "test-embed").await?,
         1
     );
 
@@ -262,7 +262,7 @@ async fn remember_reused_idempotency_key_changed_body_creates_new_stateful_fact(
     let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
-    let frozen = Arc::new(registry.freeze());
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
     let owner = nil_owner();
     let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
@@ -310,16 +310,20 @@ async fn remember_reused_idempotency_key_changed_body_creates_new_stateful_fact(
         handles.resolve_memory(second["handle"].as_str().expect("second handle"))?;
     assert_ne!(second_memory_id, first_memory_id);
 
-    let first_note_id = agent_note_id(pg.pool(), first_memory_id).await?;
-    let second_note_id = agent_note_id(pg.pool(), second_memory_id).await?;
+    let first_note_id = agent_note_id(pg.pool_for_tests(), first_memory_id).await?;
+    let second_note_id = agent_note_id(pg.pool_for_tests(), second_memory_id).await?;
     assert_eq!(second_note_id, first_note_id);
-    assert_eq!(agent_note_fact_count(pg.pool(), first_note_id).await?, 2);
     assert_eq!(
-        agent_note_current_memory_id(pg.pool(), first_note_id).await?,
+        agent_note_fact_count(pg.pool_for_tests(), first_note_id).await?,
+        2
+    );
+    assert_eq!(
+        agent_note_current_memory_id(pg.pool_for_tests(), first_note_id).await?,
         second_memory_id.into_inner()
     );
     assert_eq!(
-        supersedes_edge_count_between(pg.pool(), first_memory_id, second_memory_id).await?,
+        supersedes_edge_count_between(pg.pool_for_tests(), first_memory_id, second_memory_id)
+            .await?,
         0
     );
 
@@ -406,7 +410,7 @@ async fn search_memories_heads_filter_runs_before_limit() -> Result<(), Box<dyn 
     let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
-    let frozen = Arc::new(registry.freeze());
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
     let owner = nil_owner();
     let handles = Arc::new(HandleTable::new());
 
@@ -480,7 +484,7 @@ async fn remember_reused_idempotency_key_identical_content_is_idempotent_replay(
     let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
-    let frozen = Arc::new(registry.freeze());
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
     let owner = nil_owner();
     let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
@@ -517,10 +521,13 @@ async fn remember_reused_idempotency_key_identical_content_is_idempotent_replay(
     assert_eq!(replay["handle"], first["handle"]);
 
     let memory_id = handles.resolve_memory(first["handle"].as_str().expect("handle"))?;
-    let note_id = agent_note_id(pg.pool(), memory_id).await?;
-    assert_eq!(agent_note_fact_count(pg.pool(), note_id).await?, 1);
+    let note_id = agent_note_id(pg.pool_for_tests(), memory_id).await?;
     assert_eq!(
-        agent_note_current_memory_id(pg.pool(), note_id).await?,
+        agent_note_fact_count(pg.pool_for_tests(), note_id).await?,
+        1
+    );
+    assert_eq!(
+        agent_note_current_memory_id(pg.pool_for_tests(), note_id).await?,
         memory_id.into_inner()
     );
 
@@ -537,7 +544,7 @@ async fn remember_reused_idempotency_key_identical_content_is_idempotent_replay(
 async fn remember_cited_and_uncited_persist_citation_rows() -> Result<(), Box<dyn std::error::Error>>
 {
     let (pg, db_name) = fresh_pg_with_remember_sidecars().await;
-    create_remember_citation_sidecars(pg.pool()).await?;
+    create_remember_citation_sidecars(pg.pool_for_tests()).await?;
 
     let frozen = registry_with_remember_test_citation();
     let owner = nil_owner();
@@ -603,7 +610,7 @@ async fn remember_cited_and_uncited_persist_citation_rows() -> Result<(), Box<dy
          WHERE memory_id = $1",
     )
     .bind(cited_memory_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert!(
         cited_row.0.is_some(),
@@ -616,7 +623,7 @@ async fn remember_cited_and_uncited_persist_citation_rows() -> Result<(), Box<dy
          WHERE memory_id = $1",
     )
     .bind(uncited_memory_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert!(
         uncited_row.0.is_none(),
@@ -626,37 +633,51 @@ async fn remember_cited_and_uncited_persist_citation_rows() -> Result<(), Box<dy
     let cited_sidecar_count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM proxima_core.agent_note_v1 WHERE memory_id = $1")
             .bind(cited_memory_id)
-            .fetch_one(pg.pool())
+            .fetch_one(pg.pool_for_tests())
             .await?;
     let uncited_sidecar_count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM proxima_core.agent_note_v1 WHERE memory_id = $1")
             .bind(uncited_memory_id)
-            .fetch_one(pg.pool())
+            .fetch_one(pg.pool_for_tests())
             .await?;
     assert_eq!(cited_sidecar_count, 1);
     assert_eq!(uncited_sidecar_count, 1);
     assert_eq!(
-        count_rows(pg.pool(), "proxima_core.cited_objects").await?,
+        count_rows(pg.pool_for_tests(), "proxima_core.cited_objects").await?,
         1
     );
     assert_eq!(
-        count_rows(pg.pool(), "public.remember_test_cited_object_v1").await?,
+        count_rows(pg.pool_for_tests(), "public.remember_test_cited_object_v1").await?,
         1
     );
     assert_eq!(
-        count_rows(pg.pool(), "proxima_core.citation_mappings").await?,
+        count_rows(pg.pool_for_tests(), "proxima_core.citation_mappings").await?,
         1
     );
     assert_eq!(
-        count_rows(pg.pool(), "public.remember_test_citation_mapping_v1").await?,
+        count_rows(
+            pg.pool_for_tests(),
+            "public.remember_test_citation_mapping_v1"
+        )
+        .await?,
         1
     );
     assert_eq!(
-        embedding_job_count(pg.pool(), MemoryId::new(cited_memory_id), "test-embed").await?,
+        embedding_job_count(
+            pg.pool_for_tests(),
+            MemoryId::new(cited_memory_id),
+            "test-embed"
+        )
+        .await?,
         1
     );
     assert_eq!(
-        embedding_job_count(pg.pool(), MemoryId::new(uncited_memory_id), "test-embed").await?,
+        embedding_job_count(
+            pg.pool_for_tests(),
+            MemoryId::new(uncited_memory_id),
+            "test-embed"
+        )
+        .await?,
         1
     );
 
@@ -671,7 +692,7 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
     let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
-    let frozen = Arc::new(registry.freeze());
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
     let owner = nil_owner();
     let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
@@ -744,7 +765,7 @@ async fn search_memories_hybrid_returns_embedding_only_match()
     let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
-    let frozen_inner = registry.freeze();
+    let frozen_inner = registry.freeze_or_panic_for_tests();
     let frozen = Arc::new(frozen_inner.clone());
     let owner = nil_owner();
     let handles = Arc::new(HandleTable::new());
@@ -807,7 +828,7 @@ async fn prefixed_search_and_open_keep_company_shared_visibility()
     let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
-    let frozen = Arc::new(registry.freeze());
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
     let owner = nil_owner();
     let caller_self_perspective = MemoryId::new(uuid::Uuid::now_v7());
     let authored_handle = call_tool_prefixed(
@@ -898,7 +919,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
-    let frozen = Arc::new(registry.freeze());
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
     let frozen_b = frozen.clone();
     let owner_a = nil_owner();
     let owner_b: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::from_u128(1)));
@@ -969,7 +990,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
         "SELECT count(DISTINCT memory_id) FROM proxima_core.agent_derivation_v1
          WHERE idempotency_key = 'shared-key-collision'",
     )
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(
         distinct_owner_memories, 2,
@@ -1030,7 +1051,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
         "SELECT count(DISTINCT memory_id) FROM proxima_core.agent_derivation_v1
          WHERE idempotency_key = 'kind-key-collision'",
     )
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(
         distinct_kind_memories, 2,
@@ -1049,7 +1070,7 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
     let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
-    let frozen = Arc::new(registry.freeze());
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
     let owner = nil_owner();
     let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
@@ -1204,7 +1225,7 @@ async fn call_tool_prefixed(
             author,
             caller_self_perspective,
             master_token_id: None,
-            extensions: McpToolExtensions::with(pg.pool().clone()),
+            extensions: McpToolExtensions::with(pg.pool_for_tests().clone()),
             engine: Some(engine_for_registry(registry, pg)),
         },
         args,
@@ -1231,7 +1252,7 @@ async fn read_memory_prefixed(
             author,
             caller_self_perspective,
             master_token_id: None,
-            extensions: McpToolExtensions::with(pg.pool().clone()),
+            extensions: McpToolExtensions::with(pg.pool_for_tests().clone()),
             engine: Some(engine_for_registry(registry, pg)),
         },
         GetMemoryArgs {
@@ -1271,7 +1292,7 @@ async fn call_tool_with_engine(
             author,
             caller_self_perspective: None,
             master_token_id: None,
-            extensions: McpToolExtensions::with(pg.pool().clone()),
+            extensions: McpToolExtensions::with(pg.pool_for_tests().clone()),
             engine,
         },
         args,
@@ -1319,9 +1340,9 @@ fn engine_for_registry(
 
 fn registry_with_remember_test_citation() -> Arc<FlavorRegistryFrozen> {
     let mut registry = FlavorRegistry::new();
-    registry.add_cited_object_schema::<RememberTestCitedObject>();
-    registry.add_citation_mapping_schema::<RememberTestCitationMapping>();
-    Arc::new(registry.freeze())
+    registry.add_cited_object_schema_or_panic_for_tests::<RememberTestCitedObject>();
+    registry.add_citation_mapping_schema_or_panic_for_tests::<RememberTestCitationMapping>();
+    Arc::new(registry.freeze_or_panic_for_tests())
 }
 
 async fn fresh_pg_with_remember_sidecars() -> (proxima_storage_pg::PgStorage, String) {

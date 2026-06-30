@@ -6,6 +6,7 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use axum::routing::get;
 use proxima::{Authz, layered_router};
+use proxima_core::mcp::McpToolExtensions;
 use proxima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, Owner, OwnerRef,
     UserId,
@@ -47,8 +48,11 @@ fn router(auth: Arc<McpEdgeAuth>, owner: Owner) -> Router {
 }
 
 fn router_with_hosts(auth: Arc<McpEdgeAuth>, owner: Owner, allowed_hosts: &[String]) -> Router {
-    let pool = sqlx::PgPool::connect_lazy("postgres://placeholder/db").expect("lazy pool");
-    let host = McpToolHost::from_pool(pool, owner, Arc::new(FlavorRegistry::new().freeze()));
+    let host = McpToolHost::from_parts(
+        owner,
+        Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+        McpToolExtensions::default(),
+    );
     let cancel = CancellationToken::new();
     let allowlist = default_allowlist();
     let service = streamable_http_service(host, &allowlist, allowed_hosts, &cancel);

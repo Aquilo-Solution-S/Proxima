@@ -133,7 +133,7 @@ async fn insert_self(
     .bind(owner_id)
     .bind(proxima_core::EntityKind::Perspective)
     .bind(proxima_core::MemoryOperatorKind::AtoP)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(MemoryId::new(memory_id))
 }
@@ -158,7 +158,7 @@ async fn insert_evidence_abstraction(
     .bind(owner_id)
     .bind(proxima_core::EntityKind::Abstraction)
     .bind(proxima_core::MemoryOperatorKind::AtoA)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(MemoryId::new(memory_id))
 }
@@ -256,7 +256,7 @@ async fn goal_create_atom_writes_goal_side_effects_and_replays() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let draft = fresh_draft(&owner, "req-1".to_string());
 
         let outcome = create_goal(&pg, &registry, self_id, draft.clone()).await?;
@@ -267,7 +267,7 @@ async fn goal_create_atom_writes_goal_side_effects_and_replays() {
         let payload: Vec<u8> =
             sqlx::query_scalar("SELECT payload FROM proxima_core.goals WHERE goal_id = $1")
                 .bind(outcome.goal_id.into_inner())
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(payload, draft.payload);
 
@@ -292,13 +292,13 @@ async fn goal_create_atom_writes_goal_side_effects_and_replays() {
         assert!(err.to_string().contains("unregistered GoalPayload schema"));
 
         let goals: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
-            .fetch_one(pg.pool())
+            .fetch_one(pg.pool_for_tests())
             .await?;
         assert_eq!(goals.0, 1);
 
         let activated: (i64,) =
             sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goal_activated_v1")
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(activated.0, 1);
 
@@ -321,7 +321,7 @@ async fn goal_create_atom_rejects_invalid_wake_config_before_goal_insert() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let mut draft = fresh_draft(&owner, "req-invalid-wake".to_string());
         draft.wake = Some(wake_config(
             &registry,
@@ -341,7 +341,7 @@ async fn goal_create_atom_rejects_invalid_wake_config_before_goal_insert() {
         );
 
         let goals: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
-            .fetch_one(pg.pool())
+            .fetch_one(pg.pool_for_tests())
             .await?;
         assert_eq!(goals.0, 0);
         Ok(())
@@ -363,7 +363,7 @@ async fn goal_create_atom_rejects_deserialized_invalid_wake_tool_id() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let malformed_wake: GoalWakeConfigWrite = serde_json::from_value(serde_json::json!({
             "trigger": {
                 "FactSchema": {
@@ -384,7 +384,7 @@ async fn goal_create_atom_rejects_deserialized_invalid_wake_tool_id() {
         assert!(err.to_string().contains("invalid wake tool id"));
 
         let goals: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
-            .fetch_one(pg.pool())
+            .fetch_one(pg.pool_for_tests())
             .await?;
         assert_eq!(goals.0, 0);
         Ok(())
@@ -406,7 +406,7 @@ async fn goal_transition_atom_writes_superseding_goal() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let prior = create_goal(
             &pg,
             &registry,
@@ -435,7 +435,7 @@ async fn goal_transition_atom_writes_superseding_goal() {
         let row: (Option<Uuid>, GoalState) =
             sqlx::query_as("SELECT supersedes, state FROM proxima_core.goals WHERE goal_id = $1")
                 .bind(transitioned.goal_id.into_inner())
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(row, (Some(prior.goal_id.into_inner()), GoalState::Paused));
 
@@ -475,7 +475,7 @@ async fn goal_create_atom_with_parent_writes_goal_parent() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let parent = create_goal(
             &pg,
             &registry,
@@ -497,7 +497,7 @@ async fn goal_create_atom_with_parent_writes_goal_parent() {
         )
         .bind(CORE_DEPENDS_ON_RELATION)
         .bind(child_outcome.goal_id.into_inner())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(parents.0, 1);
 
@@ -520,7 +520,7 @@ async fn goal_create_atom_rejects_empty_payload_bytes() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
 
         let mut empty = fresh_draft(&owner, "req-empty".to_string());
         empty.payload = Vec::new();
@@ -530,7 +530,7 @@ async fn goal_create_atom_rejects_empty_payload_bytes() {
         assert!(err.to_string().contains("goals_payload_nonempty_chk"));
 
         let goals: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
-            .fetch_one(pg.pool())
+            .fetch_one(pg.pool_for_tests())
             .await?;
         assert_eq!(goals.0, 0);
 
@@ -548,7 +548,7 @@ async fn goal_create_atom_rejects_empty_payload_bytes() {
         .bind(owner_kind)
         .bind(owner_id)
         .bind(Vec::<u8>::new())
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await;
         assert!(
             raw.expect_err("DB CHECK must reject a zero-byte payload")
@@ -577,7 +577,7 @@ async fn goal_achieve_atom_writes_achieved_and_fact() {
         let self_id = insert_self(&pg, &owner).await?;
         let evidence_id = insert_evidence_abstraction(&pg, &owner).await?;
         let evidence = vec![GoalEvidenceRef::new(evidence_id)];
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let prior = create_goal(
             &pg,
             &registry,
@@ -603,7 +603,7 @@ async fn goal_achieve_atom_writes_achieved_and_fact() {
         let row: (Option<Uuid>, GoalState) =
             sqlx::query_as("SELECT supersedes, state FROM proxima_core.goals WHERE goal_id = $1")
                 .bind(outcome.goal_id.into_inner())
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(row, (Some(prior.goal_id.into_inner()), GoalState::Achieved));
 
@@ -611,7 +611,7 @@ async fn goal_achieve_atom_writes_achieved_and_fact() {
             "SELECT count(*)::bigint FROM proxima_core.goal_achieved_v1 WHERE goal_id = $1",
         )
         .bind(outcome.goal_id.into_inner())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(achieved.0, 1);
 
@@ -650,7 +650,7 @@ async fn goal_achieve_operator_authorship_writes_atogoal_evidence_edges() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let evidence_id = insert_evidence_abstraction(&pg, &owner).await?;
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let prior = create_goal(
             &pg,
             &registry,
@@ -681,7 +681,7 @@ async fn goal_achieve_operator_authorship_writes_atogoal_evidence_edges() {
         .bind(CORE_MOTIVATED_BY_RELATION)
         .bind(outcome.goal_id.into_inner())
         .bind(evidence_id.into_inner())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(row.0, EdgeAuthorshipKind::OperatorAtoGoal.as_str());
 
@@ -706,7 +706,7 @@ async fn goal_achieve_operator_replay_conflicts_on_changed_evidence() {
         let self_id = insert_self(&pg, &owner).await?;
         let evidence_a = insert_evidence_abstraction(&pg, &owner).await?;
         let evidence_b = insert_evidence_abstraction(&pg, &owner).await?;
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let prior = create_goal(
             &pg,
             &registry,
@@ -764,7 +764,7 @@ async fn goal_achieve_atom_rejects_empty_evidence() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let prior = create_goal(
             &pg,
             &registry,
@@ -794,13 +794,13 @@ async fn goal_achieve_atom_rejects_empty_evidence() {
              WHERE goal_id = $1 AND state = 'Active' AND supersedes IS NULL",
         )
         .bind(prior.goal_id.into_inner())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(active.0, 1);
 
         let achieved: (i64,) =
             sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goal_achieved_v1")
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(achieved.0, 0);
 
@@ -825,7 +825,7 @@ async fn goal_achieve_atom_rejects_evidence_without_home_owner() {
         let self_id = insert_self(&pg, &owner).await?;
         let evidence_id = MemoryId::new(Uuid::now_v7());
 
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let prior = create_goal(
             &pg,
             &registry,
@@ -857,7 +857,7 @@ async fn goal_achieve_atom_rejects_evidence_without_home_owner() {
         )
         .bind(CORE_MOTIVATED_BY_RELATION)
         .bind(evidence_id.into_inner())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(
             motivated_edges.0, 0,
@@ -883,7 +883,7 @@ async fn goal_transition_rejects_operator_authorship_without_evidence() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let prior = create_goal(
             &pg,
             &registry,
@@ -930,7 +930,7 @@ async fn goal_transition_atom_abandon_and_resume() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
 
         let abandoned_prior = create_goal(
             &pg,
@@ -952,7 +952,7 @@ async fn goal_transition_atom_abandon_and_resume() {
         let abandoned_row: (Option<Uuid>, GoalState) =
             sqlx::query_as("SELECT supersedes, state FROM proxima_core.goals WHERE goal_id = $1")
                 .bind(abandoned.goal_id.into_inner())
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(
             abandoned_row,
@@ -965,7 +965,7 @@ async fn goal_transition_atom_abandon_and_resume() {
             "SELECT count(*)::bigint FROM proxima_core.goal_abandoned_v1 WHERE goal_id = $1",
         )
         .bind(abandoned.goal_id.into_inner())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(abandoned_facts.0, 1);
 
@@ -999,7 +999,7 @@ async fn goal_transition_atom_abandon_and_resume() {
         let resumed_state: (GoalState,) =
             sqlx::query_as("SELECT state FROM proxima_core.goals WHERE goal_id = $1")
                 .bind(resumed.goal_id.into_inner())
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(resumed_state.0, GoalState::Active);
 
@@ -1011,7 +1011,7 @@ async fn goal_transition_atom_abandon_and_resume() {
             pause_prior.goal_id.into_inner(),
             resumed.goal_id.into_inner(),
         ])
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(activations.0, 2);
 
@@ -1034,7 +1034,7 @@ async fn goal_transition_atom_rejects_stale_head() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let prior = create_goal(
             &pg,
             &registry,
@@ -1088,7 +1088,7 @@ async fn goal_decompose_atom_writes_children_and_parents() {
         let self_id = insert_self(&pg, &owner).await?;
         let evidence_id = insert_evidence_abstraction(&pg, &owner).await?;
         let evidence = vec![GoalEvidenceRef::new(evidence_id)];
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let parent = create_goal(
             &pg,
             &registry,
@@ -1129,7 +1129,7 @@ async fn goal_decompose_atom_writes_children_and_parents() {
             .bind(CORE_DEPENDS_ON_RELATION)
             .bind(child.outcome.goal_id.into_inner())
             .bind(parent.goal_id.into_inner())
-            .fetch_one(pg.pool())
+            .fetch_one(pg.pool_for_tests())
             .await?;
             assert_eq!(parents.0, 1);
         }
@@ -1191,7 +1191,7 @@ async fn goal_decompose_atom_rejects_cross_owner_parent() {
         let owner_b = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_a = insert_self(&pg, &owner_a).await?;
         let self_b = insert_self(&pg, &owner_b).await?;
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let parent = create_goal(
             &pg,
             &registry,
@@ -1287,7 +1287,7 @@ async fn goal_create_atom_rejects_inactive_or_superseded_parent() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
 
         let active_parent = create_goal(
             &pg,
@@ -1367,7 +1367,7 @@ async fn goal_modify_atom_writes_replacement() {
         let self_id = insert_self(&pg, &owner).await?;
         let evidence_id = insert_evidence_abstraction(&pg, &owner).await?;
         let evidence = vec![GoalEvidenceRef::new(evidence_id)];
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let prior = create_goal(
             &pg,
             &registry,
@@ -1401,7 +1401,7 @@ async fn goal_modify_atom_writes_replacement() {
              FROM proxima_core.goals WHERE goal_id = $1",
         )
         .bind(outcome.goal_id.into_inner())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(row.0, Some(prior.goal_id.into_inner()));
         assert_eq!(row.1, GoalState::Active);
@@ -1450,7 +1450,7 @@ async fn goal_modify_operator_authorship_writes_atogoal_evidence_edges() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let evidence_id = insert_evidence_abstraction(&pg, &owner).await?;
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let prior = create_goal(
             &pg,
             &registry,
@@ -1487,7 +1487,7 @@ async fn goal_modify_operator_authorship_writes_atogoal_evidence_edges() {
         .bind(CORE_MOTIVATED_BY_RELATION)
         .bind(outcome.goal_id.into_inner())
         .bind(evidence_id.into_inner())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(row.0, EdgeAuthorshipKind::OperatorAtoGoal.as_str());
 
@@ -1512,7 +1512,7 @@ async fn goal_modify_operator_replay_conflicts_on_changed_evidence() {
         let self_id = insert_self(&pg, &owner).await?;
         let evidence_a = insert_evidence_abstraction(&pg, &owner).await?;
         let evidence_b = insert_evidence_abstraction(&pg, &owner).await?;
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let prior = create_goal(
             &pg,
             &registry,
@@ -1580,8 +1580,8 @@ async fn goal_create_atom_with_registry_generic_payload() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
         let mut registry = FlavorRegistry::new();
-        registry.add_goal_schema::<TestCustomGoalPayload>();
-        let registry = registry.freeze();
+        registry.add_goal_schema_or_panic_for_tests::<TestCustomGoalPayload>();
+        let registry = registry.freeze_or_panic_for_tests();
         let mut draft = fresh_draft(&owner, "req-custom-goal".to_string());
         draft.schema_id = SchemaId::new(TestCustomGoalPayload::SCHEMA_ID.to_string());
         draft.schema_version = SchemaVersion::new(TestCustomGoalPayload::SCHEMA_VERSION);
@@ -1595,7 +1595,7 @@ async fn goal_create_atom_with_registry_generic_payload() {
         let goals: (i64,) =
             sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals WHERE schema_id = $1")
                 .bind(TestCustomGoalPayload::SCHEMA_ID)
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(goals.0, 1);
 
@@ -1603,7 +1603,7 @@ async fn goal_create_atom_with_registry_generic_payload() {
             "SELECT count(*)::bigint FROM proxima_core.goal_activated_v1 WHERE goal_id = $1",
         )
         .bind(outcome.goal_id.into_inner())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(activated.0, 1);
 

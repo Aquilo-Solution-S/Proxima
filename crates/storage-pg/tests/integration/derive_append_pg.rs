@@ -63,13 +63,13 @@ async fn insert_source_abstraction(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(label)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(MemoryId::new(memory_id))
 }
 
 fn test_registry() -> FlavorRegistryFrozen {
-    FlavorRegistry::new().freeze()
+    FlavorRegistry::new().freeze_or_panic_for_tests()
 }
 
 fn agent_sidecar(kind: EntityKind, title: &'static str, body: &'static str) -> SidecarPayload {
@@ -154,7 +154,7 @@ async fn external_agent_abstraction_persists_with_replay() -> Result<(), Box<dyn
         );
         let sidecar = agent_sidecar(EntityKind::Abstraction, "x", "the agent view");
 
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         let outcome =
             append_with_sidecar(&mut tx, pg.sidecars(), &registry, &draft, &sidecar, source)
                 .await?;
@@ -162,7 +162,7 @@ async fn external_agent_abstraction_persists_with_replay() -> Result<(), Box<dyn
         assert_eq!(outcome.memory_id.into_inner(), memory_id);
         assert!(!outcome.idempotent_replay);
 
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         let replay =
             append_with_sidecar(&mut tx, pg.sidecars(), &registry, &draft, &sidecar, source)
                 .await?;
@@ -173,7 +173,7 @@ async fn external_agent_abstraction_persists_with_replay() -> Result<(), Box<dyn
             "SELECT count(*) FROM proxima_core.agent_derivation_v1 WHERE memory_id = $1",
         )
         .bind(memory_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(row_count, 1);
         Ok::<(), Box<dyn std::error::Error>>(())
@@ -205,13 +205,13 @@ async fn derived_replay_rejects_mismatched_input_contract() -> Result<(), Box<dy
         );
         let sidecar = agent_sidecar(EntityKind::Abstraction, "x", "the agent view");
 
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         append_with_sidecar(&mut tx, pg.sidecars(), &registry, &draft, &sidecar, source).await?;
         tx.commit().await?;
 
         let mut mismatch = draft.clone();
         mismatch.input_contract_id = InputContractId::new(Uuid::now_v7());
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         let err = append_with_sidecar(
             &mut tx,
             pg.sidecars(),
@@ -253,13 +253,13 @@ async fn external_agent_perspective_persists() -> Result<(), Box<dyn std::error:
             "perspective body",
         );
         let sidecar = agent_sidecar(EntityKind::Perspective, "p", "perspective body");
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         append_with_sidecar(&mut tx, pg.sidecars(), &registry, &draft, &sidecar, source).await?;
         tx.commit().await?;
         let kind: EntityKind =
             sqlx::query_scalar("SELECT kind FROM proxima_core.memories WHERE memory_id = $1")
                 .bind(memory_id)
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(kind, EntityKind::Perspective);
         Ok::<(), Box<dyn std::error::Error>>(())
@@ -294,7 +294,7 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
             "victim prior",
         );
         let victim_sidecar = agent_sidecar(EntityKind::Abstraction, "victim", "victim prior");
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         append_with_sidecar(
             &mut tx,
             pg.sidecars(),
@@ -316,7 +316,7 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
         foreign.supersedes = Some(MemoryId::new(victim_prior_id));
         let foreign_sidecar =
             agent_sidecar(EntityKind::Abstraction, "foreign", "foreign successor");
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         let err = append_with_sidecar(
             &mut tx,
             pg.sidecars(),
@@ -341,7 +341,7 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
             "attacker prior",
         );
         let attacker_sidecar = agent_sidecar(EntityKind::Abstraction, "attacker", "attacker prior");
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         append_with_sidecar(
             &mut tx,
             pg.sidecars(),
@@ -366,7 +366,7 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
             "same-owner",
             "same-owner successor",
         );
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         append_with_sidecar(
             &mut tx,
             pg.sidecars(),
@@ -395,7 +395,7 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
             "perspective",
             "attacker perspective",
         );
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         append_with_sidecar(
             &mut tx,
             pg.sidecars(),
@@ -420,7 +420,7 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
             "wrong-kind",
             "wrong-kind successor",
         );
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         let err = append_with_sidecar(
             &mut tx,
             pg.sidecars(),
@@ -463,7 +463,7 @@ async fn memory_count(
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT count(*) FROM proxima_core.memories WHERE memory_id = $1")
         .bind(memory_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await
 }
 
@@ -473,7 +473,7 @@ async fn stored_supersedes(
 ) -> Result<Option<uuid::Uuid>, sqlx::Error> {
     sqlx::query_scalar("SELECT supersedes FROM proxima_core.memories WHERE memory_id = $1")
         .bind(memory_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await
 }
 
@@ -483,6 +483,6 @@ async fn supersedes_pointer_count(
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT count(*) FROM proxima_core.memories WHERE supersedes = $1")
         .bind(prior)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await
 }

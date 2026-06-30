@@ -758,7 +758,7 @@ pub(in crate::engine) mod tests {
         let g1 = GroupId::new(uuid::Uuid::now_v7());
         let g1_owner = OwnerRef::Group(g1);
         let world_owner = world();
-        let engine = Engine::compose(
+        let engine = Engine::compose_or_panic_for_tests(
             MembershipStorage {
                 member: p,
                 group: g1,
@@ -796,7 +796,7 @@ pub(in crate::engine) mod tests {
     async fn granted_context_does_not_treat_foreign_accessible_personal_owner_as_role() {
         let subject = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let foreign = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-        let engine = Engine::new(FlavorRegistry::new().freeze());
+        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
         let authz = AuthzContext::scoped_access(
             subject,
             [foreign],
@@ -821,7 +821,7 @@ pub(in crate::engine) mod tests {
         let personal = OwnerRef::Personal(subject);
         let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
         let roles = OwnerRoles::for_subject(subject, [(group, Role::editor())]).unwrap();
-        let engine = Engine::new(FlavorRegistry::new().freeze());
+        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
         let authz = AuthzContext::server_resolved(roles, AuthPath::HostBearer);
 
         let access = engine
@@ -846,7 +846,7 @@ pub(in crate::engine) mod tests {
         let p = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let g1 = GroupId::new(uuid::Uuid::now_v7());
         let world_owner = world();
-        let engine = Engine::compose(
+        let engine = Engine::compose_or_panic_for_tests(
             MembershipStorage {
                 member: p,
                 group: g1,
@@ -882,7 +882,7 @@ pub(in crate::engine) mod tests {
     async fn granted_world_membership_is_read_only() {
         let p = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let world_owner = world();
-        let engine = Engine::compose(
+        let engine = Engine::compose_or_panic_for_tests(
             MembershipStorage {
                 member: p,
                 group: crate::WORLD_GROUP_ID,

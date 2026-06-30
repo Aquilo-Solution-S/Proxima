@@ -83,7 +83,7 @@ async fn insert_memory(
     .bind(kind)
     .bind(text)
     .bind(operator_kind)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(MemoryId::new(memory_id))
 }
@@ -106,7 +106,7 @@ fn product_request(
 }
 
 fn wake_config(trigger: GoalWakeTrigger, hard_memory_ids: &[MemoryId]) -> GoalWakeConfigWrite {
-    let registry = FlavorRegistry::new().freeze();
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let search =
         GoalWakeToolId::parse("core_search_memories", &registry).expect("registered search tool");
     GoalWakeConfigWrite::new(trigger, vec![search], "wake prompt", hard_memory_ids)
@@ -115,7 +115,7 @@ fn wake_config(trigger: GoalWakeTrigger, hard_memory_ids: &[MemoryId]) -> GoalWa
 
 async fn assert_no_goal_rows(pg: &PgStorage) -> Result<(), sqlx::Error> {
     let goal_count: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
     assert_eq!(goal_count.0, 0);
     Ok(())
@@ -158,9 +158,10 @@ async fn boot_registered(
     pg.run_migrations().await?;
     let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
     let target_self = insert_self(&pg, &owner).await?;
-    let engine = Engine::compose(Arc::new(pg.clone()).storage_ports(), |registry| {
-        registry.add_goal_schema::<ProductInitialGoal>();
-    });
+    let engine =
+        Engine::compose_or_panic_for_tests(Arc::new(pg.clone()).storage_ports(), |registry| {
+            registry.add_goal_schema_or_panic_for_tests::<ProductInitialGoal>();
+        });
     let authz = AuthzContext::for_subject_with_role(
         UserId::new(Uuid::now_v7()),
         [(owner, Role::admin())],
@@ -208,7 +209,7 @@ async fn engine_goalwrite_writes_product_goal_idempotently_without_table_sql() {
               WHERE goal_id = $1",
         )
         .bind(outcome.goal_id.into_inner())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(row.0, ProductInitialGoal::SCHEMA_ID);
         assert_eq!(row.1, "User");
@@ -224,7 +225,7 @@ async fn engine_goalwrite_writes_product_goal_idempotently_without_table_sql() {
         )
         .bind(outcome.goal_id.into_inner())
         .bind(target_self.into_inner())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(assigned.0, 1);
 
@@ -324,7 +325,7 @@ async fn engine_goalwrite_rejects_duplicate_evidence_before_write() {
         assert!(err.message.contains("duplicate goal evidence"));
 
         let goal_count: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
-            .fetch_one(pg.pool())
+            .fetch_one(pg.pool_for_tests())
             .await?;
         assert_eq!(goal_count.0, 0);
 
@@ -495,7 +496,8 @@ async fn engine_goalwrite_rejects_unregistered_goal_schema() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let target_self = insert_self(&pg, &owner).await?;
-        let engine = Engine::compose(Arc::new(pg).storage_ports(), |_registry| {});
+        let engine =
+            Engine::compose_or_panic_for_tests(Arc::new(pg).storage_ports(), |_registry| {});
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
 
         let err = engine
@@ -570,7 +572,7 @@ async fn engine_goalwrite_rejects_unauthorized_callers_before_write() {
 
         // Authorization is enforced before any storage write: no Goal row exists.
         let goal_count: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
-            .fetch_one(pg.pool())
+            .fetch_one(pg.pool_for_tests())
             .await?;
         assert_eq!(goal_count.0, 0);
 

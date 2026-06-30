@@ -513,6 +513,8 @@ impl std::fmt::Debug for RuntimeParts {
 pub enum ProximaError {
     #[error("config: {0}")]
     Config(String),
+    #[error("registry: {0}")]
+    Registry(#[from] proxima_core::FlavorRegistryError),
     #[error("storage: {0}")]
     Storage(String),
     #[error("engine: {0}")]
@@ -527,6 +529,7 @@ impl From<EmbedError> for ProximaError {
     fn from(value: EmbedError) -> Self {
         match value {
             EmbedError::Config(err) => Self::Config(err),
+            EmbedError::Registry(err) => Self::Registry(err),
             EmbedError::Storage(err) => Self::Storage(err),
             EmbedError::Engine(err) => Self::Engine(err),
         }

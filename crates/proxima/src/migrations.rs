@@ -94,14 +94,11 @@ pub async fn run_core_and_flavor_migrations(
 ) -> Result<MigrationRunReport, MigrationError> {
     let sources = prepare_sources(flavors)?;
     let report = MigrationRunReport::from_sources(&sources);
-    ensure_v004_baseline_compatible(pg.pool())
+    let pool = pg.clone_pool_for_backend();
+    ensure_v004_baseline_compatible(&pool)
         .await
         .map_err(MigrationError::CorePreflight)?;
-    let mut conn = pg
-        .pool()
-        .acquire()
-        .await
-        .map_err(MigrationError::Connection)?;
+    let mut conn = pool.acquire().await.map_err(MigrationError::Connection)?;
 
     pin_migration_search_path(&mut conn)
         .await

@@ -41,8 +41,8 @@ fn registry_for_test() -> FlavorRegistryFrozen {
     // Register the proxima-code schemas plus stub CitedObject / CitationMapping
     // schemas that FactIngest needs.
     let mut flavor = FlavorRegistry::new();
-    proxima_code::register(&mut flavor);
-    flavor.freeze().with_additional_schemas([
+    proxima_code::register(&mut flavor).unwrap();
+    flavor.freeze_or_panic_for_tests().with_additional_schemas([
         SchemaInfo::opaque(
             SchemaId::new("test/cited_blob".into()),
             SchemaVersion::new(1),
@@ -178,15 +178,47 @@ async fn heads_only_returns_latest_per_natural_key() {
         let repo_id = Uuid::now_v7();
 
         // 3 revisions of file_a — same NK, increasing created_at.
-        let _r1 = seed_file_revision(pg.pool(), &engine, owner, repo_id, "src/a.rs", b"v1").await?;
+        let _r1 = seed_file_revision(
+            pg.pool_for_tests(),
+            &engine,
+            owner,
+            repo_id,
+            "src/a.rs",
+            b"v1",
+        )
+        .await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
-        let _r2 = seed_file_revision(pg.pool(), &engine, owner, repo_id, "src/a.rs", b"v2").await?;
+        let _r2 = seed_file_revision(
+            pg.pool_for_tests(),
+            &engine,
+            owner,
+            repo_id,
+            "src/a.rs",
+            b"v2",
+        )
+        .await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
-        let r3 = seed_file_revision(pg.pool(), &engine, owner, repo_id, "src/a.rs", b"v3").await?;
+        let r3 = seed_file_revision(
+            pg.pool_for_tests(),
+            &engine,
+            owner,
+            repo_id,
+            "src/a.rs",
+            b"v3",
+        )
+        .await?;
 
         // 1 revision of file_b — distinct NK.
         tokio::time::sleep(Duration::from_millis(20)).await;
-        let r_b = seed_file_revision(pg.pool(), &engine, owner, repo_id, "src/b.rs", b"b1").await?;
+        let r_b = seed_file_revision(
+            pg.pool_for_tests(),
+            &engine,
+            owner,
+            repo_id,
+            "src/b.rs",
+            b"b1",
+        )
+        .await?;
 
         // Heads-only query — engine populates stateful_heads from the
         // registered NK columns on FileRevisionV1.
@@ -334,7 +366,7 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
         let repo_id = Uuid::now_v7();
 
         let first_memory = seed_file_revision_state(
-            pg.pool(),
+            pg.pool_for_tests(),
             &engine,
             owner,
             repo_id,
@@ -345,7 +377,7 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
         .await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
         let second_memory = seed_file_revision_state(
-            pg.pool(),
+            pg.pool_for_tests(),
             &engine,
             owner,
             repo_id,
@@ -409,7 +441,7 @@ async fn owner_snapshot_heads_only_folds_stateful_fact_schemas() {
         let repo_id = Uuid::now_v7();
 
         let a_v1 = seed_file_revision_state(
-            pg.pool(),
+            pg.pool_for_tests(),
             &engine,
             owner,
             repo_id,
@@ -420,7 +452,7 @@ async fn owner_snapshot_heads_only_folds_stateful_fact_schemas() {
         .await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
         let a_v2 = seed_file_revision_state(
-            pg.pool(),
+            pg.pool_for_tests(),
             &engine,
             owner,
             repo_id,
@@ -465,7 +497,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
         let repo_id = Uuid::now_v7();
 
         let present = seed_file_revision_state(
-            pg.pool(),
+            pg.pool_for_tests(),
             &engine,
             owner,
             repo_id,
@@ -476,7 +508,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
         .await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
         let tombstone = seed_file_revision_state(
-            pg.pool(),
+            pg.pool_for_tests(),
             &engine,
             owner,
             repo_id,
@@ -557,7 +589,7 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
         let engine = Engine::new(registry_for_test()).with_storage_ports(storage);
         let repo_id = Uuid::now_v7();
         let active = seed_file_revision_state(
-            pg.pool(),
+            pg.pool_for_tests(),
             &engine,
             owner,
             repo_id,
@@ -567,7 +599,7 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
         )
         .await?;
         let deleted = seed_file_revision_state(
-            pg.pool(),
+            pg.pool_for_tests(),
             &engine,
             owner,
             repo_id,
@@ -576,7 +608,7 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
             FileState::Tombstone,
         )
         .await?;
-        let edge_id = insert_memory_edge(pg.pool(), &owner, active, deleted).await?;
+        let edge_id = insert_memory_edge(pg.pool_for_tests(), &owner, active, deleted).await?;
 
         let mut req = QueryRequest::for_principal(owner);
         req.limit = 100;
@@ -617,7 +649,7 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
         let engine = Engine::new(registry_for_test()).with_storage_ports(storage);
         let repo_id = Uuid::now_v7();
         let active = seed_file_revision_state(
-            pg.pool(),
+            pg.pool_for_tests(),
             &engine,
             owner,
             repo_id,
@@ -627,7 +659,7 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
         )
         .await?;
         let deleted = seed_file_revision_state(
-            pg.pool(),
+            pg.pool_for_tests(),
             &engine,
             owner,
             repo_id,
@@ -636,7 +668,7 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
             FileState::Tombstone,
         )
         .await?;
-        let edge_id = insert_memory_edge(pg.pool(), &owner, active, deleted).await?;
+        let edge_id = insert_memory_edge(pg.pool_for_tests(), &owner, active, deleted).await?;
 
         let mut req = QueryRequest::for_principal(owner);
         req.edge_ids = vec![edge_id];
@@ -671,8 +703,8 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
 #[test]
 fn flavor_registers_natural_keys() {
     let mut r = FlavorRegistry::new();
-    proxima_code::register(&mut r);
-    let registry = r.freeze();
+    proxima_code::register(&mut r).unwrap();
+    let registry = r.freeze_or_panic_for_tests();
     let nk_for = |sid: &str| {
         registry
             .lookup(&SchemaId::new(sid.into()), SchemaVersion::new(1))
@@ -701,8 +733,8 @@ fn flavor_registers_natural_keys() {
 #[test]
 fn flavor_registers_tombstone_discriminators() {
     let mut r = FlavorRegistry::new();
-    proxima_code::register(&mut r);
-    let registry = r.freeze();
+    proxima_code::register(&mut r).unwrap();
+    let registry = r.freeze_or_panic_for_tests();
     let tombstone_for = |sid: &str| {
         registry
             .lookup(&SchemaId::new(sid.into()), SchemaVersion::new(1))

@@ -5,11 +5,14 @@ use std::fmt::Write as _;
 mod common;
 
 use common::{git, migrated_db, test_owner, write_file};
-use proxima_code::{
-    LocalGitSource, RunStage, RunStatus, StageCounters, advance_stage, begin_run, get_active_run,
-    mark_failed, mark_succeeded, register_repo, start_run, sweep_orphaned_runs,
+use proxima_code::testkit::{
+    advance_stage, begin_run, build_engine, get_active_run, mark_failed, mark_succeeded,
+    register_repo, start_run, sweep_orphaned_runs,
 };
-use proxima_core::{Cursor, Owner};
+use proxima_code::{
+    CodeFlavorStore, CodeIngestContext, LocalGitSource, RunStage, RunStatus, StageCounters,
+};
+use proxima_core::{AuthPath, AuthzContext, Cursor, Owner};
 use proxima_pg_testkit::drop_db;
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -57,10 +60,10 @@ async fn start_run_returns_active_row_on_duplicate() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let repo_id = Uuid::now_v7();
-        register_test_repo(pg.pool(), &owner, repo_id).await;
+        register_test_repo(pg.pool_for_tests(), &owner, repo_id).await;
 
-        let r1 = start_run(pg.pool(), &owner, repo_id).await?;
-        let r2 = start_run(pg.pool(), &owner, repo_id).await?;
+        let r1 = start_run(pg.pool_for_tests(), &owner, repo_id).await?;
+        let r2 = start_run(pg.pool_for_tests(), &owner, repo_id).await?;
         assert_eq!(r1.run_id, r2.run_id);
         assert_eq!(r1.status, RunStatus::Queued);
         Ok(())
@@ -76,11 +79,11 @@ async fn run_transitions_and_failure_persist() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let repo_id = Uuid::now_v7();
-        register_test_repo(pg.pool(), &owner, repo_id).await;
+        register_test_repo(pg.pool_for_tests(), &owner, repo_id).await;
 
-        let run = start_run(pg.pool(), &owner, repo_id).await?;
+        let run = start_run(pg.pool_for_tests(), &owner, repo_id).await?;
         let r2 = advance_stage(
-            pg.pool(),
+            pg.pool_for_tests(),
             run.run_id,
             RunStage::Facts,
             &StageCounters::zeroed(),
@@ -88,14 +91,21 @@ async fn run_transitions_and_failure_persist() {
         .await?;
         assert_eq!(r2.status, RunStatus::Running);
         assert_eq!(r2.stage, RunStage::Facts);
-        let r3 = mark_succeeded(pg.pool(), run.run_id, &StageCounters::zeroed()).await?;
+        let r3 = mark_succeeded(pg.pool_for_tests(), run.run_id, &StageCounters::zeroed()).await?;
         assert_eq!(r3.status, RunStatus::Succeeded);
         assert!(r3.finished_at.is_some());
 
         let repo_id2 = Uuid::now_v7();
-        register_repo(pg.pool(), &owner, repo_id2, "/tmp/proxima-e2e-2", "repo2").await?;
-        let failed = start_run(pg.pool(), &owner, repo_id2).await?;
-        let failed = mark_failed(pg.pool(), failed.run_id, "boom").await?;
+        register_repo(
+            pg.pool_for_tests(),
+            &owner,
+            repo_id2,
+            "/tmp/proxima-e2e-2",
+            "repo2",
+        )
+        .await?;
+        let failed = start_run(pg.pool_for_tests(), &owner, repo_id2).await?;
+        let failed = mark_failed(pg.pool_for_tests(), failed.run_id, "boom").await?;
         assert_eq!(failed.status, RunStatus::Failed);
         assert_eq!(failed.error_message.as_deref(), Some("boom"));
         Ok(())
@@ -113,7 +123,7 @@ async fn sweep_retires_orphans_and_unblocks_start_run() {
         let queued_repo = Uuid::now_v7();
         let running_repo = Uuid::now_v7();
         register_repo(
-            pg.pool(),
+            pg.pool_for_tests(),
             &owner,
             queued_repo,
             "/tmp/proxima-sweep-q",
@@ -121,7 +131,7 @@ async fn sweep_retires_orphans_and_unblocks_start_run() {
         )
         .await?;
         register_repo(
-            pg.pool(),
+            pg.pool_for_tests(),
             &owner,
             running_repo,
             "/tmp/proxima-sweep-r",
@@ -129,20 +139,22 @@ async fn sweep_retires_orphans_and_unblocks_start_run() {
         )
         .await?;
 
-        let queued = start_run(pg.pool(), &owner, queued_repo).await?;
+        let queued = start_run(pg.pool_for_tests(), &owner, queued_repo).await?;
         assert_eq!(queued.status, RunStatus::Queued);
-        let running_seed = start_run(pg.pool(), &owner, running_repo).await?;
-        let running = begin_run(pg.pool(), running_seed.run_id)
+        let running_seed = start_run(pg.pool_for_tests(), &owner, running_repo).await?;
+        let running = begin_run(pg.pool_for_tests(), running_seed.run_id)
             .await?
             .expect("begin_run claims queued row");
         assert_eq!(running.status, RunStatus::Running);
 
-        let swept = sweep_orphaned_runs(pg.pool()).await?;
+        let swept = sweep_orphaned_runs(pg.pool_for_tests()).await?;
         assert_eq!(swept, 2);
 
         for repo_id in [queued_repo, running_repo] {
             assert!(
-                get_active_run(pg.pool(), &owner, repo_id).await?.is_none(),
+                get_active_run(pg.pool_for_tests(), &owner, repo_id)
+                    .await?
+                    .is_none(),
                 "active run for {repo_id} should be cleared after sweep",
             );
         }
@@ -156,7 +168,7 @@ async fn sweep_retires_orphans_and_unblocks_start_run() {
         )
         .bind(kind)
         .bind(principal_id)
-        .fetch_all(pg.pool())
+        .fetch_all(pg.pool_for_tests())
         .await?;
         assert_eq!(messages.len(), 2);
         for (status, msg) in &messages {
@@ -165,10 +177,10 @@ async fn sweep_retires_orphans_and_unblocks_start_run() {
         }
 
         // Sweep is idempotent — second call retires nothing.
-        assert_eq!(sweep_orphaned_runs(pg.pool()).await?, 0);
+        assert_eq!(sweep_orphaned_runs(pg.pool_for_tests()).await?, 0);
 
         // The partial unique index no longer blocks a fresh run.
-        let fresh = start_run(pg.pool(), &owner, queued_repo).await?;
+        let fresh = start_run(pg.pool_for_tests(), &owner, queued_repo).await?;
         assert_eq!(fresh.status, RunStatus::Queued);
         assert_ne!(fresh.run_id, queued.run_id);
         Ok(())
@@ -186,11 +198,15 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         let repo = make_tiny_repo();
         let repo_id = Uuid::now_v7();
         let path = repo.path().to_string_lossy().into_owned();
-        register_repo(pg.pool(), &owner, repo_id, &path, "fixture").await?;
+        register_repo(pg.pool_for_tests(), &owner, repo_id, &path, "fixture").await?;
+        let engine = build_engine(pg.clone());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+        let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
 
         let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner);
         let (report, cursor) = source
-            .run_poll(pg.pool(), &Cursor::empty(), &mut |_| {})
+            .run_poll(&ingest_ctx, &Cursor::empty(), &mut |_| {})
             .await?;
         assert_eq!(report.commits_emitted, 2);
 
@@ -202,7 +218,7 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
                 (SELECT COUNT(*)::bigint FROM proxima_code.code_chunk_v1 WHERE repo_id = $1)",
         )
         .bind(repo_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert!(facts.0 > 0, "expected commit facts");
         assert!(facts.1 > 0, "expected file facts");
@@ -219,7 +235,7 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
             )
             .bind(kind)
             .bind(principal_id)
-            .fetch_one(pg.pool())
+            .fetch_one(pg.pool_for_tests())
             .await?;
         assert!(
             citation_mappings >= facts.0 + facts.1,
@@ -237,7 +253,7 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
             )
             .bind(kind)
             .bind(principal_id)
-            .fetch_one(pg.pool())
+            .fetch_one(pg.pool_for_tests())
             .await?;
         assert!(cited_objects < citation_mappings);
 
@@ -250,18 +266,18 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
              WHERE src.repo_id = $1 AND tgt.repo_id = $1",
         )
         .bind(repo_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert!(ast_edges > 0, "expected typed AST call edges");
 
         let cursor_before: Option<Vec<u8>> =
             sqlx::query_scalar("SELECT last_cursor FROM proxima_code.repos WHERE repo_id = $1")
                 .bind(repo_id)
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert!(cursor_before.is_none());
-        proxima_code::update_cursor(
-            pg.pool(),
+        proxima_code::testkit::update_cursor(
+            pg.pool_for_tests(),
             &owner,
             repo_id,
             cursor.as_bytes(),
@@ -271,11 +287,11 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         let cursor_after: Option<Vec<u8>> =
             sqlx::query_scalar("SELECT last_cursor FROM proxima_code.repos WHERE repo_id = $1")
                 .bind(repo_id)
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert!(cursor_after.is_some());
 
-        let (report2, _cursor2) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
+        let (report2, _cursor2) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
         assert_eq!(report2.commits_emitted, 0);
         let facts_after: (i64, i64, i64) = sqlx::query_as(
             "SELECT \
@@ -284,7 +300,7 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
                 (SELECT COUNT(*)::bigint FROM proxima_code.code_chunk_v1 WHERE repo_id = $1)",
         )
         .bind(repo_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(facts, facts_after);
 
@@ -303,10 +319,14 @@ async fn limited_local_ingestion_advances_one_commit_per_poll() {
         let repo = make_tiny_repo();
         let repo_id = Uuid::now_v7();
         let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner);
+        let engine = build_engine(pg.clone());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+        let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
 
         let mut seen = Vec::new();
         let (first, cursor) = source
-            .run_poll_limited(pg.pool(), &Cursor::empty(), Some(1), &mut |p| {
+            .run_poll_limited(&ingest_ctx, &Cursor::empty(), Some(1), &mut |p| {
                 seen.push((p.commit_index, p.total_commits));
             })
             .await?;
@@ -317,12 +337,12 @@ async fn limited_local_ingestion_advances_one_commit_per_poll() {
             "SELECT COUNT(*)::bigint FROM proxima_code.commit_v1 WHERE repo_id = $1",
         )
         .bind(repo_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(commits_after_first, 1);
 
         let (second, cursor) = source
-            .run_poll_limited(pg.pool(), &cursor, Some(1), &mut |_| {})
+            .run_poll_limited(&ingest_ctx, &cursor, Some(1), &mut |_| {})
             .await?;
         assert_eq!(second.commits_emitted, 1);
 
@@ -330,12 +350,12 @@ async fn limited_local_ingestion_advances_one_commit_per_poll() {
             "SELECT COUNT(*)::bigint FROM proxima_code.commit_v1 WHERE repo_id = $1",
         )
         .bind(repo_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(commits_after_second, 2);
 
         let (third, _cursor) = source
-            .run_poll_limited(pg.pool(), &cursor, Some(1), &mut |_| {})
+            .run_poll_limited(&ingest_ctx, &cursor, Some(1), &mut |_| {})
             .await?;
         assert_eq!(third.commits_emitted, 0);
         Ok(())

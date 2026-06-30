@@ -6,11 +6,13 @@ use axum::http::StatusCode;
 use http::request::Parts;
 use proxima_blob_s3::CitedBlobStore;
 use proxima_core::AuthzContext;
+use proxima_core::mcp::McpToolExtensions;
 use proxima_core::{Engine, Owner};
 use proxima_mcp_server::McpAuthContext;
 use sqlx::PgPool;
 
-use crate::{FlavorBundle, RuntimeBuilder};
+use crate::RuntimeBuilder;
+use crate::bundle::FlavorBundle;
 
 /// Static identity for one composed Proxima application binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,21 +41,34 @@ pub trait FlavorApp: FlavorBundle {
         let _ = ctx;
         router
     }
+
+    #[must_use]
+    fn mcp_tool_extensions(_ctx: &AppContext) -> McpToolExtensions {
+        McpToolExtensions::default()
+    }
 }
 
 /// Runtime handles passed to host HTTP mounting code.
 #[derive(Clone)]
 pub struct AppContext {
     pub engine: Arc<Engine>,
-    pub pool: PgPool,
+    pub(crate) pool: PgPool,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Owner,
+}
+
+impl AppContext {
+    /// Host-only bridge for composing backend-owned services.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn clone_pool_for_host(&self) -> PgPool {
+        self.pool.clone()
+    }
 }
 
 impl std::fmt::Debug for AppContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppContext")
-            .field("pool", &self.pool)
             .field("blobs", &self.blobs)
             .field("owner", &self.owner)
             .finish_non_exhaustive()

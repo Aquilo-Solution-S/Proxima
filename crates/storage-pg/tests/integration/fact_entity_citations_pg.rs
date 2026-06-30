@@ -84,7 +84,7 @@ impl PgFactSidecar for StatefulFactV1 {
 
 impl PgMemoryPayload for StatefulFactV1 {
     fn load_memory_payload(
-        _pool: &sqlx::PgPool,
+        _ctx: proxima_storage_pg::sidecars::PgSidecarReadCtx<'_>,
         _memory_id: MemoryId,
     ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async { Ok(None) })
@@ -93,18 +93,18 @@ impl PgMemoryPayload for StatefulFactV1 {
 
 fn registry_for_test() -> FlavorRegistryFrozen {
     let mut registry = FlavorRegistry::new();
-    registry.add_fact_schema::<StatefulFactV1>();
-    registry.add_opaque_schema(
+    registry.add_fact_schema_or_panic_for_tests::<StatefulFactV1>();
+    registry.add_opaque_schema_or_panic_for_tests(
         SchemaId::new(CITED_OBJECT_SCHEMA.into()),
         SchemaVersion::new(1),
         PayloadKind::CitedObject,
     );
-    registry.add_opaque_schema(
+    registry.add_opaque_schema_or_panic_for_tests(
         SchemaId::new(CITATION_MAPPING_SCHEMA.into()),
         SchemaVersion::new(1),
         PayloadKind::CitationMapping,
     );
-    registry.freeze()
+    registry.freeze_or_panic_for_tests()
 }
 
 fn pg_sidecars_for_test() -> PgSidecarRegistryFrozen {
@@ -124,7 +124,7 @@ async fn fresh_pg_with_sidecars() -> (PgStorage, String) {
 
 async fn create_sidecar(pg: &PgStorage) -> Result<(), sqlx::Error> {
     sqlx::query("CREATE SCHEMA proxima_test")
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
     sqlx::query(
         "CREATE TABLE proxima_test.entity_head_cited_fact_v1 (
@@ -133,7 +133,7 @@ async fn create_sidecar(pg: &PgStorage) -> Result<(), sqlx::Error> {
             body text NOT NULL
         )",
     )
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }
@@ -210,7 +210,7 @@ async fn memory_fact_entity_id(pg: &PgStorage, memory_id: Uuid) -> Result<Uuid, 
           WHERE memory_id = $1",
     )
     .bind(memory_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     Ok(id.expect("stateful Fact has fact_entity_id"))
 }
@@ -269,7 +269,7 @@ async fn citation_of_entity_head_follows_updates_while_fact_citation_pins()
                    AND column_name = 'fact_entity_id'
             )",
         )
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert!(
             !has_fact_entity_column,

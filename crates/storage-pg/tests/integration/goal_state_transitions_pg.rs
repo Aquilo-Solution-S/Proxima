@@ -46,7 +46,7 @@ async fn insert_goal(
     .bind(authorship_origin)
     .bind(authorship_tool_id)
     .bind(request_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     Ok(inserted)
 }

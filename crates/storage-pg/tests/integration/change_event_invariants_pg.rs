@@ -34,7 +34,7 @@ async fn check_rejects_undecodable_change_event_rows() {
         .bind(owner_kind)
         .bind(owner_id)
         .bind(Uuid::now_v7())
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
 
         // 1. EntityAppend with neither entity endpoint -> XOR violated.
@@ -47,7 +47,7 @@ async fn check_rejects_undecodable_change_event_rows() {
         .bind(Uuid::now_v7())
         .bind(owner_kind)
         .bind(owner_id)
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await
         .expect_err("EntityAppend with no entity endpoint must be rejected");
         assert!(err.to_string().contains("change_event_endpoint_chk"));
@@ -65,7 +65,7 @@ async fn check_rejects_undecodable_change_event_rows() {
         .bind(owner_id)
         .bind(Uuid::now_v7())
         .bind(Uuid::now_v7())
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await
         .expect_err("EntityAppend carrying an edge endpoint must be rejected");
         assert!(err.to_string().contains("change_event_endpoint_chk"));
@@ -81,7 +81,7 @@ async fn check_rejects_undecodable_change_event_rows() {
         .bind(owner_kind)
         .bind(owner_id)
         .bind(Uuid::now_v7())
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await
         .expect_err("EntityAppend without schema columns must be rejected");
         assert!(err.to_string().contains("change_event_endpoint_chk"));
@@ -103,7 +103,7 @@ async fn check_rejects_undecodable_change_event_rows() {
         .bind(Uuid::now_v7())
         .bind(Uuid::now_v7())
         .bind(Uuid::now_v7())
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await
         .expect_err("EdgeAppend with both source endpoints must be rejected");
         assert!(err.to_string().contains("change_event_endpoint_chk"));

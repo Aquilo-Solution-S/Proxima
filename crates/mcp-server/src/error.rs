@@ -8,6 +8,8 @@ pub enum McpServerError {
     Bind(#[from] std::io::Error),
     #[error("storage: {0}")]
     Storage(#[from] proxima_core::StorageError),
+    #[error("registry: {0}")]
+    Registry(#[from] proxima_core::FlavorRegistryError),
     #[error("migration: {0}")]
     Migration(#[from] sqlx::migrate::MigrateError),
     #[error("axum: {0}")]

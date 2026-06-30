@@ -58,6 +58,8 @@ pub(crate) fn schema_registry_with_config(
 ) -> proxima_core::verbs::schema::FlavorRegistryFrozen {
     let mut flavor = proxima_core::FlavorRegistry::new();
     extra(&mut flavor);
-    crate::register(&mut flavor);
-    flavor.freeze()
+    crate::register(&mut flavor).expect("code flavor registration must be valid");
+    flavor
+        .try_freeze()
+        .expect("code flavor registry must be valid")
 }

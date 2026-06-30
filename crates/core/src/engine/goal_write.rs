@@ -683,7 +683,7 @@ mod tests {
     }
 
     fn engine() -> Engine {
-        Engine::new(FlavorRegistry::new().freeze())
+        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
     }
 
     fn owner() -> crate::OwnerRef {
@@ -707,8 +707,8 @@ mod tests {
     }
 
     fn engine_with_ports(storage: MembershipStorage) -> Engine {
-        Engine::compose(storage.storage_ports(), |registry| {
-            registry.add_goal_schema::<TestGoalPayload>();
+        Engine::compose_or_panic_for_tests(storage.storage_ports(), |registry| {
+            registry.add_goal_schema_or_panic_for_tests::<TestGoalPayload>();
         })
     }
 

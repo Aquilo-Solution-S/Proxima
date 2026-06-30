@@ -13,7 +13,7 @@ use proxima_core::{
 };
 use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgMemoryPayload, PgMemoryPayloadFuture,
-    PgSidecarFuture,
+    PgSidecarFuture, PgSidecarReadCtx,
 };
 use proxima_storage_pg::verbs::fact_ingest::{
     FactIngestSidecarFuture, PgFactSidecar, attach_citation_in_tx, ingest_fact_in_tx,
@@ -75,7 +75,7 @@ impl PgFactSidecar for TestFact {
 
 impl PgMemoryPayload for TestFact {
     fn load_memory_payload(
-        _pool: &sqlx::PgPool,
+        _ctx: PgSidecarReadCtx<'_>,
         _memory_id: MemoryId,
     ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async { Ok(None) })
@@ -171,10 +171,10 @@ fn json<T: serde::Serialize>(value: &T) -> Vec<u8> {
 
 fn registry() -> FlavorRegistryFrozen {
     let mut registry = FlavorRegistry::new();
-    registry.add_fact_schema::<TestFact>();
-    registry.add_cited_object_schema::<TestCitedObject>();
-    registry.add_citation_mapping_schema::<TestCitationMapping>();
-    registry.freeze()
+    registry.add_fact_schema_or_panic_for_tests::<TestFact>();
+    registry.add_cited_object_schema_or_panic_for_tests::<TestCitedObject>();
+    registry.add_citation_mapping_schema_or_panic_for_tests::<TestCitationMapping>();
+    registry.freeze_or_panic_for_tests()
 }
 
 fn engine() -> Engine {
@@ -300,7 +300,7 @@ async fn ingest_plain_fact_for_attach(
         note: "plain fact".to_string(),
     };
     let note = fact.note.clone();
-    let mut tx = pg.pool().begin().await?;
+    let mut tx = pg.pool_for_tests().begin().await?;
     let fact_outcome = ingest_fact_in_tx(
         &mut tx,
         engine,
@@ -348,7 +348,7 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
-        create_sidecar_tables(pg.pool()).await?;
+        create_sidecar_tables(pg.pool_for_tests()).await?;
 
         let engine = engine();
         let owner = owner_fixture();
@@ -380,7 +380,7 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
 
         let first_note = "first fact".to_string();
         let first_outcome = ingest_fact_with_citation_atomic(
-            pg.pool(),
+            pg.pool_for_tests(),
             pg.sidecars(),
             &first,
             None,
@@ -402,7 +402,7 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
         .await?;
         let second_note = "second fact".to_string();
         let second_outcome = ingest_fact_with_citation_atomic(
-            pg.pool(),
+            pg.pool_for_tests(),
             pg.sidecars(),
             &second,
             None,
@@ -426,7 +426,7 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
         assert!(!first_outcome.idempotent_replay);
         assert!(!second_outcome.idempotent_replay);
         assert_ne!(first_outcome.memory_id, second_outcome.memory_id);
-        assert_written_rows(pg.pool()).await?;
+        assert_written_rows(pg.pool_for_tests()).await?;
 
         Ok(())
     }
@@ -443,7 +443,7 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
-        create_sidecar_tables(pg.pool()).await?;
+        create_sidecar_tables(pg.pool_for_tests()).await?;
 
         let engine = engine();
         let owner = owner_fixture();
@@ -466,7 +466,7 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
             )
             .await?;
 
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         let first_attach = attach_citation_in_tx(&mut tx, pg.sidecars(), &authorized).await?;
         tx.commit().await?;
 
@@ -486,15 +486,22 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
         );
 
         let stored_mapping_id =
-            stored_fact_citation_mapping_id(pg.pool(), fact_outcome.memory_id).await?;
+            stored_fact_citation_mapping_id(pg.pool_for_tests(), fact_outcome.memory_id).await?;
         assert_eq!(stored_mapping_id, Some(readback.citation_mapping_id));
-        assert_eq!(count(pg.pool(), "proxima_core.citation_mappings").await?, 1);
         assert_eq!(
-            count(pg.pool(), "public.inline_citation_mapping_sidecar").await?,
+            count(pg.pool_for_tests(), "proxima_core.citation_mappings").await?,
+            1
+        );
+        assert_eq!(
+            count(
+                pg.pool_for_tests(),
+                "public.inline_citation_mapping_sidecar"
+            )
+            .await?,
             1
         );
 
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         let second_attach = attach_citation_in_tx(&mut tx, pg.sidecars(), &authorized).await?;
         tx.commit().await?;
 
@@ -502,9 +509,16 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
         assert!(second_attach.idempotent);
         assert_eq!(second_attach.memory_id, fact_outcome.memory_id);
         assert_eq!(second_attach.cited_object_id, first_attach.cited_object_id);
-        assert_eq!(count(pg.pool(), "proxima_core.citation_mappings").await?, 1);
         assert_eq!(
-            count(pg.pool(), "public.inline_citation_mapping_sidecar").await?,
+            count(pg.pool_for_tests(), "proxima_core.citation_mappings").await?,
+            1
+        );
+        assert_eq!(
+            count(
+                pg.pool_for_tests(),
+                "public.inline_citation_mapping_sidecar"
+            )
+            .await?,
             1
         );
 
@@ -518,7 +532,7 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
                 citation_mapping(1, 5),
             )
             .await?;
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         let err = attach_citation_in_tx(&mut tx, pg.sidecars(), &missing)
             .await
             .expect_err("missing target Fact must return NotFound");
@@ -539,13 +553,13 @@ async fn facts_citing_object_filters_by_read_owners() -> Result<(), Box<dyn std:
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
-        create_sidecar_tables(pg.pool()).await?;
+        create_sidecar_tables(pg.pool_for_tests()).await?;
 
         let engine = engine();
         let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let q = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let g1 = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
-        seed_membership(pg.pool(), &g1, &q).await?;
+        seed_membership(pg.pool_for_tests(), &g1, &q).await?;
 
         let group_authz = AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
@@ -574,7 +588,7 @@ async fn facts_citing_object_filters_by_read_owners() -> Result<(), Box<dyn std:
             .await?;
 
         let group_outcome = ingest_fact_with_citation_atomic(
-            pg.pool(),
+            pg.pool_for_tests(),
             pg.sidecars(),
             &group_authorized,
             None,
@@ -598,7 +612,7 @@ async fn facts_citing_object_filters_by_read_owners() -> Result<(), Box<dyn std:
             .await?
             .expect("group fact citation");
         let p_outcome = ingest_fact_with_citation_atomic(
-            pg.pool(),
+            pg.pool_for_tests(),
             pg.sidecars(),
             &p_authorized,
             None,
@@ -648,7 +662,7 @@ async fn fact_sidecar_failure_rolls_back_whole_inline_citation_ingest()
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
-        create_sidecar_tables(pg.pool()).await?;
+        create_sidecar_tables(pg.pool_for_tests()).await?;
 
         let engine = engine();
         let owner = owner_fixture();
@@ -667,7 +681,7 @@ async fn fact_sidecar_failure_rolls_back_whole_inline_citation_ingest()
             .receipt_id_for_owner(*authorized.permit().owner())
             .expect("receipt id");
 
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         let err = ingest_fact_with_citation_in_tx(
             &mut tx,
             pg.sidecars(),
@@ -687,18 +701,31 @@ async fn fact_sidecar_failure_rolls_back_whole_inline_citation_ingest()
             "SELECT count(*) FROM proxima_core.memories WHERE receipt_id = $1",
         )
         .bind(receipt_id_bytes.as_slice())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(memories, 0);
-        assert_eq!(count(pg.pool(), "proxima_core.cited_objects").await?, 0);
         assert_eq!(
-            count(pg.pool(), "public.inline_cited_object_sidecar").await?,
+            count(pg.pool_for_tests(), "proxima_core.cited_objects").await?,
             0
         );
-        assert_eq!(count(pg.pool(), "proxima_core.fact_receipts").await?, 0);
-        assert_eq!(count(pg.pool(), "proxima_core.citation_mappings").await?, 0);
         assert_eq!(
-            count(pg.pool(), "public.inline_citation_mapping_sidecar").await?,
+            count(pg.pool_for_tests(), "public.inline_cited_object_sidecar").await?,
+            0
+        );
+        assert_eq!(
+            count(pg.pool_for_tests(), "proxima_core.fact_receipts").await?,
+            0
+        );
+        assert_eq!(
+            count(pg.pool_for_tests(), "proxima_core.citation_mappings").await?,
+            0
+        );
+        assert_eq!(
+            count(
+                pg.pool_for_tests(),
+                "public.inline_citation_mapping_sidecar"
+            )
+            .await?,
             0
         );
 

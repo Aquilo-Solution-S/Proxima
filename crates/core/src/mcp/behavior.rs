@@ -234,7 +234,7 @@ mod tests {
             authz,
             handles: None,
             mode: OutputMode::PrefixedIds,
-            registry: Arc::new(FlavorRegistry::new().freeze()),
+            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "test".into(),
                 client_name: "test".into(),

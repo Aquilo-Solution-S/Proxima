@@ -3,10 +3,11 @@
 
 mod flavor;
 
-use proxima::Proxima;
-use proxima_core::verbs::fact_ingest::{CitationSpec, FactWriteCommand};
-use proxima_core::verbs::query::{EntityKind, QueryRequest, QueryResponse};
-use proxima_core::{FactPayload, SchemaId, SourceBatchId, UPLOADED_BLOB_SCHEMA_ID};
+use proxima::flavor::{FactPayload, SchemaId};
+use proxima::{
+    CitationSpec, EntityKind, FactWriteCommand, Proxima, QueryRequest, QueryResponse,
+    SourceBatchId, UPLOADED_BLOB_SCHEMA_ID,
+};
 
 const CORE_CITATION_SCHEMA_ID: &str = "proxima-core/wake-trace-citation-v1";
 
@@ -52,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn query_for_schema(owner: &proxima_core::Owner) -> QueryRequest {
+fn query_for_schema(owner: &proxima::Owner) -> QueryRequest {
     let mut req = QueryRequest::for_principal(*owner);
     req.entity_kind = Some(EntityKind::Fact);
     req.schema_id = Some(SchemaId::new(flavor::DocumentFiledV1::SCHEMA_ID.into()));

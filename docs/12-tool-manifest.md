@@ -20,25 +20,25 @@ No runtime registration tier. No install/revoke API. No `tools` table.
 
 | Class | Owner | Vocabulary | Dispatch |
 |---|---|---|---|
-| Core MCP tools | core | `add_substrate_mcp_tool<T>()` | `McpToolCtx` |
-| Flavor MCP tools | flavor crate | `add_mcp_tool<T>(prefix)` | `McpToolCtx` |
+| Core tools | core | internal `try_add_mcp_tool<T>("core")` adapter | `McpToolCtx` |
+| Flavor tools | flavor crate | `try_add_tool<T>(prefix)` | `ToolCtx` |
 
 Stored ids:
 
 | Surface | Id form |
 |---|---|
-| Core MCP tool | provider-safe registered names, currently `core_*` (for example `core_remember`, `core_goal`) |
-| Flavor MCP tool | provider-safe `<flavor>_<name>` |
+| Core MCP projection | provider-safe registered names, currently `core_*` (for example `core_remember`, `core_goal`) |
+| Flavor MCP projection | provider-safe `<flavor>_<name>` |
 
 Registered MCP tool names are already provider-safe. Slash-separated
 schema/relation ids remain separate from MCP wire ids.
 
 ## Rust Surface
 
-MCP tools:
+Flavor SDK tools:
 
 ```rust
-pub trait McpTool: Send + Sync + 'static {
+pub trait Tool: Send + Sync + 'static {
     const NAME: &'static str;
     const DESCRIPTION: &'static str;
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
@@ -47,12 +47,21 @@ pub trait McpTool: Send + Sync + 'static {
     type Output: serde::Serialize + Send + 'static;
 
     fn call(
-        ctx: McpToolCtx,
+        ctx: ToolCtx,
         args: Self::Args,
-    ) -> BoxFuture<'static, Result<Self::Output, McpToolError>>;
+    ) -> BoxFuture<'static, Result<Self::Output, ToolError>>;
 }
 
-pub struct McpToolDescriptor {
+pub struct ToolCtx {
+    owner: Owner,
+    authz: AuthzContext,
+    registry: Arc<FlavorRegistryFrozen>,
+    caller_self_perspective: Option<MemoryId>,
+    services: ToolServices,
+    engine: Option<Arc<Engine>>,
+}
+
+pub struct ToolDescriptor {
     pub name: &'static str,
     pub description: &'static str,
     pub produces_schema_ids: &'static [&'static str],
@@ -65,9 +74,8 @@ Registration:
 
 ```rust
 impl FlavorRegistry {
-    pub(crate) fn add_substrate_mcp_tool<T: McpTool>(&mut self);
-    pub fn add_mcp_tool<T: McpTool>(&mut self, expected_prefix: &str);
-    pub fn freeze(self) -> FlavorRegistryFrozen;
+    pub fn try_add_tool<T: Tool>(&mut self, expected_prefix: &str) -> Result<(), FlavorRegistryError>;
+    pub fn try_freeze(self) -> Result<FlavorRegistryFrozen, FlavorRegistryError>;
 }
 
 impl FlavorRegistryFrozen {
@@ -83,7 +91,7 @@ Prefix rules live in 08:
 | substrate MCP tool | `core_` |
 | flavor MCP tool | `<flavor>_` |
 
-`FlavorRegistry::freeze()` rejects duplicate MCP tool names. Schema and
+`FlavorRegistry::try_freeze()` rejects duplicate tool names. Schema and
 relation validation remains the registry's build-time responsibility
 (see 08 §Freeze Guards).
 
@@ -160,6 +168,7 @@ MCP request
   provider-safe name
     -> canonical id
     -> McpToolDescriptor.call(McpToolCtx, args)
+    -> Tool::call(ToolCtx, args) for generic SDK tools
 ```
 
 Proxima is a passive brain hub. External harnesses own model choice,
@@ -172,8 +181,8 @@ MCP dispatch contract:
 | Auth | host `Authenticator` or master token |
 | Owner | from auth context; Owner = principal (doc 01) |
 | Tool scope | token capabilities intersected with deployment profile |
-| Args | action-dispatch tools validate fields strictly (see Tool Schema Contract), then JSON decoded into `McpTool::Args` |
-| Output | serialized `McpTool::Output` |
+| Args | action-dispatch tools validate fields strictly (see Tool Schema Contract), then JSON decoded into typed args |
+| Output | serialized typed output |
 | Ids | prefixed ids (`F:/A:/P:/G:/E:` form, `OutputMode::PrefixedIds`) |
 
 ## Persistence

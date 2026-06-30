@@ -1120,9 +1120,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "proxima",
- "proxima-core",
  "proxima-pg-testkit",
- "proxima-storage-pg",
  "serde",
  "serde_json",
  "sqlx",

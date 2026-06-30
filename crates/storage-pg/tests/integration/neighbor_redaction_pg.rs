@@ -223,7 +223,7 @@ async fn insert_edge_append_event(
     .bind(CORE_DERIVED_FROM_RELATION)
     .bind(source_memory_id.into_inner())
     .bind(target_memory_id.into_inner())
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await
     .map(|_| ())
 }

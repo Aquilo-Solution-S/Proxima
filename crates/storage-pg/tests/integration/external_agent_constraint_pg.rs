@@ -23,7 +23,7 @@ async fn external_agent_memory_operator_kind_is_rejected() -> Result<(), Box<dyn
         .bind(memory_id)
         .bind(owner_kind)
         .bind(owner_id)
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await
         .expect_err("ExternalAgent is not a derived memory operator phase");
         assert!(err.to_string().contains("ExternalAgent"));

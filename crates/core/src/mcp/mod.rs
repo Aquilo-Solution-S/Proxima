@@ -21,7 +21,10 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 
 use crate::authz::AuthzContext;
-use crate::{EdgeId, GoalId, MemoryId, Owner, verbs::schema::FlavorRegistryFrozen};
+use crate::{
+    EdgeId, GoalId, MemoryId, Owner, ToolCtx, ToolError, ToolServices,
+    verbs::schema::FlavorRegistryFrozen,
+};
 
 #[derive(Debug, Clone)]
 pub struct McpAuthorContext {
@@ -91,6 +94,11 @@ impl McpToolExtensions {
             .cloned()
             .and_then(|value| value.downcast::<T>().ok())
     }
+
+    #[must_use]
+    pub(crate) fn into_tool_services(self) -> ToolServices {
+        ToolServices::from_values(self.values)
+    }
 }
 
 #[derive(Clone)]
@@ -125,6 +133,255 @@ impl std::fmt::Debug for McpToolCtx {
             .field("owner", &self.owner)
             .field("author", &self.author)
             .finish_non_exhaustive()
+    }
+}
+
+/// MCP adapter presentation service made available to generic flavor [`crate::Tool`]
+/// implementations through [`crate::ToolCtx::service`].
+///
+/// `ToolCtx` stays transport-neutral and opaque; MCP-specific handle projection
+/// remains in this module and is only injected by the MCP adapter.
+#[derive(Debug, Clone)]
+pub struct McpToolPresentation {
+    handles: Option<Arc<HandleTable>>,
+    mode: OutputMode,
+}
+
+impl McpToolPresentation {
+    #[must_use]
+    pub fn new(handles: Option<Arc<HandleTable>>, mode: OutputMode) -> Self {
+        Self { handles, mode }
+    }
+
+    #[must_use]
+    pub fn from_ctx(ctx: &McpToolCtx) -> Self {
+        Self {
+            handles: ctx.handles.clone(),
+            mode: ctx.mode,
+        }
+    }
+
+    fn handle_table(&self) -> Result<&HandleTable, ToolError> {
+        self.handles.as_deref().ok_or_else(|| {
+            ToolError::Other("OutputMode::Handles requires a HandleTable".to_string())
+        })
+    }
+
+    fn handle_table_for_format(&self) -> &HandleTable {
+        self.handles
+            .as_deref()
+            .expect("OutputMode::Handles requires a HandleTable")
+    }
+
+    #[must_use]
+    pub fn format_memory_with_class(&self, id: MemoryId, class: MemoryHandleClass) -> String {
+        match class {
+            MemoryHandleClass::Fact => self.format_fact_memory(id),
+            MemoryHandleClass::Abstraction => self.format_abstraction_memory(id),
+            MemoryHandleClass::Perspective => self.format_perspective_memory(id),
+        }
+    }
+
+    #[must_use]
+    pub fn format_fact_memory(&self, id: MemoryId) -> String {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table_for_format()
+                .assign_fact_memory(id)
+                .as_str()
+                .to_string(),
+            OutputMode::RawIds => id.into_inner().to_string(),
+            OutputMode::PrefixedIds => {
+                format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Fact)
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn format_abstraction_memory(&self, id: MemoryId) -> String {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table_for_format()
+                .assign_abstraction_memory(id)
+                .as_str()
+                .to_string(),
+            OutputMode::RawIds => id.into_inner().to_string(),
+            OutputMode::PrefixedIds => {
+                format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Abstraction)
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn format_perspective_memory(&self, id: MemoryId) -> String {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table_for_format()
+                .assign_perspective_memory(id)
+                .as_str()
+                .to_string(),
+            OutputMode::RawIds => id.into_inner().to_string(),
+            OutputMode::PrefixedIds => {
+                format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Perspective)
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn format_goal(&self, id: GoalId) -> String {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table_for_format()
+                .assign_goal(id)
+                .as_str()
+                .to_string(),
+            OutputMode::RawIds => id.into_inner().to_string(),
+            OutputMode::PrefixedIds => {
+                format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Goal)
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn format_edge(&self, id: EdgeId) -> String {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table_for_format()
+                .assign_edge(id)
+                .as_str()
+                .to_string(),
+            OutputMode::RawIds => id.into_inner().to_string(),
+            OutputMode::PrefixedIds => {
+                format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Edge)
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn format_flavor_object(&self, kind: &str, id: uuid::Uuid, prefix: char) -> String {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table_for_format()
+                .assign_flavor_object(kind, id, prefix)
+                .as_str()
+                .to_string(),
+            OutputMode::RawIds => id.to_string(),
+            OutputMode::PrefixedIds => format!("{prefix}:{id}"),
+        }
+    }
+
+    /// # Errors
+    ///
+    /// Returns invalid-input errors when `raw` cannot be resolved in the
+    /// active MCP output mode.
+    pub fn resolve_fact_memory(&self, raw: &str) -> Result<MemoryId, ToolError> {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table()?
+                .resolve_fact_memory(raw)
+                .map_err(|e| ToolError::InvalidInput(e.to_string())),
+            OutputMode::RawIds => raw
+                .parse::<uuid::Uuid>()
+                .map(MemoryId::new)
+                .map_err(|e| ToolError::InvalidInput(format!("not a uuid: {e}"))),
+            OutputMode::PrefixedIds => parse_prefixed_uuid(raw, PrefixedUuidClass::Fact)
+                .map(MemoryId::new)
+                .map_err(|e| ToolError::InvalidInput(e.to_string())),
+        }
+    }
+
+    /// # Errors
+    ///
+    /// Returns invalid-input errors when `raw` cannot be resolved in the
+    /// active MCP output mode.
+    pub fn resolve_abstraction_memory(&self, raw: &str) -> Result<MemoryId, ToolError> {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table()?
+                .resolve_abstraction_memory(raw)
+                .map_err(|e| ToolError::InvalidInput(e.to_string())),
+            OutputMode::RawIds => raw
+                .parse::<uuid::Uuid>()
+                .map(MemoryId::new)
+                .map_err(|e| ToolError::InvalidInput(format!("not a uuid: {e}"))),
+            OutputMode::PrefixedIds => parse_prefixed_uuid(raw, PrefixedUuidClass::Abstraction)
+                .map(MemoryId::new)
+                .map_err(|e| ToolError::InvalidInput(e.to_string())),
+        }
+    }
+
+    /// # Errors
+    ///
+    /// Returns invalid-input errors when `raw` cannot be resolved in the
+    /// active MCP output mode.
+    pub fn resolve_perspective_memory(&self, raw: &str) -> Result<MemoryId, ToolError> {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table()?
+                .resolve_perspective_memory(raw)
+                .map_err(|e| ToolError::InvalidInput(e.to_string())),
+            OutputMode::RawIds => raw
+                .parse::<uuid::Uuid>()
+                .map(MemoryId::new)
+                .map_err(|e| ToolError::InvalidInput(format!("not a uuid: {e}"))),
+            OutputMode::PrefixedIds => parse_prefixed_uuid(raw, PrefixedUuidClass::Perspective)
+                .map(MemoryId::new)
+                .map_err(|e| ToolError::InvalidInput(e.to_string())),
+        }
+    }
+
+    /// # Errors
+    ///
+    /// Returns invalid-input errors when `raw` cannot be resolved in the
+    /// active MCP output mode.
+    pub fn resolve_flavor_object(&self, raw: &str, kind: &str) -> Result<uuid::Uuid, ToolError> {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table()?
+                .resolve_flavor_object(raw, kind)
+                .map_err(|e| ToolError::InvalidInput(e.to_string())),
+            OutputMode::RawIds => raw
+                .parse::<uuid::Uuid>()
+                .map_err(|e| ToolError::InvalidInput(format!("not a uuid: {e}"))),
+            OutputMode::PrefixedIds => {
+                parse_flavor_prefixed_uuid(raw).map_err(|e| ToolError::InvalidInput(e.to_string()))
+            }
+        }
+    }
+}
+
+/// MCP adapter caller metadata service for generic flavor tools.
+#[derive(Debug, Clone)]
+pub struct McpToolCaller {
+    model_id: String,
+    is_master_token: bool,
+}
+
+impl McpToolCaller {
+    #[must_use]
+    pub fn new(model_id: String, is_master_token: bool) -> Self {
+        Self {
+            model_id,
+            is_master_token,
+        }
+    }
+
+    #[must_use]
+    pub fn from_ctx(ctx: &McpToolCtx) -> Self {
+        Self {
+            model_id: ctx.author.model_id.clone(),
+            is_master_token: ctx.master_token_id.is_some(),
+        }
+    }
+
+    #[must_use]
+    pub fn model_id(&self) -> &str {
+        &self.model_id
+    }
+
+    #[must_use]
+    pub const fn is_master_token(&self) -> bool {
+        self.is_master_token
     }
 }
 
@@ -498,6 +755,19 @@ impl From<ResolveError> for McpToolError {
     }
 }
 
+impl From<ToolError> for McpToolError {
+    fn from(err: ToolError) -> Self {
+        match err {
+            ToolError::InvalidInput(message) => Self::InvalidInput(message),
+            ToolError::NotAuthorized(tool) => Self::NotAuthorized(tool),
+            ToolError::Protocol(err) => Self::Protocol(err),
+            ToolError::LayeringViolation(message) => Self::LayeringViolation(message),
+            ToolError::Storage(err) => Self::Storage(err),
+            ToolError::Other(message) => Self::Other(message),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpToolOrigin {
     Substrate,
@@ -606,6 +876,38 @@ pub trait McpTool: Send + Sync + 'static {
         ctx: McpToolCtx,
         args: Self::Args,
     ) -> BoxFuture<'static, Result<Self::Output, McpToolError>>;
+}
+
+impl<T> McpTool for T
+where
+    T: crate::Tool,
+{
+    const NAME: &'static str = T::NAME;
+    const DESCRIPTION: &'static str = T::DESCRIPTION;
+    const PRODUCES_SCHEMA_IDS: &'static [&'static str] = T::PRODUCES_SCHEMA_IDS;
+
+    type Args = T::Args;
+    type Output = T::Output;
+
+    fn call(
+        ctx: McpToolCtx,
+        args: Self::Args,
+    ) -> BoxFuture<'static, Result<Self::Output, McpToolError>> {
+        let presentation = McpToolPresentation::from_ctx(&ctx);
+        let caller = McpToolCaller::from_ctx(&ctx);
+        let mut services = ctx.extensions.into_tool_services();
+        services.insert(presentation);
+        services.insert(caller);
+        let tool_ctx = ToolCtx::from_parts(
+            ctx.owner,
+            ctx.authz,
+            ctx.registry,
+            ctx.caller_self_perspective,
+            services,
+            ctx.engine,
+        );
+        Box::pin(async move { T::call(tool_ctx, args).await.map_err(Into::into) })
+    }
 }
 
 /// Tool names exposed to LLM-hosted MCP clients must also be valid
@@ -1041,7 +1343,7 @@ mod tests {
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: None,
             mode: OutputMode::PrefixedIds,
-            registry: Arc::new(FlavorRegistry::new().freeze()),
+            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "t".into(),
                 client_name: "t".into(),
@@ -1078,7 +1380,7 @@ mod ctx_engine_tests {
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(Arc::new(HandleTable::new())),
             mode: OutputMode::Handles,
-            registry: Arc::new(FlavorRegistry::new().freeze()),
+            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "t".into(),
                 client_name: "t".into(),
@@ -1096,13 +1398,15 @@ mod ctx_engine_tests {
     #[tokio::test]
     async fn ctx_engine_returns_some_when_wired() {
         let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-        let engine = Arc::new(Engine::new(FlavorRegistry::new().freeze()));
+        let engine = Arc::new(Engine::new(
+            FlavorRegistry::new().freeze_or_panic_for_tests(),
+        ));
         let ctx = McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(Arc::new(HandleTable::new())),
             mode: OutputMode::Handles,
-            registry: Arc::new(FlavorRegistry::new().freeze()),
+            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "t".into(),
                 client_name: "t".into(),

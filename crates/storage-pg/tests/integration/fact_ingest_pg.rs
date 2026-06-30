@@ -134,13 +134,13 @@ async fn fact_ingest_writes_fact_and_change_event() {
 
         // Counts.
         let memories: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.memories")
-            .fetch_one(pg.pool())
+            .fetch_one(pg.pool_for_tests())
             .await?;
         assert_eq!(memories.0, 1);
 
         let change: (i64,) =
             sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.change_event")
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(change.0, 1);
 
@@ -273,7 +273,7 @@ async fn list_change_events_after_filters_by_read_owners() {
         let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let q = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let g1 = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
-        seed_membership(pg.pool(), &g1, &q, Relation::Viewer).await?;
+        seed_membership(pg.pool_for_tests(), &g1, &q, Relation::Viewer).await?;
 
         let group_authz = proxima_core::AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),

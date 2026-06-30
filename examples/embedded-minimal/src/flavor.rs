@@ -1,10 +1,10 @@
 //! Example out-of-tree flavor: one Fact schema for "a document was filed".
 
-use proxima::{AppInfo, FlavorApp, FlavorBundle, NamedMigrator};
-use proxima_core::{
-    FactPayload, FlavorRegistry, PayloadKeyBuilder, SearchProjection, SearchProjectionColumnKind,
-    SearchProjectionField,
+use proxima::flavor::{
+    FactPayload, FlavorBundle, FlavorRegistry, FlavorRegistryError, PayloadKeyBuilder,
+    SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
 };
+use proxima::{AppInfo, FlavorApp, NamedMigrator};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,7 +42,7 @@ impl FactPayload for DocumentFiledV1 {
     }
 }
 
-proxima::pg_sidecar! {
+proxima::flavor::pg_sidecar! {
     payload: DocumentFiledV1,
     row: DocumentFiledRow,
     kinds: [Fact],
@@ -54,7 +54,7 @@ proxima::pg_sidecar! {
     },
 }
 
-proxima_core::proxima_flavor! {
+proxima::flavor::proxima_flavor! {
     name = "embedded-minimal",
     display_name = "Embedded Minimal Example",
     fact_schemas = [DocumentFiledV1],
@@ -76,11 +76,11 @@ pub fn migrator() -> sqlx::migrate::Migrator {
 pub struct EmbeddedMinimalFlavor;
 
 impl FlavorBundle for EmbeddedMinimalFlavor {
-    fn register(registry: &mut FlavorRegistry) {
-        self::register(registry);
+    fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+        self::register(registry)
     }
 
-    fn register_pg_sidecars(registry: &mut proxima::PgSidecarRegistry) {
+    fn register_pg_sidecars(registry: &mut proxima::flavor::PgSidecarRegistry) {
         registry.add_fact::<DocumentFiledV1>();
     }
 
@@ -101,12 +101,11 @@ impl FlavorApp for EmbeddedMinimalFlavor {
 
 #[cfg(test)]
 mod tests {
-    use proxima::Proxima;
-    use proxima_core::verbs::schema::PayloadKind;
-    use proxima_core::{OwnerRef, Relation, UserId};
+    use proxima::flavor::{PgMemoryPayload, PgSidecarReadCtx, SidecarPayload};
+    use proxima::{
+        FactWriteCommand, OwnerRef, PayloadKind, Proxima, Relation, SourceBatchId, UserId,
+    };
     use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
-    use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemorySidecar};
-    use proxima_storage_pg::verbs::fact_ingest::ingest_fact;
 
     use super::{DocumentFiledV1, EmbeddedMinimalFlavor};
 
@@ -130,27 +129,31 @@ mod tests {
                 source_path: "/example/intake/r-2026-0001.pdf".into(),
                 title: "Example invoice".into(),
             };
-            let sidecar_payload = payload.clone();
-
-            let outcome = ingest_fact(
-                &booted.pool,
-                &booted.engine,
-                &authz,
-                Relation::Ingest,
+            let draft = FactWriteCommand::from_payload(
+                "embedded-minimal/test",
+                SourceBatchId::new(uuid::Uuid::now_v7()),
                 &payload,
-                move |tx, outcome| {
-                    Box::pin(async move {
-                        sidecar_payload
-                            .insert_memory_sidecar(tx, outcome.memory_id)
-                            .await
-                    })
-                },
+                time::OffsetDateTime::now_utc(),
+            );
+            let authorized = booted
+                .engine
+                .authorize_fact_ingest(&authz, Relation::Ingest, draft)
+                .await?;
+            let outcome = booted
+                .engine
+                .ingest_fact_with_typed_sidecar(
+                    &authorized,
+                    &SidecarPayload::fact(payload.clone()),
+                    None,
+                )
+                .await?;
+
+            let loaded = DocumentFiledV1::load_batch(
+                PgSidecarReadCtx::from(booted.pool_for_tests()),
+                PayloadKind::Fact,
+                &[outcome.memory_id],
             )
             .await?;
-
-            let loaded =
-                DocumentFiledV1::load_batch(&booted.pool, PayloadKind::Fact, &[outcome.memory_id])
-                    .await?;
             assert_eq!(loaded.len(), 1, "document_filed_v1 sidecar row must exist");
             let (loaded_memory_id, loaded) = loaded.into_iter().next().expect("checked len");
             assert_eq!(loaded_memory_id, outcome.memory_id);

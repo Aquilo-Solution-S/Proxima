@@ -103,8 +103,8 @@ proxima_flavor! {
 #[test]
 fn flavor_macro_registers_fact_schema() {
     let mut registry = FlavorRegistry::new();
-    register(&mut registry);
-    let frozen = registry.freeze();
+    register(&mut registry).unwrap();
+    let frozen = registry.freeze_or_panic_for_tests();
     let schemas = frozen.list();
     let macro_schemas: Vec<_> = schemas
         .iter()
@@ -131,8 +131,8 @@ fn flavor_macro_registers_fact_schema() {
 #[test]
 fn flavor_macro_registers_schema_capability_tags() {
     let mut registry = FlavorRegistry::new();
-    register(&mut registry);
-    let frozen = registry.freeze();
+    register(&mut registry).unwrap();
+    let frozen = registry.freeze_or_panic_for_tests();
 
     let fact_tags = frozen
         .schema_capability_tags(
@@ -168,8 +168,8 @@ fn flavor_macro_registers_schema_capability_tags() {
 #[test]
 fn flavor_macro_registers_citation_schemas() {
     let mut registry = FlavorRegistry::new();
-    register(&mut registry);
-    let frozen = registry.freeze();
+    register(&mut registry).unwrap();
+    let frozen = registry.freeze_or_panic_for_tests();
     let schemas = frozen.list();
     let cited_schema = schemas
         .iter()
@@ -198,8 +198,8 @@ mod empty_goal_schemas {
 #[test]
 fn flavor_macro_accepts_empty_goal_schemas() {
     let mut registry = FlavorRegistry::new();
-    empty_goal_schemas::register(&mut registry);
-    let frozen = registry.freeze();
+    empty_goal_schemas::register(&mut registry).unwrap();
+    let frozen = registry.freeze_or_panic_for_tests();
     // The default registry may ship substrate-managed schemas. Asserting
     // absence of the macro-targeted schemas is what this test cares about.
     assert!(
@@ -237,8 +237,12 @@ mod nested {
 }
 
 #[test]
-#[should_panic(expected = "does not start with crate prefix")]
 fn flavor_macro_rejects_wrong_prefix() {
     let mut registry = FlavorRegistry::new();
-    nested::register(&mut registry);
+    let err = nested::register(&mut registry).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("relation must start with crate prefix"),
+        "{err}"
+    );
 }

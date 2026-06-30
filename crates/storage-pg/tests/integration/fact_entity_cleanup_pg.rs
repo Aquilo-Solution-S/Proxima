@@ -95,7 +95,7 @@ impl PgFactSidecar for StatefulFactV1 {
 
 impl PgMemoryPayload for StatefulFactV1 {
     fn load_memory_payload(
-        _pool: &sqlx::PgPool,
+        _ctx: proxima_storage_pg::sidecars::PgSidecarReadCtx<'_>,
         _memory_id: MemoryId,
     ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async { Ok(None) })
@@ -143,19 +143,19 @@ impl PgEdgeSidecar for FollowEdgeV1 {
 
 fn registry_for_test() -> FlavorRegistryFrozen {
     let mut registry = FlavorRegistry::new();
-    registry.add_fact_schema::<StatefulFactV1>();
-    registry.add_edge_schema::<FollowEdgeV1>();
-    registry.add_opaque_schema(
+    registry.add_fact_schema_or_panic_for_tests::<StatefulFactV1>();
+    registry.add_edge_schema_or_panic_for_tests::<FollowEdgeV1>();
+    registry.add_opaque_schema_or_panic_for_tests(
         SchemaId::new(CITED_OBJECT_SCHEMA.into()),
         SchemaVersion::new(1),
         PayloadKind::CitedObject,
     );
-    registry.add_opaque_schema(
+    registry.add_opaque_schema_or_panic_for_tests(
         SchemaId::new(CITATION_MAPPING_SCHEMA.into()),
         SchemaVersion::new(1),
         PayloadKind::CitationMapping,
     );
-    registry.add_relation(RelationDescriptor::typed(
+    registry.add_relation_or_panic_for_tests(RelationDescriptor::typed(
         FOLLOW_RELATION,
         RelationClass::Structural,
         SchemaRef::new(FollowEdgeV1::schema_id(), SchemaVersion::new(1)),
@@ -165,7 +165,7 @@ fn registry_for_test() -> FlavorRegistryFrozen {
         EntityKindMask::fact(),
         AuthorshipKindMask::external_agent(),
     ));
-    registry.freeze()
+    registry.freeze_or_panic_for_tests()
 }
 
 fn pg_sidecars_for_test() -> PgSidecarRegistryFrozen {
@@ -186,7 +186,7 @@ async fn fresh_pg_with_sidecars() -> (PgStorage, String) {
 
 async fn create_sidecar(pg: &PgStorage) -> Result<(), sqlx::Error> {
     sqlx::query("CREATE SCHEMA proxima_test")
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
     sqlx::query(
         "CREATE TABLE proxima_test.cleanup_stateful_fact_v1 (
@@ -196,7 +196,7 @@ async fn create_sidecar(pg: &PgStorage) -> Result<(), sqlx::Error> {
             state text NOT NULL
         )",
     )
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }
@@ -276,7 +276,7 @@ async fn memory_fact_entity_id(pg: &PgStorage, memory_id: Uuid) -> Result<Uuid, 
           WHERE memory_id = $1",
     )
     .bind(memory_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     Ok(id.expect("stateful Fact has fact_entity_id"))
 }
@@ -288,7 +288,7 @@ async fn current_memory_id(pg: &PgStorage, fact_entity_id: Uuid) -> Result<Uuid,
           WHERE fact_entity_id = $1",
     )
     .bind(fact_entity_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await
 }
 
@@ -307,7 +307,7 @@ async fn append_follow_head_edge(
         reason: "cleanup sidecar proof".to_string(),
         confidence: 100,
     };
-    let mut tx = pg.pool().begin().await?;
+    let mut tx = pg.pool_for_tests().begin().await?;
     append_owner_checked_typed_edge(
         &mut tx,
         owner,
@@ -331,7 +331,7 @@ async fn age_memory(pg: &PgStorage, memory_id: Uuid) -> Result<(), sqlx::Error> 
           WHERE memory_id = $1",
     )
     .bind(memory_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }
@@ -397,7 +397,10 @@ async fn count_by_id(
         }
         _ => panic!("unsupported test count query for {table}.{column}"),
     };
-    sqlx::query_scalar(sql).bind(id).fetch_one(pg.pool()).await
+    sqlx::query_scalar(sql)
+        .bind(id)
+        .fetch_one(pg.pool_for_tests())
+        .await
 }
 
 async fn assert_no_dangling_current_memory_id(pg: &PgStorage) -> Result<(), sqlx::Error> {
@@ -408,7 +411,7 @@ async fn assert_no_dangling_current_memory_id(pg: &PgStorage) -> Result<(), sqlx
              ON m.memory_id = fe.current_memory_id
           WHERE m.memory_id IS NULL",
     )
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(dangling, 0);
     Ok(())
@@ -422,7 +425,7 @@ async fn assert_no_orphan_edge_sidecars(pg: &PgStorage) -> Result<(), sqlx::Erro
              ON edge_row.edge_id = sidecar.edge_id
           WHERE edge_row.edge_id IS NULL",
     )
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(orphaned, 0);
     Ok(())
@@ -659,7 +662,7 @@ async fn provenance_tombstone_walk_stays_memory_id_pinned() -> Result<(), Box<dy
               WHERE memory_id = $1",
         )
         .bind(derivative_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert!(derivative_tombstoned.is_some());
 
@@ -669,7 +672,7 @@ async fn provenance_tombstone_walk_stays_memory_id_pinned() -> Result<(), Box<dy
               WHERE memory_id = $1",
         )
         .bind(neighbor.memory_id.into_inner())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert!(neighbor_tombstoned.is_none());
         assert_edge_and_sidecar_erased(&pg, edge_id).await?;
@@ -701,7 +704,7 @@ async fn insert_direct_derivative(
     .bind(derivative_id)
     .bind(owner_kind)
     .bind(owner_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
 
     sqlx::query(
@@ -720,7 +723,7 @@ async fn insert_direct_derivative(
     .bind(owner_id)
     .bind(derivative_id)
     .bind(fact_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(derivative_id)
 }

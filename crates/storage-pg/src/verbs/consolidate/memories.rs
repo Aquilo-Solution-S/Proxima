@@ -10,7 +10,7 @@ use proxima_core::{
 use sqlx::PgPool;
 
 use crate::error::map_err;
-use crate::sidecars::{PgSidecarKey, PgSidecarRegistryFrozen};
+use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 
 pub async fn load_memory_batch_facts(
     pool: &PgPool,
@@ -246,7 +246,7 @@ async fn load_memory_sidecar_payload(
     }
     let memory_ids = [memory_id];
     let mut payloads = pg_sidecars
-        .load_memory_payloads_batch(pool, &key, &memory_ids)
+        .load_memory_payloads_batch(PgSidecarReadCtx::from(pool), &key, &memory_ids)
         .await?;
     Ok(payloads.pop().map(|(_memory_id, payload)| payload))
 }
@@ -272,7 +272,7 @@ async fn load_memory_sidecar_payloads_batch(
 ) -> Result<HashMap<MemoryId, SidecarPayload>, StorageError> {
     let batches = ids_by_key.into_iter().map(|(key, ids)| async move {
         pg_sidecars
-            .load_memory_payloads_batch(pool, &key, &ids)
+            .load_memory_payloads_batch(PgSidecarReadCtx::from(pool), &key, &ids)
             .await
     });
     let rows = try_join_all(batches).await?;

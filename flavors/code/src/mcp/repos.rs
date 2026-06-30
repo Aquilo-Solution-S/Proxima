@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
+use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -8,7 +8,8 @@ use uuid::Uuid;
 use crate::IndexReport;
 use crate::repos::{RepoRecord, RepoRegistryError};
 
-use super::pg_pool;
+use super::CodeToolCtxExt;
+use super::code_store;
 use super::sql::{map_storage, resolve_repo_identifier};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -83,7 +84,7 @@ pub struct IndexReportItem {
 #[derive(Debug)]
 pub struct CodeRegisterRepoTool;
 
-impl McpTool for CodeRegisterRepoTool {
+impl Tool for CodeRegisterRepoTool {
     const NAME: &'static str = "proxima-code_register_repo";
     const DESCRIPTION: &'static str = "Register one local Git repository for the current owner. Returns a repo_handle for code MCP tools.";
 
@@ -91,9 +92,9 @@ impl McpTool for CodeRegisterRepoTool {
     type Output = CodeRegisterRepoOutput;
 
     fn call(
-        ctx: McpToolCtx,
+        ctx: ToolCtx,
         args: CodeRegisterRepoArgs,
-    ) -> futures::future::BoxFuture<'static, Result<CodeRegisterRepoOutput, McpToolError>> {
+    ) -> futures::future::BoxFuture<'static, Result<CodeRegisterRepoOutput, ToolError>> {
         Box::pin(async move {
             let canonical = canonical_git_repo(&args.path)?;
             let canonical_path = canonical.to_string_lossy().into_owned();
@@ -116,10 +117,10 @@ impl McpTool for CodeRegisterRepoTool {
                     ToOwned::to_owned,
                 );
             let repo_id = Uuid::now_v7();
-            let pool = pg_pool(&ctx)?;
-            let record = crate::register_repo(
-                pool.as_ref(),
-                &ctx.owner,
+            let pool = code_store(&ctx)?;
+            let record = crate::repos::register_repo(
+                pool.pool(),
+                &ctx.owner(),
                 repo_id,
                 &canonical_path,
                 &display_name,
@@ -140,7 +141,7 @@ impl McpTool for CodeRegisterRepoTool {
 #[derive(Debug)]
 pub struct CodeIngestHeadSnapshotTool;
 
-impl McpTool for CodeIngestHeadSnapshotTool {
+impl Tool for CodeIngestHeadSnapshotTool {
     const NAME: &'static str = "proxima-code_ingest_head_snapshot";
     const DESCRIPTION: &'static str = "Ingest the current HEAD tree for one registered local Git repository and advance its cursor to HEAD. Does not walk commit history.";
 
@@ -148,30 +149,31 @@ impl McpTool for CodeIngestHeadSnapshotTool {
     type Output = CodeIngestHeadSnapshotOutput;
 
     fn call(
-        ctx: McpToolCtx,
+        ctx: ToolCtx,
         args: CodeIngestHeadSnapshotArgs,
-    ) -> futures::future::BoxFuture<'static, Result<CodeIngestHeadSnapshotOutput, McpToolError>>
-    {
+    ) -> futures::future::BoxFuture<'static, Result<CodeIngestHeadSnapshotOutput, ToolError>> {
         Box::pin(async move {
             let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
-            let pool = pg_pool(&ctx)?;
-            let repo = crate::get_repo(pool.as_ref(), &ctx.owner, repo_id)
+            let pool = code_store(&ctx)?;
+            let repo = crate::repos::get_repo(pool.pool(), &ctx.owner(), repo_id)
                 .await
                 .map_err(map_repo_registry)?
-                .ok_or_else(|| McpToolError::InvalidInput(format!("repo not found: {repo_id}")))?;
+                .ok_or_else(|| ToolError::InvalidInput(format!("repo not found: {repo_id}")))?;
 
             let source = crate::LocalGitSource::new(
                 repo.repo_id,
                 PathBuf::from(repo.canonical_path.clone()),
-                ctx.owner,
+                ctx.owner(),
             );
+            let engine = super::engine(&ctx)?;
+            let ingest_ctx = crate::CodeIngestContext::new(&engine, ctx.authz(), pool.as_ref());
             let outcome = source
-                .run_head_snapshot(pool.as_ref())
+                .run_head_snapshot(&ingest_ctx)
                 .await
                 .map_err(|err| map_index_error(&err))?;
-            crate::update_cursor(
-                pool.as_ref(),
-                &ctx.owner,
+            crate::repos::update_cursor(
+                pool.pool(),
+                &ctx.owner(),
                 repo.repo_id,
                 outcome.cursor.as_bytes(),
                 time::OffsetDateTime::now_utc(),
@@ -179,10 +181,10 @@ impl McpTool for CodeIngestHeadSnapshotTool {
             .await
             .map_err(map_repo_registry)?;
 
-            let repo = crate::get_repo(pool.as_ref(), &ctx.owner, repo.repo_id)
+            let repo = crate::repos::get_repo(pool.pool(), &ctx.owner(), repo.repo_id)
                 .await
                 .map_err(map_repo_registry)?
-                .ok_or_else(|| McpToolError::InvalidInput(format!("repo not found: {repo_id}")))?;
+                .ok_or_else(|| ToolError::InvalidInput(format!("repo not found: {repo_id}")))?;
 
             Ok(CodeIngestHeadSnapshotOutput {
                 repo: repo_item(&ctx, repo)?,
@@ -197,7 +199,7 @@ impl McpTool for CodeIngestHeadSnapshotTool {
 #[derive(Debug)]
 pub struct CodeListReposTool;
 
-impl McpTool for CodeListReposTool {
+impl Tool for CodeListReposTool {
     const NAME: &'static str = "proxima-code_list_repos";
     const DESCRIPTION: &'static str =
         "List local Git repositories registered for the current owner.";
@@ -206,12 +208,12 @@ impl McpTool for CodeListReposTool {
     type Output = CodeListReposOutput;
 
     fn call(
-        ctx: McpToolCtx,
+        ctx: ToolCtx,
         _args: CodeListReposArgs,
-    ) -> futures::future::BoxFuture<'static, Result<CodeListReposOutput, McpToolError>> {
+    ) -> futures::future::BoxFuture<'static, Result<CodeListReposOutput, ToolError>> {
         Box::pin(async move {
-            let pool = pg_pool(&ctx)?;
-            let repos = crate::list_repos(pool.as_ref(), &ctx.owner)
+            let pool = code_store(&ctx)?;
+            let repos = crate::repos::list_repos(pool.pool(), &ctx.owner())
                 .await
                 .map_err(map_repo_registry)?
                 .into_iter()
@@ -222,16 +224,15 @@ impl McpTool for CodeListReposTool {
     }
 }
 
-fn canonical_git_repo(path: &str) -> Result<PathBuf, McpToolError> {
+fn canonical_git_repo(path: &str) -> Result<PathBuf, ToolError> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
-        return Err(McpToolError::InvalidInput("path required".into()));
+        return Err(ToolError::InvalidInput("path required".into()));
     }
-    let canonical = std::fs::canonicalize(trimmed).map_err(|err| {
-        McpToolError::InvalidInput(format!("invalid repo path {trimmed:?}: {err}"))
-    })?;
+    let canonical = std::fs::canonicalize(trimmed)
+        .map_err(|err| ToolError::InvalidInput(format!("invalid repo path {trimmed:?}: {err}")))?;
     if !canonical.join(".git").exists() {
-        return Err(McpToolError::InvalidInput(format!(
+        return Err(ToolError::InvalidInput(format!(
             "not a Git repository: {}",
             canonical.to_string_lossy()
         )));
@@ -247,11 +248,11 @@ fn display_name_for_path(canonical: &std::path::Path, canonical_path: &str) -> S
 }
 
 async fn repo_by_path(
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     canonical_path: &str,
-) -> Result<Option<RepoRecord>, McpToolError> {
-    let pool = pg_pool(ctx)?;
-    let row = crate::list_repos(pool.as_ref(), &ctx.owner)
+) -> Result<Option<RepoRecord>, ToolError> {
+    let pool = code_store(ctx)?;
+    let row = crate::repos::list_repos(pool.pool(), &ctx.owner())
         .await
         .map_err(map_repo_registry)?
         .into_iter()
@@ -260,20 +261,20 @@ async fn repo_by_path(
 }
 
 async fn maybe_set_target_branch(
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     record: RepoRecord,
     target_branch: Option<&str>,
-) -> Result<RepoRecord, McpToolError> {
+) -> Result<RepoRecord, ToolError> {
     let Some(target_branch) = target_branch else {
         return Ok(record);
     };
     if target_branch.trim().is_empty() {
         return Ok(record);
     }
-    let pool = pg_pool(ctx)?;
-    crate::set_repo_target_branch(
-        pool.as_ref(),
-        &ctx.owner,
+    let pool = code_store(ctx)?;
+    crate::repos::set_repo_target_branch(
+        pool.pool(),
+        &ctx.owner(),
         record.repo_id,
         Some(target_branch),
     )
@@ -281,7 +282,7 @@ async fn maybe_set_target_branch(
     .map_err(map_repo_registry)
 }
 
-fn repo_item(ctx: &McpToolCtx, record: RepoRecord) -> Result<RepoItem, McpToolError> {
+fn repo_item(ctx: &ToolCtx, record: RepoRecord) -> Result<RepoItem, ToolError> {
     let last_polled_at = record.last_polled_at.map(format_time).transpose()?;
     Ok(RepoItem {
         repo_handle: ctx.format_flavor_object(
@@ -299,10 +300,10 @@ fn repo_item(ctx: &McpToolCtx, record: RepoRecord) -> Result<RepoItem, McpToolEr
     })
 }
 
-fn format_time(value: time::OffsetDateTime) -> Result<String, McpToolError> {
+fn format_time(value: time::OffsetDateTime) -> Result<String, ToolError> {
     value
         .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|err| McpToolError::Other(format!("format time: {err}")))
+        .map_err(|err| ToolError::Other(format!("format time: {err}")))
 }
 
 impl From<IndexReport> for IndexReportItem {
@@ -319,32 +320,32 @@ impl From<IndexReport> for IndexReportItem {
     }
 }
 
-fn map_index_error(error: &crate::IndexError) -> McpToolError {
-    McpToolError::Other(error.to_string())
+fn map_index_error(error: &crate::IndexError) -> ToolError {
+    ToolError::Other(error.to_string())
 }
 
-fn map_repo_registry(error: RepoRegistryError) -> McpToolError {
+fn map_repo_registry(error: RepoRegistryError) -> ToolError {
     match error {
-        RepoRegistryError::DuplicatePath { canonical_path } => McpToolError::InvalidInput(format!(
+        RepoRegistryError::DuplicatePath { canonical_path } => ToolError::InvalidInput(format!(
             "repo already registered for owner: {canonical_path}"
         )),
         RepoRegistryError::NotFound { repo_id } => {
-            McpToolError::InvalidInput(format!("repo not found: {repo_id}"))
+            ToolError::InvalidInput(format!("repo not found: {repo_id}"))
         }
         RepoRegistryError::InvalidTargetBranch {
             repo_id,
             target_branch,
             reason,
-        } => McpToolError::InvalidInput(format!(
+        } => ToolError::InvalidInput(format!(
             "invalid target branch for repo {repo_id}: {target_branch} ({reason})"
         )),
         RepoRegistryError::RunNotFound { run_id } => {
-            McpToolError::InvalidInput(format!("ingestion run not found: {run_id}"))
+            ToolError::InvalidInput(format!("ingestion run not found: {run_id}"))
         }
-        RepoRegistryError::RunAlreadyTerminal { run_id, status } => McpToolError::InvalidInput(
+        RepoRegistryError::RunAlreadyTerminal { run_id, status } => ToolError::InvalidInput(
             format!("ingestion run is already terminal: {run_id} ({status:?})"),
         ),
         RepoRegistryError::Database(error) => map_storage(error),
-        RepoRegistryError::Storage(error) => McpToolError::Other(error.to_string()),
+        RepoRegistryError::Storage(error) => ToolError::Other(error.to_string()),
     }
 }

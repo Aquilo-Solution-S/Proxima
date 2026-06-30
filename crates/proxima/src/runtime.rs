@@ -8,6 +8,7 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::response::IntoResponse;
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
+use proxima_core::mcp::McpToolExtensions;
 use proxima_core::{
     AnthropicClient, AuthPath, Authenticator, AuthzContext, EmbeddingClient, FlavorRegistryFrozen,
     RevalidationConfig, ToolScope,
@@ -23,9 +24,9 @@ use tokio_util::sync::CancellationToken;
 use tower::Service;
 
 use crate::{
-    AppContext, CoreMcpTools, EmbedConfig, FlavorApp, PgSidecarRegistryFrozen, ProximaBuilder,
-    ProximaError, RuntimeBuilder,
+    AppContext, CoreMcpTools, EmbedConfig, FlavorApp, ProximaBuilder, ProximaError, RuntimeBuilder,
 };
+use proxima_storage_pg::PgSidecarRegistryFrozen;
 
 const EMBEDDING_WORKER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -180,13 +181,19 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         };
         let booted = boot_app::<A>(&config, &parts).await?;
         let cancel = CancellationToken::new();
+        let app_ctx = AppContext {
+            engine: booted.engine.clone(),
+            pool: booted.pool.clone(),
+            blobs: booted.blobs.clone(),
+            owner: booted.owner,
+        };
+        let tool_extensions = A::mcp_tool_extensions(&app_ctx);
 
         let service = if let Some(allowlist) = allowlist {
             Some(
                 build_router::<A>(
-                    &booted.engine,
-                    booted.pool.clone(),
-                    booted.blobs.clone(),
+                    app_ctx.clone(),
+                    tool_extensions.clone(),
                     parts.authenticator,
                     allowlist,
                     &cancel,
@@ -209,6 +216,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             owner: booted.owner,
             cancel,
             insecure_single_owner: config.insecure_single_owner,
+            tool_extensions,
         })
     }
 
@@ -226,6 +234,13 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         };
         let booted = boot_app::<A>(&config, &parts).await?;
         let cancel = CancellationToken::new();
+        let app_ctx = AppContext {
+            engine: booted.engine.clone(),
+            pool: booted.pool.clone(),
+            blobs: booted.blobs.clone(),
+            owner: booted.owner,
+        };
+        let tool_extensions = A::mcp_tool_extensions(&app_ctx);
 
         let (mcp_addr, server) = if let (Some(mcp), Some(allowlist)) = (config.mcp, allowlist) {
             if !config.expose_network {
@@ -233,9 +248,8 @@ impl<A: FlavorApp + 'static> Proxima<A> {
                     .map_err(|err| ProximaError::Security(err.to_string()))?;
             }
             let app = build_router::<A>(
-                &booted.engine,
-                booted.pool.clone(),
-                booted.blobs.clone(),
+                app_ctx,
+                tool_extensions.clone(),
                 parts.authenticator,
                 allowlist,
                 &cancel,
@@ -280,6 +294,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             server,
             cancel,
             insecure_single_owner: config.insecure_single_owner,
+            tool_extensions,
         })
     }
 
@@ -300,13 +315,14 @@ pub struct BuiltProxima {
     pub service: Option<Router>,
     pub engine: Arc<Engine>,
     pub handle: EngineHandle,
-    pub pool: PgPool,
+    pool: PgPool,
     pub registry: Arc<FlavorRegistryFrozen>,
     pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Owner,
     pub cancel: CancellationToken,
     pub insecure_single_owner: bool,
+    tool_extensions: McpToolExtensions,
 }
 
 impl BuiltProxima {
@@ -329,11 +345,27 @@ impl BuiltProxima {
     #[must_use]
     pub fn core_mcp_tools(&self) -> CoreMcpTools {
         CoreMcpTools::new(
-            self.pool.clone(),
             self.owner,
             self.registry.clone(),
             self.engine.clone(),
+            self.tool_extensions.clone(),
         )
+    }
+
+    #[must_use]
+    pub fn engine(&self) -> Arc<Engine> {
+        self.engine.clone()
+    }
+
+    #[must_use]
+    pub fn registry(&self) -> &FlavorRegistryFrozen {
+        &self.registry
+    }
+
+    #[cfg(any(test, feature = "testkit", debug_assertions))]
+    #[must_use]
+    pub fn pool_for_tests(&self) -> &PgPool {
+        &self.pool
     }
 }
 
@@ -353,7 +385,7 @@ impl std::fmt::Debug for BuiltProxima {
 pub struct RunningProxima {
     pub engine: Arc<Engine>,
     pub handle: EngineHandle,
-    pub pool: PgPool,
+    pool: PgPool,
     pub registry: Arc<FlavorRegistryFrozen>,
     pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
     pub blobs: Option<CitedBlobStore>,
@@ -362,6 +394,7 @@ pub struct RunningProxima {
     pub server: Option<JoinHandle<()>>,
     pub cancel: CancellationToken,
     pub insecure_single_owner: bool,
+    tool_extensions: McpToolExtensions,
 }
 
 impl RunningProxima {
@@ -384,6 +417,32 @@ impl RunningProxima {
     pub fn single_owner_authz(&self) -> Option<AuthzContext> {
         self.insecure_single_owner
             .then(|| insecure_single_owner_authz(&self.owner, AuthPath::System))
+    }
+
+    #[must_use]
+    pub fn core_mcp_tools(&self) -> CoreMcpTools {
+        CoreMcpTools::new(
+            self.owner,
+            self.registry.clone(),
+            self.engine.clone(),
+            self.tool_extensions.clone(),
+        )
+    }
+
+    #[must_use]
+    pub fn engine(&self) -> Arc<Engine> {
+        self.engine.clone()
+    }
+
+    #[must_use]
+    pub fn registry(&self) -> &FlavorRegistryFrozen {
+        &self.registry
+    }
+
+    #[cfg(any(test, feature = "testkit", debug_assertions))]
+    #[must_use]
+    pub fn pool_for_tests(&self) -> &PgPool {
+        &self.pool
     }
 }
 
@@ -529,15 +588,15 @@ async fn boot_app<A: FlavorApp + 'static>(
 }
 
 async fn build_router<A: FlavorApp>(
-    engine: &Arc<Engine>,
-    pool: PgPool,
-    blobs: Option<CitedBlobStore>,
+    app_ctx: AppContext,
+    tool_extensions: McpToolExtensions,
     authenticator: Option<Arc<dyn Authenticator>>,
     allowlist: OriginAllowlist,
     cancel: &CancellationToken,
     config: &crate::RuntimeConfig,
 ) -> Router {
     let owner = config.owner;
+    let engine = app_ctx.engine.clone();
     let mut edge_auth = McpEdgeAuth::headless().with_tool_scope(config.tool_scope.clone());
     if let Some(authenticator) = authenticator {
         edge_auth = edge_auth.with_host(authenticator, owner);
@@ -546,19 +605,12 @@ async fn build_router<A: FlavorApp>(
         edge_auth.replace_local_master_token(token, owner).await;
     }
     let edge_auth = Arc::new(edge_auth);
-    let mcp_host = McpToolHost::from_pool(pool.clone(), owner, Arc::new(engine.registry().clone()))
-        .with_engine(engine.clone());
+    let mcp_host =
+        McpToolHost::from_parts(owner, Arc::new(engine.registry().clone()), tool_extensions)
+            .with_engine(engine);
     let allowed_hosts = resolve_allowed_hosts(config);
     let mcp_service = streamable_http_service(mcp_host, &allowlist, &allowed_hosts, cancel);
-    let app_router = A::mount_http(
-        Router::new(),
-        AppContext {
-            engine: engine.clone(),
-            pool,
-            blobs,
-            owner,
-        },
-    );
+    let app_router = A::mount_http(Router::new(), app_ctx);
     let www = config
         .resource_metadata
         .as_ref()
@@ -618,12 +670,14 @@ mod tests {
 
     use async_trait::async_trait;
     use proxima_core::{
-        AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, Owner,
+        AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry,
+        FlavorRegistryError, Owner,
     };
     use uuid::Uuid;
 
     use super::*;
-    use crate::{AppInfo, FlavorBundle, RuntimeBuilder, company_owner};
+    use crate::bundle::FlavorBundle;
+    use crate::{AppInfo, RuntimeBuilder, company_owner};
 
     mod alpha {
         proxima_core::proxima_flavor! {
@@ -655,8 +709,8 @@ mod tests {
     struct BetaApp;
 
     impl FlavorBundle for AlphaApp {
-        fn register(registry: &mut FlavorRegistry) {
-            alpha::register(registry);
+        fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+            alpha::register(registry)
         }
 
         fn migrators() -> Vec<crate::NamedMigrator> {
@@ -679,8 +733,8 @@ mod tests {
     }
 
     impl FlavorBundle for BetaApp {
-        fn register(registry: &mut FlavorRegistry) {
-            beta::register(registry);
+        fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+            beta::register(registry)
         }
 
         fn migrators() -> Vec<crate::NamedMigrator> {

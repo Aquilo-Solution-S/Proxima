@@ -15,7 +15,7 @@ async fn record_utterance_persists_sidecar_and_embedding_job()
     let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
-    let frozen_inner = registry.freeze();
+    let frozen_inner = registry.freeze_or_panic_for_tests();
     let frozen = Arc::new(frozen_inner.clone());
     let owner: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::nil()));
     let engine = Arc::new(
@@ -44,7 +44,7 @@ async fn record_utterance_persists_sidecar_and_embedding_job()
             },
             caller_self_perspective: None,
             master_token_id: None,
-            extensions: McpToolExtensions::with(pg.pool().clone()),
+            extensions: McpToolExtensions::with(pg.pool_for_tests().clone()),
             engine: Some(engine),
         },
         json!({
@@ -65,7 +65,7 @@ async fn record_utterance_persists_sidecar_and_embedding_job()
            JOIN proxima_core.utterance_v1 u USING (memory_id)
            WHERE m.schema_id = 'core/utterance-v1'",
     )
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(row.get::<String, _>("speaker"), "user");
     assert_eq!(row.get::<String, _>("conversation_id"), "thread-1");
@@ -76,7 +76,7 @@ async fn record_utterance_persists_sidecar_and_embedding_job()
     let memory_id: uuid::Uuid = sqlx::query_scalar(
         "SELECT memory_id FROM proxima_core.memories WHERE schema_id = 'core/utterance-v1'",
     )
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     let jobs: i64 = sqlx::query_scalar(
         "SELECT count(*)::bigint
@@ -87,7 +87,7 @@ async fn record_utterance_persists_sidecar_and_embedding_job()
             AND status = 'pending'",
     )
     .bind(memory_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(jobs, 1);
 

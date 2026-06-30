@@ -74,25 +74,26 @@ async fn receiptless_fact_ingest_creates_fresh_queryable_facts() {
                AND receipt_id IS NULL",
         )
         .bind(owner.stable_key_uuid())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(count, 2);
 
         let receipt_rows: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.fact_receipts")
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(receipt_rows, 0);
 
         assert_eq!(
-            load_fact_text(pg.pool(), &owner, first.memory_id).await?,
+            load_fact_text(pg.pool_for_tests(), &owner, first.memory_id).await?,
             Some("receiptless fact".to_string())
         );
-        let missing = list_facts_missing_embedding(pg.pool(), &owner, "test-embed", 10).await?;
+        let missing =
+            list_facts_missing_embedding(pg.pool_for_tests(), &owner, "test-embed", 10).await?;
         assert!(missing.contains(&first.memory_id));
         assert!(missing.contains(&second.memory_id));
 
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         let hard_delete_counts = execute_hard_delete(
             &mut tx,
             &HardDeleteSet {
