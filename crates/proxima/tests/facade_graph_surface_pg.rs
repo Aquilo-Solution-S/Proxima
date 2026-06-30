@@ -4,11 +4,11 @@ use proxima::{
     AbstractionPayload, AppInfo, AuthPath, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
     AuthorshipKindMask, AuthzContext, EdgeAuthorshipKind, EdgeExistsRequest, EdgeFilter,
     EdgeReadRequest, EdgeTargetProjection, EndpointBinding, EntityKind, EntityKindMask, EntityRef,
-    FactPayload, FlavorApp, FlavorBundle, FlavorRegistry, MemoryId, MemoryLineageDirection,
-    MemoryLineageRequest, MemoryOperatorKind, PayloadKeyBuilder, PgMemoryPayload,
-    PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarRegistry, Proxima, Relation,
-    Role, SchemaId, SchemaVersion, SidecarPayload, StorageError, UserId, company_owner,
-    fact_entity_id_for,
+    FactPayload, FlavorApp, FlavorBundle, FlavorRegistry, InputContractId, MemoryId,
+    MemoryLineageDirection, MemoryLineageRequest, MemoryOperatorKind, OperatorId,
+    PayloadKeyBuilder, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture,
+    PgSidecarRegistry, Proxima, Relation, Role, SchemaId, SchemaVersion, SidecarPayload,
+    StorageError, UserId, company_owner, fact_entity_id_for,
 };
 use proxima::{RelationClass, RelationDescriptor};
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
@@ -41,7 +41,7 @@ mod facade_imports_compile {
         MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode, MemoryLineageRequest,
         MemoryLineageResponse, MemoryRow, PayloadKeyBuilder, QueryRequest, QueryResponse,
         RelationClass, RelationDescriptor, SupersessionStatus, TombstoneFilter,
-        append_derived_in_tx, build_instructions, fact_entity_id_for, how_to_markdown,
+        append_derived_with_edges_in_tx, build_instructions, fact_entity_id_for, how_to_markdown,
     };
 
     #[cfg(feature = "openai-compat-embed")]
@@ -208,7 +208,7 @@ impl FlavorBundle for FacadeSurfaceApp {
             EndpointBinding::Pin,
             EntityKindMask::abstraction(),
             EntityKindMask::fact(),
-            AuthorshipKindMask::external_agent(),
+            AuthorshipKindMask::operator_f_to_a(),
         ));
         registry.add_relation(RelationDescriptor::substrate(
             FACT_ENTITY_EDGE_RELATION,
@@ -217,7 +217,7 @@ impl FlavorBundle for FacadeSurfaceApp {
             EndpointBinding::FollowHead,
             EntityKindMask::abstraction(),
             EntityKindMask::fact(),
-            AuthorshipKindMask::external_agent(),
+            AuthorshipKindMask::operator_a_to_a(),
         ));
     }
 
@@ -254,7 +254,7 @@ fn facade_flavor_authoring_symbols_are_reachable() {
         EndpointBinding::Pin,
         EntityKindMask::abstraction(),
         EntityKindMask::fact(),
-        AuthorshipKindMask::external_agent(),
+        AuthorshipKindMask::operator_a_to_a(),
     );
     assert_eq!(descriptor.class, RelationClass::Provenance);
 
@@ -333,6 +333,21 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         .await?
         .expect("stateful fact has an aggregate entity id");
 
+        let source_batch_id: Uuid = sqlx::query_scalar(
+            "SELECT fr.source_batch_id
+               FROM proxima_core.memories m
+               JOIN proxima_core.fact_receipts fr ON fr.receipt_id = m.receipt_id
+              WHERE m.memory_id = $1",
+        )
+        .bind(fact_outcome.memory_id.into_inner())
+        .fetch_one(&built.pool)
+        .await?;
+        proxima_storage_pg::verbs::close_batch::close_batch(
+            &built.pool,
+            &owner,
+            proxima::SourceBatchId::new(source_batch_id),
+        )
+        .await?;
         let derived_id = MemoryId::new(Uuid::now_v7());
         let derived_relation = built
             .engine
@@ -345,7 +360,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             source_memory_id: derived_id,
             target_kind: EntityKind::Fact,
             target_memory_id: fact_outcome.memory_id,
-            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
+            authorship_kind: EdgeAuthorshipKind::OperatorFtoA,
             authorship_owner_memory_id: None,
         }];
         let derived_outcome = built
@@ -357,7 +372,10 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                 text: "Single facade dependency is enough for flavor authors.".to_string(),
                 schema_id: SchemaId::new(FacadeAbstraction::SCHEMA_ID.to_string()),
                 schema_version: SchemaVersion::new(FacadeAbstraction::SCHEMA_VERSION),
-                operator_kind: MemoryOperatorKind::ExternalAgent,
+                operator_kind: MemoryOperatorKind::FtoA,
+                operator_id: OperatorId::new(Uuid::now_v7()),
+                input_contract_id: InputContractId::new(Uuid::now_v7()),
+                source_batch_id: Some(proxima::SourceBatchId::new(source_batch_id)),
                 model_id: "facade-test",
                 prompt_version: "v1",
                 sidecar_payload: SidecarPayload::abstraction(FacadeAbstraction {
@@ -438,7 +456,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         .bind(fact_entity_relation.descriptor.class)
         .bind(derived_id.into_inner())
         .bind(fact_entity_id.into_inner())
-        .bind(EdgeAuthorshipKind::ExternalAgent)
+        .bind(EdgeAuthorshipKind::OperatorAtoA)
         .bind(owner_kind)
         .bind(owner_id)
         .execute(conn.as_mut())

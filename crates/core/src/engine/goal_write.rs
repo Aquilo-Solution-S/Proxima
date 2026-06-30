@@ -7,9 +7,9 @@ use crate::storage_ports::GoalCommandStoragePorts;
 use crate::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, GoalAtomicContext, GoalAuthorship, GoalCreateRequest, GoalDraft,
-    GoalPayloadWrite, GoalState, GoalTopologyWrite, GoalWakeConfigWrite, GoalWakeTrigger,
-    GoalWriteBuildError, GoalWriteOutcome, IdempotencyKey, ModifyGoalAtomicRequest,
-    TransitionGoalAtomicRequest,
+    GoalEvidenceRef, GoalPayloadWrite, GoalState, GoalTopologyWrite, GoalWakeConfigWrite,
+    GoalWakeTrigger, GoalWriteBuildError, GoalWriteOutcome, IdempotencyKey,
+    ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
 use crate::verbs::schema::PayloadKind;
 use crate::{EntityKind, GoalPayload, MemoryId};
@@ -120,6 +120,8 @@ impl Engine {
             req.topology.assignment().perspective_id(),
         )
         .await?;
+        self.validate_goal_evidence_authorized(authz, req.topology.evidence())
+            .await?;
         let author_self_perspective_id = self
             .author_self_perspective_authorized(authz, req.author_self_perspective_id)
             .await?;
@@ -199,6 +201,8 @@ impl Engine {
         let author_self_perspective_id = self
             .author_self_perspective_authorized(authz, req.author_self_perspective_id)
             .await?;
+        self.validate_goal_evidence_authorized(authz, &req.evidence)
+            .await?;
         let embedding_client = self.embed_client();
         let context =
             self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
@@ -239,6 +243,10 @@ impl Engine {
             .await?;
         if let Some(Some(config)) = &req.wake {
             self.validate_wake_config_for_write(authz, Some(config))
+                .await?;
+        }
+        if let Some(evidence) = &req.evidence {
+            self.validate_goal_evidence_authorized(authz, evidence)
                 .await?;
         }
         let embedding_client = self.embed_client();
@@ -284,9 +292,13 @@ impl Engine {
             req.topology.assignment().perspective_id(),
         )
         .await?;
+        self.validate_goal_evidence_authorized(authz, req.topology.evidence())
+            .await?;
         let mut children = Vec::with_capacity(req.children.len());
         for child in &req.children {
             self.validate_wake_config_for_write(authz, child.wake.as_ref())
+                .await?;
+            self.validate_goal_evidence_authorized(authz, &child.evidence)
                 .await?;
             children.push(ChildGoalDraft {
                 payload: self.normalize_payload_write(child.payload.clone())?,
@@ -343,6 +355,8 @@ impl Engine {
             topology.assignment().perspective_id(),
         )
         .await?;
+        self.validate_goal_evidence_authorized(authz, topology.evidence())
+            .await?;
         let author_self_perspective_id = self
             .author_self_perspective_authorized(authz, author_self_perspective_id)
             .await?;
@@ -517,6 +531,29 @@ impl Engine {
             let _kind = self
                 .load_required_memory_kind(permit.owner(), *memory_id)
                 .await?;
+        }
+        Ok(())
+    }
+
+    async fn validate_goal_evidence_authorized(
+        &self,
+        authz: &AuthzContext,
+        evidence: &[GoalEvidenceRef],
+    ) -> Result<(), ProtocolError> {
+        for item in evidence {
+            let memory_id = item.memory_id();
+            let permit = self
+                .authorize_entry_read(authz, EntityId::Memory(memory_id))
+                .await?;
+            let kind = self
+                .load_required_memory_kind(permit.owner(), memory_id)
+                .await?;
+            if !matches!(kind, EntityKind::Fact | EntityKind::Abstraction) {
+                return Err(ProtocolError::invalid_argument(
+                    "evidence",
+                    "target must be Fact or Abstraction",
+                ));
+            }
         }
         Ok(())
     }

@@ -893,6 +893,7 @@ async fn prefixed_search_and_open_keep_company_shared_visibility()
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // end-to-end idempotency dimensions need distinct owner/kind fixtures
 async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
 
@@ -902,11 +903,42 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     let owner_a = nil_owner();
     let owner_b: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::from_u128(1)));
 
-    let shared_args = || {
+    let handles_a = Arc::new(HandleTable::new());
+    let handles_b = Arc::new(HandleTable::new());
+    let fact_a = call_tool(
+        &pg,
+        &owner_a,
+        &handles_a,
+        &frozen,
+        author_ctx(),
+        "core_remember",
+        json!({
+            "title": "Shared idempotency source A",
+            "body": "Owner A source fact.",
+            "idempotency_key": "shared-key-source-a",
+        }),
+    )
+    .await?;
+    let fact_b = call_tool(
+        &pg,
+        &owner_b,
+        &handles_b,
+        &frozen,
+        author_ctx(),
+        "core_remember",
+        json!({
+            "title": "Shared idempotency source B",
+            "body": "Owner B source fact.",
+            "idempotency_key": "shared-key-source-b",
+        }),
+    )
+    .await?;
+    let shared_args = |source_handle: serde_json::Value| {
         json!({
             "kind": "Abstraction",
             "title": "Shared idempotency",
             "body": "Same body, same key, different owner.",
+            "source_handles": [source_handle],
             "model_id": "codex-test",
             "idempotency_key": "shared-key-collision",
         })
@@ -915,21 +947,21 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     let a = call_tool(
         &pg,
         &owner_a,
-        &Arc::new(HandleTable::new()),
+        &handles_a,
         &frozen,
         author_ctx(),
         "core_derive",
-        shared_args(),
+        shared_args(fact_a["handle"].clone()),
     )
     .await?;
     let b = call_tool(
         &pg,
         &owner_b,
-        &Arc::new(HandleTable::new()),
+        &handles_b,
         &frozen,
         author_ctx(),
         "core_derive",
-        shared_args(),
+        shared_args(fact_b["handle"].clone()),
     )
     .await?;
 
@@ -946,10 +978,24 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     assert_eq!(a["idempotent_replay"], json!(false));
     assert_eq!(b["idempotent_replay"], json!(false));
 
+    let kind_fact = call_tool(
+        &pg,
+        &owner_a,
+        &handles_a,
+        &frozen,
+        author_ctx(),
+        "core_remember",
+        json!({
+            "title": "Kind dimension source",
+            "body": "Source fact for kind dimension test.",
+            "idempotency_key": "kind-key-source",
+        }),
+    )
+    .await?;
     let abstraction = call_tool(
         &pg,
         &owner_a,
-        &Arc::new(HandleTable::new()),
+        &handles_a,
         &frozen,
         author_ctx(),
         "core_derive",
@@ -957,6 +1003,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
             "kind": "Abstraction",
             "title": "Same key, A vs P",
             "body": "kind dimension test.",
+            "source_handles": [kind_fact["handle"].clone()],
             "model_id": "codex-test",
             "idempotency_key": "kind-key-collision",
         }),
@@ -965,7 +1012,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     let perspective = call_tool(
         &pg,
         &owner_a,
-        &Arc::new(HandleTable::new()),
+        &handles_a,
         &frozen_b,
         author_ctx(),
         "core_derive",
@@ -973,6 +1020,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
             "kind": "Perspective",
             "title": "Same key, A vs P",
             "body": "kind dimension test.",
+            "source_handles": [abstraction["handle"].clone()],
             "model_id": "codex-test",
             "idempotency_key": "kind-key-collision",
         }),
@@ -1006,6 +1054,37 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
     let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
 
+    let fact = call_tool(
+        &pg,
+        &owner,
+        &handles,
+        &frozen,
+        author.clone(),
+        "core_remember",
+        json!({
+            "title": "Layering fact",
+            "body": "Fact source for legal F→A then A→P setup.",
+            "idempotency_key": "derive-layer-test-fact"
+        }),
+    )
+    .await?;
+    let abstraction = call_tool(
+        &pg,
+        &owner,
+        &handles,
+        &frozen,
+        author.clone(),
+        "core_derive",
+        json!({
+            "kind": "Abstraction",
+            "title": "Layering abstraction",
+            "body": "Abstraction source for legal A→P setup.",
+            "source_handles": [fact["handle"].clone()],
+            "model_id": "codex-test",
+            "idempotency_key": "derive-layer-test-abstraction"
+        }),
+    )
+    .await?;
     let perspective = call_tool(
         &pg,
         &owner,
@@ -1016,7 +1095,8 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
         json!({
             "kind": "Perspective",
             "title": "Top-layer perspective",
-            "body": "A perspective with no sources, used as a layering pivot.",
+            "body": "A perspective with abstraction provenance, used as a layering pivot.",
+            "source_handles": [abstraction["handle"].clone()],
             "model_id": "codex-test",
             "idempotency_key": "derive-layer-test-perspective"
         }),

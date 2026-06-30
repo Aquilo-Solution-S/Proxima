@@ -20,6 +20,7 @@ pub mod llm;
 pub mod mcp;
 pub mod memory;
 pub mod models;
+pub mod operator_proofs;
 pub mod owner;
 pub mod payload;
 pub mod payload_contract;
@@ -61,6 +62,7 @@ pub use mcp::{
 };
 pub use memory::*;
 pub use models::*;
+pub use operator_proofs::*;
 pub use owner::*;
 pub use payload::*;
 pub use payload_contract::assert_no_serde_json_value_fields;
@@ -389,7 +391,7 @@ macro_rules! proxima_flavor {
 pub use storage_ports::{
     ChangeEventPort, CitationPort, ComplianceErasePort, EdgeReadPort, EmbeddingJobPort,
     EmbeddingTextPort, EmbeddingWritePort, FactIngestPort, FactRetentionPort, GoalReadPort,
-    GoalWritePort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
-    OperatorInvocationReadPort, OperatorInvocationWritePort, OwnerAccessReadPort,
-    OwnerMembershipAdminPort, RegistryProjectionPort, SourceBatchPort, StoragePorts,
+    GoalWritePort, McpCallReadPort, McpCallWritePort, MemoryAuthoringPort, MemoryInspectPort,
+    MemoryReadPort, OwnerAccessReadPort, OwnerMembershipAdminPort, RegistryProjectionPort,
+    SourceBatchPort, StoragePorts,
 };

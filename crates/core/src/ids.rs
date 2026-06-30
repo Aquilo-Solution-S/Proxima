@@ -205,6 +205,21 @@ impl OperatorId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct InputContractId(uuid::Uuid);
+
+impl InputContractId {
+    #[must_use]
+    pub const fn new(inner: uuid::Uuid) -> Self {
+        Self(inner)
+    }
+
+    #[must_use]
+    pub const fn into_inner(self) -> uuid::Uuid {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ToolId(String);
 

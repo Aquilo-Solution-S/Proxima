@@ -1189,10 +1189,12 @@ async fn insert_derivative(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version)
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/cleanup-abstraction-v1', 1,
-                 'Abstraction', $4, 'FtoA', 'test-model',
-                 'test-prompt')",
+                 'Abstraction', $4, 'AtoA',
+                 '00000000-0000-0000-0000-000000000381'::uuid,
+                 '00000000-0000-0000-0000-000000000382'::uuid, NULL,
+                 'test-model', 'test-prompt')",
     )
     .bind(derivative_id)
     .bind(owner_kind)

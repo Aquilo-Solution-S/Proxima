@@ -28,9 +28,11 @@ async fn insert_self(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version)
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/self', 1, $4,
-                 'self', $5, 'test-model', 'v1')",
+                 'self', $5, '00000000-0000-0000-0000-000000000361'::uuid,
+                 '00000000-0000-0000-0000-000000000362'::uuid, NULL,
+                 'test-model', 'v1')"
     )
     .bind(memory_id)
     .bind(owner_kind)

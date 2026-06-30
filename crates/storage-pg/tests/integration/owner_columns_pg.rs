@@ -109,9 +109,11 @@ async fn insert_self(pg: &PgStorage, owner: &Owner) -> MemoryId {
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version)
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/self', 1, $4,
-                 'self', $5, 'test-model', 'v1')",
+                 'self', $5, '00000000-0000-0000-0000-000000000351'::uuid,
+                 '00000000-0000-0000-0000-000000000352'::uuid, NULL,
+                 'test-model', 'v1')"
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -475,9 +477,11 @@ async fn seed_memory_owned(pg: &proxima_storage_pg::PgStorage, owner: OwnerRef) 
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version)
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/owned-memory-v1', 1, 'Abstraction', 'owned',
-                 'FtoA', 'test-model', 'v1')",
+                 'AtoA', '00000000-0000-0000-0000-000000000353'::uuid,
+                 '00000000-0000-0000-0000-000000000354'::uuid, NULL,
+                 'test-model', 'v1')"
     )
     .bind(entity_id)
     .bind(owner_kind)
@@ -499,9 +503,12 @@ async fn seed_abstraction_memory(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version)
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/entity-owner-abstraction-v1', 1,
-                 'Abstraction', $4, 'FtoA', 'test-model', 'v1')",
+                 'Abstraction', $4, 'AtoA',
+                 '00000000-0000-0000-0000-000000000355'::uuid,
+                 '00000000-0000-0000-0000-000000000356'::uuid, NULL,
+                 'test-model', 'v1')"
     )
     .bind(memory_id)
     .bind(owner_kind)

@@ -61,7 +61,7 @@ async fn insert_memory(
         proxima_core::EntityKind::Abstraction => (
             "test/product-evidence",
             "product evidence",
-            proxima_core::MemoryOperatorKind::FtoA,
+            proxima_core::MemoryOperatorKind::AtoA,
         ),
         proxima_core::EntityKind::Fact | proxima_core::EntityKind::Goal => {
             unreachable!("test helper only inserts memory-backed A/P rows")
@@ -70,8 +70,11 @@ async fn insert_memory(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version)
-         VALUES ($1, $2, $3, $4, 1, $5, $6, $7, 'test-model', 'v1')",
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
+         VALUES ($1, $2, $3, $4, 1, $5, $6, $7,
+                 '00000000-0000-0000-0000-000000000341'::uuid,
+                 '00000000-0000-0000-0000-000000000342'::uuid,
+                 NULL, 'test-model', 'v1')"
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -331,6 +334,56 @@ async fn engine_goalwrite_rejects_duplicate_evidence_before_write() {
 
     let _ = drop_db(&db_name).await;
     result.expect("typed product GoalWrite duplicate-evidence test failed");
+}
+
+#[tokio::test]
+async fn engine_goalwrite_requires_readable_evidence_before_write() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let (pg, owner, target_self, engine, _) = boot_registered(&url).await?;
+        let evidence_owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let evidence = insert_evidence(&pg, &evidence_owner).await?;
+        let subject = UserId::new(Uuid::now_v7());
+        let no_read_authz = AuthzContext::for_subject_with_role(
+            subject,
+            [(owner, Role::admin())],
+            AuthPath::System,
+        );
+
+        let err = engine
+            .create_goal(
+                &no_read_authz,
+                product_request(&owner, target_self, "Use readable evidence.")
+                    .with_evidence(vec![GoalEvidenceRef::new(evidence)]),
+            )
+            .await
+            .expect_err("unreadable evidence rejects before write");
+        assert_eq!(err.code, ErrorCode::Forbidden);
+        assert_no_goal_rows(&pg).await?;
+
+        let readable_authz = AuthzContext::for_subject_with_role(
+            subject,
+            [(owner, Role::admin()), (evidence_owner, Role::viewer())],
+            AuthPath::System,
+        );
+        let outcome = engine
+            .create_goal(
+                &readable_authz,
+                product_request(&owner, target_self, "Use readable evidence.")
+                    .with_evidence(vec![GoalEvidenceRef::new(evidence)]),
+            )
+            .await?;
+        assert!(!outcome.edge_ids.is_empty());
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("typed product GoalWrite evidence-read test failed");
 }
 
 #[tokio::test]

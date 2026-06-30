@@ -121,7 +121,7 @@ async fn query_helper_accepts_only_query_read_handles() {
     let read = Arc::new(ReadOnlyFake);
     let ports = QueryStoragePorts {
         change_event: Arc::new(storage_port_tests_support::ChangeEventFake),
-        operator_invocation_read: Arc::new(storage_port_tests_support::InvocationReadFake),
+        mcp_call_read: Arc::new(storage_port_tests_support::McpCallReadFake),
         memory_read: read,
         edge_read: Arc::new(storage_port_tests_support::EdgeReadFake),
     };
@@ -218,10 +218,10 @@ mod storage_port_tests_support {
     }
 
     #[derive(Debug)]
-    pub struct InvocationReadFake;
+    pub struct McpCallReadFake;
 
     #[async_trait::async_trait]
-    impl crate::OperatorInvocationReadPort for InvocationReadFake {
+    impl crate::McpCallReadPort for McpCallReadFake {
         async fn read_mcp_call_history(
             &self,
             _req: &crate::verbs::mcp_call_history::McpCallHistoryRequest,

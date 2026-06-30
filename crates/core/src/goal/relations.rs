@@ -15,6 +15,7 @@ pub fn motivated_by_descriptor() -> RelationDescriptor {
         EntityKindMask::goal(),
         EntityKindMask::fact_abstraction(),
         AuthorshipKindMask::user()
+            .union(AuthorshipKindMask::operator_a_to_goal())
             .union(AuthorshipKindMask::engine())
             .union(AuthorshipKindMask::external_agent()),
     )

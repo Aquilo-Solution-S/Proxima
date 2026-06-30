@@ -12,8 +12,8 @@ use crate::{
     GoalPayload, PerspectivePayload,
 };
 use crate::{
-    EdgeAuthorshipKind, EdgeId, EntityKind, MemoryId, MemoryOperatorKind, Owner,
-    RegisteredRelation, SchemaId, SchemaVersion,
+    EdgeAuthorshipKind, EdgeId, EntityKind, InputContractId, MemoryId, MemoryOperatorKind,
+    OperatorId, Owner, RegisteredRelation, SchemaId, SchemaVersion, SourceBatchId,
 };
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -39,6 +39,12 @@ pub struct MemoryKindRow {
     pub memory_id: MemoryId,
     /// `None` means Fact; Abstraction/Perspective are stored explicitly.
     pub kind: Option<EntityKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactSourceBatchRow {
+    pub memory_id: MemoryId,
+    pub source_batch_id: SourceBatchId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -262,6 +268,9 @@ pub struct AuthorDerivedRequest<'a> {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub operator_kind: MemoryOperatorKind,
+    pub operator_id: OperatorId,
+    pub input_contract_id: InputContractId,
+    pub source_batch_id: Option<SourceBatchId>,
     pub model_id: &'a str,
     pub prompt_version: &'a str,
     pub sidecar_payload: SidecarPayload,

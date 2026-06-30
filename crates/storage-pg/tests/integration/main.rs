@@ -30,6 +30,7 @@ mod lineage_pg;
 mod list_active_goals_pg;
 mod migrations;
 mod neighbor_redaction_pg;
+mod operator_proofs_pg;
 mod owner_columns_pg;
 mod persist_mcp_call;
 mod query_pg;

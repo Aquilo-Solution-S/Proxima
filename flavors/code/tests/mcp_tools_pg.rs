@@ -5,8 +5,9 @@ mod common;
 
 use common::{TestDb, test_owner as owner_fixture};
 use proxima_code::mcp::{
-    CodeIngestHeadSnapshotTool, CodeListReposTool, CodeOpenFileRevisionTool, CodeRegisterRepoTool,
-    CodeRetryExecutionRequestTool, CodeSearchChunksTool, CodeSearchCommitsTool,
+    CodeEmitExecutionPlanTool, CodeIngestHeadSnapshotTool, CodeListReposTool,
+    CodeOpenFileRevisionTool, CodeRegisterRepoTool, CodeRetryExecutionRequestTool,
+    CodeSearchChunksTool, CodeSearchCommitsTool,
 };
 use proxima_code::{CodeChunkV1, CommitV1, ExecutionRequestV1, FileRevisionV1, register_repo};
 use proxima_core::engine::Engine;
@@ -18,8 +19,9 @@ use proxima_core::verbs::fact_ingest::{
 };
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
-    AbstractionPayload, AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
-    MemoryId, Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    AbstractionPayload, AuthPath, AuthzContext, CORE_INSPIRES_RELATION, FactPayload,
+    FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner, SchemaId, SchemaVersion, SourceBatchId,
+    SourceId,
 };
 use proxima_storage_pg::PgStorage;
 use serde_json::json;
@@ -602,6 +604,80 @@ async fn retry_execution_request_succeeds_with_target_perspective()
 }
 
 #[tokio::test]
+async fn emit_execution_plan_uses_abstraction_proof_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let repo_id = Uuid::now_v7();
+    register_repo(
+        fixture.pg.pool(),
+        &owner,
+        repo_id,
+        "/tmp/proxima-plan-proof",
+        "Plan Proof Repo",
+    )
+    .await?;
+    let shell_self = seed_perspective(&fixture.pg, &owner, "Planner Root").await?;
+    let goal_activated = seed_active_goal_activation(&fixture.pg, &owner, shell_self).await?;
+    let plan_source = abstraction_memory(
+        fixture.pg.pool(),
+        &owner,
+        "test/plan-source-v1",
+        "planning context",
+    )
+    .await?;
+
+    let output = run_tool::<CodeEmitExecutionPlanTool>(
+        shell_ctx(
+            fixture.pg.pool().clone(),
+            owner,
+            registry,
+            Uuid::now_v7(),
+            MemoryId::new(shell_self),
+        ),
+        json!({
+            "repo_handle": repo_id.to_string(),
+            "goal_activated_memory": format!("F:{goal_activated}"),
+            "plan_source_memory": format!("A:{plan_source}"),
+            "plan_key": "proof-plan-1",
+            "plan_summary": "Plan from Abstraction proof source.",
+            "evidence": [],
+            "items": [{
+                "kind": "implementation",
+                "key": "work-1",
+                "title": "Implement proof-aware plan",
+                "instructions": "Use an Abstraction source for the AtoA plan derivation.",
+                "idempotency_key": "work-1"
+            }]
+        }),
+    )
+    .await?;
+
+    let plan_handle = output["plan_handle"].as_str().expect("plan handle");
+    let plan_id = Uuid::parse_str(
+        plan_handle
+            .strip_prefix("A:")
+            .expect("prefixed Abstraction handle"),
+    )?;
+    let edge: (String, String, Uuid) = sqlx::query_as(
+        "SELECT relation, authorship_kind::text, target_memory_id
+           FROM proxima_core.edges
+          WHERE source_memory_id = $1
+            AND relation = 'core/derived-from'
+          LIMIT 1",
+    )
+    .bind(plan_id)
+    .fetch_one(fixture.pg.pool())
+    .await?;
+    assert_eq!(edge.0, "core/derived-from");
+    assert_eq!(edge.1, "OperatorAtoA");
+    assert_eq!(edge.2, plan_source);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn retry_execution_request_rejects_unknown_target_perspective()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
@@ -713,6 +789,65 @@ fn shell_ctx(
     }
 }
 
+async fn seed_active_goal_activation(
+    pg: &PgStorage,
+    owner: &Owner,
+    self_id: Uuid,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let goal_id = Uuid::now_v7();
+    let memory_id = Uuid::now_v7();
+    let edge_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
+    sqlx::query(
+        "INSERT INTO proxima_core.goals
+            (goal_id, owner_kind, owner_id, schema_id, schema_version, title, text, payload,
+             state, authorship_kind, request_id, idempotency_key)
+         VALUES ($1, $2, $3, 'core/simple-text-v1', 1, 'Goal', 'Goal', '{}'::bytea,
+                 'Active', 'User', $4, md5($2::text || ':' || $3::text || ':' || $4))",
+    )
+    .bind(goal_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(format!("goal-{goal_id}"))
+    .execute(pg.pool())
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, text)
+         VALUES ($1, $2, $3, 'core/goal-activated-v1', 1, 'goal activated')",
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .execute(pg.pool())
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.goal_activated_v1
+            (memory_id, goal_id, transitioned_at)
+         VALUES ($1, $2, now())",
+    )
+    .bind(memory_id)
+    .bind(goal_id)
+    .execute(pg.pool())
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.edges
+            (edge_id, owner_kind, owner_id, relation, relation_class, source_kind, source_goal_id,
+             target_kind, target_memory_id, authorship_kind)
+         VALUES ($1, $2, $3, $4, 'Causal', 'Goal', $5,
+                 'Perspective', $6, 'PerspectiveGoalLink')",
+    )
+    .bind(edge_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(CORE_INSPIRES_RELATION)
+    .bind(goal_id)
+    .bind(self_id)
+    .execute(pg.pool())
+    .await?;
+    Ok(memory_id)
+}
+
 async fn seed_perspective(
     pg: &PgStorage,
     owner: &Owner,
@@ -723,9 +858,11 @@ async fn seed_perspective(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version)
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/mcp-perspective-v1', 1, 'Perspective', $4,
-                 'AtoP', 'test/0', 'test')",
+                 'AtoP', '00000000-0000-0000-0000-000000000461'::uuid,
+                 '00000000-0000-0000-0000-000000000462'::uuid, NULL,
+                 'test/0', 'test')"
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -890,9 +1027,12 @@ async fn abstraction_memory(
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id,
              prompt_version)
-         VALUES ($1, $2, $3, $4, 1, 'Abstraction', $5, 'FtoA',
+         VALUES ($1, $2, $3, $4, 1, 'Abstraction', $5,
+             'AtoA', '00000000-0000-0000-0000-000000000491'::uuid,
+             $1, NULL,
              'test/code-index', 'test')
          ON CONFLICT (memory_id) DO NOTHING",
     )
@@ -1078,9 +1218,11 @@ async fn ingest_commit_summary(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version)
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
          VALUES ($1, $2, $3, $4, 1, $5, $6,
-             $7, 'test/0', 'test')",
+             $7, '00000000-0000-0000-0000-000000000463'::uuid,
+             '00000000-0000-0000-0000-000000000464'::uuid, NULL,
+             'test/0', 'test')"
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -1088,7 +1230,7 @@ async fn ingest_commit_summary(
     .bind(proxima_code::CommitSummaryV1::schema_id().into_inner())
     .bind(proxima_core::EntityKind::Abstraction)
     .bind(summary)
-    .bind(proxima_core::MemoryOperatorKind::FtoA)
+    .bind(proxima_core::MemoryOperatorKind::AtoA)
     .execute(pool)
     .await?;
 
@@ -1125,7 +1267,7 @@ async fn ingest_calls_edge(
              authorship_kind)
          VALUES ($1, $2, $3, 'proxima-code/calls', 'Structural',
              'Abstraction', $4, 'Abstraction', $5,
-             'OperatorFtoA')",
+             'Engine')",
     )
     .bind(edge_id)
     .bind(owner_kind)

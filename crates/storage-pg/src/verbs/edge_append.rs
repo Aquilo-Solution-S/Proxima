@@ -11,6 +11,7 @@ use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     CapabilityTag, EdgeAuthorshipKind, EdgeId, EndpointBinding, EntityKind, Owner, OwnerRefKind,
     RegisteredRelation, RelationOwnerPolicy, SchemaId, SchemaVersion, StorageError,
+    validate_operator_edge_shape,
 };
 
 use crate::error::map_err;
@@ -133,6 +134,13 @@ fn validate_edge_draft(draft: &EdgeDraft<'_>, payload_present: bool) -> Result<(
             draft.authorship_kind.as_str(),
         )
         .map_err(StorageError::ConstraintViolation)?;
+    validate_operator_edge_shape(
+        descriptor.class,
+        draft.source_kind,
+        draft.target_kind,
+        draft.authorship_kind,
+    )
+    .map_err(StorageError::ConstraintViolation)?;
     Ok(())
 }
 

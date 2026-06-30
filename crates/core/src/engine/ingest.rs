@@ -536,7 +536,7 @@ impl Engine {
         input.owner = *permit.owner();
         self.storage
             .ingest
-            .operator_invocation_write
+            .mcp_call_write
             .persist_mcp_call_atomic(&input)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))

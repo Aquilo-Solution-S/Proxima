@@ -19,7 +19,7 @@
 //! - **Extension API (flavor authors / advanced hosts):** the re-exports of
 //!   `proxima-core` payload traits + ids and of `proxima-storage-pg` typed
 //!   verbs and sidecar generators (e.g. [`pg_sidecar`], [`PgMemorySidecar`],
-//!   [`ingest_fact`], [`append_derived_in_tx`], [`proxima_flavor`],
+//!   [`ingest_fact`], [`append_derived_with_edges_in_tx`], [`proxima_flavor`],
 //!   [`CitationSpec`]). These are deliberately surfaced
 //!   through the facade so a flavor or host can build typed sidecars, citations,
 //!   and ingest paths while **reducing or avoiding direct dependencies on
@@ -70,9 +70,9 @@ pub use proxima_core::verbs::schema::{
 pub use proxima_core::{
     AbstractionPayload, AccessScope, AuthPath, AuthzContext, CapabilitySet, CitationMappingPayload,
     CitedObjectPayload, Engine, EngineHandle, FactPayload, FactReceiptId, FlavorRegistry,
-    GoalPayload, GroupId, Identity, McpCallLogInput, McpCallLogOutcome, MemoryId, ModelId,
-    OperatorId, Owner, OwnerRef, PerspectivePayload, PromptVersion, Relation, Role, SchemaId,
-    SchemaVersion, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
+    GoalPayload, GroupId, Identity, InputContractId, McpCallLogInput, McpCallLogOutcome, MemoryId,
+    ModelId, OperatorId, Owner, OwnerRef, PerspectivePayload, PromptVersion, Relation, Role,
+    SchemaId, SchemaVersion, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
     SidecarPayload, SourceBatchId, StorageError, ToolId, ToolScope, UserId, canonical_json_bytes,
     provider_safe_tool_name, proxima_flavor,
 };
@@ -99,7 +99,7 @@ pub use proxima_storage_pg::sidecars::{
     PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture,
 };
 pub use proxima_storage_pg::verbs::derive_append::{
-    DerivedDraft, DerivedOutcome, append_derived_in_tx,
+    DerivedDraft, DerivedOutcome, append_derived_with_edges_in_tx,
 };
 
 pub use proxima_storage_pg::verbs::fact_embeddings::{

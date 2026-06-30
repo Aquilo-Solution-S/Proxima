@@ -8,9 +8,10 @@ use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
     AbstractionPayload, AgentDerivationV1, AgentNoteV1, AuthPath, AuthorshipKindMask, AuthzContext,
-    EdgeAuthorshipKind, EntityKind, EntityKindMask, ErrorCode, FlavorRegistry, MemoryId,
-    MemoryOperatorKind, Owner, OwnerRef, Relation, RelationClass, RelationDescriptor, SchemaId,
-    SchemaVersion, SidecarPayload, SourceBatchId, UserId,
+    CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind, EntityKindMask, ErrorCode,
+    FlavorRegistry, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner, OwnerRef,
+    Relation, RelationClass, RelationDescriptor, SchemaId, SchemaVersion, SidecarPayload,
+    SourceBatchId, UserId,
 };
 use uuid::Uuid;
 
@@ -49,7 +50,7 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
         proxima_core::EndpointBinding::Pin,
         EntityKindMask::abstraction(),
         EntityKindMask::abstraction(),
-        AuthorshipKindMask::external_agent(),
+        AuthorshipKindMask::operator_a_to_a(),
     ));
     let engine = proxima_core::Engine::new(registry.freeze())
         .with_storage_ports(Arc::new(pg.clone()).storage_ports())
@@ -78,7 +79,7 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
         source_memory_id: derived_memory_id,
         target_kind: EntityKind::Abstraction,
         target_memory_id: source_abstraction,
-        authorship_kind: EdgeAuthorshipKind::ExternalAgent,
+        authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
         authorship_owner_memory_id: Some(source_abstraction),
     }];
 
@@ -90,7 +91,10 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
             text: "derived body".into(),
             schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
             schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
-            operator_kind: MemoryOperatorKind::ExternalAgent,
+            operator_kind: MemoryOperatorKind::AtoA,
+            operator_id: OperatorId::new(Uuid::now_v7()),
+            input_contract_id: InputContractId::new(Uuid::now_v7()),
+            source_batch_id: None,
             model_id: "agent-model",
             prompt_version: "test-prompt",
             sidecar_payload,
@@ -150,6 +154,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
     let (pg, db_name) = fresh_pg().await;
 
     let owner = owner_fixture();
+    let source_abstraction = insert_source_abstraction(&pg, &owner).await?;
     let registry = FlavorRegistry::new();
     let engine = proxima_core::Engine::new(registry.freeze())
         .with_storage_ports(Arc::new(pg.clone()).storage_ports())
@@ -165,11 +170,24 @@ async fn engine_author_derived_supersedes_in_same_transaction()
         body: "old assertion body".into(),
         tags: vec!["assertion".into()],
         idempotency_key: Some("assertion-old".into()),
-        source_memory_ids: Vec::new(),
+        source_memory_ids: vec![source_abstraction.into_inner()],
         model_id: "agent-model".into(),
         client_name: "test-client".into(),
         client_version: "1".into(),
     });
+    let relation = engine
+        .registry()
+        .resolve_relation(CORE_DERIVED_FROM_RELATION)
+        .expect("core relation registered");
+    let old_edges = [proxima_core::AuthorDerivedEdgeInput {
+        relation,
+        source_kind: EntityKind::Abstraction,
+        source_memory_id: old_memory_id,
+        target_kind: EntityKind::Abstraction,
+        target_memory_id: source_abstraction,
+        authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
+        authorship_owner_memory_id: Some(source_abstraction),
+    }];
     let old = engine
         .author_derived(proxima_core::AuthorDerivedRequestInput {
             memory_id: old_memory_id,
@@ -178,27 +196,39 @@ async fn engine_author_derived_supersedes_in_same_transaction()
             text: "old assertion body".into(),
             schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
             schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
-            operator_kind: MemoryOperatorKind::ExternalAgent,
+            operator_kind: MemoryOperatorKind::AtoA,
+            operator_id: OperatorId::new(Uuid::now_v7()),
+            input_contract_id: InputContractId::new(Uuid::now_v7()),
+            source_batch_id: None,
             model_id: "agent-model",
             prompt_version: "test-prompt",
             sidecar_payload: old_sidecar,
             supersedes: None,
-            edges: &[],
+            edges: &old_edges,
         })
         .await?;
     assert_eq!(old.memory_id, old_memory_id);
-    assert_eq!(old.edge_count, 0);
+    assert_eq!(old.edge_count, 1);
 
     let new_sidecar = SidecarPayload::abstraction(AgentDerivationV1 {
         title: "New assertion".into(),
         body: "new assertion body".into(),
         tags: vec!["assertion".into()],
         idempotency_key: Some("assertion-new".into()),
-        source_memory_ids: Vec::new(),
+        source_memory_ids: vec![source_abstraction.into_inner()],
         model_id: "agent-model".into(),
         client_name: "test-client".into(),
         client_version: "1".into(),
     });
+    let new_edges = [proxima_core::AuthorDerivedEdgeInput {
+        relation,
+        source_kind: EntityKind::Abstraction,
+        source_memory_id: new_memory_id,
+        target_kind: EntityKind::Abstraction,
+        target_memory_id: source_abstraction,
+        authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
+        authorship_owner_memory_id: Some(source_abstraction),
+    }];
     let new = engine
         .author_derived(proxima_core::AuthorDerivedRequestInput {
             memory_id: new_memory_id,
@@ -207,16 +237,19 @@ async fn engine_author_derived_supersedes_in_same_transaction()
             text: "new assertion body".into(),
             schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
             schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
-            operator_kind: MemoryOperatorKind::ExternalAgent,
+            operator_kind: MemoryOperatorKind::AtoA,
+            operator_id: OperatorId::new(Uuid::now_v7()),
+            input_contract_id: InputContractId::new(Uuid::now_v7()),
+            source_batch_id: None,
             model_id: "agent-model",
             prompt_version: "test-prompt",
             sidecar_payload: new_sidecar,
             supersedes: Some(old_memory_id),
-            edges: &[],
+            edges: &new_edges,
         })
         .await?;
     assert_eq!(new.memory_id, new_memory_id);
-    assert_eq!(new.edge_count, 1);
+    assert_eq!(new.edge_count, 2);
 
     let stored_supersedes: Option<Uuid> =
         sqlx::query_scalar("SELECT supersedes FROM proxima_core.memories WHERE memory_id = $1")
@@ -360,16 +393,48 @@ async fn author_derived_authorized_enforces_intra_owner_same_kind_supersedes()
         );
 
         let same_owner_new_id = MemoryId::new(Uuid::now_v7());
+        let relation = engine
+            .registry()
+            .resolve_relation(CORE_DERIVED_FROM_RELATION)
+            .expect("core relation registered");
+        let same_owner_edges = [proxima_core::AuthorDerivedEdgeInput {
+            relation,
+            source_kind: EntityKind::Abstraction,
+            source_memory_id: same_owner_new_id,
+            target_kind: EntityKind::Abstraction,
+            target_memory_id: attacker_prior,
+            authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
+            authorship_owner_memory_id: Some(attacker_prior),
+        }];
         let same_owner = engine
             .author_derived_authorized(
                 &authz,
-                derived_authorized_request(
-                    same_owner_new_id,
-                    attacker,
-                    EntityKind::Abstraction,
-                    "same-owner successor",
-                    Some(attacker_prior),
-                ),
+                proxima_core::AuthorDerivedRequestInput {
+                    memory_id: same_owner_new_id,
+                    owner: attacker,
+                    kind: EntityKind::Abstraction,
+                    text: "same-owner successor".to_string(),
+                    schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
+                    schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+                    operator_kind: MemoryOperatorKind::AtoA,
+                    operator_id: OperatorId::new(Uuid::now_v7()),
+                    input_contract_id: InputContractId::new(Uuid::now_v7()),
+                    source_batch_id: None,
+                    model_id: "agent-model",
+                    prompt_version: "test-prompt",
+                    sidecar_payload: SidecarPayload::abstraction(AgentDerivationV1 {
+                        title: "same-owner successor".into(),
+                        body: "same-owner successor".into(),
+                        tags: Vec::new(),
+                        idempotency_key: None,
+                        source_memory_ids: vec![attacker_prior.into_inner()],
+                        model_id: "agent-model".into(),
+                        client_name: "test-client".into(),
+                        client_version: "1".into(),
+                    }),
+                    supersedes: Some(attacker_prior),
+                    edges: &same_owner_edges,
+                },
             )
             .await?;
         assert_eq!(same_owner.memory_id, same_owner_new_id);
@@ -448,6 +513,47 @@ async fn assert_embedding_row(
 }
 
 #[tokio::test]
+async fn author_derived_rejects_empty_operator_inputs() {
+    let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze());
+    let owner = owner_fixture();
+    let err = engine
+        .author_derived(proxima_core::AuthorDerivedRequestInput {
+            memory_id: MemoryId::new(Uuid::now_v7()),
+            owner,
+            kind: EntityKind::Abstraction,
+            text: "body".into(),
+            schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
+            schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+            operator_kind: MemoryOperatorKind::AtoA,
+            operator_id: OperatorId::new(Uuid::now_v7()),
+            input_contract_id: InputContractId::new(Uuid::now_v7()),
+            source_batch_id: None,
+            model_id: "test-model",
+            prompt_version: "test",
+            sidecar_payload: SidecarPayload::abstraction(AgentDerivationV1 {
+                title: "Derived".into(),
+                body: "Body".into(),
+                tags: Vec::new(),
+                idempotency_key: None,
+                source_memory_ids: Vec::new(),
+                model_id: "test-model".into(),
+                client_name: "test".into(),
+                client_version: "1".into(),
+            }),
+            supersedes: None,
+            edges: &[],
+        })
+        .await
+        .expect_err("operator derivation without declared input edges is invalid");
+
+    assert!(
+        err.to_string()
+            .contains("operator invocation inputs must be nonempty"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
 async fn ingest_fact_with_sidecar_writes_fact_and_note_sidecar()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
@@ -521,10 +627,15 @@ async fn insert_source_memory(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version)
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
          VALUES ($1, $2, $3, $4, 1, $5,
-                 $6, 'ExternalAgent', 'source-model',
-                 'source-prompt')",
+                 $6,
+                 CASE WHEN $5 = 'Perspective'::proxima_core.entity_kind
+                      THEN 'AtoP'::proxima_core.memory_operator_kind
+                      ELSE 'AtoA'::proxima_core.memory_operator_kind END,
+                 '00000000-0000-0000-0000-000000000201'::uuid,
+                 '00000000-0000-0000-0000-000000000202'::uuid,
+                 NULL, 'source-model', 'source-prompt')",
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -551,7 +662,10 @@ fn derived_authorized_request(
         text: title.to_string(),
         schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
-        operator_kind: MemoryOperatorKind::ExternalAgent,
+        operator_kind: MemoryOperatorKind::AtoA,
+        operator_id: OperatorId::new(Uuid::now_v7()),
+        input_contract_id: InputContractId::new(Uuid::now_v7()),
+        source_batch_id: None,
         model_id: "agent-model",
         prompt_version: "test-prompt",
         sidecar_payload: derivation_sidecar(kind, title),
