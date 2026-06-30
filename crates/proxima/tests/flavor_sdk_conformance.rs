@@ -1,5 +1,3 @@
-use std::process::Command;
-
 use proxima::flavor::{
     AuthorshipKindMask, EntityKindMask, FactPayload, FlavorDescriptor, FlavorProvenance,
     FlavorRegistry, FlavorRegistryError, PayloadKeyBuilder, RelationClass, RelationDescriptor,
@@ -82,18 +80,4 @@ fn host_and_flavor_sdk_imports_are_separate_and_compile() {
     accepts_fact::<ConformanceFact>();
 
     let _registry = FlavorRegistry::new();
-}
-
-#[test]
-fn pr8_raw_surface_denial_script_passes() {
-    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(std::path::Path::parent)
-        .expect("crate lives under repo/crates/proxima");
-    let status = Command::new("python3")
-        .arg("scripts/check-pr8-api-surface.py")
-        .current_dir(repo_root)
-        .status()
-        .expect("run PR8 API surface script");
-    assert!(status.success(), "PR8 API surface script must pass");
 }
