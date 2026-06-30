@@ -556,7 +556,7 @@ mod tests {
     // open-world — wrong for this closed substrate).
     #[test]
     fn every_core_tool_is_annotated() {
-        let registry = proxima_core::FlavorRegistry::new().freeze();
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
         for descriptor in registry.list_mcp_tools() {
             if descriptor.name.starts_with("core_") {
                 assert!(

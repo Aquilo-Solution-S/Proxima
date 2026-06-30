@@ -24,7 +24,7 @@ async fn fresh_pool() -> (sqlx::PgPool, String) {
         let _ = drop_db(&db_name).await;
         panic!("migration failed: {err}");
     }
-    (pg.pool().clone(), db_name)
+    (pg.pool_for_tests().clone(), db_name)
 }
 
 fn s3_config_for_dev() -> S3RuntimeConfig {

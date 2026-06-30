@@ -52,7 +52,7 @@ async fn replay_rejects_changed_operator_edge_set() -> Result<(), Box<dyn std::e
         let owner = owner_fixture();
         let source_a = insert_source_abstraction(&pg, &owner, "replay-edge-a").await?;
         let source_b = insert_source_abstraction(&pg, &owner, "replay-edge-b").await?;
-        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze())
+        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let memory_id = MemoryId::new(Uuid::now_v7());
         let operator_id = OperatorId::new(Uuid::now_v7());
@@ -101,7 +101,7 @@ async fn replay_rejects_omitted_operator_edge_set() -> Result<(), Box<dyn std::e
         let owner = owner_fixture();
         let source_a = insert_source_abstraction(&pg, &owner, "replay-omit-a").await?;
         let source_b = insert_source_abstraction(&pg, &owner, "replay-omit-b").await?;
-        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze())
+        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let memory_id = MemoryId::new(Uuid::now_v7());
         let operator_id = OperatorId::new(Uuid::now_v7());
@@ -151,7 +151,7 @@ async fn replay_rejects_persisted_wrong_operator_authorship_edge()
         let source_a = insert_source_abstraction(&pg, &owner, "replay-wrong-auth-a").await?;
         let fact_batch = SourceBatchId::new(Uuid::now_v7());
         let fact = insert_fact(&pg, &owner, fact_batch, true, "replay-wrong-auth-fact").await?;
-        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze())
+        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let memory_id = MemoryId::new(Uuid::now_v7());
         let operator_id = OperatorId::new(Uuid::now_v7());
@@ -183,7 +183,7 @@ async fn replay_rejects_persisted_wrong_operator_authorship_edge()
         .bind(fact.into_inner())
         .bind(owner_kind)
         .bind(owner_id)
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
 
         let err = author_test_abstraction(
@@ -218,7 +218,7 @@ async fn author_derived_rejects_extra_same_output_wrong_operator_authorship()
         let source_a = insert_source_abstraction(&pg, &owner, "wrong-auth-proof-a").await?;
         let fact_batch = SourceBatchId::new(Uuid::now_v7());
         let fact = insert_fact(&pg, &owner, fact_batch, true, "wrong-auth-extra-fact").await?;
-        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze())
+        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let relation = engine
             .registry()
@@ -305,7 +305,7 @@ async fn ftoa_requires_closed_matching_batch_and_conflicts_on_distinct_output()
         let owner = owner_fixture();
         let open_batch = SourceBatchId::new(Uuid::now_v7());
         let open_fact = insert_fact(&pg, &owner, open_batch, false, "open-ftoa").await?;
-        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze())
+        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let operator_id = OperatorId::new(Uuid::now_v7());
         let input_contract_id = InputContractId::new(Uuid::now_v7());
@@ -393,7 +393,7 @@ async fn graph_fixture_flags_invalid_atogoal_fact_target() -> Result<(), Box<dyn
         .bind(request_id)
         .bind(OperatorId::new(Uuid::now_v7()).into_inner())
         .bind(InputContractId::new(Uuid::now_v7()).into_inner())
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.edges
@@ -407,9 +407,9 @@ async fn graph_fixture_flags_invalid_atogoal_fact_target() -> Result<(), Box<dyn
         .bind(fact.into_inner())
         .bind(owner_kind)
         .bind(owner_id)
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
-        let violations = collect_memory_graph_violations(pg.pool()).await?;
+        let violations = collect_memory_graph_violations(pg.pool_for_tests()).await?;
         assert!(
             violations
                 .iter()
@@ -525,7 +525,7 @@ async fn insert_source_abstraction(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(label)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(MemoryId::new(memory_id))
 }
@@ -551,7 +551,7 @@ async fn insert_fact(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(closed)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.fact_receipts
@@ -563,7 +563,7 @@ async fn insert_fact(
     .bind(source_batch_id.into_inner())
     .bind(owner_kind)
     .bind(owner_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.memories
@@ -574,7 +574,7 @@ async fn insert_fact(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(receipt_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(MemoryId::new(memory_id))
 }

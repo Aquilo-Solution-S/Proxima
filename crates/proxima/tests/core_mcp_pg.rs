@@ -2,15 +2,15 @@ use proxima_core::storage_ports::*;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use proxima::flavor::{FlavorBundle, NamedMigrator, PgSidecarRegistry};
 use proxima::{
-    AccessScope, AppInfo, AuthPath, AuthzContext, CoreMcpError, CoreMcpErrorKind, CoreMcpTools,
-    FlavorApp, FlavorBundle, NamedMigrator, PgSidecarRegistry, Proxima, StorageError, ToolScope,
-    company_owner,
+    AppInfo, AuthzContext, CoreMcpError, CoreMcpErrorKind, CoreMcpTools, FlavorApp, Proxima,
+    StorageError, ToolScope, company_owner,
 };
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
-    CitationMappingPayload, CitedObjectPayload, FlavorRegistry, GroupId, MemoryId, Owner, OwnerRef,
-    Relation, Role, SchemaId, UserId, all_core_resources,
+    AccessScope, AuthPath, CitationMappingPayload, CitedObjectPayload, FlavorRegistry, GroupId,
+    MemoryId, Owner, OwnerRef, Relation, Role, SchemaId, UserId, all_core_resources,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
@@ -112,7 +112,9 @@ impl PgCitationMappingSidecar for TestCitationMapping {
 }
 
 impl FlavorBundle for EmptyApp {
-    fn register(_registry: &mut FlavorRegistry) {}
+    fn register(_registry: &mut FlavorRegistry) -> Result<(), proxima_core::FlavorRegistryError> {
+        Ok(())
+    }
 
     fn migrators() -> Vec<NamedMigrator> {
         Vec::new()
@@ -130,9 +132,10 @@ impl FlavorApp for EmptyApp {
 }
 
 impl FlavorBundle for AgentMemoryApp {
-    fn register(registry: &mut FlavorRegistry) {
-        registry.add_cited_object_schema::<TestCitedObject>();
-        registry.add_citation_mapping_schema::<TestCitationMapping>();
+    fn register(registry: &mut FlavorRegistry) -> Result<(), proxima_core::FlavorRegistryError> {
+        registry.try_add_cited_object_schema::<TestCitedObject>()?;
+        registry.try_add_citation_mapping_schema::<TestCitationMapping>()?;
+        Ok(())
     }
 
     fn register_pg_sidecars(registry: &mut PgSidecarRegistry) {
@@ -940,7 +943,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             .embed_client(test_embedding())
             .build()
             .await?;
-        create_citation_sidecars(&built.pool).await?;
+        create_citation_sidecars(built.pool_for_tests()).await?;
         let tools = built.core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
 
@@ -976,7 +979,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
               WHERE cm.memory_id = $1",
         )
         .bind(fact_id)
-        .fetch_one(&built.pool)
+        .fetch_one(built.pool_for_tests())
         .await?;
 
         let citing = call_test_model_tool(

@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn default_substrate_tools_classify_as_substrate() {
-        let registry = FlavorRegistry::new().freeze();
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
 
         for desc in registry.list_mcp_tools() {
             assert!(
@@ -152,7 +152,7 @@ mod tests {
             authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: None,
             mode: OutputMode::PrefixedIds,
-            registry: Arc::new(FlavorRegistry::new().freeze()),
+            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "test".into(),
                 client_name: "test".into(),

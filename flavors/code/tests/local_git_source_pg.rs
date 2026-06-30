@@ -16,10 +16,14 @@
 mod common;
 
 use common::{git, migrated_db, test_owner, write_file};
-use proxima_code::{CodeChunkV1, FileRevisionV1, FileState, LocalGitSource, build_engine};
+use proxima_code::testkit::build_engine;
+use proxima_code::{
+    CodeChunkV1, CodeFlavorStore, CodeIngestContext, FileRevisionV1, FileState, LocalGitSource,
+};
 use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
 use proxima_core::{
-    AbstractionPayload, CORE_DERIVED_FROM_RELATION, FactPayload, Owner, SchemaId, SchemaVersion,
+    AbstractionPayload, AuthPath, AuthzContext, CORE_DERIVED_FROM_RELATION, FactPayload, Owner,
+    SchemaId, SchemaVersion,
 };
 use proxima_pg_testkit::drop_db;
 use sqlx::Row;
@@ -133,17 +137,20 @@ async fn local_git_source_full_cycle() {
         let owner = test_owner();
 
         let engine = build_engine(pg.clone());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+        let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
 
         // Phase 1 — initial index.
         let repo = fixture_repo();
         let repo_id = Uuid::now_v7();
         let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner);
         let cursor = proxima_core::Cursor::empty();
-        let (r1, cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
+        let (r1, cursor) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
         assert!(r1.commits_emitted >= 1, "expected at least one commit");
         assert!(r1.files_present_emitted >= 3, "expected ≥3 file-revisions");
         assert!(r1.chunks_emitted >= 3, "expected ≥3 chunks");
-        let chunks_after_initial = count_present_chunks(pg.pool(), &owner, repo_id).await;
+        let chunks_after_initial = count_present_chunks(pg.pool_for_tests(), &owner, repo_id).await;
         assert!(chunks_after_initial >= 3);
 
         // Provenance proof — code chunks are derived code-slice
@@ -174,7 +181,7 @@ async fn local_git_source_full_cycle() {
         )
         .bind(repo_id)
         .bind(CORE_DERIVED_FROM_RELATION)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert!(linkage.0 > 0, "expected at least one chunk for src/lib.rs");
         assert_eq!(
@@ -224,7 +231,7 @@ async fn local_git_source_full_cycle() {
         git(repo.path(), &["add", "src/lib.rs"]);
         git(repo.path(), &["commit", "-q", "-m", "expand lib"]);
 
-        let (r2, cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
+        let (r2, cursor) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
         // One new commit ("expand lib") → one batch with one
         // file-revision Fact (src/lib.rs) and its chunks. README.md
         // and main.ts aren't in this commit's diff, so they aren't
@@ -245,7 +252,7 @@ async fn local_git_source_full_cycle() {
                        AND m2.created_at > m.created_at)",
         )
         .bind(repo_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         let new_hash = blake3::hash(
             "pub fn hello() -> &'static str {\n    \"hello, world\"\n}\n\n\
@@ -292,9 +299,10 @@ async fn local_git_source_full_cycle() {
         git(repo.path(), &["add", "-A"]);
         git(repo.path(), &["commit", "-q", "-m", "drop main.ts"]);
 
-        let (r3, cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
+        let (r3, cursor) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
         assert!(r3.files_tombstoned >= 1, "expected tombstone for main.ts");
-        let main_state = fetch_file_revision_state(pg.pool(), &owner, repo_id, "src/main.ts").await;
+        let main_state =
+            fetch_file_revision_state(pg.pool_for_tests(), &owner, repo_id, "src/main.ts").await;
         assert_eq!(main_state, Some(FileState::Tombstone));
 
         // ----------------------------------------------------------------
@@ -307,10 +315,11 @@ async fn local_git_source_full_cycle() {
         git(repo.path(), &["add", "-A"]);
         git(repo.path(), &["commit", "-q", "-m", "rename README"]);
 
-        let (_r4, cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
-        let old_state = fetch_file_revision_state(pg.pool(), &owner, repo_id, "README.md").await;
+        let (_r4, cursor) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
+        let old_state =
+            fetch_file_revision_state(pg.pool_for_tests(), &owner, repo_id, "README.md").await;
         let new_state =
-            fetch_file_revision_state(pg.pool(), &owner, repo_id, "docs/README.md").await;
+            fetch_file_revision_state(pg.pool_for_tests(), &owner, repo_id, "docs/README.md").await;
         assert_eq!(old_state, Some(FileState::Tombstone));
         assert_eq!(new_state, Some(FileState::Present));
 
@@ -324,7 +333,7 @@ async fn local_git_source_full_cycle() {
                AND s.state = 'Present'",
         )
         .bind(repo_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert!(
             md_chunk_count.0 >= 1,
@@ -334,7 +343,7 @@ async fn local_git_source_full_cycle() {
         // ----------------------------------------------------------------
         // Re-running index without changes must be idempotent (no new
         // emissions, all unchanged).
-        let (r_idem, _cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
+        let (r_idem, _cursor) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
         assert_eq!(
             r_idem.files_present_emitted, 0,
             "idempotent reindex emitted files"
@@ -370,7 +379,10 @@ async fn polyglot_markdown_emits_file_revision_and_fallback_chunks() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
-        let _engine = build_engine(pg.clone());
+        let engine = build_engine(pg.clone());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+        let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
 
         let dir = TempDir::new()?;
         git(dir.path(), &["init", "-q", "-b", "main"]);
@@ -384,10 +396,10 @@ async fn polyglot_markdown_emits_file_revision_and_fallback_chunks() {
         let repo_id = Uuid::now_v7();
         let source = LocalGitSource::new(repo_id, dir.path().to_path_buf(), owner);
         let cursor = proxima_core::Cursor::empty();
-        let (report, _cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
+        let (report, _cursor) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
         assert!(report.files_present_emitted >= 1);
 
-        let state = fetch_file_revision_state(pg.pool(), &owner, repo_id, "doc.md").await;
+        let state = fetch_file_revision_state(pg.pool_for_tests(), &owner, repo_id, "doc.md").await;
         assert_eq!(state, Some(FileState::Present));
 
         // Markdown lacks a tree-sitter grammar in our deps → fallback
@@ -400,7 +412,7 @@ async fn polyglot_markdown_emits_file_revision_and_fallback_chunks() {
              LIMIT 1",
         )
         .bind(repo_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(row.0, "file");
 

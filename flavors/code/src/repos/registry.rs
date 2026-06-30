@@ -1,10 +1,9 @@
+#![allow(dead_code)]
+
 use super::records::{RepoEraseReceipt, RepoRecord, RepoRegistryError};
 use super::rows::RepoRow;
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
-use proxima_core::{EntityKind, Owner, sidecar_tables};
-use proxima_storage_pg::verbs::hard_delete::{
-    HardDeleteSet, HardDeleteSidecars, execute_hard_delete,
-};
+use proxima_core::Owner;
+use proxima_core::verbs::schema::SchemaInfo;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -173,418 +172,22 @@ pub async fn delete_repo(
     Ok(result.rows_affected() > 0)
 }
 
-/// Hard-delete one repo's code-flavor data for a clear reingestion.
-///
-/// This is intentionally explicit rather than FK-cascade based: cited
-/// objects and source batches are substrate rows and are deleted only
-/// when no remaining rows reference them after the repo-scoped data is
-/// removed.
+/// Repo erase is deferred to the PR9 compliance erase port.
 ///
 /// # Errors
 /// Returns `RepoRegistryError::NotFound` if the repo is not registered
-/// for `owner`; `RepoRegistryError::Database` on database failures;
-/// `RepoRegistryError::Storage` on shared hard-delete failures.
-#[allow(clippy::too_many_lines)]
+/// for `owner`; otherwise returns `RepoRegistryError::Storage` until
+/// the compliance-owned erase port lands.
 pub async fn erase_repo(
     pool: &PgPool,
     owner: &Owner,
     repo_id: Uuid,
-    schemas: &[SchemaInfo],
+    _schemas: &[SchemaInfo],
 ) -> Result<RepoEraseReceipt, RepoRegistryError> {
     let (kind, principal_id) = owner.columns();
-    let mut tx = pool.begin().await?;
-
     let exists: Option<(Uuid,)> = sqlx::query_as(
         "SELECT repo_id \
          FROM proxima_code.repos \
-         WHERE owner_kind = $1 \
-           AND owner_id = $2 \
-           AND repo_id = $3 \
-         FOR UPDATE",
-    )
-    .bind(kind)
-    .bind(principal_id)
-    .bind(repo_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    if exists.is_none() {
-        tx.rollback().await?;
-        return Err(RepoRegistryError::NotFound { repo_id });
-    }
-
-    sqlx::query("SET CONSTRAINTS ALL DEFERRED")
-        .execute(&mut *tx)
-        .await?;
-
-    sqlx::query(
-        "CREATE TEMP TABLE tmp_proxima_repo_facts \
-            (memory_id uuid PRIMARY KEY) ON COMMIT DROP",
-    )
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "INSERT INTO tmp_proxima_repo_facts (memory_id) \
-         SELECT m.memory_id \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.commit_v1 s USING (memory_id) \
-         WHERE EXISTS ( \
-                   SELECT 1 \
-                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-                    WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_kind = $1 \
-                      AND eo.owner_id = $2 \
-               ) \
-           AND s.repo_id = $3 \
-         UNION \
-         SELECT m.memory_id \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.file_revision_v1 s USING (memory_id) \
-         WHERE EXISTS ( \
-                   SELECT 1 \
-                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-                    WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_kind = $1 \
-                      AND eo.owner_id = $2 \
-               ) \
-           AND s.repo_id = $3 \
-         UNION \
-         SELECT m.memory_id \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.work_requested_v1 s USING (memory_id) \
-         WHERE EXISTS ( \
-                   SELECT 1 \
-                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-                    WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_kind = $1 \
-                      AND eo.owner_id = $2 \
-               ) \
-           AND s.repo_id = $3 \
-         UNION \
-         SELECT m.memory_id \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.test_requested_v1 s USING (memory_id) \
-         WHERE EXISTS ( \
-                   SELECT 1 \
-                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-                    WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_kind = $1 \
-                      AND eo.owner_id = $2 \
-               ) \
-           AND s.repo_id = $3 \
-         UNION \
-         SELECT m.memory_id \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.acceptance_criteria_v1 s USING (memory_id) \
-         JOIN proxima_code.work_requested_v1 r \
-           ON r.memory_id = s.work_item_memory_id \
-         WHERE EXISTS ( \
-                   SELECT 1 \
-                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-                    WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_kind = $1 \
-                      AND eo.owner_id = $2 \
-               ) \
-           AND r.repo_id = $3 \
-         UNION \
-         SELECT m.memory_id \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.execution_result_v1 s USING (memory_id) \
-         WHERE EXISTS ( \
-                   SELECT 1 \
-                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-                    WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_kind = $1 \
-                      AND eo.owner_id = $2 \
-               ) \
-           AND s.repo_id = $3 \
-         UNION \
-         SELECT m.memory_id \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.test_result_v1 s USING (memory_id) \
-         WHERE EXISTS ( \
-                   SELECT 1 \
-                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-                    WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_kind = $1 \
-                      AND eo.owner_id = $2 \
-               ) \
-           AND s.repo_id = $3 \
-         UNION \
-         SELECT m.memory_id \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.acceptance_verification_v1 s USING (memory_id) \
-         JOIN proxima_core.memories wi ON wi.memory_id = s.work_item_memory_id \
-         LEFT JOIN proxima_code.work_requested_v1 wr ON wr.memory_id = wi.memory_id \
-         LEFT JOIN proxima_code.test_requested_v1 tr ON tr.memory_id = wi.memory_id \
-         WHERE EXISTS ( \
-                   SELECT 1 \
-                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-                    WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_kind = $1 \
-                      AND eo.owner_id = $2 \
-               ) \
-           AND COALESCE(wr.repo_id, tr.repo_id) = $3",
-    )
-    .bind(kind)
-    .bind(principal_id)
-    .bind(repo_id)
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "CREATE TEMP TABLE tmp_proxima_repo_abstractions \
-            (memory_id uuid PRIMARY KEY) ON COMMIT DROP",
-    )
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "INSERT INTO tmp_proxima_repo_abstractions (memory_id) \
-         SELECT m.memory_id \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
-         WHERE EXISTS ( \
-                   SELECT 1 \
-                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-                    WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_kind = $1 \
-                      AND eo.owner_id = $2 \
-               ) \
-           AND s.repo_id = $3 \
-         UNION \
-         SELECT m.memory_id \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.commit_summary_v1 s USING (memory_id) \
-         WHERE EXISTS ( \
-                   SELECT 1 \
-                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-                    WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_kind = $1 \
-                      AND eo.owner_id = $2 \
-               ) \
-           AND s.repo_id = $3 \
-         UNION \
-         SELECT m.memory_id \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.execution_plan_v1 s USING (memory_id) \
-         WHERE EXISTS ( \
-                   SELECT 1 \
-                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-                    WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_kind = $1 \
-                      AND eo.owner_id = $2 \
-               ) \
-           AND s.repo_id = $3 \
-         UNION \
-         SELECT m.memory_id \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.acceptance_summary_v1 s USING (memory_id) \
-         WHERE EXISTS ( \
-                   SELECT 1 \
-                     FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-                    WHERE eo.entity_id = m.memory_id \
-                      AND eo.owner_kind = $1 \
-                      AND eo.owner_id = $2 \
-               ) \
-           AND s.repo_id = $3",
-    )
-    .bind(kind)
-    .bind(principal_id)
-    .bind(repo_id)
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "CREATE TEMP TABLE tmp_proxima_repo_memories \
-            (memory_id uuid PRIMARY KEY) ON COMMIT DROP",
-    )
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "INSERT INTO tmp_proxima_repo_memories (memory_id) \
-         SELECT memory_id FROM tmp_proxima_repo_facts \
-         UNION \
-         SELECT memory_id FROM tmp_proxima_repo_abstractions",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "CREATE TEMP TABLE tmp_proxima_repo_receipts \
-            (receipt_id bytea PRIMARY KEY, source_batch_id uuid NOT NULL) ON COMMIT DROP",
-    )
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "INSERT INTO tmp_proxima_repo_receipts (receipt_id, source_batch_id) \
-         SELECT e.receipt_id, e.source_batch_id \
-         FROM proxima_core.fact_receipts e \
-         JOIN proxima_core.memories m ON m.receipt_id = e.receipt_id \
-         JOIN tmp_proxima_repo_facts f ON f.memory_id = m.memory_id",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "CREATE TEMP TABLE tmp_proxima_repo_batches \
-            (batch_id uuid PRIMARY KEY) ON COMMIT DROP",
-    )
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "INSERT INTO tmp_proxima_repo_batches (batch_id) \
-         SELECT DISTINCT source_batch_id FROM tmp_proxima_repo_receipts",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "CREATE TEMP TABLE tmp_proxima_repo_citation_mappings \
-            (citation_mapping_id uuid PRIMARY KEY, cited_object_id uuid NOT NULL) ON COMMIT DROP",
-    )
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "INSERT INTO tmp_proxima_repo_citation_mappings \
-            (citation_mapping_id, cited_object_id) \
-         SELECT cm.citation_mapping_id, cm.cited_object_id \
-         FROM proxima_core.citation_mappings cm \
-         JOIN tmp_proxima_repo_facts f ON f.memory_id = cm.memory_id",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "CREATE TEMP TABLE tmp_proxima_repo_cited_objects \
-            (cited_object_id uuid PRIMARY KEY) ON COMMIT DROP",
-    )
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "INSERT INTO tmp_proxima_repo_cited_objects (cited_object_id) \
-         SELECT DISTINCT cited_object_id FROM tmp_proxima_repo_citation_mappings",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "CREATE TEMP TABLE tmp_proxima_repo_edges \
-            (edge_id uuid PRIMARY KEY) ON COMMIT DROP",
-    )
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "INSERT INTO tmp_proxima_repo_edges (edge_id) \
-         SELECT e.edge_id \
-         FROM proxima_core.edges e \
-         WHERE ( \
-                e.source_memory_id IN (SELECT memory_id FROM tmp_proxima_repo_memories) \
-             OR e.target_memory_id IN (SELECT memory_id FROM tmp_proxima_repo_memories) \
-             OR e.authorship_owner_memory_id IN (SELECT memory_id FROM tmp_proxima_repo_memories) \
-           )",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    let mut receipt = RepoEraseReceipt {
-        repo_id,
-        completed_at: time::OffsetDateTime::now_utc(),
-        facts_deleted: 0,
-        abstractions_deleted: 0,
-        edges_deleted: 0,
-        embeddings_deleted: 0,
-        receipts_deleted: 0,
-        citation_mappings_deleted: 0,
-        cited_objects_deleted: 0,
-        source_batches_deleted: 0,
-        repo_record_deleted: false,
-    };
-
-    receipt.facts_deleted = count_temp_rows(&mut tx, "tmp_proxima_repo_facts").await?;
-    receipt.abstractions_deleted =
-        count_temp_rows(&mut tx, "tmp_proxima_repo_abstractions").await?;
-
-    sqlx::query(
-        "DELETE FROM proxima_core.change_event \
-         WHERE entity_memory_id IN (SELECT memory_id FROM tmp_proxima_repo_memories) \
-            OR edge_id IN (SELECT edge_id FROM tmp_proxima_repo_edges)",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    let fact_ids = sqlx::query_scalar::<_, Uuid>("SELECT memory_id FROM tmp_proxima_repo_facts")
-        .fetch_all(&mut *tx)
-        .await?;
-    let abstraction_ids =
-        sqlx::query_scalar::<_, Uuid>("SELECT memory_id FROM tmp_proxima_repo_abstractions")
-            .fetch_all(&mut *tx)
-            .await?;
-    let edge_ids = sqlx::query_scalar::<_, Uuid>("SELECT edge_id FROM tmp_proxima_repo_edges")
-        .fetch_all(&mut *tx)
-        .await?;
-    let receipt_ids =
-        sqlx::query_scalar::<_, Vec<u8>>("SELECT receipt_id FROM tmp_proxima_repo_receipts")
-            .fetch_all(&mut *tx)
-            .await?;
-
-    let mut memories = Vec::new();
-    memories.extend(fact_ids.into_iter().map(|id| (EntityKind::Fact, id)));
-    memories.extend(
-        abstraction_ids
-            .into_iter()
-            .map(|id| (EntityKind::Abstraction, id)),
-    );
-    let set = HardDeleteSet {
-        memories,
-        edge_ids,
-        fact_entity_ids: Vec::new(),
-        receipt_ids,
-    };
-
-    let mut memory_keyed = sidecar_tables(schemas, PayloadKind::Fact);
-    memory_keyed.extend(sidecar_tables(schemas, PayloadKind::Abstraction));
-    memory_keyed.sort();
-    memory_keyed.dedup();
-    let edge_keyed = sidecar_tables(schemas, PayloadKind::Edge);
-    let citation_mapping_keyed = sidecar_tables(schemas, PayloadKind::CitationMapping);
-    let sidecars = HardDeleteSidecars {
-        memory_keyed: &memory_keyed,
-        edge_keyed: &edge_keyed,
-        citation_mapping_keyed: &citation_mapping_keyed,
-    };
-
-    let counts = execute_hard_delete(&mut tx, &set, &sidecars).await?;
-    receipt.edges_deleted = counts.edges;
-    receipt.embeddings_deleted = counts.embeddings;
-    receipt.citation_mappings_deleted = counts.citation_mappings;
-    receipt.receipts_deleted = counts.receipts;
-
-    receipt.source_batches_deleted = sqlx::query(
-        "DELETE FROM proxima_core.source_batches sb \
-         WHERE sb.id IN (SELECT batch_id FROM tmp_proxima_repo_batches) \
-           AND NOT EXISTS ( \
-               SELECT 1 FROM proxima_core.fact_receipts e WHERE e.source_batch_id = sb.id \
-           )",
-    )
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
-
-    receipt.cited_objects_deleted = sqlx::query(
-        "DELETE FROM proxima_core.cited_objects co \
-         WHERE co.cited_object_id IN ( \
-             SELECT cited_object_id FROM tmp_proxima_repo_cited_objects \
-         ) \
-           AND NOT EXISTS ( \
-               SELECT 1 FROM proxima_core.citation_mappings cm \
-               WHERE cm.cited_object_id = co.cited_object_id \
-           )",
-    )
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
-
-    receipt.repo_record_deleted = sqlx::query(
-        "DELETE FROM proxima_code.repos \
          WHERE owner_kind = $1 \
            AND owner_id = $2 \
            AND repo_id = $3",
@@ -592,22 +195,16 @@ pub async fn erase_repo(
     .bind(kind)
     .bind(principal_id)
     .bind(repo_id)
-    .execute(&mut *tx)
-    .await?
-    .rows_affected()
-        > 0;
+    .fetch_optional(pool)
+    .await?;
+    if exists.is_none() {
+        return Err(RepoRegistryError::NotFound { repo_id });
+    }
 
-    tx.commit().await?;
-    Ok(receipt)
-}
-
-async fn count_temp_rows(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    table: &str,
-) -> Result<u64, sqlx::Error> {
-    let sql = format!("SELECT COUNT(*)::bigint FROM {table}");
-    let count: i64 = sqlx::query_scalar(&sql).fetch_one(&mut **tx).await?;
-    Ok(u64::try_from(count).unwrap_or(0))
+    Err(proxima_core::StorageError::ConstraintViolation(
+        "repo erase is deferred to PR9 compliance erase ports".into(),
+    )
+    .into())
 }
 
 /// Look up a single repo record by `(owner, repo_id)`.

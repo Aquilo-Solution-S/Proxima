@@ -171,7 +171,7 @@ sidecar registry.
 Preferred direct row mapping:
 
 ```rust
-proxima::pg_sidecar! {
+proxima::flavor::pg_sidecar! {
     payload: DocumentFiledV1,
     row: DocumentFiledRow,
     kinds: [Fact],
@@ -243,17 +243,19 @@ impl PgMemorySidecar for DocumentFiledV1 {
 }
 
 impl PgMemoryPayload for DocumentFiledV1 {
-    fn load_memory_payload(pool: &sqlx::PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_> {
+    fn load_memory_payload(
+        ctx: PgSidecarReadCtx<'_>,
+        memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async move {
-            let row: Option<(String, String)> = sqlx::query_as(
-                "SELECT source_path, title
-                   FROM embedded_minimal.document_filed_v1
-                  WHERE memory_id = $1",
-            )
-            .bind(memory_id.into_inner())
-            .fetch_optional(pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            let row: Option<(String, String)> = ctx
+                .fetch_optional_by_memory_id(
+                    "SELECT source_path, title
+                       FROM embedded_minimal.document_filed_v1
+                      WHERE memory_id = $1",
+                    memory_id,
+                )
+                .await?;
             Ok(row.map(|(source_path, title)| {
                 SidecarPayload::fact(DocumentFiledV1 { source_path, title })
             }))
@@ -261,6 +263,10 @@ impl PgMemoryPayload for DocumentFiledV1 {
     }
 }
 ```
+
+`PgSidecarReadCtx` never exposes `sqlx::PgPool`; manual readback may use
+its memory-id-bound sidecar query helpers. Do not reference
+`proxima_core.*` from sidecar read SQL.
 
 Storage dispatches typed `SidecarPayload`. Protocol adapters serialize
 only at MCP/protocol output.
@@ -329,21 +335,25 @@ let authorized = engine.authorize_fact_with_citation(
     mapping,
 )?;
 let fact_sidecar = fact_payload.clone();
-proxima::ingest_fact_with_citation_atomic(
-    pool,
-    pg_sidecars,
-    &authorized,
-    embedding_model_id,
-    move |tx, outcome| {
-        Box::pin(async move {
-            fact_sidecar
-                .insert_memory_sidecar(tx, outcome.memory_id)
-                .await
-        })
-    },
-)
-.await?;
+engine
+    .ingest_authorized_fact_with_sidecar(
+        authz,
+        authorized,
+        embedding_model_id,
+        move |tx, outcome| {
+            Box::pin(async move {
+                fact_sidecar
+                    .insert_memory_sidecar(tx, outcome.memory_id)
+                    .await
+            })
+        },
+    )
+    .await?;
 ```
+
+The SDK surface receives Engine admission witnesses and typed sidecar
+contexts. It never receives `sqlx::PgPool`; backend adapters keep the
+pool private.
 
 Typed path guarantees:
 
@@ -366,7 +376,7 @@ messages; use typed `InlineCitedObjectDraft` +
 `src/lib.rs`:
 
 ```rust
-proxima_core::proxima_flavor! {
+proxima::flavor::proxima_flavor! {
     name = "embedded-minimal",
     display_name = "Embedded Minimal Example",
     fact_schemas = [DocumentFiledV1],
@@ -393,11 +403,11 @@ One public bundle type per flavor:
 pub struct EmbeddedMinimalFlavor;
 
 impl FlavorBundle for EmbeddedMinimalFlavor {
-    fn register(registry: &mut FlavorRegistry) {
-        self::register(registry);
+    fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+        self::register(registry)
     }
 
-    fn register_pg_sidecars(registry: &mut proxima::PgSidecarRegistry) {
+    fn register_pg_sidecars(registry: &mut proxima::flavor::PgSidecarRegistry) {
         registry.add_fact::<DocumentFiledV1>();
     }
 
@@ -413,8 +423,8 @@ Composite app:
 type LinkedFlavors = (proxima_code::CodeFlavor,);
 
 impl FlavorBundle for HostApp {
-    fn register(registry: &mut FlavorRegistry) {
-        <LinkedFlavors as FlavorBundle>::register(registry);
+    fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+        <LinkedFlavors as FlavorBundle>::register(registry)
     }
 
     fn register_pg_sidecars(registry: &mut PgSidecarRegistry) {
@@ -458,10 +468,12 @@ Tool contract:
 | Name | provider-safe `<flavor_id>_<verb>` |
 | Args | `Deserialize + JsonSchema` |
 | Output | `Serialize` |
-| Storage | use typed engine/storage APIs; avoid raw `PgPool` except flavor-local read helpers |
+| Context | `ToolCtx`: Owner, AuthzContext, frozen registry, optional Engine, typed ToolServices |
+| Storage | use typed engine/storage APIs and flavor services; no public raw `PgPool` capability |
 | Writes | emit typed Facts / A/P / Goals / Edges through registered schemas |
 
-MCP JSON is protocol boundary only. Convert to typed payloads immediately.
+MCP JSON is protocol boundary only. Flavor SDK tool code targets `Tool`;
+MCP is an adapter projection.
 
 ## Tests
 

@@ -175,7 +175,7 @@ async fn close_batch_idempotent_and_owner_scoped() {
         let (closed_at,): (Option<time::OffsetDateTime>,) =
             sqlx::query_as("SELECT closed_at FROM proxima_core.source_batches WHERE id = $1")
                 .bind(batch_id.into_inner())
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert!(closed_at.is_some());
 

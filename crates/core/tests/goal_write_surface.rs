@@ -97,7 +97,7 @@ fn product_goal_create_request_defaults_to_user_authorship_and_explicit_self_tar
 
 #[test]
 fn goal_wake_tool_id_requires_leaf_scope_for_grouped_core_tools() {
-    let registry = FlavorRegistry::new().freeze();
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
 
     let err = GoalWakeToolId::parse("core_goal", &registry)
         .expect_err("grouped action-dispatch tool requires an exact leaf scope key");
@@ -114,7 +114,7 @@ fn goal_wake_tool_id_requires_leaf_scope_for_grouped_core_tools() {
 
 #[test]
 fn goal_wake_config_normalizes_tool_ids_and_rejects_duplicate_hard_memory() {
-    let registry = FlavorRegistry::new().freeze();
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let search = GoalWakeToolId::parse("core_search_memories", &registry).expect("valid tool");
     let goal_set = GoalWakeToolId::parse("core_goal:set", &registry).expect("valid leaf action");
     let hard_memory = MemoryId::new(uuid::Uuid::now_v7());

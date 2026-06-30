@@ -53,8 +53,8 @@ relations are build-time vocabulary.
 ## Registration Mechanism
 
 Every composite binary creates `FlavorRegistry::new()`, calls each linked
-flavor's generated `register(&mut FlavorRegistry)`, then calls
-`freeze()`. Freeze-time failure is startup failure.
+flavor's generated `register(&mut FlavorRegistry) -> Result<(), FlavorRegistryError>`,
+then calls `try_freeze()`. Registry failure is typed startup failure.
 
 Core registers substrate schemas, core GoalPayload schemas, Goal
 lifecycle Fact schemas, core relation descriptors, and substrate MCP
@@ -64,7 +64,12 @@ their own descriptors through `proxima_flavor!`.
 <a id="macro-surface"></a>
 ## Macro Surface
 
-`proxima_flavor!` emits one `register(&mut FlavorRegistry)` function.
+`proxima_flavor!` emits one fallible registration function:
+
+```rust
+pub fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError>;
+```
+
 Supported keys:
 
 | Key | Contract |
@@ -82,12 +87,22 @@ Supported keys:
 | `opaque_citation_mapping_schemas` | Untyped citation-mapping schema ids. |
 | `schema_capability_tags` | Build-time capability tags on registered payload schemas. |
 | `relations` | `RelationDescriptor` values. |
-| `mcp_tools` | Flavor MCP tools; tool names must use the flavor prefix. |
+| `mcp_tools` | Flavor tool descriptors projected to MCP; tool names must use the flavor prefix. |
 | `dependency_satisfaction_rules` | Build-time dependency rules for flavor schemas. |
 
 Unknown keys are compile errors. Macro-registered schemas, relations,
-MCP tools, and dependency rules must start with `name + "/"`, except
+tools, and dependency rules must start with `name + "/"`, except
 dependency rules may target `core/` schemas.
+
+## Public Tiers
+
+| Tier | Import | Surface |
+|---|---|---|
+| Host API | `use proxima::{Proxima, RuntimeBuilder, Engine, AuthzContext};` | boot/migrate/serve/query |
+| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, Tool};` | schemas, relations, sidecars, tools |
+
+Root `proxima::*` is host-facing. Flavor authoring imports live under
+`proxima::flavor`.
 
 <a id="schema-namespacing"></a>
 ## Schema Namespacing
@@ -98,7 +113,7 @@ Flavor-owned ids use `flavor_id/local_name`.
 |---|---|
 | Schema ids | Flavor schemas start with `flavor_id + "/"`; core schemas start with `core/`. |
 | Relation ids | Flavor relations start with `flavor_id + "/"`; core relations start with `core/`. |
-| MCP tool names | Flavor MCP tools start with `flavor_id + "/"` or provider-safe `flavor_id + "_"`; substrate MCP tools use provider-safe `core_...` names. |
+| Tool names | Flavor tools start with `flavor_id + "/"` or provider-safe `flavor_id + "_"`; substrate tools use provider-safe `core_...` names. |
 
 `proxima_schema_id!("x")` expands to `CARGO_PKG_NAME + "/x"`.
 
@@ -184,16 +199,17 @@ writes use the same tool with the matching action key.
 <a id="freeze-guards"></a>
 ## Freeze Guards
 
-`FlavorRegistry::freeze()` rejects:
+`FlavorRegistry::try_freeze()` rejects with `FlavorRegistryError`:
 
 1. Invalid relation descriptor masks.
 2. Typed relations whose payload schema is not a registered Edge schema.
-3. Duplicate `FlavorDescriptor::flavor_id`.
-4. Duplicate MCP tool names.
-5. Duplicate dependency satisfaction rules for one schema id.
+3. Duplicate schemas, relations, tool names, `FlavorDescriptor::flavor_id`,
+   and dependency satisfaction rules.
+4. Capability tags for unregistered schemas.
+5. Relation endpoint capability tags with no satisfying registered schema.
 
 Prefix violations in macro-registered schemas, relations, MCP tools, and
-dependency rules panic during registration before freeze.
+dependency rules fail during registration before freeze.
 
 <a id="inclusion"></a>
 ## Inclusion

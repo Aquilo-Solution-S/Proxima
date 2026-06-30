@@ -1,4 +1,4 @@
-use proxima::{FactPayload, PayloadKeyBuilder, PgMemoryPayload, PgMemorySidecar};
+use proxima::flavor::{FactPayload, PayloadKeyBuilder, PgMemoryPayload, PgMemorySidecar};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct FacadeMacroFact {
@@ -24,7 +24,7 @@ impl FactPayload for FacadeMacroFact {
     }
 }
 
-proxima::pg_sidecar! {
+proxima::flavor::pg_sidecar! {
     payload: FacadeMacroFact,
     row: FacadeMacroFactRow,
     kinds: [Fact],

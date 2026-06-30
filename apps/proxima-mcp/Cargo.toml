@@ -23,7 +23,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
 default = []
-code = ["dep:proxima-code"]
+code = ["dep:proxima-code", "proxima-code/host-api"]
 
 [dev-dependencies]
 reqwest = { workspace = true }

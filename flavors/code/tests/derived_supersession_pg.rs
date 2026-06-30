@@ -4,9 +4,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use common::{TestDb, test_owner};
-use proxima_code::{
-    CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1, build_engine,
-};
+use proxima_code::testkit::build_engine;
+use proxima_code::{CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1};
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::{
     AbstractionPayload, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind,
@@ -59,7 +58,7 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     .bind(goal_activated_memory_id)
     .bind(owner_kind)
     .bind(owner_id)
-    .execute(db.pg.pool())
+    .execute(db.pg.pool_for_tests())
     .await
     .expect("insert goal activation evidence");
 
@@ -138,7 +137,7 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     let supersedes: Option<Uuid> =
         sqlx::query_scalar("SELECT supersedes FROM proxima_core.memories WHERE memory_id = $1")
             .bind(new_memory_id.into_inner())
-            .fetch_one(db.pg.pool())
+            .fetch_one(db.pg.pool_for_tests())
             .await
             .expect("read supersedes column");
     assert_eq!(supersedes, Some(old_memory_id.into_inner()));
@@ -154,7 +153,7 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     .bind(proxima_core::CORE_SUPERSEDES_RELATION)
     .bind(new_memory_id.into_inner())
     .bind(old_memory_id.into_inner())
-    .fetch_one(db.pg.pool())
+    .fetch_one(db.pg.pool_for_tests())
     .await
     .expect("read supersedes edge");
     assert_eq!(edge_count, 1);
@@ -180,7 +179,7 @@ WHERE eo.owner_kind = $1
         .bind(owner_id)
         .bind(CodeExecutionPlanV1::SCHEMA_ID)
         .bind(plan_key)
-        .fetch_all(db.pg.pool())
+        .fetch_all(db.pg.pool_for_tests())
         .await
         .expect("query current code plans");
     assert_eq!(current_plan_ids, vec![new_memory_id.into_inner()]);

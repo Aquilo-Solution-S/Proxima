@@ -20,7 +20,7 @@ async fn author_inspires_edge(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     let edge_id = Uuid::now_v7();
-    let mut tx = pg.pool().begin().await?;
+    let mut tx = pg.pool_for_tests().begin().await?;
     sqlx::query(
         "INSERT INTO proxima_core.edges
             (edge_id, owner_kind, owner_id, relation, relation_class,
@@ -81,9 +81,9 @@ async fn seed_active_goal(
     .bind(goal_id)
     .bind(owner_kind)
     .bind(owner_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
-    insert_home(pg.pool(), goal_id, owner).await?;
+    insert_home(pg.pool_for_tests(), goal_id, owner).await?;
     Ok(goal_id)
 }
 
@@ -107,7 +107,7 @@ async fn seed_perspective(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(label)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(memory_id)
 }
@@ -135,7 +135,7 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
         )
         .bind(CORE_INSPIRES_RELATION)
         .bind(goal_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(target, alice_self);
         assert_ne!(target, bob_self);

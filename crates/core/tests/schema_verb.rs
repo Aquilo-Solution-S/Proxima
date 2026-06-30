@@ -15,7 +15,7 @@ fn empty_registry_returns_empty_response() {
 
 #[test]
 fn schema_verb_exposes_relation_policies() {
-    let registry = FlavorRegistry::new().freeze();
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let resp = registry.handle(&SchemaRequest);
 
     let derived_from = resp

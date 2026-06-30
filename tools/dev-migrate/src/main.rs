@@ -17,7 +17,8 @@
 //!
 //! Afterwards `cargo sqlx prepare --workspace` has every schema it needs.
 
-use proxima::{FlavorBundle, run_core_and_flavor_migrations};
+use proxima::flavor::FlavorBundle;
+use proxima::run_core_and_flavor_migrations;
 use proxima_storage_pg::{PgStorage, RETIRED_PRE_V004_MIGRATION_VERSIONS, core_migrator};
 
 const RESET_FLAG: &str = "--v004-reset-dev-db";
@@ -66,6 +67,7 @@ async fn reset_local_dev_database_confirmed(
     if matches!(database, "postgres" | "template0" | "template1") {
         return Err("v0.0.4 dev reset refuses protected database names".into());
     }
+    let pool = pg.clone_pool_for_backend();
     let unexpected_schemas: Vec<String> = sqlx::query_scalar(
         "SELECT schema_name::text
            FROM information_schema.schemata
@@ -73,7 +75,7 @@ async fn reset_local_dev_database_confirmed(
             AND schema_name NOT IN ('proxima_core', 'proxima_code')
           ORDER BY schema_name",
     )
-    .fetch_all(pg.pool())
+    .fetch_all(&pool)
     .await?;
     if !unexpected_schemas.is_empty() {
         return Err(format!(
@@ -102,14 +104,14 @@ async fn reset_local_dev_database_confirmed(
     eprintln!("resetting schemas: proxima_code, proxima_core");
     eprintln!("deleting migration versions: {versions:?}");
     sqlx::query("DROP SCHEMA IF EXISTS proxima_code CASCADE")
-        .execute(pg.pool())
+        .execute(&pool)
         .await?;
     sqlx::query("DROP SCHEMA IF EXISTS proxima_core CASCADE")
-        .execute(pg.pool())
+        .execute(&pool)
         .await?;
     let migration_table_exists: bool =
         sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
-            .fetch_one(pg.pool())
+            .fetch_one(&pool)
             .await?;
     if migration_table_exists {
         sqlx::query(
@@ -117,7 +119,7 @@ async fn reset_local_dev_database_confirmed(
               WHERE version = ANY($1::bigint[])",
         )
         .bind(&versions)
-        .execute(pg.pool())
+        .execute(&pool)
         .await?;
     }
     Ok(())
@@ -137,10 +139,10 @@ mod tests {
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let pg = PgStorage::connect(&url).await?;
             sqlx::query("CREATE SCHEMA proxima_core")
-                .execute(pg.pool())
+                .execute(pg.pool_for_tests())
                 .await?;
             sqlx::query("CREATE SCHEMA proxima_code")
-                .execute(pg.pool())
+                .execute(pg.pool_for_tests())
                 .await?;
             sqlx::query(
                 "CREATE TABLE public._sqlx_migrations (
@@ -152,7 +154,7 @@ mod tests {
                     execution_time bigint NOT NULL
                 )",
             )
-            .execute(pg.pool())
+            .execute(pg.pool_for_tests())
             .await?;
             for version in [1_i64, 2, 3, 4, 5, 6, 7, 20_260_622_000_000] {
                 sqlx::query(
@@ -161,7 +163,7 @@ mod tests {
                      VALUES ($1, 'old', true, decode('00', 'hex'), 0)",
                 )
                 .bind(version)
-                .execute(pg.pool())
+                .execute(pg.pool_for_tests())
                 .await?;
             }
 
@@ -169,7 +171,7 @@ mod tests {
 
             let remaining: Vec<i64> =
                 sqlx::query_scalar("SELECT version FROM public._sqlx_migrations ORDER BY version")
-                    .fetch_all(pg.pool())
+                    .fetch_all(pg.pool_for_tests())
                     .await?;
             assert!(
                 remaining.is_empty(),

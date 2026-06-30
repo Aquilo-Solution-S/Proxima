@@ -34,7 +34,7 @@ async fn insert_external_seed(
     .bind(request_id)
     .bind(state)
     .bind(request_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }

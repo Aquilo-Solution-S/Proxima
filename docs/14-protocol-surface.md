@@ -22,6 +22,16 @@ operational RPCs.
 
 No runtime schema/source/tool/flavor registration surface exists.
 
+Rust embedding has two public tiers:
+
+| Tier | Import | Contract |
+|---|---|---|
+| Host API | `use proxima::{Proxima, RuntimeBuilder, Engine};` | compose/run a binary, call graph verbs, hold server-resolved `AuthzContext` |
+| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, pg_sidecar};` | register schemas/relations/tools/sidecars at build time; no raw `PgPool`, no `proxima_core.*` SQL |
+
+Transport adapters (MCP/HTTP) project the Host API. Flavor crates target
+the Flavor SDK and typed services only.
+
 ## Core Memory MCP Surface
 
 Agent long-term memory is core substrate. MCP tools are thin callers of

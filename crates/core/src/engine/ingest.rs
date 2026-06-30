@@ -647,8 +647,8 @@ mod tests {
     async fn authorize_fact_ingest_stamps_draft_owner_from_permit() {
         let owner = test_owner();
         let mut registry = FlavorRegistry::new();
-        registry.add_fact_schema::<TestFact>();
-        let engine = Engine::new(registry.freeze());
+        registry.add_fact_schema_or_panic_for_tests::<TestFact>();
+        let engine = Engine::new(registry.freeze_or_panic_for_tests());
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
         let draft = FactWriteCommand::from_payload(
             "test/source",
@@ -671,8 +671,8 @@ mod tests {
     async fn authorize_fact_ingest_denies_denied_context() {
         let owner = test_owner();
         let mut registry = FlavorRegistry::new();
-        registry.add_fact_schema::<TestFact>();
-        let engine = Engine::new(registry.freeze());
+        registry.add_fact_schema_or_panic_for_tests::<TestFact>();
+        let engine = Engine::new(registry.freeze_or_panic_for_tests());
         let draft = FactWriteCommand::from_payload(
             "test/source",
             SourceBatchId::new(uuid::Uuid::now_v7()),
@@ -698,8 +698,8 @@ mod tests {
     async fn authorize_fact_with_citation_denies_denied_context() {
         let owner = test_owner();
         let mut registry = FlavorRegistry::new();
-        registry.add_fact_schema::<TestFact>();
-        let engine = Engine::new(registry.freeze());
+        registry.add_fact_schema_or_panic_for_tests::<TestFact>();
+        let engine = Engine::new(registry.freeze_or_panic_for_tests());
         let draft = FactWriteCommand::from_payload(
             "test/source",
             SourceBatchId::new(uuid::Uuid::now_v7()),

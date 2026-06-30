@@ -1,4 +1,9 @@
-#![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
+#![allow(
+    dead_code,
+    unused_imports,
+    clippy::missing_errors_doc,
+    clippy::doc_markdown
+)]
 //! Typed atomic Fact + sidecar writes for the proxima-code flavor.
 //!
 //! Each helper wraps `proxima_storage_pg::verbs::fact_ingest::ingest_fact_in_tx`
@@ -22,7 +27,7 @@ pub mod schemas;
 pub use blobs::{append_code_slice, close_local_git_batch, ingest_commit, ingest_file_revision};
 pub use calls::{CallEdgeDraft, ingest_calls_edge};
 pub use engine::{build_engine, build_engine_with};
-pub use heads::{FileRevisionHead, file_revision_heads, present_chunk_indexes};
+pub use heads::FileRevisionHead;
 pub use schemas::{
     ACCEPTANCE_CRITERIA_OBJECT_SCHEMA, ACCEPTANCE_CRITERIA_WHOLE_SCHEMA,
     ACCEPTANCE_VERIFICATION_OBJECT_SCHEMA, ACCEPTANCE_VERIFICATION_WHOLE_SCHEMA, CODE_BLOB_SCHEMA,

@@ -1,14 +1,12 @@
-use proxima_core::MemoryId;
-use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
+use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::payloads::FileState;
+use crate::payloads::{CodeChunkV1, FileRevisionV1, FileState};
 
-use super::pg_pool;
-use super::sql::{
-    CHUNK_HEADS_CTE, FILE_REVISION_HEADS_CTE, map_storage, owner_columns, resolve_repo_identifier,
-};
+use super::CodeToolCtxExt;
+use super::code_store;
+use super::sql::{map_storage, resolve_repo_identifier};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeOpenFileRevisionArgs {
@@ -70,7 +68,7 @@ pub struct ChunkSummary {
 #[derive(Debug)]
 pub struct CodeOpenFileRevisionTool;
 
-impl McpTool for CodeOpenFileRevisionTool {
+impl Tool for CodeOpenFileRevisionTool {
     const NAME: &'static str = "proxima-code_open_file_revision";
     const DESCRIPTION: &'static str =
         "Return the current head revision and head chunks for one repo_handle/file_path pair.";
@@ -78,96 +76,131 @@ impl McpTool for CodeOpenFileRevisionTool {
     type Args = CodeOpenFileRevisionArgs;
     type Output = CodeOpenFileRevisionOutput;
 
+    #[allow(clippy::too_many_lines)]
     fn call(
-        ctx: McpToolCtx,
+        ctx: ToolCtx,
         args: CodeOpenFileRevisionArgs,
-    ) -> futures::future::BoxFuture<'static, Result<CodeOpenFileRevisionOutput, McpToolError>> {
+    ) -> futures::future::BoxFuture<'static, Result<CodeOpenFileRevisionOutput, ToolError>> {
         Box::pin(async move {
             if args.file_path.trim().is_empty() {
-                return Err(McpToolError::InvalidInput("file_path required".into()));
+                return Err(ToolError::InvalidInput("file_path required".into()));
             }
             let line_window = requested_line_window(args.line_start, args.line_limit)?;
             let include_text =
                 args.include_text || line_window.is_some() || args.max_text_bytes.is_some();
-            let (owner_kind, owner_id) = owner_columns(&ctx.owner);
             let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
-            let pool = pg_pool(&ctx)?;
+            let pool = code_store(&ctx)?;
+            let engine = super::engine(&ctx)?;
 
-            let revision_sql = format!(
-                "WITH {FILE_REVISION_HEADS_CTE}
-                 SELECT memory_id, repo_id, file_path, language, size_bytes,
-                        indexed_commit_sha, state
-                 FROM file_revision_heads
-                 WHERE repo_id = $3 AND file_path = $4"
-            );
-            let revision = sqlx::query_as::<_, RevisionRow>(&revision_sql)
-                .bind(owner_kind)
-                .bind(owner_id)
-                .bind(repo_id)
-                .bind(&args.file_path)
-                .fetch_optional(pool.as_ref())
-                .await
-                .map_err(map_storage)?
-                .map(|row| FileRevisionInfo {
-                    handle: ctx.format_fact_memory(MemoryId::new(row.memory_id)),
-                    repo_handle: ctx.format_flavor_object(
-                        super::REPO_HANDLE_KIND,
-                        row.repo_id,
-                        super::REPO_HANDLE_PREFIX,
-                    ),
-                    file_path: row.file_path,
-                    language: row.language,
-                    size_bytes: row.size_bytes,
-                    indexed_commit_sha: row.indexed_commit_sha,
-                    state: row.state,
-                });
-
-            let chunk_sql = format!(
-                "WITH {CHUNK_HEADS_CTE}
-                 SELECT memory_id, chunk_index, chunk_type,
-                        line_range_start, line_range_end,
-                        left(text, 480) AS snippet,
-                        CASE WHEN $5::boolean THEN text ELSE NULL END AS text
-                 FROM chunk_heads
-                 WHERE repo_id = $3 AND file_path = $4
-                   AND (
-                       $6::bigint IS NULL
-                       OR (line_range_end >= $6 AND line_range_start <= $7)
-                   )
-                 ORDER BY chunk_index ASC"
-            );
-            let chunk_rows: Vec<ChunkSummaryRow> = sqlx::query_as(&chunk_sql)
-                .bind(owner_kind)
-                .bind(owner_id)
-                .bind(repo_id)
-                .bind(&args.file_path)
-                .bind(include_text)
-                .bind(line_window.map(|window| window.0))
-                .bind(line_window.map(|window| window.1))
-                .fetch_all(pool.as_ref())
-                .await
-                .map_err(map_storage)?;
-
-            let chunks = chunk_rows
+            let revision_candidates: Vec<MemoryCandidateRow> = sqlx::query_as(
+                "SELECT memory_id
+                   FROM proxima_code.file_revision_v1
+                  WHERE repo_id = $1
+                    AND file_path = $2
+                  ORDER BY memory_id DESC
+                  LIMIT 200",
+            )
+            .bind(repo_id)
+            .bind(&args.file_path)
+            .fetch_all(pool.pool())
+            .await
+            .map_err(map_storage)?;
+            let revision_ids = revision_candidates
+                .iter()
+                .map(|row| row.memory_id)
+                .collect::<Vec<_>>();
+            let revision = pool
+                .authorized_fact_payloads::<FileRevisionV1>(
+                    &engine,
+                    ctx.authz(),
+                    ctx.owner(),
+                    &revision_ids,
+                    1,
+                )
+                .await?
                 .into_iter()
-                .map(|row| {
+                .find(|(_, row)| row.repo_id == repo_id && row.file_path == args.file_path)
+                .map(|(memory_id, row)| {
+                    let size_bytes = i64::try_from(row.size_bytes)
+                        .map_err(|_| ToolError::Other("file revision size exceeds i64".into()))?;
+                    Ok::<_, ToolError>(FileRevisionInfo {
+                        handle: ctx.format_fact_memory(memory_id),
+                        repo_handle: ctx.format_flavor_object(
+                            super::REPO_HANDLE_KIND,
+                            row.repo_id,
+                            super::REPO_HANDLE_PREFIX,
+                        ),
+                        file_path: row.file_path,
+                        language: row.language,
+                        size_bytes,
+                        indexed_commit_sha: row.indexed_commit_sha,
+                        state: row.state,
+                    })
+                })
+                .transpose()?;
+
+            let chunk_rows: Vec<ChunkCandidateRow> = sqlx::query_as(
+                "SELECT memory_id
+                   FROM proxima_code.code_chunk_v1
+                  WHERE repo_id = $1
+                    AND file_path = $2
+                    AND state = 'Present'
+                    AND (
+                        $3::bigint IS NULL
+                        OR (line_range_end >= $3 AND line_range_start <= $4)
+                    )
+                  ORDER BY chunk_index ASC
+                  LIMIT 2000",
+            )
+            .bind(repo_id)
+            .bind(&args.file_path)
+            .bind(line_window.map(|window| window.0))
+            .bind(line_window.map(|window| window.1))
+            .fetch_all(pool.pool())
+            .await
+            .map_err(map_storage)?;
+            let chunk_ids = chunk_rows
+                .iter()
+                .map(|row| row.memory_id)
+                .collect::<Vec<_>>();
+            let mut chunks = pool
+                .authorized_abstraction_payloads::<CodeChunkV1>(
+                    &engine,
+                    ctx.authz(),
+                    ctx.owner(),
+                    &chunk_ids,
+                    2_000,
+                )
+                .await?
+                .into_iter()
+                .filter(|(_, row)| {
+                    row.repo_id == repo_id
+                        && row.file_path == args.file_path
+                        && row.state == FileState::Present
+                })
+                .map(|(memory_id, row)| {
                     let (text, text_line_range) = project_text(
-                        row.text,
-                        row.line_range_start,
+                        include_text.then_some(row.text.clone()),
+                        i64::from(row.line_range_start),
                         line_window,
                         args.max_text_bytes,
                     );
-                    ChunkSummary {
-                        handle: ctx.format_abstraction_memory(MemoryId::new(row.memory_id)),
-                        chunk_index: row.chunk_index,
+                    Ok::<_, ToolError>(ChunkSummary {
+                        handle: ctx.format_abstraction_memory(memory_id),
+                        chunk_index: i32::try_from(row.chunk_index)
+                            .map_err(|_| ToolError::Other("chunk_index exceeds i32".into()))?,
                         chunk_type: row.chunk_type,
-                        line_range: (row.line_range_start, row.line_range_end),
-                        snippet: row.snippet,
+                        line_range: (
+                            i64::from(row.line_range_start),
+                            i64::from(row.line_range_end),
+                        ),
+                        snippet: row.text.chars().take(480).collect(),
                         text,
                         text_line_range,
-                    }
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
+            chunks.sort_by_key(|chunk| chunk.chunk_index);
 
             Ok(CodeOpenFileRevisionOutput { revision, chunks })
         })
@@ -177,19 +210,17 @@ impl McpTool for CodeOpenFileRevisionTool {
 fn requested_line_window(
     line_start: Option<i64>,
     line_limit: Option<i64>,
-) -> Result<Option<(i64, i64)>, McpToolError> {
+) -> Result<Option<(i64, i64)>, ToolError> {
     if line_start.is_none() && line_limit.is_none() {
         return Ok(None);
     }
     let start = line_start.unwrap_or(1);
     let limit = line_limit.unwrap_or(120);
     if start < 1 {
-        return Err(McpToolError::InvalidInput("line_start must be >= 1".into()));
+        return Err(ToolError::InvalidInput("line_start must be >= 1".into()));
     }
     if !(1..=500).contains(&limit) {
-        return Err(McpToolError::InvalidInput(
-            "line_limit must be 1..=500".into(),
-        ));
+        return Err(ToolError::InvalidInput("line_limit must be 1..=500".into()));
     }
     Ok(Some((start, start.saturating_add(limit - 1))))
 }
@@ -244,23 +275,11 @@ fn truncate_utf8_bytes(text: String, max_text_bytes: Option<usize>) -> String {
 }
 
 #[derive(Debug, sqlx::FromRow)]
-struct RevisionRow {
+struct MemoryCandidateRow {
     memory_id: uuid::Uuid,
-    repo_id: uuid::Uuid,
-    file_path: String,
-    language: Option<String>,
-    size_bytes: i64,
-    indexed_commit_sha: String,
-    state: FileState,
 }
 
 #[derive(Debug, sqlx::FromRow)]
-struct ChunkSummaryRow {
+struct ChunkCandidateRow {
     memory_id: uuid::Uuid,
-    chunk_index: i32,
-    chunk_type: String,
-    line_range_start: i64,
-    line_range_end: i64,
-    snippet: String,
-    text: Option<String>,
 }

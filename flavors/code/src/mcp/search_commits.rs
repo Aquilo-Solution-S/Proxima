@@ -1,10 +1,12 @@
-use proxima_core::MemoryId;
-use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
+use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::pg_pool;
-use super::sql::{map_storage, owner_columns, resolve_repo_identifier};
+use crate::payloads::{CommitSummaryV1, CommitV1};
+
+use super::CodeToolCtxExt;
+use super::code_store;
+use super::sql::{map_storage, resolve_repo_identifier};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeSearchCommitsArgs {
@@ -57,7 +59,7 @@ pub struct SummaryMatch {
 #[derive(Debug)]
 pub struct CodeSearchCommitsTool;
 
-impl McpTool for CodeSearchCommitsTool {
+impl Tool for CodeSearchCommitsTool {
     const NAME: &'static str = "proxima-code_search_commits";
     const DESCRIPTION: &'static str =
         "Search Git commit facts and operator-authored commit summaries.";
@@ -65,38 +67,54 @@ impl McpTool for CodeSearchCommitsTool {
     type Args = CodeSearchCommitsArgs;
     type Output = CodeSearchCommitsOutput;
 
+    #[allow(clippy::too_many_lines)]
     fn call(
-        ctx: McpToolCtx,
+        ctx: ToolCtx,
         args: CodeSearchCommitsArgs,
-    ) -> futures::future::BoxFuture<'static, Result<CodeSearchCommitsOutput, McpToolError>> {
+    ) -> futures::future::BoxFuture<'static, Result<CodeSearchCommitsOutput, ToolError>> {
         Box::pin(async move {
             let query = args.query.trim();
             if query.is_empty() || query.chars().count() > 512 {
-                return Err(McpToolError::InvalidInput(
+                return Err(ToolError::InvalidInput(
                     "query must be 1..=512 chars".into(),
                 ));
             }
             let limit = args.limit.unwrap_or(10).min(50);
-            let (owner_kind, owner_id) = owner_columns(&ctx.owner);
             let repo_id = match args.repo_handle.as_deref() {
                 Some(handle) => Some(resolve_repo_identifier(&ctx, handle).await?),
                 None => None,
             };
-            let pool = pg_pool(&ctx)?;
+            let pool = code_store(&ctx)?;
+            let engine = super::engine(&ctx)?;
+            let candidate_limit = i64::from(limit.saturating_mul(4).max(limit).min(200));
 
-            let commit_rows: Vec<CommitRow> = sqlx::query_as(COMMIT_SEARCH_SQL)
-                .bind(owner_kind)
-                .bind(owner_id)
+            let commit_rows: Vec<ScoredMemoryRow> = sqlx::query_as(COMMIT_SEARCH_SQL)
                 .bind(query)
                 .bind(repo_id)
-                .bind(i64::from(limit))
-                .fetch_all(pool.as_ref())
+                .bind(candidate_limit)
+                .fetch_all(pool.pool())
                 .await
                 .map_err(map_storage)?;
-            let commits = commit_rows
+            let commit_ids = commit_rows
+                .iter()
+                .map(|row| row.memory_id)
+                .collect::<Vec<_>>();
+            let commit_scores = commit_rows
                 .into_iter()
-                .map(|row| CommitMatch {
-                    handle: ctx.format_fact_memory(MemoryId::new(row.memory_id)),
+                .map(|row| (row.memory_id, row.score))
+                .collect::<std::collections::HashMap<_, _>>();
+            let commits = pool
+                .authorized_fact_payloads::<CommitV1>(
+                    &engine,
+                    ctx.authz(),
+                    ctx.owner(),
+                    &commit_ids,
+                    usize::try_from(limit).unwrap_or(usize::MAX),
+                )
+                .await?
+                .into_iter()
+                .map(|(memory_id, row)| CommitMatch {
+                    handle: ctx.format_fact_memory(memory_id),
                     repo_handle: ctx.format_flavor_object(
                         super::REPO_HANDLE_KIND,
                         row.repo_id,
@@ -105,26 +123,43 @@ impl McpTool for CodeSearchCommitsTool {
                     sha: row.sha,
                     author_name: row.author_name,
                     committer_time: row.committer_time,
-                    message_snippet: row.message_snippet,
-                    score: row.score,
+                    message_snippet: row.message.chars().take(480).collect(),
+                    score: commit_scores
+                        .get(&memory_id.into_inner())
+                        .copied()
+                        .unwrap_or_default(),
                 })
                 .collect();
 
-            let summary_rows: Vec<SummaryRow> = sqlx::query_as(SUMMARY_SEARCH_SQL)
-                .bind(owner_kind)
-                .bind(owner_id)
+            let summary_rows: Vec<ScoredMemoryRow> = sqlx::query_as(SUMMARY_SEARCH_SQL)
                 .bind(query)
                 .bind(repo_id)
                 .bind(args.change_kind.as_deref())
-                .bind(i64::from(limit))
-                .fetch_all(pool.as_ref())
+                .bind(candidate_limit)
+                .fetch_all(pool.pool())
                 .await
                 .map_err(map_storage)?;
-            let summaries = summary_rows
+            let summary_ids = summary_rows
+                .iter()
+                .map(|row| row.memory_id)
+                .collect::<Vec<_>>();
+            let summary_scores = summary_rows
                 .into_iter()
-                .map(|row| SummaryMatch {
+                .map(|row| (row.memory_id, row.score))
+                .collect::<std::collections::HashMap<_, _>>();
+            let summaries = pool
+                .authorized_abstraction_payloads::<CommitSummaryV1>(
+                    &engine,
+                    ctx.authz(),
+                    ctx.owner(),
+                    &summary_ids,
+                    usize::try_from(limit).unwrap_or(usize::MAX),
+                )
+                .await?
+                .into_iter()
+                .map(|(memory_id, row)| SummaryMatch {
                     // CommitSummaryV1 is an AbstractionPayload; emit an `A:` handle.
-                    handle: ctx.format_abstraction_memory(MemoryId::new(row.memory_id)),
+                    handle: ctx.format_abstraction_memory(memory_id),
                     repo_handle: ctx.format_flavor_object(
                         super::REPO_HANDLE_KIND,
                         row.repo_id,
@@ -134,7 +169,10 @@ impl McpTool for CodeSearchCommitsTool {
                     change_kind: row.change_kind,
                     key_files: row.key_files,
                     summary: row.summary,
-                    score: row.score,
+                    score: summary_scores
+                        .get(&memory_id.into_inner())
+                        .copied()
+                        .unwrap_or_default(),
                 })
                 .collect();
 
@@ -144,70 +182,36 @@ impl McpTool for CodeSearchCommitsTool {
 }
 
 const COMMIT_SEARCH_SQL: &str = "
-WITH q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $3) AS tsq)
-SELECT c.memory_id, c.repo_id, c.sha, c.author_name, c.committer_time,
-       left(c.message, 480) AS message_snippet,
+WITH q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $1) AS tsq)
+SELECT c.memory_id,
        ts_rank_cd(to_tsvector('pg_catalog.simple'::regconfig, c.sha || ' ' || c.message), q.tsq) AS score
-FROM q, proxima_core.memories m
-JOIN proxima_code.commit_v1 c USING (memory_id)
-WHERE EXISTS (
-          SELECT 1
-            FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
-           WHERE eo.entity_id = m.memory_id
-             AND eo.owner_kind = $1
-             AND eo.owner_id = $2
-)
-  AND ($4::uuid IS NULL OR c.repo_id = $4)
+FROM q, proxima_code.commit_v1 c
+WHERE ($2::uuid IS NULL OR c.repo_id = $2)
   AND to_tsvector('pg_catalog.simple'::regconfig, c.sha || ' ' || c.message) @@ q.tsq
 ORDER BY score DESC, c.committer_time DESC
-LIMIT $5
+LIMIT $3
 ";
 
 const SUMMARY_SEARCH_SQL: &str = "
-WITH q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $3) AS tsq)
-SELECT s.memory_id, s.repo_id, s.commit_sha, s.summary,
-       s.key_files, s.change_kind,
+WITH q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $1) AS tsq)
+SELECT s.memory_id,
        ts_rank_cd(to_tsvector(
            'pg_catalog.simple'::regconfig,
            s.commit_sha || ' ' || s.summary || ' ' || proxima_code.text_array_search(s.key_files)
        ), q.tsq) AS score
-FROM q, proxima_core.memories m
-JOIN proxima_code.commit_summary_v1 s USING (memory_id)
-WHERE EXISTS (
-          SELECT 1
-            FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
-           WHERE eo.entity_id = m.memory_id
-             AND eo.owner_kind = $1
-             AND eo.owner_id = $2
-)
-  AND ($4::uuid IS NULL OR s.repo_id = $4)
-  AND ($5::text IS NULL OR s.change_kind = $5)
+FROM q, proxima_code.commit_summary_v1 s
+WHERE ($2::uuid IS NULL OR s.repo_id = $2)
+  AND ($3::text IS NULL OR s.change_kind = $3)
   AND to_tsvector(
       'pg_catalog.simple'::regconfig,
       s.commit_sha || ' ' || s.summary || ' ' || proxima_code.text_array_search(s.key_files)
   ) @@ q.tsq
 ORDER BY score DESC, s.memory_id DESC
-LIMIT $6
+LIMIT $4
 ";
 
 #[derive(Debug, sqlx::FromRow)]
-struct CommitRow {
+struct ScoredMemoryRow {
     memory_id: uuid::Uuid,
-    repo_id: uuid::Uuid,
-    sha: String,
-    author_name: String,
-    committer_time: time::OffsetDateTime,
-    message_snippet: String,
-    score: f32,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct SummaryRow {
-    memory_id: uuid::Uuid,
-    repo_id: uuid::Uuid,
-    commit_sha: String,
-    summary: String,
-    key_files: Vec<String>,
-    change_kind: String,
     score: f32,
 }

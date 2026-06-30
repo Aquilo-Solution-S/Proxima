@@ -39,7 +39,7 @@ async fn insert_goal(
     .bind(state)
     .bind(supersedes.map(GoalId::into_inner))
     .bind(request_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(GoalId::new(goal_id))
 }
@@ -68,7 +68,7 @@ async fn arm_goal_for_schema(
     .bind(TEST_FACT_SCHEMA)
     .bind(tools)
     .bind(hard)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }
@@ -76,7 +76,7 @@ async fn arm_goal_for_schema(
 async fn tombstone_memory(pg: &PgStorage, memory_id: MemoryId) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE proxima_core.memories SET tombstoned_at = now() WHERE memory_id = $1")
         .bind(memory_id.into_inner())
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
     Ok(())
 }
@@ -356,7 +356,7 @@ async fn active_goal_only() -> Result<(), Box<dyn std::error::Error>> {
         assert!(candidates.is_empty());
         let config_rows: (i64,) =
             sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goal_wake_config")
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(config_rows.0, 2);
         assert_ne!(passive, paused);
@@ -445,7 +445,7 @@ async fn w1_wake_no_executor_outputs() -> Result<(), Box<dyn std::error::Error>>
                 (SELECT count(*)::bigint FROM proxima_core.edges),
                 (SELECT count(*)::bigint FROM proxima_core.goal_wake_config)",
         )
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
 
         let actor_scope = ToolScope::All;
@@ -468,7 +468,7 @@ async fn w1_wake_no_executor_outputs() -> Result<(), Box<dyn std::error::Error>>
                 (SELECT count(*)::bigint FROM proxima_core.edges),
                 (SELECT count(*)::bigint FROM proxima_core.goal_wake_config)",
         )
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(after, before);
 
@@ -501,7 +501,7 @@ async fn no_generic_executor_or_tool_tables() -> Result<(), Box<dyn std::error::
                  )",
             )
             .bind(table.as_str())
-            .fetch_one(pg.pool())
+            .fetch_one(pg.pool_for_tests())
             .await?;
             assert!(
                 !exists,

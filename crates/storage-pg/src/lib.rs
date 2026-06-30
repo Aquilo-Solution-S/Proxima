@@ -7,6 +7,9 @@
 #[cfg(feature = "test-fixtures")]
 extern crate self as proxima_storage_pg;
 
+#[doc(hidden)]
+pub use proxima_core as core;
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -297,9 +300,23 @@ impl PgStorage {
         std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
     }
 
+    #[cfg(any(
+        test,
+        feature = "test-fixtures",
+        feature = "backend-api",
+        debug_assertions
+    ))]
+    #[doc(hidden)]
     #[must_use]
-    pub fn pool(&self) -> &PgPool {
+    pub fn pool_for_tests(&self) -> &PgPool {
         &self.pool
+    }
+
+    #[cfg(any(feature = "backend-api", feature = "test-fixtures"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn clone_pool_for_backend(&self) -> PgPool {
+        self.pool.clone()
     }
 
     #[must_use]

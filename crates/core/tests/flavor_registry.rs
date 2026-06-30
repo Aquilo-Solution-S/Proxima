@@ -5,7 +5,7 @@ use proxima_core::flavor::FlavorRegistry;
 /// top-level `type: object`, even when inner `oneOf` variants are object-shaped.
 #[test]
 fn all_mcp_tool_arg_schemas_have_object_root() {
-    let frozen = FlavorRegistry::default().freeze();
+    let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
     for tool in frozen.list_mcp_tools() {
         assert_eq!(
             tool.args_schema
@@ -29,7 +29,7 @@ fn all_mcp_tool_arg_schemas_have_object_root() {
 
 #[test]
 fn all_mcp_tool_arg_schemas_avoid_root_combinators() {
-    let frozen = FlavorRegistry::default().freeze();
+    let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
     for tool in frozen.list_mcp_tools() {
         for keyword in ["oneOf", "anyOf", "allOf"] {
             assert!(
@@ -59,7 +59,7 @@ const DISPATCHER_TOOL_ACTIONS: &[(&str, &[&str])] = &[
 
 #[test]
 fn pr6_retired_wake_and_personality_dispatchers_are_absent() {
-    let frozen = FlavorRegistry::default().freeze();
+    let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
     let names = frozen
         .list_mcp_tools()
         .iter()
@@ -78,7 +78,7 @@ fn pr6_retired_wake_and_personality_dispatchers_are_absent() {
 
 #[test]
 fn dispatcher_tool_arg_schemas_expose_action_enum() {
-    let frozen = FlavorRegistry::default().freeze();
+    let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
     for &(tool_name, expected_actions) in DISPATCHER_TOOL_ACTIONS {
         let schema = &frozen
             .list_mcp_tools()
@@ -142,7 +142,7 @@ fn dispatcher_tool_arg_schemas_expose_action_enum() {
 
 #[test]
 fn core_goal_action_metadata_preserves_required_fields() {
-    let frozen = FlavorRegistry::default().freeze();
+    let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
     let schema = &frozen
         .list_mcp_tools()
         .iter()
@@ -209,7 +209,7 @@ fn core_goal_action_metadata_preserves_required_fields() {
 fn action_arg_specs_match_schema_derived_action_fields() {
     use std::collections::BTreeSet;
 
-    let frozen = FlavorRegistry::default().freeze();
+    let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
     let mut dispatchers_seen = BTreeSet::new();
     for tool in frozen.list_mcp_tools() {
         if tool.action_arg_specs.is_empty() {
@@ -293,7 +293,7 @@ fn all_mcp_tool_arg_schemas_are_ref_and_defs_free() {
         }
     }
 
-    let frozen = FlavorRegistry::default().freeze();
+    let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
     for tool in frozen.list_mcp_tools() {
         assert!(
             !contains_key(&tool.args_schema, "$ref"),

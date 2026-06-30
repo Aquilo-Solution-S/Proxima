@@ -25,7 +25,7 @@ async fn column_exists(
     .bind(table_name)
     .bind(column_name)
     .bind(data_type)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert!(
         found.0,
@@ -50,7 +50,7 @@ async fn constraint_def(
     )
     .bind(table_name)
     .bind(constraint_name)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     Ok(row.0)
 }
@@ -63,7 +63,7 @@ async fn index_def(pg: &PgStorage, index_name: &str) -> Result<String, sqlx::Err
             AND indexname = $1",
     )
     .bind(index_name)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     Ok(row.0)
 }

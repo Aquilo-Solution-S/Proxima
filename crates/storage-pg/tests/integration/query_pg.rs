@@ -49,7 +49,7 @@ async fn seed_goal(
     .bind(request_id)
     .bind(owner_kind)
     .bind(owner_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }
@@ -76,7 +76,7 @@ async fn insert_abstraction_memory(
     .bind(owner_id)
     .bind(text)
     .bind(supersedes)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(memory_id)
 }
@@ -207,7 +207,7 @@ async fn insert_test_edge(
     .bind(source)
     .bind(target)
     .bind(created_offset_seconds)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(edge_id)
 }
@@ -239,7 +239,7 @@ async fn insert_n_test_edges_bulk(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(edge_ids)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }
@@ -256,7 +256,7 @@ async fn set_memory_created_offset(
     )
     .bind(memory_id)
     .bind(created_offset_seconds)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }

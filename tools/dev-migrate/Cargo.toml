@@ -16,7 +16,7 @@ workspace = true
 
 [dependencies]
 proxima = { path = "../../crates/proxima" }
-proxima-storage-pg = { path = "../../crates/storage-pg" }
+proxima-storage-pg = { path = "../../crates/storage-pg", features = ["backend-api"] }
 proxima-code = { path = "../../flavors/code" }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

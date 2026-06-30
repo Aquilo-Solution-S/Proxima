@@ -3,7 +3,7 @@ use proxima_core::verbs::schema::PayloadKind;
 #[test]
 fn all_abstraction_and_perspective_schemas_have_json_schema() {
     let registry = proxima_core::FlavorRegistry::new();
-    let registry = registry.freeze();
+    let registry = registry.freeze_or_panic_for_tests();
 
     for schema in registry.list() {
         if matches!(

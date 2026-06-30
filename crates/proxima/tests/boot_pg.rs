@@ -1,14 +1,16 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use proxima::flavor::FlavorBundle;
 use proxima::{
-    AppInfo, EmbedConfig, FlavorApp, FlavorBundle, NamedMigrator, PayloadKind, Proxima,
-    ProximaBuilder, company_owner, run_core_and_flavor_migrations,
+    AppInfo, EmbedConfig, FlavorApp, NamedMigrator, PayloadKind, Proxima, ProximaBuilder,
+    company_owner, run_core_and_flavor_migrations,
 };
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
-    FactPayload, FlavorRegistry, GoalActivatedV1, MemoryId, SchemaId, SchemaVersion, SourceBatchId,
+    FactPayload, FlavorRegistry, FlavorRegistryError, GoalActivatedV1, MemoryId, SchemaId,
+    SchemaVersion, SourceBatchId,
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::{PgSidecarKey, PgStorage};
@@ -38,8 +40,8 @@ impl FactPayload for TestFact {
 }
 
 impl FlavorBundle for GoalTestApp {
-    fn register(registry: &mut FlavorRegistry) {
-        registry.add_fact_schema::<TestFact>();
+    fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+        registry.try_add_fact_schema::<TestFact>()
     }
 
     fn migrators() -> Vec<NamedMigrator> {
@@ -191,7 +193,7 @@ async fn migration_facade_runs_core_goal_schema_idempotently() {
 
         let sidecar: Option<String> =
             sqlx::query_scalar("SELECT to_regclass('proxima_core.goal_activated_v1')::text")
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(sidecar.as_deref(), Some("proxima_core.goal_activated_v1"));
         Ok(())
@@ -211,7 +213,7 @@ async fn pre_v004_database_fails_closed_in_migration_facade() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&db_url).await?;
         sqlx::query("CREATE SCHEMA proxima_core")
-            .execute(pg.pool())
+            .execute(pg.pool_for_tests())
             .await?;
         sqlx::query(
             "CREATE TABLE public._sqlx_migrations (
@@ -223,14 +225,14 @@ async fn pre_v004_database_fails_closed_in_migration_facade() {
                  execution_time bigint NOT NULL
              )",
         )
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
         sqlx::query(
             "INSERT INTO public._sqlx_migrations
                  (version, description, success, checksum, execution_time)
              VALUES (1, 'init', true, decode('00', 'hex'), 0)",
         )
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
 
         let err = run_core_and_flavor_migrations(&pg, Vec::<NamedMigrator>::new())
@@ -269,7 +271,7 @@ async fn migration_facade_keeps_tracking_public_when_flavor_creates_current_user
         )
         .await?;
         assert_eq!(report.sources, ["proxima-core", "role-schema-flavor"]);
-        pg.pool().close().await;
+        pg.pool_for_tests().close().await;
         drop(pg);
 
         let pg = PgStorage::connect(&db_url).await?;
@@ -289,7 +291,7 @@ async fn migration_facade_keeps_tracking_public_when_flavor_creates_current_user
               WHERE table_name = '_sqlx_migrations'
               ORDER BY table_schema",
         )
-        .fetch_all(pg.pool())
+        .fetch_all(pg.pool_for_tests())
         .await?;
         assert_eq!(tracking_schemas, ["public"]);
         Ok(())
@@ -373,17 +375,17 @@ async fn facade_boot_exposes_pg_sidecars_and_worker_drains_embedding_jobs() {
         let authz = built.single_owner_authz().expect("single owner authz");
         let outcome = built.engine.fact_ingest(&authz, draft).await?;
         assert_eq!(
-            count_fact_embeddings(&built.pool, outcome.memory_id, model_id).await?,
+            count_fact_embeddings(built.pool_for_tests(), outcome.memory_id, model_id).await?,
             0
         );
         assert_eq!(
-            count_embedding_jobs(&built.pool, outcome.memory_id, model_id).await?,
+            count_embedding_jobs(built.pool_for_tests(), outcome.memory_id, model_id).await?,
             1
         );
 
         let cancel = tokio_util::sync::CancellationToken::new();
         let worker = built.spawn_embedding_worker(cancel.clone());
-        wait_for_embedding_drain(&built.pool, outcome.memory_id, model_id).await?;
+        wait_for_embedding_drain(built.pool_for_tests(), outcome.memory_id, model_id).await?;
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(1), worker).await??;
 

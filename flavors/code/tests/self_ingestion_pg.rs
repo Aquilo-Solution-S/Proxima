@@ -16,8 +16,9 @@ use std::sync::Arc;
 mod common;
 
 use common::{migrated_db, test_owner};
-use proxima_code::{LocalGitSource, build_engine};
-use proxima_core::{Cursor, Owner};
+use proxima_code::testkit::build_engine;
+use proxima_code::{CodeFlavorStore, CodeIngestContext, LocalGitSource};
+use proxima_core::{AuthPath, AuthzContext, Cursor, Owner};
 use proxima_pg_testkit::drop_db;
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -138,6 +139,9 @@ async fn self_ingestion_streams_proxima_main() {
         let owner = test_owner();
 
         let engine = build_engine(pg.clone());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+        let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
         let _storage_ports = Arc::new(pg.clone()).storage_ports();
 
         // Clone Proxima itself into a tmpdir.
@@ -151,14 +155,14 @@ async fn self_ingestion_streams_proxima_main() {
         let repo_id = Uuid::now_v7();
         let source = LocalGitSource::new(repo_id, clone_path.clone(), owner);
         let cursor = Cursor::empty();
-        let (r1, cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
+        let (r1, cursor) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
         assert!(
             r1.commits_emitted >= main_count_before,
             "expected ≥{main_count_before} commits emitted, got {}",
             r1.commits_emitted
         );
 
-        let facts_after_initial = count_commit_v1_facts(pg.pool(), &owner, repo_id).await;
+        let facts_after_initial = count_commit_v1_facts(pg.pool_for_tests(), &owner, repo_id).await;
         let main_count_i64 =
             i64::try_from(main_count_before).expect("main commit count fits in i64");
         assert!(
@@ -172,7 +176,7 @@ async fn self_ingestion_streams_proxima_main() {
         let commit_schema = proxima_core::SchemaId::new("proxima-code/commit-v1".into());
         let query_resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &authz,
                 &proxima_core::verbs::query::QueryRequest {
                     principal: owner,
                     read_owners: vec![owner],
@@ -227,7 +231,7 @@ async fn self_ingestion_streams_proxima_main() {
         // per commit.
         let unfiltered = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &authz,
                 &proxima_core::verbs::query::QueryRequest {
                     principal: owner,
                     read_owners: vec![owner],
@@ -282,13 +286,13 @@ async fn self_ingestion_streams_proxima_main() {
         let main_count_after = count_branch_commits(&clone_path, &ingest_ref);
         assert_eq!(main_count_after, main_count_before + 1);
 
-        let (r2, cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
+        let (r2, cursor) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
         assert_eq!(
             r2.commits_emitted, 1,
             "second poll should emit exactly the one new commit"
         );
 
-        let facts_after_live = count_commit_v1_facts(pg.pool(), &owner, repo_id).await;
+        let facts_after_live = count_commit_v1_facts(pg.pool_for_tests(), &owner, repo_id).await;
         assert_eq!(
             facts_after_live,
             facts_after_initial + 1,
@@ -296,7 +300,7 @@ async fn self_ingestion_streams_proxima_main() {
         );
 
         // Phase 3 — idempotency. Third poll, no new commits.
-        let (r3, _cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
+        let (r3, _cursor) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
         assert_eq!(r3.commits_emitted, 0);
         assert_eq!(r3.files_present_emitted, 0);
         assert_eq!(r3.files_tombstoned, 0);

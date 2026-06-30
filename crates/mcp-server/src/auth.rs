@@ -302,7 +302,7 @@ mod tests {
         let auth =
             McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), other);
         let ctx = auth.resolve("host-token").await.expect("host resolves");
-        let engine = Engine::new(FlavorRegistry::new().freeze());
+        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
 
         let err = engine
             .get_graph(

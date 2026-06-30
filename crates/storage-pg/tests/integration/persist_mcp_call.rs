@@ -18,14 +18,14 @@ async fn persist_writes_fact_inline_io_citation_and_change_event() {
         let io_body = br#"{"input":{"q":"x"},"output":{"ok":true},"error":null}"#.to_vec();
         let input = sample_input(&owner, io_body.clone(), false, None);
 
-        let outcome = persist_mcp_call_atomic(pg.pool(), &input).await?;
+        let outcome = persist_mcp_call_atomic(pg.pool_for_tests(), &input).await?;
 
         assert!(!outcome.idempotent_replay);
 
         let n_facts: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM proxima_core.memories WHERE schema_id = $1")
                 .bind(MCP_CALL_FACT_SCHEMA)
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(n_facts.0, 1);
 
@@ -34,7 +34,7 @@ async fn persist_writes_fact_inline_io_citation_and_change_event() {
              FROM proxima_core.mcp_call_logged_v1 WHERE memory_id = $1",
         )
         .bind(outcome.fact_memory_id.into_inner())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(fact.0, "core_search_memories");
         assert_eq!(fact.1, "agent@example.com");
@@ -46,7 +46,7 @@ async fn persist_writes_fact_inline_io_citation_and_change_event() {
              WHERE cited_object_id = $1",
         )
         .bind(outcome.cited_object_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(cited.0, io_body);
         assert_eq!(usize::try_from(cited.1).unwrap(), input.io_body.len());
@@ -57,7 +57,7 @@ async fn persist_writes_fact_inline_io_citation_and_change_event() {
              WHERE citation_mapping_id = $1",
         )
         .bind(outcome.citation_mapping_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(cm.0, outcome.fact_memory_id.into_inner());
         assert_eq!(cm.1, outcome.cited_object_id);
@@ -69,7 +69,7 @@ async fn persist_writes_fact_inline_io_citation_and_change_event() {
              WHERE entity_memory_id = $1 AND entity_kind = 'Fact'",
         )
         .bind(outcome.fact_memory_id.into_inner())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(change_event.0, 1);
 
@@ -98,8 +98,8 @@ async fn distinct_calls_share_one_cited_object() {
         second_input.observed_at = now + time::Duration::milliseconds(5);
         second_input.occurred_at = now + time::Duration::milliseconds(5);
 
-        let first = persist_mcp_call_atomic(pg.pool(), &first_input).await?;
-        let second = persist_mcp_call_atomic(pg.pool(), &second_input).await?;
+        let first = persist_mcp_call_atomic(pg.pool_for_tests(), &first_input).await?;
+        let second = persist_mcp_call_atomic(pg.pool_for_tests(), &second_input).await?;
 
         assert!(!first.idempotent_replay);
         assert!(!second.idempotent_replay);
@@ -109,20 +109,20 @@ async fn distinct_calls_share_one_cited_object() {
         let n_cited: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM proxima_core.cited_objects WHERE schema_id = $1")
                 .bind(MCP_CALL_IO_SCHEMA)
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(n_cited.0, 1);
 
         let n_facts: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM proxima_core.memories WHERE schema_id = $1")
                 .bind(MCP_CALL_FACT_SCHEMA)
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(n_facts.0, 2);
 
         let n_bodies: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM proxima_core.cited_mcp_call_io_v1")
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(n_bodies.0, 1);
 
@@ -149,8 +149,8 @@ async fn identical_event_replays_idempotently() {
             None,
         );
 
-        let first = persist_mcp_call_atomic(pg.pool(), &input).await?;
-        let second = persist_mcp_call_atomic(pg.pool(), &input).await?;
+        let first = persist_mcp_call_atomic(pg.pool_for_tests(), &input).await?;
+        let second = persist_mcp_call_atomic(pg.pool_for_tests(), &input).await?;
 
         assert!(!first.idempotent_replay);
         assert!(second.idempotent_replay);
@@ -161,7 +161,7 @@ async fn identical_event_replays_idempotently() {
         let n_facts: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM proxima_core.memories WHERE schema_id = $1")
                 .bind(MCP_CALL_FACT_SCHEMA)
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(n_facts.0, 1);
 
@@ -185,14 +185,14 @@ async fn truncated_io_round_trips_original_byte_len() {
         let original_len = u64::try_from(io_body.len()).unwrap() + 4096;
         let input = sample_input(&owner, io_body.clone(), true, Some(original_len));
 
-        let outcome = persist_mcp_call_atomic(pg.pool(), &input).await?;
+        let outcome = persist_mcp_call_atomic(pg.pool_for_tests(), &input).await?;
 
         let cited: (Vec<u8>, i64, bool) = sqlx::query_as(
             "SELECT body, byte_len, truncated FROM proxima_core.cited_mcp_call_io_v1 \
              WHERE cited_object_id = $1",
         )
         .bind(outcome.cited_object_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(cited.0, io_body);
         assert_eq!(u64::try_from(cited.1).unwrap(), original_len);

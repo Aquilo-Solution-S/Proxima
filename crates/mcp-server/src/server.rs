@@ -26,9 +26,9 @@ use crate::auth::McpAuthContext;
 
 #[derive(Clone)]
 pub struct McpToolHost {
-    pool: sqlx::PgPool,
     owner: Owner,
     registry: Arc<FlavorRegistryFrozen>,
+    extensions: McpToolExtensions,
     engine: Option<Arc<Engine>>,
 }
 
@@ -43,17 +43,22 @@ impl std::fmt::Debug for McpToolHost {
 
 impl McpToolHost {
     #[must_use]
-    pub fn from_pool(
-        pool: sqlx::PgPool,
+    pub fn from_parts(
         owner: Owner,
         registry: Arc<FlavorRegistryFrozen>,
+        extensions: McpToolExtensions,
     ) -> Self {
         Self {
-            pool,
             owner,
             registry,
+            extensions,
             engine: None,
         }
+    }
+
+    #[must_use]
+    pub fn from_engine(engine: Arc<Engine>, owner: Owner, extensions: McpToolExtensions) -> Self {
+        Self::from_parts(owner, Arc::new(engine.registry().clone()), extensions).with_engine(engine)
     }
 
     #[must_use]
@@ -77,16 +82,15 @@ impl McpToolHost {
     ) -> Result<Self, crate::McpServerError> {
         let pg = proxima_storage_pg::PgStorage::connect(database_url).await?;
         pg.run_migrations().await?;
-        let frozen = registry.freeze();
+        let frozen = registry.try_freeze()?;
         let engine = Arc::new(
             Engine::new(frozen.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
         );
-        Ok(Self::from_pool(pg.pool().clone(), owner, Arc::new(frozen)).with_engine(engine))
-    }
-
-    #[must_use]
-    pub fn pool(&self) -> &sqlx::PgPool {
-        &self.pool
+        Ok(Self::from_engine(
+            engine,
+            owner,
+            McpToolExtensions::default(),
+        ))
     }
 
     #[must_use]
@@ -124,7 +128,7 @@ impl McpToolHost {
             registry: self.registry.clone(),
             caller_self_perspective: author.caller_self_perspective,
             master_token_id,
-            extensions: McpToolExtensions::with(self.pool.clone()),
+            extensions: self.extensions.clone(),
             author,
             engine: self.engine.clone(),
         }
@@ -398,11 +402,10 @@ mod tests {
     }
 
     fn make_server() -> McpToolHost {
-        let pool = sqlx::PgPool::connect_lazy("postgres://placeholder/db").expect("lazy pool");
         McpToolHost {
             owner: fake_owner(),
-            registry: Arc::new(FlavorRegistry::new().freeze()),
-            pool,
+            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            extensions: McpToolExtensions::default(),
             engine: None,
         }
     }

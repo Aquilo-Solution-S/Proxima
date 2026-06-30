@@ -105,7 +105,7 @@ impl PgFactSidecar for StatefulFactV1 {
 
 impl PgMemoryPayload for StatefulFactV1 {
     fn load_memory_payload(
-        _pool: &sqlx::PgPool,
+        _ctx: proxima_storage_pg::sidecars::PgSidecarReadCtx<'_>,
         _memory_id: MemoryId,
     ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async { Ok(None) })
@@ -180,7 +180,7 @@ impl PgFactSidecar for PlainFactV1 {
 
 impl PgMemoryPayload for PlainFactV1 {
     fn load_memory_payload(
-        _pool: &sqlx::PgPool,
+        _ctx: proxima_storage_pg::sidecars::PgSidecarReadCtx<'_>,
         _memory_id: MemoryId,
     ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async { Ok(None) })
@@ -255,7 +255,7 @@ impl PgFactSidecar for CrossFlavorActorFactV1 {
 
 impl PgMemoryPayload for CrossFlavorActorFactV1 {
     fn load_memory_payload(
-        _pool: &sqlx::PgPool,
+        _ctx: proxima_storage_pg::sidecars::PgSidecarReadCtx<'_>,
         _memory_id: MemoryId,
     ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async { Ok(None) })
@@ -264,15 +264,15 @@ impl PgMemoryPayload for CrossFlavorActorFactV1 {
 
 fn registry_for_test() -> FlavorRegistryFrozen {
     let mut registry = FlavorRegistry::new();
-    registry.add_fact_schema::<StatefulFactV1>();
-    registry.add_fact_schema::<PlainFactV1>();
-    registry.add_schema_capability_tags(
+    registry.add_fact_schema_or_panic_for_tests::<StatefulFactV1>();
+    registry.add_fact_schema_or_panic_for_tests::<PlainFactV1>();
+    registry.add_schema_capability_tags_or_panic_for_tests(
         PayloadKind::Fact,
         StatefulFactV1::schema_id(),
         SchemaVersion::new(StatefulFactV1::SCHEMA_VERSION),
         ["actor"],
     );
-    registry.add_relation(RelationDescriptor::substrate(
+    registry.add_relation_or_panic_for_tests(RelationDescriptor::substrate(
         TEST_FOLLOW_RELATION,
         RelationClass::Structural,
         EndpointBinding::FollowHead,
@@ -281,7 +281,7 @@ fn registry_for_test() -> FlavorRegistryFrozen {
         EntityKindMask::fact(),
         AuthorshipKindMask::event_source().union(AuthorshipKindMask::external_agent()),
     ));
-    registry.add_relation(RelationDescriptor::substrate(
+    registry.add_relation_or_panic_for_tests(RelationDescriptor::substrate(
         TEST_PIN_RELATION,
         RelationClass::Structural,
         EndpointBinding::Pin,
@@ -290,7 +290,7 @@ fn registry_for_test() -> FlavorRegistryFrozen {
         EntityKindMask::fact(),
         AuthorshipKindMask::event_source().union(AuthorshipKindMask::external_agent()),
     ));
-    registry.add_relation(
+    registry.add_relation_or_panic_for_tests(
         RelationDescriptor::substrate(
             TEST_FOLLOW_ACTOR_RELATION,
             RelationClass::Structural,
@@ -302,7 +302,7 @@ fn registry_for_test() -> FlavorRegistryFrozen {
         )
         .with_required_tags(&["actor"], &["actor"]),
     );
-    registry.add_relation(
+    registry.add_relation_or_panic_for_tests(
         RelationDescriptor::substrate(
             TEST_PIN_ACTOR_RELATION,
             RelationClass::Structural,
@@ -314,7 +314,7 @@ fn registry_for_test() -> FlavorRegistryFrozen {
         )
         .with_required_tags(&["actor"], &["actor"]),
     );
-    registry.freeze()
+    registry.freeze_or_panic_for_tests()
 }
 
 fn pg_sidecars_for_test() -> PgSidecarRegistryFrozen {
@@ -360,13 +360,13 @@ mod cross_flavor_b {
 }
 
 trait TestFlavorBundle {
-    fn register(registry: &mut FlavorRegistry);
+    fn register(registry: &mut FlavorRegistry) -> Result<(), proxima_core::FlavorRegistryError>;
 }
 
 impl<A: TestFlavorBundle, B: TestFlavorBundle> TestFlavorBundle for (A, B) {
-    fn register(registry: &mut FlavorRegistry) {
-        A::register(registry);
-        B::register(registry);
+    fn register(registry: &mut FlavorRegistry) -> Result<(), proxima_core::FlavorRegistryError> {
+        A::register(registry)?;
+        B::register(registry)
     }
 }
 
@@ -374,21 +374,21 @@ struct CrossFlavorA;
 struct CrossFlavorB;
 
 impl TestFlavorBundle for CrossFlavorA {
-    fn register(registry: &mut FlavorRegistry) {
-        cross_flavor_a::register(registry);
+    fn register(registry: &mut FlavorRegistry) -> Result<(), proxima_core::FlavorRegistryError> {
+        cross_flavor_a::register(registry)
     }
 }
 
 impl TestFlavorBundle for CrossFlavorB {
-    fn register(registry: &mut FlavorRegistry) {
-        cross_flavor_b::register(registry);
+    fn register(registry: &mut FlavorRegistry) -> Result<(), proxima_core::FlavorRegistryError> {
+        cross_flavor_b::register(registry)
     }
 }
 
 fn cross_flavor_registry_for_test() -> FlavorRegistryFrozen {
     let mut registry = FlavorRegistry::new();
-    <(CrossFlavorA, CrossFlavorB) as TestFlavorBundle>::register(&mut registry);
-    registry.freeze()
+    <(CrossFlavorA, CrossFlavorB) as TestFlavorBundle>::register(&mut registry).unwrap();
+    registry.try_freeze().unwrap()
 }
 
 fn cross_flavor_pg_sidecars_for_test() -> PgSidecarRegistryFrozen {
@@ -424,7 +424,7 @@ async fn create_sidecar(pg: &PgStorage) -> Result<(), sqlx::Error> {
             state text NOT NULL
         )",
     ] {
-        sqlx::query(sql).execute(pg.pool()).await?;
+        sqlx::query(sql).execute(pg.pool_for_tests()).await?;
     }
     Ok(())
 }
@@ -515,7 +515,7 @@ async fn memory_fact_entity_id(
           WHERE memory_id = $1",
     )
     .bind(memory_id.into_inner())
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     Ok(id.expect("stateful test memory has fact_entity_id"))
 }
@@ -550,7 +550,7 @@ async fn append_follow_head_edge_for_relation(
         .resolve_relation(relation_id)
         .expect("follow relation");
     let edge_id = Uuid::now_v7();
-    let mut tx = pg.pool().begin().await?;
+    let mut tx = pg.pool_for_tests().begin().await?;
     append_owner_checked_edge(
         &mut tx,
         owner,
@@ -596,7 +596,7 @@ async fn append_pinned_edge_for_relation(
         .resolve_relation(relation_id)
         .expect("pin relation");
     let edge_id = Uuid::now_v7();
-    let mut tx = pg.pool().begin().await?;
+    let mut tx = pg.pool_for_tests().begin().await?;
     append_owner_checked_edge(
         &mut tx,
         owner,
@@ -635,7 +635,7 @@ async fn raw_insert_follow_edge(
     .bind(owner_id)
     .bind(source_fact_entity_id)
     .bind(target_fact_entity_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }
@@ -666,7 +666,7 @@ async fn follow_head_edge_writes_log_and_graph_resolves_to_latest_head()
               WHERE edge_id = $1",
         )
         .bind(edge_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(raw, (None, Some(source_entity), None, Some(target_entity)));
 
@@ -811,7 +811,7 @@ async fn follow_head_required_tag_accepts_matching_fact_schema()
         let relation: (String,) =
             sqlx::query_as("SELECT relation FROM proxima_core.edges WHERE edge_id = $1")
                 .bind(edge_id)
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(relation.0, TEST_FOLLOW_ACTOR_RELATION);
         Ok(())
@@ -844,7 +844,7 @@ async fn required_tag_rejects_endpoint_schema_missing_tag() -> Result<(), Box<dy
             .resolve_relation(TEST_FOLLOW_ACTOR_RELATION)
             .expect("tagged follow relation");
 
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         let err = append_owner_checked_edge(
             &mut tx,
             &owner,
@@ -905,7 +905,7 @@ async fn pinned_memory_required_tag_accepts_matching_schema()
               WHERE edge_id = $1",
         )
         .bind(edge_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(
             raw,
@@ -951,7 +951,7 @@ async fn untagged_relation_edge_append_unchanged() -> Result<(), Box<dyn std::er
         let relation: (String,) =
             sqlx::query_as("SELECT relation FROM proxima_core.edges WHERE edge_id = $1")
                 .bind(edge_id)
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(relation.0, TEST_FOLLOW_RELATION);
         Ok(())
@@ -1003,7 +1003,7 @@ async fn cross_flavor_relation_accepts_schema_tagged_by_other_flavor()
         let row: (String,) =
             sqlx::query_as("SELECT relation FROM proxima_core.edges WHERE edge_id = $1")
                 .bind(edge_id)
-                .fetch_one(pg.pool())
+                .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(row.0, CROSS_FLAVOR_ASSIGNED_TO_RELATION);
         Ok(())
@@ -1033,7 +1033,7 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
         let follow_relation = registry
             .resolve_relation(TEST_FOLLOW_RELATION)
             .expect("follow relation");
-        let mut tx = pg.pool().begin().await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
         let err = append_owner_checked_edge(
             &mut tx,
             &owner,
@@ -1081,7 +1081,7 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
         .bind(source.memory_id.into_inner())
         .bind(source_entity)
         .bind(target_entity)
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await
         .expect_err("SQL exactly-one guard rejects malformed endpoint");
         assert!(err.to_string().contains("edges_source_endpoint_chk"));
@@ -1105,7 +1105,7 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
         .bind(source.memory_id.into_inner())
         .bind(source_entity)
         .bind(target_entity)
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await
         .expect_err("SQL exactly-one CHECK rejects memory + fact entity");
         assert!(err.to_string().contains("edges_source_endpoint_chk"));
@@ -1126,7 +1126,7 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
         .bind(owner_id)
         .bind(source_entity)
         .bind(target_entity)
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await
         .expect_err("fact_entity endpoint must declare Fact kind");
         assert!(
@@ -1221,7 +1221,7 @@ async fn change_history_and_list_change_events_preserve_fact_entity_endpoints()
             },
             caller_self_perspective: None,
             master_token_id: None,
-            extensions: McpToolExtensions::with(pg.pool().clone()),
+            extensions: McpToolExtensions::with(pg.pool_for_tests().clone()),
             engine: Some(engine),
         };
         let listed = list_change_events(
@@ -1279,7 +1279,7 @@ async fn pin_relations_still_round_trip_memory_endpoints() -> Result<(), Box<dyn
               WHERE edge_id = $1",
         )
         .bind(edge_id)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(
             raw,

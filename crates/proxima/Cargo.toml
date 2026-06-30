@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 proxima-core = { path = "../core" }
-proxima-storage-pg = { path = "../storage-pg" }
+proxima-storage-pg = { path = "../storage-pg", features = ["backend-api"] }
 proxima-blob-s3 = { path = "../blob-s3" }
 proxima-llm-openai-compat = { path = "../llm-openai-compat", optional = true }
 proxima-mcp-server = { path = "../mcp-server" }

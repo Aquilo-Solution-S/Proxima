@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use super::{EmbeddingClientReloader, Engine, EngineMcpListener};
+use crate::FlavorRegistryError;
 use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage_ports::{EngineStoragePorts, StoragePorts};
 use crate::verbs::schema::FlavorRegistryFrozen;
@@ -25,6 +26,28 @@ impl Engine {
         }
     }
 
+    /// Test-only infallible composite assembly.
+    ///
+    /// Production hosts call [`Self::try_compose`] and propagate the typed
+    /// registry error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if registry registration or freeze fails.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn compose_or_panic_for_tests(
+        storage: StoragePorts,
+        register: impl FnOnce(&mut crate::FlavorRegistry),
+    ) -> Self {
+        Self::try_compose(storage, |registry| {
+            register(registry);
+            Ok(())
+        })
+        .expect("flavor registry must be valid")
+    }
+
     /// One-call composite assembly: build a [`crate::FlavorRegistry`],
     /// hand it to `register` for each linked flavor's `register` fn,
     /// freeze it, and wire the engine over `storage`. Authentication lives
@@ -33,14 +56,17 @@ impl Engine {
     ///
     /// Migrations are NOT run here — the host runs substrate and
     /// per-flavor migrators against its pool before composing.
-    #[must_use]
-    pub fn compose(
+    ///
+    /// # Errors
+    ///
+    /// Returns a registry error from flavor registration or freeze.
+    pub fn try_compose(
         storage: StoragePorts,
-        register: impl FnOnce(&mut crate::FlavorRegistry),
-    ) -> Self {
+        register: impl FnOnce(&mut crate::FlavorRegistry) -> Result<(), FlavorRegistryError>,
+    ) -> Result<Self, FlavorRegistryError> {
         let mut registry = crate::FlavorRegistry::new();
-        register(&mut registry);
-        Self::new(registry.freeze()).with_storage_ports(storage)
+        register(&mut registry)?;
+        Ok(Self::new(registry.try_freeze()?).with_storage_ports(storage))
     }
 
     /// Get a reference to the schema registry.
@@ -98,7 +124,7 @@ mod tests {
 
     #[test]
     fn compose_assembles_engine_over_registry_closure() {
-        let engine = Engine::compose(StoragePorts::rejecting(), |_registry| {});
+        let engine = Engine::compose_or_panic_for_tests(StoragePorts::rejecting(), |_registry| {});
         assert!(engine.mcp_url().is_none());
         assert!(engine.embed_client().is_none());
     }

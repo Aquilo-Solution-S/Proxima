@@ -2,13 +2,16 @@
 //! vocabulary (register fn) plus its sidecar migrations. Tuples of
 //! bundles compose statically — duplicate ids fail at registry freeze.
 
-use proxima_core::FlavorRegistry;
+use proxima_core::{FlavorRegistry, FlavorRegistryError};
 use proxima_storage_pg::PgSidecarRegistry;
 
 use crate::NamedMigrator;
 
 pub trait FlavorBundle {
-    fn register(registry: &mut FlavorRegistry);
+    /// # Errors
+    ///
+    /// Returns a registry error when a linked flavor registration is invalid.
+    fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError>;
     fn register_pg_sidecars(_registry: &mut PgSidecarRegistry) {}
     /// By-value, order-preserving. The facade force-sets
     /// `ignore_missing(true)` on every returned migrator at boot.
@@ -16,7 +19,9 @@ pub trait FlavorBundle {
 }
 
 impl FlavorBundle for () {
-    fn register(_registry: &mut FlavorRegistry) {}
+    fn register(_registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+        Ok(())
+    }
 
     fn migrators() -> Vec<NamedMigrator> {
         Vec::new()
@@ -26,8 +31,9 @@ impl FlavorBundle for () {
 macro_rules! impl_flavor_bundle_tuple {
     ($($name:ident),+) => {
         impl<$($name: FlavorBundle),+> FlavorBundle for ($($name,)+) {
-            fn register(registry: &mut FlavorRegistry) {
-                $($name::register(registry);)+
+            fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+                $($name::register(registry)?;)+
+                Ok(())
             }
 
             fn register_pg_sidecars(registry: &mut PgSidecarRegistry) {
@@ -56,7 +62,7 @@ impl_flavor_bundle_tuple!(A, B, C, D, E, F, G, H);
 mod tests {
     use std::borrow::Cow;
 
-    use proxima_core::FlavorRegistry;
+    use proxima_core::{FlavorRegistry, FlavorRegistryError};
     use proxima_storage_pg::PgSidecarRegistry;
     use sqlx::migrate::{Migration, MigrationType, Migrator};
 
@@ -93,8 +99,8 @@ mod tests {
     struct BetaBundle;
 
     impl FlavorBundle for AlphaBundle {
-        fn register(registry: &mut FlavorRegistry) {
-            alpha::register(registry);
+        fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+            alpha::register(registry)
         }
 
         fn register_pg_sidecars(_registry: &mut PgSidecarRegistry) {}
@@ -105,8 +111,8 @@ mod tests {
     }
 
     impl FlavorBundle for BetaBundle {
-        fn register(registry: &mut FlavorRegistry) {
-            beta::register(registry);
+        fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+            beta::register(registry)
         }
 
         fn register_pg_sidecars(_registry: &mut PgSidecarRegistry) {}
@@ -138,9 +144,9 @@ mod tests {
     #[test]
     fn tuple_registers_flavors_in_order() {
         let mut registry = FlavorRegistry::new();
-        <(AlphaBundle, BetaBundle) as FlavorBundle>::register(&mut registry);
+        <(AlphaBundle, BetaBundle) as FlavorBundle>::register(&mut registry).unwrap();
 
-        let frozen = registry.freeze();
+        let frozen = registry.freeze_or_panic_for_tests();
         let flavor_ids: Vec<_> = frozen
             .list_flavors()
             .iter()
@@ -173,10 +179,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "duplicate FlavorDescriptor flavor_id registered")]
-    fn same_flavor_twice_panics_at_freeze() {
+    fn same_flavor_twice_is_typed_error_at_freeze() {
         let mut registry = FlavorRegistry::new();
-        <(AlphaBundle, AlphaBundle) as FlavorBundle>::register(&mut registry);
-        let _ = registry.freeze();
+        <(AlphaBundle, AlphaBundle) as FlavorBundle>::register(&mut registry).unwrap();
+        let err = registry.try_freeze().unwrap_err();
+        assert!(matches!(
+            err,
+            FlavorRegistryError::DuplicateFlavor { ref flavor_id }
+                if flavor_id == "proxima-test-alpha"
+        ));
     }
 }

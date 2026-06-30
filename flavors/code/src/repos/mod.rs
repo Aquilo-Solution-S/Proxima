@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! Repository registry and ingestion-run state.
 
 pub mod records;

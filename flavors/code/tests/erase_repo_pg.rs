@@ -1,7 +1,8 @@
 mod common;
 
 use common::{migrated_db, test_owner};
-use proxima_code::{CommitV1, TestRequestV1, erase_repo, register_repo};
+use proxima_code::testkit::{erase_repo, register_repo};
+use proxima_code::{CommitV1, TestRequestV1};
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{FactPayload, Owner, SchemaId, SchemaVersion};
 use proxima_pg_testkit::drop_db;
@@ -117,14 +118,14 @@ async fn count_rows(pool: &sqlx::PgPool, sql: &str, id: Uuid) -> Result<i64, sql
 }
 
 #[tokio::test]
-async fn erase_repo_deletes_registry_discovered_fact_sidecars() {
+async fn erase_repo_is_deferred_to_pr9_compliance_ports() {
     let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let repo_id = Uuid::now_v7();
         register_repo(
-            pg.pool(),
+            pg.pool_for_tests(),
             &owner,
             repo_id,
             &format!("/tmp/proxima-erase-repo-{repo_id}"),
@@ -133,39 +134,44 @@ async fn erase_repo_deletes_registry_discovered_fact_sidecars() {
         .await?;
 
         let memory_id = Uuid::now_v7();
-        insert_repo_commit_with_test_request(pg.pool(), &owner, repo_id, memory_id).await?;
+        insert_repo_commit_with_test_request(pg.pool_for_tests(), &owner, repo_id, memory_id)
+            .await?;
 
-        let receipt = erase_repo(pg.pool(), &owner, repo_id, &schemas_for_test()).await?;
-        assert_eq!(receipt.facts_deleted, 1);
-        assert_eq!(receipt.receipts_deleted, 1);
-        assert!(receipt.repo_record_deleted);
+        let err = erase_repo(pg.pool_for_tests(), &owner, repo_id, &schemas_for_test())
+            .await
+            .expect_err("PR8 must defer repo erase to PR9 compliance erase ports");
+        assert!(
+            err.to_string()
+                .contains("repo erase is deferred to PR9 compliance erase ports"),
+            "unexpected erase_repo error: {err}"
+        );
 
         assert_eq!(
             count_rows(
-                pg.pool(),
+                pg.pool_for_tests(),
                 "SELECT COUNT(*)::bigint FROM proxima_code.test_requested_v1 WHERE memory_id = $1",
                 memory_id,
             )
             .await?,
-            0
+            1
         );
         assert_eq!(
             count_rows(
-                pg.pool(),
+                pg.pool_for_tests(),
                 "SELECT COUNT(*)::bigint FROM proxima_core.memories WHERE memory_id = $1",
                 memory_id,
             )
             .await?,
-            0
+            1
         );
         assert_eq!(
             count_rows(
-                pg.pool(),
+                pg.pool_for_tests(),
                 "SELECT COUNT(*)::bigint FROM proxima_code.repos WHERE repo_id = $1",
                 repo_id,
             )
             .await?,
-            0
+            1
         );
 
         Ok(())
@@ -173,5 +179,5 @@ async fn erase_repo_deletes_registry_discovered_fact_sidecars() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("erase_repo_deletes_registry_discovered_fact_sidecars failed");
+    result.expect("erase_repo_is_deferred_to_pr9_compliance_ports failed");
 }

@@ -51,14 +51,17 @@ const DESTRUCTIVE_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
 
 /// Register every substrate-shipped MCP tool into the `FlavorRegistry`.
 /// Called from `FlavorRegistry::default()`.
-pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
-    registry.add_substrate_mcp_tool::<SearchMemoriesTool>();
-    registry.add_substrate_mcp_tool::<MemorySpacesTool>();
-    registry.add_substrate_mcp_tool::<RememberTool>();
-    registry.add_substrate_mcp_tool::<RecordUtteranceTool>();
-    registry.add_substrate_mcp_tool::<DeriveTool>();
-    registry.add_substrate_mcp_tool::<LinkTool>();
-    registry.add_substrate_mcp_tool::<CoreGoalTool>();
-    registry.add_substrate_mcp_tool::<CoreFactTool>();
-    registry.add_substrate_mcp_tool::<CoreMembershipTool>();
+pub(crate) fn register_all(
+    registry: &mut crate::FlavorRegistry,
+) -> Result<(), crate::FlavorRegistryError> {
+    registry.try_add_mcp_tool::<SearchMemoriesTool>("core")?;
+    registry.try_add_mcp_tool::<MemorySpacesTool>("core")?;
+    registry.try_add_mcp_tool::<RememberTool>("core")?;
+    registry.try_add_mcp_tool::<RecordUtteranceTool>("core")?;
+    registry.try_add_mcp_tool::<DeriveTool>("core")?;
+    registry.try_add_mcp_tool::<LinkTool>("core")?;
+    registry.try_add_mcp_tool::<CoreGoalTool>("core")?;
+    registry.try_add_mcp_tool::<CoreFactTool>("core")?;
+    registry.try_add_mcp_tool::<CoreMembershipTool>("core")?;
+    Ok(())
 }

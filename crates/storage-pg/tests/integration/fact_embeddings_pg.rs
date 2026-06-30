@@ -61,8 +61,8 @@ fn engine_for(
     embed: Option<Arc<dyn EmbeddingClient>>,
 ) -> proxima_core::Engine {
     let mut registry = FlavorRegistry::new();
-    registry.add_fact_schema::<TestFactV1>();
-    let engine = proxima_core::Engine::new(registry.freeze())
+    registry.add_fact_schema_or_panic_for_tests::<TestFactV1>();
+    let engine = proxima_core::Engine::new(registry.freeze_or_panic_for_tests())
         .with_storage_ports(Arc::new(pg).storage_ports());
     if let Some(embed) = embed {
         engine.with_embed(embed)
@@ -196,14 +196,17 @@ async fn fact_ingest_with_embed_client_enqueues_pending_embedding_job_once()
         assert!(replay.idempotent_replay);
         assert_eq!(replay.memory_id, outcome.memory_id);
         assert_eq!(
-            load_memory_text(pg.pool(), outcome.memory_id).await?,
+            load_memory_text(pg.pool_for_tests(), outcome.memory_id).await?,
             Some("rendered fact".to_string()),
         );
         assert_eq!(
-            count_fact_embeddings(pg.pool(), outcome.memory_id).await?,
+            count_fact_embeddings(pg.pool_for_tests(), outcome.memory_id).await?,
             0
         );
-        assert_eq!(count_embedding_jobs(pg.pool(), outcome.memory_id).await?, 1);
+        assert_eq!(
+            count_embedding_jobs(pg.pool_for_tests(), outcome.memory_id).await?,
+            1
+        );
         Ok(())
     }
     .await;
@@ -233,19 +236,25 @@ async fn drain_embedding_jobs_writes_embedding_and_deletes_job()
             .await?;
 
         assert_eq!(
-            count_fact_embeddings(pg.pool(), outcome.memory_id).await?,
+            count_fact_embeddings(pg.pool_for_tests(), outcome.memory_id).await?,
             0
         );
-        assert_eq!(count_embedding_jobs(pg.pool(), outcome.memory_id).await?, 1);
+        assert_eq!(
+            count_embedding_jobs(pg.pool_for_tests(), outcome.memory_id).await?,
+            1
+        );
 
         let drain = engine.drain_embedding_jobs(10).await?;
         assert_eq!(drain.processed, 1);
         assert_eq!(drain.failed, 0);
         assert_eq!(
-            count_fact_embeddings(pg.pool(), outcome.memory_id).await?,
+            count_fact_embeddings(pg.pool_for_tests(), outcome.memory_id).await?,
             1
         );
-        assert_eq!(count_embedding_jobs(pg.pool(), outcome.memory_id).await?, 0);
+        assert_eq!(
+            count_embedding_jobs(pg.pool_for_tests(), outcome.memory_id).await?,
+            0
+        );
         Ok(())
     }
     .await;
@@ -290,11 +299,11 @@ async fn upsert_memory_embedding_noops_after_source_memory_deleted()
                 AND entity_id = $1",
         )
         .bind(outcome.memory_id.into_inner())
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
         sqlx::query("DELETE FROM proxima_core.memories WHERE memory_id = $1")
             .bind(outcome.memory_id.into_inner())
-            .execute(pg.pool())
+            .execute(pg.pool_for_tests())
             .await?;
 
         let embedding = vec![0.125; EMBEDDING_DIM];
@@ -314,7 +323,7 @@ async fn upsert_memory_embedding_noops_after_source_memory_deleted()
             None,
         );
         assert_eq!(
-            count_fact_embeddings(pg.pool(), outcome.memory_id).await?,
+            count_fact_embeddings(pg.pool_for_tests(), outcome.memory_id).await?,
             0
         );
         Ok(())
@@ -343,7 +352,7 @@ async fn failed_embedding_jobs_retry_until_attempt_cap() -> Result<(), Box<dyn s
             assert_eq!(drain.processed, 1);
             assert_eq!(drain.failed, 1);
             let Some((status, attempts, last_error)) =
-                load_embedding_job(pg.pool(), outcome.memory_id).await?
+                load_embedding_job(pg.pool_for_tests(), outcome.memory_id).await?
             else {
                 panic!("failed job must remain in embedding_jobs");
             };
@@ -368,7 +377,7 @@ async fn failed_embedding_jobs_retry_until_attempt_cap() -> Result<(), Box<dyn s
         assert_eq!(drain.processed, 0);
         assert_eq!(drain.failed, 0);
         assert_eq!(
-            count_fact_embeddings(pg.pool(), outcome.memory_id).await?,
+            count_fact_embeddings(pg.pool_for_tests(), outcome.memory_id).await?,
             0
         );
         Ok(())
@@ -409,7 +418,7 @@ async fn claimed_embedding_job_is_not_claimed_again() -> Result<(), Box<dyn std:
             .await?;
         assert!(second_claims.is_empty());
         assert_eq!(
-            load_embedding_job(pg.pool(), outcome.memory_id)
+            load_embedding_job(pg.pool_for_tests(), outcome.memory_id)
                 .await?
                 .map(|(status, _, _)| status),
             Some("processing".to_string()),
@@ -457,7 +466,7 @@ async fn stale_processing_embedding_job_is_reclaimed() -> Result<(), Box<dyn std
               WHERE entity_id = $1",
         )
         .bind(outcome.memory_id.into_inner())
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
 
         let reclaimed = pg
@@ -494,11 +503,17 @@ async fn fact_embedding_backfill_heals_no_client_ingest() -> Result<(), Box<dyn 
             .await?;
 
         assert_eq!(
-            load_memory_text(pg.pool(), first.memory_id).await?,
+            load_memory_text(pg.pool_for_tests(), first.memory_id).await?,
             Some("backfill fact one".to_string()),
         );
-        assert_eq!(count_embedding_jobs(pg.pool(), first.memory_id).await?, 0);
-        assert_eq!(count_embedding_jobs(pg.pool(), second.memory_id).await?, 0);
+        assert_eq!(
+            count_embedding_jobs(pg.pool_for_tests(), first.memory_id).await?,
+            0
+        );
+        assert_eq!(
+            count_embedding_jobs(pg.pool_for_tests(), second.memory_id).await?,
+            0
+        );
 
         engine
             .set_embed_client(Some(Arc::new(ConstantEmbedding::prefixed(
@@ -508,13 +523,13 @@ async fn fact_embedding_backfill_heals_no_client_ingest() -> Result<(), Box<dyn 
             .await;
         assert_eq!(engine.backfill_fact_embeddings(&owner, 1).await?, 1);
         assert_eq!(
-            count_embedding_jobs(pg.pool(), first.memory_id).await?
-                + count_embedding_jobs(pg.pool(), second.memory_id).await?,
+            count_embedding_jobs(pg.pool_for_tests(), first.memory_id).await?
+                + count_embedding_jobs(pg.pool_for_tests(), second.memory_id).await?,
             1
         );
         assert_eq!(
-            count_fact_embeddings(pg.pool(), first.memory_id).await?
-                + count_fact_embeddings(pg.pool(), second.memory_id).await?,
+            count_fact_embeddings(pg.pool_for_tests(), first.memory_id).await?
+                + count_fact_embeddings(pg.pool_for_tests(), second.memory_id).await?,
             0
         );
 
@@ -522,8 +537,8 @@ async fn fact_embedding_backfill_heals_no_client_ingest() -> Result<(), Box<dyn 
         assert_eq!(drain.processed, 1);
         assert_eq!(drain.failed, 0);
         assert_eq!(
-            count_fact_embeddings(pg.pool(), first.memory_id).await?
-                + count_fact_embeddings(pg.pool(), second.memory_id).await?,
+            count_fact_embeddings(pg.pool_for_tests(), first.memory_id).await?
+                + count_fact_embeddings(pg.pool_for_tests(), second.memory_id).await?,
             1
         );
 
@@ -532,12 +547,18 @@ async fn fact_embedding_backfill_heals_no_client_ingest() -> Result<(), Box<dyn 
         assert_eq!(drain.processed, 1);
         assert_eq!(drain.failed, 0);
         assert_eq!(
-            count_fact_embeddings(pg.pool(), first.memory_id).await?
-                + count_fact_embeddings(pg.pool(), second.memory_id).await?,
+            count_fact_embeddings(pg.pool_for_tests(), first.memory_id).await?
+                + count_fact_embeddings(pg.pool_for_tests(), second.memory_id).await?,
             2
         );
-        assert_eq!(count_embedding_jobs(pg.pool(), first.memory_id).await?, 0);
-        assert_eq!(count_embedding_jobs(pg.pool(), second.memory_id).await?, 0);
+        assert_eq!(
+            count_embedding_jobs(pg.pool_for_tests(), first.memory_id).await?,
+            0
+        );
+        assert_eq!(
+            count_embedding_jobs(pg.pool_for_tests(), second.memory_id).await?,
+            0
+        );
         Ok(())
     }
     .await;
@@ -583,7 +604,7 @@ async fn reconcile_embeddings_enqueues_missing_facts_idempotently()
         .await?;
 
         assert_eq!(
-            count_embedding_jobs_for_model(pg.pool(), "stub-fact-embed").await?,
+            count_embedding_jobs_for_model(pg.pool_for_tests(), "stub-fact-embed").await?,
             0
         );
         let first =
@@ -592,10 +613,13 @@ async fn reconcile_embeddings_enqueues_missing_facts_idempotently()
         assert_eq!(first.enqueued, 3);
         assert_eq!(first.skipped, 1);
         assert_eq!(
-            count_embedding_jobs_for_model(pg.pool(), "stub-fact-embed").await?,
+            count_embedding_jobs_for_model(pg.pool_for_tests(), "stub-fact-embed").await?,
             3
         );
-        assert_eq!(count_embedding_jobs(pg.pool(), stale.memory_id).await?, 0);
+        assert_eq!(
+            count_embedding_jobs(pg.pool_for_tests(), stale.memory_id).await?,
+            0
+        );
 
         let second =
             reconcile_stub_fact_embeddings(&pg, EmbeddingReconcileScope::MissingOnly).await?;
@@ -603,10 +627,13 @@ async fn reconcile_embeddings_enqueues_missing_facts_idempotently()
         assert_eq!(second.enqueued, 0);
         assert_eq!(second.skipped, 4);
         assert_eq!(
-            count_embedding_jobs_for_model(pg.pool(), "stub-fact-embed").await?,
+            count_embedding_jobs_for_model(pg.pool_for_tests(), "stub-fact-embed").await?,
             3
         );
-        assert_eq!(count_embedding_jobs(pg.pool(), stale.memory_id).await?, 0);
+        assert_eq!(
+            count_embedding_jobs(pg.pool_for_tests(), stale.memory_id).await?,
+            0
+        );
 
         let include_stale =
             reconcile_stub_fact_embeddings(&pg, EmbeddingReconcileScope::IncludeStale).await?;
@@ -614,10 +641,13 @@ async fn reconcile_embeddings_enqueues_missing_facts_idempotently()
         assert_eq!(include_stale.enqueued, 1);
         assert_eq!(include_stale.skipped, 3);
         assert_eq!(
-            count_embedding_jobs_for_model(pg.pool(), "stub-fact-embed").await?,
+            count_embedding_jobs_for_model(pg.pool_for_tests(), "stub-fact-embed").await?,
             4
         );
-        assert_eq!(count_embedding_jobs(pg.pool(), stale.memory_id).await?, 1);
+        assert_eq!(
+            count_embedding_jobs(pg.pool_for_tests(), stale.memory_id).await?,
+            1
+        );
 
         let include_stale_again =
             reconcile_stub_fact_embeddings(&pg, EmbeddingReconcileScope::IncludeStale).await?;
@@ -625,7 +655,7 @@ async fn reconcile_embeddings_enqueues_missing_facts_idempotently()
         assert_eq!(include_stale_again.enqueued, 0);
         assert_eq!(include_stale_again.skipped, 4);
         assert_eq!(
-            count_embedding_jobs_for_model(pg.pool(), "stub-fact-embed").await?,
+            count_embedding_jobs_for_model(pg.pool_for_tests(), "stub-fact-embed").await?,
             4
         );
         Ok(())
@@ -656,10 +686,13 @@ async fn reconcile_embedding_drain_writes_fact_embeddings() -> Result<(), Box<dy
         assert_eq!(drain.embedded, 1);
         assert_eq!(drain.failed, 0);
         assert_eq!(
-            count_fact_embeddings(pg.pool(), outcome.memory_id).await?,
+            count_fact_embeddings(pg.pool_for_tests(), outcome.memory_id).await?,
             1
         );
-        assert_eq!(count_embedding_jobs(pg.pool(), outcome.memory_id).await?, 0);
+        assert_eq!(
+            count_embedding_jobs(pg.pool_for_tests(), outcome.memory_id).await?,
+            0
+        );
         Ok(())
     }
     .await;
@@ -728,14 +761,17 @@ async fn fact_ingest_without_embed_client_still_succeeds() -> Result<(), Box<dyn
             .await?;
 
         assert_eq!(
-            load_memory_text(pg.pool(), outcome.memory_id).await?,
+            load_memory_text(pg.pool_for_tests(), outcome.memory_id).await?,
             Some("no client fact".to_string()),
         );
         assert_eq!(
-            count_fact_embeddings(pg.pool(), outcome.memory_id).await?,
+            count_fact_embeddings(pg.pool_for_tests(), outcome.memory_id).await?,
             0
         );
-        assert_eq!(count_embedding_jobs(pg.pool(), outcome.memory_id).await?, 0);
+        assert_eq!(
+            count_embedding_jobs(pg.pool_for_tests(), outcome.memory_id).await?,
+            0
+        );
         Ok(())
     }
     .await;

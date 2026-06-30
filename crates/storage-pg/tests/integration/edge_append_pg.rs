@@ -21,7 +21,7 @@ async fn direct_operator_edge_append_rejects_invalid_phase_shape()
     let (pg, db_name) = fresh_pg().await;
 
     let result = async {
-        let engine = Engine::new(FlavorRegistry::new().freeze())
+        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let user = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
@@ -65,7 +65,7 @@ async fn cross_owner_derived_edge_requires_source_write_and_target_read()
     let (pg, db_name) = fresh_pg().await;
 
     let result = async {
-        let engine = Engine::new(FlavorRegistry::new().freeze())
+        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
         let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
@@ -173,7 +173,7 @@ async fn insert_source_abstraction(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(label)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(MemoryId::new(memory_id))
 }
@@ -265,7 +265,7 @@ async fn seed_membership(
     .bind(group_id.into_inner())
     .bind(member_id.into_inner())
     .bind(relation)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }
@@ -281,7 +281,7 @@ async fn edge_change_event_owner(
             AND kind = 'EdgeAppend'",
     )
     .bind(edge_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     Ok(kind.with_uuid(id).expect("change_event owner_ref shape"))
 }

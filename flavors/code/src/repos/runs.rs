@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use super::records::{RepoIngestionRun, RepoRegistryError, RunStage, RunStatus, StageCounters};
 use super::rows::RunRow;
 use proxima_core::Owner;

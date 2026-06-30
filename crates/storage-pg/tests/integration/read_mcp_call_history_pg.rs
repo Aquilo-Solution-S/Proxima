@@ -107,7 +107,7 @@ async fn seed_history_fixture(
 
     for (owner, actor_oid, tool_name, io_body, offset_ms) in seeds {
         seed_call(
-            pg.pool(),
+            pg.pool_for_tests(),
             owner,
             actor_oid,
             tool_name,
