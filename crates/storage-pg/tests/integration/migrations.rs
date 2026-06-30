@@ -220,9 +220,12 @@ async fn fresh_v004_baseline_enforces_owner_ref_shape_constraints() {
         let err = sqlx::query(
             "INSERT INTO proxima_core.memories
                 (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-                 operator_kind, model_id, prompt_version)
+                 operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
              VALUES ($1, 'personal', NULL, 'test/owner-shape', 1, 'Abstraction',
-                     'bad owner', 'Wake', 'test-model', 'v1')",
+                     'bad owner', 'AtoA',
+                     '00000000-0000-0000-0000-000000000401'::uuid,
+                     '00000000-0000-0000-0000-000000000402'::uuid, NULL,
+                     'test-model', 'v1')"
         )
         .bind(Uuid::now_v7())
         .execute(pg.pool())

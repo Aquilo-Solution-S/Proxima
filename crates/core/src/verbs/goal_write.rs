@@ -6,8 +6,8 @@
 
 use crate::{FlavorRegistryFrozen, ProtocolError};
 use crate::{
-    GoalId, GoalPayload, MemoryId, ModelId, OperatorId, Owner, OwnerRef, PromptVersion, SchemaId,
-    SchemaVersion, SidecarPayload, ToolId,
+    GoalId, GoalPayload, InputContractId, MemoryId, ModelId, OperatorId, Owner, OwnerRef,
+    PromptVersion, SchemaId, SchemaVersion, SidecarPayload, ToolId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, sqlx::Type)]
@@ -47,6 +47,7 @@ pub enum SystemOrigin {
     Operator {
         operator_id: OperatorId,
         operator_kind: OperatorKind,
+        input_contract_id: InputContractId,
         model_id: ModelId,
         prompt_version: PromptVersion,
     },

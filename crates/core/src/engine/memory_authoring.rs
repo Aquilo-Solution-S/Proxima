@@ -5,9 +5,11 @@ use crate::error::ProtocolError;
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, StorageError};
 use crate::{
     CORE_SUPERSEDES_RELATION, EdgeAuthorshipKind, EdgeId, EndpointBinding, EntityId, EntityKind,
-    MemoryId, MemoryOperatorKind, Owner, RegisteredRelation, RelationOwnerPolicy,
-    RelationTargetAccessPolicy, SchemaId, SchemaVersion, SidecarPayload,
+    InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner, RegisteredRelation,
+    RelationOwnerPolicy, RelationTargetAccessPolicy, SchemaId, SchemaVersion, SidecarPayload,
+    SourceBatchId, validate_operator_edge_shape,
 };
+use crate::{MemoryOutputInvocation, OperatorInvocationManifest, OutputEdgeManifest};
 
 #[derive(Debug, Clone)]
 pub struct AuthorDerivedEdgeInput<'a> {
@@ -29,6 +31,9 @@ pub struct AuthorDerivedRequestInput<'a> {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub operator_kind: MemoryOperatorKind,
+    pub operator_id: OperatorId,
+    pub input_contract_id: InputContractId,
+    pub source_batch_id: Option<SourceBatchId>,
     pub model_id: &'a str,
     pub prompt_version: &'a str,
     pub sidecar_payload: SidecarPayload,
@@ -98,6 +103,9 @@ impl Engine {
             }
         }
         let edges = self.validated_author_derived_edges(authz, &req).await?;
+        let source_batch_id = self
+            .effective_operator_source_batch_id(&owner, &req, &edges)
+            .await?;
         let target_ids = req
             .edges
             .iter()
@@ -117,6 +125,9 @@ impl Engine {
                 schema_id: req.schema_id,
                 schema_version: req.schema_version,
                 operator_kind: req.operator_kind,
+                operator_id: req.operator_id,
+                input_contract_id: req.input_contract_id,
+                source_batch_id,
                 model_id: req.model_id,
                 prompt_version: req.prompt_version,
                 sidecar_payload: req.sidecar_payload,
@@ -173,6 +184,12 @@ impl Engine {
             req.authorship_kind,
             "edge",
         )?;
+        if req.authorship_kind.is_operator() {
+            return Err(ProtocolError::invalid_argument(
+                "edge",
+                "operator-authored edges require an operator proof-carrier write path",
+            ));
+        }
 
         let edge = DerivedEdgeSpec {
             owner: &owner,
@@ -206,6 +223,7 @@ impl Engine {
         &self,
         req: AuthorDerivedRequestInput<'_>,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
+        validate_operator_memory_invocation_request(&req)?;
         let (embedding, embedding_model_id) = if let Some(client) = self.embed_client() {
             let embedding = client
                 .embed(&req.text)
@@ -274,6 +292,9 @@ impl Engine {
             schema_id: req.schema_id,
             schema_version: req.schema_version,
             operator_kind: req.operator_kind,
+            operator_id: req.operator_id,
+            input_contract_id: req.input_contract_id,
+            source_batch_id: req.source_batch_id,
             model_id: req.model_id,
             prompt_version: req.prompt_version,
             sidecar_payload: req.sidecar_payload,
@@ -287,6 +308,60 @@ impl Engine {
             .memory_authoring
             .author_derived(&storage_req)
             .await
+    }
+
+    async fn effective_operator_source_batch_id(
+        &self,
+        owner: &Owner,
+        req: &AuthorDerivedRequestInput<'_>,
+        edges: &[AuthorDerivedEdgeInput<'_>],
+    ) -> Result<Option<SourceBatchId>, ProtocolError> {
+        match req.operator_kind {
+            MemoryOperatorKind::FtoA => {
+                let input_ids = edges
+                    .iter()
+                    .filter(|edge| {
+                        edge.authorship_kind == MemoryOperatorKind::FtoA.edge_authorship()
+                    })
+                    .map(|edge| edge.target_memory_id)
+                    .collect::<Vec<_>>();
+                let rows = self
+                    .storage()
+                    .memory_authoring
+                    .memory_authoring
+                    .load_fact_source_batches(owner, &input_ids)
+                    .await
+                    .map_err(|err| ProtocolError::internal(err.to_string()))?;
+                if rows.len() != input_ids.len() {
+                    return Err(ProtocolError::invalid_argument(
+                        "source_handles",
+                        "F→A operator inputs must be Fact memories with source receipts",
+                    ));
+                }
+                let first = rows.first().map(|row| row.source_batch_id).ok_or_else(|| {
+                    ProtocolError::invalid_argument(
+                        "source_handles",
+                        "F→A operator invocation requires source inputs",
+                    )
+                })?;
+                if rows.iter().any(|row| row.source_batch_id != first) {
+                    return Err(ProtocolError::invalid_argument(
+                        "source_handles",
+                        "F→A operator inputs must belong to one source batch",
+                    ));
+                }
+                if let Some(requested) = req.source_batch_id
+                    && requested != first
+                {
+                    return Err(ProtocolError::invalid_argument(
+                        "source_batch_id",
+                        "must match the F→A input Facts",
+                    ));
+                }
+                Ok(Some(first))
+            }
+            MemoryOperatorKind::AtoA | MemoryOperatorKind::AtoP => Ok(req.source_batch_id),
+        }
     }
 
     async fn validated_author_derived_edges<'a>(
@@ -439,6 +514,63 @@ impl Engine {
     }
 }
 
+fn validate_operator_memory_invocation_request(
+    req: &AuthorDerivedRequestInput<'_>,
+) -> Result<(), StorageError> {
+    match req.operator_kind {
+        MemoryOperatorKind::FtoA if req.source_batch_id.is_none() => {
+            return Err(StorageError::ConstraintViolation(
+                "F→A operator invocation requires source_batch_id".into(),
+            ));
+        }
+        MemoryOperatorKind::AtoA | MemoryOperatorKind::AtoP if req.source_batch_id.is_some() => {
+            return Err(StorageError::ConstraintViolation(
+                "source_batch_id is only valid for F→A operator invocations".into(),
+            ));
+        }
+        MemoryOperatorKind::FtoA | MemoryOperatorKind::AtoA | MemoryOperatorKind::AtoP => {}
+    }
+
+    let output_edges = req
+        .edges
+        .iter()
+        .map(|edge| {
+            OutputEdgeManifest::memory_to_memory(
+                edge.source_memory_id,
+                edge.target_memory_id,
+                edge.authorship_kind,
+            )
+        })
+        .collect::<Vec<_>>();
+    let inputs = req
+        .edges
+        .iter()
+        .map(|edge| (edge.target_memory_id, edge.target_kind))
+        .collect::<Vec<_>>();
+    let manifest = OperatorInvocationManifest::memory_output(MemoryOutputInvocation {
+        phase: req.operator_kind.phase(),
+        operator_id: req.operator_id,
+        input_contract_id: req.input_contract_id,
+        inputs,
+        output_memory_id: req.memory_id,
+        output_kind: req.kind,
+        schema_id: req.schema_id.clone(),
+        schema_version: req.schema_version,
+        output_edges,
+    });
+    manifest
+        .validate()
+        .map_err(|err| StorageError::ConstraintViolation(err.to_string()))?;
+    for edge in req.edges {
+        if edge.source_memory_id != req.memory_id {
+            return Err(StorageError::ConstraintViolation(
+                "operator provenance edge source must be the output memory".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn write_relation_for_entity_kind(kind: EntityKind) -> Relation {
     match kind {
         EntityKind::Fact => Relation::Ingest,
@@ -490,7 +622,14 @@ fn validate_relation_shape(
             EndpointBinding::Pin,
             authorship_kind.as_str(),
         )
-        .map_err(|err| ProtocolError::invalid_argument(field, err))
+        .map_err(|err| ProtocolError::invalid_argument(field, err))?;
+    validate_operator_edge_shape(
+        relation.descriptor.class,
+        source_kind,
+        target_kind,
+        authorship_kind,
+    )
+    .map_err(|err| ProtocolError::invalid_argument(field, err))
 }
 
 #[cfg(test)]
@@ -539,7 +678,10 @@ mod tests {
                     text: "body".into(),
                     schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
                     schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
-                    operator_kind: MemoryOperatorKind::ExternalAgent,
+                    operator_kind: MemoryOperatorKind::FtoA,
+                    operator_id: OperatorId::new(uuid::Uuid::now_v7()),
+                    input_contract_id: InputContractId::new(uuid::Uuid::now_v7()),
+                    source_batch_id: Some(SourceBatchId::new(uuid::Uuid::now_v7())),
                     model_id: "test-model",
                     prompt_version: "test",
                     sidecar_payload: derivation_sidecar(),

@@ -560,9 +560,12 @@ async fn insert_tagged_abstraction(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, created_at,
-             kind, text, operator_kind, model_id, prompt_version)
+             kind, text, operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
          VALUES ($1, $2, $3, 'proxima-test/tagged-abstraction-v1', 1,
-                 $4, 'Abstraction', $5, 'Wake', 'test-model', 'test-v1')",
+                 $4, 'Abstraction', $5, 'AtoA',
+                 '00000000-0000-0000-0000-000000000321'::uuid,
+                 '00000000-0000-0000-0000-000000000322'::uuid, NULL,
+                 'test-model', 'test-v1')"
     )
     .bind(input.memory_id)
     .bind(owner_kind)
@@ -620,9 +623,12 @@ async fn insert_embedded_memory_with_vec(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version)
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/search-abstraction-v1', 1,
-                 'Abstraction', $4, 'Wake', 'test-model', 'test-v1')",
+                 'Abstraction', $4, 'AtoA',
+                 '00000000-0000-0000-0000-000000000323'::uuid,
+                 '00000000-0000-0000-0000-000000000324'::uuid, NULL,
+                 'test-model', 'test-v1')"
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -655,9 +661,12 @@ async fn insert_text_memory(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version)
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/search-attribution-v1', 1,
-                 'Abstraction', $4, 'Wake', 'test-model', 'test-v1')",
+                 'Abstraction', $4, 'AtoA',
+                 '00000000-0000-0000-0000-000000000325'::uuid,
+                 '00000000-0000-0000-0000-000000000326'::uuid, NULL,
+                 'test-model', 'test-v1')"
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -679,9 +688,12 @@ async fn insert_search_abstraction(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, supersedes)
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version, supersedes)
          VALUES ($1, $2, $3, 'test/search-abstraction-v1', 1,
-                 'Abstraction', $4, 'Wake', 'test-model', 'test-v1', $5)",
+                 'Abstraction', $4, 'AtoA',
+                 '00000000-0000-0000-0000-000000000327'::uuid,
+                 '00000000-0000-0000-0000-000000000328'::uuid, NULL,
+                 'test-model', 'test-v1', $5)"
     )
     .bind(memory_id)
     .bind(owner_kind)

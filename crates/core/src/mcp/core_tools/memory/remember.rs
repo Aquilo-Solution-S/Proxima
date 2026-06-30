@@ -126,12 +126,9 @@ impl McpTool for RememberTool {
                 idempotency_key: args.idempotency_key,
             };
             let observed_at = time::OffsetDateTime::now_utc();
-            let draft = FactWriteCommand::from_payload(
-                SOURCE_ID,
-                SourceBatchId::new(uuid::Uuid::now_v7()),
-                &payload,
-                observed_at,
-            );
+            let source_batch_id = SourceBatchId::new(uuid::Uuid::now_v7());
+            let draft =
+                FactWriteCommand::from_payload(SOURCE_ID, source_batch_id, &payload, observed_at);
 
             let engine = ctx
                 .engine()
@@ -170,6 +167,13 @@ impl McpTool for RememberTool {
                     )
                     .await?
             };
+
+            if !outcome.idempotent_replay {
+                engine
+                    .close_batch(&authz, space.owner, source_batch_id)
+                    .await
+                    .map_err(|err| McpToolError::Other(err.to_string()))?;
+            }
 
             Ok(RememberOutput {
                 handle: ctx.format_fact_memory(outcome.memory_id),

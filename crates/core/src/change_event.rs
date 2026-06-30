@@ -40,9 +40,28 @@ impl EntityKind {
 #[sqlx(type_name = "proxima_core.memory_operator_kind")]
 pub enum MemoryOperatorKind {
     FtoA,
+    AtoA,
     AtoP,
-    ExternalAgent,
-    Wake,
+}
+
+impl MemoryOperatorKind {
+    #[must_use]
+    pub const fn phase(self) -> crate::OperatorPhase {
+        match self {
+            Self::FtoA => crate::OperatorPhase::FtoA,
+            Self::AtoA => crate::OperatorPhase::AtoA,
+            Self::AtoP => crate::OperatorPhase::AtoP,
+        }
+    }
+
+    #[must_use]
+    pub const fn edge_authorship(self) -> crate::EdgeAuthorshipKind {
+        match self {
+            Self::FtoA => crate::EdgeAuthorshipKind::OperatorFtoA,
+            Self::AtoA => crate::EdgeAuthorshipKind::OperatorAtoA,
+            Self::AtoP => crate::EdgeAuthorshipKind::OperatorAtoP,
+        }
+    }
 }
 
 /// Discriminant tag for `ChangeEventKind`, mirrors the SQL enum

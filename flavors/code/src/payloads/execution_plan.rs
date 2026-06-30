@@ -24,7 +24,8 @@ pub struct CodeExecutionPlanItemV1 {
 
 /// Goal-native Code work plan. The durable desired future remains the
 /// core Goal; this Abstraction records the code-flavor planning
-/// synthesis derived from a goal activation Fact plus evidence Facts.
+/// synthesis derived from an Abstraction proof input in the context of
+/// an active goal activation Fact plus optional evidence Facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CodeExecutionPlanV1 {
     pub repo_id: uuid::Uuid,

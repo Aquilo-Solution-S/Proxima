@@ -6,11 +6,12 @@ use proxima_core::relation::{
 };
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
 use proxima_core::{
-    AbstractionPayload, EdgeAuthorshipKind, EdgeId, EntityKind, FactPayload, MemoryId,
-    MemoryOperatorKind, Owner, SchemaVersion, SourceBatchId,
+    AbstractionPayload, DerivedEdgeSpec, EdgeAuthorshipKind, EdgeId, EntityKind, FactPayload,
+    InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner, RegisteredRelation,
+    SchemaVersion, SourceBatchId,
 };
 use proxima_storage_pg::sidecars::PgMemorySidecar;
-use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_in_tx};
+use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_with_edges_in_tx};
 use proxima_storage_pg::verbs::edge_write::{MemoryEndpoint, append_owner_checked_memory_edge};
 use proxima_storage_pg::verbs::fact_ingest::{FactIngestContext, ingest_fact_with_sidecar};
 use schemars::JsonSchema;
@@ -33,6 +34,27 @@ use super::sql::{map_storage, owner_columns, resolve_repo_identifier};
 
 const EXECUTION_REQUEST_SOURCE_ID: &str = "proxima-code/execution-request";
 pub const CODE_TARGETS_EXECUTION_REQUEST_RELATION: &str = "proxima-code/targets-execution-request";
+
+const EXECUTION_PLAN_OPERATOR_NAMESPACE: Uuid = Uuid::from_bytes([
+    0x65, 0xf8, 0x8d, 0xc6, 0x96, 0x8c, 0x45, 0x9b, 0x8d, 0x32, 0x9a, 0xde, 0x41, 0xfa, 0x5f, 0x21,
+]);
+const EXECUTION_PLAN_INPUT_CONTRACT_NAMESPACE: Uuid = Uuid::from_bytes([
+    0xa5, 0x1e, 0xb1, 0x22, 0xad, 0x14, 0x41, 0xda, 0xa9, 0x25, 0x11, 0x4d, 0x91, 0xa0, 0xf0, 0xdd,
+]);
+
+fn execution_plan_operator_id() -> OperatorId {
+    OperatorId::new(Uuid::new_v5(
+        &EXECUTION_PLAN_OPERATOR_NAMESPACE,
+        b"proxima-code/emit_execution_plan-v1",
+    ))
+}
+
+fn execution_plan_input_contract_id() -> InputContractId {
+    InputContractId::new(Uuid::new_v5(
+        &EXECUTION_PLAN_INPUT_CONTRACT_NAMESPACE,
+        b"proxima-code/execution-plan:plan-source-v1",
+    ))
+}
 pub const CODE_HAS_ACCEPTANCE_CRITERIA_RELATION: &str = "proxima-code/has-acceptance-criteria";
 const ACCEPTANCE_CRITERIA_SOURCE_ID: &str = "proxima-code/acceptance-criteria";
 const TEST_REQUEST_SOURCE_ID: &str = "proxima-code/test-request";
@@ -127,6 +149,10 @@ pub struct CodeEmitExecutionPlanArgs {
     pub repo_handle: String,
     #[schemars(description = "`F...` goal-activated Fact memory handle for the Active Goal.")]
     pub goal_activated_memory: String,
+    #[schemars(
+        description = "`A...` Abstraction proof input for the A→A execution-plan derivation. This should be the planning context/synthesis Abstraction grounded in the active Goal."
+    )]
+    pub plan_source_memory: String,
     #[serde(default)]
     #[schemars(
         description = "Optional stable idempotency key for the plan Abstraction. Defaults to a deterministic key from goal + item keys."
@@ -330,7 +356,7 @@ pub struct CodeEmitExecutionPlanTool;
 
 impl McpTool for CodeEmitExecutionPlanTool {
     const NAME: &'static str = "proxima-code_emit_execution_plan";
-    const DESCRIPTION: &'static str = "Atomically emit an ordered set of repo-scoped implementation/test request Facts plus core/depends-on edges.";
+    const DESCRIPTION: &'static str = "Atomically emit a repo-scoped execution-plan Abstraction plus implementation/test request Facts and core/depends-on edges.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[
         CodeExecutionPlanV1::SCHEMA_ID,
         ExecutionRequestV1::SCHEMA_ID,
@@ -357,6 +383,7 @@ impl McpTool for CodeEmitExecutionPlanTool {
                 )
             })?;
             let goal_activated_memory_id = ctx.resolve_fact_memory(&args.goal_activated_memory)?;
+            let plan_source_memory_id = ctx.resolve_abstraction_memory(&args.plan_source_memory)?;
             let evidence = resolve_evidence(&ctx, &args.evidence)?;
 
             let pool = pg_pool(&ctx)?;
@@ -364,6 +391,7 @@ impl McpTool for CodeEmitExecutionPlanTool {
             let goal_id =
                 validate_goal_activated_fact(&mut tx, &ctx, goal_activated_memory_id).await?;
             validate_active_goal_context(&mut tx, &ctx, goal_id, planner_root).await?;
+            validate_plan_source_abstraction_in_owner(&mut tx, &ctx, plan_source_memory_id).await?;
             validate_evidence_in_owner(&mut tx, &ctx, &evidence).await?;
 
             let plan_key = match args.plan_key {
@@ -401,6 +429,7 @@ impl McpTool for CodeEmitExecutionPlanTool {
                 &ctx,
                 planner_root,
                 goal_activated_memory_id,
+                plan_source_memory_id,
                 &evidence,
                 &plan_key,
                 &plan_summary,
@@ -486,8 +515,13 @@ impl McpTool for CodeEmitExecutionPlanTool {
                     }
                 };
                 plan_edge_ids.push(
-                    append_plan_derived_edge(&mut tx, &ctx, plan_memory_id, outcome.memory_id)
-                        .await?,
+                    append_plan_fact_evidence_edge(
+                        &mut tx,
+                        &ctx,
+                        plan_memory_id,
+                        outcome.memory_id,
+                    )
+                    .await?,
                 );
                 let mut dependency_edges = Vec::new();
                 for dependency_key in &item.depends_on {
@@ -579,6 +613,7 @@ async fn append_execution_plan(
     ctx: &McpToolCtx,
     planner_root: MemoryId,
     goal_activated_memory_id: MemoryId,
+    plan_source_memory_id: MemoryId,
     evidence: &[MemoryId],
     plan_key: &str,
     plan_summary: &str,
@@ -597,15 +632,28 @@ async fn append_execution_plan(
         schema_id: <CodeExecutionPlanV1 as AbstractionPayload>::schema_id(),
         schema_version: SchemaVersion::new(CodeExecutionPlanV1::SCHEMA_VERSION),
         text: plan_summary.to_string(),
-        operator_kind: MemoryOperatorKind::ExternalAgent,
+        operator_kind: MemoryOperatorKind::AtoA,
+        operator_id: execution_plan_operator_id(),
+        input_contract_id: execution_plan_input_contract_id(),
+        source_batch_id: None,
         model_id: &ctx.author.model_id,
         prompt_version: "proxima-code/emit_execution_plan-v1",
         supersedes: None,
         embedding: None,
         embedding_model_id: None,
     };
+    let derived_relation = ctx
+        .registry
+        .resolve_relation(CORE_DERIVED_FROM_RELATION)
+        .ok_or_else(|| McpToolError::Other("core/derived-from relation not registered".into()))?;
+    let proof_edges = [execution_plan_proof_edge(
+        &ctx.owner,
+        memory_id,
+        plan_source_memory_id,
+        derived_relation,
+    )];
     let sidecar_payload = payload.clone();
-    let outcome = append_derived_in_tx(tx, &draft, move |tx, outcome| {
+    let outcome = append_derived_with_edges_in_tx(tx, &draft, &proof_edges, move |tx, outcome| {
         Box::pin(async move {
             sidecar_payload
                 .insert_memory_sidecar(tx, outcome.memory_id)
@@ -617,10 +665,10 @@ async fn append_execution_plan(
     let mut edge_ids = Vec::new();
     if !outcome.idempotent_replay {
         edge_ids.push(append_plan_authored_edge(tx, ctx, planner_root, memory_id).await?);
-        edge_ids
-            .push(append_plan_derived_edge(tx, ctx, memory_id, goal_activated_memory_id).await?);
         for memory_id in evidence {
-            edge_ids.push(append_plan_derived_edge(tx, ctx, outcome.memory_id, *memory_id).await?);
+            edge_ids.push(
+                append_plan_fact_evidence_edge(tx, ctx, outcome.memory_id, *memory_id).await?,
+            );
         }
     }
     Ok(PlanAppendOutcome {
@@ -656,7 +704,26 @@ async fn append_plan_authored_edge(
     Ok(edge_id)
 }
 
-async fn append_plan_derived_edge(
+fn execution_plan_proof_edge<'a>(
+    owner: &'a Owner,
+    plan_memory_id: MemoryId,
+    plan_source_memory_id: MemoryId,
+    relation: RegisteredRelation<'a>,
+) -> DerivedEdgeSpec<'a> {
+    DerivedEdgeSpec {
+        owner,
+        relation,
+        source_kind: EntityKind::Abstraction,
+        source_memory_id: plan_memory_id,
+        target_kind: EntityKind::Abstraction,
+        target_memory_id: plan_source_memory_id,
+        authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
+        authorship_owner_memory_id: Some(plan_source_memory_id),
+        sidecar_payload: None,
+    }
+}
+
+async fn append_plan_fact_evidence_edge(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     plan_memory_id: MemoryId,
@@ -1348,6 +1415,43 @@ async fn validate_active_goal_context(
         ));
     }
     Ok(())
+}
+
+async fn validate_plan_source_abstraction_in_owner(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    memory_id: MemoryId,
+) -> Result<(), McpToolError> {
+    let (owner_kind, owner_id) = owner_columns(&ctx.owner);
+    let row: Option<EntityKind> = sqlx::query_scalar(
+        "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind
+           FROM proxima_core.memories m
+          WHERE m.memory_id = $1
+            AND EXISTS (
+                 SELECT 1
+                   FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                  WHERE eo.entity_id = m.memory_id
+                    AND eo.owner_kind = $2
+                    AND eo.owner_id = $3
+)",
+    )
+    .bind(memory_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_storage)?;
+    match row {
+        Some(EntityKind::Abstraction) => Ok(()),
+        Some(kind) => Err(McpToolError::LayeringViolation(format!(
+            "plan_source_memory {} must be an Abstraction handle; got {kind:?}",
+            memory_id.into_inner()
+        ))),
+        None => Err(McpToolError::InvalidInput(format!(
+            "plan_source_memory not visible: {}",
+            memory_id.into_inner()
+        ))),
+    }
 }
 
 async fn validate_evidence_in_owner(

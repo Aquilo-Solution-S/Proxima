@@ -1,6 +1,6 @@
 //! Integration tests for the `read_mcp_call_history` verb.
 
-use proxima_core::OperatorInvocationReadPort;
+use proxima_core::McpCallReadPort;
 use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
 use proxima_core::verbs::persist_mcp_call::McpCallLogInput;
 use proxima_core::{Owner, OwnerRef, UserId};

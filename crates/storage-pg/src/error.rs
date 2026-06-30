@@ -10,6 +10,12 @@ pub(crate) fn internal(e: impl std::fmt::Display) -> StorageError {
 pub(crate) fn map_err(e: sqlx::Error) -> StorageError {
     use sqlx::Error;
     match &e {
+        Error::Database(db)
+            if db.is_unique_violation()
+                && db.constraint() == Some("memories_ftoa_batch_exclusive_uidx") =>
+        {
+            StorageError::Conflict(db.message().to_string())
+        }
         Error::Database(db) if db.is_unique_violation() => {
             StorageError::ConstraintViolation(db.message().to_string())
         }

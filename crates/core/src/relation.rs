@@ -17,7 +17,7 @@
 use std::collections::BTreeSet;
 
 use crate::verbs::schema::FlavorRegistryFrozen;
-use crate::{CapabilityTag, SchemaId, SchemaVersion};
+use crate::{CapabilityTag, EntityKind, SchemaId, SchemaVersion};
 
 pub const CORE_DERIVED_FROM_RELATION: &str = "core/derived-from";
 pub const CORE_SUPERSEDES_RELATION: &str = "core/supersedes";
@@ -127,6 +127,14 @@ pub enum EdgeAuthorshipKind {
 
 impl EdgeAuthorshipKind {
     #[must_use]
+    pub const fn is_operator(self) -> bool {
+        matches!(
+            self,
+            Self::OperatorFtoA | Self::OperatorAtoA | Self::OperatorAtoP | Self::OperatorAtoGoal
+        )
+    }
+
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::EventSource => "EventSource",
@@ -140,6 +148,62 @@ impl EdgeAuthorshipKind {
             Self::Engine => "Engine",
             Self::ExternalAgent => "ExternalAgent",
         }
+    }
+}
+
+/// Enforce Lean `EdgeOperatorShapeValid` for every operator-authored edge row.
+///
+/// Descriptor masks admit broad relation families; this guard closes the
+/// phase-local operator edge shape independent of the concrete relation.
+///
+/// # Errors
+///
+/// Returns a message when `authorship_kind` is an operator variant and the
+/// edge class/source/target tuple is not the corresponding phase shape.
+pub fn validate_operator_edge_shape(
+    relation_class: RelationClass,
+    source_kind: EntityKind,
+    target_kind: EntityKind,
+    authorship_kind: EdgeAuthorshipKind,
+) -> Result<(), String> {
+    let valid = match authorship_kind {
+        EdgeAuthorshipKind::OperatorFtoA => {
+            relation_class == RelationClass::Provenance
+                && source_kind == EntityKind::Abstraction
+                && target_kind == EntityKind::Fact
+        }
+        EdgeAuthorshipKind::OperatorAtoA => {
+            relation_class == RelationClass::Provenance
+                && source_kind == EntityKind::Abstraction
+                && target_kind == EntityKind::Abstraction
+        }
+        EdgeAuthorshipKind::OperatorAtoP => {
+            relation_class == RelationClass::Provenance
+                && source_kind == EntityKind::Perspective
+                && target_kind == EntityKind::Abstraction
+        }
+        EdgeAuthorshipKind::OperatorAtoGoal => {
+            relation_class == RelationClass::Structural
+                && source_kind == EntityKind::Goal
+                && target_kind == EntityKind::Abstraction
+        }
+        EdgeAuthorshipKind::EventSource
+        | EdgeAuthorshipKind::PerspectiveLink
+        | EdgeAuthorshipKind::PerspectiveGoalLink
+        | EdgeAuthorshipKind::User
+        | EdgeAuthorshipKind::Engine
+        | EdgeAuthorshipKind::ExternalAgent => true,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "operator edge shape invalid for {}: class={}, source={}, target={}",
+            authorship_kind.as_str(),
+            relation_class.as_str(),
+            source_kind.as_str(),
+            target_kind.as_str()
+        ))
     }
 }
 

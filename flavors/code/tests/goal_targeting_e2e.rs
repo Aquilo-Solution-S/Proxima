@@ -97,9 +97,11 @@ async fn seed_perspective(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version)
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/engineer-perspective-v1', 1, 'Perspective', $4,
-                 'AtoP', 'test-model', 'test-v1')",
+                 'AtoP', '00000000-0000-0000-0000-000000000441'::uuid,
+                 '00000000-0000-0000-0000-000000000442'::uuid, NULL,
+                 'test-model', 'test-v1')"
     )
     .bind(memory_id)
     .bind(owner_kind)

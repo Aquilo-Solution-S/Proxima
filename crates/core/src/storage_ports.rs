@@ -14,7 +14,7 @@ use crate::read_models::{
 };
 use crate::storage::{
     AuthorDerivedOutcome, AuthorDerivedRequest, EdgeEndpointKindRow, EmbeddingJobClaim,
-    MemoryGraphPayloadRow, MemoryKindRow, NeighborEdgeRow, StorageError,
+    FactSourceBatchRow, MemoryGraphPayloadRow, MemoryKindRow, NeighborEdgeRow, StorageError,
 };
 use crate::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use crate::verbs::close_batch::CloseBatchOutcome;
@@ -73,7 +73,7 @@ pub trait FactIngestPort: Send + Sync {
 }
 
 #[async_trait::async_trait]
-pub trait OperatorInvocationWritePort: Send + Sync {
+pub trait McpCallWritePort: Send + Sync {
     async fn persist_mcp_call_atomic(
         &self,
         input: &McpCallLogInput,
@@ -81,7 +81,7 @@ pub trait OperatorInvocationWritePort: Send + Sync {
 }
 
 #[async_trait::async_trait]
-pub trait OperatorInvocationReadPort: Send + Sync {
+pub trait McpCallReadPort: Send + Sync {
     async fn read_mcp_call_history(
         &self,
         req: &McpCallHistoryRequest,
@@ -108,6 +108,14 @@ pub trait MemoryAuthoringPort: Send + Sync {
         _owner: &Owner,
         _memory_ids: &[MemoryId],
     ) -> Result<Vec<MemoryKindRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn load_fact_source_batches(
+        &self,
+        _owner: &Owner,
+        _memory_ids: &[MemoryId],
+    ) -> Result<Vec<FactSourceBatchRow>, StorageError> {
         Ok(Vec::new())
     }
 
@@ -474,8 +482,8 @@ pub trait RegistryProjectionPort: Send + Sync {
 }
 
 pub type FactIngestHandle = Arc<dyn FactIngestPort>;
-pub type OperatorInvocationWriteHandle = Arc<dyn OperatorInvocationWritePort>;
-pub type OperatorInvocationReadHandle = Arc<dyn OperatorInvocationReadPort>;
+pub type McpCallWriteHandle = Arc<dyn McpCallWritePort>;
+pub type McpCallReadHandle = Arc<dyn McpCallReadPort>;
 pub type MemoryAuthoringHandle = Arc<dyn MemoryAuthoringPort>;
 pub type MemoryReadHandle = Arc<dyn MemoryReadPort>;
 pub type MemoryInspectHandle = Arc<dyn MemoryInspectPort>;
@@ -498,8 +506,8 @@ pub type RegistryProjectionHandle = Arc<dyn RegistryProjectionPort>;
 #[derive(Clone)]
 pub struct StoragePorts {
     fact_ingest: FactIngestHandle,
-    operator_invocation_write: OperatorInvocationWriteHandle,
-    operator_invocation_read: OperatorInvocationReadHandle,
+    mcp_call_write: McpCallWriteHandle,
+    mcp_call_read: McpCallReadHandle,
     memory_authoring: MemoryAuthoringHandle,
     memory_read: MemoryReadHandle,
     memory_inspect: MemoryInspectHandle,
@@ -544,7 +552,7 @@ pub(crate) struct GoalCommandStoragePorts {
 #[derive(Clone)]
 pub(crate) struct IngestStoragePorts {
     pub fact_ingest: FactIngestHandle,
-    pub operator_invocation_write: OperatorInvocationWriteHandle,
+    pub mcp_call_write: McpCallWriteHandle,
     pub embedding_text: EmbeddingTextHandle,
     pub embedding_write: EmbeddingWriteHandle,
     pub embedding_job: EmbeddingJobHandle,
@@ -565,7 +573,7 @@ pub(crate) struct PipelineStoragePorts {
 #[derive(Clone)]
 pub(crate) struct QueryStoragePorts {
     pub change_event: ChangeEventHandle,
-    pub operator_invocation_read: OperatorInvocationReadHandle,
+    pub mcp_call_read: McpCallReadHandle,
     pub memory_read: MemoryReadHandle,
     pub edge_read: EdgeReadHandle,
 }
@@ -596,8 +604,8 @@ pub(crate) struct EngineStoragePorts {
 #[derive(Default)]
 pub struct StoragePortsBuilder {
     fact_ingest: Option<FactIngestHandle>,
-    operator_invocation_write: Option<OperatorInvocationWriteHandle>,
-    operator_invocation_read: Option<OperatorInvocationReadHandle>,
+    mcp_call_write: Option<McpCallWriteHandle>,
+    mcp_call_read: Option<McpCallReadHandle>,
     memory_authoring: Option<MemoryAuthoringHandle>,
     memory_read: Option<MemoryReadHandle>,
     memory_inspect: Option<MemoryInspectHandle>,
@@ -641,8 +649,8 @@ impl StoragePorts {
         let rejecting = Arc::new(RejectingStorage);
         Self {
             fact_ingest: rejecting.clone(),
-            operator_invocation_write: rejecting.clone(),
-            operator_invocation_read: rejecting.clone(),
+            mcp_call_write: rejecting.clone(),
+            mcp_call_read: rejecting.clone(),
             memory_authoring: rejecting.clone(),
             memory_read: rejecting.clone(),
             memory_inspect: rejecting.clone(),
@@ -683,7 +691,7 @@ impl From<StoragePorts> for EngineStoragePorts {
             },
             ingest: IngestStoragePorts {
                 fact_ingest: ports.fact_ingest.clone(),
-                operator_invocation_write: ports.operator_invocation_write.clone(),
+                mcp_call_write: ports.mcp_call_write.clone(),
                 embedding_text: ports.embedding_text.clone(),
                 embedding_write: ports.embedding_write.clone(),
                 embedding_job: ports.embedding_job.clone(),
@@ -698,7 +706,7 @@ impl From<StoragePorts> for EngineStoragePorts {
             },
             query: QueryStoragePorts {
                 change_event: ports.change_event.clone(),
-                operator_invocation_read: ports.operator_invocation_read.clone(),
+                mcp_call_read: ports.mcp_call_read.clone(),
                 memory_read: ports.memory_read.clone(),
                 edge_read: ports.edge_read.clone(),
             },
@@ -722,14 +730,14 @@ impl StoragePortsBuilder {
     }
 
     #[must_use]
-    pub fn operator_invocation_write(mut self, handle: OperatorInvocationWriteHandle) -> Self {
-        self.operator_invocation_write = Some(handle);
+    pub fn mcp_call_write(mut self, handle: McpCallWriteHandle) -> Self {
+        self.mcp_call_write = Some(handle);
         self
     }
 
     #[must_use]
-    pub fn operator_invocation_read(mut self, handle: OperatorInvocationReadHandle) -> Self {
-        self.operator_invocation_read = Some(handle);
+    pub fn mcp_call_read(mut self, handle: McpCallReadHandle) -> Self {
+        self.mcp_call_read = Some(handle);
         self
     }
 
@@ -846,12 +854,12 @@ impl StoragePortsBuilder {
             fact_ingest: self
                 .fact_ingest
                 .expect("fact_ingest storage port configured"),
-            operator_invocation_write: self
-                .operator_invocation_write
-                .expect("operator_invocation_write storage port configured"),
-            operator_invocation_read: self
-                .operator_invocation_read
-                .expect("operator_invocation_read storage port configured"),
+            mcp_call_write: self
+                .mcp_call_write
+                .expect("mcp_call_write storage port configured"),
+            mcp_call_read: self
+                .mcp_call_read
+                .expect("mcp_call_read storage port configured"),
             memory_authoring: self
                 .memory_authoring
                 .expect("memory_authoring storage port configured"),
@@ -939,7 +947,7 @@ impl FactIngestPort for RejectingStorage {
 }
 
 #[async_trait::async_trait]
-impl OperatorInvocationWritePort for RejectingStorage {
+impl McpCallWritePort for RejectingStorage {
     async fn persist_mcp_call_atomic(
         &self,
         _input: &McpCallLogInput,
@@ -951,7 +959,7 @@ impl OperatorInvocationWritePort for RejectingStorage {
 }
 
 #[async_trait::async_trait]
-impl OperatorInvocationReadPort for RejectingStorage {
+impl McpCallReadPort for RejectingStorage {
     async fn read_mcp_call_history(
         &self,
         _req: &McpCallHistoryRequest,

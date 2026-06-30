@@ -1,6 +1,6 @@
 //! Integration tests for the `persist_mcp_call` verb.
 
-use proxima_core::OperatorInvocationWritePort;
+use proxima_core::McpCallWritePort;
 use proxima_core::Owner;
 use proxima_core::verbs::persist_mcp_call::{
     MCP_CALL_FACT_SCHEMA, MCP_CALL_IO_SCHEMA, McpCallLogInput,

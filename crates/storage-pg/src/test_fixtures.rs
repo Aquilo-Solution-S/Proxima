@@ -1,3 +1,6 @@
+#[path = "test_fixtures/operator_proofs.rs"]
+pub mod operator_proofs;
+
 use proxima_storage_pg::{PgStorage, core_migrator};
 
 use proxima_pg_testkit::{

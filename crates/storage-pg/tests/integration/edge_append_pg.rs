@@ -2,17 +2,62 @@ use std::sync::Arc;
 
 use crate::common::{drop_db, fresh_pg};
 use proxima_core::engine::{
-    AuthorDerivedAuthorizedOutcome, AuthorDerivedEdgeInput, AuthorDerivedRequestInput, Engine,
+    AppendMemoryEdgeRequestInput, AuthorDerivedAuthorizedOutcome, AuthorDerivedEdgeInput,
+    AuthorDerivedRequestInput, Engine,
 };
 use proxima_core::{
     AbstractionPayload, AgentDerivationV1, AgentNoteV1, AuthPath, AuthzContext,
     CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind, ErrorCode, FlavorRegistry, GroupId,
-    MemoryId, MemoryOperatorKind, Owner, OwnerRef, Relation, Role, SchemaId, SchemaVersion,
-    SidecarPayload, SourceBatchId, UserId,
+    InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner, OwnerRef, Relation, Role,
+    SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, UserId,
 };
 use uuid::Uuid;
 
 type ResolvedAuthz = AuthzContext;
+
+#[tokio::test]
+async fn direct_operator_edge_append_rejects_invalid_phase_shape()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let result = async {
+        let engine = Engine::new(FlavorRegistry::new().freeze())
+            .with_storage_ports(Arc::new(pg.clone()).storage_ports());
+        let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let user = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        seed_membership(&pg, &owner, &user, Relation::Admin).await?;
+        let source = insert_source_abstraction(&pg, &owner, "bad-direct-operator-edge").await?;
+        let target = ingest_note_fact(&engine, &owner, "bad direct target").await?;
+        let relation = engine
+            .registry()
+            .resolve_relation(CORE_DERIVED_FROM_RELATION)
+            .expect("core derived-from relation registered");
+
+        let err = engine
+            .append_memory_edge_authorized(
+                &user_authz_with_roles(&user, [(owner, Role::admin())]),
+                AppendMemoryEdgeRequestInput {
+                    owner,
+                    relation,
+                    source_memory_id: source,
+                    target_memory_id: target,
+                    authorship_kind: EdgeAuthorshipKind::OperatorFtoA,
+                    authorship_owner_memory_id: None,
+                    sidecar_payload: None,
+                },
+            )
+            .await
+            .expect_err("valid-shape operator edge still requires proof-carrier write path");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        assert!(err.message.contains("operator proof-carrier write path"));
+
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
 
 #[tokio::test]
 async fn cross_owner_derived_edge_requires_source_write_and_target_read()
@@ -35,6 +80,7 @@ async fn cross_owner_derived_edge_requires_source_write_and_target_read()
         let target = ingest_note_fact(&engine, &g1, "g1 target").await?;
 
         let ok = author_abstraction_over_target(
+            &pg,
             &engine,
             &user_authz_with_roles(&p, [(gp, Role::editor()), (g1, Role::viewer())]),
             gp,
@@ -49,6 +95,7 @@ async fn cross_owner_derived_edge_requires_source_write_and_target_read()
         );
 
         let err = author_abstraction_over_target(
+            &pg,
             &engine,
             &user_authz_with_roles(&no_read, [(gp, Role::editor())]),
             gp,
@@ -96,19 +143,50 @@ async fn ingest_note_fact(
         .expect("group admin narrows to target owner"),
         OwnerRef::World => AuthzContext::denied_for_owner(owner),
     };
-    engine
-        .fact_ingest(&authz, draft)
-        .await
-        .map(|outcome| outcome.memory_id)
+    let source_batch_id = draft
+        .receipt
+        .as_ref()
+        .expect("test fact has receipt")
+        .source_batch_id;
+    let outcome = engine.fact_ingest(&authz, draft).await?;
+    engine.close_batch(&authz, *owner, source_batch_id).await?;
+    Ok(outcome.memory_id)
+}
+
+async fn insert_source_abstraction(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    label: &str,
+) -> Result<MemoryId, sqlx::Error> {
+    let memory_id = Uuid::new_v5(&Uuid::NAMESPACE_OID, label.as_bytes());
+    let (owner_kind, owner_id) = owner.columns();
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id,
+             prompt_version)
+         VALUES ($1, $2, $3, 'test/source-abstraction', 1, 'Abstraction', $4,
+                 'AtoA', '00000000-0000-0000-0000-000000000681'::uuid,
+                 '00000000-0000-0000-0000-000000000682'::uuid, NULL, 'test', 'test')",
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(label)
+    .execute(pg.pool())
+    .await?;
+    Ok(MemoryId::new(memory_id))
 }
 
 async fn author_abstraction_over_target(
+    pg: &proxima_storage_pg::PgStorage,
     engine: &Engine,
     authz: &AuthzContext,
     source_owner: Owner,
     target: MemoryId,
     label: &str,
 ) -> Result<AuthorDerivedAuthorizedOutcome, proxima_core::ProtocolError> {
+    let _ = pg;
     let relation = engine
         .registry()
         .resolve_relation(CORE_DERIVED_FROM_RELATION)
@@ -120,7 +198,7 @@ async fn author_abstraction_over_target(
         source_memory_id: source,
         target_kind: EntityKind::Fact,
         target_memory_id: target,
-        authorship_kind: EdgeAuthorshipKind::ExternalAgent,
+        authorship_kind: EdgeAuthorshipKind::OperatorFtoA,
         authorship_owner_memory_id: None,
     }];
 
@@ -134,7 +212,10 @@ async fn author_abstraction_over_target(
                 text: label.to_string(),
                 schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
                 schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
-                operator_kind: MemoryOperatorKind::ExternalAgent,
+                operator_kind: MemoryOperatorKind::FtoA,
+                operator_id: OperatorId::new(Uuid::now_v7()),
+                input_contract_id: InputContractId::new(Uuid::now_v7()),
+                source_batch_id: None,
                 model_id: "test-model",
                 prompt_version: "edge-append-pg",
                 sidecar_payload: SidecarPayload::abstraction(AgentDerivationV1 {

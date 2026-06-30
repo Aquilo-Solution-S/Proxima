@@ -8,7 +8,9 @@ use crate::verbs::goal_write::{
     GoalState, GoalTopologyWrite, GoalWriteOutcome, IdempotencyKey, OperatorKind, SystemOrigin,
 };
 use crate::verbs::schema::PayloadKind;
-use crate::{EdgeId, ModelId, OperatorId, PromptVersion, SchemaId, SchemaVersion, ToolId};
+use crate::{
+    EdgeId, InputContractId, ModelId, OperatorId, PromptVersion, SchemaId, SchemaVersion, ToolId,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +24,9 @@ const CORE_GOAL_MARK_ACHIEVED_SCOPE_KEY: &str = "core_goal:mark_achieved";
 const CORE_GOAL_DECOMPOSE_SCOPE_KEY: &str = "core_goal:decompose";
 const MCP_OPERATOR_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x3f, 0x61, 0xde, 0x85, 0x4e, 0x09, 0x45, 0x62, 0x97, 0xc4, 0x8a, 0x74, 0xaa, 0xf9, 0x4a, 0x2c,
+]);
+const MCP_GOAL_INPUT_CONTRACT_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+    0xb2, 0x3f, 0x07, 0xef, 0xeb, 0x6f, 0x4f, 0xe7, 0xa9, 0xd3, 0x67, 0xa9, 0x53, 0xf3, 0x4a, 0x6d,
 ]);
 const GOAL_ACTIVATED_SCHEMA_IDS: &[&str] =
     &[<crate::GoalActivatedV1 as crate::FactPayload>::SCHEMA_ID];
@@ -104,9 +109,8 @@ fn default_empty_object() -> serde_json::Value {
 pub struct GoalSetArgs {
     #[serde(flatten)]
     pub payload: GoalPayloadArgs,
-    #[serde(default)]
     #[schemars(
-        description = "Optional memory handles (`F.../A.../P...`) that motivate this goal. Use `[]` when there is none."
+        description = "Required Abstraction memory handles (`A...`) that motivate this operator-authored goal."
     )]
     pub evidence: Vec<String>,
     #[schemars(
@@ -165,7 +169,7 @@ impl McpTool for CoreGoalTool {
                 "target_perspective",
                 "idempotency_key",
             ],
-            required_fields: &["schema_id", "title", "text"],
+            required_fields: &["schema_id", "title", "text", "evidence"],
         },
         McpActionArgSpec {
             action: "transition",
@@ -370,7 +374,7 @@ pub struct GoalModifyArgs {
     #[serde(flatten)]
     pub payload: GoalPayloadArgs,
     #[schemars(
-        description = "Optional evidence handles (`F.../A.../P...`) to attach to the modified goal head."
+        description = "Abstraction evidence handles (`A...`) for the operator-authored modified goal head."
     )]
     pub evidence: Option<Vec<String>>,
     #[schemars(description = "Optional stable idempotency key for replay-safe modification.")]
@@ -438,7 +442,7 @@ pub struct ChildGoalInput {
     pub payload: GoalPayloadArgs,
     #[serde(default)]
     #[schemars(
-        description = "Optional motivating memory handles for this child goal. Use `[]` when there is none."
+        description = "Required Abstraction memory handles (`A...`) that motivate this operator-authored child goal."
     )]
     pub evidence: Vec<String>,
 }
@@ -605,9 +609,14 @@ fn system_operator_authorship(ctx: &McpToolCtx, prompt_version: &str) -> GoalAut
         ctx.author.client_name, ctx.author.client_version, ctx.author.model_id, prompt_version
     );
     let operator_id = uuid::Uuid::new_v5(&MCP_OPERATOR_NAMESPACE, operator_key.as_bytes());
+    let input_contract_id = uuid::Uuid::new_v5(
+        &MCP_GOAL_INPUT_CONTRACT_NAMESPACE,
+        format!("core_goal:{prompt_version}:abstraction-evidence-v1").as_bytes(),
+    );
     GoalAuthorship::System(SystemOrigin::Operator {
         operator_id: OperatorId::new(operator_id),
         operator_kind: OperatorKind::AtoGoal,
+        input_contract_id: InputContractId::new(input_contract_id),
         model_id: ModelId::new(ctx.author.model_id.clone()),
         prompt_version: PromptVersion::new(prompt_version),
     })
