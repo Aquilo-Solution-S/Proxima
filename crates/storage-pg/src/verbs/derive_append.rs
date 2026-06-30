@@ -22,6 +22,7 @@ type StoredEdgeProofRow = (
     EdgeAuthorshipKind,
     Option<uuid::Uuid>,
 );
+type InputProofRow = (uuid::Uuid, Option<EntityKind>, Option<uuid::Uuid>, bool);
 
 #[derive(Debug, Clone)]
 pub struct DerivedDraft<'a> {
@@ -181,27 +182,30 @@ fn edge_draft_from_spec<'a>(
     }
 }
 
-#[allow(clippy::too_many_lines)] // storage-side proof validation is one linear SQL-backed invariant check
 async fn validate_derived_draft_edges_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
     edges: &[DerivedEdgeSpec<'_>],
 ) -> Result<(), StorageError> {
     let expected_authorship = draft.operator_kind.edge_authorship();
-    let proof_edges = edges
-        .iter()
-        .filter(|edge| {
-            edge.source_memory_id.into_inner() == draft.memory_id
-                && edge.authorship_kind == expected_authorship
-        })
-        .collect::<Vec<_>>();
-    if proof_edges.is_empty() {
-        return Err(StorageError::ConstraintViolation(
-            "operator invocation inputs must be nonempty".into(),
-        ));
-    }
-
     let expected_input_kind = draft.operator_kind.phase().input_kind();
+    validate_no_wrong_phase_operator_edges(draft, edges, expected_authorship)?;
+    let input_ids = validate_proof_edges_and_collect_inputs(
+        draft,
+        edges,
+        expected_authorship,
+        expected_input_kind,
+    )?;
+    let rows = load_live_input_proof_rows_in_tx(tx, &input_ids).await?;
+    let ftoa_batch = validate_input_proof_rows(draft, rows, input_ids.len(), expected_input_kind)?;
+    validate_derived_source_batch(draft, ftoa_batch)
+}
+
+fn validate_no_wrong_phase_operator_edges(
+    draft: &DerivedDraft<'_>,
+    edges: &[DerivedEdgeSpec<'_>],
+    expected_authorship: EdgeAuthorshipKind,
+) -> Result<(), StorageError> {
     for edge in edges {
         if edge.source_memory_id.into_inner() == draft.memory_id
             && edge.relation.descriptor.class == RelationClass::Provenance
@@ -213,9 +217,21 @@ async fn validate_derived_draft_edges_in_tx(
             ));
         }
     }
-    let mut input_ids = Vec::with_capacity(proof_edges.len());
+    Ok(())
+}
+
+fn validate_proof_edges_and_collect_inputs(
+    draft: &DerivedDraft<'_>,
+    edges: &[DerivedEdgeSpec<'_>],
+    expected_authorship: EdgeAuthorshipKind,
+    expected_input_kind: EntityKind,
+) -> Result<Vec<uuid::Uuid>, StorageError> {
+    let mut input_ids = Vec::new();
     let mut seen = BTreeSet::new();
-    for edge in &proof_edges {
+    for edge in edges.iter().filter(|edge| {
+        edge.source_memory_id.into_inner() == draft.memory_id
+            && edge.authorship_kind == expected_authorship
+    }) {
         if edge.relation.descriptor.class != RelationClass::Provenance {
             return Err(StorageError::ConstraintViolation(
                 "operator proof edges must use Provenance relations".into(),
@@ -233,8 +249,19 @@ async fn validate_derived_draft_edges_in_tx(
         }
         input_ids.push(edge.target_memory_id.into_inner());
     }
+    if input_ids.is_empty() {
+        return Err(StorageError::ConstraintViolation(
+            "operator invocation inputs must be nonempty".into(),
+        ));
+    }
+    Ok(input_ids)
+}
 
-    let rows: Vec<(uuid::Uuid, Option<EntityKind>, Option<uuid::Uuid>, bool)> = sqlx::query_as(
+async fn load_live_input_proof_rows_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    input_ids: &[uuid::Uuid],
+) -> Result<Vec<InputProofRow>, StorageError> {
+    sqlx::query_as(
         "SELECT m.memory_id, m.kind, fr.source_batch_id, sb.closed_at IS NOT NULL
            FROM proxima_core.memories m
            LEFT JOIN proxima_core.fact_receipts fr ON fr.receipt_id = m.receipt_id
@@ -242,16 +269,23 @@ async fn validate_derived_draft_edges_in_tx(
           WHERE m.memory_id = ANY($1::uuid[])
             AND m.tombstoned_at IS NULL",
     )
-    .bind(&input_ids)
+    .bind(input_ids)
     .fetch_all(&mut **tx)
     .await
-    .map_err(map_err)?;
-    if rows.len() != input_ids.len() {
+    .map_err(map_err)
+}
+
+fn validate_input_proof_rows(
+    draft: &DerivedDraft<'_>,
+    rows: Vec<InputProofRow>,
+    expected_len: usize,
+    expected_input_kind: EntityKind,
+) -> Result<Option<uuid::Uuid>, StorageError> {
+    if rows.len() != expected_len {
         return Err(StorageError::ConstraintViolation(
             "operator invocation inputs must exist and be live".into(),
         ));
     }
-
     let mut ftoa_batch = None;
     for (memory_id, actual_kind, source_batch_id, closed) in rows {
         let actual = actual_kind.unwrap_or(EntityKind::Fact);
@@ -262,28 +296,42 @@ async fn validate_derived_draft_edges_in_tx(
             )));
         }
         if draft.operator_kind == MemoryOperatorKind::FtoA {
-            let source_batch_id = source_batch_id.ok_or_else(|| {
-                StorageError::ConstraintViolation(
-                    "F→A operator inputs must be receipted Facts".into(),
-                )
-            })?;
-            if !closed {
-                return Err(StorageError::ConstraintViolation(
-                    "F→A operator source batch must be closed".into(),
-                ));
-            }
-            match ftoa_batch {
-                Some(existing) if existing != source_batch_id => {
-                    return Err(StorageError::ConstraintViolation(
-                        "F→A operator inputs must belong to one source batch".into(),
-                    ));
-                }
-                Some(_) => {}
-                None => ftoa_batch = Some(source_batch_id),
-            }
+            ftoa_batch = Some(validate_ftoa_input_batch(
+                source_batch_id,
+                closed,
+                ftoa_batch,
+            )?);
         }
     }
+    Ok(ftoa_batch)
+}
 
+fn validate_ftoa_input_batch(
+    source_batch_id: Option<uuid::Uuid>,
+    closed: bool,
+    existing_batch: Option<uuid::Uuid>,
+) -> Result<uuid::Uuid, StorageError> {
+    let source_batch_id = source_batch_id.ok_or_else(|| {
+        StorageError::ConstraintViolation("F→A operator inputs must be receipted Facts".into())
+    })?;
+    if !closed {
+        return Err(StorageError::ConstraintViolation(
+            "F→A operator source batch must be closed".into(),
+        ));
+    }
+    match existing_batch {
+        Some(existing) if existing != source_batch_id => Err(StorageError::ConstraintViolation(
+            "F→A operator inputs must belong to one source batch".into(),
+        )),
+        Some(existing) => Ok(existing),
+        None => Ok(source_batch_id),
+    }
+}
+
+fn validate_derived_source_batch(
+    draft: &DerivedDraft<'_>,
+    ftoa_batch: Option<uuid::Uuid>,
+) -> Result<(), StorageError> {
     if draft.operator_kind == MemoryOperatorKind::FtoA {
         let expected = ftoa_batch.ok_or_else(|| {
             StorageError::ConstraintViolation("F→A operator source batch is required".into())
@@ -298,7 +346,6 @@ async fn validate_derived_draft_edges_in_tx(
             "source_batch_id is only valid for F→A operator invocations".into(),
         ));
     }
-
     Ok(())
 }
 
