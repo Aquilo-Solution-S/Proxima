@@ -380,7 +380,7 @@ macro_rules! proxima_flavor {
                     let rule: ::std::sync::Arc<dyn DependencySatisfactionRule> =
                         ::std::sync::Arc::new(<$dependency_rule as ::std::default::Default>::default());
                     let schema_id = rule.target_schema_id();
-                    if !(schema_id.starts_with(EXPECTED_PREFIX) || schema_id.starts_with("proxima-core/")) {
+                    if !(schema_id.starts_with(EXPECTED_PREFIX) || schema_id.starts_with("core/")) {
                         return ::std::result::Result::Err($crate::FlavorRegistryError::SchemaIngressMismatch {
                             schema_id: $crate::SchemaId::new(schema_id.to_string()),
                             schema_version: $crate::SchemaVersion::new(1),
