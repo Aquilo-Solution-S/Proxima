@@ -114,13 +114,7 @@ impl Engine {
             .authorize_write(authz, &req.principal, Relation::Editor)
             .await?;
         let payload = self.normalize_payload_write(req.payload.clone())?;
-        self.target_perspective_authorized(
-            authz,
-            permit.owner(),
-            req.topology.assignment().perspective_id(),
-        )
-        .await?;
-        self.validate_goal_evidence_authorized(authz, req.topology.evidence())
+        self.validate_goal_topology_authorized(authz, permit.owner(), &req.topology)
             .await?;
         let author_self_perspective_id = self
             .author_self_perspective_authorized(authz, req.author_self_perspective_id)
@@ -245,10 +239,8 @@ impl Engine {
             self.validate_wake_config_for_write(authz, Some(config))
                 .await?;
         }
-        if let Some(evidence) = &req.evidence {
-            self.validate_goal_evidence_authorized(authz, evidence)
-                .await?;
-        }
+        self.validate_optional_goal_evidence_authorized(authz, req.evidence.as_deref())
+            .await?;
         let embedding_client = self.embed_client();
         let context =
             self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
@@ -286,26 +278,11 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &req.principal, Relation::Editor)
             .await?;
-        self.target_perspective_authorized(
-            authz,
-            permit.owner(),
-            req.topology.assignment().perspective_id(),
-        )
-        .await?;
-        self.validate_goal_evidence_authorized(authz, req.topology.evidence())
+        self.validate_goal_topology_authorized(authz, permit.owner(), &req.topology)
             .await?;
         let mut children = Vec::with_capacity(req.children.len());
         for child in &req.children {
-            self.validate_wake_config_for_write(authz, child.wake.as_ref())
-                .await?;
-            self.validate_goal_evidence_authorized(authz, &child.evidence)
-                .await?;
-            children.push(ChildGoalDraft {
-                payload: self.normalize_payload_write(child.payload.clone())?,
-                evidence: child.evidence.clone(),
-                wake: child.wake.clone(),
-                request_id: child.request_id.clone(),
-            });
+            children.push(self.child_goal_draft_for_write(authz, child).await?);
         }
         let author_self_perspective_id = self
             .author_self_perspective_authorized(authz, req.author_self_perspective_id)
@@ -349,13 +326,7 @@ impl Engine {
             author_self_perspective_id,
         } = request;
 
-        self.target_perspective_authorized(
-            authz,
-            permit.owner(),
-            topology.assignment().perspective_id(),
-        )
-        .await?;
-        self.validate_goal_evidence_authorized(authz, topology.evidence())
+        self.validate_goal_topology_authorized(authz, permit.owner(), &topology)
             .await?;
         let author_self_perspective_id = self
             .author_self_perspective_authorized(authz, author_self_perspective_id)
@@ -443,6 +414,51 @@ impl Engine {
             payload_write.sidecar_payload = None;
         }
         Ok(payload_write)
+    }
+
+    async fn validate_goal_topology_authorized(
+        &self,
+        authz: &AuthzContext,
+        goal_owner: &crate::Owner,
+        topology: &GoalTopologyWrite,
+    ) -> Result<(), ProtocolError> {
+        self.target_perspective_authorized(
+            authz,
+            goal_owner,
+            topology.assignment().perspective_id(),
+        )
+        .await?;
+        self.validate_goal_evidence_authorized(authz, topology.evidence())
+            .await
+    }
+
+    async fn validate_optional_goal_evidence_authorized(
+        &self,
+        authz: &AuthzContext,
+        evidence: Option<&[GoalEvidenceRef]>,
+    ) -> Result<(), ProtocolError> {
+        if let Some(evidence) = evidence {
+            self.validate_goal_evidence_authorized(authz, evidence)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn child_goal_draft_for_write(
+        &self,
+        authz: &AuthzContext,
+        child: &ChildGoalDraft,
+    ) -> Result<ChildGoalDraft, ProtocolError> {
+        self.validate_wake_config_for_write(authz, child.wake.as_ref())
+            .await?;
+        self.validate_goal_evidence_authorized(authz, &child.evidence)
+            .await?;
+        Ok(ChildGoalDraft {
+            payload: self.normalize_payload_write(child.payload.clone())?,
+            evidence: child.evidence.clone(),
+            wake: child.wake.clone(),
+            request_id: child.request_id.clone(),
+        })
     }
 
     async fn target_perspective_authorized(
