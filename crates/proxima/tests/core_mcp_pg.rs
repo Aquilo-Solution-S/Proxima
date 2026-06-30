@@ -378,6 +378,7 @@ async fn shared_space_include_body_uses_shared_owner() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // legal Fact→A setup plus cross-space A→A assertion is intentionally end-to-end
 async fn cross_space_derive_succeeds_when_sources_readable() {
     let db_name = unique_db_name("proxima_core_memory_spaces_derive");
     create_db(&db_name).await.expect("PG required for tests");
@@ -416,6 +417,39 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
         )
         .await?;
 
+        let personal_abstraction = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            personal,
+            "core_derive",
+            serde_json::json!({
+                "space": "current",
+                "kind": "Abstraction",
+                "title": "personal abstraction",
+                "body": "personal source abstraction",
+                "tags": [],
+                "source_handles": [personal_fact["handle"].as_str().unwrap()],
+                "model_id": "test-model"
+            }),
+        )
+        .await?;
+        let shared_abstraction = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            personal,
+            "core_derive",
+            serde_json::json!({
+                "space": shared_space,
+                "kind": "Abstraction",
+                "title": "shared abstraction",
+                "body": "shared source abstraction",
+                "tags": [],
+                "source_handles": [shared_fact["handle"].as_str().unwrap()],
+                "model_id": "test-model"
+            }),
+        )
+        .await?;
+
         let derived = call_test_model_tool(
             &tools,
             authz,
@@ -425,9 +459,9 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
                 "space": "current",
                 "kind": "Abstraction",
                 "title": "cross-space pattern",
-                "body": "personal and shared sources are readable",
+                "body": "personal and shared abstractions are readable",
                 "tags": [],
-                "source_handles": [personal_fact["handle"].as_str().unwrap(), shared_fact["handle"].as_str().unwrap()],
+                "source_handles": [personal_abstraction["handle"].as_str().unwrap(), shared_abstraction["handle"].as_str().unwrap()],
                 "model_id": "test-model"
             }),
         )

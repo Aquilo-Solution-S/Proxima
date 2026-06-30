@@ -9,7 +9,8 @@ use proxima_code::{
 };
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::{
-    AbstractionPayload, EntityKind, MemoryId, MemoryOperatorKind, SchemaId, SchemaVersion,
+    AbstractionPayload, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind,
+    InputContractId, MemoryId, MemoryOperatorKind, OperatorId, SchemaId, SchemaVersion,
     SidecarPayload,
 };
 use uuid::Uuid;
@@ -46,10 +47,14 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text, operator_kind, model_id,
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id,
              prompt_version)
          VALUES ($1, $2, $3, 'test/goal-activation', 1, 'Abstraction',
-                 'goal activation evidence', 'ExternalAgent', 'test', 'test')",
+                 'goal activation evidence', 'AtoA',
+                 '00000000-0000-0000-0000-000000000451'::uuid,
+                 '00000000-0000-0000-0000-000000000452'::uuid, NULL,
+                 'test', 'test')",
     )
     .bind(goal_activated_memory_id)
     .bind(owner_kind)
@@ -62,6 +67,19 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     let new_memory_id = MemoryId::new(Uuid::now_v7());
     let plan_key = "goal:repo:plan";
 
+    let relation = engine
+        .registry()
+        .resolve_relation(CORE_DERIVED_FROM_RELATION)
+        .expect("core derived-from relation registered");
+    let old_edges = [proxima_core::AuthorDerivedEdgeInput {
+        relation,
+        source_kind: EntityKind::Abstraction,
+        source_memory_id: old_memory_id,
+        target_kind: EntityKind::Abstraction,
+        target_memory_id: MemoryId::new(goal_activated_memory_id),
+        authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
+        authorship_owner_memory_id: Some(MemoryId::new(goal_activated_memory_id)),
+    }];
     let old_payload = plan_payload(repo_id, goal_activated_memory_id, plan_key, "old plan");
     let old_outcome = engine
         .author_derived(proxima_core::AuthorDerivedRequestInput {
@@ -71,17 +89,29 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
             text: old_payload.summary.clone(),
             schema_id: SchemaId::new(CodeExecutionPlanV1::SCHEMA_ID.into()),
             schema_version: SchemaVersion::new(CodeExecutionPlanV1::SCHEMA_VERSION),
-            operator_kind: MemoryOperatorKind::ExternalAgent,
+            operator_kind: MemoryOperatorKind::AtoA,
+            operator_id: OperatorId::new(Uuid::now_v7()),
+            input_contract_id: InputContractId::new(Uuid::now_v7()),
+            source_batch_id: None,
             model_id: "test-planner",
             prompt_version: "proxima-code/test-plan-v1",
             sidecar_payload: SidecarPayload::abstraction(old_payload),
             supersedes: None,
-            edges: &[],
+            edges: &old_edges,
         })
         .await
         .expect("old plan authored");
-    assert_eq!(old_outcome.edge_count, 0);
+    assert_eq!(old_outcome.edge_count, 1);
 
+    let new_edges = [proxima_core::AuthorDerivedEdgeInput {
+        relation,
+        source_kind: EntityKind::Abstraction,
+        source_memory_id: new_memory_id,
+        target_kind: EntityKind::Abstraction,
+        target_memory_id: MemoryId::new(goal_activated_memory_id),
+        authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
+        authorship_owner_memory_id: Some(MemoryId::new(goal_activated_memory_id)),
+    }];
     let new_payload = plan_payload(repo_id, goal_activated_memory_id, plan_key, "new plan");
     let new_outcome = engine
         .author_derived(proxima_core::AuthorDerivedRequestInput {
@@ -91,16 +121,19 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
             text: new_payload.summary.clone(),
             schema_id: SchemaId::new(CodeExecutionPlanV1::SCHEMA_ID.into()),
             schema_version: SchemaVersion::new(CodeExecutionPlanV1::SCHEMA_VERSION),
-            operator_kind: MemoryOperatorKind::ExternalAgent,
+            operator_kind: MemoryOperatorKind::AtoA,
+            operator_id: OperatorId::new(Uuid::now_v7()),
+            input_contract_id: InputContractId::new(Uuid::now_v7()),
+            source_batch_id: None,
             model_id: "test-planner",
             prompt_version: "proxima-code/test-plan-v1",
             sidecar_payload: SidecarPayload::abstraction(new_payload),
             supersedes: Some(old_memory_id),
-            edges: &[],
+            edges: &new_edges,
         })
         .await
         .expect("new plan authored");
-    assert_eq!(new_outcome.edge_count, 1);
+    assert_eq!(new_outcome.edge_count, 2);
 
     let supersedes: Option<Uuid> =
         sqlx::query_scalar("SELECT supersedes FROM proxima_core.memories WHERE memory_id = $1")

@@ -89,7 +89,7 @@ fn calls_edge_id(
     uuid::Uuid::new_v5(&PROXIMA_CODE_EDGE_NAMESPACE, &key)
 }
 
-/// Atomic operator-authored edge + typed sidecar write for derived
+/// Atomic Engine-authored edge + typed sidecar write for derived
 /// `code/calls` edges.
 ///
 /// `edge_id` is derived deterministically from the natural key
@@ -131,7 +131,7 @@ pub async fn ingest_calls_edge(
         relation,
         MemoryEndpoint::abstraction(MemoryId::new(edge.source_memory_id)),
         MemoryEndpoint::abstraction(MemoryId::new(edge.target_memory_id)),
-        EdgeAuthorshipKind::OperatorAtoA,
+        EdgeAuthorshipKind::Engine,
         Some(MemoryId::new(edge.source_memory_id)),
         &payload,
     )

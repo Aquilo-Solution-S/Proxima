@@ -222,7 +222,7 @@ pub(in crate::engine) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl OperatorInvocationWritePort for MembershipStorage {
+    impl McpCallWritePort for MembershipStorage {
         async fn persist_mcp_call_atomic(
             &self,
             _input: &McpCallLogInput,
@@ -234,7 +234,7 @@ pub(in crate::engine) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl OperatorInvocationReadPort for MembershipStorage {
+    impl McpCallReadPort for MembershipStorage {
         async fn read_mcp_call_history(
             &self,
             _req: &McpCallHistoryRequest,
@@ -729,8 +729,8 @@ pub(in crate::engine) mod tests {
             let storage = Arc::new(self);
             StoragePorts::builder()
                 .fact_ingest(storage.clone())
-                .operator_invocation_write(storage.clone())
-                .operator_invocation_read(storage.clone())
+                .mcp_call_write(storage.clone())
+                .mcp_call_read(storage.clone())
                 .memory_authoring(storage.clone())
                 .memory_read(storage.clone())
                 .memory_inspect(storage.clone())

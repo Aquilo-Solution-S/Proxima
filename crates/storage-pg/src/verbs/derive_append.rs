@@ -1,14 +1,27 @@
-//! External-agent Derived memory append verb.
+//! Operator-derived memory append verb.
 
 use proxima_core::llm::EMBEDDING_DIM;
+use std::collections::BTreeSet;
+
 use proxima_core::{
-    EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerRefKind, SchemaId, SchemaVersion,
+    DerivedEdgeSpec, EdgeAuthorshipKind, EntityKind, InputContractId, MemoryId, MemoryOperatorKind,
+    OperatorId, Owner, OwnerRefKind, RelationClass, SchemaId, SchemaVersion, SourceBatchId,
     StorageError,
 };
 use sqlx::{Postgres, Transaction};
 
 use crate::error::map_err;
 use crate::sidecars::PgSidecarFuture;
+
+type StoredEdgeProofRow = (
+    String,
+    EntityKind,
+    uuid::Uuid,
+    EntityKind,
+    uuid::Uuid,
+    EdgeAuthorshipKind,
+    Option<uuid::Uuid>,
+);
 
 #[derive(Debug, Clone)]
 pub struct DerivedDraft<'a> {
@@ -19,6 +32,9 @@ pub struct DerivedDraft<'a> {
     pub schema_version: SchemaVersion,
     pub text: String,
     pub operator_kind: MemoryOperatorKind,
+    pub operator_id: OperatorId,
+    pub input_contract_id: InputContractId,
+    pub source_batch_id: Option<SourceBatchId>,
     pub model_id: &'a str,
     pub prompt_version: &'a str,
     pub supersedes: Option<MemoryId>,
@@ -37,7 +53,7 @@ pub struct DerivedOutcome {
 /// # Errors
 ///
 /// Returns storage constraint/internal errors from Postgres.
-pub async fn append_derived_in_tx(
+pub(crate) async fn append_derived_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
     sidecar: impl for<'t> FnOnce(
@@ -53,8 +69,9 @@ pub async fn append_derived_in_tx(
     let inserted: Option<(uuid::Uuid,)> = sqlx::query_as(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version, supersedes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             operator_kind, operator_id, input_contract_id, source_batch_id,
+             model_id, prompt_version, supersedes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          ON CONFLICT (memory_id) DO NOTHING
          RETURNING memory_id",
     )
@@ -66,6 +83,9 @@ pub async fn append_derived_in_tx(
     .bind(draft.kind)
     .bind(&draft.text)
     .bind(draft.operator_kind)
+    .bind(draft.operator_id.into_inner())
+    .bind(draft.input_contract_id.into_inner())
+    .bind(draft.source_batch_id.map(SourceBatchId::into_inner))
     .bind(draft.model_id)
     .bind(draft.prompt_version)
     .bind(draft.supersedes.map(MemoryId::into_inner))
@@ -74,6 +94,7 @@ pub async fn append_derived_in_tx(
     .map_err(map_err)?;
 
     if inserted.is_none() {
+        validate_derived_replay_equivalent(tx, draft, owner_kind, owner_id).await?;
         return Ok(DerivedOutcome {
             memory_id: MemoryId::new(draft.memory_id),
             idempotent_replay: true,
@@ -108,6 +129,313 @@ pub async fn append_derived_in_tx(
     .map_err(map_err)?;
 
     Ok(outcome)
+}
+
+/// Append one operator-derived memory with its declared output→input ledger
+/// edges in the same transaction.
+///
+/// # Errors
+///
+/// Returns `ConstraintViolation` when the operator proof shape does not match
+/// persisted input rows, `Conflict` when an idempotent replay changes proof
+/// metadata or ledger edges, and storage errors from Postgres.
+pub async fn append_derived_with_edges_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    draft: &DerivedDraft<'_>,
+    edges: &[DerivedEdgeSpec<'_>],
+    sidecar: impl for<'t> FnOnce(
+        &'t mut Transaction<'_, Postgres>,
+        &'t DerivedOutcome,
+    ) -> PgSidecarFuture<'t>,
+) -> Result<DerivedOutcome, StorageError> {
+    validate_derived_draft_edges_in_tx(tx, draft, edges).await?;
+    let outcome = append_derived_in_tx(tx, draft, sidecar).await?;
+    if outcome.idempotent_replay {
+        validate_derived_edge_replay_equivalent(tx, draft, edges).await?;
+        return Ok(outcome);
+    }
+    for edge in edges {
+        let draft = edge_draft_from_spec(edge);
+        crate::verbs::edge_append::append_edge_in_tx(tx.as_mut(), &draft).await?;
+    }
+    Ok(outcome)
+}
+
+fn edge_draft_from_spec<'a>(
+    edge: &'a DerivedEdgeSpec<'a>,
+) -> crate::verbs::edge_append::EdgeDraft<'a> {
+    crate::verbs::edge_append::EdgeDraft {
+        edge_id: uuid::Uuid::now_v7(),
+        relation: edge.relation,
+        source_kind: edge.source_kind,
+        source_memory_id: Some(edge.source_memory_id.into_inner()),
+        source_goal_id: None,
+        source_fact_entity_id: None,
+        target_kind: edge.target_kind,
+        target_memory_id: Some(edge.target_memory_id.into_inner()),
+        target_goal_id: None,
+        target_fact_entity_id: None,
+        authorship_kind: edge.authorship_kind,
+        authorship_owner_memory_id: edge.authorship_owner_memory_id.map(MemoryId::into_inner),
+        owner: edge.owner,
+    }
+}
+
+#[allow(clippy::too_many_lines)] // storage-side proof validation is one linear SQL-backed invariant check
+async fn validate_derived_draft_edges_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    draft: &DerivedDraft<'_>,
+    edges: &[DerivedEdgeSpec<'_>],
+) -> Result<(), StorageError> {
+    let expected_authorship = draft.operator_kind.edge_authorship();
+    let proof_edges = edges
+        .iter()
+        .filter(|edge| {
+            edge.source_memory_id.into_inner() == draft.memory_id
+                && edge.authorship_kind == expected_authorship
+        })
+        .collect::<Vec<_>>();
+    if proof_edges.is_empty() {
+        return Err(StorageError::ConstraintViolation(
+            "operator invocation inputs must be nonempty".into(),
+        ));
+    }
+
+    let expected_input_kind = draft.operator_kind.phase().input_kind();
+    for edge in edges {
+        if edge.source_memory_id.into_inner() == draft.memory_id
+            && edge.relation.descriptor.class == RelationClass::Provenance
+            && edge.authorship_kind.is_operator()
+            && edge.authorship_kind != expected_authorship
+        {
+            return Err(StorageError::ConstraintViolation(
+                "operator provenance edge authorship kind does not match operator phase".into(),
+            ));
+        }
+    }
+    let mut input_ids = Vec::with_capacity(proof_edges.len());
+    let mut seen = BTreeSet::new();
+    for edge in &proof_edges {
+        if edge.relation.descriptor.class != RelationClass::Provenance {
+            return Err(StorageError::ConstraintViolation(
+                "operator proof edges must use Provenance relations".into(),
+            ));
+        }
+        if edge.source_kind != draft.kind || edge.target_kind != expected_input_kind {
+            return Err(StorageError::ConstraintViolation(
+                "operator proof edge shape does not match operator phase".into(),
+            ));
+        }
+        if !seen.insert(edge.target_memory_id) {
+            return Err(StorageError::ConstraintViolation(
+                "operator invocation inputs must be unique".into(),
+            ));
+        }
+        input_ids.push(edge.target_memory_id.into_inner());
+    }
+
+    let rows: Vec<(uuid::Uuid, Option<EntityKind>, Option<uuid::Uuid>, bool)> = sqlx::query_as(
+        "SELECT m.memory_id, m.kind, fr.source_batch_id, sb.closed_at IS NOT NULL
+           FROM proxima_core.memories m
+           LEFT JOIN proxima_core.fact_receipts fr ON fr.receipt_id = m.receipt_id
+           LEFT JOIN proxima_core.source_batches sb ON sb.id = fr.source_batch_id
+          WHERE m.memory_id = ANY($1::uuid[])
+            AND m.tombstoned_at IS NULL",
+    )
+    .bind(&input_ids)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    if rows.len() != input_ids.len() {
+        return Err(StorageError::ConstraintViolation(
+            "operator invocation inputs must exist and be live".into(),
+        ));
+    }
+
+    let mut ftoa_batch = None;
+    for (memory_id, actual_kind, source_batch_id, closed) in rows {
+        let actual = actual_kind.unwrap_or(EntityKind::Fact);
+        if actual != expected_input_kind {
+            return Err(StorageError::ConstraintViolation(format!(
+                "invalid input kind for {:?}: expected {expected_input_kind:?}, got {actual:?}",
+                MemoryId::new(memory_id)
+            )));
+        }
+        if draft.operator_kind == MemoryOperatorKind::FtoA {
+            let source_batch_id = source_batch_id.ok_or_else(|| {
+                StorageError::ConstraintViolation(
+                    "F→A operator inputs must be receipted Facts".into(),
+                )
+            })?;
+            if !closed {
+                return Err(StorageError::ConstraintViolation(
+                    "F→A operator source batch must be closed".into(),
+                ));
+            }
+            match ftoa_batch {
+                Some(existing) if existing != source_batch_id => {
+                    return Err(StorageError::ConstraintViolation(
+                        "F→A operator inputs must belong to one source batch".into(),
+                    ));
+                }
+                Some(_) => {}
+                None => ftoa_batch = Some(source_batch_id),
+            }
+        }
+    }
+
+    if draft.operator_kind == MemoryOperatorKind::FtoA {
+        let expected = ftoa_batch.ok_or_else(|| {
+            StorageError::ConstraintViolation("F→A operator source batch is required".into())
+        })?;
+        if draft.source_batch_id.map(SourceBatchId::into_inner) != Some(expected) {
+            return Err(StorageError::ConstraintViolation(
+                "F→A operator source_batch_id must match input Facts".into(),
+            ));
+        }
+    } else if draft.source_batch_id.is_some() {
+        return Err(StorageError::ConstraintViolation(
+            "source_batch_id is only valid for F→A operator invocations".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn operator_edge_authorship_values() -> [&'static str; 4] {
+    [
+        EdgeAuthorshipKind::OperatorFtoA.as_str(),
+        EdgeAuthorshipKind::OperatorAtoA.as_str(),
+        EdgeAuthorshipKind::OperatorAtoP.as_str(),
+        EdgeAuthorshipKind::OperatorAtoGoal.as_str(),
+    ]
+}
+
+async fn validate_derived_edge_replay_equivalent(
+    tx: &mut Transaction<'_, Postgres>,
+    draft: &DerivedDraft<'_>,
+    edges: &[DerivedEdgeSpec<'_>],
+) -> Result<(), StorageError> {
+    let expected_authorship = draft.operator_kind.edge_authorship();
+    let expected = edges
+        .iter()
+        .filter(|edge| {
+            edge.source_memory_id.into_inner() == draft.memory_id
+                && edge.authorship_kind == expected_authorship
+                && edge.relation.descriptor.class == RelationClass::Provenance
+        })
+        .map(|edge| {
+            (
+                edge.relation.descriptor.relation.as_str().to_string(),
+                format!("{:?}", edge.source_kind),
+                edge.source_memory_id.into_inner(),
+                format!("{:?}", edge.target_kind),
+                edge.target_memory_id.into_inner(),
+                format!("{:?}", edge.authorship_kind),
+                edge.authorship_owner_memory_id.map(MemoryId::into_inner),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let rows: Vec<StoredEdgeProofRow> = sqlx::query_as(
+        "SELECT relation, source_kind, source_memory_id, target_kind, target_memory_id,
+                authorship_kind, authorship_owner_memory_id
+           FROM proxima_core.edges
+          WHERE source_memory_id = $1
+            AND relation_class = 'Provenance'
+            AND authorship_kind::text = ANY($2::text[])",
+    )
+    .bind(draft.memory_id)
+    .bind(operator_edge_authorship_values())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    let actual = rows
+        .into_iter()
+        .map(
+            |(
+                relation,
+                source_kind,
+                source_memory_id,
+                target_kind,
+                target_memory_id,
+                authorship_kind,
+                authorship_owner_memory_id,
+            )| {
+                (
+                    relation,
+                    format!("{source_kind:?}"),
+                    source_memory_id,
+                    format!("{target_kind:?}"),
+                    target_memory_id,
+                    format!("{authorship_kind:?}"),
+                    authorship_owner_memory_id,
+                )
+            },
+        )
+        .collect::<BTreeSet<_>>();
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(StorageError::Conflict(
+            "derived memory idempotent replay edge proof mismatch".into(),
+        ))
+    }
+}
+
+async fn validate_derived_replay_equivalent(
+    tx: &mut Transaction<'_, Postgres>,
+    draft: &DerivedDraft<'_>,
+    owner_kind: OwnerRefKind,
+    owner_id: Option<uuid::Uuid>,
+) -> Result<(), StorageError> {
+    let equivalent: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM proxima_core.memories
+              WHERE memory_id = $1
+                AND owner_kind = $2
+                AND owner_id IS NOT DISTINCT FROM $3
+                AND schema_id = $4
+                AND schema_version = $5
+                AND kind = $6
+                AND text = $7
+                AND operator_kind = $8
+                AND operator_id = $9
+                AND input_contract_id = $10
+                AND source_batch_id IS NOT DISTINCT FROM $11
+                AND model_id = $12
+                AND prompt_version = $13
+                AND supersedes IS NOT DISTINCT FROM $14
+                AND receipt_id IS NULL
+                AND citation_mapping_id IS NULL
+                AND tombstoned_at IS NULL
+         )",
+    )
+    .bind(draft.memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(draft.schema_id.as_str())
+    .bind(i32::try_from(draft.schema_version.into_inner()).unwrap_or(1))
+    .bind(draft.kind)
+    .bind(&draft.text)
+    .bind(draft.operator_kind)
+    .bind(draft.operator_id.into_inner())
+    .bind(draft.input_contract_id.into_inner())
+    .bind(draft.source_batch_id.map(SourceBatchId::into_inner))
+    .bind(draft.model_id)
+    .bind(draft.prompt_version)
+    .bind(draft.supersedes.map(MemoryId::into_inner))
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(map_err)?;
+
+    if equivalent {
+        Ok(())
+    } else {
+        Err(StorageError::Conflict(
+            "derived memory idempotent replay proof mismatch".into(),
+        ))
+    }
 }
 
 async fn validate_supersedes_in_owner(

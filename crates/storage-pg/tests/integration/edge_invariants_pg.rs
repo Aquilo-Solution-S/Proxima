@@ -35,15 +35,17 @@ async fn insert_derived_memory(
     };
     let operator_kind = match kind {
         EntityKind::Perspective => MemoryOperatorKind::AtoP,
-        _ => MemoryOperatorKind::FtoA,
+        _ => MemoryOperatorKind::AtoA,
     };
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version)
-         VALUES ($1, $2, $3, $4, 1, $5, 'derived', $6, 'test-model',
-                 'v1')",
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
+         VALUES ($1, $2, $3, $4, 1, $5, 'derived', $6,
+                 '00000000-0000-0000-0000-000000000371'::uuid,
+                 '00000000-0000-0000-0000-000000000372'::uuid, NULL,
+                 'test-model', 'v1')"
     )
     .bind(memory_id)
     .bind(owner_kind)

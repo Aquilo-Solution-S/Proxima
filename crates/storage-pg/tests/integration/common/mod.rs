@@ -104,8 +104,14 @@ pub async fn seed_memory(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version)
-         VALUES ($1, $2, $3, 'test/edge-access-v1', 1, $4, $5, 'Wake',
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
+         VALUES ($1, $2, $3, 'test/edge-access-v1', 1, $4, $5,
+                 CASE WHEN $4 = 'Perspective'::proxima_core.entity_kind
+                      THEN 'AtoP'::proxima_core.memory_operator_kind
+                      ELSE 'AtoA'::proxima_core.memory_operator_kind END,
+                 '00000000-0000-0000-0000-000000000101'::uuid,
+                 '00000000-0000-0000-0000-000000000102'::uuid,
+                 NULL,
                  'test-model', 'edge-access-v1')",
     )
     .bind(memory_id)

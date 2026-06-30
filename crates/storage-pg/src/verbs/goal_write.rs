@@ -12,7 +12,7 @@ use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, DecomposedGoalOutcome, GoalAtomicContext, GoalAuthorship, GoalDraft,
     GoalEvidenceRef, GoalLifecycleFact, GoalPayloadWrite, GoalState, GoalWakeConfigWrite,
-    GoalWakeToolId, GoalWakeTrigger, GoalWriteOutcome, ModifyGoalAtomicRequest,
+    GoalWakeToolId, GoalWakeTrigger, GoalWriteOutcome, ModifyGoalAtomicRequest, SystemOrigin,
     TransitionGoalAtomicRequest,
 };
 use proxima_core::verbs::schema::PayloadKind;
@@ -139,6 +139,7 @@ struct AuthorshipRow {
     authorship_operator_id: Option<uuid::Uuid>,
     authorship_tool_id: Option<String>,
     operator_kind: Option<proxima_core::verbs::goal_write::OperatorKind>,
+    input_contract_id: Option<uuid::Uuid>,
     model_id: Option<String>,
     prompt_version: Option<String>,
 }
@@ -191,6 +192,7 @@ pub(crate) async fn create_goal_atomic(
     let evidence =
         validate_evidence_in_owner(&mut tx, &req.draft.owner(), req.draft.topology.evidence())
             .await?;
+    validate_operator_goal_evidence(&req.draft.authorship, &evidence)?;
     let inserted = insert_or_replay_goal(
         &mut tx,
         sidecars,
@@ -207,6 +209,7 @@ pub(crate) async fn create_goal_atomic(
                 goal_id: inserted.goal_id,
                 target_self_perspective_id: req.draft.topology.assignment().perspective_id(),
                 evidence: &evidence,
+                evidence_authorship_kind: motivated_by_authorship_kind(&req.draft.authorship),
                 author_self_perspective_id: req.context.author_self_perspective_id,
                 wake_write: WakeWrite::Explicit(req.draft.wake.as_ref()),
                 expected_prior: None,
@@ -258,7 +261,7 @@ pub(crate) async fn create_goal_atomic(
                 &req.draft.owner(),
                 inserted.goal_id,
                 &evidence,
-                EdgeAuthorshipKind::ExternalAgent,
+                motivated_by_authorship_kind(&req.draft.authorship),
             )
             .await?,
         );
@@ -293,6 +296,14 @@ pub(crate) async fn transition_goal_atomic(
     if matches!(req.next_state, GoalState::Achieved) {
         return Err(StorageError::ConstraintViolation(
             "use achieve_goal_atomic for Achieved transitions".into(),
+        ));
+    }
+    if matches!(
+        &req.authorship,
+        GoalAuthorship::System(SystemOrigin::Operator { .. })
+    ) {
+        return Err(StorageError::ConstraintViolation(
+            "operator-authored Goal transition requires explicit Abstraction evidence".into(),
         ));
     }
     let mut tx = pool.begin().await.map_err(internal)?;
@@ -341,6 +352,7 @@ pub(crate) async fn achieve_goal_atomic(
     }
     let mut tx = pool.begin().await.map_err(internal)?;
     let evidence = validate_evidence_in_owner(&mut tx, &req.owner, &req.evidence).await?;
+    validate_operator_goal_evidence(&req.authorship, &evidence)?;
     let prior = load_prior_goal(&mut tx, &req.owner, req.prior_goal_id).await?;
     validate_goal_transition(prior.state, GoalState::Achieved)?;
     let draft = draft_from_stored(
@@ -361,6 +373,16 @@ pub(crate) async fn achieve_goal_atomic(
     )
     .await?;
     let outcome = if inserted.idempotent_replay {
+        if !goal_evidence_edges_match(
+            &mut tx,
+            inserted.goal_id,
+            &evidence,
+            motivated_by_authorship_kind(&req.authorship),
+        )
+        .await?
+        {
+            return Err(idempotency_conflict(req.request_id.as_str()));
+        }
         replay_goal_outcome(
             &mut tx,
             inserted,
@@ -381,6 +403,7 @@ pub(crate) async fn achieve_goal_atomic(
                 inserted,
                 evidence: &evidence,
                 assignment: prior.assignment,
+                authorship_kind: motivated_by_authorship_kind(&req.authorship),
             },
         )
         .await?
@@ -395,6 +418,7 @@ struct AchieveGoalNonReplay<'a> {
     inserted: InsertedGoal,
     evidence: &'a [EvidenceTarget],
     assignment: MemoryId,
+    authorship_kind: EdgeAuthorshipKind,
 }
 
 async fn achieve_goal_non_replay(
@@ -417,7 +441,7 @@ async fn achieve_goal_non_replay(
         args.owner,
         args.inserted.goal_id,
         args.evidence,
-        EdgeAuthorshipKind::Engine,
+        args.authorship_kind,
     )
     .await?;
     edge_ids.push(
@@ -456,6 +480,7 @@ async fn achieve_goal_non_replay(
     })
 }
 
+#[allow(clippy::too_many_lines)] // atomic Goal replace path keeps replay/proof side effects together
 pub(crate) async fn modify_goal_atomic(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
@@ -482,6 +507,7 @@ pub(crate) async fn modify_goal_atomic(
         authorship: req.authorship.clone(),
         request_id: req.request_id.as_str(),
     });
+    validate_operator_goal_evidence(&draft.authorship, &evidence)?;
     let wake_write = match &req.wake {
         Some(wake) => WakeWrite::Explicit(wake.as_ref()),
         None => WakeWrite::CarryFrom(req.prior_goal_id),
@@ -496,6 +522,16 @@ pub(crate) async fn modify_goal_atomic(
     )
     .await?;
     let outcome = if inserted.idempotent_replay {
+        if !goal_evidence_edges_match(
+            &mut tx,
+            inserted.goal_id,
+            &evidence,
+            motivated_by_authorship_kind(&req.authorship),
+        )
+        .await?
+        {
+            return Err(idempotency_conflict(req.request_id.as_str()));
+        }
         replay_goal_outcome(
             &mut tx,
             inserted,
@@ -542,7 +578,7 @@ pub(crate) async fn modify_goal_atomic(
                 &req.owner,
                 inserted.goal_id,
                 &evidence,
-                EdgeAuthorshipKind::User,
+                motivated_by_authorship_kind(&req.authorship),
             )
             .await?,
         );
@@ -558,6 +594,7 @@ pub(crate) async fn modify_goal_atomic(
     Ok(outcome)
 }
 
+#[allow(clippy::too_many_lines)] // atomic child Goal creation path keeps replay/proof side effects together
 pub(crate) async fn decompose_goal_atomic(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
@@ -569,6 +606,7 @@ pub(crate) async fn decompose_goal_atomic(
     let mut children = Vec::with_capacity(req.children.len());
     for child in &req.children {
         let evidence = validate_evidence_in_owner(&mut tx, &req.owner, &child.evidence).await?;
+        validate_operator_goal_evidence(&req.authorship, &evidence)?;
         let draft = child_draft(
             &req.owner,
             req.parent_goal_id,
@@ -586,6 +624,16 @@ pub(crate) async fn decompose_goal_atomic(
         )
         .await?;
         let outcome = if inserted.idempotent_replay {
+            if !goal_evidence_edges_match(
+                &mut tx,
+                inserted.goal_id,
+                &evidence,
+                motivated_by_authorship_kind(&req.authorship),
+            )
+            .await?
+            {
+                return Err(idempotency_conflict(child.request_id.as_str()));
+            }
             replay_goal_outcome(
                 &mut tx,
                 inserted,
@@ -632,7 +680,7 @@ pub(crate) async fn decompose_goal_atomic(
                     &req.owner,
                     inserted.goal_id,
                     &evidence,
-                    EdgeAuthorshipKind::ExternalAgent,
+                    motivated_by_authorship_kind(&req.authorship),
                 )
                 .await?,
             );
@@ -787,6 +835,7 @@ struct CreateGoalReplayExpectation<'a> {
     goal_id: GoalId,
     target_self_perspective_id: MemoryId,
     evidence: &'a [EvidenceTarget],
+    evidence_authorship_kind: EdgeAuthorshipKind,
     author_self_perspective_id: Option<MemoryId>,
     wake_write: WakeWrite<'a>,
     expected_prior: Option<GoalId>,
@@ -802,7 +851,14 @@ async fn ensure_create_goal_replay_side_effects_match(
     {
         return Err(idempotency_conflict(expected.request_id));
     }
-    if !goal_evidence_edges_match(tx, expected.goal_id, expected.evidence).await? {
+    if !goal_evidence_edges_match(
+        tx,
+        expected.goal_id,
+        expected.evidence,
+        expected.evidence_authorship_kind,
+    )
+    .await?
+    {
         return Err(idempotency_conflict(expected.request_id));
     }
     let Some(lifecycle_memory_id) =
@@ -852,9 +908,20 @@ async fn goal_evidence_edges_match(
     tx: &mut Transaction<'_, Postgres>,
     goal_id: GoalId,
     evidence: &[EvidenceTarget],
+    authorship_kind: EdgeAuthorshipKind,
 ) -> Result<bool, StorageError> {
-    let rows: Vec<(EntityKind, uuid::Uuid)> = sqlx::query_as(
-        "SELECT target_kind, target_memory_id
+    type EvidenceEdgeTuple = (
+        String,
+        String,
+        Option<uuid::Uuid>,
+        EntityKind,
+        Option<uuid::Uuid>,
+        EdgeAuthorshipKind,
+    );
+
+    let rows: Vec<EvidenceEdgeTuple> = sqlx::query_as(
+        "SELECT relation, relation_class::text, source_goal_id, target_kind,
+                target_memory_id, authorship_kind
            FROM proxima_core.edges
           WHERE source_goal_id = $1
             AND relation = $2
@@ -868,7 +935,16 @@ async fn goal_evidence_edges_match(
     let stored = rows.into_iter().collect::<HashSet<_>>();
     let requested = evidence
         .iter()
-        .map(|target| (target.kind, target.memory_id.into_inner()))
+        .map(|target| {
+            (
+                CORE_MOTIVATED_BY_RELATION.to_string(),
+                "Structural".to_string(),
+                Some(goal_id.into_inner()),
+                target.kind,
+                Some(target.memory_id.into_inner()),
+                authorship_kind,
+            )
+        })
         .collect::<HashSet<_>>();
     Ok(stored == requested)
 }
@@ -950,7 +1026,7 @@ async fn authorship_matches(
 ) -> Result<bool, StorageError> {
     let row: AuthorshipRow = sqlx::query_as(
         "SELECT authorship_kind, authorship_origin, authorship_operator_id,
-                authorship_tool_id, operator_kind, model_id, prompt_version
+                authorship_tool_id, operator_kind, input_contract_id, model_id, prompt_version
            FROM proxima_core.goals
           WHERE goal_id = $1",
     )
@@ -964,6 +1040,7 @@ async fn authorship_matches(
         authorship_operator_id: row.authorship_operator_id,
         authorship_tool_id: row.authorship_tool_id,
         operator_kind: row.operator_kind,
+        input_contract_id: row.input_contract_id,
         model_id: row.model_id,
         prompt_version: row.prompt_version,
     };
@@ -989,11 +1066,11 @@ async fn insert_goal_row(
             (goal_id, schema_id, schema_version, owner_kind, owner_id,
              title, text, payload, state, supersedes,
              authorship_kind, authorship_origin, authorship_operator_id,
-             authorship_tool_id, operator_kind, model_id, prompt_version,
+             authorship_tool_id, operator_kind, input_contract_id, model_id, prompt_version,
              request_id, idempotency_key)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                 $11, $12, $13, $14, $15, $16, $17, $18,
-                 md5($4::text || ':' || $5::text || ':' || $18))",
+                 $11, $12, $13, $14, $15, $16, $17, $18, $19,
+                 md5($4::text || ':' || $5::text || ':' || $19))",
     )
     .bind(goal_id)
     .bind(draft.schema_id.as_str())
@@ -1010,6 +1087,7 @@ async fn insert_goal_row(
     .bind(authorship.authorship_operator_id)
     .bind(authorship.authorship_tool_id)
     .bind(authorship.operator_kind)
+    .bind(authorship.input_contract_id)
     .bind(authorship.model_id)
     .bind(authorship.prompt_version)
     .bind(&draft.request_id)
@@ -1522,12 +1600,37 @@ fn child_draft(
     ))
 }
 
+fn validate_operator_goal_evidence(
+    authorship: &GoalAuthorship,
+    evidence: &[EvidenceTarget],
+) -> Result<(), StorageError> {
+    if !matches!(
+        authorship,
+        GoalAuthorship::System(SystemOrigin::Operator { .. })
+    ) {
+        return Ok(());
+    }
+    if evidence.is_empty() {
+        return Err(StorageError::ConstraintViolation(
+            "operator-authored Goal requires non-empty Abstraction evidence".into(),
+        ));
+    }
+    if evidence
+        .iter()
+        .any(|target| target.kind != EntityKind::Abstraction)
+    {
+        return Err(StorageError::ConstraintViolation(
+            "operator-authored Goal evidence must be Abstraction".into(),
+        ));
+    }
+    Ok(())
+}
+
 async fn validate_evidence_in_owner(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    _owner: &Owner,
     evidence: &[GoalEvidenceRef],
 ) -> Result<Vec<EvidenceTarget>, StorageError> {
-    let (owner_kind, owner_id) = owner.columns();
     let mut seen = HashSet::with_capacity(evidence.len());
     let mut out = Vec::with_capacity(evidence.len());
     for item in evidence {
@@ -1540,19 +1643,15 @@ async fn validate_evidence_in_owner(
             "SELECT m.kind
                FROM proxima_core.memories m
               WHERE m.memory_id = $1
-                AND m.tombstoned_at IS NULL
-                AND m.owner_kind = $2
-                AND m.owner_id IS NOT DISTINCT FROM $3",
+                AND m.tombstoned_at IS NULL",
         )
         .bind(item.memory_id().into_inner())
-        .bind(owner_kind)
-        .bind(owner_id)
         .fetch_optional(&mut **tx)
         .await
         .map_err(map_err)?;
         let Some(row) = row else {
             return Err(StorageError::ConstraintViolation(
-                "evidence crosses Owner boundary or does not exist".into(),
+                "evidence does not exist".into(),
             ));
         };
         let kind = row.kind.unwrap_or(EntityKind::Fact);
@@ -1845,6 +1944,17 @@ async fn append_goal_to_self_edge(
     };
     append_edge_in_tx(tx, &draft).await?;
     Ok(edge_id)
+}
+
+fn motivated_by_authorship_kind(authorship: &GoalAuthorship) -> EdgeAuthorshipKind {
+    match authorship {
+        GoalAuthorship::System(SystemOrigin::Operator { .. }) => {
+            EdgeAuthorshipKind::OperatorAtoGoal
+        }
+        GoalAuthorship::User => EdgeAuthorshipKind::User,
+        GoalAuthorship::System(SystemOrigin::Tool { .. }) => EdgeAuthorshipKind::Engine,
+        GoalAuthorship::External => EdgeAuthorshipKind::ExternalAgent,
+    }
 }
 
 async fn append_motivated_by_edges(

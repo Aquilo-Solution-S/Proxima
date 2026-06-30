@@ -857,6 +857,22 @@ where
         .await
         .map_err(map_err)?;
 
+        let batch_closed: bool = sqlx::query_scalar(
+            "SELECT closed_at IS NOT NULL
+               FROM proxima_core.source_batches
+              WHERE id = $1
+              FOR UPDATE",
+        )
+        .bind(receipt.source_batch_id.into_inner())
+        .fetch_one(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+        if batch_closed {
+            return Err(StorageError::ConstraintViolation(
+                "cannot ingest Fact into closed source batch".into(),
+            ));
+        }
+
         sqlx::query(
             "INSERT INTO proxima_core.fact_receipts
                 (receipt_id, source, source_batch_id,

@@ -33,11 +33,13 @@ type BoxTestFuture<'a> = Pin<Box<dyn Future<Output = TestResult> + 'a>>;
 async fn goal_set_tool_creates_active_goal() -> TestResult {
     with_harness(|harness| {
         Box::pin(async move {
+            let evidence = harness.seed_evidence_memory("goal set evidence").await?;
             let first = harness
-                .call_goal_write(CoreGoalArgs::Set(goal_set_args(
+                .call_goal_write(CoreGoalArgs::Set(goal_set_args_with_evidence(
                     "Tool-created goal",
                     "Create this goal through the MCP tool.",
                     "goal-set-tool-active",
+                    &evidence,
                 )))
                 .await?;
             assert_goal_write(&first.handle, first.lifecycle_memory.as_deref());
@@ -56,10 +58,11 @@ async fn goal_set_tool_creates_active_goal() -> TestResult {
             assert_eq!(count_goal_activated(harness.pg.pool()).await?, 1);
 
             let replay = harness
-                .call_goal_write(CoreGoalArgs::Set(goal_set_args(
+                .call_goal_write(CoreGoalArgs::Set(goal_set_args_with_evidence(
                     "Tool-created goal",
                     "Create this goal through the MCP tool.",
                     "goal-set-tool-active",
+                    &evidence,
                 )))
                 .await?;
             assert!(replay.idempotent_replay);
@@ -80,10 +83,11 @@ async fn goal_lifecycle_tool_chain() -> TestResult {
                 .seed_evidence_memory("evidence for achievement")
                 .await?;
             let active = harness
-                .call_goal_write(CoreGoalArgs::Set(goal_set_args(
+                .call_goal_write(CoreGoalArgs::Set(goal_set_args_with_evidence(
                     "Lifecycle chain goal",
                     "Pause, resume, then achieve this goal.",
                     "goal-lifecycle-set",
+                    &evidence,
                 )))
                 .await?;
             let paused = harness
@@ -148,11 +152,12 @@ async fn goal_full_lifecycle_accepts_structured_body_payload() -> TestResult {
                 .seed_evidence_memory("structured body lifecycle evidence")
                 .await?;
             let active = harness
-                .call_goal_write(CoreGoalArgs::Set(task_goal_set_args(
+                .call_goal_write(CoreGoalArgs::Set(task_goal_set_args_with_evidence(
                     "Structured lifecycle goal",
                     "Exercise every goal tool with a structured body object.",
                     "High",
                     "structured-lifecycle-set",
+                    &evidence,
                 )))
                 .await?;
             assert_fresh_goal_write(&active);
@@ -161,10 +166,11 @@ async fn goal_full_lifecycle_accepts_structured_body_payload() -> TestResult {
             let decomposed = harness
                 .call_goal_decompose(GoalDecomposeArgs {
                     parent_goal: active.handle.clone(),
-                    children: vec![task_child_goal(
+                    children: vec![task_child_goal_with_evidence(
                         "Structured lifecycle child",
                         "Child goal with a structured body object.",
                         "Low",
+                        &evidence,
                     )],
                     target_perspective: None,
                     idempotency_key: "structured-lifecycle-decompose".into(),
@@ -249,12 +255,14 @@ async fn goal_full_lifecycle_accepts_structured_body_payload() -> TestResult {
 async fn goal_set_tool_requires_memory_write() -> TestResult {
     with_harness(|harness| {
         Box::pin(async move {
+            let evidence = harness.seed_evidence_memory("denied goal evidence").await?;
             let err = CoreGoalTool::call(
                 harness.ctx_with_authz(harness.viewer_without_memory_write().await),
-                CoreGoalArgs::Set(goal_set_args(
+                CoreGoalArgs::Set(goal_set_args_with_evidence(
                     "Denied goal",
                     "This goal write must be rejected before storage.",
                     "goal-set-no-memory-write",
+                    &evidence,
                 )),
             )
             .await
@@ -297,11 +305,13 @@ async fn goal_transition_tool_rejects_raw_uuid() -> TestResult {
 async fn goal_decompose_tool_writes_children() -> TestResult {
     with_harness(|harness| {
         Box::pin(async move {
+            let evidence = harness.seed_evidence_memory("decompose evidence").await?;
             let parent = harness
-                .call_goal_write(CoreGoalArgs::Set(goal_set_args(
+                .call_goal_write(CoreGoalArgs::Set(goal_set_args_with_evidence(
                     "Parent goal",
                     "Split this parent into children.",
                     "goal-decompose-parent",
+                    &evidence,
                 )))
                 .await?;
             let parent_id = harness.goal_id(&parent.handle)?;
@@ -309,8 +319,8 @@ async fn goal_decompose_tool_writes_children() -> TestResult {
                 .call_goal_decompose(GoalDecomposeArgs {
                     parent_goal: parent.handle.clone(),
                     children: vec![
-                        child_goal("Child one", "First child goal."),
-                        child_goal("Child two", "Second child goal."),
+                        child_goal_with_evidence("Child one", "First child goal.", &evidence),
+                        child_goal_with_evidence("Child two", "Second child goal.", &evidence),
                     ],
                     target_perspective: None,
                     idempotency_key: "goal-decompose-children".into(),
@@ -343,18 +353,20 @@ async fn goal_decompose_tool_writes_children() -> TestResult {
 async fn goal_modify_tool_supersedes_head() -> TestResult {
     with_harness(|harness| {
         Box::pin(async move {
+            let evidence = harness.seed_evidence_memory("modify evidence").await?;
             let prior = harness
-                .call_goal_write(CoreGoalArgs::Set(goal_set_args(
+                .call_goal_write(CoreGoalArgs::Set(goal_set_args_with_evidence(
                     "Original title",
                     "Original goal text.",
                     "goal-modify-prior",
+                    &evidence,
                 )))
                 .await?;
             let modified = harness
                 .call_goal_write(CoreGoalArgs::Modify(GoalModifyArgs {
                     goal: prior.handle.clone(),
                     payload: simple_payload("Modified title", "Modified goal text."),
-                    evidence: Some(Vec::new()),
+                    evidence: Some(vec![evidence.handle.clone()]),
                     idempotency_key: Some("goal-modify-replacement".into()),
                 }))
                 .await?;
@@ -448,7 +460,11 @@ impl ToolHarness {
         text: &str,
     ) -> Result<EvidenceHandle, Box<dyn std::error::Error>> {
         let id = seed_fact_memory(&self.pg, &self.owner, text).await?;
-        let handle = self.handles.assign_fact_memory(id).as_str().to_string();
+        let handle = self
+            .handles
+            .assign_abstraction_memory(id)
+            .as_str()
+            .to_string();
         Ok(EvidenceHandle { id, handle })
     }
 
@@ -521,6 +537,17 @@ fn goal_set_args(title: &str, text: &str, idempotency_key: &str) -> GoalSetArgs 
     }
 }
 
+fn goal_set_args_with_evidence(
+    title: &str,
+    text: &str,
+    idempotency_key: &str,
+    evidence: &EvidenceHandle,
+) -> GoalSetArgs {
+    let mut args = goal_set_args(title, text, idempotency_key);
+    args.evidence = vec![evidence.handle.clone()];
+    args
+}
+
 fn task_goal_set_args(
     title: &str,
     text: &str,
@@ -535,17 +562,34 @@ fn task_goal_set_args(
     }
 }
 
-fn child_goal(title: &str, text: &str) -> ChildGoalInput {
+fn task_goal_set_args_with_evidence(
+    title: &str,
+    text: &str,
+    priority: &str,
+    idempotency_key: &str,
+    evidence: &EvidenceHandle,
+) -> GoalSetArgs {
+    let mut args = task_goal_set_args(title, text, priority, idempotency_key);
+    args.evidence = vec![evidence.handle.clone()];
+    args
+}
+
+fn child_goal_with_evidence(title: &str, text: &str, evidence: &EvidenceHandle) -> ChildGoalInput {
     ChildGoalInput {
         payload: simple_payload(title, text),
-        evidence: Vec::new(),
+        evidence: vec![evidence.handle.clone()],
     }
 }
 
-fn task_child_goal(title: &str, text: &str, priority: &str) -> ChildGoalInput {
+fn task_child_goal_with_evidence(
+    title: &str,
+    text: &str,
+    priority: &str,
+    evidence: &EvidenceHandle,
+) -> ChildGoalInput {
     ChildGoalInput {
         payload: task_payload(title, text, priority),
-        evidence: Vec::new(),
+        evidence: vec![evidence.handle.clone()],
     }
 }
 
@@ -581,9 +625,12 @@ async fn seed_assignment_perspective(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version)
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/self-perspective-v1', 1, $4,
-                 'goal tool self perspective', $5, 'codex-test', 'self-v1')",
+                 'goal tool self perspective', $5,
+                 '00000000-0000-0000-0000-000000000421'::uuid,
+                 '00000000-0000-0000-0000-000000000422'::uuid, NULL,
+                 'codex-test', 'self-v1')"
     )
     .bind(root_memory_id.into_inner())
     .bind(owner_kind)
@@ -601,47 +648,22 @@ async fn seed_fact_memory(
     text: &str,
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
     let memory_id = MemoryId::new(Uuid::now_v7());
-    let source_batch_id = Uuid::now_v7();
-    let receipt_id = Uuid::now_v7().as_bytes().to_vec();
     let (owner_kind, owner_id) = owner_parts(owner);
-    let now = time::OffsetDateTime::now_utc();
-    sqlx::query(
-        "INSERT INTO proxima_core.source_batches
-            (id, source_id, owner_kind, owner_id)
-         VALUES ($1, 'test/goal-tools', $2, $3)",
-    )
-    .bind(source_batch_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .execute(pg.pool())
-    .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.fact_receipts
-            (receipt_id, source, source_batch_id, owner_kind,
-             owner_id, schema_id, schema_version,
-             observed_at, occurred_at)
-         VALUES ($1, 'test/goal-tools', $2, $3, $4,
-                 'test/evidence-v1', 1, $5, $5)",
-    )
-    .bind(&receipt_id)
-    .bind(source_batch_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(now)
-    .execute(pg.pool())
-    .await?;
     sqlx::query(
         "INSERT INTO proxima_core.memories
-            (memory_id, owner_kind, owner_id, schema_id, schema_version, receipt_id)
-         VALUES ($1, $2, $3, 'test/evidence-v1', 1, $4)",
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
+         VALUES ($1, $2, $3, 'test/evidence-v1', 1, 'Abstraction', $4,
+                 'AtoA', '00000000-0000-0000-0000-000000000471'::uuid,
+                 '00000000-0000-0000-0000-000000000472'::uuid, NULL,
+                 'test-model', 'goal-tools-v1')",
     )
     .bind(memory_id.into_inner())
     .bind(owner_kind)
     .bind(owner_id)
-    .bind(receipt_id)
+    .bind(text)
     .execute(pg.pool())
     .await?;
-    let _ = text;
     Ok(memory_id)
 }
 

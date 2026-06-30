@@ -17,9 +17,9 @@
 //! `file-revision-v1` Facts for that commit's tree diff against its
 //! first parent (or the empty tree for root commits). Deterministic
 //! chunk/call extraction is F→A operator work over those file Facts:
-//! it emits `code-chunk-v1` code-slice Abstractions and operator-
-//! authored `proxima-code/calls` edges with provenance to file/commit
-//! Facts. `indexed_commit_sha` is the commit's own sha, not HEAD.
+//! it emits `code-chunk-v1` code-slice Abstractions plus Engine-authored
+//! `proxima-code/calls` structural edges; code slices carry provenance to
+//! file/commit Facts. `indexed_commit_sha` is the commit's own sha, not HEAD.
 //!
 //! Cursor format (tagged binary bytes inside the opaque `Cursor` newtype):
 //! ```ignore
@@ -247,6 +247,8 @@ impl LocalGitSource {
 
         let mut report = IndexReport::default();
         let mut blob_analysis_cache = HashMap::new();
+        let mut pending_present = Vec::new();
+        let mut pending_deleted = Vec::new();
         for (path, blob) in head_files {
             let content_sha256: [u8; 32] = blake3::hash(&blob).into();
             let already_current = prior_heads.get(&path).is_some_and(|head| {
@@ -255,36 +257,48 @@ impl LocalGitSource {
             if already_current {
                 continue;
             }
-            self.ingest_present_blob(
-                pool,
-                &head_sha,
-                batch_id,
-                now,
-                &path,
-                &blob,
-                None,
-                &mut report,
-                &mut blob_analysis_cache,
-            )
-            .await?;
-        }
-
-        for (path, prior) in prior_heads {
-            if prior.state == FileState::Present && !present_paths.contains(&path) {
-                self.tombstone_deleted_path(
+            pending_present.push(
+                self.ingest_present_blob(
                     pool,
                     &head_sha,
                     batch_id,
                     now,
                     &path,
+                    &blob,
                     None,
                     &mut report,
+                    &mut blob_analysis_cache,
                 )
-                .await?;
+                .await?,
+            );
+        }
+
+        for (path, prior) in prior_heads {
+            if prior.state == FileState::Present && !present_paths.contains(&path) {
+                pending_deleted.push(
+                    self.tombstone_deleted_path(
+                        pool,
+                        &head_sha,
+                        batch_id,
+                        now,
+                        &path,
+                        None,
+                        &mut report,
+                    )
+                    .await?,
+                );
             }
         }
 
         crate::ingest::close_local_git_batch(pool, &self.owner, batch_id).await?;
+        for pending in pending_present {
+            self.derive_present_blob(pool, batch_id, pending, &mut report)
+                .await?;
+        }
+        for pending in pending_deleted {
+            self.derive_deleted_path(pool, batch_id, pending, &mut report)
+                .await?;
+        }
         let cursor = encode_cursor(&CodeCursor {
             last_commit_sha: Some(head_sha.clone()),
             last_tree_sha: Some(head_tree_sha.clone()),
@@ -348,44 +362,56 @@ impl LocalGitSource {
         }
         let commit_memory_id = outcome.memory_id;
 
-        // Phase 2 — file revisions + chunks for this commit's changes.
+        // Phase 2 — materialize every file-revision Fact for this commit.
+        let mut pending_present = Vec::with_capacity(changed.len());
         for path in &changed {
-            self.ingest_changed_path(
-                pool,
-                commit_info,
-                batch_id,
-                now,
-                path,
-                Some(commit_memory_id),
-                report,
-                blob_analysis_cache,
-            )
-            .await?;
+            pending_present.push(
+                self.ingest_changed_path(
+                    pool,
+                    commit_info,
+                    batch_id,
+                    now,
+                    path,
+                    Some(commit_memory_id),
+                    report,
+                    blob_analysis_cache,
+                )
+                .await?,
+            );
         }
 
-        // Phase 3 — deletions reported by this commit's diff.
+        // Phase 3 — materialize deletion Facts for this commit's diff.
+        let mut pending_deleted = Vec::with_capacity(deleted.len());
         for path in &deleted {
-            self.tombstone_deleted_path(
-                pool,
-                &commit_info.sha,
-                batch_id,
-                now,
-                path,
-                Some(commit_memory_id),
-                report,
-            )
-            .await?;
+            pending_deleted.push(
+                self.tombstone_deleted_path(
+                    pool,
+                    &commit_info.sha,
+                    batch_id,
+                    now,
+                    path,
+                    Some(commit_memory_id),
+                    report,
+                )
+                .await?,
+            );
         }
 
-        // Close this commit's batch.
+        // Close this commit's batch before any F→A derivation consumes it.
         crate::ingest::close_local_git_batch(pool, &self.owner, batch_id).await?;
+        for pending in pending_present {
+            self.derive_present_blob(pool, batch_id, pending, report)
+                .await?;
+        }
+        for pending in pending_deleted {
+            self.derive_deleted_path(pool, batch_id, pending, report)
+                .await?;
+        }
         Ok(())
     }
 
-    /// Phase-2 inner loop: emit one file's `file-revision-v1` Fact,
-    /// derive its code-slice batch (or a tombstone burst if the slice
-    /// count shrank), and resolve intra-file calls into typed
-    /// `code/calls` edges.
+    /// Phase-2 inner loop: emit one file's `file-revision-v1` Fact and
+    /// cache the deterministic blob analysis to derive after batch close.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn ingest_changed_path(
         &self,
@@ -397,7 +423,7 @@ impl LocalGitSource {
         source_commit: Option<MemoryId>,
         report: &mut IndexReport,
         blob_analysis_cache: &mut HashMap<BlobAnalysisKey, BlobAnalysis>,
-    ) -> Result<(), IndexError> {
+    ) -> Result<PendingPresentBlob, IndexError> {
         let blob = git::cat_blob(&self.repo_path, &commit_info.sha, path)?;
         self.ingest_present_blob(
             pool,
@@ -413,9 +439,8 @@ impl LocalGitSource {
         .await
     }
 
-    /// Emit one Present file revision and its chunk/call heads from an
-    /// already-loaded blob. Shared by commit replay and HEAD snapshot
-    /// ingestion.
+    /// Emit one Present file revision Fact from an already-loaded blob.
+    /// Shared by commit replay and HEAD snapshot ingestion.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn ingest_present_blob(
         &self,
@@ -428,7 +453,7 @@ impl LocalGitSource {
         source_commit: Option<MemoryId>,
         report: &mut IndexReport,
         blob_analysis_cache: &mut HashMap<BlobAnalysisKey, BlobAnalysis>,
-    ) -> Result<(), IndexError> {
+    ) -> Result<PendingPresentBlob, IndexError> {
         let content_sha256: [u8; 32] = blake3::hash(blob).into();
 
         let language = crate::chunker::detect_language(path)
@@ -464,23 +489,44 @@ impl LocalGitSource {
             analysis
         };
 
+        Ok(PendingPresentBlob {
+            path: path.to_string(),
+            language,
+            file_revision: file_revision.memory_id,
+            source_commit,
+            analysis,
+        })
+    }
+
+    /// Derive code-slice Abstractions and call edges after all Facts in
+    /// the source batch have been materialized and the batch is closed.
+    async fn derive_present_blob(
+        &self,
+        pool: &PgPool,
+        batch_id: SourceBatchId,
+        pending: PendingPresentBlob,
+        report: &mut IndexReport,
+    ) -> Result<(), IndexError> {
         // Re-derive and tombstone any prior slice indexes that don't
         // appear in the new slice batch (file content shrunk). These
         // tombstones are projection rows tied to this file-revision
         // Fact, not external observations.
-        let new_indexes: HashSet<u32> = (0..analysis.chunks.len())
+        let new_indexes: HashSet<u32> = (0..pending.analysis.chunks.len())
             .map(|i| u32::try_from(i).unwrap_or(u32::MAX))
             .collect();
-        let prior_indexes = present_chunk_indexes(pool, &self.owner, self.repo_id, path).await?;
+        let prior_indexes =
+            present_chunk_indexes(pool, &self.owner, self.repo_id, &pending.path).await?;
         for prior in prior_indexes {
             if !new_indexes.contains(&prior) {
-                let tomb = tombstone_chunk(self.repo_id, path, prior, language.clone());
+                let tomb =
+                    tombstone_chunk(self.repo_id, &pending.path, prior, pending.language.clone());
                 append_code_slice(
                     pool,
                     &self.owner,
+                    batch_id,
                     &tomb,
-                    file_revision.memory_id,
-                    source_commit,
+                    pending.file_revision,
+                    pending.source_commit,
                 )
                 .await?;
                 report.chunks_tombstoned += 1;
@@ -488,11 +534,11 @@ impl LocalGitSource {
         }
 
         let mut file_chunks: Vec<ChunkInfo> = Vec::new();
-        for (idx, chunk) in analysis.chunks.iter().enumerate() {
+        for (idx, chunk) in pending.analysis.chunks.iter().enumerate() {
             let chunk_index = u32::try_from(idx).unwrap_or(u32::MAX);
             let payload = CodeChunkV1 {
                 repo_id: self.repo_id,
-                file_path: path.to_string(),
+                file_path: pending.path.clone(),
                 chunk_index,
                 text: chunk.text.clone(),
                 language: chunk.language.map(str::to_string),
@@ -506,16 +552,18 @@ impl LocalGitSource {
             let outcome = append_code_slice(
                 pool,
                 &self.owner,
+                batch_id,
                 &payload,
-                file_revision.memory_id,
-                source_commit,
+                pending.file_revision,
+                pending.source_commit,
             )
             .await?;
             if !outcome.idempotent_replay {
                 report.chunks_emitted += 1;
             }
 
-            let item_names: Vec<String> = analysis
+            let item_names: Vec<String> = pending
+                .analysis
                 .definitions
                 .iter()
                 .filter(|d| {
@@ -533,10 +581,10 @@ impl LocalGitSource {
         }
 
         // After all slices for this file, resolve calls into the
-        // caller/callee code-slice pair and emit one operator-authored
+        // caller/callee code-slice pair and emit one Engine-authored
         // typed edge each. Resolution is intra-file v1; cross-file
         // calls wait for an indexed name table.
-        for call in analysis.calls {
+        for call in pending.analysis.calls {
             let caller_chunk = file_chunks
                 .iter()
                 .filter(|c| {
@@ -576,8 +624,7 @@ impl LocalGitSource {
     }
 
     /// Phase-3 inner loop: emit a `file-revision-v1` tombstone Fact
-    /// for the deleted path and derive tombstones for every code-slice
-    /// index whose head was still `Present`.
+    /// for the deleted path. Code-slice tombstones derive after batch close.
     #[allow(clippy::too_many_arguments)]
     async fn tombstone_deleted_path(
         &self,
@@ -588,7 +635,7 @@ impl LocalGitSource {
         path: &str,
         source_commit: Option<MemoryId>,
         report: &mut IndexReport,
-    ) -> Result<(), IndexError> {
+    ) -> Result<PendingDeletedPath, IndexError> {
         let rev_payload = FileRevisionV1 {
             repo_id: self.repo_id,
             file_path: path.to_string(),
@@ -602,15 +649,32 @@ impl LocalGitSource {
             ingest_file_revision(pool, &self.owner, batch_id, &rev_payload, now).await?;
         report.files_tombstoned += 1;
 
-        let prior_indexes = present_chunk_indexes(pool, &self.owner, self.repo_id, path).await?;
+        Ok(PendingDeletedPath {
+            path: path.to_string(),
+            file_revision: file_revision.memory_id,
+            source_commit,
+        })
+    }
+
+    /// Derive code-slice tombstones for a deleted path after batch close.
+    async fn derive_deleted_path(
+        &self,
+        pool: &PgPool,
+        batch_id: SourceBatchId,
+        pending: PendingDeletedPath,
+        report: &mut IndexReport,
+    ) -> Result<(), IndexError> {
+        let prior_indexes =
+            present_chunk_indexes(pool, &self.owner, self.repo_id, &pending.path).await?;
         for prior in prior_indexes {
-            let tomb = tombstone_chunk(self.repo_id, path, prior, None);
+            let tomb = tombstone_chunk(self.repo_id, &pending.path, prior, None);
             append_code_slice(
                 pool,
                 &self.owner,
+                batch_id,
                 &tomb,
-                file_revision.memory_id,
-                source_commit,
+                pending.file_revision,
+                pending.source_commit,
             )
             .await?;
             report.chunks_tombstoned += 1;
@@ -733,6 +797,22 @@ struct BlobAnalysis {
     chunks: Vec<Chunk>,
     definitions: Vec<ExtractedDefinition>,
     calls: Vec<ExtractedCall>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingPresentBlob {
+    path: String,
+    language: Option<String>,
+    file_revision: MemoryId,
+    source_commit: Option<MemoryId>,
+    analysis: BlobAnalysis,
+}
+
+#[derive(Debug, Clone)]
+struct PendingDeletedPath {
+    path: String,
+    file_revision: MemoryId,
+    source_commit: Option<MemoryId>,
 }
 
 /// Chunk info for call resolution.

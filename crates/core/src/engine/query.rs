@@ -246,7 +246,7 @@ pub(in crate::engine) async fn read_mcp_call_history_authorized(
         effective.limit = MAX_MCP_CALL_HISTORY_LIMIT;
     }
     ports
-        .operator_invocation_read
+        .mcp_call_read
         .read_mcp_call_history(&effective)
         .await
         .map_err(|e| ProtocolError::internal(e.to_string()))

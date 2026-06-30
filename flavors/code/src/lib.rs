@@ -19,7 +19,7 @@ pub use ingest::{
     EXECUTION_RESULT_OBJECT_SCHEMA, EXECUTION_RESULT_WHOLE_SCHEMA, IngestError,
     LOCAL_GIT_SOURCE_ID, TEST_REQUEST_OBJECT_SCHEMA, TEST_REQUEST_WHOLE_SCHEMA,
     TEST_RESULT_OBJECT_SCHEMA, TEST_RESULT_WHOLE_SCHEMA, append_code_slice, build_engine,
-    build_engine_with, ingest_commit, ingest_file_revision,
+    build_engine_with, close_local_git_batch, ingest_commit, ingest_file_revision,
 };
 pub use local_git_source::{
     HeadSnapshotOutcome, IndexError, IndexReport, IngestProgress, LocalGitSource,
@@ -104,7 +104,7 @@ proxima_core::proxima_flavor! {
             EndpointBinding::Pin,
             EntityKindMask::abstraction(),
             EntityKindMask::abstraction(),
-            AuthorshipKindMask::operator_f_to_a().union(AuthorshipKindMask::operator_a_to_a()),
+            AuthorshipKindMask::engine(),
         ),
         RelationDescriptor::substrate(
             mcp::CODE_TARGETS_EXECUTION_REQUEST_RELATION,

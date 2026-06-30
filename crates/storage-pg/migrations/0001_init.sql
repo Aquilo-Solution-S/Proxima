@@ -145,9 +145,8 @@ CREATE TYPE proxima_core.task_priority AS ENUM (
 
 CREATE TYPE proxima_core.memory_operator_kind AS ENUM (
     'FtoA',
-    'AtoP',
-    'ExternalAgent',
-    'Wake'
+    'AtoA',
+    'AtoP'
 );
 
 
@@ -730,6 +729,7 @@ CREATE TABLE proxima_core.goals (
     authorship_operator_id uuid,
     authorship_tool_id text,
     operator_kind proxima_core.goal_operator_kind,
+    input_contract_id uuid,
     model_id text,
     prompt_version text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
@@ -738,7 +738,7 @@ CREATE TABLE proxima_core.goals (
     schema_version integer NOT NULL,
     payload bytea NOT NULL,
     title text NOT NULL,
-    CONSTRAINT goals_authorship_shape_chk CHECK ((((authorship_kind = 'User'::proxima_core.goal_authorship_kind) AND (authorship_origin IS NULL) AND (authorship_operator_id IS NULL) AND (authorship_tool_id IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL)) OR ((authorship_kind = 'System'::proxima_core.goal_authorship_kind) AND (authorship_origin = 'Operator'::proxima_core.goal_authorship_origin) AND (authorship_operator_id IS NOT NULL) AND (operator_kind IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (authorship_tool_id IS NULL)) OR ((authorship_kind = 'System'::proxima_core.goal_authorship_kind) AND (authorship_origin = 'Tool'::proxima_core.goal_authorship_origin) AND (authorship_tool_id IS NOT NULL) AND (authorship_operator_id IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL)) OR ((authorship_kind = 'External'::proxima_core.goal_authorship_kind) AND (authorship_origin IS NULL) AND (authorship_operator_id IS NULL) AND (authorship_tool_id IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL)))),
+    CONSTRAINT goals_authorship_shape_chk CHECK ((((authorship_kind = 'User'::proxima_core.goal_authorship_kind) AND (authorship_origin IS NULL) AND (authorship_operator_id IS NULL) AND (authorship_tool_id IS NULL) AND (operator_kind IS NULL) AND (input_contract_id IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL)) OR ((authorship_kind = 'System'::proxima_core.goal_authorship_kind) AND (authorship_origin = 'Operator'::proxima_core.goal_authorship_origin) AND (authorship_operator_id IS NOT NULL) AND (operator_kind IS NOT NULL) AND (input_contract_id IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (authorship_tool_id IS NULL)) OR ((authorship_kind = 'System'::proxima_core.goal_authorship_kind) AND (authorship_origin = 'Tool'::proxima_core.goal_authorship_origin) AND (authorship_tool_id IS NOT NULL) AND (authorship_operator_id IS NULL) AND (operator_kind IS NULL) AND (input_contract_id IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL)) OR ((authorship_kind = 'External'::proxima_core.goal_authorship_kind) AND (authorship_origin IS NULL) AND (authorship_operator_id IS NULL) AND (authorship_tool_id IS NULL) AND (operator_kind IS NULL) AND (input_contract_id IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL)))),
     CONSTRAINT goals_schema_version_positive_chk CHECK ((schema_version > 0)),
     CONSTRAINT goals_payload_nonempty_chk CHECK ((octet_length(payload) > 0)),
     CONSTRAINT goals_request_id_nonempty CHECK ((length(btrim(request_id)) > 0)),
@@ -751,6 +751,9 @@ CREATE TABLE proxima_core.goals (
 
 COMMENT ON TABLE proxima_core.goals IS
   'The Goal node kind (desired end-states), kept out of memories because it carries a lifecycle and authorship model. Goal topology is ordinary proxima_core.edges. See docs/06-goals-and-self.md.';
+
+COMMENT ON COLUMN proxima_core.goals.input_contract_id IS
+  'Opaque input contract id for A→Goal OperatorInvocation proof carriers; NULL for non-operator authorship.';
 
 
 COMMENT ON CONSTRAINT goals_payload_nonempty_chk ON proxima_core.goals IS
@@ -900,6 +903,9 @@ CREATE TABLE proxima_core.memories (
     kind proxima_core.entity_kind,
     text text,
     operator_kind proxima_core.memory_operator_kind,
+    operator_id uuid,
+    input_contract_id uuid,
+    source_batch_id uuid,
     model_id text,
     prompt_version text,
     supersedes uuid,
@@ -908,7 +914,7 @@ CREATE TABLE proxima_core.memories (
     CONSTRAINT memories_fact_entity_chk CHECK ((fact_entity_id IS NULL OR kind IS NULL)),
     CONSTRAINT memories_kind_values_chk CHECK (((kind IS NULL) OR (kind = ANY (ARRAY['Abstraction'::proxima_core.entity_kind, 'Perspective'::proxima_core.entity_kind])))),
     CONSTRAINT memories_schema_version_positive_chk CHECK ((schema_version > 0)),
-    CONSTRAINT memories_variant_chk CHECK (((kind IS NULL AND operator_kind IS NULL AND model_id IS NULL AND prompt_version IS NULL AND supersedes IS NULL) OR ((kind IS NOT NULL) AND (text IS NOT NULL) AND (operator_kind IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (receipt_id IS NULL) AND (citation_mapping_id IS NULL)))),
+    CONSTRAINT memories_variant_chk CHECK (((kind IS NULL AND operator_kind IS NULL AND operator_id IS NULL AND input_contract_id IS NULL AND source_batch_id IS NULL AND model_id IS NULL AND prompt_version IS NULL AND supersedes IS NULL) OR ((kind IS NOT NULL) AND (text IS NOT NULL) AND (operator_kind IS NOT NULL) AND (operator_id IS NOT NULL) AND (input_contract_id IS NOT NULL) AND (((operator_kind = 'FtoA'::proxima_core.memory_operator_kind) AND (kind = 'Abstraction'::proxima_core.entity_kind) AND (source_batch_id IS NOT NULL)) OR ((operator_kind = 'AtoA'::proxima_core.memory_operator_kind) AND (kind = 'Abstraction'::proxima_core.entity_kind) AND (source_batch_id IS NULL)) OR ((operator_kind = 'AtoP'::proxima_core.memory_operator_kind) AND (kind = 'Perspective'::proxima_core.entity_kind) AND (source_batch_id IS NULL))) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (receipt_id IS NULL) AND (citation_mapping_id IS NULL)))),
     CONSTRAINT memories_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
     CONSTRAINT memories_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
@@ -925,6 +931,15 @@ COMMENT ON COLUMN proxima_core.memories.receipt_id IS
 
 COMMENT ON COLUMN proxima_core.memories.citation_mapping_id IS
   'Optional outside-proof for a Fact (-> citation_mappings). Forbidden on Abstractions/Perspectives.';
+
+COMMENT ON COLUMN proxima_core.memories.operator_id IS
+  'Opaque operator id for PR7 OperatorInvocation proof carriers on derived memories.';
+
+COMMENT ON COLUMN proxima_core.memories.input_contract_id IS
+  'Opaque input contract id for PR7 OperatorInvocation proof carriers on derived memories.';
+
+COMMENT ON COLUMN proxima_core.memories.source_batch_id IS
+  'Closed source batch id for F→A derived Abstractions; NULL for A→A/A→P.';
 
 
 --
@@ -1165,6 +1180,13 @@ ALTER TABLE ONLY proxima_core.memories
 
 ALTER TABLE ONLY proxima_core.memories
     ADD CONSTRAINT memories_pkey PRIMARY KEY (memory_id);
+
+
+--
+-- Name: memories_ftoa_batch_exclusive_uidx; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE UNIQUE INDEX memories_ftoa_batch_exclusive_uidx ON proxima_core.memories USING btree (owner_kind, owner_id, source_batch_id, input_contract_id, operator_id, schema_id, schema_version) WHERE ((kind = 'Abstraction'::proxima_core.entity_kind) AND (operator_kind = 'FtoA'::proxima_core.memory_operator_kind) AND (source_batch_id IS NOT NULL));
 
 
 --
@@ -1782,6 +1804,14 @@ ALTER TABLE ONLY proxima_core.memories
 
 ALTER TABLE ONLY proxima_core.memories
     ADD CONSTRAINT memories_supersedes_fkey FOREIGN KEY (supersedes) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: memories memories_source_batch_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.memories
+    ADD CONSTRAINT memories_source_batch_id_fkey FOREIGN KEY (source_batch_id) REFERENCES proxima_core.source_batches(id);
 
 
 CREATE TABLE proxima_core.agent_derivation_v1 (

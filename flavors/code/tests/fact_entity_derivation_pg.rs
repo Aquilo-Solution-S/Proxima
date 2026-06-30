@@ -2,8 +2,8 @@ mod common;
 
 use common::{migrated_db, test_owner};
 use proxima_code::{
-    CodeChunkV1, CommitV1, FileRevisionV1, FileState, append_code_slice, ingest_commit,
-    ingest_file_revision,
+    CodeChunkV1, CommitV1, FileRevisionV1, FileState, append_code_slice, close_local_git_batch,
+    ingest_commit, ingest_file_revision,
 };
 use proxima_core::{AbstractionPayload, FactPayload, Owner, SourceBatchId};
 use proxima_pg_testkit::drop_db;
@@ -174,14 +174,10 @@ async fn code_stateful_ingest_derives_fact_entity_heads() {
         );
 
         let second_file = file_revision(repo_id, file_path, "v2");
-        let second_outcome = ingest_file_revision(
-            pg.pool(),
-            &owner,
-            source_batch_id(),
-            &second_file,
-            observed_at,
-        )
-        .await?;
+        let second_batch = source_batch_id();
+        let second_outcome =
+            ingest_file_revision(pg.pool(), &owner, second_batch, &second_file, observed_at)
+                .await?;
         let rows =
             fact_entity_rows(pg.pool(), &owner, FileRevisionV1::SCHEMA_ID, &file_key).await?;
         assert_eq!(rows.len(), 1);
@@ -192,9 +188,17 @@ async fn code_stateful_ingest_derives_fact_entity_heads() {
                 .is_some()
         );
 
+        close_local_git_batch(pg.pool(), &owner, second_batch).await?;
         let chunk = code_chunk(repo_id, file_path, 0);
-        let chunk_outcome =
-            append_code_slice(pg.pool(), &owner, &chunk, second_outcome.memory_id, None).await?;
+        let chunk_outcome = append_code_slice(
+            pg.pool(),
+            &owner,
+            second_batch,
+            &chunk,
+            second_outcome.memory_id,
+            None,
+        )
+        .await?;
         assert_eq!(
             fact_entity_count_for_schema(
                 pg.pool(),

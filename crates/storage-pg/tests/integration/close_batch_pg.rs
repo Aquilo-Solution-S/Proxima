@@ -133,6 +133,21 @@ async fn close_batch_idempotent_and_owner_scoped() {
         assert!(replay.already_closed);
         assert_eq!(replay.closed_at, first_closed_at);
 
+        // Closed batches reject new Fact receipts.
+        let closed_ingest = engine_a
+            .fact_ingest(
+                &proxima_core::AuthzContext::single_owner(&owner_a, proxima_core::AuthPath::System),
+                fresh_draft(owner_a, batch_id),
+            )
+            .await
+            .expect_err("closed source batch must reject new Facts");
+        assert!(
+            closed_ingest
+                .message
+                .contains("cannot ingest Fact into closed source batch"),
+            "unexpected error: {closed_ingest:?}"
+        );
+
         // Cross-owner: B sees the batch as NotFound (information leak guard).
         let cross = engine_b
             .close_batch(

@@ -8,12 +8,13 @@ use proxima_core::verbs::goal_write::{
     DecomposeGoalOutcome, GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship,
     GoalDependencyRef, GoalDraft, GoalEvidenceRef, GoalPayloadWrite, GoalState, GoalTopologyWrite,
     GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger, GoalWriteOutcome, IdempotencyKey,
-    ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
+    ModifyGoalAtomicRequest, OperatorKind, SystemOrigin, TransitionGoalAtomicRequest,
 };
 use proxima_core::{
-    CORE_DEPENDS_ON_RELATION, CORE_MOTIVATED_BY_RELATION, FlavorRegistry, FlavorRegistryFrozen,
-    GoalPayload, MemoryId, Owner, OwnerRef, OwnerRefKind, PayloadKeyBuilder, SchemaId,
-    SchemaVersion, StorageError, UserId,
+    CORE_DEPENDS_ON_RELATION, CORE_MOTIVATED_BY_RELATION, EdgeAuthorshipKind, FlavorRegistry,
+    FlavorRegistryFrozen, GoalPayload, InputContractId, MemoryId, ModelId, OperatorId, Owner,
+    OwnerRef, OwnerRefKind, PayloadKeyBuilder, PromptVersion, SchemaId, SchemaVersion,
+    StorageError, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -91,6 +92,16 @@ fn goal_context(registry: &FlavorRegistryFrozen, self_id: MemoryId) -> GoalAtomi
     }
 }
 
+fn operator_authorship() -> GoalAuthorship {
+    GoalAuthorship::System(SystemOrigin::Operator {
+        operator_id: OperatorId::new(Uuid::now_v7()),
+        operator_kind: OperatorKind::AtoGoal,
+        input_contract_id: InputContractId::new(Uuid::now_v7()),
+        model_id: ModelId::new("test-model"),
+        prompt_version: PromptVersion::new("goal-write-pg"),
+    })
+}
+
 fn wake_config(
     registry: &FlavorRegistryFrozen,
     trigger: GoalWakeTrigger,
@@ -111,9 +122,11 @@ async fn insert_self(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version)
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/self', 1, $4,
-                 'self', $5, 'test-model', 'v1')",
+                 'self', $5, '00000000-0000-0000-0000-000000000331'::uuid,
+                 '00000000-0000-0000-0000-000000000332'::uuid, NULL,
+                 'test-model', 'v1')"
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -134,15 +147,17 @@ async fn insert_evidence_abstraction(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, model_id, prompt_version)
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
          VALUES ($1, $2, $3, 'test/evidence-abstraction', 1, $4,
-                 'evidence', $5, 'test-model', 'v1')",
+                 'evidence', $5, '00000000-0000-0000-0000-000000000333'::uuid,
+                 '00000000-0000-0000-0000-000000000334'::uuid, NULL,
+                 'test-model', 'v1')"
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_id)
     .bind(proxima_core::EntityKind::Abstraction)
-    .bind(proxima_core::MemoryOperatorKind::FtoA)
+    .bind(proxima_core::MemoryOperatorKind::AtoA)
     .execute(pg.pool())
     .await?;
     Ok(MemoryId::new(memory_id))
@@ -624,6 +639,121 @@ async fn goal_achieve_atom_writes_achieved_and_fact() {
 }
 
 #[tokio::test]
+async fn goal_achieve_operator_authorship_writes_atogoal_evidence_edges() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let self_id = insert_self(&pg, &owner).await?;
+        let evidence_id = insert_evidence_abstraction(&pg, &owner).await?;
+        let registry = FlavorRegistry::new().freeze();
+        let prior = create_goal(
+            &pg,
+            &registry,
+            self_id,
+            fresh_draft(&owner, "req-operator-achieve-prior".to_string()),
+        )
+        .await?;
+
+        let outcome = pg
+            .achieve_goal_atomic(&AchieveGoalAtomicRequest {
+                owner,
+                prior_goal_id: prior.goal_id,
+                authorship: operator_authorship(),
+                request_id: IdempotencyKey::new("req-operator-achieve")
+                    .expect("valid idempotency key"),
+                context: goal_context(&registry, self_id),
+                evidence: vec![GoalEvidenceRef::new(evidence_id)],
+            })
+            .await?;
+
+        let row: (String,) = sqlx::query_as(
+            "SELECT authorship_kind::text
+               FROM proxima_core.edges
+              WHERE relation = $1
+                AND source_goal_id = $2
+                AND target_memory_id = $3",
+        )
+        .bind(CORE_MOTIVATED_BY_RELATION)
+        .bind(outcome.goal_id.into_inner())
+        .bind(evidence_id.into_inner())
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(row.0, EdgeAuthorshipKind::OperatorAtoGoal.as_str());
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("operator achieve evidence edge test failed");
+}
+
+#[tokio::test]
+async fn goal_achieve_operator_replay_conflicts_on_changed_evidence() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let self_id = insert_self(&pg, &owner).await?;
+        let evidence_a = insert_evidence_abstraction(&pg, &owner).await?;
+        let evidence_b = insert_evidence_abstraction(&pg, &owner).await?;
+        let registry = FlavorRegistry::new().freeze();
+        let prior = create_goal(
+            &pg,
+            &registry,
+            self_id,
+            fresh_draft(&owner, "req-operator-achieve-replay-prior".to_string()),
+        )
+        .await?;
+        let authorship = operator_authorship();
+
+        pg.achieve_goal_atomic(&AchieveGoalAtomicRequest {
+            owner,
+            prior_goal_id: prior.goal_id,
+            authorship: authorship.clone(),
+            request_id: IdempotencyKey::new("req-operator-achieve-replay")
+                .expect("valid idempotency key"),
+            context: goal_context(&registry, self_id),
+            evidence: vec![GoalEvidenceRef::new(evidence_a)],
+        })
+        .await?;
+
+        let err = pg
+            .achieve_goal_atomic(&AchieveGoalAtomicRequest {
+                owner,
+                prior_goal_id: prior.goal_id,
+                authorship,
+                request_id: IdempotencyKey::new("req-operator-achieve-replay")
+                    .expect("valid idempotency key"),
+                context: goal_context(&registry, self_id),
+                evidence: vec![GoalEvidenceRef::new(evidence_b)],
+            })
+            .await
+            .expect_err("same operator achieve request with changed evidence conflicts");
+        assert!(
+            err.to_string()
+                .contains("idempotency_conflict:req-operator-achieve-replay"),
+            "unexpected {err:?}"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("operator achieve replay evidence conflict test failed");
+}
+
+#[tokio::test]
 async fn goal_achieve_atom_rejects_empty_evidence() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await.expect("PG required for tests");
@@ -693,20 +823,7 @@ async fn goal_achieve_atom_rejects_evidence_without_home_owner() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let self_id = insert_self(&pg, &owner).await?;
-        let evidence_id = insert_evidence_abstraction(&pg, &owner).await?;
-        let inaccessible_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let (inaccessible_kind, inaccessible_id) =
-            proxima_storage_pg::access::owner_columns::owner_binds(&inaccessible_owner);
-        sqlx::query(
-            "UPDATE proxima_core.memories
-                SET owner_kind = $2, owner_id = $3
-              WHERE memory_id = $1",
-        )
-        .bind(evidence_id.into_inner())
-        .bind(inaccessible_kind)
-        .bind(inaccessible_id)
-        .execute(pg.pool())
-        .await?;
+        let evidence_id = MemoryId::new(Uuid::now_v7());
 
         let registry = FlavorRegistry::new().freeze();
         let prior = create_goal(
@@ -728,12 +845,9 @@ async fn goal_achieve_atom_rejects_evidence_without_home_owner() {
             evidence,
         )
         .await
-        .expect_err("no-home evidence must be rejected before edge append");
+        .expect_err("missing evidence must be rejected before edge append");
         assert!(matches!(err, StorageError::ConstraintViolation(_)));
-        assert!(
-            err.to_string()
-                .contains("evidence crosses Owner boundary or does not exist")
-        );
+        assert!(err.to_string().contains("evidence does not exist"));
 
         let motivated_edges: (i64,) = sqlx::query_as(
             "SELECT count(*)::bigint
@@ -747,7 +861,7 @@ async fn goal_achieve_atom_rejects_evidence_without_home_owner() {
         .await?;
         assert_eq!(
             motivated_edges.0, 0,
-            "rejected no-home evidence must not receive a motivated-by edge"
+            "rejected missing evidence must not receive a motivated-by edge"
         );
 
         Ok(())
@@ -756,6 +870,53 @@ async fn goal_achieve_atom_rejects_evidence_without_home_owner() {
 
     let _ = drop_db(&db_name).await;
     result.expect("no-home evidence rejection test failed");
+}
+
+#[tokio::test]
+async fn goal_transition_rejects_operator_authorship_without_evidence() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let self_id = insert_self(&pg, &owner).await?;
+        let registry = FlavorRegistry::new().freeze();
+        let prior = create_goal(
+            &pg,
+            &registry,
+            self_id,
+            fresh_draft(&owner, "req-operator-transition-prior".to_string()),
+        )
+        .await?;
+
+        let err = pg
+            .transition_goal_atomic(&TransitionGoalAtomicRequest {
+                owner,
+                prior_goal_id: prior.goal_id,
+                next_state: GoalState::Paused,
+                authorship: operator_authorship(),
+                request_id: IdempotencyKey::new("req-operator-transition")
+                    .expect("valid idempotency key"),
+                context: goal_context(&registry, self_id),
+            })
+            .await
+            .expect_err("operator transition has no evidence carrier");
+        assert!(
+            err.to_string().contains(
+                "operator-authored Goal transition requires explicit Abstraction evidence"
+            ),
+            "unexpected {err:?}"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("operator transition rejection test failed");
 }
 
 #[tokio::test]
@@ -1275,6 +1436,136 @@ async fn goal_modify_atom_writes_replacement() {
 
     let _ = drop_db(&db_name).await;
     result.expect("goal modify atom test failed");
+}
+
+#[tokio::test]
+async fn goal_modify_operator_authorship_writes_atogoal_evidence_edges() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let self_id = insert_self(&pg, &owner).await?;
+        let evidence_id = insert_evidence_abstraction(&pg, &owner).await?;
+        let registry = FlavorRegistry::new().freeze();
+        let prior = create_goal(
+            &pg,
+            &registry,
+            self_id,
+            fresh_draft(&owner, "req-operator-modify-prior".to_string()),
+        )
+        .await?;
+
+        let outcome = pg
+            .modify_goal_atomic(&ModifyGoalAtomicRequest {
+                owner,
+                prior_goal_id: prior.goal_id,
+                replacement: replacement_payload(
+                    "Operator modified",
+                    "Operator modified text",
+                    br#"{"operator":true}"#,
+                ),
+                authorship: operator_authorship(),
+                request_id: IdempotencyKey::new("req-operator-modify")
+                    .expect("valid idempotency key"),
+                context: goal_context(&registry, self_id),
+                evidence: Some(vec![GoalEvidenceRef::new(evidence_id)]),
+                wake: None,
+            })
+            .await?;
+
+        let row: (String,) = sqlx::query_as(
+            "SELECT authorship_kind::text
+               FROM proxima_core.edges
+              WHERE relation = $1
+                AND source_goal_id = $2
+                AND target_memory_id = $3",
+        )
+        .bind(CORE_MOTIVATED_BY_RELATION)
+        .bind(outcome.goal_id.into_inner())
+        .bind(evidence_id.into_inner())
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(row.0, EdgeAuthorshipKind::OperatorAtoGoal.as_str());
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("operator modify evidence edge test failed");
+}
+
+#[tokio::test]
+async fn goal_modify_operator_replay_conflicts_on_changed_evidence() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let self_id = insert_self(&pg, &owner).await?;
+        let evidence_a = insert_evidence_abstraction(&pg, &owner).await?;
+        let evidence_b = insert_evidence_abstraction(&pg, &owner).await?;
+        let registry = FlavorRegistry::new().freeze();
+        let prior = create_goal(
+            &pg,
+            &registry,
+            self_id,
+            fresh_draft(&owner, "req-operator-modify-replay-prior".to_string()),
+        )
+        .await?;
+        let authorship = operator_authorship();
+        let replacement = replacement_payload(
+            "Operator modified replay",
+            "Operator modified replay text",
+            br#"{"operator":true}"#,
+        );
+
+        pg.modify_goal_atomic(&ModifyGoalAtomicRequest {
+            owner,
+            prior_goal_id: prior.goal_id,
+            replacement: replacement.clone(),
+            authorship: authorship.clone(),
+            request_id: IdempotencyKey::new("req-operator-modify-replay")
+                .expect("valid idempotency key"),
+            context: goal_context(&registry, self_id),
+            evidence: Some(vec![GoalEvidenceRef::new(evidence_a)]),
+            wake: None,
+        })
+        .await?;
+
+        let err = pg
+            .modify_goal_atomic(&ModifyGoalAtomicRequest {
+                owner,
+                prior_goal_id: prior.goal_id,
+                replacement,
+                authorship,
+                request_id: IdempotencyKey::new("req-operator-modify-replay")
+                    .expect("valid idempotency key"),
+                context: goal_context(&registry, self_id),
+                evidence: Some(vec![GoalEvidenceRef::new(evidence_b)]),
+                wake: None,
+            })
+            .await
+            .expect_err("same operator modify request with changed evidence conflicts");
+        assert!(
+            err.to_string()
+                .contains("idempotency_conflict:req-operator-modify-replay"),
+            "unexpected {err:?}"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("operator modify replay evidence conflict test failed");
 }
 
 #[tokio::test]

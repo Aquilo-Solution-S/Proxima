@@ -1,7 +1,7 @@
-use crate::mcp::{McpTool, McpToolCtx, McpToolError};
+use crate::mcp::{McpTool, McpToolCtx, McpToolError, MemoryHandleClass};
 use crate::{
     AbstractionPayload, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
-    CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, MemoryId, SchemaId, SchemaVersion,
+    CORE_DERIVED_FROM_RELATION, InputContractId, MemoryId, OperatorId, SchemaId, SchemaVersion,
     SidecarPayload,
 };
 use schemars::JsonSchema;
@@ -15,6 +15,78 @@ const MAX_SOURCE_HANDLES: usize = 256;
 const DERIVED_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x9d, 0xc1, 0x37, 0x10, 0x4f, 0xa6, 0x4c, 0x4e, 0x95, 0x73, 0xc8, 0x18, 0x9d, 0xfb, 0xa7, 0x40,
 ]);
+const CORE_DERIVE_OPERATOR_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+    0x37, 0x20, 0xd3, 0x2a, 0xa1, 0x92, 0x49, 0x8d, 0x8c, 0x46, 0x3f, 0xad, 0x61, 0x2d, 0x9a, 0x04,
+]);
+const CORE_DERIVE_INPUT_CONTRACT_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+    0x3d, 0x1a, 0x60, 0x6d, 0x1c, 0xb9, 0x47, 0x0d, 0x9a, 0x49, 0x17, 0xb9, 0xe3, 0xef, 0xde, 0xaa,
+]);
+
+fn core_derive_operator_id(kind: DerivedKind) -> OperatorId {
+    OperatorId::new(uuid::Uuid::new_v5(
+        &CORE_DERIVE_OPERATOR_NAMESPACE,
+        format!("core_derive:{}", kind.as_str()).as_bytes(),
+    ))
+}
+
+fn core_derive_input_contract_id(kind: DerivedKind) -> InputContractId {
+    InputContractId::new(uuid::Uuid::new_v5(
+        &CORE_DERIVE_INPUT_CONTRACT_NAMESPACE,
+        format!("core_derive:{}:source-memories-v1", kind.as_str()).as_bytes(),
+    ))
+}
+
+fn resolve_source_memory(
+    ctx: &McpToolCtx,
+    handle: &str,
+) -> Result<(MemoryId, MemoryHandleClass), McpToolError> {
+    if let Ok(memory_id) = ctx.resolve_fact_memory(handle) {
+        return Ok((memory_id, MemoryHandleClass::Fact));
+    }
+    if let Ok(memory_id) = ctx.resolve_abstraction_memory(handle) {
+        return Ok((memory_id, MemoryHandleClass::Abstraction));
+    }
+    if let Ok(memory_id) = ctx.resolve_perspective_memory(handle) {
+        return Ok((memory_id, MemoryHandleClass::Perspective));
+    }
+    ctx.resolve_memory(handle)
+        .map(|memory_id| (memory_id, MemoryHandleClass::Fact))
+}
+
+fn operator_shape(
+    kind: DerivedKind,
+    sources: &[(MemoryId, MemoryHandleClass)],
+) -> Result<(crate::MemoryOperatorKind, crate::EntityKind), McpToolError> {
+    let first = sources
+        .first()
+        .map(|(_memory_id, class)| *class)
+        .ok_or_else(|| McpToolError::InvalidInput("source_handles must be nonempty".into()))?;
+    if sources.iter().any(|(_memory_id, class)| *class != first) {
+        return Err(McpToolError::InvalidInput(
+            "source_handles must have one memory layer per operator invocation".into(),
+        ));
+    }
+    match (kind, first) {
+        (DerivedKind::Abstraction, MemoryHandleClass::Fact) => {
+            Ok((crate::MemoryOperatorKind::FtoA, crate::EntityKind::Fact))
+        }
+        (DerivedKind::Abstraction, MemoryHandleClass::Abstraction) => Ok((
+            crate::MemoryOperatorKind::AtoA,
+            crate::EntityKind::Abstraction,
+        )),
+        (DerivedKind::Perspective, MemoryHandleClass::Abstraction) => Ok((
+            crate::MemoryOperatorKind::AtoP,
+            crate::EntityKind::Abstraction,
+        )),
+        (DerivedKind::Abstraction | DerivedKind::Perspective, MemoryHandleClass::Perspective)
+        | (DerivedKind::Perspective, MemoryHandleClass::Fact) => {
+            Err(McpToolError::LayeringViolation(format!(
+                "{} cannot be derived from {first} sources",
+                kind.as_str()
+            )))
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DeriveArgs {
@@ -29,9 +101,8 @@ pub struct DeriveArgs {
         description = "Optional normalized tags for later search. Use `[]` when no tags are needed."
     )]
     pub tags: Vec<String>,
-    #[serde(default)]
     #[schemars(
-        description = "Optional source memory handles (`F...`, `A...`, or `P...`) this derivation is based on. Use `[]` only when there is no concrete memory provenance."
+        description = "Required source memory handles for the operator proof. Use only one input layer per call: Facts for F→A, Abstractions for A→A/A→P."
     )]
     pub source_handles: Vec<String>,
     #[schemars(
@@ -126,28 +197,29 @@ impl McpTool for DeriveTool {
             let mut seen_sources = std::collections::HashSet::with_capacity(
                 args.source_handles.len().min(MAX_SOURCE_HANDLES),
             );
-            let mut source_uuids = Vec::with_capacity(args.source_handles.len());
+            let mut sources = Vec::with_capacity(args.source_handles.len());
             for handle in &args.source_handles {
-                let memory_id = ctx.resolve_memory(handle)?;
+                let (memory_id, class) = resolve_source_memory(&ctx, handle)?;
                 let source_uuid = memory_id.into_inner();
                 if seen_sources.insert(source_uuid) {
-                    source_uuids.push(source_uuid);
+                    sources.push((memory_id, class));
                 }
             }
 
-            let relation = if source_uuids.is_empty() {
-                None
-            } else {
-                Some(
-                    ctx.registry
-                        .resolve_relation(CORE_DERIVED_FROM_RELATION)
-                        .ok_or_else(|| {
-                            McpToolError::Other(format!(
-                                "relation {CORE_DERIVED_FROM_RELATION} not registered"
-                            ))
-                        })?,
-                )
-            };
+            if sources.is_empty() {
+                return Err(McpToolError::InvalidInput(
+                    "source_handles must be nonempty for operator derivation".into(),
+                ));
+            }
+            let relation = Some(
+                ctx.registry
+                    .resolve_relation(CORE_DERIVED_FROM_RELATION)
+                    .ok_or_else(|| {
+                        McpToolError::Other(format!(
+                            "relation {CORE_DERIVED_FROM_RELATION} not registered"
+                        ))
+                    })?,
+            );
 
             let key = args.idempotency_key.clone().unwrap_or_else(|| {
                 format!(
@@ -162,23 +234,28 @@ impl McpTool for DeriveTool {
                 body: body.to_string(),
                 tags: tags.clone(),
                 idempotency_key: args.idempotency_key.clone(),
-                source_memory_ids: source_uuids.clone(),
+                source_memory_ids: sources
+                    .iter()
+                    .map(|(memory_id, _class)| memory_id.into_inner())
+                    .collect(),
                 model_id: args.model_id.clone(),
                 client_name: ctx.author.client_name.clone(),
                 client_version: ctx.author.client_version.clone(),
             };
 
             let memory_id = MemoryId::new(memory_id);
+            let (operator_kind, target_kind) = operator_shape(args.kind, &sources)?;
+            let edge_authorship = operator_kind.edge_authorship();
             let edges: Vec<_> = relation.map_or_else(Vec::new, |relation| {
-                source_uuids
+                sources
                     .iter()
-                    .map(|source_id| AuthorDerivedEdgeInput {
+                    .map(|(source_id, _class)| AuthorDerivedEdgeInput {
                         relation,
                         source_kind: args.kind.to_entity_kind(),
                         source_memory_id: memory_id,
-                        target_kind: crate::EntityKind::Fact,
-                        target_memory_id: MemoryId::new(*source_id),
-                        authorship_kind: EdgeAuthorshipKind::ExternalAgent,
+                        target_kind,
+                        target_memory_id: *source_id,
+                        authorship_kind: edge_authorship,
                         authorship_owner_memory_id: ctx.caller_self_perspective,
                     })
                     .collect()
@@ -196,7 +273,10 @@ impl McpTool for DeriveTool {
                         text: body.to_string(),
                         schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
                         schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
-                        operator_kind: crate::MemoryOperatorKind::ExternalAgent,
+                        operator_kind,
+                        operator_id: core_derive_operator_id(args.kind),
+                        input_contract_id: core_derive_input_contract_id(args.kind),
+                        source_batch_id: None,
                         model_id: &args.model_id,
                         prompt_version: "mcp-agent-v1",
                         sidecar_payload: match args.kind {
