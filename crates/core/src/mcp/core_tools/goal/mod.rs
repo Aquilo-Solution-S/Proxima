@@ -549,15 +549,15 @@ fn encode_goal_payload(
             schema_version.into_inner(),
         )));
     }
-    let payload = ctx
+    let protocol_payload = ctx
         .registry
         .ingest_protocol_payload(&schema_id, schema_version, PayloadKind::Goal, &args.body)
         .map_err(McpToolError::InvalidInput)?;
     let sidecar_payload = schema
         .sidecar_table
         .is_some()
-        .then_some(payload.sidecar_payload);
-    let payload = payload.key_bytes.ok_or_else(|| {
+        .then_some(protocol_payload.sidecar_payload);
+    let payload_bytes = protocol_payload.key_bytes.ok_or_else(|| {
         McpToolError::InvalidInput(format!(
             "GoalPayload schema {} v{} did not produce key bytes",
             schema_id.as_str(),
@@ -569,7 +569,7 @@ fn encode_goal_payload(
         schema_version,
         title: title.to_string(),
         text: text.to_string(),
-        payload,
+        payload: payload_bytes,
         sidecar_payload,
     })
 }
