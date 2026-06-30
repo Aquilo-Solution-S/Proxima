@@ -1,6 +1,6 @@
 //! Embedded-engine facade: env config -> migrations -> compose -> start.
 //!
-//! Wraps the blessed `Engine::compose` embedding entry point
+//! Wraps the blessed `Engine::try_compose` embedding entry point
 //! (`proxima_core::engine`) for host binaries. Host wiring template:
 //! `examples/embedded-minimal`. Cohabitation contract: core, flavors,
 //! and the host's own sqlx migrations share one database and the
