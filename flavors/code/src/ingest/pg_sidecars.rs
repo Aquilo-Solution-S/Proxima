@@ -1,9 +1,10 @@
 use proxima_core::{EdgeId, MemoryId, SidecarPayload, StorageError};
 use proxima_storage_pg::sidecars::{
     PgEdgeSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture,
+    PgSidecarReadCtx,
 };
 use proxima_storage_pg::verbs::fact_ingest::{FactIngestSidecarFuture, PgFactSidecar};
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{Postgres, Transaction};
 
 use crate::payloads::{
     AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceSummaryV1, AcceptanceVerificationStatus,
@@ -60,7 +61,7 @@ struct CriterionPayloadRow {
 }
 
 async fn load_criteria_rows(
-    pool: &PgPool,
+    ctx: PgSidecarReadCtx<'_>,
     table: &'static str,
     parent_column: &'static str,
     parent_id: MemoryId,
@@ -72,11 +73,7 @@ async fn load_criteria_rows(
           WHERE {parent_column} = $1
           ORDER BY criterion_index ASC"
     );
-    let rows: Vec<CriterionPayloadRow> = sqlx::query_as(&sql)
-        .bind(parent_id.into_inner())
-        .fetch_all(pool)
-        .await
-        .map_err(|err| StorageError::Internal(err.to_string()))?;
+    let rows: Vec<CriterionPayloadRow> = ctx.fetch_all_by_memory_id(&sql, parent_id).await?;
     Ok(rows
         .into_iter()
         .map(|row| AcceptanceCriterionV1 {
@@ -413,22 +410,24 @@ impl PgFactSidecar for AcceptanceCriteriaV1 {
 
 impl PgMemoryPayload for AcceptanceCriteriaV1 {
     // N+1: low-cardinality work-item aggregate; batched load is a follow-up.
-    fn load_memory_payload(pool: &PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_> {
+    fn load_memory_payload(
+        ctx: PgSidecarReadCtx<'_>,
+        memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async move {
-            let work_item_memory_id: Option<uuid::Uuid> = sqlx::query_scalar(
-                "SELECT work_item_memory_id
-                   FROM proxima_code.acceptance_criteria_v1
-                  WHERE memory_id = $1",
-            )
-            .bind(memory_id.into_inner())
-            .fetch_optional(pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            let work_item_memory_id: Option<uuid::Uuid> = ctx
+                .fetch_optional_scalar_by_memory_id(
+                    "SELECT work_item_memory_id
+                       FROM proxima_code.acceptance_criteria_v1
+                      WHERE memory_id = $1",
+                    memory_id,
+                )
+                .await?;
             let Some(work_item_memory_id) = work_item_memory_id else {
                 return Ok(None);
             };
             let criteria = load_criteria_rows(
-                pool,
+                ctx,
                 "proxima_code.acceptance_criterion_v1",
                 "criteria_memory_id",
                 memory_id,
@@ -481,22 +480,24 @@ impl PgFactSidecar for TestRequestV1 {
 
 impl PgMemoryPayload for TestRequestV1 {
     // N+1: low-cardinality work-item aggregate; batched load is a follow-up.
-    fn load_memory_payload(pool: &PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_> {
+    fn load_memory_payload(
+        ctx: PgSidecarReadCtx<'_>,
+        memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async move {
-            let row: Option<(uuid::Uuid, String, String, String)> = sqlx::query_as(
-                "SELECT repo_id, title, instructions, test_key
-                   FROM proxima_code.test_requested_v1
-                  WHERE memory_id = $1",
-            )
-            .bind(memory_id.into_inner())
-            .fetch_optional(pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            let row: Option<(uuid::Uuid, String, String, String)> = ctx
+                .fetch_optional_by_memory_id(
+                    "SELECT repo_id, title, instructions, test_key
+                       FROM proxima_code.test_requested_v1
+                      WHERE memory_id = $1",
+                    memory_id,
+                )
+                .await?;
             let Some((repo_id, title, instructions, test_key)) = row else {
                 return Ok(None);
             };
             let criteria = load_criteria_rows(
-                pool,
+                ctx,
                 "proxima_code.test_requested_criterion_v1",
                 "test_requested_memory_id",
                 memory_id,
@@ -570,34 +571,34 @@ struct ExecutionPlanItemPayloadRow {
 
 impl PgMemoryPayload for CodeExecutionPlanV1 {
     // N+1: low-cardinality work-item aggregate; batched load is a follow-up.
-    fn load_memory_payload(pool: &PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_> {
+    fn load_memory_payload(
+        ctx: PgSidecarReadCtx<'_>,
+        memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async move {
-            let row: Option<(uuid::Uuid, String, uuid::Uuid, String, Vec<uuid::Uuid>)> =
-                sqlx::query_as(
+            let row: Option<(uuid::Uuid, String, uuid::Uuid, String, Vec<uuid::Uuid>)> = ctx
+                .fetch_optional_by_memory_id(
                     "SELECT repo_id, plan_key, goal_activated_memory_id,
                             summary, evidence_memory_ids
                        FROM proxima_code.execution_plan_v1
                       WHERE memory_id = $1",
+                    memory_id,
                 )
-                .bind(memory_id.into_inner())
-                .fetch_optional(pool)
-                .await
-                .map_err(|err| StorageError::Internal(err.to_string()))?;
+                .await?;
             let Some((repo_id, plan_key, goal_activated_memory_id, summary, evidence_memory_ids)) =
                 row
             else {
                 return Ok(None);
             };
-            let item_rows: Vec<ExecutionPlanItemPayloadRow> = sqlx::query_as(
-                "SELECT item_key, kind, title, depends_on, request_key
-                   FROM proxima_code.execution_plan_item_v1
-                  WHERE plan_memory_id = $1
-                  ORDER BY item_index ASC",
-            )
-            .bind(memory_id.into_inner())
-            .fetch_all(pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            let item_rows: Vec<ExecutionPlanItemPayloadRow> = ctx
+                .fetch_all_by_memory_id(
+                    "SELECT item_key, kind, title, depends_on, request_key
+                       FROM proxima_code.execution_plan_item_v1
+                      WHERE plan_memory_id = $1
+                      ORDER BY item_index ASC",
+                    memory_id,
+                )
+                .await?;
             let items = item_rows
                 .into_iter()
                 .map(|row| CodeExecutionPlanItemV1 {

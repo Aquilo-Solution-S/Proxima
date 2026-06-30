@@ -103,11 +103,11 @@ fn owner() -> Owner {
 
 fn engine() -> Engine {
     let mut registry = FlavorRegistry::new();
-    registry.add_fact_schema::<TestFact>();
-    registry.add_cited_object_schema::<TestCitedObject>();
-    registry.add_citation_mapping_schema::<TestCitationMapping>();
-    registry.add_citation_mapping_schema::<MismatchedCitationMapping>();
-    Engine::new(registry.freeze())
+    registry.add_fact_schema_or_panic_for_tests::<TestFact>();
+    registry.add_cited_object_schema_or_panic_for_tests::<TestCitedObject>();
+    registry.add_citation_mapping_schema_or_panic_for_tests::<TestCitationMapping>();
+    registry.add_citation_mapping_schema_or_panic_for_tests::<MismatchedCitationMapping>();
+    Engine::new(registry.freeze_or_panic_for_tests())
 }
 
 fn draft(_owner: &Owner) -> FactWriteCommand {
@@ -290,8 +290,8 @@ async fn authorize_fact_with_citation_rejects_unknown_schema_ids() {
 #[test]
 fn registered_cited_object_schema_exposes_sidecar_table() {
     let mut registry = FlavorRegistry::new();
-    registry.add_cited_object_schema::<TestCitedObject>();
-    let frozen = registry.freeze();
+    registry.add_cited_object_schema_or_panic_for_tests::<TestCitedObject>();
+    let frozen = registry.freeze_or_panic_for_tests();
 
     let info = frozen
         .lookup_payload(

@@ -1,17 +1,19 @@
-use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::relation::{CORE_DEPENDS_ON_RELATION, CORE_DERIVED_FROM_RELATION};
-use proxima_core::{FactPayload, MemoryId};
+use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EdgeTargetProjection, EntityKind};
+use proxima_core::{AbstractionPayload, EntityRef, FactPayload, GoalActivatedV1, MemoryId};
+use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::payloads::{
-    AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1, ExecutionRequestV1,
-    TestRequestV1,
+    AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1, CodeExecutionPlanV1,
+    ExecutionRequestV1, TestRequestV1,
 };
 
+use super::CodeToolCtxExt;
+use super::code_store;
 use super::emit_execution_request::CODE_TARGETS_EXECUTION_REQUEST_RELATION;
-use super::pg_pool;
 use super::sql::{map_storage, owner_columns};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -107,7 +109,7 @@ pub struct CodeWorkItemBundleOutput {
 #[derive(Debug)]
 pub struct CodeWorkItemBundleTool;
 
-impl McpTool for CodeWorkItemBundleTool {
+impl Tool for CodeWorkItemBundleTool {
     const NAME: &'static str = "proxima-code_work_item_bundle";
     const DESCRIPTION: &'static str = "Read a Goal-native Code work/test item bundle: request, repo, criteria, dependencies, evidence, target Perspectives, active-goal provenance, and results.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
@@ -116,9 +118,9 @@ impl McpTool for CodeWorkItemBundleTool {
     type Output = CodeWorkItemBundleOutput;
 
     fn call(
-        ctx: McpToolCtx,
+        ctx: ToolCtx,
         args: CodeWorkItemBundleArgs,
-    ) -> futures::future::BoxFuture<'static, Result<CodeWorkItemBundleOutput, McpToolError>> {
+    ) -> futures::future::BoxFuture<'static, Result<CodeWorkItemBundleOutput, ToolError>> {
         Box::pin(async move {
             let memory_id = ctx.resolve_fact_memory(&args.handle)?;
             let item = load_work_item(&ctx, memory_id).await?;
@@ -208,84 +210,47 @@ struct WorkItemRow {
     payload: WorkItemPayloadBundle,
 }
 
-#[derive(Debug, sqlx::FromRow)]
-struct WorkItemSqlRow {
-    schema_id: String,
-    work_repo_id: Option<Uuid>,
-    work_title: Option<String>,
-    work_instructions: Option<String>,
-    request_key: Option<String>,
-    test_repo_id: Option<Uuid>,
-    test_title: Option<String>,
-    test_instructions: Option<String>,
-    test_key: Option<String>,
-}
-
-async fn load_work_item(
-    ctx: &McpToolCtx,
-    memory_id: MemoryId,
-) -> Result<WorkItemRow, McpToolError> {
-    let (owner_kind, owner_id) = owner_columns(&ctx.owner);
-    let pool = pg_pool(ctx)?;
-    let row: Option<WorkItemSqlRow> =
-        sqlx::query_as(
-            "SELECT m.schema_id,
-                w.repo_id AS work_repo_id,
-                w.title AS work_title,
-                w.instructions AS work_instructions,
-                w.request_key,
-                t.repo_id AS test_repo_id,
-                t.title AS test_title,
-                t.instructions AS test_instructions,
-                t.test_key
-           FROM proxima_core.memories m
-           LEFT JOIN proxima_code.work_requested_v1 w USING (memory_id)
-           LEFT JOIN proxima_code.test_requested_v1 t USING (memory_id)
-          WHERE m.memory_id = $1
-            AND EXISTS (
-                SELECT 1
-                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
-                 WHERE eo.entity_id = m.memory_id
-                   AND eo.owner_kind = $2
-                   AND eo.owner_id = $3
-)
-            AND m.tombstoned_at IS NULL",
+async fn load_work_item(ctx: &ToolCtx, memory_id: MemoryId) -> Result<WorkItemRow, ToolError> {
+    let pool = code_store(ctx)?;
+    let engine = super::engine(ctx)?;
+    let candidates = [memory_id.into_inner()];
+    if let Some((_, row)) = pool
+        .authorized_fact_payloads::<ExecutionRequestV1>(
+            &engine,
+            ctx.authz(),
+            ctx.owner(),
+            &candidates,
+            1,
         )
-        .bind(memory_id.into_inner())
-        .bind(owner_kind)
-        .bind(owner_id)
-        .fetch_optional(pool.as_ref())
-        .await
-        .map_err(map_storage)?;
-
-    let Some(row) = row else {
-        return Err(McpToolError::InvalidInput("work item not visible".into()));
-    };
-    if row.schema_id == ExecutionRequestV1::SCHEMA_ID {
-        let repo_id = row
-            .work_repo_id
-            .ok_or_else(|| McpToolError::Other("missing work sidecar".into()))?;
+        .await?
+        .into_iter()
+        .next()
+    {
+        let repo_id = row.repo_id;
         return Ok(WorkItemRow {
             kind: WorkItemBundleKind::Work,
             repo_id,
             payload: WorkItemPayloadBundle::Work {
                 repo_id,
-                title: row
-                    .work_title
-                    .ok_or_else(|| McpToolError::Other("missing work title".into()))?,
-                instructions: row
-                    .work_instructions
-                    .ok_or_else(|| McpToolError::Other("missing work instructions".into()))?,
-                request_key: row
-                    .request_key
-                    .ok_or_else(|| McpToolError::Other("missing work request key".into()))?,
+                title: row.title,
+                instructions: row.instructions,
+                request_key: row.request_key,
             },
         });
     }
-    if row.schema_id == TestRequestV1::SCHEMA_ID {
-        let repo_id = row
-            .test_repo_id
-            .ok_or_else(|| McpToolError::Other("missing test sidecar".into()))?;
+    if let Some((_, row)) = pool
+        .authorized_fact_payloads::<TestRequestV1>(
+            &engine,
+            ctx.authz(),
+            ctx.owner(),
+            &candidates,
+            1,
+        )
+        .await?
+        .into_iter()
+        .next()
+    {
+        let repo_id = row.repo_id;
         let criteria = load_criterion_rows(
             ctx,
             "proxima_code.test_requested_criterion_v1",
@@ -298,30 +263,23 @@ async fn load_work_item(
             repo_id,
             payload: WorkItemPayloadBundle::Test {
                 repo_id,
-                title: row
-                    .test_title
-                    .ok_or_else(|| McpToolError::Other("missing test title".into()))?,
-                instructions: row
-                    .test_instructions
-                    .ok_or_else(|| McpToolError::Other("missing test instructions".into()))?,
-                test_key: row
-                    .test_key
-                    .ok_or_else(|| McpToolError::Other("missing test key".into()))?,
+                title: row.title,
+                instructions: row.instructions,
+                test_key: row.test_key,
                 criteria,
             },
         });
     }
-    Err(McpToolError::InvalidInput(format!(
-        "handle must reference {} or {}; got {}",
+    Err(ToolError::InvalidInput(format!(
+        "handle must reference {} or {} and be visible",
         ExecutionRequestV1::SCHEMA_ID,
         TestRequestV1::SCHEMA_ID,
-        row.schema_id,
     )))
 }
 
-async fn load_repo(ctx: &McpToolCtx, repo_id: Uuid) -> Result<RepoBundle, McpToolError> {
-    let (owner_kind, owner_id) = owner_columns(&ctx.owner);
-    let pool = pg_pool(ctx)?;
+async fn load_repo(ctx: &ToolCtx, repo_id: Uuid) -> Result<RepoBundle, ToolError> {
+    let (owner_kind, owner_id) = owner_columns(&ctx.owner());
+    let pool = code_store(ctx)?;
     let row: Option<(String, String, Option<String>)> = sqlx::query_as(
         "SELECT display_name, canonical_path, target_branch
            FROM proxima_code.repos
@@ -332,7 +290,7 @@ async fn load_repo(ctx: &McpToolCtx, repo_id: Uuid) -> Result<RepoBundle, McpToo
     .bind(owner_kind)
     .bind(owner_id)
     .bind(repo_id)
-    .fetch_optional(pool.as_ref())
+    .fetch_optional(pool.pool())
     .await
     .map_err(map_storage)?;
     Ok(match row {
@@ -352,10 +310,10 @@ async fn load_repo(ctx: &McpToolCtx, repo_id: Uuid) -> Result<RepoBundle, McpToo
 }
 
 async fn load_criteria(
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     memory_id: MemoryId,
-) -> Result<Vec<CriteriaBundle>, McpToolError> {
-    let pool = pg_pool(ctx)?;
+) -> Result<Vec<CriteriaBundle>, ToolError> {
+    let pool = code_store(ctx)?;
     let rows: Vec<Uuid> = sqlx::query_scalar(
         "SELECT memory_id
            FROM proxima_code.acceptance_criteria_v1
@@ -363,7 +321,7 @@ async fn load_criteria(
           ORDER BY created_at ASC",
     )
     .bind(memory_id.into_inner())
-    .fetch_all(pool.as_ref())
+    .fetch_all(pool.pool())
     .await
     .map_err(map_storage)?;
     let mut bundles = Vec::with_capacity(rows.len());
@@ -397,11 +355,11 @@ struct CriterionSqlRow {
 }
 
 async fn load_criterion_rows(
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     table: &'static str,
     parent_column: &'static str,
     parent_id: MemoryId,
-) -> Result<Vec<AcceptanceCriterionV1>, McpToolError> {
+) -> Result<Vec<AcceptanceCriterionV1>, ToolError> {
     let sql = format!(
         "SELECT criterion_key, description, required, verifier_kind,
                 verifier_path, verifier_command, verifier_pattern, verifier_note
@@ -409,10 +367,10 @@ async fn load_criterion_rows(
           WHERE {parent_column} = $1
           ORDER BY criterion_index ASC"
     );
-    let pool = pg_pool(ctx)?;
+    let pool = code_store(ctx)?;
     let rows: Vec<CriterionSqlRow> = sqlx::query_as(&sql)
         .bind(parent_id.into_inner())
-        .fetch_all(pool.as_ref())
+        .fetch_all(pool.pool())
         .await
         .map_err(map_storage)?;
     Ok(rows
@@ -439,67 +397,106 @@ enum EdgeDirection {
 }
 
 async fn load_memory_edge_targets(
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     memory_id: MemoryId,
     relation: &str,
     direction: EdgeDirection,
-) -> Result<Vec<MemoryId>, McpToolError> {
-    let pool = pg_pool(ctx)?;
-    let (source_predicate, target_column) = match direction {
-        EdgeDirection::Outgoing => ("source_memory_id = $1", "target_memory_id"),
-        EdgeDirection::Incoming => ("target_memory_id = $1", "source_memory_id"),
+) -> Result<Vec<MemoryId>, ToolError> {
+    let engine = super::engine(ctx)?;
+    let endpoint = EntityRef::Memory(memory_id);
+    let filter = match direction {
+        EdgeDirection::Outgoing => EdgeFilter {
+            relation: Some(relation.to_string()),
+            source: Some(endpoint),
+            target: None,
+        },
+        EdgeDirection::Incoming => EdgeFilter {
+            relation: Some(relation.to_string()),
+            source: None,
+            target: Some(endpoint),
+        },
     };
-    let sql = format!(
-        "SELECT {target_column}
-           FROM proxima_core.edges
-          WHERE {source_predicate}
-            AND relation = $2
-            AND {target_column} IS NOT NULL
-          ORDER BY created_at ASC"
-    );
-    let rows: Vec<Uuid> = sqlx::query_scalar(&sql)
-        .bind(memory_id.into_inner())
-        .bind(relation)
-        .fetch_all(pool.as_ref())
-        .await
-        .map_err(map_storage)?;
-    Ok(rows.into_iter().map(MemoryId::new).collect())
+    let response = engine
+        .read_edges(
+            ctx.authz(),
+            &EdgeReadRequest {
+                principal: ctx.owner(),
+                edge_ids: Vec::new(),
+                filter,
+                limit: 500,
+            },
+        )
+        .await?;
+    let mut out = Vec::new();
+    for edge in response.edges {
+        match direction {
+            EdgeDirection::Outgoing => {
+                if let EdgeTargetProjection::Visible {
+                    target: EntityRef::Memory(id),
+                } = edge.target
+                {
+                    out.push(id);
+                }
+            }
+            EdgeDirection::Incoming => {
+                if let EntityRef::Memory(id) = edge.source {
+                    out.push(id);
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 async fn load_goal_activation(
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     memory_id: MemoryId,
-) -> Result<Option<Uuid>, McpToolError> {
-    let pool = pg_pool(ctx)?;
-    let row: Option<Uuid> = sqlx::query_scalar(
-        "SELECT goal_id
-           FROM proxima_core.goal_activated_v1
-          WHERE memory_id = $1",
-    )
-    .bind(memory_id.into_inner())
-    .fetch_optional(pool.as_ref())
-    .await
-    .map_err(map_storage)?;
-    Ok(row)
+) -> Result<Option<Uuid>, ToolError> {
+    let pool = code_store(ctx)?;
+    let engine = super::engine(ctx)?;
+    Ok(pool
+        .authorized_fact_payloads::<GoalActivatedV1>(
+            &engine,
+            ctx.authz(),
+            ctx.owner(),
+            &[memory_id.into_inner()],
+            1,
+        )
+        .await?
+        .into_iter()
+        .next()
+        .map(|(_, payload)| payload.goal_id))
 }
 
 async fn load_target_perspectives(
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     memory_id: MemoryId,
-) -> Result<Vec<MemoryId>, McpToolError> {
-    load_memory_edge_targets(
+) -> Result<Vec<MemoryId>, ToolError> {
+    let candidates = load_memory_edge_targets(
         ctx,
         memory_id,
         CODE_TARGETS_EXECUTION_REQUEST_RELATION,
         EdgeDirection::Incoming,
     )
+    .await?;
+    let pool = code_store(ctx)?;
+    let engine = super::engine(ctx)?;
+    pool.authorized_memory_ids(
+        &engine,
+        ctx.authz(),
+        ctx.owner(),
+        &candidates
+            .into_iter()
+            .map(MemoryId::into_inner)
+            .collect::<Vec<_>>(),
+        EntityKind::Perspective,
+        None,
+        500,
+    )
     .await
 }
 
-async fn load_plan_sources(
-    ctx: &McpToolCtx,
-    memory_id: MemoryId,
-) -> Result<Vec<MemoryId>, McpToolError> {
+async fn load_plan_sources(ctx: &ToolCtx, memory_id: MemoryId) -> Result<Vec<MemoryId>, ToolError> {
     let candidates = load_memory_edge_targets(
         ctx,
         memory_id,
@@ -507,27 +504,28 @@ async fn load_plan_sources(
         EdgeDirection::Incoming,
     )
     .await?;
-    let pool = pg_pool(ctx)?;
-    let mut plans = Vec::new();
-    for candidate in candidates {
-        let schema_id: Option<String> =
-            sqlx::query_scalar("SELECT schema_id FROM proxima_core.memories WHERE memory_id = $1")
-                .bind(candidate.into_inner())
-                .fetch_optional(pool.as_ref())
-                .await
-                .map_err(map_storage)?;
-        if schema_id.as_deref() == Some("proxima-code/execution-plan-v1") {
-            plans.push(candidate);
-        }
-    }
-    Ok(plans)
+    let pool = code_store(ctx)?;
+    let engine = super::engine(ctx)?;
+    pool.authorized_memory_ids(
+        &engine,
+        ctx.authz(),
+        ctx.owner(),
+        &candidates
+            .into_iter()
+            .map(MemoryId::into_inner)
+            .collect::<Vec<_>>(),
+        EntityKind::Abstraction,
+        Some(<CodeExecutionPlanV1 as AbstractionPayload>::schema_id()),
+        500,
+    )
+    .await
 }
 
 async fn load_results(
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     memory_id: MemoryId,
     kind: WorkItemBundleKind,
-) -> Result<Vec<ResultBundle>, McpToolError> {
+) -> Result<Vec<ResultBundle>, ToolError> {
     let (table, fk) = match kind {
         WorkItemBundleKind::Work => (
             "proxima_code.execution_result_v1",
@@ -541,10 +539,10 @@ async fn load_results(
           WHERE {fk} = $1
           ORDER BY created_at ASC"
     );
-    let pool = pg_pool(ctx)?;
+    let pool = code_store(ctx)?;
     let rows: Vec<ResultSqlRow> = sqlx::query_as(&sql)
         .bind(memory_id.into_inner())
-        .fetch_all(pool.as_ref())
+        .fetch_all(pool.pool())
         .await
         .map_err(map_storage)?;
     Ok(rows
@@ -569,10 +567,10 @@ struct ResultSqlRow {
 }
 
 async fn load_acceptance_verifications(
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     memory_id: MemoryId,
-) -> Result<Vec<AcceptanceVerificationBundle>, McpToolError> {
-    let pool = pg_pool(ctx)?;
+) -> Result<Vec<AcceptanceVerificationBundle>, ToolError> {
+    let pool = code_store(ctx)?;
     let rows: Vec<AcceptanceVerificationSqlRow> = sqlx::query_as(
         "SELECT memory_id, criterion_key, status::text, summary, artifact_refs, verifier_memory_id
            FROM proxima_code.acceptance_verification_v1
@@ -580,7 +578,7 @@ async fn load_acceptance_verifications(
           ORDER BY created_at ASC",
     )
     .bind(memory_id.into_inner())
-    .fetch_all(pool.as_ref())
+    .fetch_all(pool.pool())
     .await
     .map_err(map_storage)?;
     Ok(rows
@@ -609,10 +607,10 @@ struct AcceptanceVerificationSqlRow {
 }
 
 async fn load_acceptance_summaries(
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     memory_id: MemoryId,
-) -> Result<Vec<MemoryId>, McpToolError> {
-    let pool = pg_pool(ctx)?;
+) -> Result<Vec<MemoryId>, ToolError> {
+    let pool = code_store(ctx)?;
     let rows: Vec<Uuid> = sqlx::query_scalar(
         "SELECT memory_id
            FROM proxima_code.acceptance_summary_v1
@@ -620,7 +618,7 @@ async fn load_acceptance_summaries(
           ORDER BY created_at ASC",
     )
     .bind(memory_id.into_inner())
-    .fetch_all(pool.as_ref())
+    .fetch_all(pool.pool())
     .await
     .map_err(map_storage)?;
     Ok(rows.into_iter().map(MemoryId::new).collect())

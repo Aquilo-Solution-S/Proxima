@@ -6,7 +6,8 @@
 mod common;
 
 use common::{migrated_db, test_owner};
-use proxima_code::{CommitSummaryV1, CommitV1, ingest_commit, register_repo};
+use proxima_code::testkit::{ingest_commit, register_repo};
+use proxima_code::{CommitSummaryV1, CommitV1};
 use proxima_core::SourceBatchId;
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
@@ -18,7 +19,14 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let repo_id = Uuid::now_v7();
-        register_repo(pg.pool(), &owner, repo_id, "/tmp/commit-summary-e2e", "e2e").await?;
+        register_repo(
+            pg.pool_for_tests(),
+            &owner,
+            repo_id,
+            "/tmp/commit-summary-e2e",
+            "e2e",
+        )
+        .await?;
 
         let now = time::OffsetDateTime::now_utc();
         let commit_payload = CommitV1 {
@@ -34,7 +42,7 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
             message: "feat: add foo".into(),
         };
         let commit_outcome = ingest_commit(
-            pg.pool(),
+            pg.pool_for_tests(),
             &owner,
             SourceBatchId::new(Uuid::now_v7()),
             &commit_payload,
@@ -50,7 +58,7 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
              WHERE m.schema_id = $1",
         )
         .bind(<CommitSummaryV1 as proxima_core::AbstractionPayload>::SCHEMA_ID)
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(
             summary_count, 0,

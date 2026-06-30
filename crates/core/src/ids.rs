@@ -118,6 +118,12 @@ impl SchemaId {
     }
 }
 
+impl std::fmt::Display for SchemaId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchemaVersion(u32);
 
@@ -130,6 +136,12 @@ impl SchemaVersion {
     #[must_use]
     pub const fn into_inner(self) -> u32 {
         self.0
+    }
+}
+
+impl std::fmt::Display for SchemaVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
     }
 }
 

@@ -59,7 +59,7 @@ async fn set_owned_row_owner(
     .bind(entity_id)
     .bind(owner_kind)
     .bind(owner_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     sqlx::query(
         "UPDATE proxima_core.goals
@@ -69,7 +69,7 @@ async fn set_owned_row_owner(
     .bind(entity_id)
     .bind(owner_kind)
     .bind(owner_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }
@@ -119,7 +119,7 @@ pub async fn seed_memory(
     .bind(owner_id)
     .bind(kind)
     .bind(text)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(MemoryId::new(memory_id))
 }
@@ -154,7 +154,7 @@ pub async fn seed_memory_edge(
     .bind(source_memory_id.into_inner())
     .bind(target_kind)
     .bind(target_memory_id.into_inner())
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(EdgeId::new(edge_id))
 }

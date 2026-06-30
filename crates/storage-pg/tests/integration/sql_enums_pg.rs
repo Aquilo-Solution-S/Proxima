@@ -19,7 +19,7 @@ async fn core_closed_vocab_columns_use_sql_enums() -> Result<(), Box<dyn std::er
             ("edges", "authorship_kind"),
             ("goal_wake_config", "trigger_kind"),
         ] {
-            assert_enum_column(pg.pool(), "proxima_core", table, column).await?;
+            assert_enum_column(pg.pool_for_tests(), "proxima_core", table, column).await?;
         }
 
         let leftovers: i64 = sqlx::query_scalar(
@@ -35,7 +35,7 @@ async fn core_closed_vocab_columns_use_sql_enums() -> Result<(), Box<dyn std::er
                     'change_event_shape_chk'
                 )",
         )
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(leftovers, 0, "membership-only CHECK constraints remain");
 

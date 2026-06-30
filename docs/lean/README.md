@@ -29,7 +29,7 @@ from the core (the minimization discipline) — a failing build is drift.
 | `Causa/Operators.lean` | F→A / A→P / A→Goal shapes, no downward writes, provenance obligations, batch gate (docs 02, 04) |
 | `Causa/Citations.lean` | Fact-only bibliography, 1:1 mapping, owner match (doc 11) |
 | `Causa/Compliance.lean` | erasure scopes, suppression guard, pause (doc 13) |
-| `Causa/Composition.lean` | core independence, namespace discipline, frozen registry, payload opacity (docs 03, 08) |
+| `Causa/Flavor.lean` | core independence, namespace discipline, optional sidecars/receipts, payload opacity (docs 03, 08) |
 
 ## Coverage
 

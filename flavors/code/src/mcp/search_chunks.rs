@@ -1,10 +1,16 @@
-use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
-use proxima_core::{EdgeId, MemoryId};
+use std::collections::{HashMap, HashSet};
+
+use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EdgeTargetProjection};
+use proxima_core::{EdgeId, EntityRef, MemoryId};
+use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::pg_pool;
-use super::sql::{CHUNK_HEADS_CTE, map_storage, owner_columns, resolve_repo_identifier};
+use crate::payloads::{CodeChunkV1, FileState};
+
+use super::CodeToolCtxExt;
+use super::code_store;
+use super::sql::{map_storage, resolve_repo_identifier};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeSearchChunksArgs {
@@ -72,96 +78,147 @@ pub struct CallEdge {
 #[derive(Debug)]
 pub struct CodeSearchChunksTool;
 
-impl McpTool for CodeSearchChunksTool {
+impl Tool for CodeSearchChunksTool {
     const NAME: &'static str = "proxima-code_search_chunks";
     const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content. Supports language/chunk_type filters and optional proxima-code/calls neighbor edges.";
 
     type Args = CodeSearchChunksArgs;
     type Output = CodeSearchChunksOutput;
 
+    #[allow(clippy::too_many_lines)]
     fn call(
-        ctx: McpToolCtx,
+        ctx: ToolCtx,
         args: CodeSearchChunksArgs,
-    ) -> futures::future::BoxFuture<'static, Result<CodeSearchChunksOutput, McpToolError>> {
+    ) -> futures::future::BoxFuture<'static, Result<CodeSearchChunksOutput, ToolError>> {
         Box::pin(async move {
             let query = args.query.trim();
             if query.is_empty() || query.chars().count() > 512 {
-                return Err(McpToolError::InvalidInput(
+                return Err(ToolError::InvalidInput(
                     "query must be 1..=512 chars".into(),
                 ));
             }
             let limit = args.limit.unwrap_or(12).min(50);
-            let (owner_kind, owner_id) = owner_columns(&ctx.owner);
             let exact_pattern = like_pattern(query);
             let repo_id = match args.repo_handle.as_deref() {
                 Some(handle) => Some(resolve_repo_identifier(&ctx, handle).await?),
                 None => None,
             };
-            let pool = pg_pool(&ctx)?;
+            let pool = code_store(&ctx)?;
+            let engine = super::engine(&ctx)?;
 
-            let sql = format!(
-                "WITH {CHUNK_HEADS_CTE}, q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $3) AS tsq)
-                 SELECT memory_id, repo_id, file_path, chunk_index, language,
-                        chunk_type, line_range_start, line_range_end,
-                        byte_range_start, byte_range_end,
-                        text,
-                        left(text, 480) AS snippet,
+            let candidate_limit = i64::from(limit.saturating_mul(4).max(limit).min(200));
+            let rows: Vec<ChunkCandidateRow> = sqlx::query_as(
+                "WITH q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $1) AS tsq)
+                 SELECT c.memory_id,
                         (
-                            ts_rank_cd(to_tsvector('pg_catalog.simple'::regconfig, file_path || ' ' || text), q.tsq)
-                            + CASE WHEN lower(file_path) = lower($3) THEN 10.0 ELSE 0.0 END
-                            + CASE WHEN lower(file_path) LIKE $6 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
-                            + CASE WHEN lower(text) LIKE $6 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
+                            ts_rank_cd(to_tsvector('pg_catalog.simple'::regconfig, c.file_path || ' ' || c.text), q.tsq)
+                            + CASE WHEN lower(c.file_path) = lower($1) THEN 10.0 ELSE 0.0 END
+                            + CASE WHEN lower(c.file_path) LIKE $4 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
+                            + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
                         )::real AS score
-                 FROM chunk_heads, q
-                 WHERE ($4::uuid IS NULL OR repo_id = $4)
-                   AND ($5::text IS NULL OR language = $5)
-                   AND ($7::text IS NULL OR chunk_type = $7)
-                   AND (
-                       to_tsvector('pg_catalog.simple'::regconfig, file_path || ' ' || text) @@ q.tsq
-                       OR lower(file_path) LIKE $6 ESCAPE '\\'
-                       OR lower(text) LIKE $6 ESCAPE '\\'
-                   )
-                 ORDER BY score DESC, memory_id DESC
-                 LIMIT $8"
-            );
-            let rows: Vec<ChunkRow> = sqlx::query_as(&sql)
-                .bind(owner_kind)
-                .bind(owner_id)
+                   FROM proxima_code.code_chunk_v1 c, q
+                  WHERE ($2::uuid IS NULL OR c.repo_id = $2)
+                    AND ($3::text IS NULL OR c.language = $3)
+                    AND ($5::text IS NULL OR c.chunk_type = $5)
+                    AND (
+                        c.state = 'Tombstone'
+                        OR to_tsvector('pg_catalog.simple'::regconfig, c.file_path || ' ' || c.text) @@ q.tsq
+                        OR lower(c.file_path) LIKE $4 ESCAPE '\\'
+                        OR lower(c.text) LIKE $4 ESCAPE '\\'
+                    )
+                  ORDER BY score DESC, c.memory_id DESC
+                  LIMIT $6",
+            )
                 .bind(query)
                 .bind(repo_id)
                 .bind(args.language.as_deref())
                 .bind(exact_pattern)
                 .bind(args.chunk_type.as_deref())
-                .bind(i64::from(limit))
-                .fetch_all(pool.as_ref())
+                .bind(candidate_limit)
+                .fetch_all(pool.pool())
                 .await
                 .map_err(map_storage)?;
+            let candidate_ids = rows.iter().map(|row| row.memory_id).collect::<Vec<_>>();
+            let score_by_id = rows
+                .into_iter()
+                .map(|row| (row.memory_id, row.score))
+                .collect::<HashMap<_, _>>();
+            let rows = pool
+                .authorized_abstraction_payloads_include_superseded::<CodeChunkV1>(
+                    &engine,
+                    ctx.authz(),
+                    ctx.owner(),
+                    &candidate_ids,
+                    candidate_ids.len(),
+                )
+                .await?;
+            let tombstoned_keys = rows
+                .iter()
+                .filter(|(_, payload)| payload.state == FileState::Tombstone)
+                .map(|(_, payload)| {
+                    (
+                        payload.repo_id,
+                        payload.file_path.clone(),
+                        payload.chunk_index,
+                    )
+                })
+                .collect::<HashSet<_>>();
 
-            let mut matches = Vec::with_capacity(rows.len());
+            let mut matches = Vec::new();
             let mut chunk_ids = Vec::with_capacity(rows.len());
-            for row in rows {
-                chunk_ids.push(row.memory_id);
-                let (match_kind, matched_line, matched_excerpt) =
-                    match_metadata(query, &row.file_path, &row.text, row.line_range_start);
+            let mut seen_keys = HashSet::new();
+            for (memory_id, payload) in rows {
+                let key = (
+                    payload.repo_id,
+                    payload.file_path.clone(),
+                    payload.chunk_index,
+                );
+                if tombstoned_keys.contains(&key) {
+                    continue;
+                }
+                if !seen_keys.insert(key) {
+                    continue;
+                }
+                if payload.state != FileState::Present {
+                    continue;
+                }
+                let raw_id = memory_id.into_inner();
+                chunk_ids.push(raw_id);
+                let (match_kind, matched_line, matched_excerpt) = match_metadata(
+                    query,
+                    &payload.file_path,
+                    &payload.text,
+                    payload.line_range_start,
+                );
                 matches.push(ChunkMatch {
-                    handle: ctx.format_abstraction_memory(MemoryId::new(row.memory_id)),
+                    handle: ctx.format_abstraction_memory(memory_id),
                     repo_handle: ctx.format_flavor_object(
                         super::REPO_HANDLE_KIND,
-                        row.repo_id,
+                        payload.repo_id,
                         super::REPO_HANDLE_PREFIX,
                     ),
-                    file_path: row.file_path,
-                    chunk_index: row.chunk_index,
-                    language: row.language,
-                    chunk_type: row.chunk_type,
-                    line_range: (row.line_range_start, row.line_range_end),
-                    byte_range: (row.byte_range_start, row.byte_range_end),
-                    snippet: row.snippet,
+                    file_path: payload.file_path,
+                    chunk_index: i32::try_from(payload.chunk_index)
+                        .map_err(|_| ToolError::Other("chunk_index exceeds i32".into()))?,
+                    language: payload.language,
+                    chunk_type: payload.chunk_type,
+                    line_range: (
+                        i64::from(payload.line_range_start),
+                        i64::from(payload.line_range_end),
+                    ),
+                    byte_range: (
+                        i64::from(payload.byte_range_start),
+                        i64::from(payload.byte_range_end),
+                    ),
+                    snippet: payload.text.chars().take(480).collect(),
                     match_kind,
                     matched_line,
                     matched_excerpt,
-                    score: row.score,
+                    score: score_by_id.get(&raw_id).copied().unwrap_or_default(),
                 });
+                if u32::try_from(matches.len()).unwrap_or(u32::MAX) >= limit {
+                    break;
+                }
             }
 
             let calls_edges = if args.include_calls && !chunk_ids.is_empty() {
@@ -182,7 +239,7 @@ fn match_metadata(
     query: &str,
     file_path: &str,
     text: &str,
-    line_range_start: i64,
+    line_range_start: u32,
 ) -> (String, Option<i64>, Option<String>) {
     let query_lower = query.to_ascii_lowercase();
     let path_lower = file_path.to_ascii_lowercase();
@@ -203,7 +260,7 @@ fn match_metadata(
                 "text_contains".to_string(),
                 i64::try_from(idx)
                     .ok()
-                    .map(|offset| line_range_start + offset),
+                    .map(|offset| i64::from(line_range_start) + offset),
                 Some(line.trim().chars().take(480).collect()),
             );
         }
@@ -213,39 +270,82 @@ fn match_metadata(
 }
 
 async fn load_call_edges(
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     chunk_ids: &[uuid::Uuid],
-) -> Result<Vec<CallEdge>, McpToolError> {
-    let pool = pg_pool(ctx)?;
-    let rows: Vec<CallEdgeRow> = sqlx::query_as(
-        "SELECT e.edge_id, e.source_memory_id, e.target_memory_id,
-                c.callee_name, c.is_dynamic
-         FROM proxima_core.edges e
-         JOIN proxima_code.code_calls_v1 c USING (edge_id)
-         WHERE e.relation = 'proxima-code/calls'
-           AND (e.source_memory_id = ANY($1::uuid[]) OR e.target_memory_id = ANY($1::uuid[]))
-         ORDER BY e.edge_id DESC
-         LIMIT 200",
+) -> Result<Vec<CallEdge>, ToolError> {
+    let engine = super::engine(ctx)?;
+    let pool = code_store(ctx)?;
+
+    let mut edges = HashMap::new();
+    for chunk_id in chunk_ids {
+        for filter in [
+            EdgeFilter {
+                relation: Some("proxima-code/calls".to_string()),
+                source: Some(EntityRef::Memory(MemoryId::new(*chunk_id))),
+                target: None,
+            },
+            EdgeFilter {
+                relation: Some("proxima-code/calls".to_string()),
+                source: None,
+                target: Some(EntityRef::Memory(MemoryId::new(*chunk_id))),
+            },
+        ] {
+            let response = engine
+                .read_edges(
+                    ctx.authz(),
+                    &EdgeReadRequest {
+                        principal: ctx.owner(),
+                        edge_ids: Vec::new(),
+                        filter,
+                        limit: 200,
+                    },
+                )
+                .await?;
+            for edge in response.edges {
+                edges.entry(edge.id).or_insert(edge);
+            }
+        }
+    }
+
+    let edge_ids = edges.keys().copied().collect::<Vec<_>>();
+    let payload_rows: Vec<CallPayloadRow> = sqlx::query_as(
+        "SELECT edge_id, callee_name, is_dynamic
+           FROM proxima_code.code_calls_v1
+          WHERE edge_id = ANY($1::uuid[])",
     )
-    .bind(chunk_ids)
-    .fetch_all(pool.as_ref())
+    .bind(&edge_ids)
+    .fetch_all(pool.pool())
     .await
     .map_err(map_storage)?;
-
-    Ok(rows
+    let payloads = payload_rows
         .into_iter()
-        .map(|row| CallEdge {
-            edge_handle: ctx.format_edge(EdgeId::new(row.edge_id)),
-            source: row
-                .source_memory_id
-                .map(|id| ctx.format_abstraction_memory(MemoryId::new(id))),
-            target: row
-                .target_memory_id
-                .map(|id| ctx.format_abstraction_memory(MemoryId::new(id))),
-            callee_name: row.callee_name,
-            is_dynamic: row.is_dynamic,
-        })
-        .collect())
+        .map(|row| (row.edge_id, row))
+        .collect::<HashMap<_, _>>();
+
+    let mut out = Vec::new();
+    for edge in edges.into_values().take(200) {
+        let Some(payload) = payloads.get(&edge.id) else {
+            continue;
+        };
+        out.push(CallEdge {
+            edge_handle: ctx.format_edge(EdgeId::new(edge.id)),
+            source: match edge.source {
+                EntityRef::Memory(id) => Some(ctx.format_abstraction_memory(id)),
+                EntityRef::Goal(_) | EntityRef::FactEntity(_) => None,
+            },
+            target: match edge.target {
+                EdgeTargetProjection::Visible {
+                    target: EntityRef::Memory(id),
+                } => Some(ctx.format_abstraction_memory(id)),
+                EdgeTargetProjection::Visible { .. }
+                | EdgeTargetProjection::Redacted
+                | EdgeTargetProjection::Unavailable => None,
+            },
+            callee_name: payload.callee_name.clone(),
+            is_dynamic: payload.is_dynamic,
+        });
+    }
+    Ok(out)
 }
 
 fn like_pattern(query: &str) -> String {
@@ -265,27 +365,14 @@ fn like_pattern(query: &str) -> String {
 }
 
 #[derive(Debug, sqlx::FromRow)]
-struct ChunkRow {
+struct ChunkCandidateRow {
     memory_id: uuid::Uuid,
-    repo_id: uuid::Uuid,
-    file_path: String,
-    chunk_index: i32,
-    language: Option<String>,
-    chunk_type: String,
-    line_range_start: i64,
-    line_range_end: i64,
-    byte_range_start: i64,
-    byte_range_end: i64,
-    text: String,
-    snippet: String,
     score: f32,
 }
 
 #[derive(Debug, sqlx::FromRow)]
-struct CallEdgeRow {
+struct CallPayloadRow {
     edge_id: uuid::Uuid,
-    source_memory_id: Option<uuid::Uuid>,
-    target_memory_id: Option<uuid::Uuid>,
     callee_name: String,
     is_dynamic: bool,
 }

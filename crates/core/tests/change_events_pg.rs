@@ -175,7 +175,7 @@ struct ProducedGraph {
 impl ToolHarness {
     fn new(pg: proxima_storage_pg::PgStorage) -> Self {
         let owner = owner_fixture();
-        let registry = Arc::new(FlavorRegistry::new().freeze());
+        let registry = Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests());
         let handles = Arc::new(HandleTable::new());
         let author = author_ctx();
         let engine = Arc::new(
@@ -256,7 +256,7 @@ impl ToolHarness {
             author: self.author.clone(),
             caller_self_perspective: None,
             master_token_id: None,
-            extensions: McpToolExtensions::with(self.pg.pool().clone()),
+            extensions: McpToolExtensions::with(self.pg.pool_for_tests().clone()),
             engine: Some(self.engine.clone()),
         }
     }

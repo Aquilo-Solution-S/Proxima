@@ -128,7 +128,7 @@ fn code_template_name() -> String {
 }
 
 fn code_pg_sidecars() -> PgSidecarRegistryFrozen {
-    let registry = proxima_code::ingest::schema_registry();
+    let registry = proxima_code::schema_registry();
     let mut sidecars = PgSidecarRegistry::new();
     register_core_pg_sidecars(&mut sidecars);
     proxima_code::register_pg_sidecars(&mut sidecars);

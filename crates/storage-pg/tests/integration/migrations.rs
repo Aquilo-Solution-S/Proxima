@@ -16,7 +16,7 @@ async fn table_exists(pg: &PgStorage, table_name: &str) -> bool {
          )",
     )
     .bind(table_name)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await
     .expect("table inventory query should succeed")
 }
@@ -31,7 +31,7 @@ async fn column_exists(pg: &PgStorage, column_name: &str) -> bool {
          )",
     )
     .bind(column_name)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await
     .expect("column inventory query should succeed")
 }
@@ -47,7 +47,7 @@ async fn enum_type_exists(pg: &PgStorage, type_name: &str) -> bool {
          )",
     )
     .bind(type_name)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await
     .expect("enum inventory query should succeed")
 }
@@ -65,7 +65,7 @@ async fn check_constraint_exists(pg: &PgStorage, table: &str, constraint: &str) 
     )
     .bind(table)
     .bind(constraint)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await
     .expect("constraint inventory query should succeed")
 }
@@ -87,7 +87,7 @@ async fn migrations_apply_to_fresh_db() {
             "SELECT count(*)::bigint FROM information_schema.tables \
              WHERE table_schema = 'proxima_core'",
         )
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert!(
             row.0 >= 7,
@@ -103,7 +103,7 @@ async fn migrations_apply_to_fresh_db() {
             "SELECT count(*)::bigint FROM information_schema.columns \
              WHERE table_schema = 'proxima_core' AND column_name = ('owner_' || 'org_id')",
         )
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(
             org_cols.0, 0,
@@ -228,7 +228,7 @@ async fn fresh_v004_baseline_enforces_owner_ref_shape_constraints() {
                      'test-model', 'v1')"
         )
         .bind(Uuid::now_v7())
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await
         .expect_err("personal owner with NULL owner_id must be rejected");
         assert!(err.to_string().contains("owner_ref_shape"));
@@ -243,7 +243,7 @@ async fn fresh_v004_baseline_enforces_owner_ref_shape_constraints() {
         .bind(Uuid::now_v7())
         .bind(format!("bad-world:{}", Uuid::now_v7()))
         .bind(b"{}".as_slice())
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await
         .expect_err("world write owner must be rejected");
         let msg = err.to_string();
@@ -273,13 +273,13 @@ async fn pre_v004_database_fails_closed_before_checksum_migration() {
         let pg = PgStorage::connect(&url).await?;
 
         sqlx::query("CREATE SCHEMA proxima_core")
-            .execute(pg.pool())
+            .execute(pg.pool_for_tests())
             .await?;
         sqlx::query(concat!(
             "CREATE TABLE proxima_core.entity_",
             "owner (entity_id uuid NOT NULL)"
         ))
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
         sqlx::query(
             "CREATE TABLE public._sqlx_migrations (
@@ -291,7 +291,7 @@ async fn pre_v004_database_fails_closed_before_checksum_migration() {
                  execution_time bigint NOT NULL
              )",
         )
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
         sqlx::query(
             "INSERT INTO public._sqlx_migrations
@@ -300,7 +300,7 @@ async fn pre_v004_database_fails_closed_before_checksum_migration() {
                  (1, 'init', true, decode('00', 'hex'), 0),
                  (5, 'group ownership access', true, decode('00', 'hex'), 0)",
         )
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
 
         let err = pg
@@ -334,7 +334,7 @@ async fn pre_v004_database_with_only_old_version_one_checksum_fails_closed() {
         let pg = PgStorage::connect(&url).await?;
 
         sqlx::query("CREATE SCHEMA proxima_core")
-            .execute(pg.pool())
+            .execute(pg.pool_for_tests())
             .await?;
         sqlx::query(
             "CREATE TABLE public._sqlx_migrations (
@@ -346,14 +346,14 @@ async fn pre_v004_database_with_only_old_version_one_checksum_fails_closed() {
                  execution_time bigint NOT NULL
              )",
         )
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
         sqlx::query(
             "INSERT INTO public._sqlx_migrations
                  (version, description, success, checksum, execution_time)
              VALUES (1, 'init', true, decode('00', 'hex'), 0)",
         )
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
 
         let err = pg

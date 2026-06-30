@@ -71,7 +71,7 @@ async fn assert_single_home(pg: &PgStorage, entity_id: Uuid, owner: &OwnerRef) -
           WHERE goal_id = $1",
     )
     .bind(entity_id)
-    .fetch_all(pg.pool())
+    .fetch_all(pg.pool_for_tests())
     .await
     .unwrap();
 
@@ -94,7 +94,7 @@ async fn assert_no_live_entity_lacks_home(pg: &PgStorage) {
                      OR (g.owner_kind IN ('personal', 'group') AND g.owner_id IS NOT NULL))
          )",
     )
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await
     .unwrap();
     assert_eq!(
@@ -120,7 +120,7 @@ async fn insert_self(pg: &PgStorage, owner: &Owner) -> MemoryId {
     .bind(owner_id)
     .bind(EntityKind::Perspective)
     .bind(MemoryOperatorKind::AtoP)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await
     .unwrap();
     MemoryId::new(memory_id)
@@ -129,7 +129,7 @@ async fn insert_self(pg: &PgStorage, owner: &Owner) -> MemoryId {
 #[tokio::test]
 async fn migration_creates_owner_columns_and_membership() {
     let (pg, db) = common::fresh_pg().await;
-    let pool = pg.pool();
+    let pool = pg.pool_for_tests();
 
     let (n,): (i64,) = sqlx::query_as(
         "SELECT count(*) FROM information_schema.tables
@@ -218,7 +218,7 @@ async fn group_membership_verbs_round_trip_and_engine_gates_admin_editor() {
     pg.add_group_member(group, viewer_id, Relation::Viewer, Uuid::now_v7())
         .await
         .unwrap();
-    let engine = Engine::new(FlavorRegistry::new().freeze())
+    let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
         .with_storage_ports(Arc::new(pg.clone()).storage_ports());
     let outsider_err = engine
         .add_member(&granted_authz(&outsider), group, admin_id, Relation::Viewer)
@@ -421,7 +421,7 @@ async fn owner_columns_written_on_goal_create() {
     let (pg, db) = common::fresh_pg().await;
     let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
     let self_id = insert_self(&pg, &owner).await;
-    let registry = FlavorRegistry::new().freeze();
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let mut draft = fresh_goal_draft(owner);
     draft.topology = GoalTopologyWrite::new(
         GoalAssignmentTarget::perspective(self_id),
@@ -466,7 +466,7 @@ async fn seed_membership(
     .bind(group.into_inner())
     .bind(user.into_inner())
     .bind(relation)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await
     .unwrap();
 }
@@ -486,7 +486,7 @@ async fn seed_memory_owned(pg: &proxima_storage_pg::PgStorage, owner: OwnerRef) 
     .bind(entity_id)
     .bind(owner_kind)
     .bind(owner_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await
     .unwrap();
     EntityId::Memory(MemoryId::new(entity_id))
@@ -514,7 +514,7 @@ async fn seed_abstraction_memory(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(text)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await
     .unwrap();
     MemoryId::new(memory_id)
@@ -531,7 +531,7 @@ async fn move_home_row(pg: &proxima_storage_pg::PgStorage, memory_id: MemoryId, 
     .bind(memory_id.into_inner())
     .bind(owner_kind)
     .bind(owner_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await
     .unwrap();
 }
@@ -561,7 +561,7 @@ async fn seed_edge_between_memories(
     .bind(owner_id)
     .bind(source.into_inner())
     .bind(target.into_inner())
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await
     .unwrap();
     edge_id

@@ -13,7 +13,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?; // core
-        proxima_code::migrator().run(pg.pool()).await?; // flavor
+        proxima_code::migrator().run(pg.pool_for_tests()).await?; // flavor
 
         // Verify the flavor sidecar tables exist.
         for table in [
@@ -38,7 +38,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
                  WHERE table_schema = 'proxima_code' AND table_name = $1",
             )
             .bind(table)
-            .fetch_optional(pg.pool())
+            .fetch_optional(pg.pool_for_tests())
             .await?;
             assert!(row.is_some(), "expected table proxima_code.{table}");
         }
@@ -54,7 +54,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
                  WHERE table_schema = 'proxima_code' AND table_name = $1",
             )
             .bind(dropped)
-            .fetch_optional(pg.pool())
+            .fetch_optional(pg.pool_for_tests())
             .await?;
             assert!(row.is_none(), "proxima_code.{dropped} should be dropped");
         }
@@ -66,7 +66,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
                  WHERE table_schema = 'proxima_core' AND table_name = $1",
             )
             .bind(table)
-            .fetch_optional(pg.pool())
+            .fetch_optional(pg.pool_for_tests())
             .await?;
             assert!(row.is_some(), "expected table proxima_core.{table}");
         }
@@ -83,10 +83,10 @@ async fn flavor_migrations_apply_to_fresh_db() {
             ("test_result_v1", "status"),
             ("acceptance_verification_v1", "status"),
         ] {
-            assert_enum_column(pg.pool(), "proxima_code", table, column).await?;
+            assert_enum_column(pg.pool_for_tests(), "proxima_code", table, column).await?;
         }
 
-        assert_owner_ref_constraints(pg.pool()).await?;
+        assert_owner_ref_constraints(pg.pool_for_tests()).await?;
 
         // S0 (Owner = OwnerRef collapse, Track B): the full-collapse decision
         // removes the legacy owner org column from proxima_code too. Keystone gate for the
@@ -96,7 +96,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
             "SELECT count(*)::bigint FROM information_schema.columns \
              WHERE table_schema = 'proxima_code' AND column_name = ('owner_' || 'org_id')",
         )
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(
             org_cols.0, 0,
@@ -105,7 +105,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
         );
 
         // Idempotency — a second run must not error.
-        proxima_code::migrator().run(pg.pool()).await?;
+        proxima_code::migrator().run(pg.pool_for_tests()).await?;
 
         Ok(())
     }

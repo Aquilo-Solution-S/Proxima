@@ -1,15 +1,18 @@
 use std::collections::{HashMap, HashSet};
 
-use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::relation::{
     CORE_AUTHORED_RELATION, CORE_DEPENDS_ON_RELATION, CORE_DERIVED_FROM_RELATION,
+    CORE_INSPIRES_RELATION,
 };
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
+use proxima_core::verbs::goal_write::GoalState;
+use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EdgeTargetProjection, QueryRequest};
 use proxima_core::{
-    AbstractionPayload, DerivedEdgeSpec, EdgeAuthorshipKind, EdgeId, EntityKind, FactPayload,
-    InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner, RegisteredRelation,
-    SchemaVersion, SourceBatchId,
+    AbstractionPayload, DerivedEdgeSpec, EdgeAuthorshipKind, EdgeId, EntityKind, EntityRef,
+    FactPayload, GoalActivatedV1, GoalId, InputContractId, MemoryId, MemoryOperatorKind,
+    OperatorId, Owner, RegisteredRelation, SchemaVersion, SourceBatchId,
 };
+use proxima_core::{Tool, ToolCtx, ToolError};
 use proxima_storage_pg::sidecars::PgMemorySidecar;
 use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_with_edges_in_tx};
 use proxima_storage_pg::verbs::edge_write::{MemoryEndpoint, append_owner_checked_memory_edge};
@@ -29,7 +32,8 @@ use crate::payloads::{
     CodeExecutionPlanItemV1, CodeExecutionPlanV1, ExecutionRequestV1, TestRequestV1,
 };
 
-use super::pg_pool;
+use super::CodeToolCtxExt;
+use super::code_store;
 use super::sql::{map_storage, owner_columns, resolve_repo_identifier};
 
 const EXECUTION_REQUEST_SOURCE_ID: &str = "proxima-code/execution-request";
@@ -232,7 +236,7 @@ pub struct CodeRetryExecutionRequestOutput {
 #[derive(Debug)]
 pub struct CodeEmitExecutionRequestTool;
 
-impl McpTool for CodeEmitExecutionRequestTool {
+impl Tool for CodeEmitExecutionRequestTool {
     const NAME: &'static str = "proxima-code_emit_execution_request";
     const DESCRIPTION: &'static str =
         "Emit a repo-scoped proxima-code/work-requested-v1 Fact for an Active Goal.";
@@ -242,9 +246,9 @@ impl McpTool for CodeEmitExecutionRequestTool {
     type Output = CodeEmitExecutionRequestOutput;
 
     fn call(
-        ctx: McpToolCtx,
+        ctx: ToolCtx,
         args: CodeEmitExecutionRequestArgs,
-    ) -> futures::future::BoxFuture<'static, Result<CodeEmitExecutionRequestOutput, McpToolError>>
+    ) -> futures::future::BoxFuture<'static, Result<CodeEmitExecutionRequestOutput, ToolError>>
     {
         Box::pin(async move {
             let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
@@ -255,16 +259,16 @@ impl McpTool for CodeEmitExecutionRequestTool {
             let request_key = normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
             let acceptance_criteria = validate_acceptance_criteria(args.acceptance_criteria)?;
 
-            let planner_root = ctx.caller_self_perspective.ok_or_else(|| {
-                McpToolError::InvalidInput(
+            let planner_root = ctx.caller_self_perspective().ok_or_else(|| {
+                ToolError::InvalidInput(
                     "caller_self_perspective is required to author an execution request".into(),
                 )
             })?;
             let goal_activated_memory_id = ctx.resolve_fact_memory(&args.goal_activated_memory)?;
             let evidence = resolve_evidence(&ctx, &args.evidence)?;
 
-            let pool = pg_pool(&ctx)?;
-            let mut tx = pool.begin().await.map_err(map_storage)?;
+            let pool = code_store(&ctx)?;
+            let mut tx = pool.pool().begin().await.map_err(map_storage)?;
             let goal_id =
                 validate_goal_activated_fact(&mut tx, &ctx, goal_activated_memory_id).await?;
             validate_active_goal_context(&mut tx, &ctx, goal_id, planner_root).await?;
@@ -354,7 +358,7 @@ impl McpTool for CodeEmitExecutionRequestTool {
 #[derive(Debug)]
 pub struct CodeEmitExecutionPlanTool;
 
-impl McpTool for CodeEmitExecutionPlanTool {
+impl Tool for CodeEmitExecutionPlanTool {
     const NAME: &'static str = "proxima-code_emit_execution_plan";
     const DESCRIPTION: &'static str = "Atomically emit a repo-scoped execution-plan Abstraction plus implementation/test request Facts and core/depends-on edges.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[
@@ -368,17 +372,16 @@ impl McpTool for CodeEmitExecutionPlanTool {
 
     #[allow(clippy::too_many_lines)]
     fn call(
-        ctx: McpToolCtx,
+        ctx: ToolCtx,
         args: CodeEmitExecutionPlanArgs,
-    ) -> futures::future::BoxFuture<'static, Result<CodeEmitExecutionPlanOutput, McpToolError>>
-    {
+    ) -> futures::future::BoxFuture<'static, Result<CodeEmitExecutionPlanOutput, ToolError>> {
         Box::pin(async move {
             let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
             validate_repo(&ctx, repo_id).await?;
             let plan_items = validate_plan_items(args.items)?;
 
-            let planner_root = ctx.caller_self_perspective.ok_or_else(|| {
-                McpToolError::InvalidInput(
+            let planner_root = ctx.caller_self_perspective().ok_or_else(|| {
+                ToolError::InvalidInput(
                     "caller_self_perspective is required to author an execution plan".into(),
                 )
             })?;
@@ -386,8 +389,8 @@ impl McpTool for CodeEmitExecutionPlanTool {
             let plan_source_memory_id = ctx.resolve_abstraction_memory(&args.plan_source_memory)?;
             let evidence = resolve_evidence(&ctx, &args.evidence)?;
 
-            let pool = pg_pool(&ctx)?;
-            let mut tx = pool.begin().await.map_err(map_storage)?;
+            let pool = code_store(&ctx)?;
+            let mut tx = pool.pool().begin().await.map_err(map_storage)?;
             let goal_id =
                 validate_goal_activated_fact(&mut tx, &ctx, goal_activated_memory_id).await?;
             validate_active_goal_context(&mut tx, &ctx, goal_id, planner_root).await?;
@@ -527,7 +530,7 @@ impl McpTool for CodeEmitExecutionPlanTool {
                 for dependency_key in &item.depends_on {
                     let dependency_memory_id =
                         emitted.get(dependency_key).copied().ok_or_else(|| {
-                            McpToolError::InvalidInput(format!(
+                            ToolError::InvalidInput(format!(
                                 "depends_on references unavailable item key: {dependency_key}"
                             ))
                         })?;
@@ -610,7 +613,7 @@ fn execution_plan_memory_id(
 #[allow(clippy::too_many_arguments)]
 async fn append_execution_plan(
     tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     planner_root: MemoryId,
     goal_activated_memory_id: MemoryId,
     plan_source_memory_id: MemoryId,
@@ -618,16 +621,14 @@ async fn append_execution_plan(
     plan_key: &str,
     plan_summary: &str,
     payload: &CodeExecutionPlanV1,
-) -> Result<PlanAppendOutcome, McpToolError> {
-    let memory_id = execution_plan_memory_id(
-        &ctx.owner,
-        payload.repo_id,
-        goal_activated_memory_id,
-        plan_key,
-    );
+) -> Result<PlanAppendOutcome, ToolError> {
+    let owner = ctx.owner();
+    let caller = super::caller(ctx)?;
+    let memory_id =
+        execution_plan_memory_id(&owner, payload.repo_id, goal_activated_memory_id, plan_key);
     let draft = DerivedDraft {
         memory_id: memory_id.into_inner(),
-        owner: ctx.owner,
+        owner,
         kind: EntityKind::Abstraction,
         schema_id: <CodeExecutionPlanV1 as AbstractionPayload>::schema_id(),
         schema_version: SchemaVersion::new(CodeExecutionPlanV1::SCHEMA_VERSION),
@@ -636,18 +637,18 @@ async fn append_execution_plan(
         operator_id: execution_plan_operator_id(),
         input_contract_id: execution_plan_input_contract_id(),
         source_batch_id: None,
-        model_id: &ctx.author.model_id,
+        model_id: caller.model_id(),
         prompt_version: "proxima-code/emit_execution_plan-v1",
         supersedes: None,
         embedding: None,
         embedding_model_id: None,
     };
     let derived_relation = ctx
-        .registry
+        .registry()
         .resolve_relation(CORE_DERIVED_FROM_RELATION)
-        .ok_or_else(|| McpToolError::Other("core/derived-from relation not registered".into()))?;
+        .ok_or_else(|| ToolError::Other("core/derived-from relation not registered".into()))?;
     let proof_edges = [execution_plan_proof_edge(
-        &ctx.owner,
+        &owner,
         memory_id,
         plan_source_memory_id,
         derived_relation,
@@ -661,7 +662,7 @@ async fn append_execution_plan(
         })
     })
     .await
-    .map_err(McpToolError::Storage)?;
+    .map_err(ToolError::Storage)?;
     let mut edge_ids = Vec::new();
     if !outcome.idempotent_replay {
         edge_ids.push(append_plan_authored_edge(tx, ctx, planner_root, memory_id).await?);
@@ -680,18 +681,18 @@ async fn append_execution_plan(
 
 async fn append_plan_authored_edge(
     tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     planner_root: MemoryId,
     plan_memory_id: MemoryId,
-) -> Result<Uuid, McpToolError> {
+) -> Result<Uuid, ToolError> {
     let relation = ctx
-        .registry
+        .registry()
         .resolve_relation(CORE_AUTHORED_RELATION)
-        .ok_or_else(|| McpToolError::Other("core/authored relation not registered".into()))?;
+        .ok_or_else(|| ToolError::Other("core/authored relation not registered".into()))?;
     let edge_id = Uuid::now_v7();
     append_owner_checked_memory_edge(
         tx.as_mut(),
-        &ctx.owner,
+        &ctx.owner(),
         EdgeId::new(edge_id),
         relation,
         MemoryEndpoint::perspective(planner_root),
@@ -700,7 +701,7 @@ async fn append_plan_authored_edge(
         Some(planner_root),
     )
     .await
-    .map_err(McpToolError::Storage)?;
+    .map_err(ToolError::Storage)?;
     Ok(edge_id)
 }
 
@@ -725,34 +726,34 @@ fn execution_plan_proof_edge<'a>(
 
 async fn append_plan_fact_evidence_edge(
     tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     plan_memory_id: MemoryId,
     target_memory_id: MemoryId,
-) -> Result<Uuid, McpToolError> {
+) -> Result<Uuid, ToolError> {
     let relation = ctx
-        .registry
+        .registry()
         .resolve_relation(CORE_DERIVED_FROM_RELATION)
-        .ok_or_else(|| McpToolError::Other("core/derived-from relation not registered".into()))?;
+        .ok_or_else(|| ToolError::Other("core/derived-from relation not registered".into()))?;
     let edge_id = Uuid::now_v7();
     append_owner_checked_memory_edge(
         tx.as_mut(),
-        &ctx.owner,
+        &ctx.owner(),
         EdgeId::new(edge_id),
         relation,
         MemoryEndpoint::abstraction(plan_memory_id),
         MemoryEndpoint::fact(target_memory_id),
         EdgeAuthorshipKind::ExternalAgent,
-        ctx.caller_self_perspective,
+        ctx.caller_self_perspective(),
     )
     .await
-    .map_err(McpToolError::Storage)?;
+    .map_err(ToolError::Storage)?;
     Ok(edge_id)
 }
 
 #[derive(Debug)]
 pub struct CodeRetryExecutionRequestTool;
 
-impl McpTool for CodeRetryExecutionRequestTool {
+impl Tool for CodeRetryExecutionRequestTool {
     const NAME: &'static str = "proxima-code_retry_execution_request";
     const DESCRIPTION: &'static str = "Shell-author override: retry a prior proxima-code/work-requested-v1 Fact for a target worker.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[ExecutionRequestV1::SCHEMA_ID];
@@ -762,18 +763,18 @@ impl McpTool for CodeRetryExecutionRequestTool {
 
     #[allow(clippy::too_many_lines)]
     fn call(
-        ctx: McpToolCtx,
+        ctx: ToolCtx,
         args: CodeRetryExecutionRequestArgs,
-    ) -> futures::future::BoxFuture<'static, Result<CodeRetryExecutionRequestOutput, McpToolError>>
+    ) -> futures::future::BoxFuture<'static, Result<CodeRetryExecutionRequestOutput, ToolError>>
     {
         Box::pin(async move {
-            if ctx.master_token_id.is_none() {
-                return Err(McpToolError::InvalidInput(
+            if !super::caller(&ctx)?.is_master_token() {
+                return Err(ToolError::InvalidInput(
                     "code_retry_execution_request requires a master-token shell-author call".into(),
                 ));
             }
-            let shell_author_root = ctx.caller_self_perspective.ok_or_else(|| {
-                McpToolError::InvalidInput(
+            let shell_author_root = ctx.caller_self_perspective().ok_or_else(|| {
+                ToolError::InvalidInput(
                     "caller_self_perspective is required for shell-author retry provenance".into(),
                 )
             })?;
@@ -783,8 +784,8 @@ impl McpTool for CodeRetryExecutionRequestTool {
             let request_key = normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
             let explicit_evidence = resolve_evidence(&ctx, &args.evidence)?;
 
-            let pool = pg_pool(&ctx)?;
-            let mut tx = pool.begin().await.map_err(map_storage)?;
+            let pool = code_store(&ctx)?;
+            let mut tx = pool.pool().begin().await.map_err(map_storage)?;
             let prior = load_execution_request(&mut tx, &ctx, prior_memory_id).await?;
             if let Some(existing) =
                 find_execution_request_by_key(&mut tx, &ctx, prior.repo_id, &request_key).await?
@@ -891,11 +892,11 @@ pub(super) fn normalize_text(
     value: &str,
     min: usize,
     max: usize,
-) -> Result<String, McpToolError> {
+) -> Result<String, ToolError> {
     let trimmed = value.trim();
     let len = trimmed.chars().count();
     if len < min || len > max {
-        return Err(McpToolError::InvalidInput(format!(
+        return Err(ToolError::InvalidInput(format!(
             "{field} must be {min}..={max} chars"
         )));
     }
@@ -904,7 +905,7 @@ pub(super) fn normalize_text(
 
 pub(super) fn validate_acceptance_criteria(
     criteria: Vec<AcceptanceCriterionV1>,
-) -> Result<Vec<AcceptanceCriterionV1>, McpToolError> {
+) -> Result<Vec<AcceptanceCriterionV1>, ToolError> {
     let mut seen = HashSet::new();
     let mut out = Vec::with_capacity(criteria.len());
     for mut criterion in criteria {
@@ -920,13 +921,13 @@ pub(super) fn validate_acceptance_criteria(
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
         {
-            return Err(McpToolError::InvalidInput(
+            return Err(ToolError::InvalidInput(
                 "acceptance_criteria.key must contain only ASCII letters, digits, '-' or '_'"
                     .into(),
             ));
         }
         if !seen.insert(criterion.key.clone()) {
-            return Err(McpToolError::InvalidInput(format!(
+            return Err(ToolError::InvalidInput(format!(
                 "duplicate acceptance criterion key: {}",
                 criterion.key
             )));
@@ -939,9 +940,9 @@ pub(super) fn validate_acceptance_criteria(
 
 fn validate_plan_items(
     items: Vec<ExecutionPlanItemArgs>,
-) -> Result<Vec<ExecutionPlanItemArgs>, McpToolError> {
+) -> Result<Vec<ExecutionPlanItemArgs>, ToolError> {
     if items.is_empty() || items.len() > 20 {
-        return Err(McpToolError::InvalidInput(
+        return Err(ToolError::InvalidInput(
             "items must contain 1..=20 plan requests".into(),
         ));
     }
@@ -955,12 +956,12 @@ fn validate_plan_items(
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
         {
-            return Err(McpToolError::InvalidInput(
+            return Err(ToolError::InvalidInput(
                 "items.key must contain only ASCII letters, digits, '-' or '_'".into(),
             ));
         }
         if !seen.insert(item.key.clone()) {
-            return Err(McpToolError::InvalidInput(format!(
+            return Err(ToolError::InvalidInput(format!(
                 "duplicate item key: {}",
                 item.key
             )));
@@ -974,7 +975,7 @@ fn validate_plan_items(
         match item.kind {
             ExecutionPlanItemKind::Implementation => {
                 if !item.test_criteria.is_empty() {
-                    return Err(McpToolError::InvalidInput(format!(
+                    return Err(ToolError::InvalidInput(format!(
                         "implementation item {} must not set test_criteria",
                         item.key
                     )));
@@ -982,13 +983,13 @@ fn validate_plan_items(
             }
             ExecutionPlanItemKind::Test => {
                 if !item.acceptance_criteria.is_empty() {
-                    return Err(McpToolError::InvalidInput(format!(
+                    return Err(ToolError::InvalidInput(format!(
                         "test item {} must not set acceptance_criteria",
                         item.key
                     )));
                 }
                 if item.test_criteria.is_empty() {
-                    return Err(McpToolError::InvalidInput(format!(
+                    return Err(ToolError::InvalidInput(format!(
                         "test item {} must set test_criteria",
                         item.key
                     )));
@@ -998,7 +999,7 @@ fn validate_plan_items(
                     .iter()
                     .any(|criterion| criterion.required)
                 {
-                    return Err(McpToolError::InvalidInput(format!(
+                    return Err(ToolError::InvalidInput(format!(
                         "test item {} must include at least one required test criterion",
                         item.key
                     )));
@@ -1010,7 +1011,7 @@ fn validate_plan_items(
         for dep in &item.depends_on {
             let dep = normalize_text("items.depends_on[]", dep, 1, 80)?;
             if !prior.contains(&dep) {
-                return Err(McpToolError::InvalidInput(format!(
+                return Err(ToolError::InvalidInput(format!(
                     "{} item {} depends on {}, but dependencies must reference earlier item keys",
                     item.kind.as_str(),
                     item.key,
@@ -1018,7 +1019,7 @@ fn validate_plan_items(
                 )));
             }
             if !item_deps.insert(dep.clone()) {
-                return Err(McpToolError::InvalidInput(format!(
+                return Err(ToolError::InvalidInput(format!(
                     "item {} repeats dependency {}",
                     item.key, dep
                 )));
@@ -1032,13 +1033,11 @@ fn validate_plan_items(
     Ok(out)
 }
 
-fn validate_acceptance_verifier_spec(
-    criterion: &AcceptanceCriterionV1,
-) -> Result<(), McpToolError> {
+fn validate_acceptance_verifier_spec(criterion: &AcceptanceCriterionV1) -> Result<(), ToolError> {
     match criterion.verifier_kind {
         AcceptanceVerifierKind::FileExists => {
             let path = criterion.verifier_spec.path.as_deref().ok_or_else(|| {
-                McpToolError::InvalidInput(format!(
+                ToolError::InvalidInput(format!(
                     "acceptance_criteria.{}.verifier_spec.path is required for file_exists",
                     criterion.key
                 ))
@@ -1047,13 +1046,13 @@ fn validate_acceptance_verifier_spec(
         }
         AcceptanceVerifierKind::Command => {
             let command = criterion.verifier_spec.command.as_ref().ok_or_else(|| {
-                McpToolError::InvalidInput(format!(
+                ToolError::InvalidInput(format!(
                     "acceptance_criteria.{}.verifier_spec.command is required for command",
                     criterion.key
                 ))
             })?;
             if command.is_empty() {
-                return Err(McpToolError::InvalidInput(format!(
+                return Err(ToolError::InvalidInput(format!(
                     "acceptance_criteria.{}.verifier_spec.command must not be empty",
                     criterion.key
                 )));
@@ -1075,7 +1074,7 @@ fn retry_instructions(
     prior_memory_id: MemoryId,
     request_key: &str,
     instructions_append: Option<&str>,
-) -> Result<String, McpToolError> {
+) -> Result<String, ToolError> {
     let mut instructions = format!(
         "{}\n\nRetry context:\nprior_execution_request: {}\nretry_key: {}",
         prior_instructions.trim(),
@@ -1091,13 +1090,13 @@ fn retry_instructions(
 }
 
 pub(super) fn resolve_target_perspective_id(
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     raw: &str,
-) -> Result<MemoryId, McpToolError> {
+) -> Result<MemoryId, ToolError> {
     ctx.resolve_perspective_memory(raw)
 }
 
-fn resolve_evidence(ctx: &McpToolCtx, raw: &[String]) -> Result<Vec<MemoryId>, McpToolError> {
+fn resolve_evidence(ctx: &ToolCtx, raw: &[String]) -> Result<Vec<MemoryId>, ToolError> {
     raw.iter()
         .map(|value| ctx.resolve_fact_memory(value))
         .collect()
@@ -1111,120 +1110,90 @@ pub(super) struct PriorExecutionRequest {
 }
 
 pub(super) async fn load_execution_request(
-    tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    _tx: &mut Transaction<'_, Postgres>,
+    ctx: &ToolCtx,
     memory_id: MemoryId,
-) -> Result<PriorExecutionRequest, McpToolError> {
-    let (owner_kind, owner_id) = owner_columns(&ctx.owner);
-    #[allow(clippy::type_complexity)]
-    let row: Option<(
-        EntityKind,
-        String,
-        Option<Uuid>,
-        Option<String>,
-        Option<String>,
-    )> = sqlx::query_as(
-        "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind,
-                m.schema_id,
-                r.repo_id,
-                r.title,
-                r.instructions
-         FROM proxima_core.memories m
-         LEFT JOIN proxima_code.work_requested_v1 r USING (memory_id)
-         WHERE m.memory_id = $1
-           AND EXISTS (
-                SELECT 1
-                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
-                 WHERE eo.entity_id = m.memory_id
-                   AND eo.owner_kind = $2
-                   AND eo.owner_id = $3
-)",
-    )
-    .bind(memory_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_storage)?;
-    let Some((kind, schema_id, repo_id, title, instructions)) = row else {
-        return Err(McpToolError::InvalidInput(format!(
-            "prior_execution_request is not visible: {}",
-            memory_id.into_inner()
-        )));
-    };
-    if kind != EntityKind::Fact || schema_id != ExecutionRequestV1::SCHEMA_ID {
-        return Err(McpToolError::InvalidInput(
-            "prior_execution_request must be a proxima-code/work-requested-v1 Fact".into(),
-        ));
-    }
-    let (Some(repo_id), Some(title), Some(instructions)) = (repo_id, title, instructions) else {
-        return Err(McpToolError::InvalidInput(
-            "prior_execution_request sidecar row is missing".into(),
+) -> Result<PriorExecutionRequest, ToolError> {
+    let pool = code_store(ctx)?;
+    let engine = super::engine(ctx)?;
+    let Some((_, row)) = pool
+        .authorized_fact_payloads::<ExecutionRequestV1>(
+            &engine,
+            ctx.authz(),
+            ctx.owner(),
+            &[memory_id.into_inner()],
+            1,
+        )
+        .await?
+        .into_iter()
+        .next()
+    else {
+        return Err(ToolError::InvalidInput(
+            "prior_execution_request must be a visible proxima-code/work-requested-v1 Fact".into(),
         ));
     };
     Ok(PriorExecutionRequest {
-        repo_id,
-        title,
-        instructions,
+        repo_id: row.repo_id,
+        title: row.title,
+        instructions: row.instructions,
     })
 }
 
 pub(super) async fn find_execution_request_by_key(
-    tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    _tx: &mut Transaction<'_, Postgres>,
+    ctx: &ToolCtx,
     repo_id: Uuid,
     request_key: &str,
-) -> Result<Option<MemoryId>, McpToolError> {
-    let (owner_kind, owner_id) = owner_columns(&ctx.owner);
-    let existing: Option<Uuid> =
-        sqlx::query_scalar(
-            "SELECT r.memory_id
-         FROM proxima_code.work_requested_v1 r
-         JOIN proxima_core.memories m USING (memory_id)
-         WHERE r.repo_id = $1
-           AND r.request_key = $2
-           AND EXISTS (
-                SELECT 1
-                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
-                 WHERE eo.entity_id = m.memory_id
-                   AND eo.owner_kind = $3
-                   AND eo.owner_id = $4
-)",
+) -> Result<Option<MemoryId>, ToolError> {
+    let pool = code_store(ctx)?;
+    let engine = super::engine(ctx)?;
+    let candidates: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT memory_id
+           FROM proxima_code.work_requested_v1
+          WHERE repo_id = $1
+            AND request_key = $2
+          ORDER BY memory_id DESC
+          LIMIT 20",
+    )
+    .bind(repo_id)
+    .bind(request_key)
+    .fetch_all(pool.pool())
+    .await
+    .map_err(map_storage)?;
+    Ok(pool
+        .authorized_fact_payloads::<ExecutionRequestV1>(
+            &engine,
+            ctx.authz(),
+            ctx.owner(),
+            &candidates,
+            1,
         )
-        .bind(repo_id)
-        .bind(request_key)
-        .bind(owner_kind)
-        .bind(owner_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(map_storage)?;
-    Ok(existing.map(MemoryId::new))
+        .await?
+        .into_iter()
+        .next()
+        .map(|(id, _)| id))
 }
 
 pub(super) async fn validate_target_perspective(
-    tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    _tx: &mut Transaction<'_, Postgres>,
+    ctx: &ToolCtx,
     target_perspective: MemoryId,
-) -> Result<(), McpToolError> {
-    let (owner_kind, owner_id) = owner_columns(&ctx.owner);
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-             SELECT 1
-             FROM proxima_core.memories
-         WHERE owner_kind = $1
-           AND owner_id = $2
-               AND memory_id = $3
-               AND kind = 'Perspective'
-         )",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(target_perspective.into_inner())
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(map_storage)?;
-    if !exists {
-        return Err(McpToolError::InvalidInput(format!(
+) -> Result<(), ToolError> {
+    let pool = code_store(ctx)?;
+    let engine = super::engine(ctx)?;
+    let visible = pool
+        .authorized_memory_ids(
+            &engine,
+            ctx.authz(),
+            ctx.owner(),
+            &[target_perspective.into_inner()],
+            EntityKind::Perspective,
+            None,
+            1,
+        )
+        .await?;
+    if visible.is_empty() {
+        return Err(ToolError::InvalidInput(format!(
             "target_perspective not found: {}",
             target_perspective.into_inner()
         )));
@@ -1233,51 +1202,57 @@ pub(super) async fn validate_target_perspective(
 }
 
 pub(super) async fn load_prior_derived_targets(
-    tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    _tx: &mut Transaction<'_, Postgres>,
+    ctx: &ToolCtx,
     prior_memory_id: MemoryId,
-) -> Result<Vec<MemoryId>, McpToolError> {
-    let (owner_kind, owner_id) = owner_columns(&ctx.owner);
-    let rows: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT e.target_memory_id
-         FROM proxima_core.edges e
-         JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) target_owner
-           ON target_owner.entity_id = e.target_memory_id
-          AND target_owner.owner_kind = $1
-          AND target_owner.owner_id = $2
-WHERE e.relation = $3
-           AND e.source_kind = 'Fact'
-           AND e.source_memory_id = $4
-           AND e.target_memory_id IS NOT NULL
-         ORDER BY e.created_at, e.edge_id",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(CORE_DERIVED_FROM_RELATION)
-    .bind(prior_memory_id.into_inner())
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(map_storage)?;
-    Ok(rows.into_iter().map(MemoryId::new).collect())
+) -> Result<Vec<MemoryId>, ToolError> {
+    let engine = super::engine(ctx)?;
+    let response = engine
+        .read_edges(
+            ctx.authz(),
+            &EdgeReadRequest {
+                principal: ctx.owner(),
+                edge_ids: Vec::new(),
+                filter: EdgeFilter {
+                    relation: Some(CORE_DERIVED_FROM_RELATION.to_string()),
+                    source: Some(EntityRef::Memory(prior_memory_id)),
+                    target: None,
+                },
+                limit: 500,
+            },
+        )
+        .await?;
+    Ok(response
+        .edges
+        .into_iter()
+        .filter_map(|edge| match edge.target {
+            EdgeTargetProjection::Visible {
+                target: EntityRef::Memory(id),
+            } => Some(id),
+            EdgeTargetProjection::Visible { .. }
+            | EdgeTargetProjection::Redacted
+            | EdgeTargetProjection::Unavailable => None,
+        })
+        .collect())
 }
 
 pub(super) async fn push_derived_edge(
     tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     request_memory_id: MemoryId,
     evidence_memory_id: MemoryId,
     seen: &mut HashSet<MemoryId>,
     edge_ids: &mut Vec<Uuid>,
-) -> Result<(), McpToolError> {
+) -> Result<(), ToolError> {
     if seen.insert(evidence_memory_id) {
         edge_ids.push(append_derived_edge(tx, ctx, request_memory_id, evidence_memory_id).await?);
     }
     Ok(())
 }
 
-async fn validate_repo(ctx: &McpToolCtx, repo_id: Uuid) -> Result<(), McpToolError> {
-    let (owner_kind, owner_id) = owner_columns(&ctx.owner);
-    let pool = pg_pool(ctx)?;
+async fn validate_repo(ctx: &ToolCtx, repo_id: Uuid) -> Result<(), ToolError> {
+    let (owner_kind, owner_id) = owner_columns(&ctx.owner());
+    let pool = code_store(ctx)?;
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(
              SELECT 1
@@ -1290,11 +1265,11 @@ async fn validate_repo(ctx: &McpToolCtx, repo_id: Uuid) -> Result<(), McpToolErr
     .bind(owner_kind)
     .bind(owner_id)
     .bind(repo_id)
-    .fetch_one(pool.as_ref())
+    .fetch_one(pool.pool())
     .await
     .map_err(map_storage)?;
     if !exists {
-        return Err(McpToolError::InvalidInput(format!(
+        return Err(ToolError::InvalidInput(format!(
             "repo not found for owner: {repo_id}"
         )));
     }
@@ -1302,198 +1277,165 @@ async fn validate_repo(ctx: &McpToolCtx, repo_id: Uuid) -> Result<(), McpToolErr
 }
 
 async fn validate_goal_activated_fact(
-    tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    _tx: &mut Transaction<'_, Postgres>,
+    ctx: &ToolCtx,
     memory_id: MemoryId,
-) -> Result<Uuid, McpToolError> {
-    let (owner_kind, owner_id) = owner_columns(&ctx.owner);
-    let row: Option<(EntityKind, String, Uuid)> =
-        sqlx::query_as(
-            "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind,
-                m.schema_id, g.goal_id
-         FROM proxima_core.memories m
-         JOIN proxima_core.goal_activated_v1 g USING (memory_id)
-         WHERE m.memory_id = $1
-           AND EXISTS (
-                SELECT 1
-                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
-                 WHERE eo.entity_id = m.memory_id
-                   AND eo.owner_kind = $2
-                   AND eo.owner_id = $3
-)",
+) -> Result<Uuid, ToolError> {
+    let pool = code_store(ctx)?;
+    let engine = super::engine(ctx)?;
+    let Some((_, payload)) = pool
+        .authorized_fact_payloads::<GoalActivatedV1>(
+            &engine,
+            ctx.authz(),
+            ctx.owner(),
+            &[memory_id.into_inner()],
+            1,
         )
-        .bind(memory_id.into_inner())
-        .bind(owner_kind)
-        .bind(owner_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(map_storage)?;
-    let Some((kind, schema_id, goal_id)) = row else {
-        return Err(McpToolError::InvalidInput(format!(
+        .await?
+        .into_iter()
+        .next()
+    else {
+        return Err(ToolError::InvalidInput(format!(
             "goal_activated_memory is not visible: {}",
             memory_id.into_inner()
         )));
     };
-    if kind != EntityKind::Fact || schema_id != "core/goal-activated-v1" {
-        return Err(McpToolError::InvalidInput(
-            "goal_activated_memory must be a core/goal-activated-v1 Fact".into(),
-        ));
-    }
-    Ok(goal_id)
+    Ok(payload.goal_id)
 }
 
 async fn validate_active_goal_context(
-    tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    _tx: &mut Transaction<'_, Postgres>,
+    ctx: &ToolCtx,
     goal_id: Uuid,
     planner_root: MemoryId,
-) -> Result<(), McpToolError> {
-    let (owner_kind, owner_id) = owner_columns(&ctx.owner);
-    let active: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-             SELECT 1
-             FROM proxima_core.goals g
-             WHERE g.goal_id = $3
-               AND EXISTS (
-                    SELECT 1
-                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
-                     WHERE eo.entity_id = g.goal_id
-                       AND eo.owner_kind = $1
-                       AND eo.owner_id = $2
-)
-               AND g.state = 'Active'
-         )",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(goal_id)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(map_storage)?;
-    if !active {
-        return Err(McpToolError::InvalidInput(
+) -> Result<(), ToolError> {
+    let engine = super::engine(ctx)?;
+    let mut req = QueryRequest::for_principal(ctx.owner());
+    req.entity_kind = Some(EntityKind::Goal);
+    req.goal_ids = vec![GoalId::new(goal_id)];
+    req.limit = 1;
+    let response = engine.query(ctx.authz(), &req).await?;
+    let Some(goal) = response.goals.into_iter().next() else {
+        return Err(ToolError::InvalidInput(
+            "activated goal is not visible".into(),
+        ));
+    };
+    if goal.state != GoalState::Active {
+        return Err(ToolError::InvalidInput(
             "activated goal is not Active".into(),
         ));
     }
 
-    let assigned: bool = sqlx::query_scalar(
-        "WITH RECURSIVE lineage(goal_id) AS (
-             SELECT $3::uuid
-             UNION
-             SELECT g.supersedes
-               FROM proxima_core.goals g
-               JOIN lineage l ON g.goal_id = l.goal_id
-              WHERE g.supersedes IS NOT NULL
-                AND EXISTS (
-                     SELECT 1
-                       FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
-                      WHERE eo.entity_id = g.goal_id
-                        AND eo.owner_kind = $1
-                        AND eo.owner_id = $2
-)
-         )
-         SELECT EXISTS(
-             SELECT 1
-             FROM proxima_core.edges e
-             JOIN lineage l ON l.goal_id = e.source_goal_id
-             WHERE e.relation = 'core/inspires'
-               AND e.source_kind = 'Goal'
-               AND e.target_kind = 'Perspective'
-               AND e.target_memory_id = $4
-         )",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(goal_id)
-    .bind(planner_root.into_inner())
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(map_storage)?;
-    if !assigned {
-        return Err(McpToolError::InvalidInput(
+    if !goal_lineage_assigned_to(ctx, GoalId::new(goal_id), planner_root).await? {
+        return Err(ToolError::InvalidInput(
             "activated goal is Active but not assigned to caller Root Perspective".into(),
         ));
     }
     Ok(())
 }
 
+async fn goal_lineage_assigned_to(
+    ctx: &ToolCtx,
+    start: GoalId,
+    planner_root: MemoryId,
+) -> Result<bool, ToolError> {
+    let engine = super::engine(ctx)?;
+    let mut current = Some(start);
+    let mut seen = HashSet::new();
+    for _ in 0..100 {
+        let Some(goal_id) = current else {
+            return Ok(false);
+        };
+        if !seen.insert(goal_id) {
+            return Ok(false);
+        }
+
+        let edges = engine
+            .read_edges(
+                ctx.authz(),
+                &EdgeReadRequest {
+                    principal: ctx.owner(),
+                    edge_ids: Vec::new(),
+                    filter: EdgeFilter {
+                        relation: Some(CORE_INSPIRES_RELATION.to_string()),
+                        source: Some(EntityRef::Goal(goal_id)),
+                        target: Some(EntityRef::Memory(planner_root)),
+                    },
+                    limit: 1,
+                },
+            )
+            .await?;
+        if !edges.edges.is_empty() {
+            return Ok(true);
+        }
+
+        let mut req = QueryRequest::for_principal(ctx.owner());
+        req.entity_kind = Some(EntityKind::Goal);
+        req.goal_ids = vec![goal_id];
+        req.limit = 1;
+        req.include_payloads = false;
+        current = engine
+            .query(ctx.authz(), &req)
+            .await?
+            .goals
+            .into_iter()
+            .next()
+            .and_then(|goal| goal.supersedes);
+    }
+    Ok(false)
+}
+
 async fn validate_plan_source_abstraction_in_owner(
-    tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    _tx: &mut Transaction<'_, Postgres>,
+    ctx: &ToolCtx,
     memory_id: MemoryId,
-) -> Result<(), McpToolError> {
-    let (owner_kind, owner_id) = owner_columns(&ctx.owner);
-    let row: Option<EntityKind> = sqlx::query_scalar(
-        "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind
-           FROM proxima_core.memories m
-          WHERE m.memory_id = $1
-            AND EXISTS (
-                 SELECT 1
-                   FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
-                  WHERE eo.entity_id = m.memory_id
-                    AND eo.owner_kind = $2
-                    AND eo.owner_id = $3
-)",
-    )
-    .bind(memory_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_storage)?;
-    match row {
-        Some(EntityKind::Abstraction) => Ok(()),
-        Some(kind) => Err(McpToolError::LayeringViolation(format!(
-            "plan_source_memory {} must be an Abstraction handle; got {kind:?}",
-            memory_id.into_inner()
-        ))),
-        None => Err(McpToolError::InvalidInput(format!(
+) -> Result<(), ToolError> {
+    let pool = code_store(ctx)?;
+    let engine = super::engine(ctx)?;
+    let visible = pool
+        .authorized_memory_ids(
+            &engine,
+            ctx.authz(),
+            ctx.owner(),
+            &[memory_id.into_inner()],
+            EntityKind::Abstraction,
+            None,
+            1,
+        )
+        .await?;
+    if visible.is_empty() {
+        return Err(ToolError::InvalidInput(format!(
             "plan_source_memory not visible: {}",
             memory_id.into_inner()
-        ))),
+        )));
     }
+    Ok(())
 }
 
 async fn validate_evidence_in_owner(
-    tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    _tx: &mut Transaction<'_, Postgres>,
+    ctx: &ToolCtx,
     evidence: &[MemoryId],
-) -> Result<(), McpToolError> {
-    let (owner_kind, owner_id) = owner_columns(&ctx.owner);
+) -> Result<(), ToolError> {
+    let pool = code_store(ctx)?;
+    let engine = super::engine(ctx)?;
     for memory_id in evidence {
-        let row: Option<EntityKind> =
-            sqlx::query_scalar(
-                "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind
-             FROM proxima_core.memories m
-             WHERE m.memory_id = $1
-               AND EXISTS (
-                    SELECT 1
-                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
-                     WHERE eo.entity_id = m.memory_id
-                       AND eo.owner_kind = $2
-                       AND eo.owner_id = $3
-)",
+        let visible = pool
+            .authorized_memory_ids(
+                &engine,
+                ctx.authz(),
+                ctx.owner(),
+                &[memory_id.into_inner()],
+                EntityKind::Fact,
+                None,
+                1,
             )
-            .bind(memory_id.into_inner())
-            .bind(owner_kind)
-            .bind(owner_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(map_storage)?;
-        match row {
-            Some(EntityKind::Fact) => {}
-            Some(kind) => {
-                return Err(McpToolError::LayeringViolation(format!(
-                    "evidence {} must be a Fact memory handle; got {kind:?}",
-                    memory_id.into_inner(),
-                )));
-            }
-            None => {
-                return Err(McpToolError::InvalidInput(format!(
-                    "evidence not visible: {}",
-                    memory_id.into_inner()
-                )));
-            }
+            .await?;
+        if visible.is_empty() {
+            return Err(ToolError::InvalidInput(format!(
+                "evidence not visible or not a Fact: {}",
+                memory_id.into_inner()
+            )));
         }
     }
     Ok(())
@@ -1501,30 +1443,30 @@ async fn validate_evidence_in_owner(
 
 async fn ingest_mcp_fact<P>(
     tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     source_id: &'static str,
     cited_object_schema: &'static str,
     mapping_schema: &'static str,
     payload: &P,
-) -> Result<FactIngestOutcome, McpToolError>
+) -> Result<FactIngestOutcome, ToolError>
 where
     P: FactPayload + PgMemorySidecar + Clone,
 {
-    let embedding_client = ctx.engine().and_then(proxima_core::Engine::embed_client);
-    let ingest_ctx =
-        FactIngestContext::new(&ctx.owner, source_id, SourceBatchId::new(Uuid::now_v7()))
-            .embedding_model_id(embedding_client.as_ref().map(|client| client.model_id()));
+    let embedding_client = ctx.engine().and_then(|engine| engine.embed_client());
+    let owner = ctx.owner();
+    let ingest_ctx = FactIngestContext::new(&owner, source_id, SourceBatchId::new(Uuid::now_v7()))
+        .embedding_model_id(embedding_client.as_ref().map(|client| client.model_id()));
     let citation = CitationSpec::v1_for_payload(cited_object_schema, payload, mapping_schema);
     ingest_fact_with_sidecar(tx, &ingest_ctx, payload, citation)
         .await
-        .map_err(McpToolError::Storage)
+        .map_err(ToolError::Storage)
 }
 
 pub(super) async fn ingest_execution_request(
     tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     payload: &ExecutionRequestV1,
-) -> Result<FactIngestOutcome, McpToolError> {
+) -> Result<FactIngestOutcome, ToolError> {
     ingest_mcp_fact(
         tx,
         ctx,
@@ -1538,9 +1480,9 @@ pub(super) async fn ingest_execution_request(
 
 pub(super) async fn ingest_acceptance_criteria(
     tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     payload: &AcceptanceCriteriaV1,
-) -> Result<FactIngestOutcome, McpToolError> {
+) -> Result<FactIngestOutcome, ToolError> {
     ingest_mcp_fact(
         tx,
         ctx,
@@ -1554,9 +1496,9 @@ pub(super) async fn ingest_acceptance_criteria(
 
 pub(super) async fn ingest_test_request(
     tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     payload: &TestRequestV1,
-) -> Result<FactIngestOutcome, McpToolError> {
+) -> Result<FactIngestOutcome, ToolError> {
     ingest_mcp_fact(
         tx,
         ctx,
@@ -1570,48 +1512,48 @@ pub(super) async fn ingest_test_request(
 
 pub(super) async fn append_acceptance_criteria_edge(
     tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     request_memory_id: MemoryId,
     criteria_memory_id: MemoryId,
-) -> Result<Uuid, McpToolError> {
+) -> Result<Uuid, ToolError> {
     let relation = ctx
-        .registry
+        .registry()
         .resolve_relation(CODE_HAS_ACCEPTANCE_CRITERIA_RELATION)
         .ok_or_else(|| {
-            McpToolError::Other(format!(
+            ToolError::Other(format!(
                 "{CODE_HAS_ACCEPTANCE_CRITERIA_RELATION} relation not registered"
             ))
         })?;
     let edge_id = Uuid::now_v7();
     append_owner_checked_memory_edge(
         tx.as_mut(),
-        &ctx.owner,
+        &ctx.owner(),
         EdgeId::new(edge_id),
         relation,
         MemoryEndpoint::fact(request_memory_id),
         MemoryEndpoint::fact(criteria_memory_id),
         EdgeAuthorshipKind::ExternalAgent,
-        ctx.caller_self_perspective,
+        ctx.caller_self_perspective(),
     )
     .await
-    .map_err(McpToolError::Storage)?;
+    .map_err(ToolError::Storage)?;
     Ok(edge_id)
 }
 
 pub(super) async fn append_authored_edge(
     tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     planner_root: MemoryId,
     request_memory_id: MemoryId,
-) -> Result<Uuid, McpToolError> {
+) -> Result<Uuid, ToolError> {
     let relation = ctx
-        .registry
+        .registry()
         .resolve_relation(CORE_AUTHORED_RELATION)
-        .ok_or_else(|| McpToolError::Other("core/authored relation not registered".into()))?;
+        .ok_or_else(|| ToolError::Other("core/authored relation not registered".into()))?;
     let edge_id = Uuid::now_v7();
     append_owner_checked_memory_edge(
         tx.as_mut(),
-        &ctx.owner,
+        &ctx.owner(),
         EdgeId::new(edge_id),
         relation,
         MemoryEndpoint::perspective(planner_root),
@@ -1620,92 +1562,92 @@ pub(super) async fn append_authored_edge(
         Some(planner_root),
     )
     .await
-    .map_err(McpToolError::Storage)?;
+    .map_err(ToolError::Storage)?;
     Ok(edge_id)
 }
 
 pub(super) async fn append_target_edge(
     tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     target_root: MemoryId,
     request_memory_id: MemoryId,
-) -> Result<Uuid, McpToolError> {
+) -> Result<Uuid, ToolError> {
     let relation = ctx
-        .registry
+        .registry()
         .resolve_relation(CODE_TARGETS_EXECUTION_REQUEST_RELATION)
         .ok_or_else(|| {
-            McpToolError::Other(format!(
+            ToolError::Other(format!(
                 "{CODE_TARGETS_EXECUTION_REQUEST_RELATION} relation not registered"
             ))
         })?;
     let edge_id = Uuid::now_v7();
     append_owner_checked_memory_edge(
         tx.as_mut(),
-        &ctx.owner,
+        &ctx.owner(),
         EdgeId::new(edge_id),
         relation,
         MemoryEndpoint::perspective(target_root),
         MemoryEndpoint::fact(request_memory_id),
         EdgeAuthorshipKind::ExternalAgent,
-        ctx.caller_self_perspective,
+        ctx.caller_self_perspective(),
     )
     .await
-    .map_err(McpToolError::Storage)?;
+    .map_err(ToolError::Storage)?;
     Ok(edge_id)
 }
 
 pub(super) async fn append_derived_edge(
     tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     request_memory_id: MemoryId,
     evidence_memory_id: MemoryId,
-) -> Result<Uuid, McpToolError> {
+) -> Result<Uuid, ToolError> {
     let relation = ctx
-        .registry
+        .registry()
         .resolve_relation(CORE_DERIVED_FROM_RELATION)
-        .ok_or_else(|| McpToolError::Other("core/derived-from relation not registered".into()))?;
+        .ok_or_else(|| ToolError::Other("core/derived-from relation not registered".into()))?;
     let edge_id = Uuid::now_v7();
     append_owner_checked_memory_edge(
         tx.as_mut(),
-        &ctx.owner,
+        &ctx.owner(),
         EdgeId::new(edge_id),
         relation,
         MemoryEndpoint::fact(request_memory_id),
         MemoryEndpoint::fact(evidence_memory_id),
         EdgeAuthorshipKind::ExternalAgent,
-        ctx.caller_self_perspective,
+        ctx.caller_self_perspective(),
     )
     .await
-    .map_err(McpToolError::Storage)?;
+    .map_err(ToolError::Storage)?;
     Ok(edge_id)
 }
 
 async fn append_dependency_edge(
     tx: &mut Transaction<'_, Postgres>,
-    ctx: &McpToolCtx,
+    ctx: &ToolCtx,
     dependent_memory_id: MemoryId,
     dependency_memory_id: MemoryId,
-) -> Result<Uuid, McpToolError> {
+) -> Result<Uuid, ToolError> {
     let relation = ctx
-        .registry
+        .registry()
         .resolve_relation(CORE_DEPENDS_ON_RELATION)
-        .ok_or_else(|| McpToolError::Other("core/depends-on relation not registered".into()))?;
+        .ok_or_else(|| ToolError::Other("core/depends-on relation not registered".into()))?;
     let mut name = Vec::with_capacity(32);
     name.extend_from_slice(dependent_memory_id.into_inner().as_bytes());
     name.extend_from_slice(dependency_memory_id.into_inner().as_bytes());
     let edge_id = Uuid::new_v5(&Uuid::NAMESPACE_OID, &name);
     append_owner_checked_memory_edge(
         tx.as_mut(),
-        &ctx.owner,
+        &ctx.owner(),
         EdgeId::new(edge_id),
         relation,
         MemoryEndpoint::fact(dependent_memory_id),
         MemoryEndpoint::fact(dependency_memory_id),
         EdgeAuthorshipKind::ExternalAgent,
-        ctx.caller_self_perspective,
+        ctx.caller_self_perspective(),
     )
     .await
-    .map_err(McpToolError::Storage)?;
+    .map_err(ToolError::Storage)?;
     Ok(edge_id)
 }
 
@@ -1713,9 +1655,10 @@ async fn append_dependency_edge(
 mod tests {
     use std::sync::Arc;
 
-    use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolExtensions, OutputMode};
-    use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, GroupId, OwnerRef, UserId};
-    use sqlx::postgres::PgPoolOptions;
+    use proxima_core::mcp::{HandleTable, McpToolCaller, McpToolPresentation, OutputMode};
+    use proxima_core::{
+        AuthPath, AuthzContext, FlavorRegistry, GroupId, OwnerRef, ToolServices, UserId,
+    };
 
     use super::*;
 
@@ -1740,28 +1683,17 @@ mod tests {
         );
     }
 
-    fn test_ctx(handles: Arc<HandleTable>) -> McpToolCtx {
+    fn test_ctx(handles: Arc<HandleTable>) -> ToolCtx {
         let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
-        let pool = PgPoolOptions::new()
-            .connect_lazy("postgres://proxima:proxima@localhost/proxima")
-            .expect("lazy pool");
-        McpToolCtx {
+        let mut services = ToolServices::new();
+        services.insert(McpToolPresentation::new(Some(handles), OutputMode::Handles));
+        services.insert(McpToolCaller::new("test/model".into(), false));
+        ToolCtx::new(
             owner,
-            authz: AuthzContext::single_owner(&owner, AuthPath::System),
-            handles: Some(handles),
-            mode: OutputMode::Handles,
-            registry: Arc::new(FlavorRegistry::new().freeze()),
-            author: McpAuthorContext {
-                model_id: "test/model".into(),
-                client_name: "test".into(),
-                client_version: "test".into(),
-                caller_self_perspective: None,
-            },
-            caller_self_perspective: None,
-            master_token_id: None,
-            extensions: McpToolExtensions::with(pool),
-            engine: None,
-        }
+            AuthzContext::single_owner(&owner, AuthPath::System),
+            Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            services,
+        )
     }
 
     #[tokio::test]

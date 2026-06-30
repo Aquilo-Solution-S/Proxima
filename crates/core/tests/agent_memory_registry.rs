@@ -4,7 +4,7 @@ use std::collections::HashSet;
 #[test]
 fn substrate_schemas_register() {
     let registry = FlavorRegistry::new();
-    let frozen = registry.freeze();
+    let frozen = registry.freeze_or_panic_for_tests();
 
     let schemas = frozen.list();
     let schema_ids: HashSet<_> = schemas.iter().map(|s| s.schema_id.as_str()).collect();

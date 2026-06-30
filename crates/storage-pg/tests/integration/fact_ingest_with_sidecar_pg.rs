@@ -178,7 +178,10 @@ async fn authz_rejection_writes_nothing() -> Result<(), Box<dyn std::error::Erro
 
     assert_eq!(err.code, ErrorCode::Forbidden);
     assert!(err.message.contains("requires ingest on this owner"));
-    assert_eq!(event_row_counts(pg.pool(), receipt_id).await?, (0, 0));
+    assert_eq!(
+        event_row_counts(pg.pool_for_tests(), receipt_id).await?,
+        (0, 0)
+    );
 
     drop(engine);
     drop(pg);
@@ -248,7 +251,7 @@ async fn sidecar_failure_rolls_back_fact() -> Result<(), Box<dyn std::error::Err
         .expect("receipt id");
 
     let err = fact_ingest_with_sidecar_atomic(
-        pg.pool(),
+        pg.pool_for_tests(),
         &authorized,
         Some("rollback-test-embed"),
         |_tx, _outcome| Box::pin(async move { Err(StorageError::Internal("boom".into())) }),
@@ -257,8 +260,11 @@ async fn sidecar_failure_rolls_back_fact() -> Result<(), Box<dyn std::error::Err
     .expect_err("sidecar failure must surface");
 
     assert!(err.to_string().contains("boom"));
-    assert_eq!(event_row_counts(pg.pool(), receipt_id).await?, (0, 0));
-    assert_eq!(embedding_job_count(pg.pool()).await?, 0);
+    assert_eq!(
+        event_row_counts(pg.pool_for_tests(), receipt_id).await?,
+        (0, 0)
+    );
+    assert_eq!(embedding_job_count(pg.pool_for_tests()).await?, 0);
 
     drop(engine);
     drop(pg);
@@ -276,7 +282,7 @@ async fn ingest_fact_writes_uncited_fact_and_sidecar() -> Result<(), Box<dyn std
             note text NOT NULL
         )",
     )
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
 
     let owner = owner_fixture();
@@ -288,7 +294,7 @@ async fn ingest_fact_writes_uncited_fact_and_sidecar() -> Result<(), Box<dyn std
     let sidecar_note = payload.note.clone();
 
     let outcome = ingest_fact(
-        pg.pool(),
+        pg.pool_for_tests(),
         &engine,
         &authz,
         Relation::Ingest,
@@ -316,13 +322,13 @@ async fn ingest_fact_writes_uncited_fact_and_sidecar() -> Result<(), Box<dyn std
           WHERE memory_id = $1",
     )
     .bind(outcome.memory_id.into_inner())
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert!(citation_mapping_id.is_none());
 
     let cited_objects =
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM proxima_core.cited_objects")
-            .fetch_one(pg.pool())
+            .fetch_one(pg.pool_for_tests())
             .await?;
     let citation_mappings = sqlx::query_scalar::<_, i64>(
         "SELECT count(*)
@@ -330,7 +336,7 @@ async fn ingest_fact_writes_uncited_fact_and_sidecar() -> Result<(), Box<dyn std
           WHERE memory_id = $1",
     )
     .bind(outcome.memory_id.into_inner())
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     let sidecars = sqlx::query_scalar::<_, i64>(
         "SELECT count(*)
@@ -340,7 +346,7 @@ async fn ingest_fact_writes_uncited_fact_and_sidecar() -> Result<(), Box<dyn std
     )
     .bind(outcome.memory_id.into_inner())
     .bind(&payload.note)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
 
     assert_eq!(cited_objects, 0);

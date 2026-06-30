@@ -1,7 +1,7 @@
 use crate::common::{drop_db, fresh_pg};
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{FactPayload, MemoryId, PayloadKeyBuilder, SidecarPayload};
-use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemorySidecar};
+use proxima_storage_pg::sidecars::{PgMemoryPayload, PgMemorySidecar, PgSidecarReadCtx};
 use rust_decimal::Decimal;
 use serde_json::json;
 use time::{Date, Month};
@@ -69,7 +69,7 @@ async fn pg_sidecar_macro_round_trips_decimal_date_and_jsonb_columns()
             optional_metadata jsonb
         )",
     )
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
 
     let payload = MacroKindFact {
@@ -86,11 +86,16 @@ async fn pg_sidecar_macro_round_trips_decimal_date_and_jsonb_columns()
     };
     let memory_id = MemoryId::new(Uuid::now_v7());
 
-    let mut tx = pg.pool().begin().await?;
+    let mut tx = pg.pool_for_tests().begin().await?;
     payload.insert_memory_sidecar(&mut tx, memory_id).await?;
     tx.commit().await?;
 
-    let mut rows = MacroKindFact::load_batch(pg.pool(), PayloadKind::Fact, &[memory_id]).await?;
+    let mut rows = MacroKindFact::load_batch(
+        PgSidecarReadCtx::from(pg.pool_for_tests()),
+        PayloadKind::Fact,
+        &[memory_id],
+    )
+    .await?;
     assert_eq!(rows.len(), 1);
     let (loaded_memory_id, loaded_payload) = rows.pop().expect("one row loaded");
     assert_eq!(loaded_memory_id, memory_id);

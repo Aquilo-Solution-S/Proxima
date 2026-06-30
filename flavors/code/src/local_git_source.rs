@@ -41,7 +41,10 @@ mod git;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use proxima_core::{Cursor, MemoryId, Owner, SourceBatchId};
+use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EdgeTargetProjection};
+use proxima_core::{
+    AuthzContext, Cursor, Engine, EntityRef, MemoryId, Owner, SourceBatchId, ToolError,
+};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -49,10 +52,11 @@ use self::git::{CommitInfo, WalkPlan};
 use crate::calls::{ExtractedCall, ExtractedDefinition, extract_blob_callgraph};
 use crate::chunker::{Chunk, chunk_blob};
 use crate::ingest::{
-    CallEdgeDraft, IngestError, append_code_slice, file_revision_heads, ingest_calls_edge,
-    ingest_commit, ingest_file_revision, present_chunk_indexes,
+    CallEdgeDraft, FileRevisionHead, IngestError, append_code_slice, ingest_calls_edge,
+    ingest_commit, ingest_file_revision,
 };
 use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
+use crate::store::CodeFlavorStore;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IndexError {
@@ -110,6 +114,175 @@ pub struct HeadSnapshotOutcome {
     pub head_tree_sha: String,
 }
 
+/// Authorized code-flavor ingest context. Public ingestion surfaces take this
+/// instead of a raw pool; the store keeps the backend pool private to the
+/// flavor and reads route through Engine authorization before use.
+#[derive(Debug, Clone, Copy)]
+pub struct CodeIngestContext<'a> {
+    store: &'a CodeFlavorStore,
+    engine: &'a Engine,
+    authz: &'a AuthzContext,
+}
+
+impl<'a> CodeIngestContext<'a> {
+    #[must_use]
+    pub const fn new(
+        engine: &'a Engine,
+        authz: &'a AuthzContext,
+        store: &'a CodeFlavorStore,
+    ) -> Self {
+        Self {
+            store,
+            engine,
+            authz,
+        }
+    }
+
+    fn pool(&self) -> &PgPool {
+        self.store.pool()
+    }
+
+    async fn file_revision_heads(
+        &self,
+        owner: Owner,
+        repo_id: Uuid,
+    ) -> Result<Vec<FileRevisionHead>, IngestError> {
+        let candidate_ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT memory_id
+               FROM proxima_code.file_revision_v1
+              WHERE repo_id = $1
+              ORDER BY file_path ASC, memory_id DESC
+              LIMIT 100000",
+        )
+        .bind(repo_id)
+        .fetch_all(self.pool())
+        .await?;
+        let mut payloads = Vec::new();
+        for chunk in candidate_ids.chunks(2_000) {
+            payloads.extend(
+                self.store
+                    .authorized_fact_payloads::<FileRevisionV1>(
+                        self.engine,
+                        self.authz,
+                        owner,
+                        chunk,
+                        chunk.len(),
+                    )
+                    .await
+                    .map_err(|err| read_error(&err))?,
+            );
+        }
+        Ok(payloads
+            .into_iter()
+            .filter(|(_, payload)| payload.repo_id == repo_id)
+            .map(|(memory_id, payload)| FileRevisionHead {
+                memory_id,
+                file_path: payload.file_path,
+                content_sha256: payload.content_sha256,
+                state: payload.state,
+            })
+            .collect())
+    }
+
+    async fn present_chunk_indexes(
+        &self,
+        owner: Owner,
+        repo_id: Uuid,
+        file_path: &str,
+    ) -> Result<Vec<u32>, IngestError> {
+        let Some(file_head) = self
+            .file_revision_heads(owner, repo_id)
+            .await?
+            .into_iter()
+            .find(|head| head.file_path == file_path && head.state == FileState::Present)
+        else {
+            return Ok(Vec::new());
+        };
+        let candidate_ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT memory_id
+               FROM proxima_code.code_chunk_v1
+              WHERE repo_id = $1
+                AND file_path = $2
+                AND state = 'Present'
+              ORDER BY chunk_index ASC
+              LIMIT 100000",
+        )
+        .bind(repo_id)
+        .bind(file_path)
+        .fetch_all(self.pool())
+        .await?;
+        let mut payloads = Vec::new();
+        for chunk in candidate_ids.chunks(2_000) {
+            payloads.extend(
+                self.store
+                    .authorized_abstraction_payloads::<CodeChunkV1>(
+                        self.engine,
+                        self.authz,
+                        owner,
+                        chunk,
+                        chunk.len(),
+                    )
+                    .await
+                    .map_err(|err| read_error(&err))?,
+            );
+        }
+
+        let mut out = Vec::new();
+        for (memory_id, payload) in payloads {
+            if payload.repo_id == repo_id
+                && payload.file_path == file_path
+                && payload.state == FileState::Present
+                && self
+                    .has_derived_from_edge(owner, memory_id, file_head.memory_id)
+                    .await?
+            {
+                out.push(payload.chunk_index);
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        Ok(out)
+    }
+
+    async fn has_derived_from_edge(
+        &self,
+        owner: Owner,
+        source: MemoryId,
+        target: MemoryId,
+    ) -> Result<bool, IngestError> {
+        let response = self
+            .engine
+            .read_edges(
+                self.authz,
+                &EdgeReadRequest {
+                    principal: owner,
+                    edge_ids: Vec::new(),
+                    filter: EdgeFilter {
+                        relation: Some(
+                            proxima_core::relation::CORE_DERIVED_FROM_RELATION.to_string(),
+                        ),
+                        source: Some(EntityRef::Memory(source)),
+                        target: Some(EntityRef::Memory(target)),
+                    },
+                    limit: 1,
+                },
+            )
+            .await?;
+        Ok(response.edges.into_iter().any(|edge| {
+            matches!(
+                edge.target,
+                EdgeTargetProjection::Visible {
+                    target: EntityRef::Memory(id)
+                } if id == target
+            )
+        }))
+    }
+}
+
+fn read_error(err: &ToolError) -> IngestError {
+    IngestError::Storage(format!("authorized code-flavor read: {err}"))
+}
+
 /// Pull-mode source. One instance per repo; `repo_id` is stable
 /// across runs (provided by the caller, typically a CLI flag).
 #[derive(Debug, Clone)]
@@ -157,11 +330,11 @@ impl LocalGitSource {
     /// worth of causally-coherent Facts.
     pub async fn run_poll(
         &self,
-        pool: &PgPool,
+        ctx: &CodeIngestContext<'_>,
         cursor: &Cursor,
         progress: &mut impl FnMut(IngestProgress),
     ) -> Result<(IndexReport, Cursor), IndexError> {
-        self.run_poll_limited(pool, cursor, None, progress).await
+        self.run_poll_limited(ctx, cursor, None, progress).await
     }
 
     /// DB-aware ingest with an optional commit cap. `None` ingests all
@@ -172,7 +345,7 @@ impl LocalGitSource {
     /// Returns git, cursor, or typed ingest errors.
     pub async fn run_poll_limited(
         &self,
-        pool: &PgPool,
+        ctx: &CodeIngestContext<'_>,
         cursor: &Cursor,
         max_commits: Option<usize>,
         progress: &mut impl FnMut(IngestProgress),
@@ -194,7 +367,7 @@ impl LocalGitSource {
         // historical order, and the NK head advances monotonically.
         let mut last_ingested_sha: Option<String> = None;
         for (i, commit_info) in plan.commits.iter().rev().take(selected_total).enumerate() {
-            self.ingest_one_commit(pool, commit_info, &mut report, &mut blob_analysis_cache)
+            self.ingest_one_commit(ctx, commit_info, &mut report, &mut blob_analysis_cache)
                 .await?;
             last_ingested_sha = Some(commit_info.sha.clone());
             progress(IngestProgress {
@@ -230,8 +403,9 @@ impl LocalGitSource {
     /// emits no commit Facts and does not walk history.
     pub async fn run_head_snapshot(
         &self,
-        pool: &PgPool,
+        ctx: &CodeIngestContext<'_>,
     ) -> Result<HeadSnapshotOutcome, IndexError> {
+        let pool = ctx.pool();
         let head_sha = git::head_sha(&self.repo_path)?;
         let head_tree_sha = git::tree_sha(&self.repo_path, "HEAD")?;
         let now = time::OffsetDateTime::now_utc();
@@ -239,7 +413,8 @@ impl LocalGitSource {
         let head_files = git::ls_files(&self.repo_path, "HEAD")?;
         let present_paths: HashSet<String> =
             head_files.iter().map(|(path, _)| path.clone()).collect();
-        let prior_heads: HashMap<_, _> = file_revision_heads(pool, &self.owner, self.repo_id)
+        let prior_heads: HashMap<_, _> = ctx
+            .file_revision_heads(self.owner, self.repo_id)
             .await?
             .into_iter()
             .map(|head| (head.file_path.clone(), head))
@@ -292,11 +467,11 @@ impl LocalGitSource {
 
         crate::ingest::close_local_git_batch(pool, &self.owner, batch_id).await?;
         for pending in pending_present {
-            self.derive_present_blob(pool, batch_id, pending, &mut report)
+            self.derive_present_blob(ctx, batch_id, pending, &mut report)
                 .await?;
         }
         for pending in pending_deleted {
-            self.derive_deleted_path(pool, batch_id, pending, &mut report)
+            self.derive_deleted_path(ctx, batch_id, pending, &mut report)
                 .await?;
         }
         let cursor = encode_cursor(&CodeCursor {
@@ -318,11 +493,12 @@ impl LocalGitSource {
     /// of observation per doc 01 §"The contract".
     async fn ingest_one_commit(
         &self,
-        pool: &PgPool,
+        ctx: &CodeIngestContext<'_>,
         commit_info: &CommitInfo,
         report: &mut IndexReport,
         blob_analysis_cache: &mut HashMap<BlobAnalysisKey, BlobAnalysis>,
     ) -> Result<(), IndexError> {
+        let pool = ctx.pool();
         let now = time::OffsetDateTime::now_utc();
         let batch_id = SourceBatchId::new(Uuid::now_v7());
 
@@ -400,11 +576,11 @@ impl LocalGitSource {
         // Close this commit's batch before any F→A derivation consumes it.
         crate::ingest::close_local_git_batch(pool, &self.owner, batch_id).await?;
         for pending in pending_present {
-            self.derive_present_blob(pool, batch_id, pending, report)
+            self.derive_present_blob(ctx, batch_id, pending, report)
                 .await?;
         }
         for pending in pending_deleted {
-            self.derive_deleted_path(pool, batch_id, pending, report)
+            self.derive_deleted_path(ctx, batch_id, pending, report)
                 .await?;
         }
         Ok(())
@@ -500,13 +676,15 @@ impl LocalGitSource {
 
     /// Derive code-slice Abstractions and call edges after all Facts in
     /// the source batch have been materialized and the batch is closed.
+    #[allow(clippy::too_many_lines)]
     async fn derive_present_blob(
         &self,
-        pool: &PgPool,
+        ctx: &CodeIngestContext<'_>,
         batch_id: SourceBatchId,
         pending: PendingPresentBlob,
         report: &mut IndexReport,
     ) -> Result<(), IndexError> {
+        let pool = ctx.pool();
         // Re-derive and tombstone any prior slice indexes that don't
         // appear in the new slice batch (file content shrunk). These
         // tombstones are projection rows tied to this file-revision
@@ -514,8 +692,9 @@ impl LocalGitSource {
         let new_indexes: HashSet<u32> = (0..pending.analysis.chunks.len())
             .map(|i| u32::try_from(i).unwrap_or(u32::MAX))
             .collect();
-        let prior_indexes =
-            present_chunk_indexes(pool, &self.owner, self.repo_id, &pending.path).await?;
+        let prior_indexes = ctx
+            .present_chunk_indexes(self.owner, self.repo_id, &pending.path)
+            .await?;
         for prior in prior_indexes {
             if !new_indexes.contains(&prior) {
                 let tomb =
@@ -659,13 +838,15 @@ impl LocalGitSource {
     /// Derive code-slice tombstones for a deleted path after batch close.
     async fn derive_deleted_path(
         &self,
-        pool: &PgPool,
+        ctx: &CodeIngestContext<'_>,
         batch_id: SourceBatchId,
         pending: PendingDeletedPath,
         report: &mut IndexReport,
     ) -> Result<(), IndexError> {
-        let prior_indexes =
-            present_chunk_indexes(pool, &self.owner, self.repo_id, &pending.path).await?;
+        let pool = ctx.pool();
+        let prior_indexes = ctx
+            .present_chunk_indexes(self.owner, self.repo_id, &pending.path)
+            .await?;
         for prior in prior_indexes {
             let tomb = tombstone_chunk(self.repo_id, &pending.path, prior, None);
             append_code_slice(

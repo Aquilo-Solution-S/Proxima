@@ -1,10 +1,10 @@
 mod common;
 
 use common::{migrated_db, test_owner};
-use proxima_code::{
-    CodeChunkV1, CommitV1, FileRevisionV1, FileState, append_code_slice, close_local_git_batch,
-    ingest_commit, ingest_file_revision,
+use proxima_code::testkit::{
+    append_code_slice, close_local_git_batch, ingest_commit, ingest_file_revision,
 };
+use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
 use proxima_core::{AbstractionPayload, FactPayload, Owner, SourceBatchId};
 use proxima_pg_testkit::drop_db;
 use sqlx::PgPool;
@@ -155,7 +155,7 @@ async fn code_stateful_ingest_derives_fact_entity_heads() {
 
         let first_file = file_revision(repo_id, file_path, "v1");
         let first_outcome = ingest_file_revision(
-            pg.pool(),
+            pg.pool_for_tests(),
             &owner,
             source_batch_id(),
             &first_file,
@@ -163,35 +163,50 @@ async fn code_stateful_ingest_derives_fact_entity_heads() {
         )
         .await?;
         let file_key = file_revision_key(repo_id, file_path);
-        let rows =
-            fact_entity_rows(pg.pool(), &owner, FileRevisionV1::SCHEMA_ID, &file_key).await?;
+        let rows = fact_entity_rows(
+            pg.pool_for_tests(),
+            &owner,
+            FileRevisionV1::SCHEMA_ID,
+            &file_key,
+        )
+        .await?;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].1, first_outcome.memory_id.into_inner());
         assert!(
-            memory_fact_entity_id(pg.pool(), first_outcome.memory_id)
+            memory_fact_entity_id(pg.pool_for_tests(), first_outcome.memory_id)
                 .await?
                 .is_some()
         );
 
         let second_file = file_revision(repo_id, file_path, "v2");
         let second_batch = source_batch_id();
-        let second_outcome =
-            ingest_file_revision(pg.pool(), &owner, second_batch, &second_file, observed_at)
-                .await?;
-        let rows =
-            fact_entity_rows(pg.pool(), &owner, FileRevisionV1::SCHEMA_ID, &file_key).await?;
+        let second_outcome = ingest_file_revision(
+            pg.pool_for_tests(),
+            &owner,
+            second_batch,
+            &second_file,
+            observed_at,
+        )
+        .await?;
+        let rows = fact_entity_rows(
+            pg.pool_for_tests(),
+            &owner,
+            FileRevisionV1::SCHEMA_ID,
+            &file_key,
+        )
+        .await?;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].1, second_outcome.memory_id.into_inner());
         assert!(
-            memory_fact_entity_id(pg.pool(), second_outcome.memory_id)
+            memory_fact_entity_id(pg.pool_for_tests(), second_outcome.memory_id)
                 .await?
                 .is_some()
         );
 
-        close_local_git_batch(pg.pool(), &owner, second_batch).await?;
+        close_local_git_batch(pg.pool_for_tests(), &owner, second_batch).await?;
         let chunk = code_chunk(repo_id, file_path, 0);
         let chunk_outcome = append_code_slice(
-            pg.pool(),
+            pg.pool_for_tests(),
             &owner,
             second_batch,
             &chunk,
@@ -201,7 +216,7 @@ async fn code_stateful_ingest_derives_fact_entity_heads() {
         .await?;
         assert_eq!(
             fact_entity_count_for_schema(
-                pg.pool(),
+                pg.pool_for_tests(),
                 &owner,
                 <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID,
             )
@@ -209,16 +224,23 @@ async fn code_stateful_ingest_derives_fact_entity_heads() {
             0
         );
         assert_eq!(
-            memory_kind(pg.pool(), chunk_outcome.memory_id)
+            memory_kind(pg.pool_for_tests(), chunk_outcome.memory_id)
                 .await?
                 .as_deref(),
             Some("Abstraction")
         );
 
         let commit = commit(repo_id);
-        ingest_commit(pg.pool(), &owner, source_batch_id(), &commit, observed_at).await?;
+        ingest_commit(
+            pg.pool_for_tests(),
+            &owner,
+            source_batch_id(),
+            &commit,
+            observed_at,
+        )
+        .await?;
         let commit_entities =
-            fact_entity_count_for_schema(pg.pool(), &owner, CommitV1::SCHEMA_ID).await?;
+            fact_entity_count_for_schema(pg.pool_for_tests(), &owner, CommitV1::SCHEMA_ID).await?;
         assert_eq!(commit_entities, 0);
 
         Ok(())

@@ -9,7 +9,8 @@ use proxima_code::mcp::{
     CodeOpenFileRevisionTool, CodeRegisterRepoTool, CodeRetryExecutionRequestTool,
     CodeSearchChunksTool, CodeSearchCommitsTool,
 };
-use proxima_code::{CodeChunkV1, CommitV1, ExecutionRequestV1, FileRevisionV1, register_repo};
+use proxima_code::testkit::register_repo;
+use proxima_code::{CodeChunkV1, CodeFlavorStore, CommitV1, ExecutionRequestV1, FileRevisionV1};
 use proxima_core::engine::Engine;
 use proxima_core::mcp::{
     HandleTable, McpAuthorContext, McpTool, McpToolCtx, McpToolError, McpToolExtensions, OutputMode,
@@ -42,7 +43,7 @@ async fn register_repo_tool_registers_local_git_repo_idempotently()
         .output()?;
 
     let result = run_tool::<CodeRegisterRepoTool>(
-        ctx(fixture.pg.pool().clone(), owner, registry.clone()),
+        ctx(fixture.pg.clone(), owner, registry.clone()),
         json!({ "path": temp.path().to_string_lossy(), "display_name": "Proxima Dogfood" }),
     )
     .await?;
@@ -60,7 +61,7 @@ async fn register_repo_tool_registers_local_git_repo_idempotently()
     );
 
     let replay = run_tool::<CodeRegisterRepoTool>(
-        ctx(fixture.pg.pool().clone(), owner, registry.clone()),
+        ctx(fixture.pg.clone(), owner, registry.clone()),
         json!({ "path": temp.path().to_string_lossy(), "display_name": "Ignored Replay Name" }),
     )
     .await?;
@@ -69,8 +70,7 @@ async fn register_repo_tool_registers_local_git_repo_idempotently()
     assert_eq!(replay["repo"]["display_name"], "Proxima Dogfood");
 
     let list =
-        run_tool::<CodeListReposTool>(ctx(fixture.pg.pool().clone(), owner, registry), json!({}))
-            .await?;
+        run_tool::<CodeListReposTool>(ctx(fixture.pg.clone(), owner, registry), json!({})).await?;
     let repos = list["repos"].as_array().expect("repos");
     assert_eq!(repos.len(), 1);
     assert_eq!(repos[0]["repo_id"], result["repo"]["repo_id"]);
@@ -91,14 +91,14 @@ async fn ingest_head_snapshot_tool_indexes_current_tree() -> Result<(), Box<dyn 
     )?;
 
     let registered = run_tool::<CodeRegisterRepoTool>(
-        ctx(fixture.pg.pool().clone(), owner, registry.clone()),
+        ctx(fixture.pg.clone(), owner, registry.clone()),
         json!({ "path": temp.path().to_string_lossy(), "display_name": "Snapshot Repo" }),
     )
     .await?;
     let repo_handle = registered["repo"]["repo_id"].as_str().expect("repo_id");
 
     let snapshot = run_tool::<CodeIngestHeadSnapshotTool>(
-        ctx(fixture.pg.pool().clone(), owner, registry.clone()),
+        ctx(fixture.pg.clone(), owner, registry.clone()),
         json!({ "repo_handle": repo_handle }),
     )
     .await?;
@@ -114,7 +114,7 @@ async fn ingest_head_snapshot_tool_indexes_current_tree() -> Result<(), Box<dyn 
     );
 
     let chunks = run_tool::<CodeSearchChunksTool>(
-        ctx(fixture.pg.pool().clone(), owner, registry),
+        ctx(fixture.pg.clone(), owner, registry),
         json!({ "query": "proxima_snapshot_marker", "repo_handle": repo_handle, "limit": 10 }),
     )
     .await?;
@@ -132,7 +132,7 @@ async fn search_chunks_returns_only_head_per_nk() -> Result<(), Box<dyn std::err
     let repo_id = Uuid::now_v7();
 
     ingest_code_chunk(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &engine,
         owner,
         repo_id,
@@ -143,7 +143,7 @@ async fn search_chunks_returns_only_head_per_nk() -> Result<(), Box<dyn std::err
     .await?;
     tokio::time::sleep(Duration::from_millis(20)).await;
     ingest_code_chunk(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &engine,
         owner,
         repo_id,
@@ -154,7 +154,7 @@ async fn search_chunks_returns_only_head_per_nk() -> Result<(), Box<dyn std::err
     .await?;
 
     let result = run_tool::<CodeSearchChunksTool>(
-        ctx(fixture.pg.pool().clone(), owner, registry),
+        ctx(fixture.pg.clone(), owner, registry),
         json!({ "query": "atlas_edges", "limit": 10 }),
     )
     .await?;
@@ -180,7 +180,7 @@ async fn search_chunks_excludes_chunk_when_head_is_tombstone()
     let repo_id = Uuid::now_v7();
 
     ingest_code_chunk(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &engine,
         owner,
         repo_id,
@@ -191,7 +191,7 @@ async fn search_chunks_excludes_chunk_when_head_is_tombstone()
     .await?;
     tokio::time::sleep(Duration::from_millis(20)).await;
     ingest_code_chunk_tombstone(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &engine,
         owner,
         repo_id,
@@ -201,7 +201,7 @@ async fn search_chunks_excludes_chunk_when_head_is_tombstone()
     .await?;
 
     let result = run_tool::<CodeSearchChunksTool>(
-        ctx(fixture.pg.pool().clone(), owner, registry),
+        ctx(fixture.pg.clone(), owner, registry),
         json!({ "query": "atlas_edges", "limit": 10 }),
     )
     .await?;
@@ -224,7 +224,7 @@ async fn search_chunks_includes_calls_edges_when_present() -> Result<(), Box<dyn
     let repo_id = Uuid::now_v7();
 
     let source_chunk = ingest_code_chunk(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &engine,
         owner,
         repo_id,
@@ -234,7 +234,7 @@ async fn search_chunks_includes_calls_edges_when_present() -> Result<(), Box<dyn
     )
     .await?;
     let target_chunk = ingest_code_chunk(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &engine,
         owner,
         repo_id,
@@ -243,10 +243,17 @@ async fn search_chunks_includes_calls_edges_when_present() -> Result<(), Box<dyn
         "fn b() {}",
     )
     .await?;
-    ingest_calls_edge(fixture.pg.pool(), &owner, source_chunk, target_chunk, "b").await?;
+    ingest_calls_edge(
+        fixture.pg.pool_for_tests(),
+        &owner,
+        source_chunk,
+        target_chunk,
+        "b",
+    )
+    .await?;
 
     let result = run_tool::<CodeSearchChunksTool>(
-        ctx(fixture.pg.pool().clone(), owner, registry),
+        ctx(fixture.pg.clone(), owner, registry),
         json!({ "query": "fn a", "include_calls": true }),
     )
     .await?;
@@ -267,7 +274,7 @@ async fn search_chunks_supports_exact_substring_and_chunk_type_filter()
     let repo_id = Uuid::now_v7();
 
     ingest_code_chunk_with_type(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &engine,
         owner,
         ChunkFixture {
@@ -280,7 +287,7 @@ async fn search_chunks_supports_exact_substring_and_chunk_type_filter()
     )
     .await?;
     ingest_code_chunk_with_type(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &engine,
         owner,
         ChunkFixture {
@@ -294,7 +301,7 @@ async fn search_chunks_supports_exact_substring_and_chunk_type_filter()
     .await?;
 
     let result = run_tool::<CodeSearchChunksTool>(
-        ctx(fixture.pg.pool().clone(), owner, registry),
+        ctx(fixture.pg.clone(), owner, registry),
         json!({
             "query": "exact_symbol()",
             "chunk_type": "function",
@@ -333,7 +340,7 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
     let repo_id = Uuid::now_v7();
 
     ingest_file_revision(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &engine,
         owner,
         repo_id,
@@ -343,7 +350,7 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
     .await?;
     tokio::time::sleep(Duration::from_millis(20)).await;
     ingest_file_revision(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &engine,
         owner,
         repo_id,
@@ -352,7 +359,7 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
     )
     .await?;
     ingest_code_chunk(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &engine,
         owner,
         repo_id,
@@ -362,7 +369,7 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
     )
     .await?;
     ingest_code_chunk(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &engine,
         owner,
         repo_id,
@@ -372,7 +379,7 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
     )
     .await?;
 
-    let test_ctx = ctx(fixture.pg.pool().clone(), owner, registry);
+    let test_ctx = ctx(fixture.pg.clone(), owner, registry);
     let repo_handle = test_ctx.format_flavor_object("proxima-code/repo", repo_id, 'R');
     let result = run_tool::<CodeOpenFileRevisionTool>(
         test_ctx,
@@ -389,7 +396,7 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
     );
 
     let text_result = run_tool::<CodeOpenFileRevisionTool>(
-        ctx(fixture.pg.pool().clone(), owner, registry_for_mcp()),
+        ctx(fixture.pg.clone(), owner, registry_for_mcp()),
         json!({
             "repo_handle": repo_id.to_string(),
             "file_path": "src/atlas.rs",
@@ -405,7 +412,7 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
     );
 
     let bounded_result = run_tool::<CodeOpenFileRevisionTool>(
-        ctx(fixture.pg.pool().clone(), owner, registry_for_mcp()),
+        ctx(fixture.pg.clone(), owner, registry_for_mcp()),
         json!({
             "repo_handle": repo_id.to_string(),
             "file_path": "src/atlas.rs",
@@ -433,7 +440,7 @@ async fn open_file_revision_accepts_raw_repo_uuid() -> Result<(), Box<dyn std::e
     let repo_id = Uuid::now_v7();
 
     ingest_file_revision(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &engine,
         owner,
         repo_id,
@@ -443,7 +450,7 @@ async fn open_file_revision_accepts_raw_repo_uuid() -> Result<(), Box<dyn std::e
     .await?;
 
     let result = run_tool::<CodeOpenFileRevisionTool>(
-        ctx(fixture.pg.pool().clone(), owner, registry),
+        ctx(fixture.pg.clone(), owner, registry),
         json!({ "repo_handle": repo_id.to_string(), "file_path": "src/raw.rs" }),
     )
     .await?;
@@ -461,7 +468,7 @@ async fn open_file_revision_accepts_unambiguous_repo_display_name()
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
     register_repo(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &owner,
         repo_id,
         "/tmp/proxima-mcp-display",
@@ -470,7 +477,7 @@ async fn open_file_revision_accepts_unambiguous_repo_display_name()
     .await?;
 
     ingest_file_revision(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &engine,
         owner,
         repo_id,
@@ -480,7 +487,7 @@ async fn open_file_revision_accepts_unambiguous_repo_display_name()
     .await?;
 
     let result = run_tool::<CodeOpenFileRevisionTool>(
-        ctx(fixture.pg.pool().clone(), owner, registry),
+        ctx(fixture.pg.clone(), owner, registry),
         json!({ "repo_handle": "proxima", "file_path": "src/atlas.rs" }),
     )
     .await?;
@@ -499,7 +506,7 @@ async fn search_commits_unions_commit_and_summary_legs() -> Result<(), Box<dyn s
     let repo_id = Uuid::now_v7();
 
     ingest_commit(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &engine,
         owner,
         repo_id,
@@ -508,7 +515,7 @@ async fn search_commits_unions_commit_and_summary_legs() -> Result<(), Box<dyn s
     )
     .await?;
     ingest_commit_summary(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &owner,
         repo_id,
         "deadbeef",
@@ -519,7 +526,7 @@ async fn search_commits_unions_commit_and_summary_legs() -> Result<(), Box<dyn s
     .await?;
 
     let result = run_tool::<CodeSearchCommitsTool>(
-        ctx(fixture.pg.pool().clone(), owner, registry),
+        ctx(fixture.pg.clone(), owner, registry),
         json!({ "query": "atlas", "limit": 10 }),
     )
     .await?;
@@ -551,15 +558,20 @@ async fn retry_execution_request_succeeds_with_target_perspective()
 
     // A prior execution-request Fact + sidecar to retry.
     let repo_id = Uuid::now_v7();
-    let prior =
-        ingest_execution_request_fixture(fixture.pg.pool(), &engine, owner, repo_id, "prior")
-            .await?;
+    let prior = ingest_execution_request_fixture(
+        fixture.pg.pool_for_tests(),
+        &engine,
+        owner,
+        repo_id,
+        "prior",
+    )
+    .await?;
 
     let target = seed_perspective(&fixture.pg, &owner, "Retry Worker").await?;
 
     let result = run_tool::<CodeRetryExecutionRequestTool>(
         shell_ctx(
-            fixture.pg.pool().clone(),
+            fixture.pg.clone(),
             owner,
             registry,
             master_token,
@@ -597,7 +609,7 @@ async fn retry_execution_request_succeeds_with_target_perspective()
     )
     .bind(repo_id)
     .bind("retry-1")
-    .fetch_one(fixture.pg.pool())
+    .fetch_one(fixture.pg.pool_for_tests())
     .await?;
     assert_eq!(count, 1, "retry request row persisted");
     Ok(())
@@ -611,7 +623,7 @@ async fn emit_execution_plan_uses_abstraction_proof_source()
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
     register_repo(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &owner,
         repo_id,
         "/tmp/proxima-plan-proof",
@@ -621,7 +633,7 @@ async fn emit_execution_plan_uses_abstraction_proof_source()
     let shell_self = seed_perspective(&fixture.pg, &owner, "Planner Root").await?;
     let goal_activated = seed_active_goal_activation(&fixture.pg, &owner, shell_self).await?;
     let plan_source = abstraction_memory(
-        fixture.pg.pool(),
+        fixture.pg.pool_for_tests(),
         &owner,
         "test/plan-source-v1",
         "planning context",
@@ -630,7 +642,7 @@ async fn emit_execution_plan_uses_abstraction_proof_source()
 
     let output = run_tool::<CodeEmitExecutionPlanTool>(
         shell_ctx(
-            fixture.pg.pool().clone(),
+            fixture.pg.clone(),
             owner,
             registry,
             Uuid::now_v7(),
@@ -668,7 +680,7 @@ async fn emit_execution_plan_uses_abstraction_proof_source()
           LIMIT 1",
     )
     .bind(plan_id)
-    .fetch_one(fixture.pg.pool())
+    .fetch_one(fixture.pg.pool_for_tests())
     .await?;
     assert_eq!(edge.0, "core/derived-from");
     assert_eq!(edge.1, "OperatorAtoA");
@@ -689,12 +701,17 @@ async fn retry_execution_request_rejects_unknown_target_perspective()
     let shell_self = seed_perspective(&fixture.pg, &owner, "Shell author").await?;
 
     let repo_id = Uuid::now_v7();
-    let prior =
-        ingest_execution_request_fixture(fixture.pg.pool(), &engine, owner, repo_id, "prior")
-            .await?;
+    let prior = ingest_execution_request_fixture(
+        fixture.pg.pool_for_tests(),
+        &engine,
+        owner,
+        repo_id,
+        "prior",
+    )
+    .await?;
 
     let ctx = shell_ctx(
-        fixture.pg.pool().clone(),
+        fixture.pg.clone(),
         owner,
         registry,
         master_token,
@@ -723,7 +740,7 @@ async fn retry_execution_request_rejects_unknown_target_perspective()
     )
     .bind(repo_id)
     .bind("retry-1")
-    .fetch_one(fixture.pg.pool())
+    .fetch_one(fixture.pg.pool_for_tests())
     .await?;
     assert_eq!(count, 0, "rejected retry left no request row");
     Ok(())
@@ -738,8 +755,10 @@ async fn run_tool<T: McpTool>(
     Ok(serde_json::to_value(output)?)
 }
 
-fn ctx(pool: PgPool, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpToolCtx {
+fn ctx(pg: PgStorage, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpToolCtx {
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+    let engine = Arc::new(engine_for_test(pg));
     McpToolCtx {
         owner,
         authz,
@@ -754,8 +773,8 @@ fn ctx(pool: PgPool, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpTo
         },
         caller_self_perspective: None,
         master_token_id: None,
-        extensions: McpToolExtensions::with(pool),
-        engine: None,
+        extensions: McpToolExtensions::with(store),
+        engine: Some(engine),
     }
 }
 
@@ -763,13 +782,15 @@ fn ctx(pool: PgPool, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpTo
 /// table, a master-token id, and a `caller_self_perspective` — the shape
 /// `McpToolHost` builds for `code_retry_execution_request` callers.
 fn shell_ctx(
-    pool: PgPool,
+    pg: PgStorage,
     owner: Owner,
     registry: Arc<FlavorRegistryFrozen>,
     master_token_id: Uuid,
     caller_self_perspective: MemoryId,
 ) -> McpToolCtx {
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+    let engine = Arc::new(engine_for_test(pg));
     McpToolCtx {
         owner,
         authz,
@@ -784,8 +805,8 @@ fn shell_ctx(
         },
         caller_self_perspective: Some(caller_self_perspective),
         master_token_id: Some(master_token_id),
-        extensions: McpToolExtensions::with(pool),
-        engine: None,
+        extensions: McpToolExtensions::with(store),
+        engine: Some(engine),
     }
 }
 
@@ -809,7 +830,7 @@ async fn seed_active_goal_activation(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(format!("goal-{goal_id}"))
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.memories
@@ -819,7 +840,7 @@ async fn seed_active_goal_activation(
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.goal_activated_v1
@@ -828,7 +849,7 @@ async fn seed_active_goal_activation(
     )
     .bind(memory_id)
     .bind(goal_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.edges
@@ -843,7 +864,7 @@ async fn seed_active_goal_activation(
     .bind(CORE_INSPIRES_RELATION)
     .bind(goal_id)
     .bind(self_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(memory_id)
 }
@@ -868,7 +889,7 @@ async fn seed_perspective(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(label)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(memory_id)
 }
@@ -906,14 +927,14 @@ async fn ingest_execution_request_fixture(
 
 fn registry_for_mcp() -> Arc<FlavorRegistryFrozen> {
     let mut registry = FlavorRegistry::new();
-    proxima_code::register(&mut registry);
-    Arc::new(registry.freeze())
+    proxima_code::register(&mut registry).unwrap();
+    Arc::new(registry.freeze_or_panic_for_tests())
 }
 
 fn registry_for_engine() -> FlavorRegistryFrozen {
     let mut flavor = FlavorRegistry::new();
-    proxima_code::register(&mut flavor);
-    flavor.freeze().with_additional_schemas([
+    proxima_code::register(&mut flavor).unwrap();
+    flavor.freeze_or_panic_for_tests().with_additional_schemas([
         SchemaInfo::opaque(
             SchemaId::new("test/cited_blob".into()),
             SchemaVersion::new(1),

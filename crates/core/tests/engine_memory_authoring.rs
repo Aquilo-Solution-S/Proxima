@@ -43,7 +43,7 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
     let owner = owner_fixture();
     let source_abstraction = insert_source_abstraction(&pg, &owner).await?;
     let mut registry = FlavorRegistry::new();
-    registry.add_relation(RelationDescriptor::substrate(
+    registry.add_relation_or_panic_for_tests(RelationDescriptor::substrate(
         "test/derived-from-abstraction",
         RelationClass::Provenance,
         proxima_core::EndpointBinding::Pin,
@@ -52,7 +52,7 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
         EntityKindMask::abstraction(),
         AuthorshipKindMask::operator_a_to_a(),
     ));
-    let engine = proxima_core::Engine::new(registry.freeze())
+    let engine = proxima_core::Engine::new(registry.freeze_or_panic_for_tests())
         .with_storage_ports(Arc::new(pg.clone()).storage_ports())
         .with_embed(Arc::new(ConstantEmbedding::prefixed(
             "test-embed",
@@ -112,7 +112,7 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
           WHERE memory_id = $1",
     )
     .bind(memory_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(memory_row.0, EntityKind::Abstraction);
     assert_eq!(memory_row.1, "derived body");
@@ -121,7 +121,7 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
         "SELECT title FROM proxima_core.agent_derivation_v1 WHERE memory_id = $1",
     )
     .bind(memory_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(sidecar_title, "Derived");
 
@@ -132,14 +132,14 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
     )
     .bind(memory_id)
     .bind(source_abstraction.into_inner())
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(edge_row.0, "test/derived-from-abstraction");
     assert_eq!(edge_row.1, memory_id);
     assert_eq!(edge_row.2, source_abstraction.into_inner());
     assert_eq!(edge_row.3, Some(source_abstraction.into_inner()));
 
-    assert_embedding_row(pg.pool(), memory_id).await?;
+    assert_embedding_row(pg.pool_for_tests(), memory_id).await?;
 
     drop(engine);
     drop(pg);
@@ -156,7 +156,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
     let owner = owner_fixture();
     let source_abstraction = insert_source_abstraction(&pg, &owner).await?;
     let registry = FlavorRegistry::new();
-    let engine = proxima_core::Engine::new(registry.freeze())
+    let engine = proxima_core::Engine::new(registry.freeze_or_panic_for_tests())
         .with_storage_ports(Arc::new(pg.clone()).storage_ports())
         .with_embed(Arc::new(ConstantEmbedding::prefixed(
             "test-embed",
@@ -254,7 +254,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
     let stored_supersedes: Option<Uuid> =
         sqlx::query_scalar("SELECT supersedes FROM proxima_core.memories WHERE memory_id = $1")
             .bind(new_memory_id.into_inner())
-            .fetch_one(pg.pool())
+            .fetch_one(pg.pool_for_tests())
             .await?;
     assert_eq!(stored_supersedes, Some(old_memory_id.into_inner()));
 
@@ -269,7 +269,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
     .bind(proxima_core::CORE_SUPERSEDES_RELATION)
     .bind(new_memory_id.into_inner())
     .bind(old_memory_id.into_inner())
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(supersedes_edge_count, 1);
 
@@ -291,7 +291,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
     .bind(owner_kind)
     .bind(owner_id)
     .bind(AgentDerivationV1::SCHEMA_ID)
-    .fetch_all(pg.pool())
+    .fetch_all(pg.pool_for_tests())
     .await?;
     assert!(head_ids.contains(&new_memory_id.into_inner()));
     assert!(!head_ids.contains(&old_memory_id.into_inner()));
@@ -362,7 +362,7 @@ async fn author_derived_authorized_enforces_intra_owner_same_kind_supersedes()
         )
         .await?;
 
-        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze())
+        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let authz = AuthzContext::single_owner(&attacker, AuthPath::System);
 
@@ -514,7 +514,7 @@ async fn assert_embedding_row(
 
 #[tokio::test]
 async fn author_derived_rejects_empty_operator_inputs() {
-    let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze());
+    let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
     let owner = owner_fixture();
     let err = engine
         .author_derived(proxima_core::AuthorDerivedRequestInput {
@@ -560,7 +560,7 @@ async fn ingest_fact_with_sidecar_writes_fact_and_note_sidecar()
 
     let owner = owner_fixture();
     let registry = FlavorRegistry::new();
-    let engine = proxima_core::Engine::new(registry.freeze());
+    let engine = proxima_core::Engine::new(registry.freeze_or_panic_for_tests());
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let note = AgentNoteV1 {
         note_id: Uuid::now_v7(),
@@ -586,7 +586,7 @@ async fn ingest_fact_with_sidecar_writes_fact_and_note_sidecar()
     let memory_row: (Option<EntityKind>, String) =
         sqlx::query_as("SELECT kind, text FROM proxima_core.memories WHERE memory_id = $1")
             .bind(outcome.memory_id.into_inner())
-            .fetch_one(pg.pool())
+            .fetch_one(pg.pool_for_tests())
             .await?;
     assert_eq!(memory_row.0, None);
     assert_eq!(memory_row.1, "Note title\n\nNote body");
@@ -597,7 +597,7 @@ async fn ingest_fact_with_sidecar_writes_fact_and_note_sidecar()
           WHERE memory_id = $1",
     )
     .bind(outcome.memory_id.into_inner())
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(sidecar_row.0, note.note_id);
     assert_eq!(sidecar_row.1, "Note title");
@@ -643,7 +643,7 @@ async fn insert_source_memory(
     .bind(AgentDerivationV1::SCHEMA_ID)
     .bind(kind)
     .bind(text)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(MemoryId::new(memory_id))
 }
@@ -698,7 +698,7 @@ async fn memory_count(
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT count(*) FROM proxima_core.memories WHERE memory_id = $1")
         .bind(memory_id.into_inner())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await
 }
 
@@ -708,7 +708,7 @@ async fn stored_supersedes(
 ) -> Result<Option<Uuid>, sqlx::Error> {
     sqlx::query_scalar("SELECT supersedes FROM proxima_core.memories WHERE memory_id = $1")
         .bind(memory_id.into_inner())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await
 }
 
@@ -718,7 +718,7 @@ async fn supersedes_pointer_count(
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT count(*) FROM proxima_core.memories WHERE supersedes = $1")
         .bind(prior.into_inner())
-        .fetch_one(pg.pool())
+        .fetch_one(pg.pool_for_tests())
         .await
 }
 
@@ -738,6 +738,6 @@ async fn supersedes_edge_count(
     .bind(proxima_core::CORE_SUPERSEDES_RELATION)
     .bind(source.into_inner())
     .bind(target.into_inner())
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await
 }

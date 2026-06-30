@@ -1,17 +1,21 @@
 use std::collections::BTreeSet;
 
-use proxima::{
-    AbstractionPayload, AppInfo, AuthPath, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
-    AuthorshipKindMask, AuthzContext, EdgeAuthorshipKind, EdgeExistsRequest, EdgeFilter,
-    EdgeReadRequest, EdgeTargetProjection, EndpointBinding, EntityKind, EntityKindMask, EntityRef,
-    FactPayload, FlavorApp, FlavorBundle, FlavorRegistry, InputContractId, MemoryId,
-    MemoryLineageDirection, MemoryLineageRequest, MemoryOperatorKind, OperatorId,
-    PayloadKeyBuilder, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture,
-    PgSidecarRegistry, Proxima, Relation, Role, SchemaId, SchemaVersion, SidecarPayload,
-    StorageError, UserId, company_owner, fact_entity_id_for,
+use proxima::flavor::{
+    AbstractionPayload, AuthorshipKindMask, EntityKindMask, FactPayload, FlavorBundle,
+    FlavorRegistry, InputContractId, MemoryId, OperatorId, PayloadKeyBuilder, PgMemoryPayload,
+    PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx, PgSidecarRegistry,
+    RelationClass, RelationDescriptor, SchemaId, SchemaVersion, SidecarPayload,
 };
-use proxima::{RelationClass, RelationDescriptor};
+use proxima::{
+    AppInfo, AuthPath, AuthzContext, EdgeExistsRequest, EdgeFilter, EdgeReadRequest, FlavorApp,
+    MemoryLineageDirection, MemoryLineageRequest, Proxima, StorageError, company_owner,
+};
+use proxima_core::{
+    AuthorDerivedEdgeInput, AuthorDerivedRequestInput, EdgeAuthorshipKind, EdgeTargetProjection,
+    EndpointBinding, EntityKind, EntityRef, MemoryOperatorKind, Relation, Role, UserId,
+};
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_storage_pg::query::fact_entity_id_for;
 use uuid::Uuid;
 
 const DERIVED_FROM_FACT_RELATION: &str = "facade-test/derived-from-fact";
@@ -34,14 +38,15 @@ fn facade_does_not_export_raw_edge_append_surface() {
 
 #[allow(unused_imports)]
 mod facade_imports_compile {
+    use proxima::flavor::{
+        AuthorshipKindMask, EndpointBinding, EntityKindMask, FlavorRegistryFrozen,
+        PayloadKeyBuilder, RelationClass, RelationDescriptor, Tool, ToolCtx, ToolError,
+    };
     use proxima::{
-        AuthorshipKindMask, DerivedDraft, EdgeExistsRequest, EdgeExistsResponse, EdgeFilter,
-        EdgeReadRequest, EdgeReadResponse, EdgeRow, EndpointBinding, EntityKindMask,
-        FactCitationReadback, FlavorRegistryFrozen, McpTool, McpToolCtx, McpToolError,
-        MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode, MemoryLineageRequest,
-        MemoryLineageResponse, MemoryRow, PayloadKeyBuilder, QueryRequest, QueryResponse,
-        RelationClass, RelationDescriptor, SupersessionStatus, TombstoneFilter,
-        append_derived_with_edges_in_tx, build_instructions, fact_entity_id_for, how_to_markdown,
+        EdgeExistsRequest, EdgeExistsResponse, EdgeFilter, EdgeReadRequest, EdgeReadResponse,
+        EdgeRow, FactCitationReadback, MemoryLineageDirection, MemoryLineageEdge,
+        MemoryLineageNode, MemoryLineageRequest, MemoryLineageResponse, MemoryRow, QueryRequest,
+        QueryResponse, SupersessionStatus, TombstoneFilter, build_instructions, how_to_markdown,
     };
 
     #[cfg(feature = "openai-compat-embed")]
@@ -109,17 +114,19 @@ impl PgMemorySidecar for FacadeFact {
 }
 
 impl PgMemoryPayload for FacadeFact {
-    fn load_memory_payload(pool: &sqlx::PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_> {
+    fn load_memory_payload(
+        ctx: PgSidecarReadCtx<'_>,
+        memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async move {
-            let row: Option<(Uuid, String, String)> = sqlx::query_as(
-                "SELECT note_id, title, body
-                   FROM public.facade_surface_fact_v1
-                  WHERE memory_id = $1",
-            )
-            .bind(memory_id.into_inner())
-            .fetch_optional(pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            let row: Option<(Uuid, String, String)> = ctx
+                .fetch_optional_by_memory_id(
+                    "SELECT note_id, title, body
+                       FROM public.facade_surface_fact_v1
+                      WHERE memory_id = $1",
+                    memory_id,
+                )
+                .await?;
             Ok(row.map(|(note_id, title, body)| {
                 SidecarPayload::fact(FacadeFact {
                     note_id,
@@ -173,17 +180,19 @@ impl PgMemorySidecar for FacadeAbstraction {
 }
 
 impl PgMemoryPayload for FacadeAbstraction {
-    fn load_memory_payload(pool: &sqlx::PgPool, memory_id: MemoryId) -> PgMemoryPayloadFuture<'_> {
+    fn load_memory_payload(
+        ctx: PgSidecarReadCtx<'_>,
+        memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async move {
-            let row: Option<(String, String, i32)> = sqlx::query_as(
-                "SELECT title, body, source_count
-                   FROM public.facade_surface_abstraction_v1
-                  WHERE memory_id = $1",
-            )
-            .bind(memory_id.into_inner())
-            .fetch_optional(pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            let row: Option<(String, String, i32)> = ctx
+                .fetch_optional_by_memory_id(
+                    "SELECT title, body, source_count
+                       FROM public.facade_surface_abstraction_v1
+                      WHERE memory_id = $1",
+                    memory_id,
+                )
+                .await?;
             Ok(row.map(|(title, body, source_count)| {
                 SidecarPayload::abstraction(FacadeAbstraction {
                     title,
@@ -198,10 +207,10 @@ impl PgMemoryPayload for FacadeAbstraction {
 struct FacadeSurfaceApp;
 
 impl FlavorBundle for FacadeSurfaceApp {
-    fn register(registry: &mut FlavorRegistry) {
-        registry.add_fact_schema::<FacadeFact>();
-        registry.add_abstraction_schema::<FacadeAbstraction>();
-        registry.add_relation(RelationDescriptor::substrate(
+    fn register(registry: &mut FlavorRegistry) -> Result<(), proxima_core::FlavorRegistryError> {
+        registry.try_add_fact_schema::<FacadeFact>()?;
+        registry.try_add_abstraction_schema::<FacadeAbstraction>()?;
+        registry.try_add_relation(RelationDescriptor::substrate(
             DERIVED_FROM_FACT_RELATION,
             RelationClass::Provenance,
             EndpointBinding::Pin,
@@ -209,8 +218,8 @@ impl FlavorBundle for FacadeSurfaceApp {
             EntityKindMask::abstraction(),
             EntityKindMask::fact(),
             AuthorshipKindMask::operator_f_to_a(),
-        ));
-        registry.add_relation(RelationDescriptor::substrate(
+        ))?;
+        registry.try_add_relation(RelationDescriptor::substrate(
             FACT_ENTITY_EDGE_RELATION,
             RelationClass::Provenance,
             EndpointBinding::Pin,
@@ -218,7 +227,8 @@ impl FlavorBundle for FacadeSurfaceApp {
             EntityKindMask::abstraction(),
             EntityKindMask::fact(),
             AuthorshipKindMask::operator_a_to_a(),
-        ));
+        ))?;
+        Ok(())
     }
 
     fn register_pg_sidecars(registry: &mut PgSidecarRegistry) {
@@ -262,8 +272,8 @@ fn facade_flavor_authoring_symbols_are_reachable() {
     let advertised_resources = BTreeSet::new();
     assert!(proxima::build_instructions(&advertised_tools, &advertised_resources).is_empty());
     assert!(proxima::how_to_markdown(&advertised_tools, &advertised_resources).contains("Proxima"));
-    let _ctx_size = std::mem::size_of::<Option<proxima::McpToolCtx>>();
-    let _ = proxima::McpToolError::InvalidInput("bad input".to_string());
+    let _ctx_size = std::mem::size_of::<Option<proxima::flavor::ToolCtx>>();
+    let _ = proxima::flavor::ToolError::InvalidInput("bad input".to_string());
 
     #[cfg(feature = "openai-compat-embed")]
     {
@@ -292,7 +302,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .owner(owner)
             .build()
             .await?;
-        create_sidecar_tables(&built.pool).await?;
+        create_sidecar_tables(built.pool_for_tests()).await?;
         let authz = AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
             [(owner, Role::admin())],
@@ -306,7 +316,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         };
         let fact_for_sidecar = fact.clone();
         let fact_outcome = proxima_storage_pg::verbs::fact_ingest::ingest_fact_for_owner(
-            &built.pool,
+            built.pool_for_tests(),
             built.engine.as_ref(),
             &authz,
             &owner,
@@ -322,7 +332,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         )
         .await?;
 
-        let mut conn = built.pool.acquire().await?;
+        let mut conn = built.pool_for_tests().acquire().await?;
         let fact_entity_id = fact_entity_id_for(
             conn.as_mut(),
             &owner,
@@ -340,12 +350,12 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
               WHERE m.memory_id = $1",
         )
         .bind(fact_outcome.memory_id.into_inner())
-        .fetch_one(&built.pool)
+        .fetch_one(built.pool_for_tests())
         .await?;
         proxima_storage_pg::verbs::close_batch::close_batch(
-            &built.pool,
+            built.pool_for_tests(),
             &owner,
-            proxima::SourceBatchId::new(source_batch_id),
+            proxima_core::SourceBatchId::new(source_batch_id),
         )
         .await?;
         let derived_id = MemoryId::new(Uuid::now_v7());
@@ -375,7 +385,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                 operator_kind: MemoryOperatorKind::FtoA,
                 operator_id: OperatorId::new(Uuid::now_v7()),
                 input_contract_id: InputContractId::new(Uuid::now_v7()),
-                source_batch_id: Some(proxima::SourceBatchId::new(source_batch_id)),
+                source_batch_id: Some(proxima_core::SourceBatchId::new(source_batch_id)),
                 model_id: "facade-test",
                 prompt_version: "v1",
                 sidecar_payload: SidecarPayload::abstraction(FacadeAbstraction {
@@ -397,7 +407,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                 AND entity_id = $1",
         )
         .bind(derived_id.into_inner())
-        .fetch_one(&built.pool)
+        .fetch_one(built.pool_for_tests())
         .await?;
         assert_eq!(
             embedding_rows, 0,
@@ -488,7 +498,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                     principal: owner,
                     edge_ids: Vec::new(),
                     filter: EdgeFilter {
-                        target: Some(EntityRef::FactEntity(proxima::FactEntityId::new(
+                        target: Some(EntityRef::FactEntity(proxima_core::FactEntityId::new(
                             Uuid::now_v7(),
                         ))),
                         ..present_filter.clone()

@@ -10,7 +10,7 @@ use proxima_core::{MemoryId, SchemaId, SchemaVersion, SidecarPayload, StorageErr
 use sqlx::PgPool;
 
 use crate::error::internal;
-use crate::sidecars::{PgSidecarKey, PgSidecarRegistryFrozen};
+use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 
 use super::edges::query_edges;
 use super::goals::query_goals;
@@ -199,7 +199,9 @@ async fn load_row_payloads_batch(
         }
     }
     let batches = ids_by_key.into_iter().map(|(key, ids)| async move {
-        sidecars.load_memory_payloads_batch(pool, &key, &ids).await
+        sidecars
+            .load_memory_payloads_batch(PgSidecarReadCtx::from(pool), &key, &ids)
+            .await
     });
     let rows = try_join_all(batches).await?;
     Ok(rows.into_iter().flatten().collect())

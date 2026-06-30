@@ -8,11 +8,14 @@ pub use args::{
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
+use proxima::flavor::FlavorBundle;
 use proxima::{
-    AppInfo, FlavorApp, FlavorBundle, Proxima, ProximaError, RunningProxima, RuntimeBuilder,
+    AppContext, AppInfo, FlavorApp, Proxima, ProximaError, RunningProxima, RuntimeBuilder,
 };
+use proxima_core::mcp::McpToolExtensions;
 use proxima_core::{
-    FlavorRegistry, ToolScope, all_core_actions, all_core_resources, llm::EmbeddingClient,
+    FlavorRegistry, FlavorRegistryError, ToolScope, all_core_actions, all_core_resources,
+    llm::EmbeddingClient,
 };
 use proxima_llm_openai_compat::{
     MISTRAL_EMBED_BASE_URL, MISTRAL_EMBED_MODEL, OpenAiCompatEmbeddingClient,
@@ -97,11 +100,11 @@ type OidcBundle = (
 pub struct ProximaMcpApp;
 
 impl FlavorBundle for ProximaMcpApp {
-    fn register(registry: &mut FlavorRegistry) {
-        <LinkedFlavors as FlavorBundle>::register(registry);
+    fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+        <LinkedFlavors as FlavorBundle>::register(registry)
     }
 
-    fn register_pg_sidecars(registry: &mut proxima::PgSidecarRegistry) {
+    fn register_pg_sidecars(registry: &mut proxima::flavor::PgSidecarRegistry) {
         <LinkedFlavors as FlavorBundle>::register_pg_sidecars(registry);
     }
 
@@ -125,6 +128,22 @@ impl FlavorApp for ProximaMcpApp {
                 .parse()
                 .expect("DEFAULT_BIND must be a valid SocketAddr"),
         )
+    }
+
+    fn mcp_tool_extensions(ctx: &AppContext) -> McpToolExtensions {
+        #[cfg(feature = "code")]
+        {
+            let mut extensions = McpToolExtensions::default();
+            extensions.insert(proxima_code::CodeFlavorStore::from_backend_pool_for_host(
+                ctx.clone_pool_for_host(),
+            ));
+            extensions
+        }
+        #[cfg(not(feature = "code"))]
+        {
+            let _ = ctx;
+            McpToolExtensions::default()
+        }
     }
 }
 
@@ -255,7 +274,7 @@ fn build_app(
     config: McpConfig,
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<Proxima<ProximaMcpApp>, CliError> {
-    let registered_ids = registered_tool_ids();
+    let registered_ids = registered_tool_ids()?;
     let tool_scope = tool_scope_from_env(&lookup, &registered_ids)?;
     let oidc = oidc_from_env(&config, &lookup)?;
     let mut app = Proxima::<ProximaMcpApp>::app()
@@ -284,10 +303,13 @@ enum ToolProfile {
     Memory,
 }
 
-fn registered_tool_ids() -> Vec<&'static str> {
+fn registered_tool_ids() -> Result<Vec<&'static str>, CliError> {
     let mut registry = FlavorRegistry::new();
-    <ProximaMcpApp as FlavorBundle>::register(&mut registry);
-    let frozen = registry.freeze();
+    <ProximaMcpApp as FlavorBundle>::register(&mut registry)
+        .map_err(|err| CliError::Runtime(ProximaError::Registry(err)))?;
+    let frozen = registry
+        .try_freeze()
+        .map_err(|err| CliError::Runtime(ProximaError::Registry(err)))?;
     let mut ids = Vec::new();
     for tool in frozen.list_mcp_tools() {
         let mut added_actions = false;
@@ -300,7 +322,7 @@ fn registered_tool_ids() -> Vec<&'static str> {
         }
     }
     ids.extend(all_core_resources().map(|resource| resource.scope_key));
-    ids
+    Ok(ids)
 }
 
 fn tool_scope_from_env(

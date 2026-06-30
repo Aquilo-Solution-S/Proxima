@@ -47,15 +47,15 @@ async fn goal_set_tool_creates_active_goal() -> TestResult {
 
             let goal_id = harness.goal_id(&first.handle)?;
             let (state, authorship_kind, authorship_origin, operator_kind, model_id, prompt) =
-                goal_set_authorship_row(harness.pg.pool(), goal_id).await?;
+                goal_set_authorship_row(harness.pg.pool_for_tests(), goal_id).await?;
             assert_eq!(state, "Active");
             assert_eq!(authorship_kind, "System");
             assert_eq!(authorship_origin.as_deref(), Some("Operator"));
             assert_eq!(operator_kind.as_deref(), Some("AtoGoal"));
             assert_eq!(model_id.as_deref(), Some("codex-test"));
             assert_eq!(prompt.as_deref(), Some("goal_set"));
-            assert_eq!(count_goals(harness.pg.pool()).await?, 1);
-            assert_eq!(count_goal_activated(harness.pg.pool()).await?, 1);
+            assert_eq!(count_goals(harness.pg.pool_for_tests()).await?, 1);
+            assert_eq!(count_goal_activated(harness.pg.pool_for_tests()).await?, 1);
 
             let replay = harness
                 .call_goal_write(CoreGoalArgs::Set(goal_set_args_with_evidence(
@@ -67,8 +67,8 @@ async fn goal_set_tool_creates_active_goal() -> TestResult {
                 .await?;
             assert!(replay.idempotent_replay);
             assert_eq!(replay.handle, first.handle);
-            assert_eq!(count_goals(harness.pg.pool()).await?, 1);
-            assert_eq!(count_goal_activated(harness.pg.pool()).await?, 1);
+            assert_eq!(count_goals(harness.pg.pool_for_tests()).await?, 1);
+            assert_eq!(count_goal_activated(harness.pg.pool_for_tests()).await?, 1);
             Ok(())
         })
     })
@@ -117,25 +117,40 @@ async fn goal_lifecycle_tool_chain() -> TestResult {
             let resumed_id = harness.goal_id(&resumed.handle)?;
             let achieved_id = harness.goal_id(&achieved.handle)?;
 
-            assert_goal_state_supersedes(harness.pg.pool(), active_id, "Active", None).await?;
-            assert_goal_state_supersedes(harness.pg.pool(), paused_id, "Paused", Some(active_id))
-                .await?;
-            assert_goal_state_supersedes(harness.pg.pool(), resumed_id, "Active", Some(paused_id))
+            assert_goal_state_supersedes(harness.pg.pool_for_tests(), active_id, "Active", None)
                 .await?;
             assert_goal_state_supersedes(
-                harness.pg.pool(),
+                harness.pg.pool_for_tests(),
+                paused_id,
+                "Paused",
+                Some(active_id),
+            )
+            .await?;
+            assert_goal_state_supersedes(
+                harness.pg.pool_for_tests(),
+                resumed_id,
+                "Active",
+                Some(paused_id),
+            )
+            .await?;
+            assert_goal_state_supersedes(
+                harness.pg.pool_for_tests(),
                 achieved_id,
                 "Achieved",
                 Some(resumed_id),
             )
             .await?;
-            assert_eq!(superseding_count(harness.pg.pool(), achieved_id).await?, 0);
             assert_eq!(
-                count_goal_achieved_for(harness.pg.pool(), achieved_id).await?,
+                superseding_count(harness.pg.pool_for_tests(), achieved_id).await?,
+                0
+            );
+            assert_eq!(
+                count_goal_achieved_for(harness.pg.pool_for_tests(), achieved_id).await?,
                 1
             );
             assert_eq!(
-                count_motivated_by_edge(harness.pg.pool(), achieved_id, evidence.id).await?,
+                count_motivated_by_edge(harness.pg.pool_for_tests(), achieved_id, evidence.id)
+                    .await?,
                 1,
             );
             Ok(())
@@ -183,7 +198,7 @@ async fn goal_full_lifecycle_accepts_structured_body_payload() -> TestResult {
             assert_fresh_goal_write(child);
             let child_id = harness.goal_id(&child.handle)?;
             assert_eq!(
-                count_parent_link(harness.pg.pool(), child_id, active_id).await?,
+                count_parent_link(harness.pg.pool_for_tests(), child_id, active_id).await?,
                 1,
             );
 
@@ -233,7 +248,7 @@ async fn goal_full_lifecycle_accepts_structured_body_payload() -> TestResult {
             let modified_id = harness.goal_id(&modified.handle)?;
             let achieved_id = harness.goal_id(&achieved.handle)?;
             assert_structured_lifecycle_chain(
-                harness.pg.pool(),
+                harness.pg.pool_for_tests(),
                 active_id,
                 paused_id,
                 resumed_id,
@@ -242,7 +257,7 @@ async fn goal_full_lifecycle_accepts_structured_body_payload() -> TestResult {
             )
             .await?;
             assert_eq!(
-                task_goal_priority(harness.pg.pool(), achieved_id).await?,
+                task_goal_priority(harness.pg.pool_for_tests(), achieved_id).await?,
                 Some("Medium".to_string())
             );
             Ok(())
@@ -271,8 +286,8 @@ async fn goal_set_tool_requires_memory_write() -> TestResult {
                 McpToolError::Protocol(err) => assert_eq!(err.code, ErrorCode::Forbidden),
                 other => panic!("expected forbidden protocol error, got {other:?}"),
             }
-            assert_eq!(count_goals(harness.pg.pool()).await?, 0);
-            assert_eq!(count_goal_activated(harness.pg.pool()).await?, 0);
+            assert_eq!(count_goals(harness.pg.pool_for_tests()).await?, 0);
+            assert_eq!(count_goal_activated(harness.pg.pool_for_tests()).await?, 0);
             Ok(())
         })
     })
@@ -335,12 +350,12 @@ async fn goal_decompose_tool_writes_children() -> TestResult {
                 assert!(!child.idempotent_replay);
                 let child_id = harness.goal_id(&child.handle)?;
                 assert_eq!(
-                    count_parent_link(harness.pg.pool(), child_id, parent_id).await?,
+                    count_parent_link(harness.pg.pool_for_tests(), child_id, parent_id).await?,
                     1,
                 );
             }
             assert_eq!(
-                count_children_for_parent(harness.pg.pool(), parent_id).await?,
+                count_children_for_parent(harness.pg.pool_for_tests(), parent_id).await?,
                 2,
             );
             Ok(())
@@ -375,7 +390,7 @@ async fn goal_modify_tool_supersedes_head() -> TestResult {
             let modified_id = harness.goal_id(&modified.handle)?;
             assert_ne!(modified_id, prior_id);
             let (state, supersedes, title, text) =
-                goal_content_row(harness.pg.pool(), modified_id).await?;
+                goal_content_row(harness.pg.pool_for_tests(), modified_id).await?;
             assert_eq!(state, "Active");
             assert_eq!(supersedes, Some(prior_id.into_inner()));
             assert_eq!(title, "Modified title");
@@ -412,7 +427,7 @@ struct ToolHarness {
 impl ToolHarness {
     async fn new(pg: proxima_storage_pg::PgStorage) -> Result<Self, Box<dyn std::error::Error>> {
         let owner = nil_owner();
-        let registry = Arc::new(FlavorRegistry::new().freeze());
+        let registry = Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests());
         let handles = Arc::new(HandleTable::new());
         let root_memory_id = seed_assignment_perspective(&pg, &owner).await?;
         let author = author_ctx().with_self_perspective(root_memory_id);
@@ -517,7 +532,7 @@ impl ToolHarness {
             author: self.author.clone(),
             caller_self_perspective: self.author.caller_self_perspective,
             master_token_id: None,
-            extensions: McpToolExtensions::with(self.pg.pool().clone()),
+            extensions: McpToolExtensions::with(self.pg.pool_for_tests().clone()),
             engine: Some(self.engine.clone()),
         }
     }
@@ -637,7 +652,7 @@ async fn seed_assignment_perspective(
     .bind(owner_id)
     .bind(EntityKind::Perspective)
     .bind(MemoryOperatorKind::AtoP)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(root_memory_id)
 }
@@ -662,7 +677,7 @@ async fn seed_fact_memory(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(text)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(memory_id)
 }

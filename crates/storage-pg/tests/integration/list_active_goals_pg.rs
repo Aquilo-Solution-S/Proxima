@@ -39,7 +39,7 @@ async fn insert_self(
     .bind(owner_id)
     .bind(proxima_core::EntityKind::Perspective)
     .bind(proxima_core::MemoryOperatorKind::AtoP)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(MemoryId::new(memory_id))
 }
@@ -70,7 +70,7 @@ async fn insert_goal(
     .bind(state)
     .bind(supersedes.map(GoalId::into_inner))
     .bind(request_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     if state == GoalState::Active {
         insert_goal_activated_fact(pg, owner, goal_id).await?;
@@ -84,11 +84,11 @@ async fn link_goal_to_self(
     goal_id: GoalId,
     self_id: MemoryId,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let registry = FlavorRegistry::new().freeze();
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let relation = registry
         .resolve_relation(CORE_INSPIRES_RELATION)
         .expect("core/inspires relation");
-    let mut tx = pg.pool().begin().await?;
+    let mut tx = pg.pool_for_tests().begin().await?;
     append_owner_checked_edge(
         &mut tx,
         owner,
@@ -250,7 +250,7 @@ async fn insert_goal_activated_fact(
     goal_id: GoalId,
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
-    let mut tx = pg.pool().begin().await?;
+    let mut tx = pg.pool_for_tests().begin().await?;
 
     // Minimal Fact-shaped memory row (requires receipt_id + citation_mapping_id
     // per the variant check). Insert dummy receipt/citation rows just so the
@@ -407,7 +407,7 @@ async fn seed_membership(
     .bind(group_id.into_inner())
     .bind(member_id.into_inner())
     .bind(relation)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }

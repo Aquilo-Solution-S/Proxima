@@ -86,7 +86,7 @@ impl PgFactSidecar for CleanupStatefulFactV1 {
 
 impl PgMemoryPayload for CleanupStatefulFactV1 {
     fn load_memory_payload(
-        _pool: &sqlx::PgPool,
+        _ctx: proxima_storage_pg::sidecars::PgSidecarReadCtx<'_>,
         _memory_id: MemoryId,
     ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async { Ok(None) })
@@ -138,8 +138,8 @@ fn schemas_for_uploaded_blob_gc_test() -> Vec<SchemaInfo> {
 
 fn stateful_registry_for_test() -> FlavorRegistryFrozen {
     let mut registry = FlavorRegistry::new();
-    registry.add_fact_schema::<CleanupStatefulFactV1>();
-    registry.freeze()
+    registry.add_fact_schema_or_panic_for_tests::<CleanupStatefulFactV1>();
+    registry.freeze_or_panic_for_tests()
 }
 
 fn stateful_pg_sidecars_for_test() -> PgSidecarRegistryFrozen {
@@ -159,7 +159,7 @@ async fn fresh_pg_with_stateful_sidecars() -> (PgStorage, String) {
 
 async fn create_stateful_sidecar(pg: &PgStorage) -> Result<(), sqlx::Error> {
     sqlx::query("CREATE SCHEMA proxima_test")
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
     sqlx::query(
         "CREATE TABLE proxima_test.cleanup_stateful_fact_v1 (
@@ -169,7 +169,7 @@ async fn create_stateful_sidecar(pg: &PgStorage) -> Result<(), sqlx::Error> {
             state text NOT NULL
         )",
     )
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }
@@ -273,7 +273,7 @@ async fn cleanup_due_facts_erases_fact_and_tombstones_direct_derivative()
           WHERE memory_id = $1",
     )
     .bind(fact_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
 
     sqlx::query(
@@ -282,7 +282,7 @@ async fn cleanup_due_facts_erases_fact_and_tombstones_direct_derivative()
           WHERE memory_id = $1",
     )
     .bind(fact_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
 
     let derivative_id = insert_direct_derivative(&pg, &owner, fact_id).await?;
@@ -691,7 +691,7 @@ async fn assert_fact_erased(
         "SELECT count(*)::bigint FROM proxima_core.memories WHERE memory_id = $1",
     )
     .bind(fact_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(fact_count, 0);
 
@@ -699,7 +699,7 @@ async fn assert_fact_erased(
         "SELECT count(*)::bigint FROM proxima_core.fact_receipts WHERE receipt_id = $1",
     )
     .bind(receipt_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(event_count, 0);
 
@@ -709,7 +709,7 @@ async fn assert_fact_erased(
           WHERE citation_mapping_id = $1",
     )
     .bind(citation_mapping_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(citation_count, 0);
     Ok(())
@@ -725,7 +725,7 @@ async fn assert_derivative_tombstoned(
           WHERE memory_id = $1",
     )
     .bind(derivative_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert!(tombstoned_at.is_some());
     Ok(())
@@ -741,7 +741,7 @@ async fn assert_embedding_artifacts_erased(
           WHERE entity_id = $1",
     )
     .bind(memory_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(embedding_count, 0);
 
@@ -751,7 +751,7 @@ async fn assert_embedding_artifacts_erased(
           WHERE entity_id = $1",
     )
     .bind(memory_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(job_count, 0);
     Ok(())
@@ -767,7 +767,7 @@ async fn assert_memory_exists(
           WHERE memory_id = $1",
     )
     .bind(memory_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(count, 1);
     Ok(())
@@ -783,7 +783,7 @@ async fn assert_memory_erased(
           WHERE memory_id = $1",
     )
     .bind(memory_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(count, 0);
     Ok(())
@@ -799,7 +799,7 @@ async fn assert_fact_entity_exists(
           WHERE fact_entity_id = $1",
     )
     .bind(fact_entity_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(count, 1);
     Ok(())
@@ -815,7 +815,7 @@ async fn assert_stateful_sidecar_erased(
           WHERE memory_id = $1",
     )
     .bind(memory_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(count, 0);
     Ok(())
@@ -831,7 +831,7 @@ async fn assert_cited_object_exists(
           WHERE cited_object_id = $1",
     )
     .bind(cited_object_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(count, 1);
     Ok(())
@@ -847,7 +847,7 @@ async fn fact_entity_id_for_memory(
           WHERE memory_id = $1",
     )
     .bind(memory_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     Ok(fact_entity_id.expect("stateful Fact has fact_entity_id"))
 }
@@ -862,7 +862,7 @@ async fn current_memory_id(
           WHERE fact_entity_id = $1",
     )
     .bind(fact_entity_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?)
 }
 
@@ -887,7 +887,7 @@ async fn insert_active_goal(
     .bind(owner_id)
     .bind(request_id)
     .bind(b"{}".to_vec())
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(goal_id)
 }
@@ -918,7 +918,7 @@ async fn insert_motivated_by_edge(
     .bind(CORE_MOTIVATED_BY_RELATION)
     .bind(goal_id)
     .bind(fact_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
 
     Ok(edge_id)
@@ -934,7 +934,7 @@ async fn assert_cited_object_erased(
           WHERE cited_object_id = $1",
     )
     .bind(cited_object_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(count, 0);
     Ok(())
@@ -950,7 +950,7 @@ async fn assert_uploaded_blob_sidecar_erased(
           WHERE cited_object_id = $1",
     )
     .bind(cited_object_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(count, 0);
     Ok(())
@@ -966,7 +966,7 @@ async fn assert_agent_link_sidecar_erased(
           WHERE edge_id = $1",
     )
     .bind(edge_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(count, 0);
     Ok(())
@@ -983,7 +983,7 @@ async fn assert_entity_delete_emitted(
             AND entity_memory_id = $1",
     )
     .bind(memory_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(delete_events, 1);
     Ok(())
@@ -1028,7 +1028,7 @@ async fn assert_edge_erased(
           WHERE edge_id = $1",
     )
     .bind(edge_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(edge_count, 0);
     Ok(())
@@ -1041,7 +1041,7 @@ async fn assert_goal_active(
     let state: proxima_core::verbs::goal_write::GoalState =
         sqlx::query_scalar("SELECT state FROM proxima_core.goals WHERE goal_id = $1")
             .bind(goal_id)
-            .fetch_one(pg.pool())
+            .fetch_one(pg.pool_for_tests())
             .await?;
     assert_eq!(state, proxima_core::verbs::goal_write::GoalState::Active);
     Ok(())
@@ -1085,7 +1085,7 @@ async fn age_fact(
           WHERE memory_id = $1",
     )
     .bind(fact_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }
@@ -1100,7 +1100,7 @@ async fn citation_mapping_id_for_memory(
           WHERE memory_id = $1",
     )
     .bind(memory_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     Ok(citation_mapping_id)
 }
@@ -1115,7 +1115,7 @@ async fn cited_object_id_for_memory(
           WHERE memory_id = $1",
     )
     .bind(memory_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     Ok(cited_object_id)
 }
@@ -1131,7 +1131,7 @@ async fn insert_uploaded_blob_sidecar(
     )
     .bind(cited_object_id)
     .bind([7_u8; 32].as_slice())
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }
@@ -1145,7 +1145,7 @@ async fn insert_agent_link_sidecar(
          VALUES ($1, 'cleanup test edge sidecar', 100)",
     )
     .bind(edge_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }
@@ -1163,7 +1163,7 @@ async fn edge_id_between(
     )
     .bind(source_memory_id)
     .bind(target_memory_id)
-    .fetch_one(pg.pool())
+    .fetch_one(pg.pool_for_tests())
     .await?;
     Ok(edge_id)
 }
@@ -1200,7 +1200,7 @@ async fn insert_derivative(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(text)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
 
     insert_provenance_edge(pg, owner, derivative_id, origin_id, origin_kind).await?;
@@ -1226,7 +1226,7 @@ async fn insert_embedding_artifacts(
     .bind(zero_vector_literal())
     .bind(owner_kind)
     .bind(owner_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
 
     sqlx::query(
@@ -1239,7 +1239,7 @@ async fn insert_embedding_artifacts(
     .bind(owner_id)
     .bind(kind)
     .bind(memory_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }
@@ -1284,7 +1284,7 @@ async fn insert_provenance_edge(
     .bind(derivative_id)
     .bind(origin_kind)
     .bind(origin_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
 
     Ok(())

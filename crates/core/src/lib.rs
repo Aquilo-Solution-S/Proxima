@@ -31,6 +31,7 @@ pub mod storage;
 pub mod storage_ports;
 #[cfg(feature = "test-fixtures")]
 pub mod test_fixtures;
+pub mod tool;
 pub mod verbs;
 
 pub use access::*;
@@ -55,10 +56,9 @@ pub use mcp::{
     CoreActionMeta, CoreResourceMeta, Handle, HandleTable, McpAuthorContext, McpCallFn, McpTool,
     McpToolAnnotations, McpToolCtx, McpToolDescriptor, McpToolError, McpToolErrorKind,
     McpToolExtensions, McpToolOrigin, MemoryHandleClass, Next, OutputMode, PrefixedUuidClass,
-    PrefixedUuidError, RequestBehavior, ScopeGateBehavior, TerminalDispatch, ToolCall,
-    all_core_actions, all_core_resources, core_action_meta, core_tool_annotations,
-    core_tool_has_actions, format_prefixed_uuid, parse_prefixed_uuid, provider_safe_tool_name,
-    tool_name_matches,
+    PrefixedUuidError, RequestBehavior, ScopeGateBehavior, TerminalDispatch, all_core_actions,
+    all_core_resources, core_action_meta, core_tool_annotations, core_tool_has_actions,
+    format_prefixed_uuid, parse_prefixed_uuid, provider_safe_tool_name, tool_name_matches,
 };
 pub use memory::*;
 pub use models::*;
@@ -70,6 +70,7 @@ pub use read_models::*;
 pub use relation::*;
 pub use secrets::*;
 pub use storage::*;
+pub use tool::*;
 
 // Re-export verb modules for convenience.
 pub use verbs::fact_ingest::{
@@ -104,8 +105,8 @@ macro_rules! proxima_schema_id {
 /// `opaque_citation_mapping_schemas`, `schema_capability_tags`,
 /// `relations`, `mcp_tools`.
 /// Expands to a
-/// `pub fn register(registry: &mut FlavorRegistry)` that adds each
-/// schema / relation.
+/// `pub fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError>`
+/// that adds each schema / relation.
 ///
 /// Prefix enforcement is tiered. Schema, `mcp_tools`, and
 /// Prefix enforcement is tiered. Schema and `mcp_tools` prefixes resolve to associated `const`s or
@@ -168,7 +169,7 @@ macro_rules! proxima_flavor {
                     " must start with \"", $name, "/\"",
                 ),
             );
-            $registry.$add::<$ty>();
+            $registry.$add::<$ty>()?;
         )*
     };
     // Internal: register opaque cited-object / citation-mapping schemas
@@ -177,17 +178,19 @@ macro_rules! proxima_flavor {
         $(
             {
                 let schema_id: &str = $schema_id;
-                assert!(
-                    schema_id.starts_with(::std::concat!($name, "/")),
-                    "opaque schema {:?} does not start with crate prefix {:?}",
+                let schema_id = $crate::SchemaId::new(schema_id.to_string());
+                if !schema_id.as_str().starts_with(::std::concat!($name, "/")) {
+                    return ::std::result::Result::Err($crate::FlavorRegistryError::SchemaIngressMismatch {
+                        schema_id,
+                        schema_version: $crate::SchemaVersion::new(1),
+                        kind: $crate::verbs::schema::PayloadKind::$kind,
+                    });
+                }
+                $registry.try_add_opaque_schema(
                     schema_id,
-                    ::std::concat!($name, "/"),
-                );
-                $registry.add_opaque_schema(
-                    $crate::SchemaId::new(schema_id.to_string()),
                     $crate::SchemaVersion::new(1),
                     $crate::verbs::schema::PayloadKind::$kind,
-                );
+                )?;
             }
         )*
     };
@@ -208,12 +211,12 @@ macro_rules! proxima_flavor {
                 " must start with \"", $name, "/\"",
             ),
         );
-        $registry.add_schema_capability_tags(
+        $registry.try_add_schema_capability_tags(
             $crate::verbs::schema::PayloadKind::Fact,
             <$ty as $crate::FactPayload>::schema_id(),
             $crate::SchemaVersion::new(<$ty as $crate::FactPayload>::SCHEMA_VERSION),
             [ $($tag),* ],
-        );
+        )?;
     };
     (@schema_capability_tag $registry:ident $name:literal Abstraction $ty:ty [ $($tag:expr),* $(,)? ]) => {
         const _: () = ::std::assert!(
@@ -227,12 +230,12 @@ macro_rules! proxima_flavor {
                 " must start with \"", $name, "/\"",
             ),
         );
-        $registry.add_schema_capability_tags(
+        $registry.try_add_schema_capability_tags(
             $crate::verbs::schema::PayloadKind::Abstraction,
             <$ty as $crate::AbstractionPayload>::schema_id(),
             $crate::SchemaVersion::new(<$ty as $crate::AbstractionPayload>::SCHEMA_VERSION),
             [ $($tag),* ],
-        );
+        )?;
     };
     (@schema_capability_tag $registry:ident $name:literal Perspective $ty:ty [ $($tag:expr),* $(,)? ]) => {
         const _: () = ::std::assert!(
@@ -246,12 +249,12 @@ macro_rules! proxima_flavor {
                 " must start with \"", $name, "/\"",
             ),
         );
-        $registry.add_schema_capability_tags(
+        $registry.try_add_schema_capability_tags(
             $crate::verbs::schema::PayloadKind::Perspective,
             <$ty as $crate::PerspectivePayload>::schema_id(),
             $crate::SchemaVersion::new(<$ty as $crate::PerspectivePayload>::SCHEMA_VERSION),
             [ $($tag),* ],
-        );
+        )?;
     };
     (@schema_capability_tag $registry:ident $name:literal Goal $ty:ty [ $($tag:expr),* $(,)? ]) => {
         const _: () = ::std::assert!(
@@ -265,12 +268,12 @@ macro_rules! proxima_flavor {
                 " must start with \"", $name, "/\"",
             ),
         );
-        $registry.add_schema_capability_tags(
+        $registry.try_add_schema_capability_tags(
             $crate::verbs::schema::PayloadKind::Goal,
             <$ty as $crate::GoalPayload>::schema_id(),
             $crate::SchemaVersion::new(<$ty as $crate::GoalPayload>::SCHEMA_VERSION),
             [ $($tag),* ],
-        );
+        )?;
     };
     (
         name = $name:literal
@@ -292,7 +295,7 @@ macro_rules! proxima_flavor {
     ) => {
         /// Generated by `proxima_flavor!`. Composite binaries
         /// call this once per linked flavor at startup.
-        pub fn register(registry: &mut $crate::FlavorRegistry) {
+        pub fn register(registry: &mut $crate::FlavorRegistry) -> ::std::result::Result<(), $crate::FlavorRegistryError> {
             // Used by the `relations` / `dependency_satisfaction_rules`
             // arms, whose prefix-bearing value is a runtime expression
             // and so cannot be checked at `const` time like schemas are.
@@ -308,28 +311,28 @@ macro_rules! proxima_flavor {
                         .map(|s: &str| {
                             s.split(':').next().unwrap_or(s).trim().to_string()
                         });
-                registry.add_flavor($crate::FlavorDescriptor {
+                registry.try_add_flavor($crate::FlavorDescriptor {
                     flavor_id: $name.to_string(),
                     display_name: display_name.to_string(),
                     package_version: ::std::env!("CARGO_PKG_VERSION").to_string(),
                     author,
                     provenance: $crate::FlavorProvenance::Builtin,
-                });
+                })?;
             }
             $($crate::proxima_flavor!(@schemas registry $name
-                FactPayload add_fact_schema [ $($fact),* ]);)?
+                FactPayload try_add_fact_schema [ $($fact),* ]);)?
             $($crate::proxima_flavor!(@schemas registry $name
-                AbstractionPayload add_abstraction_schema [ $($abs),* ]);)?
+                AbstractionPayload try_add_abstraction_schema [ $($abs),* ]);)?
             $($crate::proxima_flavor!(@schemas registry $name
-                PerspectivePayload add_perspective_schema [ $($persp),* ]);)?
+                PerspectivePayload try_add_perspective_schema [ $($persp),* ]);)?
             $($crate::proxima_flavor!(@schemas registry $name
-                GoalPayload add_goal_schema [ $($goal),* ]);)?
+                GoalPayload try_add_goal_schema [ $($goal),* ]);)?
             $($crate::proxima_flavor!(@schemas registry $name
-                EdgePayload add_edge_schema [ $($edge),* ]);)?
+                EdgePayload try_add_edge_schema [ $($edge),* ]);)?
             $($crate::proxima_flavor!(@schemas registry $name
-                CitedObjectPayload add_cited_object_schema [ $($cited),* ]);)?
+                CitedObjectPayload try_add_cited_object_schema [ $($cited),* ]);)?
             $($crate::proxima_flavor!(@schemas registry $name
-                CitationMappingPayload add_citation_mapping_schema [ $($citemap),* ]);)?
+                CitationMappingPayload try_add_citation_mapping_schema [ $($citemap),* ]);)?
             $($crate::proxima_flavor!(@opaque_schemas registry $name
                 CitedObject [ $($opaque_cited),* ]);)?
             $($crate::proxima_flavor!(@opaque_schemas registry $name
@@ -340,12 +343,13 @@ macro_rules! proxima_flavor {
             $($(
                 {
                     let descriptor: $crate::RelationDescriptor = $rel;
-                    assert!(
-                        descriptor.relation.starts_with(EXPECTED_PREFIX),
-                        "RelationDescriptor relation {:?} does not start with crate prefix {:?}",
-                        descriptor.relation, EXPECTED_PREFIX,
-                    );
-                    registry.add_relation(descriptor);
+                    if !descriptor.relation.starts_with(EXPECTED_PREFIX) {
+                        return ::std::result::Result::Err($crate::FlavorRegistryError::InvalidRelationDescriptor {
+                            relation: descriptor.relation,
+                            message: ::std::format!("relation must start with crate prefix {EXPECTED_PREFIX:?}"),
+                        });
+                    }
+                    registry.try_add_relation(descriptor)?;
                 }
             )*)?
             $($(
@@ -367,7 +371,7 @@ macro_rules! proxima_flavor {
                             " must start with \"", $name, "/\" or \"", $name, "_\"",
                         ),
                     );
-                    registry.add_mcp_tool::<$tool>($name);
+                    registry.try_add_tool::<$tool>($name)?;
                 }
             )*)?
             $($(
@@ -376,14 +380,17 @@ macro_rules! proxima_flavor {
                     let rule: ::std::sync::Arc<dyn DependencySatisfactionRule> =
                         ::std::sync::Arc::new(<$dependency_rule as ::std::default::Default>::default());
                     let schema_id = rule.target_schema_id();
-                    assert!(
-                        schema_id.starts_with(EXPECTED_PREFIX) || schema_id.starts_with("proxima-core/"),
-                        "DependencySatisfactionRule schema {:?} does not start with crate prefix {:?}",
-                        schema_id, EXPECTED_PREFIX,
-                    );
-                    registry.add_dependency_satisfaction_rule(schema_id, rule);
+                    if !(schema_id.starts_with(EXPECTED_PREFIX) || schema_id.starts_with("proxima-core/")) {
+                        return ::std::result::Result::Err($crate::FlavorRegistryError::SchemaIngressMismatch {
+                            schema_id: $crate::SchemaId::new(schema_id.to_string()),
+                            schema_version: $crate::SchemaVersion::new(1),
+                            kind: $crate::verbs::schema::PayloadKind::Fact,
+                        });
+                    }
+                    registry.try_add_dependency_satisfaction_rule(schema_id, rule)?;
                 }
             )*)?
+            ::std::result::Result::Ok(())
         }
     };
 }

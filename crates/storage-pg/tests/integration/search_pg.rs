@@ -166,7 +166,7 @@ async fn semantic_search_matches_pgvector_cosine_and_clamps_zero_query()
             AND tablename = 'embeddings'
             AND indexname = 'idx_embeddings_vec_hnsw'",
     )
-    .fetch_optional(pg.pool())
+    .fetch_optional(pg.pool_for_tests())
     .await?;
     let indexdef = indexdef.expect("HNSW index exists");
     assert!(indexdef.contains("USING hnsw"), "{indexdef}");
@@ -218,7 +218,7 @@ async fn lexical_search_ignores_unprojected_code_chunk_text()
     let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     sqlx::query("CREATE SCHEMA IF NOT EXISTS proxima_code")
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
     sqlx::query(
         "CREATE TABLE proxima_code.code_chunk_v1 (
@@ -229,7 +229,7 @@ async fn lexical_search_ignores_unprojected_code_chunk_text()
              text text NOT NULL
          )",
     )
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
 
     let owner = owner_fixture();
@@ -243,7 +243,7 @@ async fn lexical_search_ignores_unprojected_code_chunk_text()
     )
     .bind(chunk_id.into_inner())
     .bind(long_token)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
 
     let projections = vec![code_chunk_projection()];
@@ -269,7 +269,7 @@ async fn lexical_search_ignores_sidecar_without_projection()
     let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     sqlx::query("CREATE SCHEMA IF NOT EXISTS proxima_test")
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
     sqlx::query(
         "CREATE TABLE proxima_test.unprojected_v1 (
@@ -277,7 +277,7 @@ async fn lexical_search_ignores_sidecar_without_projection()
              secret text NOT NULL
          )",
     )
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
 
     let owner = owner_fixture();
@@ -286,7 +286,7 @@ async fn lexical_search_ignores_sidecar_without_projection()
     sqlx::query("INSERT INTO proxima_test.unprojected_v1 (memory_id, secret) VALUES ($1, $2)")
         .bind(memory_id.into_inner())
         .bind("hidden payload phrase")
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
 
     let rows = pg
@@ -304,7 +304,7 @@ async fn search_filters_tags_across_modes_and_excludes_untagged()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
-    create_tagged_search_sidecars(pg.pool()).await?;
+    create_tagged_search_sidecars(pg.pool_for_tests()).await?;
 
     let owner = owner_fixture();
     let now = time::OffsetDateTime::from_unix_timestamp(1_700_000_000)?;
@@ -400,7 +400,7 @@ async fn search_filters_created_at_range_and_populates_created_at()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
-    create_tagged_search_sidecars(pg.pool()).await?;
+    create_tagged_search_sidecars(pg.pool_for_tests()).await?;
 
     let owner = owner_fixture();
     let base = time::OffsetDateTime::from_unix_timestamp(1_700_010_000)?;
@@ -469,7 +469,7 @@ async fn search_order_recency_sorts_matching_candidates_newest_first()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
-    create_tagged_search_sidecars(pg.pool()).await?;
+    create_tagged_search_sidecars(pg.pool_for_tests()).await?;
 
     let owner = owner_fixture();
     let base = time::OffsetDateTime::from_unix_timestamp(1_700_020_000)?;
@@ -572,7 +572,7 @@ async fn insert_tagged_abstraction(
     .bind(owner_id)
     .bind(input.created_at)
     .bind(input.body)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     let tags: Vec<String> = input.tags.iter().map(|tag| (*tag).to_string()).collect();
     sqlx::query(
@@ -583,7 +583,7 @@ async fn insert_tagged_abstraction(
     .bind(input.title)
     .bind(input.body)
     .bind(tags)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     if let Some(embedding) = input.embedding {
         sqlx::query(
@@ -596,7 +596,7 @@ async fn insert_tagged_abstraction(
         .bind(vector_literal(&padded_embedding(embedding)))
         .bind(owner_kind)
         .bind(owner_id)
-        .execute(pg.pool())
+        .execute(pg.pool_for_tests())
         .await?;
     }
     Ok(MemoryId::new(input.memory_id))
@@ -634,7 +634,7 @@ async fn insert_embedded_memory_with_vec(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(text)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
@@ -646,7 +646,7 @@ async fn insert_embedded_memory_with_vec(
     .bind(vector_literal(embedding))
     .bind(owner_kind)
     .bind(owner_id)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(memory_id)
 }
@@ -672,7 +672,7 @@ async fn insert_text_memory(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(text)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(memory_id)
 }
@@ -700,7 +700,7 @@ async fn insert_search_abstraction(
     .bind(owner_id)
     .bind(text)
     .bind(supersedes)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(memory_id)
 }

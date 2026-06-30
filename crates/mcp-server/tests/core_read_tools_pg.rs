@@ -3,7 +3,7 @@ mod common;
 use std::sync::Arc;
 
 use common::{create_db, db_url, drop_db};
-use proxima_core::mcp::McpAuthorContext;
+use proxima_core::mcp::{McpAuthorContext, McpToolExtensions};
 use proxima_core::{Engine, FlavorRegistry, Owner, OwnerRef, RelationClass, UserId};
 use proxima_mcp_server::{McpAuthContext, McpToolHost};
 use proxima_storage_pg::PgStorage;
@@ -21,12 +21,11 @@ async fn core_read_resources_return_prefixed_ids_and_author()
     let derived = insert_memory(&pg, &owner, "derived lineage memory").await?;
     let edge = insert_edge(&pg, &owner, derived, source).await?;
 
-    let registry = FlavorRegistry::new().freeze();
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let engine = Arc::new(
         Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
     );
-    let server =
-        McpToolHost::from_pool(pg.pool().clone(), owner, Arc::new(registry)).with_engine(engine);
+    let server = McpToolHost::from_engine(engine, owner, McpToolExtensions::default());
     // The host is now the authoritative scope chokepoint, so reads need an
     // authenticated full-scope context (production always passes Some(auth);
     // a None context is unauthenticated and correctly denied).
@@ -111,7 +110,7 @@ async fn insert_memory(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(text)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(memory_id)
 }
@@ -141,7 +140,7 @@ async fn insert_edge(
     .bind(RelationClass::Provenance)
     .bind(source)
     .bind(target)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(edge_id)
 }

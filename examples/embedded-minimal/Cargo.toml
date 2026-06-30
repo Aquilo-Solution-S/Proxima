@@ -11,7 +11,6 @@ publish = false
 workspace = true
 
 [dependencies]
-proxima-core = { path = "../../crates/core" }
 proxima = { path = "../../crates/proxima" }
 blake3 = { workspace = true }
 sqlx = { workspace = true }
@@ -23,4 +22,3 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 proxima-pg-testkit = { path = "../../crates/pg-testkit" }
-proxima-storage-pg = { path = "../../crates/storage-pg" }

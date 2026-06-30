@@ -53,7 +53,7 @@ async fn insert_derived_memory(
     .bind(schema_id)
     .bind(kind)
     .bind(operator_kind)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(MemoryId::new(memory_id))
 }
@@ -88,7 +88,7 @@ async fn insert_memory_edge(
     .bind(source_memory_id.into_inner())
     .bind(target_kind)
     .bind(target_memory_id.into_inner())
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(())
 }

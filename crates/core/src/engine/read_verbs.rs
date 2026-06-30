@@ -461,7 +461,7 @@ mod tests {
     };
 
     fn engine() -> Engine {
-        Engine::new(FlavorRegistry::new().freeze())
+        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
     }
 
     fn owner() -> OwnerRef {

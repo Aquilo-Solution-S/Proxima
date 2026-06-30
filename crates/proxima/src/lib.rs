@@ -16,112 +16,35 @@
 //!   [`RuntimeBuilder`]/[`RuntimeConfig`], and the `from_env` → migrate →
 //!   compose → `run` flow. A host binary that just stands up the MCP server
 //!   needs nothing below this line.
-//! - **Extension API (flavor authors / advanced hosts):** the re-exports of
-//!   `proxima-core` payload traits + ids and of `proxima-storage-pg` typed
-//!   verbs and sidecar generators (e.g. [`pg_sidecar`], [`PgMemorySidecar`],
-//!   [`ingest_fact`], [`append_derived_with_edges_in_tx`], [`proxima_flavor`],
-//!   [`CitationSpec`]). These are deliberately surfaced
-//!   through the facade so a flavor or host can build typed sidecars, citations,
-//!   and ingest paths while **reducing or avoiding direct dependencies on
-//!   `proxima-core` / `proxima-storage-pg`**. They are part of the framework's
-//!   supported surface, not internal leakage; treat them as lower-level and
-//!   longer-to-stabilize than the host entry point. (`examples/embedded-minimal`
-//!   imports a few core types directly for illustration; hosts may instead route
-//!   those through these re-exports.)
+//! - **Flavor SDK:** import from `proxima::flavor`, not the root facade. The
+//!   SDK exposes payload traits, ids, `proxima_flavor!`, `Tool`/`ToolCtx`,
+//!   relation descriptors, sidecar macros/traits, and registry types. It does
+//!   not expose raw `PgPool`, raw storage verbs, or proofless append helpers.
+//!   Flavor crates should avoid direct `proxima-core` / `proxima-storage-pg`
+//!   dependencies except backend-owned adapters explicitly outside the stable
+//!   SDK boundary.
 
 mod app;
 mod bundle;
 mod config;
 mod core_mcp;
+pub mod flavor;
+pub mod host;
 mod migrations;
 mod runtime;
 mod runtime_config;
 
-pub use app::{AppContext, AppInfo, Authz, FlavorApp};
-pub use bundle::FlavorBundle;
-pub use config::EmbedConfig;
-pub use core_mcp::{CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo};
-pub use migrations::{
-    MigrationError, MigrationRunReport, NamedMigrator, run_core_and_flavor_migrations,
-};
-pub use proxima_core::error::ProtocolError;
-pub use proxima_core::llm;
-pub use proxima_core::verbs::fact_ingest::{
-    AuthorizedCitationAttachment, CitationSpec, FactIngestOutcome, FactReceiptDraft,
-    FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
-};
-pub use proxima_core::verbs::goal_write::{
-    GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalEvidenceRef, GoalPayloadWrite,
-    GoalState, GoalWriteBuildError, GoalWriteOutcome, IdempotencyKey, MAX_GOAL_TEXT_CHARS,
-    MAX_GOAL_TITLE_CHARS, OperatorKind, SystemOrigin,
-};
-pub use proxima_core::verbs::mcp_call_history::{
-    MAX_MCP_CALL_HISTORY_LIMIT, McpCallHistoryRequest, McpCallHistoryResponse, McpCallRecord,
-};
-pub use proxima_core::verbs::query::{
-    EdgeExistsRequest, EdgeExistsResponse, EdgeFilter, EdgeReadRequest, EdgeReadResponse, EdgeRow,
-    FactCitationReadback, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode,
-    MemoryLineageRequest, MemoryLineageResponse, MemoryRow, QueryRequest, QueryResponse,
-    SupersessionStatus, TombstoneFilter,
-};
-pub use proxima_core::verbs::schema::{
-    PayloadKind, RelationInfo, RelationPayloadSchemaRef, SchemaRequest, SchemaResponse,
-};
-pub use proxima_core::{
-    AbstractionPayload, AccessScope, AuthPath, AuthzContext, CapabilitySet, CitationMappingPayload,
-    CitedObjectPayload, Engine, EngineHandle, FactPayload, FactReceiptId, FlavorRegistry,
-    GoalPayload, GroupId, Identity, InputContractId, McpCallLogInput, McpCallLogOutcome, MemoryId,
-    ModelId, OperatorId, Owner, OwnerRef, PerspectivePayload, PromptVersion, Relation, Role,
-    SchemaId, SchemaVersion, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
-    SidecarPayload, SourceBatchId, StorageError, ToolId, ToolScope, UserId, canonical_json_bytes,
-    provider_safe_tool_name, proxima_flavor,
-};
-pub use proxima_core::{
-    AuthorDerivedEdgeInput, AuthorDerivedOutcome, AuthorDerivedRequestInput, AuthorshipKindMask,
-    EdgeAuthorshipKind, EdgeId, EdgeTargetProjection, EndpointBinding, EntityKind, EntityKindMask,
-    EntityRef, FactEntityId, FlavorRegistryFrozen, GoalId, McpTool, McpToolCtx, McpToolError,
-    McpToolErrorKind, MemoryOperatorKind, PayloadKeyBuilder, RegisteredRelation, RelationClass,
-    RelationDescriptor, SchemaRef,
-};
-#[cfg(feature = "openai-compat-embed")]
-pub use proxima_llm_openai_compat::{
-    MISTRAL_EMBED_BASE_URL, MISTRAL_EMBED_MODEL, OpenAiCompatConfig, OpenAiCompatEmbeddingClient,
-};
-pub use proxima_mcp_server::selfdoc::{build_instructions, how_to_markdown};
-pub use proxima_mcp_server::{McpAuthContext, ResourceServerMetadata};
-#[cfg(feature = "testkit")]
-pub use proxima_pg_testkit as testkit;
-/// Declarative PG sidecar generator for flavor-owned typed sidecar tables.
-pub use proxima_storage_pg::pg_sidecar;
-pub use proxima_storage_pg::query::fact_entity_id_for;
-pub use proxima_storage_pg::sidecars::{
-    PgCitationMappingSidecar, PgCitedObjectSidecar, PgEdgeSidecar, PgGoalSidecar, PgMemoryPayload,
-    PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture,
-};
-pub use proxima_storage_pg::verbs::derive_append::{
-    DerivedDraft, DerivedOutcome, append_derived_with_edges_in_tx,
-};
-
-pub use proxima_storage_pg::verbs::fact_embeddings::{
-    list_facts_missing_embedding, load_fact_text, load_fact_text_in_tx, upsert_fact_embedding,
-};
-pub use proxima_storage_pg::verbs::fact_ingest::{
-    AttachCitationOutcome, attach_citation_in_tx, ingest_fact, ingest_fact_in_tx,
-    ingest_fact_with_citation_atomic, ingest_fact_with_citation_in_tx,
-};
-pub use proxima_storage_pg::{
-    PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, register_core_pg_sidecars,
-};
-pub use runtime::{
-    BuiltProxima, Proxima, RunningProxima, layered_router, layered_router_with_revalidation, run,
-};
-pub use runtime_config::{McpSettings, ProximaError, RuntimeBuilder, RuntimeConfig, RuntimeParts};
+pub use host::*;
 
 use std::sync::Arc;
 
+use crate::bundle::FlavorBundle;
 use proxima_blob_s3::CitedBlobStore;
 use proxima_core::llm::{AnthropicClient, EmbeddingClient};
-use proxima_storage_pg::PgStorage;
+use proxima_core::{FlavorRegistry, GroupId};
+use proxima_storage_pg::{
+    PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
+};
 use sqlx::PgPool;
 
 /// One Owner per embedded host: a Group principal.
@@ -168,7 +91,8 @@ pub async fn read_mcp_call_history(
     engine.read_mcp_call_history(authz, req).await
 }
 
-type RegisterFn = Box<dyn FnOnce(&mut FlavorRegistry) + Send>;
+type RegisterFn =
+    Box<dyn FnOnce(&mut FlavorRegistry) -> Result<(), proxima_core::FlavorRegistryError> + Send>;
 type PgSidecarRegisterFn = Box<dyn FnOnce(&mut PgSidecarRegistry) + Send>;
 
 /// Builder for an embedded engine.
@@ -200,18 +124,26 @@ impl std::fmt::Debug for ProximaBuilder {
 pub struct EmbeddedProxima {
     pub engine: Arc<Engine>,
     pub handle: EngineHandle,
-    pub pool: PgPool,
+    pool: PgPool,
     pub registry: Arc<proxima_core::FlavorRegistryFrozen>,
     pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Owner,
 }
 
+impl EmbeddedProxima {
+    /// Test-only backend pool access for integration fixtures.
+    #[cfg(any(test, feature = "testkit", debug_assertions))]
+    #[must_use]
+    pub fn pool_for_tests(&self) -> &PgPool {
+        &self.pool
+    }
+}
+
 impl std::fmt::Debug for EmbeddedProxima {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EmbeddedProxima")
             .field("handle", &self.handle)
-            .field("pool", &self.pool)
             .field("blobs", &self.blobs)
             .field("owner", &self.owner)
             .finish_non_exhaustive()
@@ -236,7 +168,9 @@ impl ProximaBuilder {
     #[must_use]
     pub fn flavor(
         self,
-        register: impl FnOnce(&mut FlavorRegistry) + Send + 'static,
+        register: impl FnOnce(&mut FlavorRegistry) -> Result<(), proxima_core::FlavorRegistryError>
+        + Send
+        + 'static,
         migrator: Option<sqlx::migrate::Migrator>,
     ) -> Self {
         self.flavor_named("inline-flavor", register, migrator)
@@ -248,7 +182,9 @@ impl ProximaBuilder {
     pub fn flavor_named(
         mut self,
         source: &'static str,
-        register: impl FnOnce(&mut FlavorRegistry) + Send + 'static,
+        register: impl FnOnce(&mut FlavorRegistry) -> Result<(), proxima_core::FlavorRegistryError>
+        + Send
+        + 'static,
         migrator: Option<sqlx::migrate::Migrator>,
     ) -> Self {
         self.registers.push(Box::new(register));
@@ -320,9 +256,9 @@ impl ProximaBuilder {
 
         let mut registry = FlavorRegistry::new();
         for register in registers {
-            register(&mut registry);
+            register(&mut registry).map_err(EmbedError::Registry)?;
         }
-        let registry = registry.freeze();
+        let registry = registry.try_freeze().map_err(EmbedError::Registry)?;
 
         let mut pg_sidecars = PgSidecarRegistry::new();
         register_core_pg_sidecars(&mut pg_sidecars);
@@ -350,7 +286,7 @@ impl ProximaBuilder {
             .start()
             .await
             .map_err(|e| EmbedError::Engine(e.to_string()))?;
-        let pool = pg.pool().clone();
+        let pool = pg.clone_pool_for_backend();
         let registry = Arc::new(engine.registry().clone());
         let blobs = config.s3.map(|s3| CitedBlobStore::new(pool.clone(), s3));
         Ok(EmbeddedProxima {
@@ -370,6 +306,8 @@ impl ProximaBuilder {
 pub enum EmbedError {
     #[error("config: {0}")]
     Config(String),
+    #[error("registry: {0}")]
+    Registry(#[from] proxima_core::FlavorRegistryError),
     #[error("storage: {0}")]
     Storage(String),
     #[error("engine: {0}")]

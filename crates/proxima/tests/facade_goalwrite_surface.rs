@@ -1,7 +1,9 @@
+use proxima::flavor::{GoalPayload, PayloadKeyBuilder};
 use proxima::{
-    GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalPayload, GoalPayloadWrite,
-    IdempotencyKey, MemoryId, OwnerRef, PayloadKeyBuilder, SystemOrigin, ToolId, UserId,
+    GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalPayloadWrite, IdempotencyKey,
+    MemoryId, OwnerRef, SystemOrigin,
 };
+use proxima_core::{ToolId, UserId};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct FacadeGoalPayload {

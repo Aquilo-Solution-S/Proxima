@@ -121,7 +121,7 @@ async fn insert_memory(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(text)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(memory_id)
 }
@@ -154,7 +154,7 @@ async fn insert_edge(
     .bind(relation_class)
     .bind(source)
     .bind(target)
-    .execute(pg.pool())
+    .execute(pg.pool_for_tests())
     .await?;
     Ok(edge_id)
 }

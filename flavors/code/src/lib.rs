@@ -4,12 +4,13 @@
 
 pub mod calls;
 pub mod chunker;
-pub mod ingest;
+mod ingest;
 pub mod local_git_source;
 pub mod mcp;
 pub mod migrations;
 pub mod payloads;
-pub mod repos;
+mod repos;
+mod store;
 
 pub use ingest::{
     ACCEPTANCE_CRITERIA_OBJECT_SCHEMA, ACCEPTANCE_CRITERIA_WHOLE_SCHEMA,
@@ -18,11 +19,10 @@ pub use ingest::{
     EXECUTION_REQUEST_OBJECT_SCHEMA, EXECUTION_REQUEST_WHOLE_SCHEMA,
     EXECUTION_RESULT_OBJECT_SCHEMA, EXECUTION_RESULT_WHOLE_SCHEMA, IngestError,
     LOCAL_GIT_SOURCE_ID, TEST_REQUEST_OBJECT_SCHEMA, TEST_REQUEST_WHOLE_SCHEMA,
-    TEST_RESULT_OBJECT_SCHEMA, TEST_RESULT_WHOLE_SCHEMA, append_code_slice, build_engine,
-    build_engine_with, close_local_git_batch, ingest_commit, ingest_file_revision,
+    TEST_RESULT_OBJECT_SCHEMA, TEST_RESULT_WHOLE_SCHEMA, schema_registry, schema_registry_with,
 };
 pub use local_git_source::{
-    HeadSnapshotOutcome, IndexError, IndexReport, IngestProgress, LocalGitSource,
+    CodeIngestContext, HeadSnapshotOutcome, IndexError, IndexReport, IngestProgress, LocalGitSource,
 };
 pub use migrations::migrator;
 pub use payloads::{
@@ -33,6 +33,7 @@ pub use payloads::{
     CommitV1, EdgeCallsV1, ExecutionRequestV1, ExecutionResultV1, FileRevisionV1, FileState,
     TestRequestV1, TestRequestedV1, TestResultV1, WorkRequestedV1, WorkResultStatus,
 };
+pub use store::CodeFlavorStore;
 
 use proxima_core::{
     AuthorshipKindMask, EndpointBinding, EntityKindMask, RelationClass, RelationDescriptor,
@@ -40,12 +41,25 @@ use proxima_core::{
 };
 pub use repos::{
     RepoEraseReceipt, RepoIngestionRun, RepoRecord, RepoRegistryError, RunStage, RunStatus,
-    StageCounters, advance_stage, begin_run, delete_repo, erase_repo, get_active_run, get_repo,
-    get_run, infer_missing_target_branch, list_repos, mark_failed, mark_succeeded, register_repo,
-    set_repo_target_branch, start_run, start_run_with_created, sweep_orphaned_runs, update_cursor,
+    StageCounters,
 };
 
-proxima_core::proxima_flavor! {
+#[cfg(any(test, debug_assertions))]
+#[doc(hidden)]
+pub mod testkit {
+    pub use crate::ingest::{
+        append_code_slice, build_engine, build_engine_with, close_local_git_batch, ingest_commit,
+        ingest_file_revision,
+    };
+    pub use crate::repos::{
+        advance_stage, begin_run, delete_repo, erase_repo, get_active_run, get_repo, get_run,
+        infer_missing_target_branch, list_repos, mark_failed, mark_succeeded, register_repo,
+        set_repo_target_branch, start_run, start_run_with_created, sweep_orphaned_runs,
+        update_cursor,
+    };
+}
+
+proxima::flavor::proxima_flavor! {
     name = "proxima-code",
     display_name = "Code",
     fact_schemas = [
@@ -161,12 +175,14 @@ pub fn register_pg_sidecars(registry: &mut proxima_storage_pg::PgSidecarRegistry
 #[derive(Debug)]
 pub struct CodeFlavor;
 
-impl proxima::FlavorBundle for CodeFlavor {
-    fn register(registry: &mut proxima_core::FlavorRegistry) {
-        self::register(registry);
+impl proxima::flavor::FlavorBundle for CodeFlavor {
+    fn register(
+        registry: &mut proxima_core::FlavorRegistry,
+    ) -> Result<(), proxima_core::FlavorRegistryError> {
+        self::register(registry)
     }
 
-    fn register_pg_sidecars(registry: &mut proxima::PgSidecarRegistry) {
+    fn register_pg_sidecars(registry: &mut proxima::flavor::PgSidecarRegistry) {
         self::register_pg_sidecars(registry);
     }
 
@@ -191,8 +207,8 @@ mod tests {
     #[test]
     fn registry_contains_all_schemas_and_relations() {
         let mut registry = FlavorRegistry::new();
-        super::register(&mut registry);
-        let frozen = registry.freeze();
+        super::register(&mut registry).unwrap();
+        let frozen = registry.try_freeze().unwrap();
 
         let schemas = frozen.list();
         let schema_ids: HashSet<_> = schemas.iter().map(|s| s.schema_id.as_str()).collect();
@@ -260,8 +276,8 @@ mod tests {
     #[test]
     fn registry_lists_all_mcp_tools() {
         let mut registry = FlavorRegistry::new();
-        super::register(&mut registry);
-        let frozen = registry.freeze();
+        super::register(&mut registry).unwrap();
+        let frozen = registry.try_freeze().unwrap();
 
         let names: HashSet<_> = frozen
             .list_mcp_tools()
@@ -292,8 +308,8 @@ mod tests {
         }
 
         let mut registry = FlavorRegistry::default();
-        super::register(&mut registry);
-        let frozen = registry.freeze();
+        super::register(&mut registry).unwrap();
+        let frozen = registry.try_freeze().unwrap();
         let names: HashSet<_> = frozen
             .list_mcp_tools()
             .iter()

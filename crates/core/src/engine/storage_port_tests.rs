@@ -126,7 +126,7 @@ async fn query_helper_accepts_only_query_read_handles() {
         edge_read: Arc::new(storage_port_tests_support::EdgeReadFake),
     };
     let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
-    let registry = crate::FlavorRegistry::new().freeze();
+    let registry = crate::FlavorRegistry::new().freeze_or_panic_for_tests();
     let req = crate::verbs::query::QueryRequest::for_principal(owner);
 
     let response = super::query::query_authorized(&ports, &registry, &[owner], &req)
@@ -167,7 +167,7 @@ async fn goal_helper_accepts_only_goal_command_handles() {
         goal_write: goal.clone(),
         owner_access_read: goal,
     };
-    let registry = crate::FlavorRegistry::new().freeze();
+    let registry = crate::FlavorRegistry::new().freeze_or_panic_for_tests();
     let req = crate::verbs::goal_write::TransitionGoalAtomicRequest {
         owner: OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7())),
         prior_goal_id: crate::GoalId::new(uuid::Uuid::now_v7()),
