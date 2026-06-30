@@ -590,7 +590,7 @@ impl FlavorRegistry {
     /// # Panics
     ///
     /// Panics if any tag fails [`CapabilityTag::parse`]. The schema
-    /// existence check runs at [`Self::freeze`], after every flavor has
+    /// existence check runs at [`Self::try_freeze`], after every flavor has
     /// registered its schemas.
     /// # Errors
     ///
