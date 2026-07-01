@@ -112,7 +112,7 @@ Aquilo the right to relicense contributions as part of commercial offerings.
 
 ## Code of Conduct
 
-This project follows a standard open source code of conduct. Be respectful,
+This project follows [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md). Be respectful,
 focus on technical facts, and keep discussions constructive. Personal attacks,
 harassment, or trolling will not be tolerated.
 
