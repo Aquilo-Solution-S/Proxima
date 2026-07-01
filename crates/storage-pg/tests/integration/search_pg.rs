@@ -213,6 +213,142 @@ async fn semantic_search_matches_pgvector_cosine_and_clamps_zero_query()
 }
 
 #[tokio::test]
+async fn semantic_search_uses_current_embedding_head() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let stale_far = padded_embedding([0.0, 1.0, 0.0]);
+    let current_near = padded_embedding([1.0, 0.0, 0.0]);
+    let memory_id =
+        insert_embedded_memory_with_vec(&pg, &owner, "current head", &stale_far).await?;
+    let (owner_kind, owner_id) = owner.columns();
+    insert_embedding_with_head(
+        pg.pool_for_tests(),
+        EntityKind::Abstraction,
+        memory_id,
+        "test-embed",
+        2,
+        &current_near,
+        owner_kind,
+        owner_id,
+    )
+    .await?;
+
+    let rows = pg
+        .search_memories(&semantic_request(&owner, current_near), &[])
+        .await?;
+
+    assert_eq!(
+        rows.first().map(|row| row.memory_id.into_inner()),
+        Some(memory_id)
+    );
+    assert!(
+        rows.first().is_some_and(|row| row.similarity_score > 0.99),
+        "{rows:#?}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn semantic_search_filters_current_and_authorized_before_candidate_limit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let other_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let query = padded_embedding([1.0, 0.0, 0.0]);
+    let stale_current_far = padded_embedding([0.0, 1.0, 0.0]);
+    let target_vec = padded_embedding([0.8, 0.2, 0.0]);
+    let target =
+        insert_embedded_memory_with_vec(&pg, &owner, "authorized current target", &target_vec)
+            .await?;
+    let (owner_kind, owner_id) = owner.columns();
+
+    for idx in 0..300 {
+        let inaccessible = insert_embedded_memory_with_vec(
+            &pg,
+            &other_owner,
+            &format!("inaccessible near {idx}"),
+            &query,
+        )
+        .await?;
+        assert_ne!(inaccessible, target);
+
+        let stale =
+            insert_embedded_memory_with_vec(&pg, &owner, &format!("stale near {idx}"), &query)
+                .await?;
+        insert_embedding_with_head(
+            pg.pool_for_tests(),
+            EntityKind::Abstraction,
+            stale,
+            "test-embed",
+            2,
+            &stale_current_far,
+            owner_kind,
+            owner_id,
+        )
+        .await?;
+    }
+
+    let mut req = semantic_request(&owner, query);
+    req.limit = 1;
+    let rows = pg.search_memories(&req, &[]).await?;
+
+    assert_eq!(
+        rows.first().map(|row| row.memory_id.into_inner()),
+        Some(target),
+        "{rows:#?}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn semantic_search_filters_query_predicates_before_candidate_limit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let query = padded_embedding([1.0, 0.0, 0.0]);
+    let target_vec = padded_embedding([0.8, 0.2, 0.0]);
+    let target =
+        insert_embedded_memory_with_vec(&pg, &owner, "matching schema target", &target_vec).await?;
+    for idx in 0..540 {
+        let bad = insert_embedded_memory_with_schema(
+            &pg,
+            &owner,
+            "test/search-other-abstraction-v1",
+            &format!("schema filtered near {idx}"),
+            &query,
+        )
+        .await?;
+        assert_ne!(bad, target);
+    }
+
+    let mut req = semantic_request(&owner, query);
+    req.limit = 1;
+    let rows = pg.search_memories(&req, &[]).await?;
+
+    assert_eq!(
+        rows.first().map(|row| row.memory_id.into_inner()),
+        Some(target),
+        "{rows:#?}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn lexical_search_ignores_unprojected_code_chunk_text()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
@@ -586,17 +722,16 @@ async fn insert_tagged_abstraction(
     .execute(pg.pool_for_tests())
     .await?;
     if let Some(embedding) = input.embedding {
-        sqlx::query(
-            "INSERT INTO proxima_core.embeddings
-                (entity_kind, entity_id, embedding_version, model_id, vec,
-                 owner_kind, owner_id)
-             VALUES ('Abstraction', $1, 1, 'test-embed', $2::vector, $3, $4)",
+        insert_embedding_with_head(
+            pg.pool_for_tests(),
+            EntityKind::Abstraction,
+            input.memory_id,
+            "test-embed",
+            1,
+            &padded_embedding(embedding),
+            owner_kind,
+            owner_id,
         )
-        .bind(input.memory_id)
-        .bind(vector_literal(&padded_embedding(embedding)))
-        .bind(owner_kind)
-        .bind(owner_id)
-        .execute(pg.pool_for_tests())
         .await?;
     }
     Ok(MemoryId::new(input.memory_id))
@@ -618,14 +753,25 @@ async fn insert_embedded_memory_with_vec(
     text: &str,
     embedding: &[f32],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
+    insert_embedded_memory_with_schema(pg, owner, "test/search-abstraction-v1", text, embedding)
+        .await
+}
+
+async fn insert_embedded_memory_with_schema(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    schema_id: &str,
+    text: &str,
+    embedding: &[f32],
+) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
     let (owner_kind, owner_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
              operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
-         VALUES ($1, $2, $3, 'test/search-abstraction-v1', 1,
-                 'Abstraction', $4, 'AtoA',
+         VALUES ($1, $2, $3, $4, 1,
+                 'Abstraction', $5, 'AtoA',
                  '00000000-0000-0000-0000-000000000323'::uuid,
                  '00000000-0000-0000-0000-000000000324'::uuid, NULL,
                  'test-model', 'test-v1')"
@@ -633,20 +779,20 @@ async fn insert_embedded_memory_with_vec(
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_id)
+    .bind(schema_id)
     .bind(text)
     .execute(pg.pool_for_tests())
     .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.embeddings
-            (entity_kind, entity_id, embedding_version, model_id, vec,
-             owner_kind, owner_id)
-         VALUES ('Abstraction', $1, 1, 'test-embed', $2::vector, $3, $4)",
+    insert_embedding_with_head(
+        pg.pool_for_tests(),
+        EntityKind::Abstraction,
+        memory_id,
+        "test-embed",
+        1,
+        embedding,
+        owner_kind,
+        owner_id,
     )
-    .bind(memory_id)
-    .bind(vector_literal(embedding))
-    .bind(owner_kind)
-    .bind(owner_id)
-    .execute(pg.pool_for_tests())
     .await?;
     Ok(memory_id)
 }
@@ -812,6 +958,54 @@ fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
     let mut embedding = vec![0.0; EMBEDDING_DIM];
     embedding[..prefix.len()].copy_from_slice(&prefix);
     embedding
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn insert_embedding_with_head(
+    pool: &sqlx::PgPool,
+    entity_kind: EntityKind,
+    entity_id: Uuid,
+    model_id: &str,
+    embedding_version: i32,
+    embedding: &[f32],
+    owner_kind: proxima_core::OwnerRefKind,
+    owner_id: Option<Uuid>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO proxima_core.embeddings
+            (entity_kind, entity_id, embedding_version, model_id, vec,
+             owner_kind, owner_id)
+         VALUES ($1, $2, $3, $4, $5::vector, $6, $7)",
+    )
+    .bind(entity_kind)
+    .bind(entity_id)
+    .bind(embedding_version)
+    .bind(model_id)
+    .bind(vector_literal(embedding))
+    .bind(owner_kind)
+    .bind(owner_id)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.embedding_heads
+            (entity_kind, entity_id, model_id, embedding_version, owner_kind, owner_id)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (entity_kind, entity_id, model_id)
+         DO UPDATE SET
+             embedding_version = EXCLUDED.embedding_version,
+             owner_kind = EXCLUDED.owner_kind,
+             owner_id = EXCLUDED.owner_id,
+             updated_at = now()",
+    )
+    .bind(entity_kind)
+    .bind(entity_id)
+    .bind(model_id)
+    .bind(embedding_version)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 fn vector_literal(vec: &[f32]) -> String {

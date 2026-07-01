@@ -6,12 +6,9 @@ use std::sync::Arc;
 use proxima_core::engine::Engine;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
-use proxima_core::{EntityKind, OwnerRef, SchemaId, SchemaVersion, UserId};
+use proxima_core::{OwnerRef, SchemaId, SchemaVersion, UserId};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::fact_embeddings::{list_facts_missing_embedding, load_fact_text};
-use proxima_storage_pg::verbs::hard_delete::{
-    HardDeleteSet, HardDeleteSidecars, execute_hard_delete,
-};
 use uuid::Uuid;
 
 fn schemas_for_test() -> Vec<SchemaInfo> {
@@ -92,26 +89,6 @@ async fn receiptless_fact_ingest_creates_fresh_queryable_facts() {
             list_facts_missing_embedding(pg.pool_for_tests(), &owner, "test-embed", 10).await?;
         assert!(missing.contains(&first.memory_id));
         assert!(missing.contains(&second.memory_id));
-
-        let mut tx = pg.pool_for_tests().begin().await?;
-        let hard_delete_counts = execute_hard_delete(
-            &mut tx,
-            &HardDeleteSet {
-                memories: vec![(EntityKind::Fact, first.memory_id.into_inner())],
-                edge_ids: vec![],
-                fact_entity_ids: vec![],
-                receipt_ids: vec![],
-            },
-            &HardDeleteSidecars {
-                memory_keyed: &[],
-                edge_keyed: &[],
-                citation_mapping_keyed: &[],
-            },
-        )
-        .await?;
-        tx.commit().await?;
-        assert_eq!(hard_delete_counts.memories, 1);
-        assert_eq!(hard_delete_counts.receipts, 0);
 
         Ok(())
     }

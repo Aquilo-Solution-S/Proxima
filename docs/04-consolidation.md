@@ -9,7 +9,7 @@ policy, and retrieval policy.
 ## Shape
 
 ```
-EventSource receipt metadata
+source receipt metadata
   -> receipt-backed Fact + structural Edge
   -> closed source batch
   -> Abstraction + provenance Edge
@@ -26,14 +26,14 @@ Phase split:
 
 | Phase | Input | Output | Runtime |
 |---|---|---|---|
-| EventSource ingest | external observation + receipt metadata | receipt-backed Fact + structural Edge | 01 / 03 / 05 |
+| FactIngest | external observation + receipt metadata | receipt-backed Fact + structural Edge | 01 / 03 / 05 |
 | F->A | Fact set, source batch | Abstraction + provenance Edge | flavor-operator discipline |
 | A->P | Abstraction set, active Perspective context | Perspective + provenance Edge | operator / harness |
 | A->Goal | Abstraction set, active Perspective context | Goal + evidence Edge | operator / harness |
 
 ## Source-batch lifecycle
 
-`source_batches` is core EventSource lifecycle, not a domain payload.
+`source_batches` is core source-ingest lifecycle, not a domain payload.
 
 | Column family | Rule |
 |---|---|

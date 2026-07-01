@@ -28,7 +28,7 @@ host injects for vector retrieval and an optional model-seat client.
 | Embedding client | binary-wide | optional `Arc<dyn EmbeddingClient>` injected at boot |
 | Anthropic model client | binary-wide | optional `Arc<dyn AnthropicClient>` host-injected; programmatic only |
 | Large artefact S3 storage | binary-wide | process env + AWS SDK credential chain |
-| EventSource credentials | per source instance | source-owned, not engine-owned |
+| source credentials | per source instance | source-owned, not engine-owned |
 
 Not runtime configurable: schema ids, payload types, relation
 descriptors, prompts, tool definitions, source types, wake trigger kinds,
@@ -111,10 +111,10 @@ Profiles:
 | Profile | Scope |
 |---|---|
 | `full` | Default. No filtering (`ToolScope::All`) when allow/deny are unset; otherwise all registered ids resolved to a palette. |
-| `memory` | Curated memory-brain palette: memory authoring/retrieval, citations, graph/schema introspection, non-destructive Fact/citation actions (the destructive `core_fact:tombstone` and retention/cleanup stay host/config-only — excluded), the full goal lifecycle, and code-as-memory repository/chunk/commit reads. |
+| `memory` | Curated memory-brain palette: memory authoring/retrieval, citations, graph/schema introspection, citation-only Fact actions, the full goal lifecycle, and code-as-memory repository/chunk/commit reads. Compliance erase is Host API/admin-only, not an MCP memory-profile action. |
 
 Allow/deny ids use canonical scope keys: tool ids (`core_search_memories`),
-group-action leaf keys (`core_goal:set`, `core_fact:tombstone`), resource
+group-action leaf keys (`core_goal:set`, `core_fact:citation_of_fact`), resource
 keys (`resource:memory`, `resource:change-events`), or flavor ids
 (`proxima-code_search_chunks`). Unknown profile names fail boot. Unknown
 ids in allow/deny log `warn` and do not fail boot.
@@ -133,8 +133,9 @@ those tables and their config tools were removed. The host wires its own
 provider (e.g. via `crates/llm-openai-compat`) and is responsible for
 keeping vector dimensions consistent: vector rows are shared
 infrastructure, so a binary uses one embedding space and changing it may
-require re-embedding. If no client is injected, semantic search modes are
-unavailable; lexical paths still work.
+require re-embedding. Re-embedding appends a new version and advances
+`embedding_heads`; prior vector rows are not updated. If no client is
+injected, semantic search modes are unavailable; lexical paths still work.
 
 `apps/proxima-mcp` injects a Mistral client only when `MISTRAL_API_KEY`
 is present:
@@ -154,7 +155,8 @@ drains queued embedding jobs automatically in-process every few seconds;
 no external drain cron is required.
 
 Embedding job reconciliation remains a global maintenance command for
-backfill / stale re-embedding, not an owner-scoped MCP tool:
+model-specific missing-head backfill / stale re-embedding, not an
+owner-scoped MCP tool:
 
 ```sh
 proxima-mcp reconcile-embeddings

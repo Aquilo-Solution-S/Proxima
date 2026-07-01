@@ -13,7 +13,7 @@ owners, roles, and World are structural over it.
 
 A `Role` is two independent capability ceilings over the access ladder
 F < A < P < G — how high a member may READ and how high they may WRITE (read and
-write are separate, so a source-ingest role never widens into a general editor)
+write are separate, so an `Ingest` owner role never widens into a general editor)
 — plus a `manage` flag for META-MANAGEMENT of the group itself (membership and
 role assignment). A "user" is the special case of a Group: the personal group,
 automatically present for every user, in which that user holds the maximal

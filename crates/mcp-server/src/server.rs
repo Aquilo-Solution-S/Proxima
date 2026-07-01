@@ -17,6 +17,9 @@ use proxima_core::mcp::{
     McpAuthorContext, McpToolCtx, McpToolError, McpToolErrorKind, McpToolExtensions, Next,
     OutputMode, TerminalDispatch, ToolCall, tool_name_matches,
 };
+use proxima_core::protocol::{
+    resource as protocol_resource, resource_path as protocol_resource_path,
+};
 use proxima_core::{AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner};
 use serde::Serialize;
 
@@ -277,13 +280,13 @@ enum ParsedResource {
 impl ParsedResource {
     const fn scope_key(&self) -> &'static str {
         match self {
-            Self::Schemas(_) => "resource:schemas",
-            Self::EdgeTypes(_) => "resource:edge-types",
-            Self::Tools(_) => "resource:tools",
-            Self::Graph(_) => "resource:graph",
-            Self::Memory(_) => "resource:memory",
-            Self::MemoryLineage(_) => "resource:memory-lineage",
-            Self::ChangeEvents(_) => "resource:change-events",
+            Self::Schemas(_) => protocol_resource::SCHEMAS,
+            Self::EdgeTypes(_) => protocol_resource::EDGE_TYPES,
+            Self::Tools(_) => protocol_resource::TOOLS,
+            Self::Graph(_) => protocol_resource::GRAPH,
+            Self::Memory(_) => protocol_resource::MEMORY,
+            Self::MemoryLineage(_) => protocol_resource::MEMORY_LINEAGE,
+            Self::ChangeEvents(_) => protocol_resource::CHANGE_EVENTS,
         }
     }
 }
@@ -296,25 +299,29 @@ fn parse_resource_uri(uri: &str) -> Option<ParsedResource> {
     let query = parse_query(query)?;
 
     match path {
-        "schemas" => Some(ParsedResource::Schemas(ListSchemasArgs {
+        protocol_resource_path::SCHEMAS => Some(ParsedResource::Schemas(ListSchemasArgs {
             kind: query_value(&query, "kind").map(ToOwned::to_owned),
         })),
-        "edge-types" => Some(ParsedResource::EdgeTypes(ListEdgeTypesArgs {})),
-        "tools" => Some(ParsedResource::Tools(ListSubstrateToolsArgs {})),
-        "graph" => Some(ParsedResource::Graph(GetGraphArgs {
+        protocol_resource_path::EDGE_TYPES => Some(ParsedResource::EdgeTypes(ListEdgeTypesArgs {})),
+        protocol_resource_path::TOOLS => Some(ParsedResource::Tools(ListSubstrateToolsArgs {})),
+        protocol_resource_path::GRAPH => Some(ParsedResource::Graph(GetGraphArgs {
             include_tombstoned: query_bool(&query, "include_tombstoned"),
         })),
-        "change-events" => Some(ParsedResource::ChangeEvents(ListChangeEventsArgs {
-            since: query_value(&query, "since").map(ToOwned::to_owned),
-            limit: query_parse(&query, "limit").ok()?,
-        })),
+        protocol_resource_path::CHANGE_EVENTS => {
+            Some(ParsedResource::ChangeEvents(ListChangeEventsArgs {
+                since: query_value(&query, "since").map(ToOwned::to_owned),
+                limit: query_parse(&query, "limit").ok()?,
+            }))
+        }
         path if path.starts_with("memory/") => parse_memory_resource_path(path, &query),
         _ => None,
     }
 }
 
 fn parse_memory_resource_path(path: &str, query: &[(&str, &str)]) -> Option<ParsedResource> {
-    let rest = path.strip_prefix("memory/")?;
+    let rest = path
+        .strip_prefix(protocol_resource_path::MEMORY)?
+        .strip_prefix('/')?;
     if let Some(id) = rest.strip_suffix("/lineage") {
         if id.is_empty() || id.contains('/') {
             return None;
@@ -444,6 +451,30 @@ mod tests {
         assert!(parse_resource_uri("proxima://memory//lineage").is_none());
         assert!(parse_resource_uri("proxima://memory/F:one/two/lineage").is_none());
         assert!(parse_resource_uri("proxima://change-events?limit=not-a-number").is_none());
+    }
+
+    #[test]
+    fn resource_constants_match_server_resource_keys() {
+        let cases = [
+            ("proxima://schemas", protocol_resource::SCHEMAS),
+            ("proxima://edge-types", protocol_resource::EDGE_TYPES),
+            ("proxima://tools", protocol_resource::TOOLS),
+            ("proxima://graph", protocol_resource::GRAPH),
+            (
+                "proxima://memory/F:018f0000-0000-7000-8000-000000000001",
+                protocol_resource::MEMORY,
+            ),
+            (
+                "proxima://memory/A:018f0000-0000-7000-8000-000000000001/lineage",
+                protocol_resource::MEMORY_LINEAGE,
+            ),
+            ("proxima://change-events", protocol_resource::CHANGE_EVENTS),
+        ];
+
+        for (uri, scope_key) in cases {
+            let parsed = parse_resource_uri(uri).expect("resource parses");
+            assert_eq!(parsed.scope_key(), scope_key);
+        }
     }
 
     #[tokio::test]

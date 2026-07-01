@@ -313,6 +313,7 @@ async fn discovery_reads_filter_by_owner_read_set() {
                 supersession: SupersessionStatus::HeadsOnly,
                 tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
                 limit: 50,
+                page: proxima_core::verbs::query::QueryPage::default(),
                 include_payloads: false,
                 memory_ids: Vec::new(),
                 goal_ids: Vec::new(),
@@ -345,6 +346,7 @@ async fn discovery_reads_filter_by_owner_read_set() {
                 supersession: SupersessionStatus::HeadsOnly,
                 tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
                 limit: 50,
+                page: proxima_core::verbs::query::QueryPage::default(),
                 include_payloads: false,
                 memory_ids: Vec::new(),
                 goal_ids: Vec::new(),
@@ -554,7 +556,7 @@ async fn seed_edge_between_memories(
            ($1, $2, $3, 'test/leaky-edge', 'Structural',
             'Fact', $4, NULL,
             'Fact', $5, NULL,
-            'EventSource', NULL)",
+            'SourceIngest', NULL)",
     )
     .bind(edge_id)
     .bind(owner_kind)

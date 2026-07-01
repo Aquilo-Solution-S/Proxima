@@ -14,8 +14,10 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use proxima_core::SidecarPayload;
 use proxima_core::change_event::{EdgeTargetProjection, EntityRef};
+use proxima_core::compliance::{
+    ComplianceAuditContext, ComplianceEraseOutcome, EraseAuthorization,
+};
 use proxima_core::read_models::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, FactRow, GoalWakeCandidate,
     GoalWakeCandidateRequest, MemorySnapshot, SidecarSpec,
@@ -29,7 +31,6 @@ use proxima_core::storage_ports::{
 };
 use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
-use proxima_core::verbs::fact_cleanup::{CleanupDueFactsOutcome, TombstoneFactOutcome};
 use proxima_core::verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWrite, FactIngestOutcome, FactWriteCommand,
 };
@@ -49,8 +50,9 @@ use proxima_core::{
     EdgeEndpointKindRow, EdgeId, EmbeddingJobClaim, EntityId, EntityKind, FactEntityId,
     FactSourceBatchRow, GroupId, MembershipRow, MemoryDependency, MemoryGraphPayloadRow, MemoryId,
     MemoryKindRow, NeighborEdgeRow, Owner, OwnerRef, Relation, RelationClass, SchemaId,
-    SchemaVersion, SourceBatchId, StorageError, UserId,
+    SchemaVersion, SourceBatchId, SourceId, StorageError, UserId,
 };
+use proxima_core::{EmbeddableEntityRef, EmbeddingWriteOutcome, SidecarPayload};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{PgPool, Postgres, Transaction};
 pub use verbs::fact_embeddings::{
@@ -1170,6 +1172,25 @@ impl EmbeddingTextPort for PgStorage {
 
 #[async_trait::async_trait]
 impl EmbeddingWritePort for PgStorage {
+    async fn insert_embedding(
+        &self,
+        owner: &Owner,
+        entity: EmbeddableEntityRef,
+        model_id: &str,
+        dim: usize,
+        vec: &[f32],
+    ) -> Result<EmbeddingWriteOutcome, StorageError> {
+        let mut tx =
+            self.pool.begin().await.map_err(|err| {
+                StorageError::Internal(format!("begin embedding insert tx: {err}"))
+            })?;
+        let outcome =
+            verbs::fact_embeddings::insert_embedding(&mut tx, owner, entity, model_id, dim, vec)
+                .await?;
+        tx.commit().await.map_err(crate::error::map_err)?;
+        Ok(outcome)
+    }
+
     async fn upsert_fact_embedding(
         &self,
         owner: &Owner,
@@ -1178,14 +1199,9 @@ impl EmbeddingWritePort for PgStorage {
         dim: usize,
         vec: &[f32],
     ) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(|err| {
-            StorageError::Internal(format!("begin Fact embedding upsert tx: {err}"))
-        })?;
-        verbs::fact_embeddings::upsert_fact_embedding(
-            &mut tx, owner, memory_id, model_id, dim, vec,
-        )
-        .await?;
-        tx.commit().await.map_err(crate::error::map_err)
+        self.insert_fact_embedding(owner, memory_id, model_id, dim, vec)
+            .await?;
+        Ok(())
     }
 
     async fn upsert_memory_embedding(
@@ -1197,20 +1213,9 @@ impl EmbeddingWritePort for PgStorage {
         dim: usize,
         vec: &[f32],
     ) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(|err| {
-            StorageError::Internal(format!("begin memory embedding upsert tx: {err}"))
-        })?;
-        verbs::fact_embeddings::upsert_memory_embedding(
-            &mut tx,
-            owner,
-            entity_kind,
-            memory_id,
-            model_id,
-            dim,
-            vec,
-        )
-        .await?;
-        tx.commit().await.map_err(crate::error::map_err)
+        self.insert_memory_embedding(owner, entity_kind, memory_id, model_id, dim, vec)
+            .await?;
+        Ok(())
     }
 }
 
@@ -1503,18 +1508,30 @@ impl FactRetentionPort for PgStorage {
 
 #[async_trait::async_trait]
 impl ComplianceErasePort for PgStorage {
-    async fn cleanup_due_facts(
+    async fn record_compliance_outcome(
         &self,
-        owner: &Owner,
+        audit: &ComplianceAuditContext,
+        outcome: &ComplianceEraseOutcome,
+    ) -> Result<(), StorageError> {
+        verbs::compliance_erase::record_compliance_outcome(&self.pool, audit, outcome).await
+    }
+
+    async fn erase_group_owner_if_abandoned(
+        &self,
+        auth: &EraseAuthorization,
+        group_id: GroupId,
         fact_sidecar_tables: &[String],
+        goal_sidecar_tables: &[String],
         edge_sidecar_tables: &[String],
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
-    ) -> Result<CleanupDueFactsOutcome, StorageError> {
-        verbs::fact_cleanup::cleanup_due_facts(
+    ) -> Result<ComplianceEraseOutcome, StorageError> {
+        verbs::compliance_erase::erase_group_owner_if_abandoned(
             &self.pool,
-            owner,
+            auth,
+            group_id,
             fact_sidecar_tables,
+            goal_sidecar_tables,
             edge_sidecar_tables,
             citation_mapping_sidecar_tables,
             cited_object_sidecar_tables,
@@ -1522,20 +1539,72 @@ impl ComplianceErasePort for PgStorage {
         .await
     }
 
-    async fn tombstone_fact(
+    async fn erase_personal_owner_if_drop_verified(
         &self,
-        owner: &Owner,
-        fact_id: uuid::Uuid,
+        auth: &EraseAuthorization,
+        user_id: UserId,
         fact_sidecar_tables: &[String],
+        goal_sidecar_tables: &[String],
         edge_sidecar_tables: &[String],
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
-    ) -> Result<TombstoneFactOutcome, StorageError> {
-        verbs::fact_cleanup::tombstone_fact(
+    ) -> Result<ComplianceEraseOutcome, StorageError> {
+        verbs::compliance_erase::erase_personal_owner_if_drop_verified(
             &self.pool,
-            owner,
-            fact_id,
+            auth,
+            user_id,
             fact_sidecar_tables,
+            goal_sidecar_tables,
+            edge_sidecar_tables,
+            citation_mapping_sidecar_tables,
+            cited_object_sidecar_tables,
+        )
+        .await
+    }
+
+    async fn erase_group_source_scope_if_owner_abandoned(
+        &self,
+        auth: &EraseAuthorization,
+        group_id: GroupId,
+        source_id: &SourceId,
+        fact_sidecar_tables: &[String],
+        goal_sidecar_tables: &[String],
+        edge_sidecar_tables: &[String],
+        citation_mapping_sidecar_tables: &[String],
+        cited_object_sidecar_tables: &[String],
+    ) -> Result<ComplianceEraseOutcome, StorageError> {
+        verbs::compliance_erase::erase_group_source_scope_if_owner_abandoned(
+            &self.pool,
+            auth,
+            group_id,
+            source_id,
+            fact_sidecar_tables,
+            goal_sidecar_tables,
+            edge_sidecar_tables,
+            citation_mapping_sidecar_tables,
+            cited_object_sidecar_tables,
+        )
+        .await
+    }
+
+    async fn erase_personal_source_scope_if_drop_verified(
+        &self,
+        auth: &EraseAuthorization,
+        user_id: UserId,
+        source_id: &SourceId,
+        fact_sidecar_tables: &[String],
+        goal_sidecar_tables: &[String],
+        edge_sidecar_tables: &[String],
+        citation_mapping_sidecar_tables: &[String],
+        cited_object_sidecar_tables: &[String],
+    ) -> Result<ComplianceEraseOutcome, StorageError> {
+        verbs::compliance_erase::erase_personal_source_scope_if_drop_verified(
+            &self.pool,
+            auth,
+            user_id,
+            source_id,
+            fact_sidecar_tables,
+            goal_sidecar_tables,
             edge_sidecar_tables,
             citation_mapping_sidecar_tables,
             cited_object_sidecar_tables,

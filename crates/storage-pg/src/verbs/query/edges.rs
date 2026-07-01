@@ -25,12 +25,22 @@ WITH edge_heads AS (
            e.target_goal_id, e.target_fact_entity_id,
            e.created_at,
            COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id) AS source_entity_id,
-           COALESCE(e.target_memory_id, e.target_goal_id, tfe.current_memory_id) AS target_entity_id
+           COALESCE(e.target_memory_id, e.target_goal_id, tfe.current_memory_id) AS target_entity_id,
+           (etr.edge_id IS NOT NULL
+            OR (e.target_memory_id IS NOT NULL AND tm.memory_id IS NULL)
+            OR (e.target_goal_id IS NOT NULL AND tg.goal_id IS NULL)
+            OR (e.target_fact_entity_id IS NOT NULL AND tfe.fact_entity_id IS NULL)) AS target_unavailable
       FROM proxima_core.edges e
       LEFT JOIN proxima_core.fact_entities sfe
         ON sfe.fact_entity_id = e.source_fact_entity_id
       LEFT JOIN proxima_core.fact_entities tfe
         ON tfe.fact_entity_id = e.target_fact_entity_id
+      LEFT JOIN proxima_core.memories tm
+        ON tm.memory_id = e.target_memory_id
+      LEFT JOIN proxima_core.goals tg
+        ON tg.goal_id = e.target_goal_id
+      LEFT JOIN proxima_core.compliance_edge_target_redactions etr
+        ON etr.edge_id = e.edge_id
      WHERE ($5::boolean = false OR e.edge_id = ANY($6::uuid[]))
        AND ($7::text IS NULL OR e.relation = $7)
        AND ($8::uuid IS NULL OR e.source_memory_id = $8)
@@ -50,14 +60,14 @@ visible AS (
                   AND seo.owner_id IS NOT DISTINCT FROM rs.id
                 WHERE seo.entity_id = edge_heads.source_entity_id
            ) AS source_readable,
-           EXISTS (
+           (NOT edge_heads.target_unavailable AND EXISTS (
                SELECT 1
                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) teo
                  JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS rs(kind, id)
                    ON teo.owner_kind = rs.kind
                   AND teo.owner_id IS NOT DISTINCT FROM rs.id
                 WHERE teo.entity_id = edge_heads.target_entity_id
-           ) AS target_visible,
+           )) AS target_visible,
            EXISTS (
                SELECT 1
                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) weo
@@ -70,7 +80,7 @@ visible AS (
 SELECT edge_id, relation, relation_class,
        source_memory_id, source_goal_id, source_fact_entity_id,
        target_memory_id, target_goal_id, target_fact_entity_id,
-       target_visible
+       target_visible, target_unavailable
   FROM visible
  WHERE source_readable
    AND NOT (source_world_visible AND NOT target_visible)
@@ -299,7 +309,8 @@ async fn query_edges_between_visible_nodes(
                 e.source_goal_id, e.source_fact_entity_id,
                 COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id,
                 e.target_goal_id, e.target_fact_entity_id,
-                true AS target_visible
+                true AS target_visible,
+                false AS target_unavailable
          FROM proxima_core.edges e
          LEFT JOIN proxima_core.fact_entities sfe
            ON sfe.fact_entity_id = e.source_fact_entity_id
@@ -329,7 +340,16 @@ async fn hydrate_fact_entity_heads(
 ) -> Result<(), StorageError> {
     let mut ids = rows
         .iter()
-        .flat_map(|row| [row.source_fact_entity_id, row.target_fact_entity_id])
+        .flat_map(|row| {
+            [
+                row.source_fact_entity_id,
+                if row.target_unavailable {
+                    None
+                } else {
+                    row.target_fact_entity_id
+                },
+            ]
+        })
         .flatten()
         .collect::<Vec<_>>();
     if ids.is_empty() {
@@ -348,7 +368,9 @@ async fn hydrate_fact_entity_heads(
                 .ok_or_else(|| StorageError::Internal(format!("fact entity {id} has no head")))?;
             row.source_memory_id = Some(head);
         }
-        if let Some(id) = row.target_fact_entity_id {
+        if !row.target_unavailable
+            && let Some(id) = row.target_fact_entity_id
+        {
             let head = resolved
                 .get(&id)
                 .copied()

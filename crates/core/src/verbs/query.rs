@@ -201,6 +201,24 @@ pub struct StatefulHeadsFilter {
     pub tombstone: Option<SchemaTombstone>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum QueryCursor {
+    Memory {
+        created_at: time::OffsetDateTime,
+        memory_id: MemoryId,
+    },
+    Goal {
+        created_at: time::OffsetDateTime,
+        goal_id: GoalId,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct QueryPage {
+    #[serde(default)]
+    pub after: Option<QueryCursor>,
+}
+
 /// One core-generic Query request. Flavor-typed filters
 /// per docs/14 §"Query" land when the first flavor crate
 /// registers a sidecar (M3+).
@@ -215,6 +233,8 @@ pub struct QueryRequest {
     #[serde(default = "default_tombstone_filter")]
     pub tombstones: TombstoneFilter,
     pub limit: u32,
+    #[serde(default)]
+    pub page: QueryPage,
     /// Include typed payload projections in returned rows. Broad graph snapshots can
     /// set this false and hydrate selected IDs later.
     #[serde(default = "default_include_payloads")]
@@ -235,8 +255,7 @@ pub struct QueryRequest {
 
 impl QueryRequest {
     /// Builder for the common case: heads-only, no kind/schema
-    /// filter. Pagination cursor lands when M2 introduces real
-    /// data.
+    /// filter.
     #[must_use]
     pub fn for_principal(principal: OwnerRef) -> Self {
         Self {
@@ -247,6 +266,7 @@ impl QueryRequest {
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: TombstoneFilter::PresentOnly,
             limit: 100,
+            page: QueryPage::default(),
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
@@ -335,6 +355,7 @@ pub struct QueryResponse {
     pub memories: Vec<MemoryRow>,
     pub goals: Vec<GoalRow>,
     pub edges: Vec<EdgeRow>,
+    pub next_cursor: Option<QueryCursor>,
     /// docs/14 §"Cursor & resume".
     pub seq_high_water: Option<Uuid>,
 }

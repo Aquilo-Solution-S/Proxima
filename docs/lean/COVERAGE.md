@@ -25,7 +25,7 @@
 | ES-10 | Idempotency keys content-derived/opaque, never natural-person identifiers | excluded: source/flavor ingest concern with no kernel carrier (suppression docstring retired 2026-06-28 with the `SuppressionKey` axioms) |
 | ES-11 | Facts' typing frozen at insert; engine does not migrate Facts across schema versions | `Immutable Memory`-stance via `AppendOnly Memory` + accessor totality (`memory_schema` fixed per row); migration mechanics excluded (SR-50..55 exclusion block) |
 | ES-12 | No legacy org-principal variant; org-wide = `<org>-everyone` group | structural: stable ownership uses `OwnerRef.world` / `OwnerRef.personal u` / `OwnerRef.group id`; no Org variant. Resolved owner is a Group (`User → Option Role`). Realign 2026-06-28 |
-| ES-13 | Per-memory ACL (AccessGrant) is v2+, not v1 | structural absence + Owner.lean header comment |
+| ES-13 | Per-memory ACL / `AccessGrant` layer is absent | structural absence + Owner.lean header comment |
 | ES-14 | Push vs pull is source-side implementation detail | excluded: engine |
 | ES-15 | Bootstrap/founding-goal is flavor onboarding | excluded: app-layer |
 | AUTH-SHARE | One owner per entity; sharing IS group membership (no share set above the owner) | structural: entity rows should carry one stable `OwnerRef`; `OwnerState.resolve` yields the single resolved Group for access. Read-only share = viewer-role membership, publish = `.world`. No `Scope`/`reaches` multi-owner layer — realign 2026-06-28 |

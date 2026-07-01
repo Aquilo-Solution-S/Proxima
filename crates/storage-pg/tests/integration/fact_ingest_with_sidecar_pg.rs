@@ -174,7 +174,7 @@ async fn authz_rejection_writes_nothing() -> Result<(), Box<dyn std::error::Erro
     let err = engine
         .authorize_fact_ingest(&authz, Relation::Ingest, draft)
         .await
-        .expect_err("missing source_ingest role must reject before storage");
+        .expect_err("missing fact_ingest role must reject before storage");
 
     assert_eq!(err.code, ErrorCode::Forbidden);
     assert!(err.message.contains("requires ingest on this owner"));

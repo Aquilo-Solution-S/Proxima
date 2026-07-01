@@ -15,7 +15,9 @@ use crate::verbs::fact_ingest::{
 };
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::verbs::schema::{PayloadKind, ProtocolPayload, SchemaInfo};
-use crate::{EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload, SourceBatchId};
+use crate::{
+    EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload, SourceBatchId,
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EmbeddingDrainOutcome {
@@ -59,7 +61,10 @@ impl Engine {
                 embedding_model_id,
             )
             .await
-            .map_err(|e| ProtocolError::internal(e.to_string()))?;
+            .map_err(|e| match e {
+                StorageError::Suppressed(message) => ProtocolError::suppressed(message),
+                other => ProtocolError::internal(other.to_string()),
+            })?;
         Ok(outcome)
     }
 
@@ -390,10 +395,12 @@ impl Engine {
         self.storage
             .ingest
             .embedding_write
-            .upsert_memory_embedding(
+            .insert_embedding(
                 owner,
-                entity_kind,
-                memory_id,
+                EmbeddableEntityRef::Memory {
+                    kind: entity_kind,
+                    memory_id,
+                },
                 client.model_id(),
                 client.dim(),
                 &embedding,

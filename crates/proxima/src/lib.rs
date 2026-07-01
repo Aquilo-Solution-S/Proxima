@@ -65,9 +65,9 @@ pub fn company_owner(id: uuid::Uuid) -> Owner {
 ///
 /// # Errors
 ///
-/// Returns `Forbidden` when `authz` cannot access the log Owner, lacks the
-/// source-ingest role, or lacks a `memory.write` grant on the owner space;
-/// or `Internal` on storage failure.
+/// Returns `Forbidden` when `authz` cannot access the log Owner or lacks an
+/// `Ingest`/write-capable owner role for that Owner; or `Internal` on storage
+/// failure.
 pub async fn log_mcp_call(
     engine: &Engine,
     authz: &AuthzContext,

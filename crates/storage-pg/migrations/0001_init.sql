@@ -41,7 +41,7 @@ CREATE TYPE proxima_core.cited_object_upload_status AS ENUM (
 --
 
 CREATE TYPE proxima_core.edge_authorship_kind AS ENUM (
-    'EventSource',
+    'SourceIngest',
     'OperatorFtoA',
     'OperatorAtoP',
     'OperatorAtoA',
@@ -170,6 +170,27 @@ CREATE TYPE proxima_core.membership_relation AS ENUM (
     'editor',
     'viewer',
     'ingest'
+);
+
+CREATE TYPE proxima_core.compliance_erase_outcome AS ENUM (
+    'Completed',
+    'Refused',
+    'NotFound',
+    'Unauthorized'
+);
+
+CREATE TYPE proxima_core.compliance_erase_refusal AS ENUM (
+    'OwnerNotAbandoned',
+    'WorldOwner',
+    'SourceScopeOwnerStillLive',
+    'PersonalDropNotVerified',
+    'DropProofPortUnavailable'
+);
+
+CREATE TYPE proxima_core.compliance_suppression_key_class AS ENUM (
+    'owner_source_scope',
+    'source_batch',
+    'receipt_content'
 );
 
 
@@ -444,6 +465,61 @@ CREATE TABLE proxima_core.group_memberships (
     CONSTRAINT group_memberships_member_not_nil_chk CHECK ((member_user_id <> '00000000-0000-0000-0000-000000000000'::uuid))
 );
 
+CREATE VIEW proxima_core.resolved_group_memberships AS
+    SELECT group_id, member_user_id, relation, created_at
+      FROM proxima_core.group_memberships;
+
+CREATE TABLE proxima_core.compliance_audit_log (
+    operation_id uuid NOT NULL,
+    target_kind text NOT NULL,
+    outcome proxima_core.compliance_erase_outcome NOT NULL,
+    refusal proxima_core.compliance_erase_refusal,
+    owner_ref_digest bytea NOT NULL,
+    requester_digest bytea,
+    source_scope_digest bytea,
+    derived_auth_path text NOT NULL,
+    requested_at timestamp with time zone NOT NULL,
+    completed_at timestamp with time zone,
+    memories_count bigint DEFAULT 0 NOT NULL,
+    goals_count bigint DEFAULT 0 NOT NULL,
+    edges_count bigint DEFAULT 0 NOT NULL,
+    fact_entities_count bigint DEFAULT 0 NOT NULL,
+    receipts_count bigint DEFAULT 0 NOT NULL,
+    source_batches_count bigint DEFAULT 0 NOT NULL,
+    citations_count bigint DEFAULT 0 NOT NULL,
+    cited_objects_count bigint DEFAULT 0 NOT NULL,
+    embeddings_count bigint DEFAULT 0 NOT NULL,
+    embedding_jobs_count bigint DEFAULT 0 NOT NULL,
+    mcp_call_rows_count bigint DEFAULT 0 NOT NULL,
+    change_events_count bigint DEFAULT 0 NOT NULL,
+    redacted_edge_targets_count bigint DEFAULT 0 NOT NULL,
+    suppressed_keys_count bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT compliance_audit_log_no_negative_counts_chk CHECK (
+        memories_count >= 0 AND goals_count >= 0 AND edges_count >= 0
+        AND fact_entities_count >= 0 AND receipts_count >= 0
+        AND source_batches_count >= 0 AND citations_count >= 0
+        AND cited_objects_count >= 0 AND embeddings_count >= 0
+        AND embedding_jobs_count >= 0 AND mcp_call_rows_count >= 0
+        AND change_events_count >= 0 AND redacted_edge_targets_count >= 0
+        AND suppressed_keys_count >= 0
+    )
+);
+
+CREATE TABLE proxima_core.compliance_suppression_keys (
+    key_class proxima_core.compliance_suppression_key_class NOT NULL,
+    suppression_key bytea NOT NULL,
+    operation_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+CREATE TABLE proxima_core.compliance_edge_target_redactions (
+    operation_id uuid NOT NULL,
+    edge_id uuid NOT NULL,
+    target_kind proxima_core.entity_kind NOT NULL,
+    target_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
 
 --
 -- Name: change_event; Type: TABLE; Schema: proxima_core; Owner: -
@@ -647,6 +723,18 @@ CREATE TABLE proxima_core.embeddings (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT embeddings_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
     CONSTRAINT embeddings_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
+);
+
+CREATE TABLE proxima_core.embedding_heads (
+    entity_kind proxima_core.entity_kind NOT NULL,
+    entity_id uuid NOT NULL,
+    model_id text NOT NULL,
+    embedding_version integer NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT embedding_heads_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT embedding_heads_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
 );
 
 
@@ -983,6 +1071,15 @@ CREATE TABLE proxima_core.source_batches (
 ALTER TABLE ONLY proxima_core.group_memberships
     ADD CONSTRAINT group_memberships_pkey PRIMARY KEY (group_id, member_user_id, relation);
 
+ALTER TABLE ONLY proxima_core.compliance_audit_log
+    ADD CONSTRAINT compliance_audit_log_pkey PRIMARY KEY (operation_id);
+
+ALTER TABLE ONLY proxima_core.compliance_suppression_keys
+    ADD CONSTRAINT compliance_suppression_keys_pkey PRIMARY KEY (key_class, suppression_key);
+
+ALTER TABLE ONLY proxima_core.compliance_edge_target_redactions
+    ADD CONSTRAINT compliance_edge_target_redactions_pkey PRIMARY KEY (operation_id, edge_id);
+
 
 ALTER TABLE ONLY proxima_core.change_event
     ADD CONSTRAINT change_event_pkey PRIMARY KEY (seq);
@@ -1058,6 +1155,14 @@ ALTER TABLE ONLY proxima_core.edges
 
 ALTER TABLE ONLY proxima_core.embeddings
     ADD CONSTRAINT embeddings_pkey PRIMARY KEY (entity_kind, entity_id, embedding_version, model_id);
+
+
+--
+-- Name: embedding_heads embedding_heads_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.embedding_heads
+    ADD CONSTRAINT embedding_heads_pkey PRIMARY KEY (entity_kind, entity_id, model_id);
 
 
 --
@@ -1387,6 +1492,13 @@ CREATE INDEX idx_edges_target_fact_entity ON proxima_core.edges USING btree (tar
 
 CREATE INDEX idx_edges_target_fact_entity_created ON proxima_core.edges USING btree (target_fact_entity_id, created_at) WHERE (target_fact_entity_id IS NOT NULL);
 
+CREATE INDEX idx_compliance_audit_owner_digest ON proxima_core.compliance_audit_log USING btree (owner_ref_digest, requested_at);
+CREATE INDEX idx_compliance_edge_target_redactions_edge ON proxima_core.compliance_edge_target_redactions USING btree (edge_id);
+CREATE INDEX idx_compliance_suppression_operation ON proxima_core.compliance_suppression_keys USING btree (operation_id);
+CREATE INDEX idx_memories_owner_source_batch ON proxima_core.memories USING btree (owner_kind, owner_id, source_batch_id) WHERE (source_batch_id IS NOT NULL);
+CREATE INDEX idx_fact_receipts_owner_source_batch ON proxima_core.fact_receipts USING btree (owner_kind, owner_id, source_batch_id);
+CREATE INDEX idx_source_batches_owner_source ON proxima_core.source_batches USING btree (owner_kind, owner_id, source_id);
+
 
 
 --
@@ -1394,6 +1506,20 @@ CREATE INDEX idx_edges_target_fact_entity_created ON proxima_core.edges USING bt
 --
 
 CREATE INDEX idx_embeddings_owner ON proxima_core.embeddings USING btree (owner_kind, owner_id);
+
+
+--
+-- Name: idx_embedding_heads_model_entity_version; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_embedding_heads_model_entity_version ON proxima_core.embedding_heads USING btree (model_id, entity_kind, entity_id, embedding_version);
+
+
+--
+-- Name: idx_embeddings_model_entity_version_desc; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_embeddings_model_entity_version_desc ON proxima_core.embeddings USING btree (model_id, entity_kind, entity_id, embedding_version DESC);
 
 
 --
@@ -1466,6 +1592,13 @@ CREATE INDEX idx_goals_owner_state ON proxima_core.goals USING btree (owner_kind
 CREATE INDEX idx_goals_owner_state_created ON proxima_core.goals USING btree (owner_kind, owner_id, state, created_at);
 
 
+--
+-- Name: idx_goals_owner_created_id; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_goals_owner_created_id ON proxima_core.goals USING btree (owner_kind, owner_id, created_at DESC, goal_id DESC);
+
+
 
 --
 -- Name: goals_supersedes_unique; Type: INDEX; Schema: proxima_core; Owner: -
@@ -1508,6 +1641,20 @@ CREATE INDEX idx_memories_fact_entity ON proxima_core.memories USING btree (fact
 --
 
 CREATE INDEX idx_memories_owner_created ON proxima_core.memories USING btree (owner_kind, owner_id, created_at);
+
+
+--
+-- Name: idx_memories_owner_kind_created_id_live; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_memories_owner_kind_created_id_live ON proxima_core.memories USING btree (owner_kind, owner_id, kind, created_at DESC, memory_id DESC) WHERE (tombstoned_at IS NULL);
+
+
+--
+-- Name: idx_memories_owner_fact_created_id_live; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_memories_owner_fact_created_id_live ON proxima_core.memories USING btree (owner_kind, owner_id, created_at DESC, memory_id DESC) WHERE ((tombstoned_at IS NULL) AND (kind IS NULL));
 
 
 
@@ -1586,6 +1733,12 @@ ALTER TABLE ONLY proxima_core.cited_mcp_call_io_v1
 ALTER TABLE ONLY proxima_core.cited_object_uploads
     ADD CONSTRAINT cited_object_uploads_cited_object_id_fkey FOREIGN KEY (cited_object_id) REFERENCES proxima_core.cited_objects(cited_object_id);
 
+ALTER TABLE ONLY proxima_core.compliance_suppression_keys
+    ADD CONSTRAINT compliance_suppression_keys_operation_id_fkey FOREIGN KEY (operation_id) REFERENCES proxima_core.compliance_audit_log(operation_id);
+
+ALTER TABLE ONLY proxima_core.compliance_edge_target_redactions
+    ADD CONSTRAINT compliance_edge_target_redactions_operation_id_fkey FOREIGN KEY (operation_id) REFERENCES proxima_core.compliance_audit_log(operation_id);
+
 
 --
 -- Name: cited_uploaded_blob_v1 cited_uploaded_blob_v1_cited_object_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
@@ -1625,30 +1778,6 @@ ALTER TABLE ONLY proxima_core.edges
 
 ALTER TABLE ONLY proxima_core.edges
     ADD CONSTRAINT edges_source_memory_id_fkey FOREIGN KEY (source_memory_id) REFERENCES proxima_core.memories(memory_id);
-
-
---
--- Name: edges edges_target_goal_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.edges
-    ADD CONSTRAINT edges_target_goal_id_fkey FOREIGN KEY (target_goal_id) REFERENCES proxima_core.goals(goal_id);
-
-
---
--- Name: edges edges_target_fact_entity_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.edges
-    ADD CONSTRAINT edges_target_fact_entity_id_fkey FOREIGN KEY (target_fact_entity_id) REFERENCES proxima_core.fact_entities(fact_entity_id) ON DELETE RESTRICT;
-
-
---
--- Name: edges edges_target_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.edges
-    ADD CONSTRAINT edges_target_memory_id_fkey FOREIGN KEY (target_memory_id) REFERENCES proxima_core.memories(memory_id);
 
 
 --

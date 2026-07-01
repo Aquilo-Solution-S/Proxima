@@ -47,7 +47,7 @@ a narrower DML role.
 | `PROXIMA_OIDC_ALLOWED_SUBJECTS` | no | `user1,user2` | Comma-separated `sub` allowlist. |
 | `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile: `full` default, or curated `memory`. |
 | `PROXIMA_TOOL_ALLOW` | no | `core_goal:set` | Comma-separated canonical scope keys added after profile resolution. |
-| `PROXIMA_TOOL_DENY` | no | `core_fact:tombstone` | Comma-separated canonical scope keys removed after allow. |
+| `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow. Compliance erase is not exposed as an MCP action. |
 | `MISTRAL_API_KEY` | no | `sk-...` | Enables Mistral embeddings. |
 | `PROXIMA_EMBED_MODEL` | no | `mistral-embed` | Embedding model id. |
 | `MISTRAL_API_BASE` | no | `https://api.mistral.ai/v1` | Mistral-compatible API base. |
@@ -75,8 +75,8 @@ cluster edge (see [§Edge defense-in-depth](#edge-defense-in-depth)).
 > **Single-tenant OIDC trust model.** Current pre-1.0 releases intentionally have no
 > per-user RBAC. Every token valid for the configured issuer and
 > `PROXIMA_OIDC_AUDIENCE` maps to the one configured owner with full
-> capabilities: all roles, including `SourceIngest`, and all tools,
-> including destructive forgetting via `core_fact:tombstone`. The issuer
+> capabilities: all owner roles (`Viewer`, `Ingest`, `Editor`, `Admin`) and all currently
+> registered MCP tools. Destructive Fact actions are absent; compliance erase is Host API/admin-only. The issuer
 > and audience are the trust boundary. Before network exposure, constrain
 > the IdP audience to trusted principals and/or set
 > `PROXIMA_OIDC_ALLOWED_SUBJECTS` as a `sub` allowlist; absent means any
@@ -134,9 +134,7 @@ multi-tenant host that instead derives `Owner` from a token claim owns
 the *entire* cross-tenant boundary in that mapping — Core has no org
 column to cross-check it.
 
-In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_search_memories`, `core_get_memory`, and `core_publish_memory`. Omitted `space` preserves the current owner behavior for single-owner deployments.
-
-`core_publish_memory` v1 copies only `core/agent-note-v1`; flavor-specific publish is a host/flavor concern until typed replay is designed.
+In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_link`; hydrate a memory through `proxima://memory/{id}`. Omitted `space` preserves the current owner behavior for single-owner deployments.
 
 ## Zitadel setup
 

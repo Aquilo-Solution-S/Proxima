@@ -279,7 +279,7 @@ fn registry_for_test() -> FlavorRegistryFrozen {
         EndpointBinding::FollowHead,
         EntityKindMask::fact(),
         EntityKindMask::fact(),
-        AuthorshipKindMask::event_source().union(AuthorshipKindMask::external_agent()),
+        AuthorshipKindMask::source_ingest().union(AuthorshipKindMask::external_agent()),
     ));
     registry.add_relation_or_panic_for_tests(RelationDescriptor::substrate(
         TEST_PIN_RELATION,
@@ -288,7 +288,7 @@ fn registry_for_test() -> FlavorRegistryFrozen {
         EndpointBinding::Pin,
         EntityKindMask::fact(),
         EntityKindMask::fact(),
-        AuthorshipKindMask::event_source().union(AuthorshipKindMask::external_agent()),
+        AuthorshipKindMask::source_ingest().union(AuthorshipKindMask::external_agent()),
     ));
     registry.add_relation_or_panic_for_tests(
         RelationDescriptor::substrate(
@@ -298,7 +298,7 @@ fn registry_for_test() -> FlavorRegistryFrozen {
             EndpointBinding::FollowHead,
             EntityKindMask::fact(),
             EntityKindMask::fact(),
-            AuthorshipKindMask::event_source().union(AuthorshipKindMask::external_agent()),
+            AuthorshipKindMask::source_ingest().union(AuthorshipKindMask::external_agent()),
         )
         .with_required_tags(&["actor"], &["actor"]),
     );
@@ -310,7 +310,7 @@ fn registry_for_test() -> FlavorRegistryFrozen {
             EndpointBinding::Pin,
             EntityKindMask::fact(),
             EntityKindMask::fact(),
-            AuthorshipKindMask::event_source().union(AuthorshipKindMask::external_agent()),
+            AuthorshipKindMask::source_ingest().union(AuthorshipKindMask::external_agent()),
         )
         .with_required_tags(&["actor"], &["actor"]),
     );
