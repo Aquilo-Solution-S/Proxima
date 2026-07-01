@@ -231,6 +231,7 @@ async fn erase_selected(
     cited_object_sidecar_tables: &[String],
 ) -> Result<(), StorageError> {
     create_selected_sets(tx, owner, scope).await?;
+    repoint_surviving_fact_entity_heads(tx).await?;
     upsert_audit_outcome(
         tx,
         auth.audit(),
@@ -564,7 +565,18 @@ async fn create_selected_sets(
                    FROM proxima_core.fact_entities fe
                    JOIN selected_memories sm
                      ON sm.memory_id = fe.current_memory_id OR sm.fact_entity_id = fe.fact_entity_id
-                  WHERE fe.owner_kind = $1 AND fe.owner_id IS NOT DISTINCT FROM $2",
+                  WHERE fe.owner_kind = $1
+                    AND fe.owner_id IS NOT DISTINCT FROM $2
+                    AND NOT EXISTS (
+                        SELECT 1
+                          FROM proxima_core.memories survivor
+                         WHERE survivor.fact_entity_id = fe.fact_entity_id
+                           AND NOT EXISTS (
+                               SELECT 1
+                                 FROM selected_memories selected
+                                WHERE selected.memory_id = survivor.memory_id
+                           )
+                    )",
             )
             .bind(owner_kind)
             .bind(owner_id)
@@ -666,6 +678,35 @@ async fn create_selected_sets(
             .map_err(map_err)?;
         }
     }
+    Ok(())
+}
+
+async fn repoint_surviving_fact_entity_heads(tx: &mut Tx<'_>) -> Result<(), StorageError> {
+    sqlx::query(
+        "WITH surviving_heads AS (
+             SELECT DISTINCT ON (fe.fact_entity_id)
+                    fe.fact_entity_id, survivor.memory_id, survivor.created_at
+               FROM proxima_core.fact_entities fe
+               JOIN selected_memories selected_current
+                 ON selected_current.memory_id = fe.current_memory_id
+               JOIN proxima_core.memories survivor
+                 ON survivor.fact_entity_id = fe.fact_entity_id
+              WHERE NOT EXISTS (
+                    SELECT 1
+                      FROM selected_memories selected
+                     WHERE selected.memory_id = survivor.memory_id
+                )
+              ORDER BY fe.fact_entity_id, survivor.created_at DESC, survivor.memory_id DESC
+         )
+         UPDATE proxima_core.fact_entities fe
+            SET current_memory_id = surviving_heads.memory_id,
+                current_created_at = surviving_heads.created_at
+           FROM surviving_heads
+          WHERE fe.fact_entity_id = surviving_heads.fact_entity_id",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
     Ok(())
 }
 

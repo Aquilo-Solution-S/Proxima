@@ -428,6 +428,148 @@ async fn group_source_scope_erases_only_requested_source_and_suppresses_new_batc
     result
 }
 
+struct SharedFactEntityFixture {
+    erased_memory: Uuid,
+    kept_memory: Uuid,
+    fact_entity: Uuid,
+    edge: Uuid,
+}
+
+async fn seed_shared_fact_entity_fixture(
+    pg: &PgStorage,
+    owner: OwnerRef,
+) -> Result<SharedFactEntityFixture, Box<dyn std::error::Error>> {
+    let erased_draft = receipt_draft("test/shared-entity-a", Uuid::now_v7(), b"shared-v1");
+    let kept_draft = receipt_draft("test/shared-entity-b", Uuid::now_v7(), b"shared-v2");
+    let erased = pg.ingest_fact_atomic(&owner, &erased_draft, None).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let kept = pg.ingest_fact_atomic(&owner, &kept_draft, None).await?;
+    let fact_entity_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
+    sqlx::query(
+        "INSERT INTO proxima_core.fact_entities(
+            fact_entity_id, owner_kind, owner_id, schema_id, schema_version,
+            natural_key, current_memory_id, current_created_at)
+         SELECT $1, $2, $3, 'test/compliance-stateful', 1,
+                ARRAY['shared-key']::text[], m.memory_id, m.created_at
+           FROM proxima_core.memories m
+          WHERE m.memory_id = $4",
+    )
+    .bind(fact_entity_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(erased.memory_id.into_inner())
+    .execute(pg.pool_for_tests())
+    .await?;
+    sqlx::query(
+        "UPDATE proxima_core.memories
+            SET fact_entity_id = $1
+          WHERE memory_id IN ($2, $3)",
+    )
+    .bind(fact_entity_id)
+    .bind(erased.memory_id.into_inner())
+    .bind(kept.memory_id.into_inner())
+    .execute(pg.pool_for_tests())
+    .await?;
+    let edge_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxima_core.edges(
+            edge_id, owner_kind, owner_id, relation, relation_class,
+            source_kind, source_memory_id, source_goal_id, source_fact_entity_id,
+            target_kind, target_memory_id, target_goal_id, target_fact_entity_id,
+            authorship_kind, authorship_owner_memory_id)
+         VALUES ($1, $2, $3, 'test/compliance/shared-entity-source',
+                 'Structural'::proxima_core.relation_class,
+                 'Fact'::proxima_core.entity_kind, NULL, NULL, $4,
+                 'Fact'::proxima_core.entity_kind, $5, NULL, NULL,
+                 'Engine'::proxima_core.edge_authorship_kind, NULL)",
+    )
+    .bind(edge_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(fact_entity_id)
+    .bind(kept.memory_id.into_inner())
+    .execute(pg.pool_for_tests())
+    .await?;
+    Ok(SharedFactEntityFixture {
+        erased_memory: erased.memory_id.into_inner(),
+        kept_memory: kept.memory_id.into_inner(),
+        fact_entity: fact_entity_id,
+        edge: edge_id,
+    })
+}
+
+#[tokio::test]
+async fn source_scope_erase_preserves_shared_fact_entity_head_and_source_edges()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await?;
+    let url = db_url(&db_name);
+    let result = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let engine = compliance_engine(&pg);
+        let group = GroupId::new(Uuid::now_v7());
+        let owner = OwnerRef::Group(group);
+        let fixture = seed_shared_fact_entity_fixture(&pg, owner).await?;
+
+        let outcome = engine
+            .erase_abandoned_group_source_scope(
+                &AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::HostBearer),
+                group,
+                SourceId::new("test/shared-entity-a"),
+            )
+            .await?;
+        let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
+            panic!("expected completed source-scope erase");
+        };
+        assert_eq!(counts.fact_entities, 0, "shared fact entity must survive");
+
+        assert_shared_fact_entity_survives_source_scope_erase(&pg, &fixture).await?;
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+async fn assert_shared_fact_entity_survives_source_scope_erase(
+    pg: &PgStorage,
+    fixture: &SharedFactEntityFixture,
+) -> Result<(), sqlx::Error> {
+    let erased_remaining: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM proxima_core.memories WHERE memory_id = $1",
+    )
+    .bind(fixture.erased_memory)
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    assert_eq!(erased_remaining, 0);
+    let kept_entity: Option<Uuid> =
+        sqlx::query_scalar("SELECT fact_entity_id FROM proxima_core.memories WHERE memory_id = $1")
+            .bind(fixture.kept_memory)
+            .fetch_one(pg.pool_for_tests())
+            .await?;
+    assert_eq!(kept_entity, Some(fixture.fact_entity));
+    let current_memory: Option<Uuid> = sqlx::query_scalar(
+        "SELECT current_memory_id FROM proxima_core.fact_entities WHERE fact_entity_id = $1",
+    )
+    .bind(fixture.fact_entity)
+    .fetch_optional(pg.pool_for_tests())
+    .await?;
+    assert_eq!(current_memory, Some(fixture.kept_memory));
+    let edge_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxima_core.edges
+          WHERE edge_id = $1 AND source_fact_entity_id = $2",
+    )
+    .bind(fixture.edge)
+    .bind(fixture.fact_entity)
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    assert_eq!(edge_rows, 1, "source fact-entity edge must survive");
+    Ok(())
+}
+
 #[tokio::test]
 async fn personal_source_scope_with_verified_drop_erases_only_scope()
 -> Result<(), Box<dyn std::error::Error>> {
