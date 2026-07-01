@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 
 use futures_util::future::try_join_all;
 use proxima_core::verbs::query::{
-    EntityKind, QueryRequest, QueryResponse, SupersessionStatus, TombstoneFilter,
+    EntityKind, QueryCursor, QueryRequest, QueryResponse, SupersessionStatus, TombstoneFilter,
 };
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{MemoryId, SchemaId, SchemaVersion, SidecarPayload, StorageError};
@@ -36,27 +36,49 @@ pub(crate) async fn query_memories(
         !req.memory_ids.is_empty() || !req.goal_ids.is_empty() || !req.edge_ids.is_empty();
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
     if matches!(req.entity_kind, Some(EntityKind::Goal)) {
+        let (goals, next_cursor) = query_goals(
+            pool,
+            req,
+            &read_owner_kinds,
+            &read_owner_ids,
+            schema_id_filter.as_deref(),
+        )
+        .await?;
         return Ok(QueryResponse {
             memories: Vec::new(),
-            goals: query_goals(
-                pool,
-                req,
-                &read_owner_kinds,
-                &read_owner_ids,
-                schema_id_filter.as_deref(),
-            )
-            .await?,
+            goals,
             edges: Vec::new(),
+            next_cursor,
             seq_high_water: read_seq_high_water(pool, &read_owner_kinds, &read_owner_ids).await?,
         });
     }
 
     let stateful = validated_stateful_filters(req)?;
+    let cursor = match &req.page.after {
+        Some(QueryCursor::Memory {
+            created_at,
+            memory_id,
+        }) => Some((*created_at, memory_id.into_inner())),
+        _ => None,
+    };
+    let single_memory_stream = matches!(
+        req.entity_kind,
+        Some(EntityKind::Fact | EntityKind::Abstraction | EntityKind::Perspective)
+    );
+    let fetch_limit = if single_memory_stream {
+        u64::from(req.limit) + 1
+    } else {
+        u64::from(req.limit)
+    };
 
     let mut sql = String::from(
-        "SELECT m.memory_id, m.owner_kind, m.owner_id, \
-                m.schema_id, m.schema_version, m.kind \
-         FROM proxima_core.memories m",
+        "SELECT page.memory_id, page.created_at, page.owner_kind, page.owner_id, \
+                page.schema_id, page.schema_version, page.kind \
+         FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id) \
+         JOIN LATERAL ( \
+             SELECT m.memory_id, m.created_at, m.owner_kind, m.owner_id, \
+                    m.schema_id, m.schema_version, m.kind \
+               FROM proxima_core.memories m",
     );
 
     // Bindings: $1=read_owner_kinds, $2=read_owner_ids.
@@ -73,6 +95,12 @@ pub(crate) async fn query_memories(
         param
     });
     let stateful_params = allocate_stateful_params(&stateful, &mut next_param);
+    let cursor_params = cursor.map(|_| {
+        let created_at = next_param;
+        next_param += 1;
+        let memory_id = next_param;
+        (created_at, memory_id)
+    });
     // The stateful JOINs (for head-by-natural-key filtering) use
     // explicit `ON sf_i.memory_id = m.memory_id` so generated aliases
     // stay unambiguous.
@@ -88,13 +116,11 @@ pub(crate) async fn query_memories(
     }
 
     sql.push_str(
-        " WHERE EXISTS (
-            SELECT 1
-              FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-             WHERE m.owner_kind = s.kind
-               AND m.owner_id IS NOT DISTINCT FROM s.id
-          )
-          AND m.tombstoned_at IS NULL",
+        // Cognitive rows cannot be world-owned (`*_world_not_write_owner_chk`),
+        // so non-null owner equality preserves the keyset indexes.
+        " WHERE m.owner_kind = s.kind \
+            AND m.owner_id = s.id \
+            AND m.tombstoned_at IS NULL",
     );
 
     if let Some(param) = memory_ids_param {
@@ -105,9 +131,20 @@ pub(crate) async fn query_memories(
 
     push_heads_predicate(&mut sql, req, schema, &stateful, &stateful_params);
 
-    sql.push_str(" ORDER BY m.created_at DESC LIMIT ");
-    sql.push_str(&u64::from(req.limit).to_string());
+    if let Some((created_at_param, memory_id_param)) = cursor_params {
+        write!(
+            sql,
+            " AND (m.created_at, m.memory_id) < (${created_at_param}, ${memory_id_param})"
+        )
+        .expect("write to String is infallible");
+    }
 
+    sql.push_str(" ORDER BY m.created_at DESC, m.memory_id DESC LIMIT ");
+    sql.push_str(&fetch_limit.to_string());
+    sql.push_str(") page ON TRUE ORDER BY page.created_at DESC, page.memory_id DESC LIMIT ");
+    sql.push_str(&fetch_limit.to_string());
+
+    // SQL-POLICY: fixed-fragment
     let mut q = sqlx::query_as::<_, MemoryRowDb>(&sql)
         .bind(&read_owner_kinds)
         .bind(&read_owner_ids);
@@ -118,8 +155,22 @@ pub(crate) async fn query_memories(
         q = q.bind(memory_ids);
     }
     q = bind_stateful_filters(q, &stateful);
+    if let Some((created_at, memory_id)) = cursor {
+        q = q.bind(created_at).bind(memory_id);
+    }
 
-    let rows: Vec<MemoryRowDb> = q.fetch_all(pool).await.map_err(internal)?;
+    let mut rows: Vec<MemoryRowDb> = q.fetch_all(pool).await.map_err(internal)?;
+    let limit = usize::try_from(req.limit)
+        .map_err(|_| StorageError::Internal("query limit does not fit usize".into()))?;
+    let next_memory_cursor = if single_memory_stream && rows.len() > limit {
+        rows.truncate(limit);
+        rows.last().map(|row| QueryCursor::Memory {
+            created_at: row.created_at,
+            memory_id: MemoryId::new(row.memory_id),
+        })
+    } else {
+        None
+    };
 
     let mut payloads = if req.include_payloads {
         load_row_payloads_batch(pool, sidecars, &rows).await?
@@ -132,18 +183,19 @@ pub(crate) async fn query_memories(
         memories.push(memory_row_from_db(row, payload)?);
     }
 
-    let goals = if req.entity_kind.is_none() || matches!(req.entity_kind, Some(EntityKind::Goal)) {
-        query_goals(
-            pool,
-            req,
-            &read_owner_kinds,
-            &read_owner_ids,
-            schema_id_filter.as_deref(),
-        )
-        .await?
-    } else {
-        Vec::new()
-    };
+    let (goals, next_goal_cursor) =
+        if req.entity_kind.is_none() || matches!(req.entity_kind, Some(EntityKind::Goal)) {
+            query_goals(
+                pool,
+                req,
+                &read_owner_kinds,
+                &read_owner_ids,
+                schema_id_filter.as_deref(),
+            )
+            .await?
+        } else {
+            (Vec::new(), None)
+        };
     let visible_memory_ids: Vec<uuid::Uuid> =
         memories.iter().map(|row| row.id.into_inner()).collect();
     let visible_goal_ids: Vec<uuid::Uuid> = goals.iter().map(|row| row.id.into_inner()).collect();
@@ -163,6 +215,7 @@ pub(crate) async fn query_memories(
         memories,
         goals,
         edges,
+        next_cursor: next_memory_cursor.or(next_goal_cursor),
         seq_high_water,
     })
 }
@@ -251,7 +304,11 @@ async fn query_visible_memory_ids(
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
 
     let mut sql = String::from(
-        "SELECT m.memory_id FROM proxima_core.memories m \
+        "SELECT m.memory_id \
+           FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id) \
+           JOIN proxima_core.memories m \
+             ON m.owner_kind = s.kind \
+            AND m.owner_id IS NOT DISTINCT FROM s.id \
         ",
     );
     for (idx, sf) in stateful.iter().enumerate() {
@@ -265,15 +322,7 @@ async fn query_visible_memory_ids(
         .expect("write to String is infallible");
     }
 
-    sql.push_str(
-        " WHERE EXISTS (
-            SELECT 1
-              FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-             WHERE m.owner_kind = s.kind
-               AND m.owner_id IS NOT DISTINCT FROM s.id
-          )
-          AND m.tombstoned_at IS NULL",
-    );
+    sql.push_str(" WHERE m.tombstoned_at IS NULL");
     sql.push_str(" AND m.memory_id = ANY($3::uuid[])");
     let mut next_param = 4;
     let schema = schema_id_filter.as_ref().map(|_| {
@@ -285,6 +334,7 @@ async fn query_visible_memory_ids(
 
     push_heads_predicate(&mut sql, req, schema, &stateful, &stateful_params);
 
+    // SQL-POLICY: fixed-fragment
     let mut q = sqlx::query_as::<_, (uuid::Uuid,)>(&sql)
         .bind(read_owner_kinds)
         .bind(read_owner_ids)
@@ -313,25 +363,26 @@ async fn query_visible_goal_ids(
         return Ok(HashSet::new());
     }
     let mut sql = String::from(
-        "SELECT g.goal_id FROM proxima_core.goals g \
-         WHERE EXISTS (
-             SELECT 1
-               FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-              WHERE g.owner_kind = s.kind
-                AND g.owner_id IS NOT DISTINCT FROM s.id
-         ) \
-           AND g.goal_id = ANY($3::uuid[])",
+        "SELECT g.goal_id \
+           FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id) \
+           JOIN proxima_core.goals g \
+             ON g.owner_kind = s.kind \
+            AND g.owner_id IS NOT DISTINCT FROM s.id \
+          WHERE g.goal_id = ANY($3::uuid[])",
     );
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
     if schema_id_filter.is_some() {
+        // SQL-POLICY: fixed-fragment
         sql.push_str(" AND g.schema_id = $4");
     }
     if matches!(req.supersession, SupersessionStatus::HeadsOnly) {
+        // SQL-POLICY: fixed-fragment
         sql.push_str(
             " AND NOT EXISTS (SELECT 1 FROM proxima_core.goals g2 \
                               WHERE g2.supersedes = g.goal_id)",
         );
     }
+    // SQL-POLICY: fixed-fragment
     let mut q = sqlx::query_as::<_, (uuid::Uuid,)>(&sql)
         .bind(read_owner_kinds)
         .bind(read_owner_ids)
@@ -418,6 +469,7 @@ fn push_heads_predicate(
     }
     if matches!(req.supersession, SupersessionStatus::HeadsOnly) {
         if stateful.is_empty() {
+            // SQL-POLICY: fixed-fragment
             sql.push_str(
                 " AND NOT EXISTS (SELECT 1 FROM proxima_core.memories m2 \
                                   WHERE m2.supersedes = m.memory_id \
@@ -435,6 +487,7 @@ fn push_heads_predicate(
             }
             sql.push_str(" OR (");
             push_not_stateful_match(sql, stateful_params);
+            // SQL-POLICY: fixed-fragment
             sql.push_str(
                 " AND NOT EXISTS (SELECT 1 FROM proxima_core.memories m2 \
                                   WHERE m2.supersedes = m.memory_id \

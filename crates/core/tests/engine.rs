@@ -342,12 +342,6 @@ async fn fact_retention_rejects_owner_the_context_cannot_access() {
         .await
         .expect_err("foreign owner must be rejected");
     assert_eq!(err.code, ErrorCode::Forbidden);
-
-    let err = engine
-        .cleanup_due_facts(&stranger, &owner)
-        .await
-        .expect_err("foreign owner must be rejected");
-    assert_eq!(err.code, ErrorCode::Forbidden);
 }
 
 #[tokio::test]
@@ -373,12 +367,6 @@ async fn fact_retention_rejects_context_without_admin_role() {
         .await
         .expect_err("missing admin role must be rejected");
     assert_eq!(err.code, ErrorCode::Forbidden);
-
-    let err = engine
-        .cleanup_due_facts(&authz, &owner)
-        .await
-        .expect_err("missing admin role must be rejected");
-    assert_eq!(err.code, ErrorCode::Forbidden);
 }
 
 #[tokio::test]
@@ -401,12 +389,6 @@ async fn fact_retention_authorized_context_clears_the_gate() {
 
     let err = engine
         .clear_fact_retention(&authz, &owner)
-        .await
-        .expect_err("RejectingStorage rejects writes");
-    assert_eq!(err.code, ErrorCode::Internal);
-
-    let err = engine
-        .cleanup_due_facts(&authz, &owner)
         .await
         .expect_err("RejectingStorage rejects writes");
     assert_eq!(err.code, ErrorCode::Internal);

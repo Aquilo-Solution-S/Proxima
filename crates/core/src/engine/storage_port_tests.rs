@@ -28,6 +28,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
             memories: Vec::new(),
             goals: Vec::new(),
             edges: Vec::new(),
+            next_cursor: None,
             seq_high_water: None,
         })
     }

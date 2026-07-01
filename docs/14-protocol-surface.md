@@ -10,14 +10,13 @@ framing and UI are consumer concerns (see [§Out of scope](#out-of-scope)).
 
 A deployment is one composite binary: core plus linked flavor crates
 (see [08](08-core-and-flavors.md)). Frontends, wire clients, and
-trusted EventSources talk to the binary through graph verbs and
-operational RPCs.
+trusted sources talk to the binary through graph verbs and operational RPCs.
 
 | Surface | Status | Contract |
 |---|---|---|
 | graph verbs | current | cognitive graph reads/writes/events |
 | operational/config RPCs | current | deployment profiles and auth surfaces |
-| compliance admin operations | design intent | compliance primitives in [13](13-compliance.md), admin surface deferred |
+| compliance admin operations | current Host API; transport RPCs deferred | abandonment-only erase primitives in [13](13-compliance.md); non-erase admin primitives remain design intent |
 | operators / wake / tools / LLM calls | internal | clients read committed graph effects from the `change_event` pull log |
 
 No runtime schema/source/tool/flavor registration surface exists.
@@ -41,7 +40,7 @@ resources; `proxima://tools` returns the live tool catalog only, and
 resources are discovered through MCP `resources/list` and
 `resources/templates/list`.
 
-Owner remains the storage and graph isolation primitive. Owner-space grants are an authorization layer above Owner: the host resolves which `(subject, Owner, action)` grants exist, and Core enforces the resolved grants at verb/tool entry. Grants never add org semantics to Core. Edge rows are source-owned; registered relation descriptors decide whether a foreign target is admitted and whether target read/write is required. Read projection is source-local for the edge row with independent target `Visible` / `Redacted` / `Unavailable` rendering.
+Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Edge rows are source-owned; registered relation descriptors decide whether a foreign target is admitted and whether target read/write is required. Read projection is source-local for the edge row with independent target `Visible` / `Redacted` / `Unavailable` rendering.
 
 Canonical substrate tools:
 
@@ -51,11 +50,11 @@ Canonical substrate tools:
 | `core_record_utterance` | write utterance Fact |
 | `core_derive` | write agent-authored Abstraction |
 | `core_link` | write registered relation edge |
-| `core_search_memories` | search memories; may include neighbor edges, per-result tags, lexical-degradation status, and owner-space labels when explicit grants are present |
-| `core_memory_spaces` | list server-issued memory-space keys and the per-space `search/read/write/publish/admin` actions available to the caller |
-| `core_publish_memory` | copy/re-ingest a core AgentNote Fact from one authorized owner-space to another; v1 never mutates Owner and never creates cross-owner edges |
+| `core_search_memories` | search memories; may include neighbor edges, per-result tags, lexical-degradation status, and selected memory-space labels |
+| `core_memory_spaces` | list server-issued memory-space keys with labels and coarse unrestricted-access flags |
+| `core_membership` | group roster dispatcher: `add_member`, `remove_member`, `list_members`; host/controller scoped |
 | `core_goal` | goal action dispatcher: `set`, `transition`, `modify`, `mark_achieved`, `decompose` |
-| `core_fact` | Fact action dispatcher: `citation_of_fact`, `citation_of_entity_head`, `facts_citing_object`, `tombstone` |
+| `core_fact` | Fact action dispatcher: `citation_of_fact`, `citation_of_entity_head`, `facts_citing_object` |
 
 Graph search is unified into `core_search_memories`; there is no
 separate graph-search tool.
@@ -109,55 +108,66 @@ have no receipt id and admit a fresh Fact per successful call.
 
 ## Owner-scoping — the primary axis
 
-Every graph read, write, ingest, and event poll names exactly one
-`Owner` (see [01](01-event-source.md#owner--scoping-primitive)).
-Dispatch verifies caller access to that Owner.
+Every graph write/ingest names one concrete `Owner` (see [01](01-event-source.md#owner--scoping-primitive)); graph reads and event polls are scoped to the server-resolved authorized Owner set. Dispatch resolves caller access before storage and never accepts caller-supplied roles.
 
 | Shape | Contract |
 |---|---|
 | single-tenant | one accessible Owner |
-| multi-tenant | same calls, different Owner per call |
-| multi-owner event reads | one `ChangeHistory` / poll call per Owner |
-| multi-space memory search | MCP fanout over authorized single-Owner searches, merged with per-result space labels |
-| cross-owner graph data | not exposed by protocol |
+| multi-tenant reads/events | one call may read the authorized Owner set, with redaction/projection applied per row |
+| owner-selected writes | write/ingest tools resolve one selected Owner before storage |
+| multi-space memory search | MCP fanout over selected authorized memory spaces, merged with per-result space labels |
+| cross-owner graph data | exposed only through rows readable by source Owner; target rendering is independent |
 
-Owner-space grant actions are `search`, `read`, `write`, `publish`, and `admin`. Public MCP inputs may name server-issued space keys from `core_memory_spaces`; the keys are selectors only, not authority. Each use is resolved through `AuthzContext` grants and Owner visibility before calling the existing single-owner storage/graph path.
+Public MCP inputs may name server-issued space keys from `core_memory_spaces`; the keys are selectors only, not authority. Each use is resolved through `AuthzContext` into `OwnerRoles` and Owner visibility before calling storage/graph paths.
 
 ## Graph Verbs
 
 ### Query
 
-Owner-scoped snapshot read of memories, goals, and edges.
+Snapshot read of memories, goals, and edges scoped to the server-resolved authorized Owner set (`S_read`).
 
 | Axis | Current contract |
 |---|---|
-| owner | required |
+| owner set | `AuthzContext` resolves `S_read`; request principal is not an authority vector |
 | entity kind | optional |
 | schema id | optional |
 | supersession | heads-only or include superseded |
 | tombstones | present-only or include tombstoned |
 | Goal/Perspective selectors | explicit ids; selectors never authorize by themselves |
-| pagination | `limit`; cursor pagination deferred |
+| pagination | single-kind keyset: `limit` + `page.after` over `(created_at, id) DESC` |
 | payloads | optional typed payload projections; identity hydration by memory/goal/edge ids |
 | stateful Facts | heads by registered natural key; tombstone heads suppress prior present rows |
 | flavor-typed filters | design intent; advertised/validated only when implemented by a linked flavor |
 | edge traversal / time range | deferred |
 
-Returns rows plus `seq_high_water`. Clients persist the watermark as
-the seq cursor for a subsequent forward poll of `change_event`.
+Cursor streams:
+
+| `entity_kind` | cursor |
+|---|---|
+| `Fact` / `Abstraction` / `Perspective` | `QueryCursor::Memory { created_at, memory_id }` |
+| `Goal` | `QueryCursor::Goal { created_at, goal_id }` |
+| absent | rejected when `page.after` is present; `next_cursor = None` |
+
+Cursor mismatch returns `InvalidArgument`. Storage fetches `limit + 1`,
+returns at most `limit`, and emits `next_cursor` from the last returned
+row only when another row exists. Edge hydration is bounded to the
+returned node window.
+
+Returns rows plus `seq_high_water`. Clients persist the watermark as the
+seq cursor for a subsequent forward poll of `change_event`.
 
 ### ChangeHistory
 
-Owner-scoped bounded read of `change_event`, newest-first.
+Bounded read of `change_event`, newest-first, scoped to the server-resolved authorized Owner set (`S_read`).
 
 | Field | Contract |
 |---|---|
-| `owner` | required |
+| owner set | `AuthzContext` resolves `S_read`; request principal is not an authority vector |
 | `limit` | required; `1..=1000`, server-clamped |
 | `before` | optional UUIDv7 cursor; returns `seq < before` |
-| filters | owner-only in current implementation |
+| filters | authorized-owner set only in current implementation |
 | return order | newest-first |
-| `seq_high_water` | latest owner event seq at read time |
+| `seq_high_water` | latest visible event seq at read time |
 
 No `after` cursor — this verb is backward-only. Forward replay (events
 with `seq > cursor`) is served by the `proxima://change-events{?since,limit}`
@@ -203,7 +213,7 @@ Unassigned owner-only Goal rows are not part of the public helper.
 ### FactIngest
 
 Fact write path for external sources and in-app sources. Receipt-backed writes
-carry EventSource receipt metadata; receiptless writes carry no source-batch
+carry source receipt metadata; receiptless writes carry no source-batch
 witness.
 
 | Rule | Contract |
@@ -295,20 +305,21 @@ Perspective rows; no materialized Self row authorizes access.
 
 ## Compliance Admin Surface
 
-Compliance primitives are defined in [13](13-compliance.md). Their
-admin protocol surface is deferred unless a concrete RPC exists.
+Compliance primitives are defined in [13](13-compliance.md). Current
+Rust Host API exposes abandonment-only erase entry points; transport/admin
+RPCs beyond those concrete methods stay deferred.
 
 | Primitive | Protocol status |
 |---|---|
-| `delete_owner` | design intent |
-| `delete_source_scope` | design intent |
+| `delete_owner` | current Host API: `erase_abandoned_group_owner`, `erase_dropped_personal_owner`, `erase_world_owner` refusal |
+| `delete_source_scope` | current Host API: `erase_abandoned_group_source_scope`, `erase_dropped_personal_source_scope` |
 | `pause_owner` / `resume_owner` | design intent |
 | `export_owner` | design intent |
 | tool-recipient export | deferred |
 | legal-consequence blocking | deferred |
 
 Compliance operations are admin/controller actions, not cognitive
-graph writes.
+graph writes or MCP memory-profile actions.
 
 ## Auth Model
 
@@ -320,7 +331,7 @@ access.
 |---|---|
 | `None` | local embedded / NoAuth deployments |
 | bearer token | user principal |
-| source credential | external EventSource |
+| source credential | external source identity |
 
 | Credential subject | Access |
 |---|---|
@@ -329,8 +340,9 @@ access.
 | admin/controller | operational/config RPCs and future compliance admin operations |
 
 Per-call dispatch enforces `call.owner` inside the resolved Owner set.
-Signup, MFA, billing, group membership, and tenancy services live in
-front of the engine.
+Signup, MFA, billing, and tenancy services live in front of the engine;
+`core_membership` mutates the explicit group roster when the host exposes
+that controller-scoped tool.
 
 ## Error Envelope
 
@@ -350,11 +362,11 @@ not-found/state, tool/inference config, and internal errors. Docs must
 not require a code variant until it exists in `crates/core/src/error.rs`
 or the owning wire surface.
 
-## EventSource Registration
+## Source Registration
 
-EventSources register at startup from linked flavor crates, same
+Source identities register at startup from linked flavor crates, same
 build-time posture as schemas, relations, prompts, and tools. Runtime
-EventSource registration is deferred and requires a new ADR.
+source registration is deferred and requires a new ADR.
 
 ## Backpressure
 
@@ -377,7 +389,7 @@ Current contract:
 
 ## Cross-References
 
-- Owner and EventSource invariants: [01](01-event-source.md).
+- Owner and source-ingest invariants: [01](01-event-source.md).
 - Entity / edge model: [02](02-memory.md).
 - Payload/schema registry: [03](03-schema-registry.md).
 - Operators: [04](04-consolidation.md).

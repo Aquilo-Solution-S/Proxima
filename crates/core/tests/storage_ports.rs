@@ -3,7 +3,6 @@
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
-use proxima_core::verbs::fact_cleanup::{CleanupDueFactsOutcome, TombstoneFactOutcome};
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
@@ -227,26 +226,15 @@ struct EmbeddingWriteFake;
 
 #[async_trait::async_trait]
 impl EmbeddingWritePort for EmbeddingWriteFake {
-    async fn upsert_fact_embedding(
+    async fn insert_embedding(
         &self,
-        owner: &Owner,
-        memory_id: proxima_core::MemoryId,
+        _owner: &Owner,
+        _entity: proxima_core::EmbeddableEntityRef,
         model_id: &str,
         dim: usize,
         vec: &[f32],
-    ) -> Result<(), StorageError> {
-        fake_error()
-    }
-
-    async fn upsert_memory_embedding(
-        &self,
-        owner: &Owner,
-        entity_kind: EntityKind,
-        memory_id: proxima_core::MemoryId,
-        model_id: &str,
-        dim: usize,
-        vec: &[f32],
-    ) -> Result<(), StorageError> {
+    ) -> Result<proxima_core::EmbeddingWriteOutcome, StorageError> {
+        let _ = (model_id, dim, vec);
         fake_error()
     }
 }
@@ -534,26 +522,65 @@ struct ComplianceEraseFake;
 
 #[async_trait::async_trait]
 impl ComplianceErasePort for ComplianceEraseFake {
-    async fn cleanup_due_facts(
+    async fn record_compliance_outcome(
         &self,
-        owner: &Owner,
-        fact_sidecar_tables: &[String],
-        edge_sidecar_tables: &[String],
-        citation_mapping_sidecar_tables: &[String],
-        cited_object_sidecar_tables: &[String],
-    ) -> Result<CleanupDueFactsOutcome, StorageError> {
+        _audit: &proxima_core::compliance::ComplianceAuditContext,
+        _outcome: &proxima_core::compliance::ComplianceEraseOutcome,
+    ) -> Result<(), StorageError> {
         fake_error()
     }
 
-    async fn tombstone_fact(
+    async fn erase_group_owner_if_abandoned(
         &self,
-        owner: &Owner,
-        fact_id: uuid::Uuid,
-        fact_sidecar_tables: &[String],
-        edge_sidecar_tables: &[String],
-        citation_mapping_sidecar_tables: &[String],
-        cited_object_sidecar_tables: &[String],
-    ) -> Result<TombstoneFactOutcome, StorageError> {
+        _auth: &proxima_core::compliance::EraseAuthorization,
+        _group_id: GroupId,
+        _fact_sidecar_tables: &[String],
+        _goal_sidecar_tables: &[String],
+        _edge_sidecar_tables: &[String],
+        _citation_mapping_sidecar_tables: &[String],
+        _cited_object_sidecar_tables: &[String],
+    ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+        fake_error()
+    }
+
+    async fn erase_personal_owner_if_drop_verified(
+        &self,
+        _auth: &proxima_core::compliance::EraseAuthorization,
+        _user_id: UserId,
+        _fact_sidecar_tables: &[String],
+        _goal_sidecar_tables: &[String],
+        _edge_sidecar_tables: &[String],
+        _citation_mapping_sidecar_tables: &[String],
+        _cited_object_sidecar_tables: &[String],
+    ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+        fake_error()
+    }
+
+    async fn erase_group_source_scope_if_owner_abandoned(
+        &self,
+        _auth: &proxima_core::compliance::EraseAuthorization,
+        _group_id: GroupId,
+        _source_id: &SourceId,
+        _fact_sidecar_tables: &[String],
+        _goal_sidecar_tables: &[String],
+        _edge_sidecar_tables: &[String],
+        _citation_mapping_sidecar_tables: &[String],
+        _cited_object_sidecar_tables: &[String],
+    ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+        fake_error()
+    }
+
+    async fn erase_personal_source_scope_if_drop_verified(
+        &self,
+        _auth: &proxima_core::compliance::EraseAuthorization,
+        _user_id: UserId,
+        _source_id: &SourceId,
+        _fact_sidecar_tables: &[String],
+        _goal_sidecar_tables: &[String],
+        _edge_sidecar_tables: &[String],
+        _citation_mapping_sidecar_tables: &[String],
+        _cited_object_sidecar_tables: &[String],
+    ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
         fake_error()
     }
 }

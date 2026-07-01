@@ -649,6 +649,7 @@ fn map_goal_storage_error(err: StorageError) -> ProtocolError {
         StorageError::ConstraintViolation(message) | StorageError::Conflict(message) => {
             ProtocolError::invalid_argument("goal", message)
         }
+        StorageError::Suppressed(message) => ProtocolError::suppressed(message),
         StorageError::Unavailable(message) | StorageError::Internal(message) => {
             ProtocolError::internal(message)
         }

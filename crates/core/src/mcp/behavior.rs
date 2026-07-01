@@ -120,6 +120,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::protocol::tool as protocol_tool;
     use crate::{
         AuthPath, AuthzContext, FlavorRegistry, McpAuthorContext, McpToolExtensions, OutputMode,
         OwnerRef, ToolScope, UserId,
@@ -169,14 +170,14 @@ mod tests {
 
         let output = Next::new(&behaviors, terminal)
             .run(ToolCall {
-                name: "core_search_memories".to_string(),
+                name: protocol_tool::CORE_SEARCH_MEMORIES.to_string(),
                 args: serde_json::json!({ "query": "x" }),
                 ctx: test_ctx(ToolScope::All),
             })
             .await
             .expect("chain output");
 
-        assert_eq!(output["tool"], "core_search_memories");
+        assert_eq!(output["tool"], protocol_tool::CORE_SEARCH_MEMORIES);
         assert_eq!(
             calls.lock().expect("recording lock").as_slice(),
             ["flavor", "terminal"]
@@ -191,7 +192,7 @@ mod tests {
 
         let err = Next::new(&behaviors, terminal)
             .run(ToolCall {
-                name: "core_search_memories".to_string(),
+                name: protocol_tool::CORE_SEARCH_MEMORIES.to_string(),
                 args: serde_json::json!({ "query": "x" }),
                 ctx: test_ctx(ToolScope::Palette(Vec::new())),
             })
@@ -199,7 +200,7 @@ mod tests {
             .expect_err("scope denial");
 
         assert!(
-            matches!(err, McpToolError::NotAuthorized(ref tool) if tool == "core_search_memories")
+            matches!(err, McpToolError::NotAuthorized(ref tool) if tool == protocol_tool::CORE_SEARCH_MEMORIES)
         );
         assert_eq!(err.kind(), super::super::McpToolErrorKind::InvalidRequest);
     }
@@ -207,20 +208,25 @@ mod tests {
     #[tokio::test]
     async fn scope_gate_requires_exact_palette_match_for_flat_tools() {
         let action_only = ScopeGateBehavior::enforce_scope(
-            "core_remember",
+            protocol_tool::CORE_REMEMBER,
             &serde_json::json!({ "title": "t", "body": "b" }),
-            &test_ctx(ToolScope::Palette(vec!["core_remember:x".to_string()])),
+            &test_ctx(ToolScope::Palette(vec![format!(
+                "{}:x",
+                protocol_tool::CORE_REMEMBER
+            )])),
         )
         .expect_err("flat tool requires exact palette entry");
 
         assert!(
-            matches!(action_only, McpToolError::NotAuthorized(ref tool) if tool == "core_remember")
+            matches!(action_only, McpToolError::NotAuthorized(ref tool) if tool == protocol_tool::CORE_REMEMBER)
         );
 
         ScopeGateBehavior::enforce_scope(
-            "core_remember",
+            protocol_tool::CORE_REMEMBER,
             &serde_json::json!({ "title": "t", "body": "b" }),
-            &test_ctx(ToolScope::Palette(vec!["core_remember".to_string()])),
+            &test_ctx(ToolScope::Palette(vec![
+                protocol_tool::CORE_REMEMBER.to_string(),
+            ])),
         )
         .expect("bare palette entry allows flat tool");
     }

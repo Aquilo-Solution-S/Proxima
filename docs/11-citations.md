@@ -108,7 +108,7 @@ citation_chat_telegram_message_v1(citation_mapping_id pk FK, message_external_id
 - One CitedObject ↔ N CitationMappings ↔ N Facts. Re-ingesting the
   same PDF reuses the CitedObject row; new chunks add new mappings
   pointing at it.
-- One Fact ↔ exactly one CitationMapping ↔ one CitedObject. A Fact
+- One cited Fact ↔ exactly one CitationMapping ↔ one CitedObject. A Fact
   needing to reference multiple artefacts is a modelling smell — emit
   multiple Facts, or model the relationship as Abstractions citing
   several memories.
@@ -163,24 +163,19 @@ S3 preserves original bytes only. It does not replace
 
 CitedObject carries Owner. A document ingested for `User(A)` is not
 visible to `User(B)`; the same PDF re-ingested for B produces a
-separate CitedObject row under B's Owner. Cross-owner sharing is a
-v2+ AccessGrant concern ([01](01-event-source.md)); the citation layer never spans owners.
+separate CitedObject row under B's Owner. Cross-owner access is resolved through group membership / `OwnerRoles`; the citation layer never spans owners.
 
 CitationMapping inherits `owner` from its Fact (and equivalently from
 its CitedObject — the engine checks they match).
 
 ## Edges do not cite
 
-`Edge` has no `citation_id`. An edge's *reasoning* is its
-`authored_by`:
-
-| `authored_by`              | Meaning                                                 |
-|---------------------------|---------------------------------------------------------|
-| `EventSource(SourceId)`   | payload-encoded structural fact; relation *is* the data |
-| `OperatorFtoA(MemoryId)`  | reasoned by the source Abstraction                      |
-| `OperatorAtoP(MemoryId)`  | reasoned by the source Perspective                      |
-| `PerspectiveLink(MemoryId)` | reasoned by the source Perspective                    |
-| engine `Supersedes`        | engine-authored on re-derivation                        |
+`Edge` has no `citation_id`. An edge's authorship class is the closed
+`authorship_kind` vocabulary (`SourceIngest`, `OperatorFtoA`, `OperatorAtoA`,
+`OperatorAtoP`, `OperatorAtoGoal`, `PerspectiveLink`, `PerspectiveGoalLink`,
+`User`, `Engine`, `ExternalAgent`). Memory/operator provenance lives in
+`authorship_owner_memory_id`, relation descriptors, and operator invocation
+metadata; enum variants do not carry payload IDs.
 
 Anything you'd want a "citation" to express on an edge is already
 encoded by the authoring memory's own citation chain.

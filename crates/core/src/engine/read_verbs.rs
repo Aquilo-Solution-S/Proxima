@@ -94,24 +94,14 @@ impl Engine {
         authz: &AuthzContext,
         req: &SearchReadRequest,
     ) -> Result<SearchReadResponse, ProtocolError> {
-        let read_owners = self.authorize_read(authz).await?;
-        let hydration_permit = if req.include_body || req.include_neighbor_edges {
-            Some(
-                self.authorize_request(authz, &req.search.principal, Relation::Viewer)
-                    .await?,
-            )
-        } else {
-            None
-        };
-
-        let hydration_owner = hydration_permit
-            .as_ref()
-            .map_or(&req.search.principal, |permit| permit.owner());
+        let read_permit = self
+            .authorize_request(authz, &req.search.principal, Relation::Viewer)
+            .await?;
         search_authorized(
             &self.storage.read_verb,
             self.registry.search_projections(),
-            &read_owners,
-            hydration_owner,
+            std::slice::from_ref(read_permit.owner()),
+            read_permit.owner(),
             req,
         )
         .await

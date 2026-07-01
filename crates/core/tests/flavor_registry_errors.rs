@@ -285,7 +285,7 @@ fn unregistered_relation_payload_is_typed_freeze_error() {
             EndpointBinding::Pin,
             EntityKindMask::fact(),
             EntityKindMask::fact(),
-            AuthorshipKindMask::event_source(),
+            AuthorshipKindMask::source_ingest(),
         ))
         .unwrap();
 

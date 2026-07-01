@@ -1,5 +1,6 @@
 use super::*;
 use crate::mcp::{McpToolCtx, McpToolError};
+use crate::protocol::tool as protocol_tool;
 
 #[test]
 fn schema_id_has_prefix_edge_cases() {
@@ -178,15 +179,15 @@ fn default_registry_includes_all_9_substrate_mcp_tools() {
     let names: std::collections::HashSet<_> =
         frozen.list_mcp_tools().iter().map(|d| d.name).collect();
     let expected = [
-        "core_search_memories",
-        "core_memory_spaces",
-        "core_remember",
-        "core_record_utterance",
-        "core_derive",
-        "core_link",
-        "core_goal",
-        "core_fact",
-        "core_membership",
+        protocol_tool::CORE_SEARCH_MEMORIES,
+        protocol_tool::CORE_MEMORY_SPACES,
+        protocol_tool::CORE_REMEMBER,
+        protocol_tool::CORE_RECORD_UTTERANCE,
+        protocol_tool::CORE_DERIVE,
+        protocol_tool::CORE_LINK,
+        protocol_tool::CORE_GOAL,
+        protocol_tool::CORE_FACT,
+        protocol_tool::CORE_MEMBERSHIP,
     ];
     for name in expected {
         assert!(names.contains(name), "missing tool {name}");

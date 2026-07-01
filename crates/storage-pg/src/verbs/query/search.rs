@@ -63,6 +63,9 @@ struct CandidateFilterParams {
     tags: Option<usize>,
 }
 
+const MIN_VECTOR_CANDIDATE_OVERFETCH: u64 = 512;
+const VECTOR_CANDIDATE_OVERFETCH_PER_RESULT: u64 = 64;
+
 pub(crate) async fn search_memories(
     pool: &PgPool,
     req: &MemorySearchRequest,
@@ -239,27 +242,52 @@ async fn run_semantic(
     let vec_param = next_param;
     let model_param = next_param + 1;
     let order_by = branch_order_by(req, "similarity_score");
+    let candidate_overfetch = u64::from(req.limit.min(50))
+        .saturating_mul(VECTOR_CANDIDATE_OVERFETCH_PER_RESULT)
+        .max(MIN_VECTOR_CANDIDATE_OVERFETCH);
 
     write!(
         sql,
-        " SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
+        " , eligible_entities AS MATERIALIZED (
+              SELECT DISTINCT ON (c.kind, c.memory_id)
+                     c.memory_id, c.owner_kind, c.owner_id, c.kind,
+                     c.schema_id, c.created_at, c.search_text
+                FROM candidates c
+               ORDER BY c.kind, c.memory_id, c.created_at DESC
+          ),
+          vector_candidates AS MATERIALIZED (
+              SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
+                     c.search_text,
+                     CASE
+                         WHEN (1 - (emb.vec <=> ${vec_param}::vector)) = 'NaN'::float8 THEN 0.0
+                         ELSE GREATEST(0.0, (1 - (emb.vec <=> ${vec_param}::vector)))
+                     END::real AS similarity_score
+                FROM proxima_core.embeddings emb
+                JOIN proxima_core.embedding_heads head
+                  ON head.entity_kind = emb.entity_kind
+                 AND head.entity_id = emb.entity_id
+                 AND head.model_id = emb.model_id
+                 AND head.embedding_version = emb.embedding_version
+                 AND head.owner_kind = emb.owner_kind
+                 AND head.owner_id IS NOT DISTINCT FROM emb.owner_id
+                JOIN eligible_entities c
+                  ON c.kind = emb.entity_kind
+                 AND c.memory_id = emb.entity_id
+                 AND c.owner_kind = emb.owner_kind
+                 AND c.owner_id IS NOT DISTINCT FROM emb.owner_id
+               WHERE emb.model_id = ${model_param}
+               ORDER BY emb.vec <=> ${vec_param}::vector
+               LIMIT {candidate_overfetch}
+          )
+          SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
                  left(c.search_text, 480) AS snippet,
                  0.0::real AS lexical_score,
-                 CASE
-                     WHEN (1 - (emb.vec <=> ${vec_param}::vector)) = 'NaN'::float8 THEN 0.0
-                     ELSE GREATEST(0.0, (1 - (emb.vec <=> ${vec_param}::vector)))
-                 END::real AS similarity_score
-          FROM candidates c
-          JOIN proxima_core.embeddings emb
-            ON emb.entity_kind = c.kind
-           AND emb.entity_id = c.memory_id
-           AND emb.owner_kind = c.owner_kind
-           AND emb.owner_id = c.owner_id
-           AND emb.embedding_version = 1
-           AND emb.model_id = ${model_param}
+                 c.similarity_score
+          FROM vector_candidates c
           ORDER BY {order_by}
           LIMIT {}",
         u64::from(limit),
+        candidate_overfetch = candidate_overfetch,
         order_by = order_by
     )
     .expect("write to String is infallible");

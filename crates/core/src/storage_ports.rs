@@ -7,6 +7,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::SourceBatchId;
+use crate::access::AccessError;
+use crate::compliance::ComplianceEraseTarget;
 use crate::dependency::MemoryDependency;
 use crate::read_models::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, FactRow, GoalWakeCandidate,
@@ -18,7 +20,6 @@ use crate::storage::{
 };
 use crate::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use crate::verbs::close_batch::CloseBatchOutcome;
-use crate::verbs::fact_cleanup::{CleanupDueFactsOutcome, TombstoneFactOutcome};
 use crate::verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWrite, FactIngestOutcome, FactWriteCommand,
 };
@@ -29,8 +30,9 @@ use crate::verbs::goal_write::{
 use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::{
-    DerivedEdgeSpec, EdgeId, EntityId, EntityKind, FactEntityId, GroupId, MembershipRow, MemoryId,
-    Owner, OwnerRef, Relation, SchemaId, SchemaVersion, SidecarPayload, UserId,
+    DerivedEdgeSpec, EdgeId, EmbeddableEntityRef, EntityId, EntityKind, FactEntityId, GroupId,
+    MembershipRow, MemoryId, Owner, OwnerRef, Relation, SchemaId, SchemaVersion, SidecarPayload,
+    SourceId, UserId,
 };
 
 /// Unforgeable witness that engine admission already enforced the relation
@@ -218,6 +220,58 @@ pub trait EmbeddingTextPort: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait EmbeddingWritePort: Send + Sync {
+    async fn insert_embedding(
+        &self,
+        owner: &Owner,
+        entity: EmbeddableEntityRef,
+        model_id: &str,
+        dim: usize,
+        vec: &[f32],
+    ) -> Result<EmbeddingWriteOutcome, StorageError>;
+
+    async fn insert_fact_embedding(
+        &self,
+        owner: &Owner,
+        memory_id: crate::MemoryId,
+        model_id: &str,
+        dim: usize,
+        vec: &[f32],
+    ) -> Result<EmbeddingWriteOutcome, StorageError> {
+        self.insert_embedding(
+            owner,
+            EmbeddableEntityRef::Memory {
+                kind: EntityKind::Fact,
+                memory_id,
+            },
+            model_id,
+            dim,
+            vec,
+        )
+        .await
+    }
+
+    async fn insert_memory_embedding(
+        &self,
+        owner: &Owner,
+        entity_kind: EntityKind,
+        memory_id: crate::MemoryId,
+        model_id: &str,
+        dim: usize,
+        vec: &[f32],
+    ) -> Result<EmbeddingWriteOutcome, StorageError> {
+        self.insert_embedding(
+            owner,
+            EmbeddableEntityRef::Memory {
+                kind: entity_kind,
+                memory_id,
+            },
+            model_id,
+            dim,
+            vec,
+        )
+        .await
+    }
+
     async fn upsert_fact_embedding(
         &self,
         owner: &Owner,
@@ -225,7 +279,11 @@ pub trait EmbeddingWritePort: Send + Sync {
         model_id: &str,
         dim: usize,
         vec: &[f32],
-    ) -> Result<(), StorageError>;
+    ) -> Result<(), StorageError> {
+        self.insert_fact_embedding(owner, memory_id, model_id, dim, vec)
+            .await?;
+        Ok(())
+    }
 
     async fn upsert_memory_embedding(
         &self,
@@ -235,7 +293,16 @@ pub trait EmbeddingWritePort: Send + Sync {
         model_id: &str,
         dim: usize,
         vec: &[f32],
-    ) -> Result<(), StorageError>;
+    ) -> Result<(), StorageError> {
+        self.insert_memory_embedding(owner, entity_kind, memory_id, model_id, dim, vec)
+            .await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddingWriteOutcome {
+    pub embedding_version: i32,
 }
 
 #[async_trait::async_trait]
@@ -442,26 +509,82 @@ pub trait FactRetentionPort: Send + Sync {
     async fn clear_fact_retention(&self, owner: &Owner) -> Result<bool, StorageError>;
 }
 
+#[allow(clippy::too_many_arguments)]
 #[async_trait::async_trait]
 pub trait ComplianceErasePort: Send + Sync {
-    async fn cleanup_due_facts(
+    async fn record_compliance_outcome(
         &self,
-        owner: &Owner,
-        fact_sidecar_tables: &[String],
-        edge_sidecar_tables: &[String],
-        citation_mapping_sidecar_tables: &[String],
-        cited_object_sidecar_tables: &[String],
-    ) -> Result<CleanupDueFactsOutcome, StorageError>;
+        audit: &crate::compliance::ComplianceAuditContext,
+        outcome: &crate::compliance::ComplianceEraseOutcome,
+    ) -> Result<(), StorageError>;
 
-    async fn tombstone_fact(
+    async fn erase_group_owner_if_abandoned(
         &self,
-        owner: &Owner,
-        fact_id: uuid::Uuid,
+        auth: &crate::compliance::EraseAuthorization,
+        group_id: GroupId,
         fact_sidecar_tables: &[String],
+        goal_sidecar_tables: &[String],
         edge_sidecar_tables: &[String],
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
-    ) -> Result<TombstoneFactOutcome, StorageError>;
+    ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError>;
+
+    async fn erase_personal_owner_if_drop_verified(
+        &self,
+        auth: &crate::compliance::EraseAuthorization,
+        user_id: UserId,
+        fact_sidecar_tables: &[String],
+        goal_sidecar_tables: &[String],
+        edge_sidecar_tables: &[String],
+        citation_mapping_sidecar_tables: &[String],
+        cited_object_sidecar_tables: &[String],
+    ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError>;
+
+    async fn erase_group_source_scope_if_owner_abandoned(
+        &self,
+        auth: &crate::compliance::EraseAuthorization,
+        group_id: GroupId,
+        source_id: &SourceId,
+        fact_sidecar_tables: &[String],
+        goal_sidecar_tables: &[String],
+        edge_sidecar_tables: &[String],
+        citation_mapping_sidecar_tables: &[String],
+        cited_object_sidecar_tables: &[String],
+    ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError>;
+
+    async fn erase_personal_source_scope_if_drop_verified(
+        &self,
+        auth: &crate::compliance::EraseAuthorization,
+        user_id: UserId,
+        source_id: &SourceId,
+        fact_sidecar_tables: &[String],
+        goal_sidecar_tables: &[String],
+        edge_sidecar_tables: &[String],
+        citation_mapping_sidecar_tables: &[String],
+        cited_object_sidecar_tables: &[String],
+    ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError>;
+}
+
+/// Trusted host port for compliance erase authorization.
+/// Fail-closed: absence or denial means erase is not authorized.
+#[async_trait::async_trait]
+pub trait ComplianceAdminPort: Send + Sync {
+    async fn may_perform_compliance_erase(
+        &self,
+        authz: &crate::AuthzContext,
+        target: &ComplianceEraseTarget,
+    ) -> Result<bool, AccessError>;
+}
+
+/// Trusted host port for personal owner drop verification.
+/// Fail-closed: absence or denial means drop is not verified.
+#[async_trait::async_trait]
+pub trait OwnerDropProofPort: Send + Sync {
+    async fn verify_personal_owner_dropped(
+        &self,
+        user_id: UserId,
+        drop_event_id: &str,
+    ) -> Result<bool, AccessError>;
 }
 
 #[async_trait::async_trait]
@@ -501,6 +624,8 @@ pub type SourceBatchHandle = Arc<dyn SourceBatchPort>;
 pub type FactRetentionHandle = Arc<dyn FactRetentionPort>;
 pub type ComplianceEraseHandle = Arc<dyn ComplianceErasePort>;
 pub type RegistryProjectionHandle = Arc<dyn RegistryProjectionPort>;
+pub type ComplianceAdminHandle = Arc<dyn ComplianceAdminPort>;
+pub type OwnerDropProofHandle = Arc<dyn OwnerDropProofPort>;
 
 #[allow(dead_code)]
 #[derive(Clone)]
@@ -524,6 +649,8 @@ pub struct StoragePorts {
     source_batch: SourceBatchHandle,
     fact_retention: FactRetentionHandle,
     compliance_erase: ComplianceEraseHandle,
+    compliance_admin: Option<ComplianceAdminHandle>,
+    owner_drop_proof: Option<OwnerDropProofHandle>,
     registry_projection: RegistryProjectionHandle,
 }
 
@@ -540,7 +667,6 @@ pub(crate) struct AccessAdminStoragePorts {
 #[derive(Clone)]
 pub(crate) struct FactRetentionStoragePorts {
     pub fact_retention: FactRetentionHandle,
-    pub compliance_erase: ComplianceEraseHandle,
 }
 
 #[derive(Clone)]
@@ -589,9 +715,18 @@ pub(crate) struct ReadVerbStoragePorts {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
+pub(crate) struct ComplianceStoragePorts {
+    pub compliance_erase: ComplianceEraseHandle,
+    pub compliance_admin: Option<ComplianceAdminHandle>,
+    pub owner_drop_proof: Option<OwnerDropProofHandle>,
+}
+
+#[derive(Clone)]
 pub(crate) struct EngineStoragePorts {
     pub access_read: AccessReadStoragePorts,
     pub access_admin: AccessAdminStoragePorts,
+    pub compliance: ComplianceStoragePorts,
     pub fact_retention: FactRetentionStoragePorts,
     pub goal_command: GoalCommandStoragePorts,
     pub ingest: IngestStoragePorts,
@@ -622,6 +757,8 @@ pub struct StoragePortsBuilder {
     source_batch: Option<SourceBatchHandle>,
     fact_retention: Option<FactRetentionHandle>,
     compliance_erase: Option<ComplianceEraseHandle>,
+    compliance_admin: Option<ComplianceAdminHandle>,
+    owner_drop_proof: Option<OwnerDropProofHandle>,
     registry_projection: Option<RegistryProjectionHandle>,
 }
 
@@ -667,6 +804,8 @@ impl StoragePorts {
             source_batch: rejecting.clone(),
             fact_retention: rejecting.clone(),
             compliance_erase: rejecting.clone(),
+            compliance_admin: None,
+            owner_drop_proof: None,
             registry_projection: rejecting.clone(),
         }
     }
@@ -681,9 +820,13 @@ impl From<StoragePorts> for EngineStoragePorts {
             access_admin: AccessAdminStoragePorts {
                 owner_membership_admin: ports.owner_membership_admin.clone(),
             },
+            compliance: ComplianceStoragePorts {
+                compliance_erase: ports.compliance_erase.clone(),
+                compliance_admin: ports.compliance_admin.clone(),
+                owner_drop_proof: ports.owner_drop_proof.clone(),
+            },
             fact_retention: FactRetentionStoragePorts {
                 fact_retention: ports.fact_retention.clone(),
-                compliance_erase: ports.compliance_erase.clone(),
             },
             goal_command: GoalCommandStoragePorts {
                 goal_write: ports.goal_write.clone(),
@@ -838,6 +981,18 @@ impl StoragePortsBuilder {
     }
 
     #[must_use]
+    pub fn compliance_admin(mut self, handle: ComplianceAdminHandle) -> Self {
+        self.compliance_admin = Some(handle);
+        self
+    }
+
+    #[must_use]
+    pub fn owner_drop_proof(mut self, handle: OwnerDropProofHandle) -> Self {
+        self.owner_drop_proof = Some(handle);
+        self
+    }
+
+    #[must_use]
     pub fn registry_projection(mut self, handle: RegistryProjectionHandle) -> Self {
         self.registry_projection = Some(handle);
         self
@@ -900,6 +1055,8 @@ impl StoragePortsBuilder {
             compliance_erase: self
                 .compliance_erase
                 .expect("compliance_erase storage port configured"),
+            compliance_admin: self.compliance_admin,
+            owner_drop_proof: self.owner_drop_proof,
             registry_projection: self
                 .registry_projection
                 .expect("registry_projection storage port configured"),
@@ -1009,6 +1166,7 @@ impl MemoryReadPort for RejectingStorage {
             memories: Vec::new(),
             goals: Vec::new(),
             edges: Vec::new(),
+            next_cursor: None,
             seq_high_water: None,
         })
     }
@@ -1068,27 +1226,17 @@ impl EmbeddingTextPort for RejectingStorage {
 
 #[async_trait::async_trait]
 impl EmbeddingWritePort for RejectingStorage {
-    async fn upsert_fact_embedding(
+    async fn insert_embedding(
         &self,
         _owner: &Owner,
-        _memory_id: crate::MemoryId,
+        _entity: EmbeddableEntityRef,
         _model_id: &str,
         _dim: usize,
         _vec: &[f32],
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn upsert_memory_embedding(
-        &self,
-        _owner: &Owner,
-        _entity_kind: EntityKind,
-        _memory_id: crate::MemoryId,
-        _model_id: &str,
-        _dim: usize,
-        _vec: &[f32],
-    ) -> Result<(), StorageError> {
-        Ok(())
+    ) -> Result<EmbeddingWriteOutcome, StorageError> {
+        Ok(EmbeddingWriteOutcome {
+            embedding_version: 0,
+        })
     }
 }
 
@@ -1379,30 +1527,101 @@ impl FactRetentionPort for RejectingStorage {
 
 #[async_trait::async_trait]
 impl ComplianceErasePort for RejectingStorage {
-    async fn cleanup_due_facts(
+    async fn record_compliance_outcome(
         &self,
-        _owner: &Owner,
-        _fact_sidecar_tables: &[String],
-        _edge_sidecar_tables: &[String],
-        _citation_mapping_sidecar_tables: &[String],
-        _cited_object_sidecar_tables: &[String],
-    ) -> Result<CleanupDueFactsOutcome, StorageError> {
+        _audit: &crate::compliance::ComplianceAuditContext,
+        _outcome: &crate::compliance::ComplianceEraseOutcome,
+    ) -> Result<(), StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
         ))
     }
 
-    async fn tombstone_fact(
+    async fn erase_group_owner_if_abandoned(
         &self,
-        _owner: &Owner,
-        _fact_id: uuid::Uuid,
+        _auth: &crate::compliance::EraseAuthorization,
+        _group_id: GroupId,
         _fact_sidecar_tables: &[String],
+        _goal_sidecar_tables: &[String],
         _edge_sidecar_tables: &[String],
         _citation_mapping_sidecar_tables: &[String],
         _cited_object_sidecar_tables: &[String],
-    ) -> Result<TombstoneFactOutcome, StorageError> {
+    ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn erase_personal_owner_if_drop_verified(
+        &self,
+        _auth: &crate::compliance::EraseAuthorization,
+        _user_id: UserId,
+        _fact_sidecar_tables: &[String],
+        _goal_sidecar_tables: &[String],
+        _edge_sidecar_tables: &[String],
+        _citation_mapping_sidecar_tables: &[String],
+        _cited_object_sidecar_tables: &[String],
+    ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn erase_group_source_scope_if_owner_abandoned(
+        &self,
+        _auth: &crate::compliance::EraseAuthorization,
+        _group_id: GroupId,
+        _source_id: &SourceId,
+        _fact_sidecar_tables: &[String],
+        _goal_sidecar_tables: &[String],
+        _edge_sidecar_tables: &[String],
+        _citation_mapping_sidecar_tables: &[String],
+        _cited_object_sidecar_tables: &[String],
+    ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn erase_personal_source_scope_if_drop_verified(
+        &self,
+        _auth: &crate::compliance::EraseAuthorization,
+        _user_id: UserId,
+        _source_id: &SourceId,
+        _fact_sidecar_tables: &[String],
+        _goal_sidecar_tables: &[String],
+        _edge_sidecar_tables: &[String],
+        _citation_mapping_sidecar_tables: &[String],
+        _cited_object_sidecar_tables: &[String],
+    ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl ComplianceAdminPort for RejectingStorage {
+    async fn may_perform_compliance_erase(
+        &self,
+        _authz: &crate::AuthzContext,
+        _target: &ComplianceEraseTarget,
+    ) -> Result<bool, AccessError> {
+        Err(AccessError::Resolution(
+            "RejectingStorage rejects all auth".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl OwnerDropProofPort for RejectingStorage {
+    async fn verify_personal_owner_dropped(
+        &self,
+        _user_id: UserId,
+        _drop_event_id: &str,
+    ) -> Result<bool, AccessError> {
+        Err(AccessError::Resolution(
+            "RejectingStorage rejects all auth".into(),
         ))
     }
 }

@@ -36,7 +36,7 @@ pub const CORE_WAKE_MOTIVATED_BY_RELATION: &str = "core/wake-motivated-by";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, sqlx::Type)]
 #[sqlx(type_name = "proxima_core.relation_class")]
 pub enum RelationClass {
-    /// EventSource-authored edges shaped from payload structure
+    /// Fact-ingest-authored edges shaped from source-owned payload structure
     /// (e.g. `commit→parent_commit`, `chunk→file_revision`).
     Structural,
     /// Operator-authored edges produced during consolidation
@@ -113,7 +113,7 @@ impl RelationTargetAccessPolicy {
 )]
 #[sqlx(type_name = "proxima_core.edge_authorship_kind")]
 pub enum EdgeAuthorshipKind {
-    EventSource,
+    SourceIngest,
     OperatorFtoA,
     OperatorAtoP,
     OperatorAtoA,
@@ -137,7 +137,7 @@ impl EdgeAuthorshipKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::EventSource => "EventSource",
+            Self::SourceIngest => "SourceIngest",
             Self::OperatorFtoA => "OperatorFtoA",
             Self::OperatorAtoP => "OperatorAtoP",
             Self::OperatorAtoA => "OperatorAtoA",
@@ -187,7 +187,7 @@ pub fn validate_operator_edge_shape(
                 && source_kind == EntityKind::Goal
                 && target_kind == EntityKind::Abstraction
         }
-        EdgeAuthorshipKind::EventSource
+        EdgeAuthorshipKind::SourceIngest
         | EdgeAuthorshipKind::PerspectiveLink
         | EdgeAuthorshipKind::PerspectiveGoalLink
         | EdgeAuthorshipKind::User
@@ -307,7 +307,7 @@ impl EntityKindMask {
 pub struct AuthorshipKindMask(u16);
 
 impl AuthorshipKindMask {
-    const EVENT_SOURCE: u16 = 0b0000_0001;
+    const SOURCE_INGEST: u16 = 0b0000_0001;
     const OPERATOR_F_TO_A: u16 = 0b0000_0010;
     const OPERATOR_A_TO_P: u16 = 0b0000_0100;
     const OPERATOR_A_TO_A: u16 = 0b0000_1000;
@@ -319,8 +319,8 @@ impl AuthorshipKindMask {
     const EXTERNAL_AGENT: u16 = 0b0010_0000_0000;
 
     #[must_use]
-    pub const fn event_source() -> Self {
-        Self(Self::EVENT_SOURCE)
+    pub const fn source_ingest() -> Self {
+        Self(Self::SOURCE_INGEST)
     }
 
     #[must_use]
@@ -396,7 +396,7 @@ impl AuthorshipKindMask {
     #[must_use]
     pub fn contains_str(self, kind: &str) -> bool {
         match kind {
-            "EventSource" => self.0 & Self::EVENT_SOURCE != 0,
+            "SourceIngest" => self.0 & Self::SOURCE_INGEST != 0,
             "OperatorFtoA" => self.0 & Self::OPERATOR_F_TO_A != 0,
             "OperatorAtoP" => self.0 & Self::OPERATOR_A_TO_P != 0,
             "OperatorAtoA" => self.0 & Self::OPERATOR_A_TO_A != 0,
@@ -418,7 +418,7 @@ impl AuthorshipKindMask {
     #[must_use]
     pub fn as_strings(self) -> Vec<&'static str> {
         [
-            "EventSource",
+            "SourceIngest",
             "OperatorFtoA",
             "OperatorAtoP",
             "OperatorAtoA",
@@ -839,7 +839,7 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
             EndpointBinding::Pin,
             EntityKindMask::all(),
             EntityKindMask::fact_abstraction_goal(),
-            AuthorshipKindMask::event_source()
+            AuthorshipKindMask::source_ingest()
                 .union(AuthorshipKindMask::operator())
                 .union(AuthorshipKindMask::engine())
                 .union(AuthorshipKindMask::external_agent()),
@@ -1164,6 +1164,41 @@ mod tests {
     }
 
     #[test]
+    fn edge_authorship_uses_source_ingest_wording() {
+        assert_eq!(
+            super::EdgeAuthorshipKind::SourceIngest.as_str(),
+            "SourceIngest"
+        );
+        assert!(super::AuthorshipKindMask::source_ingest().contains_str("SourceIngest"));
+        assert!(
+            super::AuthorshipKindMask::source_ingest()
+                .as_strings()
+                .contains(&"SourceIngest")
+        );
+
+        let migration = include_str!("../../storage-pg/migrations/0001_init.sql");
+        assert!(migration.contains("'SourceIngest'"));
+
+        for stale in [
+            format!("{}{}", "Event", "Source"),
+            format!("{}{}{}", "event", "_", "source"),
+            format!("{}{}{}", "source", "_", "event"),
+            format!("{}{}{}", "core", "_", "event"),
+        ] {
+            assert!(
+                !migration.contains(&stale),
+                "migration still contains {stale}"
+            );
+            assert!(
+                !super::AuthorshipKindMask::source_ingest()
+                    .as_strings()
+                    .contains(&stale.as_str()),
+                "authorship mask still exposes {stale}"
+            );
+        }
+    }
+
+    #[test]
     fn pin_descriptors_reject_follow_head_endpoint_shape() {
         let substrate = super::RelationDescriptor::substrate(
             "test/pin-substrate",
@@ -1172,7 +1207,7 @@ mod tests {
             EndpointBinding::Pin,
             EntityKindMask::fact(),
             EntityKindMask::fact(),
-            super::AuthorshipKindMask::event_source(),
+            super::AuthorshipKindMask::source_ingest(),
         );
         assert!(
             substrate
@@ -1181,7 +1216,7 @@ mod tests {
                     EndpointBinding::FollowHead,
                     "Fact",
                     EndpointBinding::Pin,
-                    "EventSource",
+                    "SourceIngest",
                 )
                 .is_err()
         );
@@ -1197,7 +1232,7 @@ mod tests {
             EndpointBinding::Pin,
             EntityKindMask::fact(),
             EntityKindMask::fact(),
-            super::AuthorshipKindMask::event_source(),
+            super::AuthorshipKindMask::source_ingest(),
         );
         assert!(
             typed
@@ -1206,7 +1241,7 @@ mod tests {
                     EndpointBinding::Pin,
                     "Fact",
                     EndpointBinding::FollowHead,
-                    "EventSource",
+                    "SourceIngest",
                 )
                 .is_err()
         );

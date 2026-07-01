@@ -16,8 +16,8 @@ Expected: server listens on `http://127.0.0.1:31415/mcp`.
 
 ## Tool Surface Profiles
 
-The default substrate exposes memory, goals, citations, fact tombstones,
-membership/profile-scoped administration, and introspection tools.
+The default substrate exposes memory, goals, citations, citation-only Fact
+actions, membership/profile-scoped administration, and introspection tools.
 `PROXIMA_TOOL_PROFILE=memory` shrinks the advertised surface for agent memory use.
 
 ```sh

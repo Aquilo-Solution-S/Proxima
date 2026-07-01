@@ -591,6 +591,8 @@ const fn non_zero_duration(duration: Duration) -> Duration {
 mod tests {
     use super::*;
     use crate::access::Role;
+    use crate::protocol::tool as protocol_tool;
+    use crate::protocol::{action as protocol_action, resource as protocol_resource};
     use crate::{GroupId, UserId};
     use futures_util::StreamExt;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -671,7 +673,11 @@ mod tests {
         assert!(ctx.identity.accessible_principals.is_empty());
         assert!(!ctx.identity.can_access_principal(&o));
         assert_eq!(ctx.capabilities.access, AccessScope::Granted);
-        assert!(!ctx.capabilities.tool_scope.allows("resource:memory"));
+        assert!(
+            !ctx.capabilities
+                .tool_scope
+                .allows(protocol_resource::MEMORY)
+        );
     }
 
     #[test]
@@ -717,38 +723,41 @@ mod tests {
 
     #[test]
     fn palette_scope_allows_and_denies() {
-        let scope = ToolScope::Palette(vec!["resource:memory".to_string()]);
+        let scope = ToolScope::Palette(vec![protocol_resource::MEMORY.to_string()]);
 
-        assert!(scope.allows("resource:memory"));
-        assert!(!scope.allows("core_goal:set"));
+        assert!(scope.allows(protocol_resource::MEMORY));
+        assert!(!scope.allows(protocol_action::CORE_GOAL_SET));
     }
 
     #[test]
     fn allows_action_requires_leaf_scope_key() {
-        let scope = ToolScope::Palette(vec!["core_goal:set".to_string()]);
+        let scope = ToolScope::Palette(vec![protocol_action::CORE_GOAL_SET.to_string()]);
 
-        assert!(scope.allows_action("core_goal", "set"));
-        assert!(!scope.allows_action("core_goal", "transition"));
-        assert!(!scope.allows("core_goal"));
+        assert!(scope.allows_action(protocol_tool::CORE_GOAL, "set"));
+        assert!(!scope.allows_action(protocol_tool::CORE_GOAL, "transition"));
+        assert!(!scope.allows(protocol_tool::CORE_GOAL));
     }
 
     #[test]
     fn allows_group_advertisement_accepts_flat_or_leaf_key() {
-        let leaf = ToolScope::Palette(vec!["core_goal:set".to_string()]);
-        let flat = ToolScope::Palette(vec!["core_goal".to_string()]);
-        let unrelated = ToolScope::Palette(vec!["resource:memory".to_string()]);
+        let leaf = ToolScope::Palette(vec![protocol_action::CORE_GOAL_SET.to_string()]);
+        let flat = ToolScope::Palette(vec![protocol_tool::CORE_GOAL.to_string()]);
+        let unrelated = ToolScope::Palette(vec![protocol_resource::MEMORY.to_string()]);
 
-        assert!(ToolScope::All.allows_group_advertisement("core_goal"));
-        assert!(leaf.allows_group_advertisement("core_goal"));
-        assert!(flat.allows_group_advertisement("core_goal"));
-        assert!(!unrelated.allows_group_advertisement("core_goal"));
+        assert!(ToolScope::All.allows_group_advertisement(protocol_tool::CORE_GOAL));
+        assert!(leaf.allows_group_advertisement(protocol_tool::CORE_GOAL));
+        assert!(flat.allows_group_advertisement(protocol_tool::CORE_GOAL));
+        assert!(!unrelated.allows_group_advertisement(protocol_tool::CORE_GOAL));
     }
 
     #[test]
     fn tool_scope_intersect_only_narrows_never_widens() {
         let palette =
             |ids: &[&str]| ToolScope::Palette(ids.iter().map(|id| (*id).to_string()).collect());
-        let mem = palette(&["resource:memory", "core_search_memories"]);
+        let mem = palette(&[
+            protocol_resource::MEMORY,
+            protocol_tool::CORE_SEARCH_MEMORIES,
+        ]);
 
         // `All` is the identity element in both positions.
         assert_eq!(ToolScope::All.intersect(&mem), mem);
@@ -757,11 +766,11 @@ mod tests {
 
         // Two palettes intersect to only the ids both allow — a deployment
         // scope can never re-add an id the caller's scope omitted.
-        let caller = palette(&["resource:memory", "core_goal:set"]);
+        let caller = palette(&[protocol_resource::MEMORY, protocol_action::CORE_GOAL_SET]);
         let result = mem.intersect(&caller);
-        assert!(result.allows("resource:memory"));
-        assert!(!result.allows("core_search_memories")); // caller lacked it
-        assert!(!result.allows("core_goal:set")); // deployment lacked it
+        assert!(result.allows(protocol_resource::MEMORY));
+        assert!(!result.allows(protocol_tool::CORE_SEARCH_MEMORIES)); // caller lacked it
+        assert!(!result.allows(protocol_action::CORE_GOAL_SET)); // deployment lacked it
 
         // Disjoint palettes intersect to empty (deny-all), never widening.
         assert_eq!(

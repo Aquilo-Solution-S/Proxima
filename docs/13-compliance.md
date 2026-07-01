@@ -23,8 +23,8 @@ bounded primitives and metadata vocabulary.
 
 | Operation | Status | Scope | Contract |
 |---|---|---|---|
-| `delete_owner` | v1 intent | one `Owner` | remove owner-scoped memories, goals, edges, sidecars, embeddings, source-batch payloads, and invocation caches; retain suppression and audit rows |
-| `delete_source_scope` | v1 intent | one source object inside one `Owner` | erase rows attributable to the scope; flavor resolves scope, substrate executes compliance deletion |
+| `delete_owner` | current Host API for erase; transport RPC deferred | one abandoned group `Owner`, verified dropped personal `Owner`, or refused World owner | remove owner-scoped memories, goals, edges, sidecars, embeddings, source-batch payloads, and invocation caches only after abandonment/drop proof; live owners refuse; retain suppression and audit rows |
+| `delete_source_scope` | current Host API for erase; transport RPC deferred | one source object inside one abandoned/dropped `Owner` | erase rows attributable to the scope only under the same abandonment/drop proof as owner erase; live owners refuse; flavor resolves scope, substrate executes compliance deletion |
 | `pause_owner` | v1 intent | one `Owner` | stop future operator dispatch and wake execution; reads and export remain available |
 | `resume_owner` | v1 intent | one `Owner` | clear pause state for future dispatch |
 | `export_owner` | v1 intent | one `Owner` | serialize owner-scoped substrate rows plus owner-involving compliance audit entries |
@@ -63,7 +63,7 @@ Hard deletion must not reopen ingest.
 | operation identity | uuidv7 operation id, owner/scope, requester |
 | timing | requested/completed timestamps |
 | outcome | `completed`, `refused`, `not-found`, `unauthorized` |
-| owner-space RBAC | grant administration and denials for `search/read/write/publish/admin` are audit-worthy controller events; personal-memory MCP calls should be logged metadata-only or redacted by host/admin policy, not copied into a shared audit payload |
+| owner roles | group membership/role administration and authorization denials are audit-worthy controller events; personal-memory MCP calls should be logged metadata-only or redacted by host/admin policy, not copied into a shared audit payload |
 | counts | affected-row counts only |
 | refusal | structured reason and retention/legal citation |
 | forbidden content | deleted payloads, payload diffs, natural-person identifiers, decision trees |
@@ -72,7 +72,7 @@ Hard deletion must not reopen ingest.
 
 Audit survives `delete_owner` for the same Owner.
 
-Owner remains the storage and graph isolation primitive. Owner-space grants are an authorization layer above Owner: the host resolves which `(subject, Owner, action)` grants exist, and Core enforces the resolved grants at verb/tool entry. Grants never add org semantics to Core. Edge rows are source-owned; descriptor policy and target gates control cross-owner target admission. Compliance export/delete redacts or omits unreadable targets independently from source-readable edge rows.
+Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Edge rows are source-owned; descriptor policy and target gates control cross-owner target admission. Compliance export/delete redacts or omits unreadable targets independently from source-readable edge rows.
 
 ## External side effects
 

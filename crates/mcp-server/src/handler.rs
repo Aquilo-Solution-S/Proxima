@@ -470,6 +470,7 @@ fn strip_call_context_args(args: &mut serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proxima_core::protocol::{action as protocol_action, tool as protocol_tool};
 
     #[test]
     fn author_from_args_extracts_caller_self_perspective() {
@@ -540,13 +541,16 @@ mod tests {
     #[test]
     fn tool_scope_denials_remain_invalid_request() {
         let err = tool_invocation_error_to_error_data(
-            McpToolError::NotAuthorized("core_goal:set".into()).into(),
+            McpToolError::NotAuthorized(protocol_action::CORE_GOAL_SET.into()).into(),
         );
 
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_REQUEST);
         assert_eq!(
             err.message,
-            "tool core_goal:set not authorized for this MCP token"
+            format!(
+                "tool {} not authorized for this MCP token",
+                protocol_action::CORE_GOAL_SET
+            )
         );
     }
 
@@ -571,37 +575,37 @@ mod tests {
     #[test]
     fn core_tool_annotations_encode_expected_semantics() {
         // Closed substrate: open_world is always false.
-        let read = core_tool_annotations("core_search_memories").expect("read tool");
+        let read = core_tool_annotations(protocol_tool::CORE_SEARCH_MEMORIES).expect("read tool");
         assert_eq!(read.read_only, Some(true));
         assert_eq!(read.open_world, Some(false));
 
         // Convergent additive write (required idempotency key).
-        let derive = core_tool_annotations("core_derive").expect("write tool");
+        let derive = core_tool_annotations(protocol_tool::CORE_DERIVE).expect("write tool");
         assert_eq!(derive.read_only, Some(false));
         assert_eq!(derive.destructive, Some(false));
         assert_eq!(derive.idempotent, Some(true));
 
         // Additive write with an OPTIONAL idempotency key: identical args
         // without a key create a new Fact, so it is not replay-safe.
-        let remember = core_tool_annotations("core_remember").expect("non-idempotent write");
+        let remember =
+            core_tool_annotations(protocol_tool::CORE_REMEMBER).expect("non-idempotent write");
         assert_eq!(remember.read_only, Some(false));
         assert_eq!(remember.destructive, Some(false));
         assert_eq!(remember.idempotent, Some(false));
 
-        // Grouped fact dispatcher is conservative: tombstone is destructive,
-        // but its writes converge.
-        let fact = core_tool_annotations("core_fact").expect("fact dispatcher");
-        assert_eq!(fact.read_only, Some(false));
-        assert_eq!(fact.destructive, Some(true));
+        // Grouped fact dispatcher now contains only citation reads.
+        let fact = core_tool_annotations(protocol_tool::CORE_FACT).expect("fact dispatcher");
+        assert_eq!(fact.read_only, Some(true));
+        assert_eq!(fact.destructive, Some(false));
         assert_eq!(fact.idempotent, Some(true));
 
         // Create-new-each-call write is not replay-safe.
-        let link = core_tool_annotations("core_link").expect("create tool");
+        let link = core_tool_annotations(protocol_tool::CORE_LINK).expect("create tool");
         assert_eq!(link.idempotent, Some(false));
 
         // Grouped goal dispatcher aggregates mixed write actions, so it is
         // advertised as non-idempotent at tool level.
-        let goal = core_tool_annotations("core_goal").expect("goal dispatcher");
+        let goal = core_tool_annotations(protocol_tool::CORE_GOAL).expect("goal dispatcher");
         assert_eq!(goal.read_only, Some(false));
         assert_eq!(goal.destructive, Some(false));
         assert_eq!(goal.idempotent, Some(false));

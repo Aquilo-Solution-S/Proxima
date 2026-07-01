@@ -2,6 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
+use crate::protocol::tool as protocol_tool;
 use crate::{AccessScope, GroupId, Owner, OwnerRef, OwnerRefKind, UserId};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -28,7 +29,7 @@ pub struct MemorySpaceAccessOutput {
 pub struct MemorySpacesTool;
 
 impl McpTool for MemorySpacesTool {
-    const NAME: &'static str = "core_memory_spaces";
+    const NAME: &'static str = protocol_tool::CORE_MEMORY_SPACES;
     const DESCRIPTION: &'static str = "List memory spaces this caller may use. Space keys are selectors only; every use is re-authorized.";
     type Args = MemorySpacesArgs;
     type Output = MemorySpacesOutput;

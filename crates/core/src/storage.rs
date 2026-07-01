@@ -30,6 +30,8 @@ pub enum StorageError {
     V004ResetRequired { details: String },
     #[error("not found")]
     NotFound,
+    #[error("suppressed: {0}")]
+    Suppressed(String),
     #[error("internal storage error: {0}")]
     Internal(String),
 }

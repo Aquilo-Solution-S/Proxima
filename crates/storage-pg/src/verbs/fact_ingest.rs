@@ -754,6 +754,17 @@ where
     let receipt_id_bytes = receipt_id.map(FactReceiptId::into_inner);
     let (owner_kind, owner_id) = owner_binds(owner);
 
+    if let (Some(receipt), Some(receipt_id_bytes)) = (&draft.receipt, receipt_id_bytes.as_ref()) {
+        super::compliance_erase::check_suppression_for_fact_tx(
+            tx,
+            *owner,
+            &receipt.source_id,
+            receipt.source_batch_id.into_inner(),
+            receipt_id_bytes,
+        )
+        .await?;
+    }
+
     let existing = if let Some(receipt_id_bytes) = receipt_id_bytes {
         sqlx::query_scalar::<_, uuid::Uuid>(
             "SELECT memory_id FROM proxima_core.memories

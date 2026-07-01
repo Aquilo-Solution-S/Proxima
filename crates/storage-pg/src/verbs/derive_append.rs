@@ -527,33 +527,22 @@ async fn validate_supersedes_in_owner(
 async fn insert_embedding_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
-    owner_kind: OwnerRefKind,
-    owner_id: Option<uuid::Uuid>,
+    _owner_kind: OwnerRefKind,
+    _owner_id: Option<uuid::Uuid>,
 ) -> Result<(), StorageError> {
     let (Some(embedding), Some(embedding_model_id)) = (&draft.embedding, draft.embedding_model_id)
     else {
         return Ok(());
     };
-    if embedding.len() != EMBEDDING_DIM {
-        return Err(StorageError::ConstraintViolation(
-            "embedding length must be 1024".into(),
-        ));
-    }
-    let vec_literal = crate::pgvector::literal(embedding);
-    sqlx::query(
-        "INSERT INTO proxima_core.embeddings
-            (entity_kind, entity_id, embedding_version, model_id, vec,
-             owner_kind, owner_id)
-         VALUES ($1, $2, 1, $3, $4::vector, $5, $6)",
+    crate::verbs::fact_embeddings::insert_memory_embedding(
+        tx,
+        &draft.owner,
+        draft.kind,
+        MemoryId::new(draft.memory_id),
+        embedding_model_id,
+        EMBEDDING_DIM,
+        embedding,
     )
-    .bind(draft.kind)
-    .bind(draft.memory_id)
-    .bind(embedding_model_id)
-    .bind(vec_literal)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
+    .await?;
     Ok(())
 }

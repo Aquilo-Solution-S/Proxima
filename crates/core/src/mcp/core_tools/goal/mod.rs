@@ -3,6 +3,7 @@ use crate::engine::{
     GoalModifyRequest, GoalTransitionRequest,
 };
 use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
+use crate::protocol::{action as protocol_action, tool as protocol_tool};
 use crate::verbs::goal_write::{
     ChildGoalDraft, GoalAssignmentTarget, GoalAuthorship, GoalEvidenceRef, GoalPayloadWrite,
     GoalState, GoalTopologyWrite, GoalWriteOutcome, IdempotencyKey, OperatorKind, SystemOrigin,
@@ -17,11 +18,6 @@ use serde::{Deserialize, Serialize};
 use super::{WRITE_IDEMPOTENT, WRITE_NON_IDEMPOTENT};
 
 const MAX_CHILD_GOALS: usize = 50;
-const CORE_GOAL_SET_SCOPE_KEY: &str = "core_goal:set";
-const CORE_GOAL_TRANSITION_SCOPE_KEY: &str = "core_goal:transition";
-const CORE_GOAL_MODIFY_SCOPE_KEY: &str = "core_goal:modify";
-const CORE_GOAL_MARK_ACHIEVED_SCOPE_KEY: &str = "core_goal:mark_achieved";
-const CORE_GOAL_DECOMPOSE_SCOPE_KEY: &str = "core_goal:decompose";
 const MCP_OPERATOR_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x3f, 0x61, 0xde, 0x85, 0x4e, 0x09, 0x45, 0x62, 0x97, 0xc4, 0x8a, 0x74, 0xaa, 0xf9, 0x4a, 0x2c,
 ]);
@@ -40,7 +36,7 @@ pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
     CoreActionMeta {
         tool: CoreGoalTool::NAME,
         action: "set",
-        scope_key: CORE_GOAL_SET_SCOPE_KEY,
+        scope_key: protocol_action::CORE_GOAL_SET,
         description: "Set an Active Goal assigned to a Perspective.",
         produces_schema_ids: GOAL_ACTIVATED_SCHEMA_IDS,
         annotations: WRITE_NON_IDEMPOTENT,
@@ -48,7 +44,7 @@ pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
     CoreActionMeta {
         tool: CoreGoalTool::NAME,
         action: "transition",
-        scope_key: CORE_GOAL_TRANSITION_SCOPE_KEY,
+        scope_key: protocol_action::CORE_GOAL_TRANSITION,
         description: "Pause, resume, or abandon a Goal head.",
         produces_schema_ids: &[],
         annotations: WRITE_NON_IDEMPOTENT,
@@ -56,7 +52,7 @@ pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
     CoreActionMeta {
         tool: CoreGoalTool::NAME,
         action: "modify",
-        scope_key: CORE_GOAL_MODIFY_SCOPE_KEY,
+        scope_key: protocol_action::CORE_GOAL_MODIFY,
         description: "Replace an Active Goal head's content.",
         produces_schema_ids: GOAL_ACTIVATED_SCHEMA_IDS,
         annotations: WRITE_NON_IDEMPOTENT,
@@ -64,7 +60,7 @@ pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
     CoreActionMeta {
         tool: CoreGoalTool::NAME,
         action: "mark_achieved",
-        scope_key: CORE_GOAL_MARK_ACHIEVED_SCOPE_KEY,
+        scope_key: protocol_action::CORE_GOAL_MARK_ACHIEVED,
         description: "Mark a Goal head Achieved with completion evidence.",
         produces_schema_ids: GOAL_ACHIEVED_SCHEMA_IDS,
         annotations: WRITE_NON_IDEMPOTENT,
@@ -72,7 +68,7 @@ pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
     CoreActionMeta {
         tool: CoreGoalTool::NAME,
         action: "decompose",
-        scope_key: CORE_GOAL_DECOMPOSE_SCOPE_KEY,
+        scope_key: protocol_action::CORE_GOAL_DECOMPOSE,
         description: "Create Active child Goals under a parent Goal.",
         produces_schema_ids: GOAL_ACTIVATED_SCHEMA_IDS,
         annotations: WRITE_IDEMPOTENT,
@@ -152,7 +148,7 @@ pub enum CoreGoalOutput {
 }
 
 impl McpTool for CoreGoalTool {
-    const NAME: &'static str = "core_goal";
+    const NAME: &'static str = protocol_tool::CORE_GOAL;
     const DESCRIPTION: &'static str =
         "Goal write dispatcher — set/transition/modify/mark_achieved/decompose.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = CORE_GOAL_PRODUCES_SCHEMA_IDS;
@@ -353,7 +349,7 @@ async fn goal_mark_achieved(
                 principal: ctx.owner,
                 prior_goal_id: prior,
                 authorship: GoalAuthorship::System(SystemOrigin::Tool {
-                    tool_id: ToolId::new(CORE_GOAL_MARK_ACHIEVED_SCOPE_KEY),
+                    tool_id: ToolId::new(protocol_action::CORE_GOAL_MARK_ACHIEVED),
                 }),
                 request_id,
                 evidence,
@@ -494,7 +490,7 @@ async fn goal_decompose(
                 principal: ctx.owner,
                 parent_goal_id: parent,
                 authorship: GoalAuthorship::System(SystemOrigin::Tool {
-                    tool_id: ToolId::new(CORE_GOAL_DECOMPOSE_SCOPE_KEY),
+                    tool_id: ToolId::new(protocol_action::CORE_GOAL_DECOMPOSE),
                 }),
                 topology,
                 children,
@@ -611,7 +607,11 @@ fn system_operator_authorship(ctx: &McpToolCtx, prompt_version: &str) -> GoalAut
     let operator_id = uuid::Uuid::new_v5(&MCP_OPERATOR_NAMESPACE, operator_key.as_bytes());
     let input_contract_id = uuid::Uuid::new_v5(
         &MCP_GOAL_INPUT_CONTRACT_NAMESPACE,
-        format!("core_goal:{prompt_version}:abstraction-evidence-v1").as_bytes(),
+        format!(
+            "{}:{prompt_version}:abstraction-evidence-v1",
+            protocol_tool::CORE_GOAL
+        )
+        .as_bytes(),
     );
     GoalAuthorship::System(SystemOrigin::Operator {
         operator_id: OperatorId::new(operator_id),

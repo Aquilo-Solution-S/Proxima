@@ -12,7 +12,7 @@ use crate::verbs::mcp_call_history::{
 };
 use crate::verbs::query::{
     EdgeExistsRequest, EdgeExistsResponse, EdgeReadRequest, EdgeReadResponse, MemoryLineageRequest,
-    MemoryLineageResponse, QueryRequest, QueryResponse,
+    MemoryLineageResponse, QueryCursor, QueryRequest, QueryResponse,
 };
 use crate::verbs::schema::{FlavorRegistryFrozen, SchemaRequest, SchemaResponse};
 
@@ -159,6 +159,7 @@ pub(in crate::engine) async fn query_authorized(
     if req.limit == 0 {
         return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
     }
+    validate_query_cursor(req)?;
     let mut effective = req.clone();
     effective.read_owners = read_owners.to_vec();
     if effective.stateful_heads.is_empty() {
@@ -172,6 +173,29 @@ pub(in crate::engine) async fn query_authorized(
         .query_memories(&effective, registry.list().as_slice())
         .await
         .map_err(|e| ProtocolError::internal(e.to_string()))
+}
+
+fn validate_query_cursor(req: &QueryRequest) -> Result<(), ProtocolError> {
+    let Some(cursor) = &req.page.after else {
+        return Ok(());
+    };
+
+    match req.entity_kind {
+        None => Err(ProtocolError::invalid_argument(
+            "page.after",
+            "cursor requires a single entity_kind",
+        )),
+        Some(crate::EntityKind::Goal) if matches!(cursor, QueryCursor::Goal { .. }) => Ok(()),
+        Some(
+            crate::EntityKind::Fact
+            | crate::EntityKind::Abstraction
+            | crate::EntityKind::Perspective,
+        ) if matches!(cursor, QueryCursor::Memory { .. }) => Ok(()),
+        Some(_) => Err(ProtocolError::invalid_argument(
+            "page.after",
+            "cursor kind does not match entity_kind",
+        )),
+    }
 }
 
 pub(in crate::engine) async fn read_edges_authorized(

@@ -11,7 +11,7 @@ Substrate shape:
 | Concept | Rule |
 |---|---|
 | Action attempt | ordinary Fact emitted by a trusted source or tool path |
-| External effect | later ordinary Fact emitted by the observing EventSource |
+| External effect | later ordinary Fact emitted by the observing source |
 | Action identity | Fact `memory_id`; no `ActionId` |
 | Action schema | registered `FactPayload`; no separate action payload family |
 | Motivation | later A/P interpretation or Goal evidence, never Fact mutation |
@@ -24,11 +24,11 @@ append-only Fact stream.
 
 ```
 Goal / Perspective / user intent
-  -> armed Goal wake match or trusted EventSource
+  -> armed Goal wake match or trusted source
   -> tool / external side-effect attempt
   -> Fact(action attempt)
   -> Reality changes or refuses
-  -> EventSource observation
+  -> source observation
   -> Fact(effect)
   -> F->A / A->P / A->Goal interpretation
 ```
@@ -43,7 +43,7 @@ Automated action selection is wake execution.
 |---|---|---|
 | `change_event` | matching armed Goal wake trigger | tool call, A/P/Goal/Edge write, or no output |
 | UI / chat / trusted source | user or source policy | action-attempt Fact |
-| external callback | EventSource | effect Fact |
+| external callback | source | effect Fact |
 
 There is no standalone action-selection registry in core. Goal wake config is
 detect/admission-only. An external harness receives tool scope from token
@@ -62,7 +62,7 @@ Tools are effect adapters.
 |---|---|
 | Tool vocabulary | 12 owns build-time tool classes, MCP dispatch, and compliance declarations |
 | Runtime tool scope | auth token scope ∩ deployment profile (`ToolScope::Palette` when narrowed) |
-| Memory-space RBAC | memory reads/writes/actions are gated by owner-space grants plus tool scope; grants are host-resolved `(subject, Owner, action)` capabilities over the `search/read/write/publish/admin` action vocabulary |
+| Owner roles | memory reads/writes/actions are gated by server-resolved `OwnerRoles` plus tool scope; roles are `Viewer`/`Ingest`/`Editor`/`Admin` over concrete `OwnerRef`s, not a separate action vocabulary |
 | Persistence | tool result enters storage only as registered Fact / Edge writes |
 | A/P writes | operator/wake output protocol only; tools do not bypass 04 |
 | Failure | failed attempts are Facts when the source/tool schema models them |
@@ -78,7 +78,7 @@ External state is outside the substrate.
 Rules:
 
 - A successful tool call may change Reality before Proxima observes the result.
-- The observed consequence returns through the normal EventSource path.
+- The observed consequence returns through the normal FactIngest path.
 - Request ids, message ids, branch names, issue ids, and payload references may
   create ordinary structural edges.
 - No action-effect shortcut relation is required.
@@ -112,14 +112,14 @@ Some tools require human approval before external execution.
 |---|---|
 | Legal consequence | tool metadata marks the risk; user-authored approval remains required design intent |
 | Proposal | wake/source emits a proposal Fact |
-| Approval | user-authored EventSource Fact is the firing observation |
+| Approval | user-authored source Fact is the firing observation |
 | Execution | approved tool call emits its own attempt/result Facts |
 
-Approval is an EventSource pattern, not a new entity or lifecycle.
+Approval is a source-observation pattern, not a new entity or lifecycle.
 
 ## Idempotency
 
-Same rule as any EventSource:
+Same rule as any source:
 
 | Path | Key |
 |---|---|
@@ -127,7 +127,7 @@ Same rule as any EventSource:
 | effect Fact | observing source's `receipt_id` |
 | tool result persistence | tool/source request id inside its Fact payload when needed |
 
-No `ActionId`. Re-receipt dedups at the EventSource boundary.
+No `ActionId`. Re-receipt dedups at the source-ingest boundary.
 
 ## Validation at ingest
 
@@ -136,7 +136,7 @@ Every action-attempt or effect Fact follows the ordinary ingest contract:
 | Check | Rule |
 |---|---|
 | owner | source/tool may write only within the authorized Owner |
-| owner-space grant | memory writes require the resolved `write` action for that Owner; publish requires `read` + `publish` on the source space and `write` on the target space |
+| owner roles | memory writes require a resolved write-capable role for that `Owner`; cross-owner copy/publish is not a current protocol action |
 | schema | `schema_id` / version must resolve to a registered `FactPayload` |
 | relation | structural edges must use registered relation descriptors |
 | capability | tool output must stay within registered schemas/relations and resolved tool scope |
@@ -157,7 +157,7 @@ provenance stay fixed.
 
 ## Invariants
 
-- EventSource membrane and Owner scoping: 01.
+- Source-ingest membrane and Owner scoping: 01.
 - Fact payload typing and migration: 03.
 - Wake execution and output protocol: 04.
 - Tool vocabulary and MCP dispatch: 12.

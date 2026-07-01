@@ -13,6 +13,7 @@ use proxima::{
     AppContext, AppInfo, FlavorApp, Proxima, ProximaError, RunningProxima, RuntimeBuilder,
 };
 use proxima_core::mcp::McpToolExtensions;
+use proxima_core::protocol::profile as protocol_profile;
 use proxima_core::{
     FlavorRegistry, FlavorRegistryError, ToolScope, all_core_actions, all_core_resources,
     llm::EmbeddingClient,
@@ -28,7 +29,6 @@ const MISTRAL_API_BASE: &str = "MISTRAL_API_BASE";
 const PROXIMA_TOOL_PROFILE: &str = "PROXIMA_TOOL_PROFILE";
 const PROXIMA_TOOL_ALLOW: &str = "PROXIMA_TOOL_ALLOW";
 const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
-const CORE_FACT_TOMBSTONE_SCOPE_KEY: &str = "core_fact:tombstone";
 
 /// Tool/action scope keys advertised by the `memory` profile. Flat entries
 /// reference the owning tool's `McpTool::NAME`; grouped tools contribute
@@ -36,8 +36,8 @@ const CORE_FACT_TOMBSTONE_SCOPE_KEY: &str = "core_fact:tombstone";
 fn memory_keep_set() -> Vec<&'static str> {
     use proxima_core::mcp::McpTool;
     use proxima_core::mcp::core_tools::{
-        CoreFactTool, CoreGoalTool, DeriveTool, LinkTool, RecordUtteranceTool, RememberTool,
-        SearchMemoriesTool,
+        CoreFactTool, CoreGoalTool, DeriveTool, LinkTool, MemorySpacesTool, RecordUtteranceTool,
+        RememberTool, SearchMemoriesTool,
     };
 
     #[allow(unused_mut)]
@@ -49,16 +49,14 @@ fn memory_keep_set() -> Vec<&'static str> {
         RecordUtteranceTool::NAME,
         // retrieval
         SearchMemoriesTool::NAME,
+        MemorySpacesTool::NAME,
     ];
     // The memory profile carries the full goal lifecycle plus non-destructive
     // fact/citation actions. Retention/cleanup are host/config-only.
     // Retention/cleanup stay out.
     ids.extend(
         all_core_actions()
-            .filter(|action| {
-                (action.tool == CoreGoalTool::NAME || action.tool == CoreFactTool::NAME)
-                    && action.scope_key != CORE_FACT_TOMBSTONE_SCOPE_KEY
-            })
+            .filter(|action| action.tool == CoreGoalTool::NAME || action.tool == CoreFactTool::NAME)
             .map(|action| action.scope_key),
     );
     ids.extend(all_core_resources().map(|resource| resource.scope_key));
@@ -343,7 +341,7 @@ fn resolve_tool_scope(
     deny_raw: Option<&str>,
     registered_ids: &[&str],
 ) -> Result<ToolScope, CliError> {
-    let profile = parse_tool_profile(profile_name.unwrap_or("full"))?;
+    let profile = parse_tool_profile(profile_name.unwrap_or(protocol_profile::FULL))?;
     let allow = parse_tool_id_csv(allow_raw);
     let deny = parse_tool_id_csv(deny_raw);
     warn_unknown_tool_ids(&allow, registered_ids, PROXIMA_TOOL_ALLOW);
@@ -366,10 +364,12 @@ fn resolve_tool_scope(
 
 fn parse_tool_profile(raw: &str) -> Result<ToolProfile, CliError> {
     match raw.trim() {
-        "full" => Ok(ToolProfile::Full),
-        "memory" => Ok(ToolProfile::Memory),
+        protocol_profile::FULL => Ok(ToolProfile::Full),
+        protocol_profile::MEMORY => Ok(ToolProfile::Memory),
         other => Err(CliError::Runtime(ProximaError::Config(format!(
-            "unknown {PROXIMA_TOOL_PROFILE} {other:?}; expected \"full\" or \"memory\""
+            "unknown {PROXIMA_TOOL_PROFILE} {other:?}; expected \"{}\" or \"{}\"",
+            protocol_profile::FULL,
+            protocol_profile::MEMORY
         )))),
     }
 }
@@ -500,6 +500,8 @@ impl CliError {
 #[cfg(test)]
 mod tests {
     use proxima_core::llm::EmbeddingClient;
+    use proxima_core::protocol::tool as protocol_tool;
+    use proxima_core::protocol::{action as protocol_action, resource as protocol_resource};
 
     use super::*;
 
@@ -552,25 +554,16 @@ mod tests {
     }
 
     #[test]
-    fn memory_keep_set_excludes_tombstone_but_keeps_fact_reads() {
-        let keep = memory_keep_set();
-        assert!(!keep.contains(&CORE_FACT_TOMBSTONE_SCOPE_KEY));
-        assert!(keep.contains(&"core_fact:citation_of_fact"));
-        assert!(keep.contains(&"core_fact:citation_of_entity_head"));
-        assert!(keep.contains(&"core_fact:facts_citing_object"));
-    }
-
-    #[test]
     fn tool_profile_resolver_builds_deployment_scope() {
         let registered_ids = [
-            "resource:memory",
-            "resource:schemas",
-            "core_search_memories",
-            "core_fact:citation_of_fact",
-            "core_fact:citation_of_entity_head",
-            "core_fact:facts_citing_object",
-            "core_fact:tombstone",
-            "core_goal:set",
+            protocol_resource::MEMORY,
+            protocol_resource::SCHEMAS,
+            protocol_tool::CORE_SEARCH_MEMORIES,
+            protocol_tool::CORE_MEMORY_SPACES,
+            protocol_action::CORE_FACT_CITATION_OF_FACT,
+            protocol_action::CORE_FACT_CITATION_OF_ENTITY_HEAD,
+            protocol_action::CORE_FACT_FACTS_CITING_OBJECT,
+            protocol_action::CORE_GOAL_SET,
             "proxima-code_register_repo",
             "proxima-code_emit_execution_request",
         ];
@@ -578,31 +571,33 @@ mod tests {
         let full = resolve_tool_scope(None, None, None, &registered_ids).expect("full profile");
         assert_eq!(full, ToolScope::All);
 
-        let memory = resolve_tool_scope(Some("memory"), None, None, &registered_ids)
-            .expect("memory profile");
-        assert!(memory.allows("core_search_memories"));
-        assert!(memory.allows("resource:memory"));
-        assert!(memory.allows("resource:schemas"));
-        assert!(memory.allows("core_fact:citation_of_fact"));
-        assert!(memory.allows("core_fact:citation_of_entity_head"));
-        assert!(memory.allows("core_fact:facts_citing_object"));
-        assert!(!memory.allows(CORE_FACT_TOMBSTONE_SCOPE_KEY));
+        let memory =
+            resolve_tool_scope(Some(protocol_profile::MEMORY), None, None, &registered_ids)
+                .expect("memory profile");
+        assert!(memory.allows(protocol_tool::CORE_SEARCH_MEMORIES));
+        assert!(memory.allows(protocol_tool::CORE_MEMORY_SPACES));
+        assert!(memory.allows(protocol_resource::MEMORY));
+        assert!(memory.allows(protocol_resource::SCHEMAS));
+        assert!(memory.allows(protocol_action::CORE_FACT_CITATION_OF_FACT));
+        assert!(memory.allows(protocol_action::CORE_FACT_CITATION_OF_ENTITY_HEAD));
+        assert!(memory.allows(protocol_action::CORE_FACT_FACTS_CITING_OBJECT));
+
         // Code-flavor tools join the memory keep set only when the `code`
         // flavor is compiled in (the keep set references their `NAME`
         // consts under the same cfg).
         #[cfg(feature = "code")]
         assert!(memory.allows("proxima-code_register_repo"));
-        assert!(memory.allows("core_goal:set"));
+        assert!(memory.allows(protocol_action::CORE_GOAL_SET));
         assert!(!memory.allows("proxima-code_emit_execution_request"));
 
         let overridden = resolve_tool_scope(
-            Some("memory"),
+            Some(protocol_profile::MEMORY),
             Some("proxima-code_emit_execution_request"),
-            Some("resource:memory"),
+            Some(protocol_resource::MEMORY),
             &registered_ids,
         )
         .expect("overridden memory profile");
-        assert!(!overridden.allows("resource:memory"));
+        assert!(!overridden.allows(protocol_resource::MEMORY));
         assert!(overridden.allows("proxima-code_emit_execution_request"));
     }
 

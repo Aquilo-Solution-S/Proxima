@@ -1,8 +1,10 @@
 use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
+use crate::protocol::{action as protocol_action, tool as protocol_tool};
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::READ_ONLY;
 use super::citation_of_fact::{
     CitationOfEntityHeadArgs, CitationOfEntityHeadOutput, CitationOfFactArgs, CitationOfFactOutput,
     citation_of_entity_head, citation_of_fact,
@@ -10,19 +12,12 @@ use super::citation_of_fact::{
 use super::facts_citing_object::{
     FactsCitingObjectArgs, FactsCitingObjectOutput, facts_citing_object,
 };
-use super::tombstone_fact::{TombstoneFactArgs, TombstoneFactMcpOutput, tombstone_fact};
-use super::{DESTRUCTIVE_IDEMPOTENT, READ_ONLY};
-
-const CORE_FACT_CITATION_OF_FACT_SCOPE_KEY: &str = "core_fact:citation_of_fact";
-const CORE_FACT_CITATION_OF_ENTITY_HEAD_SCOPE_KEY: &str = "core_fact:citation_of_entity_head";
-const CORE_FACT_FACTS_CITING_OBJECT_SCOPE_KEY: &str = "core_fact:facts_citing_object";
-const CORE_FACT_TOMBSTONE_SCOPE_KEY: &str = "core_fact:tombstone";
 
 pub const CORE_FACT_ACTIONS: &[CoreActionMeta] = &[
     CoreActionMeta {
         tool: CoreFactTool::NAME,
         action: "citation_of_fact",
-        scope_key: CORE_FACT_CITATION_OF_FACT_SCOPE_KEY,
+        scope_key: protocol_action::CORE_FACT_CITATION_OF_FACT,
         description: "Return the owner-scoped citation mapping and cited object for one Fact.",
         produces_schema_ids: &[],
         annotations: READ_ONLY,
@@ -30,7 +25,7 @@ pub const CORE_FACT_ACTIONS: &[CoreActionMeta] = &[
     CoreActionMeta {
         tool: CoreFactTool::NAME,
         action: "citation_of_entity_head",
-        scope_key: CORE_FACT_CITATION_OF_ENTITY_HEAD_SCOPE_KEY,
+        scope_key: protocol_action::CORE_FACT_CITATION_OF_ENTITY_HEAD,
         description: "Return citation data for a stateful Fact entity's current head.",
         produces_schema_ids: &[],
         annotations: READ_ONLY,
@@ -38,18 +33,10 @@ pub const CORE_FACT_ACTIONS: &[CoreActionMeta] = &[
     CoreActionMeta {
         tool: CoreFactTool::NAME,
         action: "facts_citing_object",
-        scope_key: CORE_FACT_FACTS_CITING_OBJECT_SCOPE_KEY,
+        scope_key: protocol_action::CORE_FACT_FACTS_CITING_OBJECT,
         description: "Return owner-scoped Facts whose citation mapping points at a cited object.",
         produces_schema_ids: &[],
         annotations: READ_ONLY,
-    },
-    CoreActionMeta {
-        tool: CoreFactTool::NAME,
-        action: "tombstone",
-        scope_key: CORE_FACT_TOMBSTONE_SCOPE_KEY,
-        description: "Forget one Fact by id: hard-erase it and cascade soft-tombstones through its transitive derivatives.",
-        produces_schema_ids: &[],
-        annotations: DESTRUCTIVE_IDEMPOTENT,
     },
 ];
 
@@ -62,7 +49,6 @@ pub enum CoreFactArgs {
     CitationOfFact(CitationOfFactArgs),
     CitationOfEntityHead(CitationOfEntityHeadArgs),
     FactsCitingObject(FactsCitingObjectArgs),
-    Tombstone(TombstoneFactArgs),
 }
 
 #[derive(Debug, Serialize)]
@@ -71,12 +57,12 @@ pub enum CoreFactOutput {
     CitationOfFact(CitationOfFactOutput),
     CitationOfEntityHead(CitationOfEntityHeadOutput),
     FactsCitingObject(FactsCitingObjectOutput),
-    Tombstone(TombstoneFactMcpOutput),
 }
 
 impl McpTool for CoreFactTool {
-    const NAME: &'static str = "core_fact";
-    const DESCRIPTION: &'static str = "Fact/citation dispatcher — citation_of_fact/citation_of_entity_head/facts_citing_object/tombstone.";
+    const NAME: &'static str = protocol_tool::CORE_FACT;
+    const DESCRIPTION: &'static str =
+        "Fact/citation dispatcher — citation_of_fact/citation_of_entity_head/facts_citing_object.";
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
             action: "citation_of_fact",
@@ -92,11 +78,6 @@ impl McpTool for CoreFactTool {
             action: "facts_citing_object",
             allowed_fields: &["cited_object_id"],
             required_fields: &["cited_object_id"],
-        },
-        McpActionArgSpec {
-            action: "tombstone",
-            allowed_fields: &["fact", "confirm", "expect_handle"],
-            required_fields: &["fact", "confirm", "expect_handle"],
         },
     ];
     type Args = CoreFactArgs;
@@ -117,9 +98,6 @@ impl McpTool for CoreFactTool {
                 CoreFactArgs::FactsCitingObject(args) => facts_citing_object(ctx, args)
                     .await
                     .map(CoreFactOutput::FactsCitingObject),
-                CoreFactArgs::Tombstone(args) => tombstone_fact(ctx, args)
-                    .await
-                    .map(CoreFactOutput::Tombstone),
             }
         })
     }

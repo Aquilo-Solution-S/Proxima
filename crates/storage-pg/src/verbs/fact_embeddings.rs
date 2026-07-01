@@ -1,5 +1,8 @@
 use proxima_core::llm::{EMBEDDING_DIM, EMBEDDING_JOB_MAX_ATTEMPTS, EmbeddingClient};
-use proxima_core::{EmbeddingJobClaim, EntityKind, MemoryId, Owner, OwnerRefKind, StorageError};
+use proxima_core::{
+    EmbeddableEntityRef, EmbeddingJobClaim, EmbeddingWriteOutcome, EntityKind, MemoryId, Owner,
+    OwnerRefKind, StorageError,
+};
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 
@@ -76,12 +79,16 @@ const RECONCILE_EMBEDDINGS_SQL: &str = "
 WITH scoped AS MATERIALIZED (
      SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS entity_kind,
             m.memory_id,
-            home_owner.owner_kind,
-            home_owner.owner_id
+            m.owner_kind,
+            m.owner_id,
+            m.created_at,
+            h.embedding_version AS head_version
        FROM proxima_core.memories m
-       LEFT JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) home_owner
-         ON home_owner.entity_id = m.memory_id
-WHERE m.text IS NOT NULL
+       LEFT JOIN proxima_core.embedding_heads h
+         ON h.entity_kind = COALESCE(m.kind, 'Fact'::proxima_core.entity_kind)
+        AND h.entity_id = m.memory_id
+        AND h.model_id = $1
+WHERE NULLIF(btrim(m.text), '') IS NOT NULL
         AND m.tombstoned_at IS NULL
         AND (
             m.kind IS NULL
@@ -91,29 +98,15 @@ WHERE m.text IS NOT NULL
             )
         )
         AND ($3::text <> 'since' OR m.created_at >= $4)
-      ORDER BY m.created_at ASC, m.memory_id ASC
-      LIMIT $2
  ),
  eligible AS MATERIALIZED (
-     SELECT s.*
+     SELECT s.*,
+            COALESCE(s.head_version + 1, 1) AS desired_embedding_version
        FROM scoped s
       WHERE (
             CASE WHEN $3::text = 'missing_only'
-            THEN NOT EXISTS (
-                SELECT 1
-                  FROM proxima_core.embeddings e
-                 WHERE e.entity_kind = s.entity_kind
-                   AND e.entity_id = s.memory_id
-                   AND e.embedding_version = 1
-            )
-            ELSE NOT EXISTS (
-                SELECT 1
-                  FROM proxima_core.embeddings e
-                 WHERE e.entity_kind = s.entity_kind
-                   AND e.entity_id = s.memory_id
-                   AND e.embedding_version = 1
-                   AND e.model_id = $1
-            )
+            THEN s.head_version IS NULL
+            ELSE true
             END
         )
         AND NOT EXISTS (
@@ -124,23 +117,31 @@ WHERE m.text IS NOT NULL
                AND j.entity_kind = s.entity_kind
                AND j.entity_id = s.memory_id
                AND j.model_id = $1
-               AND j.embedding_version = 1
+               AND j.embedding_version = COALESCE(s.head_version + 1, 1)
+               AND j.status IN ('pending'::proxima_core.embedding_job_status,
+                                'processing'::proxima_core.embedding_job_status)
         )
+ ),
+ limited AS MATERIALIZED (
+     SELECT *
+       FROM eligible
+      ORDER BY created_at ASC, memory_id ASC
+      LIMIT $2
  ),
  inserted AS (
      INSERT INTO proxima_core.embedding_jobs
          (owner_kind, owner_id,
-          entity_kind, entity_id, model_id)
+          entity_kind, entity_id, model_id, embedding_version)
      SELECT owner_kind, owner_id,
-            entity_kind, memory_id, $1
-       FROM eligible
+            entity_kind, memory_id, $1, desired_embedding_version
+       FROM limited
      ON CONFLICT (owner_kind, owner_id,
                   entity_kind, entity_id, model_id, embedding_version)
      DO NOTHING
      RETURNING 1
  )
  SELECT
-     (SELECT count(*)::bigint FROM scoped) AS scanned,
+     (SELECT count(*)::bigint FROM limited) AS scanned,
      (SELECT count(*)::bigint FROM inserted) AS enqueued";
 
 /// Owner-scoped read of the rendered text stored on a Fact memory row.
@@ -252,13 +253,59 @@ pub async fn load_fact_text_in_tx(
     .map_err(map_err)
 }
 
-/// Idempotently upsert one Fact embedding row inside an existing tx.
+/// Append one Fact embedding row inside an existing tx.
 ///
 /// # Errors
 ///
 /// Returns `ConstraintViolation` when `dim` or `vec.len()` do not match
 /// the fixed embedding width, otherwise maps SQL failures through the
 /// shared mapper.
+pub async fn insert_fact_embedding(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    memory_id: MemoryId,
+    model_id: &str,
+    dim: usize,
+    vec: &[f32],
+) -> Result<EmbeddingWriteOutcome, StorageError> {
+    insert_memory_embedding(tx, owner, EntityKind::Fact, memory_id, model_id, dim, vec).await
+}
+
+/// Append one memory embedding row inside an existing tx.
+///
+/// # Errors
+///
+/// Returns `ConstraintViolation` when `dim` or `vec.len()` do not match
+/// the fixed embedding width, otherwise maps SQL failures through the
+/// shared mapper.
+pub async fn insert_memory_embedding(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    entity_kind: EntityKind,
+    memory_id: MemoryId,
+    model_id: &str,
+    dim: usize,
+    vec: &[f32],
+) -> Result<EmbeddingWriteOutcome, StorageError> {
+    insert_embedding(
+        tx,
+        owner,
+        EmbeddableEntityRef::Memory {
+            kind: entity_kind,
+            memory_id,
+        },
+        model_id,
+        dim,
+        vec,
+    )
+    .await
+}
+
+/// Compatibility wrapper for older callers; appends a new row.
+///
+/// # Errors
+///
+/// Returns storage errors from append validation or SQL writes.
 pub async fn upsert_fact_embedding(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
@@ -267,16 +314,15 @@ pub async fn upsert_fact_embedding(
     dim: usize,
     vec: &[f32],
 ) -> Result<(), StorageError> {
-    upsert_memory_embedding(tx, owner, EntityKind::Fact, memory_id, model_id, dim, vec).await
+    insert_fact_embedding(tx, owner, memory_id, model_id, dim, vec).await?;
+    Ok(())
 }
 
-/// Idempotently upsert one memory embedding row inside an existing tx.
+/// Compatibility wrapper for older callers; appends a new row.
 ///
 /// # Errors
 ///
-/// Returns `ConstraintViolation` when `dim` or `vec.len()` do not match
-/// the fixed embedding width, otherwise maps SQL failures through the
-/// shared mapper.
+/// Returns storage errors from append validation or SQL writes.
 pub async fn upsert_memory_embedding(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
@@ -286,45 +332,79 @@ pub async fn upsert_memory_embedding(
     dim: usize,
     vec: &[f32],
 ) -> Result<(), StorageError> {
+    insert_memory_embedding(tx, owner, entity_kind, memory_id, model_id, dim, vec).await?;
+    Ok(())
+}
+
+/// Append one embedding row and advance the independent latest head.
+///
+/// Returns version `0` when the entity is not currently eligible for
+/// embedding, preserving the existing best-effort no-op behavior for deleted
+/// or textless entities.
+///
+/// # Errors
+///
+/// Returns `ConstraintViolation` when the vector length differs from the fixed
+/// embedding dimension, otherwise maps SQL failures through the shared mapper.
+pub async fn insert_embedding(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    entity: EmbeddableEntityRef,
+    model_id: &str,
+    dim: usize,
+    vec: &[f32],
+) -> Result<EmbeddingWriteOutcome, StorageError> {
     let (owner_kind, owner_id) = owner_parts(owner);
     if dim != EMBEDDING_DIM || vec.len() != EMBEDDING_DIM {
         return Err(StorageError::ConstraintViolation(
             "embedding length must be 1024".into(),
         ));
     }
+
+    let entity_kind = entity.entity_kind();
+    let entity_id = entity.entity_id();
+    let lock_key = format!(
+        "proxima-embedding:{}:{}:{}",
+        entity_kind.as_str(),
+        entity_id,
+        model_id
+    );
+    let _ = sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(lock_key)
+        .fetch_one(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+
+    if !embedding_entity_is_eligible(tx, owner, entity).await? {
+        return Ok(EmbeddingWriteOutcome {
+            embedding_version: 0,
+        });
+    }
+
+    let embedding_version: i32 = sqlx::query_scalar(
+        "SELECT COALESCE(max(embedding_version), 0) + 1
+           FROM proxima_core.embeddings
+          WHERE entity_kind = $1
+            AND entity_id = $2
+            AND model_id = $3",
+    )
+    .bind(entity_kind)
+    .bind(entity_id)
+    .bind(model_id)
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+
     let vec_literal = crate::pgvector::literal(vec);
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
             (entity_kind, entity_id, embedding_version, model_id, vec,
              owner_kind, owner_id)
-         SELECT $1, $2, 1, $3, $4::vector, $5, $6
-          WHERE EXISTS (
-                SELECT 1
-                  FROM proxima_core.memories m
-                 WHERE m.memory_id = $2
-                   AND EXISTS (
-                        SELECT 1
-                          FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
-                         WHERE eo.entity_id = m.memory_id
-                           AND eo.owner_kind = $5
-                           AND eo.owner_id = $6
-)
-                   AND m.text IS NOT NULL
-                   AND m.tombstoned_at IS NULL
-                   AND (
-                       ($1 = 'Fact'::proxima_core.entity_kind
-                        AND m.kind IS NULL)
-                       OR m.kind = $1
-                   )
-            )
-         ON CONFLICT (entity_kind, entity_id, embedding_version, model_id)
-         DO UPDATE SET
-             vec = EXCLUDED.vec,
-             owner_kind = EXCLUDED.owner_kind,
-             owner_id = EXCLUDED.owner_id",
+         VALUES ($1, $2, $3, $4, $5::vector, $6, $7)",
     )
     .bind(entity_kind)
-    .bind(memory_id.into_inner())
+    .bind(entity_id)
+    .bind(embedding_version)
     .bind(model_id)
     .bind(vec_literal)
     .bind(owner_kind)
@@ -332,7 +412,104 @@ pub async fn upsert_memory_embedding(
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
-    Ok(())
+
+    sqlx::query(
+        "INSERT INTO proxima_core.embedding_heads
+            (entity_kind, entity_id, model_id, embedding_version,
+             owner_kind, owner_id)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (entity_kind, entity_id, model_id)
+         DO UPDATE SET
+             embedding_version = EXCLUDED.embedding_version,
+             owner_kind = EXCLUDED.owner_kind,
+             owner_id = EXCLUDED.owner_id,
+             updated_at = now()",
+    )
+    .bind(entity_kind)
+    .bind(entity_id)
+    .bind(model_id)
+    .bind(embedding_version)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+
+    Ok(EmbeddingWriteOutcome { embedding_version })
+}
+
+async fn embedding_entity_is_eligible(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    entity: EmbeddableEntityRef,
+) -> Result<bool, StorageError> {
+    let (owner_kind, owner_id) = owner_parts(owner);
+    let exists = match entity {
+        EmbeddableEntityRef::Memory { kind, memory_id } => sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1
+                  FROM proxima_core.memories m
+                 WHERE m.memory_id = $1
+                   AND m.owner_kind = $2
+                   AND m.owner_id IS NOT DISTINCT FROM $3
+                   AND NULLIF(btrim(m.text), '') IS NOT NULL
+                   AND m.tombstoned_at IS NULL
+                   AND (
+                       ($4 = 'Fact'::proxima_core.entity_kind AND m.kind IS NULL)
+                       OR m.kind = $4
+                   )
+            )",
+        )
+        .bind(memory_id.into_inner())
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(kind)
+        .fetch_one(tx.as_mut())
+        .await
+        .map_err(map_err)?,
+        EmbeddableEntityRef::Goal(goal_id) => sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1
+                  FROM proxima_core.goals g
+                 WHERE g.goal_id = $1
+                   AND g.owner_kind = $2
+                   AND g.owner_id IS NOT DISTINCT FROM $3
+                   AND NULLIF(btrim(g.text), '') IS NOT NULL
+            )",
+        )
+        .bind(goal_id.into_inner())
+        .bind(owner_kind)
+        .bind(owner_id)
+        .fetch_one(tx.as_mut())
+        .await
+        .map_err(map_err)?,
+    };
+    Ok(exists)
+}
+
+/// Append one Goal embedding row inside an existing tx.
+///
+/// # Errors
+///
+/// Returns storage errors from entity validation, version allocation, or SQL
+/// writes.
+pub async fn insert_goal_embedding(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    goal_id: proxima_core::GoalId,
+    model_id: &str,
+    dim: usize,
+    vec: &[f32],
+) -> Result<EmbeddingWriteOutcome, StorageError> {
+    insert_embedding(
+        tx,
+        owner,
+        EmbeddableEntityRef::Goal(goal_id),
+        model_id,
+        dim,
+        vec,
+    )
+    .await
 }
 
 /// Owner-scoped list of Facts with rendered text and no embedding row
@@ -367,11 +544,10 @@ pub async fn list_facts_missing_embedding(
             AND m.tombstoned_at IS NULL
             AND NOT EXISTS (
                 SELECT 1
-                  FROM proxima_core.embeddings e
-                 WHERE e.entity_kind = 'Fact'
-                   AND e.entity_id = m.memory_id
-                   AND e.embedding_version = 1
-                   AND e.model_id = $3
+                  FROM proxima_core.embedding_heads h
+                 WHERE h.entity_kind = 'Fact'
+                   AND h.entity_id = m.memory_id
+                   AND h.model_id = $3
             )
           ORDER BY m.created_at ASC, m.memory_id ASC
           LIMIT $4",
@@ -571,11 +747,10 @@ pub async fn enqueue_missing_embedding_jobs(
                 AND m.tombstoned_at IS NULL
                 AND NOT EXISTS (
                     SELECT 1
-                      FROM proxima_core.embeddings e
-                     WHERE e.entity_kind = 'Fact'
-                       AND e.entity_id = m.memory_id
-                       AND e.embedding_version = 1
-                       AND e.model_id = $3
+                      FROM proxima_core.embedding_heads h
+                     WHERE h.entity_kind = 'Fact'
+                       AND h.entity_id = m.memory_id
+                       AND h.model_id = $3
                 )
               ORDER BY m.created_at ASC, m.memory_id ASC
               LIMIT $4
@@ -743,7 +918,7 @@ async fn embed_claim(
     let mut tx = pool.begin().await.map_err(|err| {
         StorageError::Internal(format!("begin memory embedding upsert tx: {err}"))
     })?;
-    upsert_memory_embedding(
+    insert_memory_embedding(
         &mut tx,
         &claim.owner,
         claim.entity_kind,

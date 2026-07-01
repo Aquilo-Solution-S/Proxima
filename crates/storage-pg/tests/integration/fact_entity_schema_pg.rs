@@ -69,6 +69,7 @@ async fn index_def(pg: &PgStorage, index_name: &str) -> Result<String, sqlx::Err
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn fact_entity_schema_matches_task_1_contract() {
     let (pg, db_name) = migrate()
         .await
@@ -139,25 +140,33 @@ async fn fact_entity_schema_matches_task_1_contract() {
         assert!(target_chk.contains("num_nonnulls(target_memory_id, target_goal_id, target_fact_entity_id) = 1"));
         assert!(target_chk.contains("target_fact_entity_id IS NULL"));
         assert!(target_chk.contains("target_kind = 'Fact'"));
-        for (constraint_name, index_name, index_column) in [
-            (
-                "edges_source_fact_entity_id_fkey",
-                "idx_edges_source_fact_entity",
-                "source_fact_entity_id",
-            ),
-            (
-                "edges_target_fact_entity_id_fkey",
-                "idx_edges_target_fact_entity",
-                "target_fact_entity_id",
-            ),
+        let source_fk = constraint_def(&pg, "edges", "edges_source_fact_entity_id_fkey").await?;
+        assert!(source_fk.contains("REFERENCES proxima_core.fact_entities(fact_entity_id)"));
+        assert!(source_fk.contains("ON DELETE RESTRICT"));
+        for (index_name, index_column) in [
+            ("idx_edges_source_fact_entity", "source_fact_entity_id"),
+            ("idx_edges_target_fact_entity", "target_fact_entity_id"),
         ] {
-            let fk = constraint_def(&pg, "edges", constraint_name).await?;
-            assert!(fk.contains("REFERENCES proxima_core.fact_entities(fact_entity_id)"));
-            assert!(fk.contains("ON DELETE RESTRICT"));
             let index = index_def(&pg, index_name).await?;
             assert!(index.contains(index_column));
             assert!(index.contains(&format!("WHERE ({index_column} IS NOT NULL)")));
         }
+        let target_fk_count: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint
+               FROM pg_constraint c
+               JOIN pg_class t ON t.oid = c.conrelid
+               JOIN pg_namespace n ON n.oid = t.relnamespace
+              WHERE n.nspname = 'proxima_core'
+                AND t.relname = 'edges'
+                AND c.conname IN (
+                    'edges_target_memory_id_fkey',
+                    'edges_target_goal_id_fkey',
+                    'edges_target_fact_entity_id_fkey'
+                )",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(target_fk_count, 0, "PR9 target endpoints are projection-relaxed");
 
         for column_name in ["edge_source_fact_entity_id", "edge_target_fact_entity_id"] {
             column_exists(&pg, "change_event", column_name, "uuid").await?;
