@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Aquilo-Solution-S/Proxima/security/policy
+    about: Please do not open public issues for security vulnerabilities.
+  - name: Contributing guide
+    url: https://github.com/Aquilo-Solution-S/Proxima/blob/main/CONTRIBUTING.md
+    about: Read contribution, CLA, and verification requirements before opening a PR.
