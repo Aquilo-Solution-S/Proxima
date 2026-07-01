@@ -46,7 +46,7 @@ fn facade_reexports_typed_goalwrite_surface_for_embedded_hosts() {
             key: "daily-practice".to_string(),
         },
     );
-    assert_eq!(request.principal, owner);
+    assert_eq!(request.owner, owner);
     assert_eq!(request.topology.assignment().perspective_id(), target_self);
 
     let system_request = request.with_authorship(GoalAuthorship::System(SystemOrigin::Tool {

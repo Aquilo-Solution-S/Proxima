@@ -420,7 +420,7 @@ async fn load_memory_edge_targets(
         .read_edges(
             ctx.authz(),
             &EdgeReadRequest {
-                principal: ctx.owner(),
+                owner: ctx.owner(),
                 edge_ids: Vec::new(),
                 filter,
                 limit: 500,

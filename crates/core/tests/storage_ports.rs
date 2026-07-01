@@ -492,7 +492,7 @@ struct SourceBatchFake;
 impl SourceBatchPort for SourceBatchFake {
     async fn close_batch(
         &self,
-        principal: &OwnerRef,
+        owner: &OwnerRef,
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError> {
         fake_error()

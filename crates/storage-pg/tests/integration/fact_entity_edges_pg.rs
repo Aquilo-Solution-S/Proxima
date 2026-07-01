@@ -700,7 +700,7 @@ async fn follow_head_edge_writes_log_and_graph_resolves_to_latest_head()
         let source_v2 = ingest_fact(&pg, &engine, &owner, &fact("source", "v2", "Present")).await?;
 
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
-        let mut req = QueryRequest::for_principal(owner);
+        let mut req = QueryRequest::for_owner(owner);
         req.limit = 100;
         let response = engine.query(&authz, &req).await?;
         let edge = response
@@ -752,7 +752,7 @@ async fn follow_head_tombstoned_head_uses_existing_visibility()
         let target_tombstone =
             ingest_fact(&pg, &engine, &owner, &fact("target", "deleted", "Deleted")).await?;
 
-        let mut req = QueryRequest::for_principal(owner);
+        let mut req = QueryRequest::for_owner(owner);
         req.limit = 100;
         let response = engine.query(&authz, &req).await?;
         assert!(
@@ -1180,7 +1180,7 @@ async fn change_history_and_list_change_events_preserve_fact_entity_endpoints()
             .change_history(
                 std::slice::from_ref(&owner),
                 &ChangeHistoryRequest {
-                    principal: owner,
+                    owner,
                     limit: 100,
                     before: None,
                 },
@@ -1292,7 +1292,7 @@ async fn pin_relations_still_round_trip_memory_endpoints() -> Result<(), Box<dyn
         );
 
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
-        let mut req = QueryRequest::for_principal(owner);
+        let mut req = QueryRequest::for_owner(owner);
         req.limit = 100;
         let response = engine.query(&authz, &req).await?;
         let edge = response

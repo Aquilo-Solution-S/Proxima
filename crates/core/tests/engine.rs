@@ -111,7 +111,7 @@ async fn query_verb_returns_empty_for_configured_owner() {
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
 
     let resp = engine
-        .query(&authz, &QueryRequest::for_principal(owner))
+        .query(&authz, &QueryRequest::for_owner(owner))
         .await
         .expect("single-owner query must succeed");
 
@@ -138,7 +138,7 @@ async fn query_scopes_reads_to_authz_context_not_client_principal() {
     // Forbidden. Cross-principal no-leak against real data is proven in the PG
     // integration suite (owner_columns_pg).
     let resp = engine
-        .query(&authz, &QueryRequest::for_principal(foreign))
+        .query(&authz, &QueryRequest::for_owner(foreign))
         .await
         .expect("a foreign client principal is scoped away, not rejected");
     assert!(resp.memories.is_empty() && resp.goals.is_empty() && resp.edges.is_empty());
@@ -171,7 +171,7 @@ async fn change_history_ignores_client_principal_as_access_vector() {
         .change_history(
             &authz,
             &ChangeHistoryRequest {
-                principal: owner_b,
+                owner: owner_b,
                 limit: 1,
                 before: None,
             },
@@ -222,7 +222,7 @@ async fn read_mcp_call_history_rejects_context_without_read_grant() {
         .read_mcp_call_history(
             &authz,
             &McpCallHistoryRequest {
-                principal: owner,
+                owner,
                 actor_oid: None,
                 limit: 10,
             },
@@ -286,7 +286,7 @@ async fn read_mcp_call_history_rejects_context_without_graph_read_role() {
         .read_mcp_call_history(
             &authz,
             &McpCallHistoryRequest {
-                principal: owner,
+                owner,
                 actor_oid: None,
                 limit: 1,
             },
@@ -306,7 +306,7 @@ async fn read_mcp_call_history_rejects_zero_limit_as_invalid_argument() {
         .read_mcp_call_history(
             &authz,
             &McpCallHistoryRequest {
-                principal: owner,
+                owner,
                 actor_oid: None,
                 limit: 0,
             },

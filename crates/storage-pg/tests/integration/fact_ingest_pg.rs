@@ -241,7 +241,7 @@ async fn list_change_events_after_scopes_by_principal() {
             )
             .await?;
 
-        // Pull under the same principal: the event is returned, scoped by
+        // Pull under the same owner: the event is returned, scoped by
         // principal alone.
         let rows = pg
             .list_change_events_after(std::slice::from_ref(&requested_owner), Uuid::nil(), 10)

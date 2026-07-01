@@ -121,7 +121,7 @@ async fn seed_history_fixture(
 
 fn history_req(owner: &Owner, actor_oid: Option<&str>, limit: u32) -> McpCallHistoryRequest {
     McpCallHistoryRequest {
-        principal: *owner,
+        owner: *owner,
         actor_oid: actor_oid.map(str::to_string),
         limit,
     }

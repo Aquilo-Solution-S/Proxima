@@ -68,7 +68,7 @@ pub async fn get_graph(
         .get_graph(
             &ctx.authz,
             &GetGraphReadRequest {
-                principal: ctx.owner,
+                owner: ctx.owner,
                 include_tombstoned: args.include_tombstoned,
             },
         )

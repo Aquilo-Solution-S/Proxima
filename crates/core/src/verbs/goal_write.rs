@@ -76,7 +76,7 @@ pub enum GoalWriteBuildError {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalDraft {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub title: String,
@@ -96,7 +96,7 @@ impl GoalDraft {
     /// Build an Active Goal draft from an already-encoded typed payload.
     #[must_use]
     pub fn active_from_payload_write(
-        principal: OwnerRef,
+        owner: OwnerRef,
         payload: GoalPayloadWrite,
         topology: GoalTopologyWrite,
         wake: Option<GoalWakeConfigWrite>,
@@ -104,7 +104,7 @@ impl GoalDraft {
         request_id: IdempotencyKey,
     ) -> Self {
         Self {
-            principal,
+            owner,
             schema_id: payload.schema_id,
             schema_version: payload.schema_version,
             title: payload.title,
@@ -120,10 +120,10 @@ impl GoalDraft {
         }
     }
 
-    /// The storage `Owner` (= principal) for this draft.
+    /// The storage `Owner` for this draft.
     #[must_use]
     pub fn owner(&self) -> Owner {
-        self.principal
+        self.owner
     }
 }
 
@@ -526,7 +526,7 @@ fn normalize_goal_display_field(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalCreateRequest<P> {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     pub topology: GoalTopologyWrite,
     pub wake: Option<GoalWakeConfigWrite>,
     pub title: String,
@@ -555,7 +555,7 @@ impl<P> GoalCreateRequest<P> {
     /// which would be a programming error in the constructor invariant.
     #[must_use]
     pub fn product(
-        principal: OwnerRef,
+        owner: OwnerRef,
         assignment: GoalAssignmentTarget,
         request_id: IdempotencyKey,
         title: impl Into<String>,
@@ -563,7 +563,7 @@ impl<P> GoalCreateRequest<P> {
         payload: P,
     ) -> Self {
         Self {
-            principal,
+            owner,
             topology: GoalTopologyWrite::new(assignment, Vec::new(), Vec::new())
                 .expect("empty topology is valid"),
             wake: None,

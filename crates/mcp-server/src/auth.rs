@@ -308,7 +308,7 @@ mod tests {
             .get_graph(
                 &ctx.authz,
                 &GetGraphReadRequest {
-                    principal: owner,
+                    owner,
                     include_tombstoned: false,
                 },
             )

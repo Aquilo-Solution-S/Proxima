@@ -88,7 +88,7 @@ fn product_goal_create_request_defaults_to_user_authorship_and_explicit_self_tar
         },
     );
 
-    assert_eq!(request.principal, owner);
+    assert_eq!(request.owner, owner);
     assert_eq!(request.topology.assignment(), target);
     assert_eq!(request.author_self_perspective_id, None);
     assert!(request.topology.evidence().is_empty());

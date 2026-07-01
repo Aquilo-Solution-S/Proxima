@@ -419,7 +419,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .walk_memory_lineage(
                 &authz,
                 &MemoryLineageRequest {
-                    principal: owner,
+                    owner,
                     start_memory_id: derived_id,
                     direction: MemoryLineageDirection::Ancestors,
                     depth: 2,
@@ -482,7 +482,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .edge_exists(
                 &authz,
                 &EdgeExistsRequest {
-                    principal: owner,
+                    owner,
                     edge_ids: Vec::new(),
                     filter: present_filter.clone(),
                 },
@@ -495,7 +495,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .edge_exists(
                 &authz,
                 &EdgeExistsRequest {
-                    principal: owner,
+                    owner,
                     edge_ids: Vec::new(),
                     filter: EdgeFilter {
                         target: Some(EntityRef::FactEntity(proxima_core::FactEntityId::new(
@@ -513,7 +513,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .read_edges(
                 &authz,
                 &EdgeReadRequest {
-                    principal: owner,
+                    owner,
                     edge_ids: Vec::new(),
                     filter: present_filter,
                     limit: 5,

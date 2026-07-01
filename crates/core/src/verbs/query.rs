@@ -76,7 +76,7 @@ pub enum SearchOrder {
 /// metadata before dispatching to storage.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemorySearchRequest {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     #[serde(skip)]
     pub read_owners: Vec<OwnerRef>,
     pub query: String,
@@ -131,7 +131,7 @@ pub enum MemoryLineageDirection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryLineageRequest {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     pub start_memory_id: MemoryId,
     pub direction: MemoryLineageDirection,
     pub depth: u8,
@@ -224,7 +224,7 @@ pub struct QueryPage {
 /// registers a sidecar (M3+).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueryRequest {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     #[serde(skip)]
     pub read_owners: Vec<OwnerRef>,
     pub entity_kind: Option<EntityKind>,
@@ -257,10 +257,10 @@ impl QueryRequest {
     /// Builder for the common case: heads-only, no kind/schema
     /// filter.
     #[must_use]
-    pub fn for_principal(principal: OwnerRef) -> Self {
+    pub fn for_owner(owner: OwnerRef) -> Self {
         Self {
-            principal,
-            read_owners: vec![principal],
+            owner,
+            read_owners: vec![owner],
             entity_kind: None,
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,
@@ -323,7 +323,7 @@ pub struct EdgeFilter {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EdgeReadRequest {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     #[serde(default)]
     pub edge_ids: Vec<EdgeId>,
     #[serde(default)]
@@ -338,7 +338,7 @@ pub struct EdgeReadResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EdgeExistsRequest {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     #[serde(default)]
     pub edge_ids: Vec<EdgeId>,
     #[serde(default)]

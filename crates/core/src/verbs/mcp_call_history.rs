@@ -8,7 +8,7 @@ pub const MAX_MCP_CALL_HISTORY_LIMIT: u32 = 200;
 
 #[derive(Debug, Clone)]
 pub struct McpCallHistoryRequest {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     /// `Some` => scope to one actor (per-user privacy view); `None` => all
     /// actors under the Owner.
     pub actor_oid: Option<String>,

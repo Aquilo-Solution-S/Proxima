@@ -81,7 +81,7 @@ pub async fn log_mcp_call(
 ///
 /// # Errors
 ///
-/// Returns `Forbidden` when `authz` cannot access `req.principal` or lacks
+/// Returns `Forbidden` when `authz` cannot access `req.owner` or lacks
 /// graph-read, or `Internal` on storage failure / `limit == 0`.
 pub async fn read_mcp_call_history(
     engine: &Engine,

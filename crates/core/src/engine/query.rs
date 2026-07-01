@@ -28,7 +28,7 @@ impl Engine {
     /// set (`S_read`). Caller passes the transport-extracted authorization
     /// context; the engine resolves the readable owners from it and filters
     /// results to `row owner ∈ S_read`. A client-supplied
-    /// [`QueryRequest::principal`] is NOT an access vector — it can never widen
+    /// [`QueryRequest::owner`] is NOT an access vector — it can never widen
     /// what the caller sees (writes/admin reject a foreign owner; reads simply
     /// return the caller's accessible subset).
     ///
@@ -76,7 +76,7 @@ impl Engine {
 
     /// Edge existence probe scoped to the context's read set (`S_read`), same
     /// source-owned visibility as `read_edges`: existence is disclosed only for
-    /// edges whose source is readable (a client `req.principal` is not an access
+    /// edges whose source is readable (a client `req.owner` is not an access
     /// vector).
     ///
     /// # Errors
@@ -97,7 +97,7 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
+    /// Returns `Forbidden` when the context cannot access `req.owner` or
     /// lacks [`Relation::Viewer`], or `Internal` when storage fails.
     pub async fn walk_memory_lineage(
         &self,
@@ -110,7 +110,7 @@ impl Engine {
 
     /// docs/14 §"`ChangeHistory`" — bounded change-event read scoped to the
     /// authorization context's read access set (`S_read`), matching `Query` and
-    /// `read_edges`. A client-supplied [`ChangeHistoryRequest::principal`] is not
+    /// `read_edges`. A client-supplied [`ChangeHistoryRequest::owner`] is not
     /// an access vector and cannot widen what the caller sees. Server clamps
     /// `limit` to `MAX_CHANGE_HISTORY_LIMIT`.
     ///
@@ -129,13 +129,13 @@ impl Engine {
     }
 
     /// docs/14 §protocol surface — bounded MCP-call activity read for ONE owner
-    /// the caller selects via `req.principal` and the context can access (gated
+    /// the caller selects via `req.owner` and the context can access (gated
     /// by `authorize_request`; single-owner, not `S_read`-spanning like
     /// `Query`). Server clamps `limit` to `MAX_MCP_CALL_HISTORY_LIMIT`.
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
+    /// Returns `Forbidden` when the context cannot access `req.owner` or
     /// lacks [`Relation::Viewer`], `InvalidArgument` when `req.limit == 0`, or
     /// `Internal` when the storage read fails.
     pub async fn read_mcp_call_history(
@@ -144,7 +144,7 @@ impl Engine {
         req: &McpCallHistoryRequest,
     ) -> Result<McpCallHistoryResponse, ProtocolError> {
         let permit = self
-            .authorize_request(authz, &req.principal, Relation::Viewer)
+            .authorize_request(authz, &req.owner, Relation::Viewer)
             .await?;
         read_mcp_call_history_authorized(&self.storage.query, &permit, req).await
     }
@@ -265,7 +265,7 @@ pub(in crate::engine) async fn read_mcp_call_history_authorized(
         return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
     }
     let mut effective = req.clone();
-    effective.principal = *permit.owner();
+    effective.owner = *permit.owner();
     if effective.limit > MAX_MCP_CALL_HISTORY_LIMIT {
         effective.limit = MAX_MCP_CALL_HISTORY_LIMIT;
     }

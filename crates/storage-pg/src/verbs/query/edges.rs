@@ -175,7 +175,7 @@ pub(crate) async fn edge_exists(
     req: &EdgeExistsRequest,
 ) -> Result<EdgeExistsResponse, StorageError> {
     let read = EdgeReadRequest {
-        principal: req.principal,
+        owner: req.owner,
         edge_ids: req.edge_ids.clone(),
         filter: req.filter.clone(),
         limit: 1,
@@ -243,7 +243,7 @@ async fn query_edges_by_id(
         pool,
         &read_owners,
         &EdgeReadRequest {
-            principal: req.principal,
+            owner: req.owner,
             edge_ids,
             filter: EdgeFilter::default(),
             limit: req.limit,

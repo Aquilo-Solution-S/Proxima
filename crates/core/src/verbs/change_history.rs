@@ -8,7 +8,7 @@ pub const MAX_CHANGE_HISTORY_LIMIT: u32 = 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChangeHistoryRequest {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     pub limit: u32,
     pub before: Option<uuid::Uuid>,
 }

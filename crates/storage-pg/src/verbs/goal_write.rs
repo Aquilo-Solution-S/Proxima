@@ -1511,7 +1511,7 @@ fn draft_from_stored(
     request_id: &str,
 ) -> GoalDraft {
     GoalDraft {
-        principal: *owner,
+        owner: *owner,
         schema_id: stored.schema_id.clone(),
         schema_version: stored.schema_version,
         title: stored.title.clone(),
@@ -1550,7 +1550,7 @@ struct DraftFromPayload<'a> {
 
 fn draft_from_payload(input: DraftFromPayload<'_>) -> GoalDraft {
     GoalDraft {
-        principal: *input.owner,
+        owner: *input.owner,
         schema_id: input.payload.schema_id.clone(),
         schema_version: input.payload.schema_version,
         title: input.payload.title.clone(),

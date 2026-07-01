@@ -41,7 +41,7 @@ pub struct GetMemoryReadResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetGraphReadRequest {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     pub include_tombstoned: bool,
 }
 
@@ -53,7 +53,7 @@ pub struct GetGraphReadResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListChangeEventsReadRequest {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     pub after: uuid::Uuid,
     pub limit: usize,
 }
@@ -66,19 +66,19 @@ pub struct ListChangeEventsReadResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactCitationReadRequest {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     pub fact_memory_id: MemoryId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntityHeadCitationReadRequest {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     pub fact_entity_id: FactEntityId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactsCitingObjectReadRequest {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     pub cited_object_id: uuid::Uuid,
 }
 
@@ -87,7 +87,7 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.search.principal`
+    /// Returns `Forbidden` when the context cannot access `req.search.owner`
     /// or lacks [`Relation::Viewer`]; returns `Internal` when storage reads fail.
     pub async fn search(
         &self,
@@ -95,7 +95,7 @@ impl Engine {
         req: &SearchReadRequest,
     ) -> Result<SearchReadResponse, ProtocolError> {
         let read_permit = self
-            .authorize_request(authz, &req.search.principal, Relation::Viewer)
+            .authorize_request(authz, &req.search.owner, Relation::Viewer)
             .await?;
         search_authorized(
             &self.storage.read_verb,
@@ -130,7 +130,7 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
+    /// Returns `Forbidden` when the context cannot access `req.owner` or
     /// lacks [`Relation::Admin`], and `Internal` when storage reads fail.
     pub async fn get_graph(
         &self,
@@ -138,7 +138,7 @@ impl Engine {
         req: &GetGraphReadRequest,
     ) -> Result<GetGraphReadResponse, ProtocolError> {
         let permit = self
-            .authorize_request(authz, &req.principal, Relation::Admin)
+            .authorize_request(authz, &req.owner, Relation::Admin)
             .await?;
         get_graph_authorized(
             &self.storage.read_verb,
@@ -465,7 +465,7 @@ mod tests {
     fn search_req(owner: &OwnerRef) -> SearchReadRequest {
         SearchReadRequest {
             search: MemorySearchRequest {
-                principal: *owner,
+                owner: *owner,
                 read_owners: vec![*owner],
                 query: "needle".into(),
                 mode: SearchMode::Lexical,
@@ -541,7 +541,7 @@ mod tests {
     async fn get_graph_denies_denied_context() {
         let owner = owner();
         let req = GetGraphReadRequest {
-            principal: owner,
+            owner,
             include_tombstoned: false,
         };
         let err = engine()
@@ -555,7 +555,7 @@ mod tests {
     async fn list_change_events_denies_denied_context() {
         let owner = owner();
         let req = ListChangeEventsReadRequest {
-            principal: owner,
+            owner,
             after: uuid::Uuid::nil(),
             limit: 1,
         };
@@ -570,7 +570,7 @@ mod tests {
     async fn read_fact_citation_denies_denied_context() {
         let owner = owner();
         let req = FactCitationReadRequest {
-            principal: owner,
+            owner,
             fact_memory_id: MemoryId::new(uuid::Uuid::now_v7()),
         };
         let err = engine()
@@ -584,7 +584,7 @@ mod tests {
     async fn read_entity_head_citation_denies_denied_context() {
         let owner = owner();
         let req = EntityHeadCitationReadRequest {
-            principal: owner,
+            owner,
             fact_entity_id: FactEntityId::new(uuid::Uuid::now_v7()),
         };
         let err = engine()
@@ -598,7 +598,7 @@ mod tests {
     async fn facts_citing_object_denies_denied_context() {
         let owner = owner();
         let req = FactsCitingObjectReadRequest {
-            principal: owner,
+            owner,
             cited_object_id: uuid::Uuid::now_v7(),
         };
         let err = engine()

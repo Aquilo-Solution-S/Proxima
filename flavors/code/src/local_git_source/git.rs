@@ -9,6 +9,7 @@ use std::path::Path;
 use std::process::Command;
 
 use super::IndexError;
+use crate::chunker::MAX_BLOB_BYTES;
 
 /// Walk plan returned by the cursor-aware git pre-pass.
 #[derive(Debug)]
@@ -45,6 +46,18 @@ fn run_git(repo: &Path, args: &[&str]) -> Result<Vec<u8>, IndexError> {
         )));
     }
     Ok(out.stdout)
+}
+
+fn blob_size(repo: &Path, spec: &str) -> Result<u64, IndexError> {
+    let bytes = run_git(repo, &["cat-file", "-s", spec])?;
+    let text = String::from_utf8(bytes).map_err(|_| IndexError::Utf8)?;
+    text.trim()
+        .parse::<u64>()
+        .map_err(|e| IndexError::Git(format!("git cat-file -s {spec:?}: {e}")))
+}
+
+fn blob_within_cap(repo: &Path, spec: &str) -> Result<bool, IndexError> {
+    Ok(blob_size(repo, spec)? <= MAX_BLOB_BYTES as u64)
 }
 
 pub(super) fn head_sha(repo: &Path) -> Result<String, IndexError> {
@@ -133,14 +146,21 @@ pub(super) fn ls_files(repo: &Path, rev: &str) -> Result<Vec<(String, Vec<u8>)>,
 
     let mut out = Vec::with_capacity(paths.len());
     for (path, oid) in paths {
+        if !blob_within_cap(repo, &oid)? {
+            continue;
+        }
         let bytes = run_git(repo, &["cat-file", "blob", &oid])?;
         out.push((path, bytes));
     }
     Ok(out)
 }
 
-pub(super) fn cat_blob(repo: &Path, rev: &str, path: &str) -> Result<Vec<u8>, IndexError> {
-    run_git(repo, &["show", &format!("{rev}:{path}")])
+pub(super) fn cat_blob(repo: &Path, rev: &str, path: &str) -> Result<Option<Vec<u8>>, IndexError> {
+    let spec = format!("{rev}:{path}");
+    if !blob_within_cap(repo, &spec)? {
+        return Ok(None);
+    }
+    run_git(repo, &["show", &spec]).map(Some)
 }
 
 /// Returns `(changed_or_added_paths, deleted_paths)` between two
@@ -178,4 +198,60 @@ pub(super) fn diff_paths(
         }
     }
     Ok((changed, deleted))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::process::Command;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn run(repo: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .status()
+            .expect("run git");
+        assert!(status.success(), "git {args:?} failed: {status}");
+    }
+
+    fn fixture_repo() -> TempDir {
+        let dir = TempDir::new().expect("tempdir");
+        run(dir.path(), &["init", "-q", "-b", "main"]);
+        run(dir.path(), &["config", "user.email", "test@example.com"]);
+        run(dir.path(), &["config", "user.name", "Test"]);
+        run(dir.path(), &["config", "commit.gpgsign", "false"]);
+        fs::write(dir.path().join("small.txt"), b"small\n").expect("write small");
+        fs::write(dir.path().join("large.txt"), vec![b'x'; MAX_BLOB_BYTES + 1])
+            .expect("write large");
+        run(dir.path(), &["add", "."]);
+        run(dir.path(), &["commit", "-q", "-m", "initial"]);
+        dir
+    }
+
+    #[test]
+    fn ls_files_applies_blob_cap_before_loading_contents() {
+        let repo = fixture_repo();
+
+        let files = ls_files(repo.path(), "HEAD").expect("list files");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].0, "small.txt");
+        assert_eq!(files[0].1, b"small\n");
+    }
+
+    #[test]
+    fn cat_blob_returns_none_for_blob_larger_than_cap() {
+        let repo = fixture_repo();
+
+        let small = cat_blob(repo.path(), "HEAD", "small.txt").expect("small blob");
+        let large = cat_blob(repo.path(), "HEAD", "large.txt").expect("large blob");
+
+        assert_eq!(small.as_deref(), Some(&b"small\n"[..]));
+        assert!(large.is_none());
+    }
 }

@@ -78,7 +78,7 @@ pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GoalPayloadArgs {
     #[schemars(
-        description = "Registered Goal-payload schema id (PayloadKind::Goal). Discover valid ids with `core_list_schemas` (kind=Goal)."
+        description = "Registered Goal-payload schema id (PayloadKind::Goal). Discover valid ids with the `proxima://schemas{?kind}` resource (kind=Goal)."
     )]
     pub schema_id: String,
     #[schemars(description = "Goal-payload schema version. Omit to default to 1.")]
@@ -245,7 +245,7 @@ async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput,
         .create_goal_from_payload_write(
             &ctx.authz,
             &GoalCreatePayloadWriteRequest {
-                principal: ctx.owner,
+                owner: ctx.owner,
                 topology,
                 wake: None,
                 payload,
@@ -298,7 +298,7 @@ async fn goal_transition(
         .transition_goal(
             &ctx.authz,
             &GoalTransitionRequest {
-                principal: ctx.owner,
+                owner: ctx.owner,
                 prior_goal_id: prior,
                 next_state,
                 authorship: GoalAuthorship::User,
@@ -346,7 +346,7 @@ async fn goal_mark_achieved(
         .mark_goal_achieved(
             &ctx.authz,
             &GoalMarkAchievedRequest {
-                principal: ctx.owner,
+                owner: ctx.owner,
                 prior_goal_id: prior,
                 authorship: GoalAuthorship::System(SystemOrigin::Tool {
                     tool_id: ToolId::new(protocol_action::CORE_GOAL_MARK_ACHIEVED),
@@ -397,7 +397,7 @@ async fn goal_modify(
         .modify_goal(
             &ctx.authz,
             &GoalModifyRequest {
-                principal: ctx.owner,
+                owner: ctx.owner,
                 prior_goal_id: prior,
                 replacement: payload,
                 wake: None,
@@ -487,7 +487,7 @@ async fn goal_decompose(
         .decompose_goal(
             &ctx.authz,
             &GoalDecomposeRequest {
-                principal: ctx.owner,
+                owner: ctx.owner,
                 parent_goal_id: parent,
                 authorship: GoalAuthorship::System(SystemOrigin::Tool {
                     tool_id: ToolId::new(protocol_action::CORE_GOAL_DECOMPOSE),

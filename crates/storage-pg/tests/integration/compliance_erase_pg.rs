@@ -297,7 +297,7 @@ async fn target_abandoned_keeps_live_source_edge_as_unavailable()
             .read_edges(
                 &[live],
                 &EdgeReadRequest {
-                    principal: live,
+                    owner: live,
                     edge_ids: vec![EdgeId::new(edge.into_inner())],
                     filter: EdgeFilter::default(),
                     limit: 10,
@@ -402,7 +402,7 @@ async fn group_source_scope_erases_only_requested_source_and_suppresses_new_batc
             .read_edges(
                 &[owner],
                 &EdgeReadRequest {
-                    principal: owner,
+                    owner,
                     edge_ids: vec![EdgeId::new(surviving_edge.into_inner())],
                     filter: EdgeFilter::default(),
                     limit: 10,

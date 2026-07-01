@@ -16,6 +16,7 @@
 mod common;
 
 use common::{git, migrated_db, test_owner, write_file};
+use proxima_code::chunker::MAX_BLOB_BYTES;
 use proxima_code::testkit::build_engine;
 use proxima_code::{
     CodeChunkV1, CodeFlavorStore, CodeIngestContext, FileRevisionV1, FileState, LocalGitSource,
@@ -48,6 +49,7 @@ fn fixture_repo() -> TempDir {
         "export function greet(): string {\n  return \"hi\";\n}\n",
     );
     write_file(dir.path(), "README.md", "# Fixture\n\nHello.\n");
+    write_file(dir.path(), "src/oversized.rs", "pub fn before() {}\n");
     git(dir.path(), &["add", "."]);
     git(dir.path(), &["commit", "-q", "-m", "initial"]);
 
@@ -86,6 +88,48 @@ async fn count_present_chunks(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid)
     .fetch_one(pool)
     .await
     .expect("count present chunks");
+    row.try_get::<i64, _>("c").expect("count column")
+}
+
+async fn count_present_chunks_for_path(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    repo_id: Uuid,
+    file_path: &str,
+) -> i64 {
+    let (kind, principal_id) = owner.columns();
+    let row = sqlx::query(
+        "SELECT COUNT(*)::bigint AS c \
+         FROM proxima_core.memories m \
+         JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
+         JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
+           ON eo.entity_id = m.memory_id \
+         WHERE eo.owner_kind = $1 \
+           AND eo.owner_id = $2 \
+           AND s.repo_id = $3 \
+           AND s.file_path = $4 \
+           AND s.state = 'Present' \
+           AND NOT EXISTS ( \
+                 SELECT 1 FROM proxima_core.memories m2 \
+                 JOIN proxima_code.code_chunk_v1 s2 USING (memory_id) \
+                 JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo2 \
+                   ON eo2.entity_id = m2.memory_id \
+                 WHERE m2.schema_id = m.schema_id \
+                   AND eo2.owner_kind = eo.owner_kind \
+                   AND eo2.owner_id = eo.owner_id \
+                   AND s2.repo_id = s.repo_id \
+                   AND s2.file_path = s.file_path \
+                   AND s2.chunk_index = s.chunk_index \
+                   AND m2.created_at > m.created_at \
+           )",
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(repo_id)
+    .bind(file_path)
+    .fetch_one(pool)
+    .await
+    .expect("count present chunks for path");
     row.try_get::<i64, _>("c").expect("count column")
 }
 
@@ -193,7 +237,7 @@ async fn local_git_source_full_cycle() {
         // Heads-only chunk Query through the Engine — the path that
         // matters for downstream consumers.
         let q = QueryRequest {
-            principal: owner,
+            owner,
             read_owners: vec![owner],
             entity_kind: None,
             schema_id: Some(SchemaId::new(
@@ -268,7 +312,7 @@ async fn local_git_source_full_cycle() {
 
         // Old revision still exists as history (IncludeSuperseded view).
         let q_all = QueryRequest {
-            principal: owner,
+            owner,
             read_owners: vec![owner],
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
@@ -296,7 +340,35 @@ async fn local_git_source_full_cycle() {
         );
 
         // ----------------------------------------------------------------
-        // Phase 3 — delete src/main.ts and reindex.
+        // Phase 3 — grow a previously indexed file past the blob cap.
+        // It should tombstone the prior chunks instead of leaving stale
+        // Present heads behind.
+        std::fs::write(
+            repo.path().join("src/oversized.rs"),
+            vec![b'x'; MAX_BLOB_BYTES + 1],
+        )?;
+        git(repo.path(), &["add", "src/oversized.rs"]);
+        git(repo.path(), &["commit", "-q", "-m", "oversize file"]);
+
+        let (r_big, cursor) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
+        assert!(
+            r_big.files_tombstoned >= 1,
+            "expected oversized file to tombstone prior head"
+        );
+        let oversized_state =
+            fetch_file_revision_state(pg.pool_for_tests(), &owner, repo_id, "src/oversized.rs")
+                .await;
+        assert_eq!(oversized_state, Some(FileState::Tombstone));
+        let oversized_chunks =
+            count_present_chunks_for_path(pg.pool_for_tests(), &owner, repo_id, "src/oversized.rs")
+                .await;
+        assert_eq!(
+            oversized_chunks, 0,
+            "oversized file must not leave stale present chunks"
+        );
+
+        // ----------------------------------------------------------------
+        // Phase 4 — delete src/main.ts and reindex.
         std::fs::remove_file(repo.path().join("src/main.ts"))?;
         git(repo.path(), &["add", "-A"]);
         git(repo.path(), &["commit", "-q", "-m", "drop main.ts"]);
@@ -308,7 +380,7 @@ async fn local_git_source_full_cycle() {
         assert_eq!(main_state, Some(FileState::Tombstone));
 
         // ----------------------------------------------------------------
-        // Phase 4 — rename README.md → docs/README.md and reindex.
+        // Phase 5 — rename README.md → docs/README.md and reindex.
         std::fs::create_dir_all(repo.path().join("docs"))?;
         std::fs::rename(
             repo.path().join("README.md"),
@@ -326,7 +398,7 @@ async fn local_git_source_full_cycle() {
         assert_eq!(new_state, Some(FileState::Present));
 
         // ----------------------------------------------------------------
-        // Phase 5 — markdown is polyglot: present revision, fallback chunks.
+        // Phase 6 — markdown is polyglot: present revision, fallback chunks.
         // (The renamed docs/README.md proves this.)
         let md_chunk_count: (i64,) = sqlx::query_as(
             "SELECT COUNT(*)::bigint FROM proxima_core.memories m \

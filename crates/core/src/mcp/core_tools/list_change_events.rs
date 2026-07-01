@@ -78,7 +78,7 @@ pub async fn list_change_events(
         .list_change_events(
             &ctx.authz,
             &ListChangeEventsReadRequest {
-                principal: ctx.owner,
+                owner: ctx.owner,
                 after,
                 limit: overfetch_limit(limit),
             },

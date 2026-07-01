@@ -95,7 +95,7 @@ pub async fn walk_memory_lineage(
         .walk_memory_lineage(
             &ctx.authz,
             &MemoryLineageRequest {
-                principal: ctx.owner,
+                owner: ctx.owner,
                 start_memory_id: start,
                 direction,
                 depth: args.depth.clamp(1, 8),

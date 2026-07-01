@@ -459,7 +459,7 @@ async fn query_cursor_second_page_has_no_overlap() {
         let seeded = seed_memory_rows(&pg, owner, None, 7, 0, "page").await?;
         let engine = engine_for(&pg);
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
-        let mut req = QueryRequest::for_principal(owner);
+        let mut req = QueryRequest::for_owner(owner);
         req.entity_kind = Some(EntityKind::Fact);
         req.limit = 3;
 
@@ -514,7 +514,7 @@ async fn query_cursor_second_page_has_no_overlap() {
 async fn mixed_query_rejects_cursor() {
     let owner = personal_owner();
     let engine = Engine::new(FlavorRegistryFrozen::new());
-    let mut req = QueryRequest::for_principal(owner);
+    let mut req = QueryRequest::for_owner(owner);
     req.page.after = Some(QueryCursor::Memory {
         created_at: time::OffsetDateTime::now_utc(),
         memory_id: MemoryId::new(Uuid::now_v7()),
@@ -534,7 +534,7 @@ async fn cursor_kind_mismatch_rejects() {
     let engine = Engine::new(FlavorRegistryFrozen::new());
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
 
-    let mut goal_req = QueryRequest::for_principal(owner);
+    let mut goal_req = QueryRequest::for_owner(owner);
     goal_req.entity_kind = Some(EntityKind::Goal);
     goal_req.page.after = Some(QueryCursor::Memory {
         created_at: time::OffsetDateTime::now_utc(),
@@ -546,7 +546,7 @@ async fn cursor_kind_mismatch_rejects() {
         .expect_err("Goal Query must reject Memory cursor");
     assert_eq!(goal_err.code, ErrorCode::InvalidArgument);
 
-    let mut memory_req = QueryRequest::for_principal(owner);
+    let mut memory_req = QueryRequest::for_owner(owner);
     memory_req.entity_kind = Some(EntityKind::Fact);
     memory_req.page.after = Some(QueryCursor::Goal {
         created_at: time::OffsetDateTime::now_utc(),
