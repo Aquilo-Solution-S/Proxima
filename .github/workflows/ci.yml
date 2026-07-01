@@ -30,8 +30,8 @@ jobs:
       # actions/checkout@v7
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       # rust-toolchain.toml pins the channel (1.96.0) + components (rustfmt, clippy).
-      # Swatinem/rust-cache@v2
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      # Swatinem/rust-cache@v2.9.1
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
       - name: rustfmt
         run: cargo fmt --all --check
       - name: clippy
@@ -89,7 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: pgvector/pgvector:pg18
+        image: pgvector/pgvector:pg18@sha256:212765b63c1462883de295c4c415edcd22191b8d8d46853e86ad05d4b577a4cb
         env:
           POSTGRES_USER: proxima
           POSTGRES_PASSWORD: proxima
@@ -120,8 +120,8 @@ jobs:
           # most-recent commits; a single-commit CI checkout would starve
           # it, so fetch full history here (the test itself bounds depth).
           fetch-depth: 0
-      # Swatinem/rust-cache@v2
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      # Swatinem/rust-cache@v2.9.1
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
       - name: create e2e database
         # Dedicated DB for the HTTP e2e tests, isolated from pg-testkit's
         # per-test clones (psql ships on the ubuntu-latest runner).
