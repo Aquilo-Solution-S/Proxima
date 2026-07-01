@@ -35,7 +35,7 @@ jobs:
         # taiki-e/install-action@v2
         uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419
         with:
-          tool: git-cliff
+          tool: git-cliff@2.13.1
       - name: generate release notes
         env:
           # Enrichment (PR links, authors, contributors). The built-in token
