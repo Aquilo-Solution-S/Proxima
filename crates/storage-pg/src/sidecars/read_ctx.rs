@@ -41,7 +41,7 @@ impl PgSidecarReadCtx<'_> {
         for<'r> T: FromRow<'r, PgRow> + Send + Unpin,
     {
         validate_sidecar_read_sql(sql, self.allow_core_schema)?;
-        sqlx::query_as(sql)
+        sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(memory_id.into_inner())
             .fetch_optional(self.pool)
             .await
@@ -62,7 +62,7 @@ impl PgSidecarReadCtx<'_> {
         for<'r> T: FromRow<'r, PgRow> + Send + Unpin,
     {
         validate_sidecar_read_sql(sql, self.allow_core_schema)?;
-        sqlx::query_as(sql)
+        sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(memory_id.into_inner())
             .fetch_all(self.pool)
             .await
@@ -87,7 +87,7 @@ impl PgSidecarReadCtx<'_> {
             .iter()
             .map(|memory_id| (*memory_id).into_inner())
             .collect::<Vec<_>>();
-        sqlx::query_as(sql)
+        sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(&raw_memory_ids)
             .fetch_all(self.pool)
             .await
@@ -108,7 +108,7 @@ impl PgSidecarReadCtx<'_> {
         for<'r> T: sqlx::Decode<'r, Postgres> + sqlx::Type<Postgres> + Send + Unpin,
     {
         validate_sidecar_read_sql(sql, self.allow_core_schema)?;
-        sqlx::query_scalar(sql)
+        sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
             .bind(memory_id.into_inner())
             .fetch_optional(self.pool)
             .await

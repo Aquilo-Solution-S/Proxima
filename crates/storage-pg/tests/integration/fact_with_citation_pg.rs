@@ -739,7 +739,9 @@ async fn fact_sidecar_failure_rolls_back_whole_inline_citation_ingest()
 
 async fn count(pool: &sqlx::PgPool, table: &str) -> Result<i64, sqlx::Error> {
     let sql = format!("SELECT count(*) FROM {table}");
-    sqlx::query_scalar(&sql).fetch_one(pool).await
+    sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .fetch_one(pool)
+        .await
 }
 
 async fn assert_written_rows(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {

@@ -174,7 +174,7 @@ pub(super) async fn read_seq_high_water(
            AND {edge_visibility}
          ORDER BY ce.seq DESC LIMIT 1"
     );
-    let row: Option<(uuid::Uuid,)> = sqlx::query_as(&sql)
+    let row: Option<(uuid::Uuid,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(read_owner_kinds)
         .bind(read_owner_ids)
         .bind(world_kind)

@@ -145,7 +145,7 @@ pub(crate) async fn query_memories(
     sql.push_str(&fetch_limit.to_string());
 
     // SQL-POLICY: fixed-fragment
-    let mut q = sqlx::query_as::<_, MemoryRowDb>(&sql)
+    let mut q = sqlx::query_as::<_, MemoryRowDb>(sqlx::AssertSqlSafe(sql))
         .bind(&read_owner_kinds)
         .bind(&read_owner_ids);
     if let Some(sid) = &schema_id_filter {
@@ -335,7 +335,7 @@ async fn query_visible_memory_ids(
     push_heads_predicate(&mut sql, req, schema, &stateful, &stateful_params);
 
     // SQL-POLICY: fixed-fragment
-    let mut q = sqlx::query_as::<_, (uuid::Uuid,)>(&sql)
+    let mut q = sqlx::query_as::<_, (uuid::Uuid,)>(sqlx::AssertSqlSafe(sql))
         .bind(read_owner_kinds)
         .bind(read_owner_ids)
         .bind(candidate_memory_ids);
@@ -383,7 +383,7 @@ async fn query_visible_goal_ids(
         );
     }
     // SQL-POLICY: fixed-fragment
-    let mut q = sqlx::query_as::<_, (uuid::Uuid,)>(&sql)
+    let mut q = sqlx::query_as::<_, (uuid::Uuid,)>(sqlx::AssertSqlSafe(sql))
         .bind(read_owner_kinds)
         .bind(read_owner_ids)
         .bind(candidate_goal_ids);

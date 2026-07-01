@@ -1126,7 +1126,7 @@ async fn fact_natural_key_after_sidecar(
         natural_key_exprs.join(", "),
         sidecar_table.as_str(),
     );
-    sqlx::query_as::<_, (Vec<String>, time::OffsetDateTime)>(&natural_key_sql)
+    sqlx::query_as::<_, (Vec<String>, time::OffsetDateTime)>(sqlx::AssertSqlSafe(natural_key_sql))
         .bind(memory_id)
         .fetch_optional(tx.as_mut())
         .await

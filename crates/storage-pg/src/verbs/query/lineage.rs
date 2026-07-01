@@ -150,7 +150,7 @@ async fn start_memory_visible(
                AND m.memory_id = $3
                AND m.tombstoned_at IS NULL",
     );
-    let query = sqlx::query_as::<_, (uuid::Uuid,)>(&sql)
+    let query = sqlx::query_as::<_, (uuid::Uuid,)>(sqlx::AssertSqlSafe(sql))
         .bind(read_owner_kinds)
         .bind(read_owner_ids)
         .bind(memory_id.into_inner());
@@ -206,7 +206,7 @@ async fn load_nodes(
                AND m.memory_id = ANY($3::uuid[])
                AND m.tombstoned_at IS NULL",
     );
-    let query = sqlx::query_as::<_, NodeRow>(&sql)
+    let query = sqlx::query_as::<_, NodeRow>(sqlx::AssertSqlSafe(sql))
         .bind(read_owner_kinds)
         .bind(read_owner_ids)
         .bind(memory_ids);

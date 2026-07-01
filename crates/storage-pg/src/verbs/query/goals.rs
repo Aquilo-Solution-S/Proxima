@@ -118,7 +118,7 @@ pub(super) async fn query_goals(
     sql.push_str(&fetch_limit.to_string());
 
     // SQL-POLICY: fixed-fragment
-    let mut q = sqlx::query_as::<_, GoalRowDb>(&sql)
+    let mut q = sqlx::query_as::<_, GoalRowDb>(sqlx::AssertSqlSafe(sql))
         .bind(read_owner_kinds)
         .bind(read_owner_ids);
     if let Some(sid) = schema_id_filter {

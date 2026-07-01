@@ -2,7 +2,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{Connection, Executor, PgConnection, PgPool};
+use sqlx::{AssertSqlSafe, Connection, PgConnection, PgPool};
 use uuid::Uuid;
 
 const DEFAULT_ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
@@ -51,8 +51,12 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
 /// Returns any database connection or `CREATE DATABASE` error.
 pub async fn create_db(name: &str) -> Result<(), sqlx::Error> {
     let mut conn = PgConnection::connect(&admin_url()).await?;
-    conn.execute(format!("CREATE DATABASE {}", quoted_ident(name)).as_str())
-        .await?;
+    sqlx::raw_sql(AssertSqlSafe(format!(
+        "CREATE DATABASE {}",
+        quoted_ident(name)
+    )))
+    .execute(&mut conn)
+    .await?;
     conn.close().await?;
     Ok(())
 }
@@ -92,8 +96,12 @@ where
             return Ok(());
         }
 
-        conn.execute(format!("CREATE DATABASE {}", quoted_ident(template)).as_str())
-            .await?;
+        sqlx::raw_sql(AssertSqlSafe(format!(
+            "CREATE DATABASE {}",
+            quoted_ident(template)
+        )))
+        .execute(&mut conn)
+        .await?;
 
         let pool = PgPoolOptions::new()
             .max_connections(1)
@@ -138,7 +146,10 @@ pub async fn create_db_from_template(prefix: &str, template: &str) -> Result<Str
     let mut last_error = None;
 
     for _ in 0..DROP_RETRIES {
-        match conn.execute(statement.as_str()).await {
+        match sqlx::raw_sql(AssertSqlSafe(statement.clone()))
+            .execute(&mut conn)
+            .await
+        {
             Ok(_) => {
                 conn.close().await?;
                 return Ok(name);
@@ -167,9 +178,11 @@ pub async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
     let mut conn = PgConnection::connect(&admin_url()).await?;
     let quoted_name = quoted_ident(name);
 
-    match conn
-        .execute(format!("ALTER DATABASE {quoted_name} WITH ALLOW_CONNECTIONS false").as_str())
-        .await
+    match sqlx::raw_sql(AssertSqlSafe(format!(
+        "ALTER DATABASE {quoted_name} WITH ALLOW_CONNECTIONS false"
+    )))
+    .execute(&mut conn)
+    .await
     {
         Ok(_) => {}
         Err(err) if is_sqlstate(&err, SQLSTATE_UNDEFINED_DATABASE) => {
@@ -195,9 +208,11 @@ pub async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
         .execute(&mut conn)
         .await;
 
-        match conn
-            .execute(format!("DROP DATABASE IF EXISTS {quoted_name}").as_str())
-            .await
+        match sqlx::raw_sql(AssertSqlSafe(format!(
+            "DROP DATABASE IF EXISTS {quoted_name}"
+        )))
+        .execute(&mut conn)
+        .await
         {
             Ok(_) => {
                 conn.close().await?;

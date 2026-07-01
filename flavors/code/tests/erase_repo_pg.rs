@@ -113,7 +113,7 @@ async fn insert_repo_commit_with_test_request(
     Ok(())
 }
 
-async fn count_rows(pool: &sqlx::PgPool, sql: &str, id: Uuid) -> Result<i64, sqlx::Error> {
+async fn count_rows(pool: &sqlx::PgPool, sql: &'static str, id: Uuid) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(sql).bind(id).fetch_one(pool).await
 }
 

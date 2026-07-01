@@ -1,4 +1,4 @@
-//! rmcp 1.6 dynamic tool projection.
+//! rmcp dynamic tool projection.
 //!
 //! The SDK exposes dynamic tools through direct
 //! `ServerHandler::list_tools` / `call_tool` overrides. This adapter
@@ -16,11 +16,11 @@ use proxima_core::mcp::{
 use proxima_core::{McpAuthorContext, MemoryId};
 use rmcp::ServerHandler;
 use rmcp::model::{
-    AnnotateAble, CallToolRequestParams, CallToolResult, Content, ErrorData, Implementation,
+    CallToolRequestParams, CallToolResult, ContentBlock, ErrorData, Implementation,
     InitializeRequestParams, InitializeResult, ListResourceTemplatesResult, ListResourcesResult,
-    ListToolsResult, PaginatedRequestParams, RawResource, RawResourceTemplate,
-    ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
-    ServerInfo, Tool, ToolAnnotations,
+    ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult,
+    Resource, ResourceContents, ResourceTemplate, ServerCapabilities, ServerInfo, Tool,
+    ToolAnnotations,
 };
 use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 
@@ -93,13 +93,10 @@ impl ServerHandler for DynamicHandler {
     ) -> impl Future<Output = Result<ListResourcesResult, ErrorData>> + MaybeSendFuture + '_ {
         let auth = auth_context(&context);
         let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
-        let resource = RawResource {
-            title: Some(selfdoc::HOW_TO_TITLE.to_string()),
-            description: Some(selfdoc::HOW_TO_DESCRIPTION.to_string()),
-            mime_type: Some(selfdoc::HOW_TO_MIME.to_string()),
-            ..RawResource::new(selfdoc::HOW_TO_URI, selfdoc::HOW_TO_NAME)
-        }
-        .no_annotation();
+        let resource = Resource::new(selfdoc::HOW_TO_URI, selfdoc::HOW_TO_NAME)
+            .with_title(selfdoc::HOW_TO_TITLE)
+            .with_description(selfdoc::HOW_TO_DESCRIPTION)
+            .with_mime_type(selfdoc::HOW_TO_MIME);
         let mut resources = vec![resource];
         resources.extend(
             all_core_resources()
@@ -248,7 +245,7 @@ impl ServerHandler for DynamicHandler {
                 .await
                 .map_err(tool_invocation_error_to_error_data)?;
             let text = serde_json::to_string(&output).map_err(generic_internal_error)?;
-            let mut result = CallToolResult::success(vec![Content::text(text)]);
+            let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
             result.structured_content = Some(output);
             Ok(result)
         }
@@ -318,22 +315,18 @@ fn to_rmcp_annotations(annotations: McpToolAnnotations) -> ToolAnnotations {
     hints
 }
 
-fn raw_resource_from_meta(meta: &proxima_core::CoreResourceMeta) -> rmcp::model::Resource {
-    RawResource::new(static_resource_uri(meta.uri_template), meta.name)
+fn raw_resource_from_meta(meta: &proxima_core::CoreResourceMeta) -> Resource {
+    Resource::new(static_resource_uri(meta.uri_template), meta.name)
         .with_title(meta.title)
         .with_description(meta.description)
         .with_mime_type("application/json")
-        .no_annotation()
 }
 
-fn raw_resource_template_from_meta(
-    meta: &proxima_core::CoreResourceMeta,
-) -> rmcp::model::ResourceTemplate {
-    RawResourceTemplate::new(meta.uri_template, meta.name)
+fn raw_resource_template_from_meta(meta: &proxima_core::CoreResourceMeta) -> ResourceTemplate {
+    ResourceTemplate::new(meta.uri_template, meta.name)
         .with_title(meta.title)
         .with_description(meta.description)
         .with_mime_type("application/json")
-        .no_annotation()
 }
 
 fn static_resource_uri(uri_template: &str) -> String {

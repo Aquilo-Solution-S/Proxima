@@ -33,7 +33,7 @@ pub async fn list_change_events_after(
              ORDER BY ce.seq ASC
              LIMIT $4"
     );
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(&read_owner_kinds)
         .bind(&read_owner_ids)
         .bind(after)
@@ -84,7 +84,7 @@ pub async fn list_change_events_for_replay(
              ORDER BY ce.seq ASC
              LIMIT $5"
     );
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(&read_owner_kinds)
         .bind(&read_owner_ids)
         .bind(after)

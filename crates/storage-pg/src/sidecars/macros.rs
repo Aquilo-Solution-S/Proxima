@@ -398,7 +398,7 @@ macro_rules! pg_sidecar {
                             (::std::stringify!($column), $crate::pg_sidecar_cast! $column_kind),
                         )+],
                     )?;
-                    ::sqlx::query(&sql)
+                    ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                         .bind(memory_id.into_inner())
                         $(
                             .bind($crate::pg_sidecar_bind!($column_kind, self, $field))
