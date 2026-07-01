@@ -27,9 +27,11 @@ jobs:
     name: fmt + clippy + doc
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      # actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       # rust-toolchain.toml pins the channel (1.96.0) + components (rustfmt, clippy).
-      - uses: Swatinem/rust-cache@v2
+      # Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: rustfmt
         run: cargo fmt --all --check
       - name: clippy
@@ -45,7 +47,8 @@ jobs:
     name: docs links + status + lean
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      # actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - name: install docs dependencies
         run: python3 -m pip install -r requirements-docs.txt
       - name: mkdocs strict build
@@ -59,7 +62,8 @@ jobs:
           python3 scripts/check-architecture-guardrails.py
           python3 scripts/check-sql-policy.py
       - name: set up Lean/Lake
-        uses: leanprover/lean-action@v1
+        # leanprover/lean-action@v1
+        uses: leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9
         with:
           lake-package-directory: docs/lean
           build: false
@@ -71,7 +75,8 @@ jobs:
     name: cargo-deny (advisories + licenses + bans + sources)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      # actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       # cargo-deny-action v2.0.20 pinned by commit SHA (bundles cargo-deny 0.19.8,
       # the schema deny.toml targets). Dependabot's github-actions ecosystem keeps
       # this current via reviewable PRs.
@@ -108,19 +113,22 @@ jobs:
       DATABASE_URL: postgres://proxima:proxima@localhost:5432/proxima_e2e
       PROXIMA_TEST_DATABASE_URL: postgres://proxima:proxima@localhost:5432/proxima_e2e
     steps:
-      - uses: actions/checkout@v7
+      # actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           # self_ingestion_pg shallow-clones the workspace and ingests its
           # most-recent commits; a single-commit CI checkout would starve
           # it, so fetch full history here (the test itself bounds depth).
           fetch-depth: 0
-      - uses: Swatinem/rust-cache@v2
+      # Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: create e2e database
         # Dedicated DB for the HTTP e2e tests, isolated from pg-testkit's
         # per-test clones (psql ships on the ubuntu-latest runner).
         run: psql "postgres://proxima:proxima@localhost:5432/proxima" -c 'CREATE DATABASE proxima_e2e;'
       - name: install nextest
-        uses: taiki-e/install-action@nextest
+        # taiki-e/install-action@nextest
+        uses: taiki-e/install-action@0c80bcf54d007ab0e714c95f3bcc43c387707535
       - name: build
         run: cargo build --workspace --all-targets --locked
       - name: test
