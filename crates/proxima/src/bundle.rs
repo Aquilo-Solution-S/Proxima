@@ -64,6 +64,7 @@ mod tests {
 
     use proxima_core::{FlavorRegistry, FlavorRegistryError};
     use proxima_storage_pg::PgSidecarRegistry;
+    use sqlx::SqlSafeStr;
     use sqlx::migrate::{Migration, MigrationType, Migrator};
 
     use super::FlavorBundle;
@@ -130,7 +131,7 @@ mod tests {
                     *version,
                     Cow::Owned(format!("test {version}")),
                     MigrationType::Simple,
-                    Cow::Owned(format!("SELECT {version};")),
+                    sqlx::AssertSqlSafe(format!("SELECT {version};")).into_sql_str(),
                     false,
                 )
             })

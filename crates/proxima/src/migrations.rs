@@ -152,13 +152,13 @@ async fn run_sources_on_connection(
         if source.source == CORE_SOURCE {
             source
                 .migrator
-                .run_direct(&mut *conn)
+                .run_direct(None, &mut *conn, false)
                 .await
                 .map_err(MigrationError::Core)?;
         } else {
             source
                 .migrator
-                .run_direct(&mut *conn)
+                .run_direct(None, &mut *conn, false)
                 .await
                 .map_err(|err| MigrationError::Flavor {
                     source: source.source,
@@ -212,6 +212,7 @@ fn reject_duplicate_versions(sources: &[NamedMigrator]) -> Result<(), MigrationE
 mod tests {
     use std::borrow::Cow;
 
+    use sqlx::SqlSafeStr;
     use sqlx::migrate::{Migration, MigrationType, Migrator};
 
     use super::{MigrationError, NamedMigrator, prepare_sources};
@@ -224,7 +225,7 @@ mod tests {
                     *version,
                     Cow::Owned(format!("test {version}")),
                     MigrationType::Simple,
-                    Cow::Owned(format!("SELECT {version};")),
+                    sqlx::AssertSqlSafe(format!("SELECT {version};")).into_sql_str(),
                     false,
                 )
             })

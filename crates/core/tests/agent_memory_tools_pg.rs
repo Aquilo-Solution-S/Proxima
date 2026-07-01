@@ -1383,7 +1383,9 @@ async fn create_remember_citation_sidecars(pool: &sqlx::PgPool) -> Result<(), sq
 
 async fn count_rows(pool: &sqlx::PgPool, table: &str) -> Result<i64, sqlx::Error> {
     let sql = format!("SELECT count(*) FROM {table}");
-    sqlx::query_scalar(&sql).fetch_one(pool).await
+    sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .fetch_one(pool)
+        .await
 }
 
 async fn agent_note_id(pool: &sqlx::PgPool, memory_id: MemoryId) -> Result<Uuid, sqlx::Error> {

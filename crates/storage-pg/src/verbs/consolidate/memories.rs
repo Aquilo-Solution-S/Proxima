@@ -63,7 +63,7 @@ async fn load_batch_facts_by_id(
                AND e.schema_version = $5
                AND m.tombstoned_at IS NULL"
         ;
-        let rows: Vec<(uuid::Uuid, i32)> = sqlx::query_as(sql)
+        let rows: Vec<(uuid::Uuid, i32)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(batch_id)
             .bind(owner_kind)
             .bind(owner_id)
@@ -132,15 +132,16 @@ pub async fn load_abstraction_heads(
              ORDER BY m.created_at DESC, m.memory_id DESC
              LIMIT $5"
         ;
-        let rows: Vec<(uuid::Uuid, i32, String, time::OffsetDateTime)> = sqlx::query_as(sql)
-            .bind(owner_kind)
-            .bind(owner_id)
-            .bind(spec.schema_id.as_str())
-            .bind(i32::try_from(spec.schema_version.into_inner()).unwrap_or(i32::MAX))
-            .bind(i64::try_from(limit).unwrap_or(i64::MAX))
-            .fetch_all(pool)
-            .await
-            .map_err(map_err)?;
+        let rows: Vec<(uuid::Uuid, i32, String, time::OffsetDateTime)> =
+            sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                .bind(owner_kind)
+                .bind(owner_id)
+                .bind(spec.schema_id.as_str())
+                .bind(i32::try_from(spec.schema_version.into_inner()).unwrap_or(i32::MAX))
+                .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+                .fetch_all(pool)
+                .await
+                .map_err(map_err)?;
         for (memory_id, schema_version, text, created_at) in rows {
             let id = MemoryId::new(memory_id);
             let schema_version = SchemaVersion::new(u32::try_from(schema_version).unwrap_or(1));

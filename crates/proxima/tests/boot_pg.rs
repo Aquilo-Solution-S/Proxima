@@ -15,7 +15,7 @@ use proxima_core::{
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::{PgSidecarKey, PgStorage};
 use sqlx::migrate::{Migration, MigrationType, Migrator};
-use sqlx::{Connection, Executor};
+use sqlx::{Connection, SqlSafeStr};
 use tokio::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -125,7 +125,7 @@ fn current_user_schema_migrator() -> Migrator {
             20_990_101_000_000,
             Cow::Borrowed("current user schema collision"),
             MigrationType::Simple,
-            Cow::Borrowed("CREATE SCHEMA AUTHORIZATION CURRENT_USER;"),
+            "CREATE SCHEMA AUTHORIZATION CURRENT_USER;".into_sql_str(),
             false,
         )]),
         ..Migrator::DEFAULT
@@ -134,13 +134,11 @@ fn current_user_schema_migrator() -> Migrator {
 
 async fn force_role_first_search_path(db_name: &str) -> Result<(), sqlx::Error> {
     let mut conn = sqlx::PgConnection::connect(&admin_url()).await?;
-    conn.execute(
-        format!(
-            "ALTER ROLE CURRENT_USER IN DATABASE {} SET search_path = \"$user\", public",
-            quoted_ident(db_name)
-        )
-        .as_str(),
-    )
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "ALTER ROLE CURRENT_USER IN DATABASE {} SET search_path = \"$user\", public",
+        quoted_ident(db_name)
+    )))
+    .execute(&mut conn)
     .await?;
     conn.close().await
 }

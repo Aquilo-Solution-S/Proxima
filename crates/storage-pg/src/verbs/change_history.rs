@@ -45,7 +45,7 @@ pub(crate) async fn change_history(
              ORDER BY ce.seq DESC
              LIMIT $4"
     );
-    let seqs: Vec<Uuid> = sqlx::query_scalar(&sql)
+    let seqs: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
         .bind(&read_owner_kinds)
         .bind(&read_owner_ids)
         .bind(req.before)
@@ -71,7 +71,7 @@ pub(crate) async fn change_history(
              ORDER BY ce.seq DESC
              LIMIT 1"
     );
-    let high_water = sqlx::query_scalar(&high_water_sql)
+    let high_water = sqlx::query_scalar(sqlx::AssertSqlSafe(high_water_sql))
         .bind(&read_owner_kinds)
         .bind(&read_owner_ids)
         .bind(world_kind)

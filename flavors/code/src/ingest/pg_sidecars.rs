@@ -30,7 +30,7 @@ async fn insert_criteria_rows(
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
     );
     for (index, criterion) in criteria.iter().enumerate() {
-        sqlx::query(&sql)
+        sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(parent_id.into_inner())
             .bind(i32::try_from(index).unwrap_or(i32::MAX))
             .bind(&criterion.key)
