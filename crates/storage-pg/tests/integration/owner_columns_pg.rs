@@ -39,7 +39,7 @@ fn fresh_fact_draft(_owner: Owner) -> FactWriteCommand {
 
 fn fresh_goal_draft(owner: Owner) -> GoalDraft {
     GoalDraft {
-        principal: owner,
+        owner,
         schema_id: SchemaId::new("core/simple-text-v1".into()),
         schema_version: SchemaVersion::new(1),
         title: "Home-row goal".to_string(),
@@ -306,7 +306,7 @@ async fn discovery_reads_filter_by_owner_read_set() {
     let query = pg
         .query_memories(
             &QueryRequest {
-                principal: q,
+                owner: q,
                 read_owners: q_read_owners.clone(),
                 entity_kind: None,
                 schema_id: None,
@@ -339,7 +339,7 @@ async fn discovery_reads_filter_by_owner_read_set() {
     let edge_by_id = pg
         .query_memories(
             &QueryRequest {
-                principal: q,
+                owner: q,
                 read_owners: q_read_owners.clone(),
                 entity_kind: None,
                 schema_id: None,
@@ -372,7 +372,7 @@ async fn discovery_reads_filter_by_owner_read_set() {
     let search = pg
         .search_memories(
             &MemorySearchRequest {
-                principal: q,
+                owner: q,
                 read_owners: q_read_owners,
                 query: "boundaryneedle".to_string(),
                 mode: SearchMode::Lexical,

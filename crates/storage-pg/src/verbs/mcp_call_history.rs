@@ -12,7 +12,7 @@ pub(crate) async fn read_mcp_call_history(
     pool: &PgPool,
     req: &McpCallHistoryRequest,
 ) -> Result<McpCallHistoryResponse, StorageError> {
-    let (owner_kind, owner_id) = req.principal.columns();
+    let (owner_kind, owner_id) = req.owner.columns();
     let limit = i64::from(req.limit.min(MAX_MCP_CALL_HISTORY_LIMIT));
 
     let rows = sqlx::query_as::<

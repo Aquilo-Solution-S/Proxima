@@ -15,7 +15,7 @@ use crate::error::BlobError;
 /// Tauri/TS-compatible cited-blob upload request.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobUploadPrepareTs {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     pub filename: String,
     pub mime: String,
     pub byte_len: u64,
@@ -40,7 +40,7 @@ pub struct PresignedHeaderTs {
 /// Tauri/TS-compatible cited-blob completion request.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobUploadCompleteTs {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     pub upload_id: String,
 }
 
@@ -60,7 +60,7 @@ pub struct CitedBlobUploadCompleteOutcomeTs {
 /// Tauri/TS-compatible cited-blob abort request.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobUploadAbortTs {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     pub upload_id: String,
 }
 
@@ -73,7 +73,7 @@ pub struct CitedBlobUploadAbortOutcomeTs {
 /// Tauri/TS-compatible cited-blob read URL request.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobReadUrlTs {
-    pub principal: OwnerRef,
+    pub owner: OwnerRef,
     pub cited_object_id: String,
 }
 
@@ -85,34 +85,34 @@ pub struct CitedBlobReadUrlOutcomeTs {
 }
 
 impl CitedBlobUploadPrepareTs {
-    /// The storage `Owner` (= principal) for this request.
+    /// The storage `Owner` for this request.
     #[must_use]
     pub fn owner(&self) -> Owner {
-        self.principal
+        self.owner
     }
 }
 
 impl CitedBlobUploadCompleteTs {
-    /// The storage `Owner` (= principal) for this request.
+    /// The storage `Owner` for this request.
     #[must_use]
     pub fn owner(&self) -> Owner {
-        self.principal
+        self.owner
     }
 }
 
 impl CitedBlobUploadAbortTs {
-    /// The storage `Owner` (= principal) for this request.
+    /// The storage `Owner` for this request.
     #[must_use]
     pub fn owner(&self) -> Owner {
-        self.principal
+        self.owner
     }
 }
 
 impl CitedBlobReadUrlTs {
-    /// The storage `Owner` (= principal) for this request.
+    /// The storage `Owner` for this request.
     #[must_use]
     pub fn owner(&self) -> Owner {
-        self.principal
+        self.owner
     }
 }
 

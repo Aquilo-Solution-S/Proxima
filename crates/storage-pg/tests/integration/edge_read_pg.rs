@@ -116,7 +116,7 @@ async fn lineage_hides_unreadable_sources_and_stops_at_redacted_fact_targets()
             .walk_memory_lineage(
                 &fixture.q_read,
                 &MemoryLineageRequest {
-                    principal: fixture.q,
+                    owner: fixture.q,
                     start_memory_id: fixture.f1,
                     direction: MemoryLineageDirection::Descendants,
                     depth: 3,
@@ -142,7 +142,7 @@ async fn lineage_hides_unreadable_sources_and_stops_at_redacted_fact_targets()
             .walk_memory_lineage(
                 &fixture.p_without_g1_read,
                 &MemoryLineageRequest {
-                    principal: fixture.p,
+                    owner: fixture.p,
                     start_memory_id: lifecycle,
                     direction: MemoryLineageDirection::Ancestors,
                     depth: 2,
@@ -169,7 +169,7 @@ async fn lineage_hides_unreadable_sources_and_stops_at_redacted_fact_targets()
             .walk_memory_lineage(
                 &fixture.q_read,
                 &MemoryLineageRequest {
-                    principal: fixture.q,
+                    owner: fixture.q,
                     start_memory_id: evidence,
                     direction: MemoryLineageDirection::Descendants,
                     depth: 2,
@@ -197,13 +197,13 @@ async fn lineage_hides_unreadable_sources_and_stops_at_redacted_fact_targets()
 async fn read_edge_by_id(
     pg: &proxima_storage_pg::PgStorage,
     read_owners: &[OwnerRef],
-    principal: &OwnerRef,
+    owner: &OwnerRef,
     edge_id: EdgeId,
 ) -> Result<proxima_core::verbs::query::EdgeReadResponse, proxima_core::StorageError> {
     pg.read_edges(
         read_owners,
         &EdgeReadRequest {
-            principal: *principal,
+            owner: *owner,
             edge_ids: vec![edge_id],
             filter: EdgeFilter::default(),
             limit: 10,
@@ -215,13 +215,13 @@ async fn read_edge_by_id(
 async fn edge_exists_by_id(
     pg: &proxima_storage_pg::PgStorage,
     read_owners: &[OwnerRef],
-    principal: &OwnerRef,
+    owner: &OwnerRef,
     edge_id: EdgeId,
 ) -> Result<proxima_core::verbs::query::EdgeExistsResponse, proxima_core::StorageError> {
     pg.edge_exists(
         read_owners,
         &EdgeExistsRequest {
-            principal: *principal,
+            owner: *owner,
             edge_ids: vec![edge_id],
             filter: EdgeFilter::default(),
         },
@@ -232,14 +232,14 @@ async fn edge_exists_by_id(
 async fn read_edge_by_target_filter(
     pg: &proxima_storage_pg::PgStorage,
     read_owners: &[OwnerRef],
-    principal: &OwnerRef,
+    owner: &OwnerRef,
     edge_id: EdgeId,
     target: EntityRef,
 ) -> Result<proxima_core::verbs::query::EdgeReadResponse, proxima_core::StorageError> {
     pg.read_edges(
         read_owners,
         &EdgeReadRequest {
-            principal: *principal,
+            owner: *owner,
             edge_ids: vec![edge_id],
             filter: EdgeFilter {
                 relation: None,

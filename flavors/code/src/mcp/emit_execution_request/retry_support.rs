@@ -149,7 +149,7 @@ pub(super) async fn load_prior_derived_targets(
         .read_edges(
             ctx.authz(),
             &EdgeReadRequest {
-                principal: ctx.owner(),
+                owner: ctx.owner(),
                 edge_ids: Vec::new(),
                 filter: EdgeFilter {
                     relation: Some(CORE_DERIVED_FROM_RELATION.to_string()),

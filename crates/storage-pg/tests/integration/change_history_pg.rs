@@ -143,7 +143,7 @@ async fn change_history_returns_owner_scoped_newest_first() {
             .change_history(
                 &authz1,
                 &ChangeHistoryRequest {
-                    principal: owner1,
+                    owner: owner1,
                     limit: 100,
                     before: None,
                 },
@@ -164,7 +164,7 @@ async fn change_history_returns_owner_scoped_newest_first() {
             .change_history(
                 &authz2,
                 &ChangeHistoryRequest {
-                    principal: owner2,
+                    owner: owner2,
                     limit: 100,
                     before: None,
                 },
@@ -176,7 +176,7 @@ async fn change_history_returns_owner_scoped_newest_first() {
             .change_history(
                 &authz1,
                 &ChangeHistoryRequest {
-                    principal: owner1,
+                    owner: owner1,
                     limit: 2,
                     before: None,
                 },
@@ -188,7 +188,7 @@ async fn change_history_returns_owner_scoped_newest_first() {
             .change_history(
                 &authz1,
                 &ChangeHistoryRequest {
-                    principal: owner1,
+                    owner: owner1,
                     limit: 2,
                     before: Some(page1.events[1].seq),
                 },
@@ -233,7 +233,7 @@ async fn change_history_surfaces_readable_non_world_source_edge_events()
             .read_edges(
                 &p_read,
                 &EdgeReadRequest {
-                    principal: p,
+                    owner: p,
                     edge_ids: vec![edge],
                     filter: EdgeFilter::default(),
                     limit: 10,
@@ -254,7 +254,7 @@ async fn change_history_surfaces_readable_non_world_source_edge_events()
             .change_history(
                 &authz,
                 &ChangeHistoryRequest {
-                    principal: gp,
+                    owner: gp,
                     limit: 100,
                     before: None,
                 },
@@ -278,7 +278,7 @@ async fn change_history_surfaces_readable_non_world_source_edge_events()
             .list_change_events(
                 &authz,
                 &ListChangeEventsReadRequest {
-                    principal: gp,
+                    owner: gp,
                     after: Uuid::nil(),
                     limit: 100,
                 },
@@ -331,7 +331,7 @@ async fn query_high_water_includes_readable_non_world_source_edge_events()
         let query = pg
             .query_memories(
                 &QueryRequest {
-                    principal: p,
+                    owner: p,
                     read_owners: p_read,
                     entity_kind: None,
                     schema_id: None,

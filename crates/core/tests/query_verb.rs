@@ -7,7 +7,7 @@ use uuid::Uuid;
 #[test]
 fn query_request_defaults_to_present_only() {
     let owner = Owner::Personal(UserId::new(Uuid::now_v7()));
-    let req = QueryRequest::for_principal(owner);
+    let req = QueryRequest::for_owner(owner);
     assert_eq!(req.supersession, SupersessionStatus::HeadsOnly);
     assert_eq!(req.tombstones, TombstoneFilter::PresentOnly);
     assert_eq!(req.page, QueryPage::default());
@@ -17,7 +17,7 @@ fn query_request_defaults_to_present_only() {
 #[test]
 fn query_request_deserializes_missing_page_as_default() {
     let owner = Owner::Personal(UserId::new(Uuid::now_v7()));
-    let req = QueryRequest::for_principal(owner);
+    let req = QueryRequest::for_owner(owner);
     let mut value = serde_json::to_value(&req).expect("QueryRequest serializes");
     value
         .as_object_mut()

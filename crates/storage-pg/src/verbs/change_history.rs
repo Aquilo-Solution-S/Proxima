@@ -30,7 +30,7 @@ pub(crate) async fn change_history(
     let limit = i64::from(req.limit.min(MAX_CHANGE_HISTORY_LIMIT));
 
     // Uses the shared edge guard over ce.edge_source_memory_id /
-    // ce.edge_target_memory_id; client `req.principal` is not an access vector.
+    // ce.edge_target_memory_id; client `req.owner` is not an access vector.
     let edge_visibility = edge_event_visibility_predicate(1, 2, 5, 6);
     let sql = format!(
         r"SELECT ce.seq FROM proxima_core.change_event ce

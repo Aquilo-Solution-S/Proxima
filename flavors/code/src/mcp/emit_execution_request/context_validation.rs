@@ -70,7 +70,7 @@ pub(super) async fn validate_active_goal_context(
     planner_root: MemoryId,
 ) -> Result<(), ToolError> {
     let engine = engine(ctx)?;
-    let mut req = QueryRequest::for_principal(ctx.owner());
+    let mut req = QueryRequest::for_owner(ctx.owner());
     req.entity_kind = Some(EntityKind::Goal);
     req.goal_ids = vec![GoalId::new(goal_id)];
     req.limit = 1;
@@ -114,7 +114,7 @@ async fn goal_lineage_assigned_to(
             .read_edges(
                 ctx.authz(),
                 &EdgeReadRequest {
-                    principal: ctx.owner(),
+                    owner: ctx.owner(),
                     edge_ids: Vec::new(),
                     filter: EdgeFilter {
                         relation: Some(CORE_INSPIRES_RELATION.to_string()),
@@ -129,7 +129,7 @@ async fn goal_lineage_assigned_to(
             return Ok(true);
         }
 
-        let mut req = QueryRequest::for_principal(ctx.owner());
+        let mut req = QueryRequest::for_owner(ctx.owner());
         req.entity_kind = Some(EntityKind::Goal);
         req.goal_ids = vec![goal_id];
         req.limit = 1;

@@ -16,7 +16,7 @@ use crate::{EntityKind, GoalPayload, MemoryId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalCreatePayloadWriteRequest {
-    pub principal: crate::OwnerRef,
+    pub owner: crate::OwnerRef,
     pub topology: GoalTopologyWrite,
     pub wake: Option<GoalWakeConfigWrite>,
     pub payload: GoalPayloadWrite,
@@ -27,7 +27,7 @@ pub struct GoalCreatePayloadWriteRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalTransitionRequest {
-    pub principal: crate::OwnerRef,
+    pub owner: crate::OwnerRef,
     pub prior_goal_id: crate::GoalId,
     pub next_state: GoalState,
     pub authorship: GoalAuthorship,
@@ -37,7 +37,7 @@ pub struct GoalTransitionRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalMarkAchievedRequest {
-    pub principal: crate::OwnerRef,
+    pub owner: crate::OwnerRef,
     pub prior_goal_id: crate::GoalId,
     pub authorship: GoalAuthorship,
     pub request_id: IdempotencyKey,
@@ -47,7 +47,7 @@ pub struct GoalMarkAchievedRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalModifyRequest {
-    pub principal: crate::OwnerRef,
+    pub owner: crate::OwnerRef,
     pub prior_goal_id: crate::GoalId,
     pub replacement: GoalPayloadWrite,
     pub wake: Option<Option<GoalWakeConfigWrite>>,
@@ -59,7 +59,7 @@ pub struct GoalModifyRequest {
 
 #[derive(Debug)]
 pub struct GoalDecomposeRequest {
-    pub principal: crate::OwnerRef,
+    pub owner: crate::OwnerRef,
     pub parent_goal_id: crate::GoalId,
     pub authorship: GoalAuthorship,
     pub topology: GoalTopologyWrite,
@@ -91,7 +91,7 @@ impl Engine {
         P: GoalPayload,
     {
         let permit = self
-            .authorize_write(authz, &request.principal, Relation::Editor)
+            .authorize_write(authz, &request.owner, Relation::Editor)
             .await?;
         self.create_goal_authorized(authz, &permit, request).await
     }
@@ -111,7 +111,7 @@ impl Engine {
         req: &GoalCreatePayloadWriteRequest,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
         let permit = self
-            .authorize_write(authz, &req.principal, Relation::Editor)
+            .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
         let payload = self.normalize_payload_write(req.payload.clone())?;
         self.validate_goal_topology_authorized(authz, permit.owner(), &req.topology)
@@ -154,7 +154,7 @@ impl Engine {
         req: &GoalTransitionRequest,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
         let permit = self
-            .authorize_write(authz, &req.principal, Relation::Editor)
+            .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
         let author_self_perspective_id = self
             .author_self_perspective_authorized(authz, req.author_self_perspective_id)
@@ -190,7 +190,7 @@ impl Engine {
         req: &GoalMarkAchievedRequest,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
         let permit = self
-            .authorize_write(authz, &req.principal, Relation::Editor)
+            .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
         let author_self_perspective_id = self
             .author_self_perspective_authorized(authz, req.author_self_perspective_id)
@@ -230,7 +230,7 @@ impl Engine {
         req: &GoalModifyRequest,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
         let permit = self
-            .authorize_write(authz, &req.principal, Relation::Editor)
+            .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
         let author_self_perspective_id = self
             .author_self_perspective_authorized(authz, req.author_self_perspective_id)
@@ -276,7 +276,7 @@ impl Engine {
         req: &GoalDecomposeRequest,
     ) -> Result<DecomposeGoalOutcome, ProtocolError> {
         let permit = self
-            .authorize_write(authz, &req.principal, Relation::Editor)
+            .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
         self.validate_goal_topology_authorized(authz, permit.owner(), &req.topology)
             .await?;
@@ -315,7 +315,7 @@ impl Engine {
         P: GoalPayload,
     {
         let GoalCreateRequest {
-            principal: _,
+            owner: _,
             topology,
             wake,
             title,
@@ -812,7 +812,7 @@ mod tests {
             EntityKind::Perspective,
         ));
         let req = GoalCreatePayloadWriteRequest {
-            principal: owner,
+            owner,
             topology: topology(target),
             wake: None,
             payload: payload_write(),
@@ -844,7 +844,7 @@ mod tests {
             EntityKind::Perspective,
         ));
         let req = GoalDecomposeRequest {
-            principal: owner,
+            owner,
             parent_goal_id: goal_id(),
             authorship: tool_authorship(),
             topology: topology(target),
@@ -893,7 +893,7 @@ mod tests {
     async fn create_goal_from_payload_write_denies_denied_context() {
         let owner = owner();
         let req = GoalCreatePayloadWriteRequest {
-            principal: owner,
+            owner,
             topology: topology(memory_id()),
             wake: None,
             payload: payload_write(),
@@ -912,7 +912,7 @@ mod tests {
     async fn transition_goal_denies_denied_context() {
         let owner = owner();
         let req = GoalTransitionRequest {
-            principal: owner,
+            owner,
             prior_goal_id: goal_id(),
             next_state: GoalState::Paused,
             authorship: GoalAuthorship::User,
@@ -930,7 +930,7 @@ mod tests {
     async fn modify_goal_denies_denied_context() {
         let owner = owner();
         let req = GoalModifyRequest {
-            principal: owner,
+            owner,
             prior_goal_id: goal_id(),
             replacement: payload_write(),
             wake: None,
@@ -950,7 +950,7 @@ mod tests {
     async fn mark_goal_achieved_denies_denied_context() {
         let owner = owner();
         let req = GoalMarkAchievedRequest {
-            principal: owner,
+            owner,
             prior_goal_id: goal_id(),
             authorship: tool_authorship(),
             request_id: request_id("achieved"),
@@ -968,7 +968,7 @@ mod tests {
     async fn decompose_goal_denies_denied_context() {
         let owner = owner();
         let req = GoalDecomposeRequest {
-            principal: owner,
+            owner,
             parent_goal_id: goal_id(),
             authorship: tool_authorship(),
             topology: topology(memory_id()),

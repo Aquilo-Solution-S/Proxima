@@ -300,7 +300,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
         .walk_memory_lineage(
             std::slice::from_ref(&owner),
             &proxima_core::verbs::query::MemoryLineageRequest {
-                principal: owner,
+                owner,
                 start_memory_id: new_memory_id,
                 direction: proxima_core::verbs::query::MemoryLineageDirection::Ancestors,
                 depth: 2,

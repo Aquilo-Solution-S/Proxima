@@ -33,7 +33,7 @@ pub struct RememberArgs {
     pub idempotency_key: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional typed inline citation linking this Fact to an external artifact; the object/mapping schemas must be registered (`CitedObject`/`CitationMapping` kinds — see `core_list_schemas`)."
+        description = "Optional typed inline citation linking this Fact to an external artifact; the object/mapping schemas must be registered (`CitedObject`/`CitationMapping` kinds — discover them via the `proxima://schemas{?kind}` resource)."
     )]
     pub citation: Option<RememberCitation>,
     #[serde(default)]
@@ -44,7 +44,7 @@ pub struct RememberArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RememberCitation {
     #[schemars(
-        description = "Schema id of the cited external object (a registered `CitedObject` schema — see `core_list_schemas`)."
+        description = "Schema id of the cited external object (a registered `CitedObject` schema — discover via `proxima://schemas{?kind}`)."
     )]
     pub object_schema_id: String,
     #[schemars(description = "Version of the cited-object schema.")]
@@ -52,7 +52,7 @@ pub struct RememberCitation {
     #[schemars(description = "The cited object payload as JSON, conforming to its schema.")]
     pub object_payload: serde_json::Value,
     #[schemars(
-        description = "Schema id of the citation mapping (a registered `CitationMapping` schema — see `core_list_schemas`)."
+        description = "Schema id of the citation mapping (a registered `CitationMapping` schema — discover via `proxima://schemas{?kind}`)."
     )]
     pub mapping_schema_id: String,
     #[schemars(description = "Version of the citation-mapping schema.")]

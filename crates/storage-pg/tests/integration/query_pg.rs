@@ -291,7 +291,7 @@ async fn query_returns_stored_schema_version() {
         let resp = engine
             .query(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                &QueryRequest::for_principal(owner),
+                &QueryRequest::for_owner(owner),
             )
             .await?;
 
@@ -351,7 +351,7 @@ async fn query_returns_fact_rows() {
             .await?;
 
         // Query for all memories for this owner.
-        let req = QueryRequest::for_principal(owner);
+        let req = QueryRequest::for_owner(owner);
         let resp = engine
             .query(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
@@ -420,7 +420,7 @@ async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exc
         let e2 = insert_test_edge(&pg, &owner, first.into_inner(), second.into_inner(), 2).await?;
         let e3 = insert_test_edge(&pg, &owner, first.into_inner(), second.into_inner(), 3).await?;
 
-        let mut req = QueryRequest::for_principal(owner);
+        let mut req = QueryRequest::for_owner(owner);
         req.limit = 2;
         let resp = engine
             .query(
@@ -505,7 +505,7 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
         let hidden_edge =
             insert_test_edge(&pg, &owner, outside.into_inner(), inside_b.into_inner(), 2).await?;
 
-        let mut req = QueryRequest::for_principal(owner);
+        let mut req = QueryRequest::for_owner(owner);
         req.limit = 2;
         let resp = engine
             .query(
@@ -568,7 +568,7 @@ async fn query_edge_id_hydration_returns_requested_edge_without_visible_nodes() 
             .memory_id;
         let edge_id = insert_test_edge(&pg, &owner, a.into_inner(), b.into_inner(), 1).await?;
 
-        let mut req = QueryRequest::for_principal(owner);
+        let mut req = QueryRequest::for_owner(owner);
         req.limit = 1;
         req.edge_ids = vec![edge_id];
         let resp = engine
@@ -629,7 +629,7 @@ async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
         let total = proxima_storage_pg::query::MAX_SNAPSHOT_EDGES + 1;
         insert_n_test_edges_bulk(&pg, &owner, a.into_inner(), b.into_inner(), total).await?;
 
-        let mut req = QueryRequest::for_principal(owner);
+        let mut req = QueryRequest::for_owner(owner);
         req.limit = 2;
         let resp = engine
             .query(
@@ -686,7 +686,7 @@ async fn query_owner_scope_is_principal() {
                     &stored_owner,
                     proxima_core::AuthPath::System,
                 ),
-                &QueryRequest::for_principal(requested_owner),
+                &QueryRequest::for_owner(requested_owner),
             )
             .await?;
 
@@ -730,7 +730,7 @@ async fn query_filter_abstraction_returns_empty() {
 
         // Query with entity_kind = Abstraction filter.
         let req = QueryRequest {
-            principal: owner,
+            owner,
             read_owners: vec![owner],
             entity_kind: Some(EntityKind::Abstraction),
             schema_id: None,
@@ -797,7 +797,7 @@ async fn query_heads_only_ignores_cross_owner_supersedes_successor() {
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage_ports(storage);
         let req = QueryRequest {
-            principal: victim,
+            owner: victim,
             read_owners: vec![victim],
             entity_kind: Some(EntityKind::Abstraction),
             schema_id: Some(SchemaId::new("test/head-abstraction-v1".into())),
@@ -881,7 +881,7 @@ async fn query_goals_filter_by_schema_id() {
 
         // Filtering by a Fact schema_id must return zero goals.
         let req_fact_filter = QueryRequest {
-            principal: owner,
+            owner,
             read_owners: vec![owner],
             entity_kind: Some(EntityKind::Goal),
             schema_id: Some(SchemaId::new("test/fact_blob".into())),
@@ -904,7 +904,7 @@ async fn query_goals_filter_by_schema_id() {
 
         // Filtering by the matching goal schema_id returns the goal.
         let req_goal_filter = QueryRequest {
-            principal: owner,
+            owner,
             read_owners: vec![owner],
             entity_kind: Some(EntityKind::Goal),
             schema_id: Some(SchemaId::new("test/goal_blob".into())),
@@ -923,7 +923,7 @@ async fn query_goals_filter_by_schema_id() {
 
         // Filtering by a non-existent schema_id returns zero goals.
         let req_unknown = QueryRequest {
-            principal: owner,
+            owner,
             read_owners: vec![owner],
             entity_kind: None,
             schema_id: Some(SchemaId::new("test/never_registered".into())),
@@ -980,7 +980,7 @@ async fn query_returns_stored_goal_schema_version() {
         let resp = engine
             .query(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                &QueryRequest::for_principal(owner),
+                &QueryRequest::for_owner(owner),
             )
             .await?;
         assert_eq!(resp.goals.len(), 1);
@@ -1026,7 +1026,7 @@ async fn query_filter_nonexistent_schema_returns_empty() {
 
         // Query with non-existent schema_id filter.
         let req = QueryRequest {
-            principal: owner,
+            owner,
             read_owners: vec![owner],
             entity_kind: None,
             schema_id: Some(SchemaId::new("test/non_existent".into())),

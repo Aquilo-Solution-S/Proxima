@@ -294,7 +294,7 @@ async fn load_call_edges(
                 .read_edges(
                     ctx.authz(),
                     &EdgeReadRequest {
-                        principal: ctx.owner(),
+                        owner: ctx.owner(),
                         edge_ids: Vec::new(),
                         filter,
                         limit: 200,

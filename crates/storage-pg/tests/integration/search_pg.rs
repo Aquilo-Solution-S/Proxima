@@ -30,7 +30,7 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
     let rows = pg
         .search_memories(
             &MemorySearchRequest {
-                principal: owner,
+                owner,
                 read_owners: vec![owner],
                 query: "semantic query".into(),
                 mode: SearchMode::Semantic,
@@ -97,7 +97,7 @@ async fn search_heads_only_ignores_cross_owner_supersedes_successor()
     let rows = pg
         .search_memories(
             &MemorySearchRequest {
-                principal: victim,
+                owner: victim,
                 read_owners: vec![victim],
                 query: "headscope".into(),
                 mode: SearchMode::Lexical,
@@ -896,7 +896,7 @@ async fn ingest_fact_memory(
 
 fn lexical_request(owner: &Owner, query: &str) -> MemorySearchRequest {
     MemorySearchRequest {
-        principal: *owner,
+        owner: *owner,
         read_owners: vec![*owner],
         query: query.into(),
         mode: SearchMode::Lexical,
@@ -916,7 +916,7 @@ fn lexical_request(owner: &Owner, query: &str) -> MemorySearchRequest {
 
 fn semantic_request(owner: &Owner, query_embedding: Vec<f32>) -> MemorySearchRequest {
     MemorySearchRequest {
-        principal: *owner,
+        owner: *owner,
         read_owners: vec![*owner],
         query: "semantic query".into(),
         mode: SearchMode::Semantic,
@@ -936,7 +936,7 @@ fn semantic_request(owner: &Owner, query_embedding: Vec<f32>) -> MemorySearchReq
 
 fn tagged_search_request(owner: &Owner, query: &str, mode: SearchMode) -> MemorySearchRequest {
     MemorySearchRequest {
-        principal: *owner,
+        owner: *owner,
         read_owners: vec![*owner],
         query: query.into(),
         mode,

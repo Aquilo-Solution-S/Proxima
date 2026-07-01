@@ -53,7 +53,7 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
         .walk_memory_lineage(
             &owner_read,
             &MemoryLineageRequest {
-                principal: owner,
+                owner,
                 start_memory_id: MemoryId::new(perspective),
                 direction: MemoryLineageDirection::Ancestors,
                 depth: 3,
@@ -80,7 +80,7 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
         .walk_memory_lineage(
             &owner_read,
             &MemoryLineageRequest {
-                principal: owner,
+                owner,
                 start_memory_id: MemoryId::new(old),
                 direction: MemoryLineageDirection::Descendants,
                 depth: 3,

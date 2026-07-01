@@ -153,7 +153,7 @@ pub(super) struct MemoryRowDb {
 /// Cursor high-water over the requester's READ set — never a client-supplied
 /// principal. Computed across `read_owners` so it spans exactly the change
 /// events the requester may see (the same set `list_change_events_after`
-/// filters by); using `req.principal` here would leak whether/when a foreign
+/// filters by); using `req.owner` here would leak whether/when a foreign
 /// owner has events.
 pub(super) async fn read_seq_high_water(
     pool: &PgPool,

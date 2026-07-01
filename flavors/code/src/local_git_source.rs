@@ -41,10 +41,7 @@ mod git;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EdgeTargetProjection};
-use proxima_core::{
-    AuthzContext, Cursor, Engine, EntityRef, MemoryId, Owner, SourceBatchId, ToolError,
-};
+use proxima_core::{AuthzContext, Cursor, Engine, MemoryId, Owner, SourceBatchId, ToolError};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -190,92 +187,49 @@ impl<'a> CodeIngestContext<'a> {
         repo_id: Uuid,
         file_path: &str,
     ) -> Result<Vec<u32>, IngestError> {
-        let Some(file_head) = self
-            .file_revision_heads(owner, repo_id)
-            .await?
-            .into_iter()
-            .find(|head| head.file_path == file_path && head.state == FileState::Present)
-        else {
-            return Ok(Vec::new());
-        };
-        let candidate_ids: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT memory_id
-               FROM proxima_code.code_chunk_v1
-              WHERE repo_id = $1
-                AND file_path = $2
-                AND state = 'Present'
-              ORDER BY chunk_index ASC
+        let (owner_kind, owner_id) = owner.columns();
+        let indexes = sqlx::query_scalar::<_, i32>(
+            "SELECT DISTINCT s.chunk_index
+               FROM proxima_core.memories m
+               JOIN proxima_code.code_chunk_v1 s USING (memory_id)
+               JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                 ON eo.entity_id = m.memory_id
+              WHERE eo.owner_kind = $1
+                AND eo.owner_id = $2
+                AND s.repo_id = $3
+                AND s.file_path = $4
+                AND s.state = 'Present'
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM proxima_core.memories m2
+                      JOIN proxima_code.code_chunk_v1 s2 USING (memory_id)
+                      JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo2
+                        ON eo2.entity_id = m2.memory_id
+                     WHERE m2.schema_id = m.schema_id
+                       AND eo2.owner_kind = eo.owner_kind
+                       AND eo2.owner_id = eo.owner_id
+                       AND s2.repo_id = s.repo_id
+                       AND s2.file_path = s.file_path
+                       AND s2.chunk_index = s.chunk_index
+                       AND m2.created_at > m.created_at
+                )
+              ORDER BY s.chunk_index ASC
               LIMIT 100000",
         )
+        .bind(owner_kind)
+        .bind(owner_id)
         .bind(repo_id)
         .bind(file_path)
         .fetch_all(self.pool())
         .await?;
-        let mut payloads = Vec::new();
-        for chunk in candidate_ids.chunks(2_000) {
-            payloads.extend(
-                self.store
-                    .authorized_abstraction_payloads::<CodeChunkV1>(
-                        self.engine,
-                        self.authz,
-                        owner,
-                        chunk,
-                        chunk.len(),
-                    )
-                    .await
-                    .map_err(|err| read_error(&err))?,
-            );
-        }
-
-        let mut out = Vec::new();
-        for (memory_id, payload) in payloads {
-            if payload.repo_id == repo_id
-                && payload.file_path == file_path
-                && payload.state == FileState::Present
-                && self
-                    .has_derived_from_edge(owner, memory_id, file_head.memory_id)
-                    .await?
-            {
-                out.push(payload.chunk_index);
-            }
-        }
-        out.sort_unstable();
-        out.dedup();
-        Ok(out)
-    }
-
-    async fn has_derived_from_edge(
-        &self,
-        owner: Owner,
-        source: MemoryId,
-        target: MemoryId,
-    ) -> Result<bool, IngestError> {
-        let response = self
-            .engine
-            .read_edges(
-                self.authz,
-                &EdgeReadRequest {
-                    principal: owner,
-                    edge_ids: Vec::new(),
-                    filter: EdgeFilter {
-                        relation: Some(
-                            proxima_core::relation::CORE_DERIVED_FROM_RELATION.to_string(),
-                        ),
-                        source: Some(EntityRef::Memory(source)),
-                        target: Some(EntityRef::Memory(target)),
-                    },
-                    limit: 1,
-                },
-            )
-            .await?;
-        Ok(response.edges.into_iter().any(|edge| {
-            matches!(
-                edge.target,
-                EdgeTargetProjection::Visible {
-                    target: EntityRef::Memory(id)
-                } if id == target
-            )
-        }))
+        indexes
+            .into_iter()
+            .map(|idx| {
+                u32::try_from(idx).map_err(|err| {
+                    IngestError::Storage(format!("invalid code chunk index {idx}: {err}"))
+                })
+            })
+            .collect()
     }
 }
 
@@ -538,11 +492,14 @@ impl LocalGitSource {
         }
         let commit_memory_id = outcome.memory_id;
 
-        // Phase 2 — materialize every file-revision Fact for this commit.
+        // Phase 2 — materialize every changed file-revision Fact for this
+        // commit. Oversized blobs are intentionally represented as
+        // tombstones so prior chunk heads are closed instead of left stale.
         let mut pending_present = Vec::with_capacity(changed.len());
+        let mut pending_deleted = Vec::with_capacity(deleted.len());
         for path in &changed {
-            pending_present.push(
-                self.ingest_changed_path(
+            match self
+                .ingest_changed_path(
                     pool,
                     commit_info,
                     batch_id,
@@ -552,12 +509,14 @@ impl LocalGitSource {
                     report,
                     blob_analysis_cache,
                 )
-                .await?,
-            );
+                .await?
+            {
+                ChangedPathIngest::Present(pending) => pending_present.push(pending),
+                ChangedPathIngest::Tombstone(pending) => pending_deleted.push(pending),
+            }
         }
 
         // Phase 3 — materialize deletion Facts for this commit's diff.
-        let mut pending_deleted = Vec::with_capacity(deleted.len());
         for path in &deleted {
             pending_deleted.push(
                 self.tombstone_deleted_path(
@@ -599,8 +558,21 @@ impl LocalGitSource {
         source_commit: Option<MemoryId>,
         report: &mut IndexReport,
         blob_analysis_cache: &mut HashMap<BlobAnalysisKey, BlobAnalysis>,
-    ) -> Result<PendingPresentBlob, IndexError> {
-        let blob = git::cat_blob(&self.repo_path, &commit_info.sha, path)?;
+    ) -> Result<ChangedPathIngest, IndexError> {
+        let Some(blob) = git::cat_blob(&self.repo_path, &commit_info.sha, path)? else {
+            return self
+                .tombstone_deleted_path(
+                    pool,
+                    &commit_info.sha,
+                    batch_id,
+                    now,
+                    path,
+                    source_commit,
+                    report,
+                )
+                .await
+                .map(ChangedPathIngest::Tombstone);
+        };
         self.ingest_present_blob(
             pool,
             &commit_info.sha,
@@ -613,6 +585,7 @@ impl LocalGitSource {
             blob_analysis_cache,
         )
         .await
+        .map(ChangedPathIngest::Present)
     }
 
     /// Emit one Present file revision Fact from an already-loaded blob.
@@ -978,6 +951,12 @@ struct BlobAnalysis {
     chunks: Vec<Chunk>,
     definitions: Vec<ExtractedDefinition>,
     calls: Vec<ExtractedCall>,
+}
+
+#[derive(Debug, Clone)]
+enum ChangedPathIngest {
+    Present(PendingPresentBlob),
+    Tombstone(PendingDeletedPath),
 }
 
 #[derive(Debug, Clone)]

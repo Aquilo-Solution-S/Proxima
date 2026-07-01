@@ -56,7 +56,7 @@ impl CodeFlavorStore {
             return Ok(Vec::new());
         }
 
-        let mut req = QueryRequest::for_principal(owner);
+        let mut req = QueryRequest::for_owner(owner);
         req.entity_kind = Some(entity_kind);
         req.schema_id = schema_id;
         req.supersession = SupersessionStatus::HeadsOnly;
@@ -184,7 +184,7 @@ impl CodeFlavorStore {
             return Ok(Vec::new());
         }
 
-        let mut req = QueryRequest::for_principal(owner);
+        let mut req = QueryRequest::for_owner(owner);
         req.entity_kind = Some(entity_kind);
         req.schema_id = Some(schema_id);
         req.supersession = supersession;

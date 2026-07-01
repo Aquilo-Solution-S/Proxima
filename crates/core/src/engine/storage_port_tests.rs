@@ -128,7 +128,7 @@ async fn query_helper_accepts_only_query_read_handles() {
     };
     let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
     let registry = crate::FlavorRegistry::new().freeze_or_panic_for_tests();
-    let req = crate::verbs::query::QueryRequest::for_principal(owner);
+    let req = crate::verbs::query::QueryRequest::for_owner(owner);
 
     let response = super::query::query_authorized(&ports, &registry, &[owner], &req)
         .await
@@ -149,7 +149,7 @@ async fn read_verb_helper_accepts_only_read_verb_handles() {
     };
     let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
     let req = super::read_verbs::ListChangeEventsReadRequest {
-        principal: owner,
+        owner,
         after: uuid::Uuid::nil(),
         limit: 1,
     };

@@ -41,7 +41,7 @@ fn owner_parts(owner: &Owner) -> (OwnerRefKind, Option<Uuid>) {
 
 fn fresh_draft(owner: &Owner, request_id: String) -> GoalDraft {
     GoalDraft {
-        principal: *owner,
+        owner: *owner,
         schema_id: SchemaId::new("core/simple-text-v1".into()),
         schema_version: SchemaVersion::new(1),
         title: "Test goal".to_string(),
