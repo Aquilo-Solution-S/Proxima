@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PR9/v0.0.4 architecture ratchets.
+"""v0.0.4 architecture ratchets.
 
 These checks intentionally scan source text rather than relying on compile-time
 reachability. A stale public vocabulary or bypass surface should be removed, not
@@ -283,11 +283,11 @@ def main() -> int:
     check_caller_supplied_audit(findings)
 
     if findings:
-        print("PR9 ratchet violations:", file=sys.stderr)
+        print("v0.0.4 architecture ratchet violations:", file=sys.stderr)
         for finding in findings:
             print(f"  {finding.render()}", file=sys.stderr)
         return 1
-    print("PR9 ratchets passed")
+    print("v0.0.4 architecture ratchets passed")
     return 0
 
 

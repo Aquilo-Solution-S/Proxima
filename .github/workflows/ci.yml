@@ -56,7 +56,7 @@ jobs:
         run: python3 scripts/check-doc-status.py
       - name: v0.0.4 architecture ratchets
         run: |
-          python3 scripts/check-pr9-ratchets.py
+          python3 scripts/check-v004-architecture-ratchets.py
           python3 scripts/check-sql-policy.py
       - name: set up Lean/Lake
         uses: leanprover/lean-action@v1

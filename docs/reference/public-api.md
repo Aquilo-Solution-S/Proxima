@@ -20,7 +20,7 @@ Unsupported:
 |---|---|
 | raw `sqlx::PgPool` | not stable Host API or Flavor SDK |
 | aggregate `Storage` / `StorageHandle` | removed; Engine owns storage ports |
-| flavor raw SQL against `proxima_core.*` | denied by `scripts/check-pr9-ratchets.py` |
+| flavor raw SQL against `proxima_core.*` | denied by `scripts/check-v004-architecture-ratchets.py` |
 | runtime plugin/tool/schema registration | denied; flavor composition is build-time |
 
 Machine checks:
@@ -28,7 +28,7 @@ Machine checks:
 | Check | Command |
 |---|---|
 | import tiers | `cargo test -p proxima --test public_api_tiers --locked` |
-| architecture ratchets | `python3 scripts/check-pr9-ratchets.py` |
+| architecture ratchets | `python3 scripts/check-v004-architecture-ratchets.py` |
 | SQL policy ratchet | `python3 scripts/check-sql-policy.py` |
 
 ## Compliance Erase Host API
