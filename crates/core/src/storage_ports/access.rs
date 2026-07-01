@@ -1,0 +1,40 @@
+use crate::storage::StorageError;
+use crate::{EntityId, GroupId, MembershipRow, OwnerRef, Relation, UserId};
+
+#[async_trait::async_trait]
+pub trait OwnerAccessReadPort: Send + Sync {
+    async fn resolve_membership(
+        &self,
+        member: &OwnerRef,
+    ) -> Result<Vec<MembershipRow>, StorageError>;
+
+    async fn visible_to_any(
+        &self,
+        entity: EntityId,
+        read_owners: &[OwnerRef],
+    ) -> Result<bool, StorageError>;
+
+    async fn home_owner(&self, entity: EntityId) -> Result<Option<OwnerRef>, StorageError>;
+}
+
+#[async_trait::async_trait]
+pub trait OwnerMembershipAdminPort: Send + Sync {
+    async fn add_group_member(
+        &self,
+        group_id: GroupId,
+        member_user_id: UserId,
+        relation: Relation,
+        granted_by: uuid::Uuid,
+    ) -> Result<(), StorageError>;
+
+    async fn remove_group_member(
+        &self,
+        group_id: GroupId,
+        member_user_id: UserId,
+    ) -> Result<(), StorageError>;
+
+    async fn list_group_members(
+        &self,
+        group_id: GroupId,
+    ) -> Result<Vec<(UserId, Relation)>, StorageError>;
+}
