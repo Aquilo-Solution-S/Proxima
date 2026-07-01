@@ -1,0 +1,623 @@
+use super::access::{OwnerAccessReadPort, OwnerMembershipAdminPort};
+use super::change::ChangeEventPort;
+use super::compliance::{
+    ComplianceAdminPort, ComplianceErasePort, FactRetentionPort, OwnerDropProofPort,
+};
+use super::embeddings::{
+    EmbeddingJobPort, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort,
+};
+use super::fact::{FactIngestPort, SourceBatchPort};
+use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
+use super::mcp::{McpCallReadPort, McpCallWritePort};
+use super::memory::{
+    CitationPort, EdgeReadPort, EdgeWriteProof, MemoryAuthoringPort, MemoryInspectPort,
+    MemoryReadPort,
+};
+use super::registry::RegistryProjectionPort;
+use crate::SourceBatchId;
+use crate::access::AccessError;
+use crate::compliance::ComplianceEraseTarget;
+use crate::read_models::{
+    AbstractionRow, ActiveGoalSummary, ChangeEventForWake, FactRow, GoalWakeCandidate,
+    GoalWakeCandidateRequest, MemorySnapshot, SidecarSpec,
+};
+use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, EmbeddingJobClaim, StorageError};
+use crate::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
+use crate::verbs::close_batch::CloseBatchOutcome;
+use crate::verbs::fact_ingest::{
+    AuthorizedFactWithCitation, AuthorizedFactWrite, FactIngestOutcome, FactWriteCommand,
+};
+use crate::verbs::goal_write::{
+    AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
+    DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
+};
+use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
+use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
+use crate::{
+    DerivedEdgeSpec, EdgeId, EmbeddableEntityRef, EntityId, EntityKind, FactEntityId, GroupId,
+    MembershipRow, Owner, OwnerRef, Relation, SchemaId, SchemaVersion, SidecarPayload, SourceId,
+    UserId,
+};
+
+#[derive(Debug)]
+pub(super) struct RejectingStorage;
+
+#[async_trait::async_trait]
+impl FactIngestPort for RejectingStorage {
+    async fn ingest_fact_atomic(
+        &self,
+        _owner: &Owner,
+        _draft: &FactWriteCommand,
+        _embedding_model_id: Option<&str>,
+    ) -> Result<FactIngestOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn ingest_fact_with_typed_sidecar(
+        &self,
+        _authorized: &AuthorizedFactWrite,
+        _sidecar_payload: &SidecarPayload,
+        _embedding_model_id: Option<&str>,
+    ) -> Result<FactIngestOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn ingest_fact_with_citation_and_typed_sidecar(
+        &self,
+        _authorized: &AuthorizedFactWithCitation,
+        _sidecar_payload: &SidecarPayload,
+        _embedding_model_id: Option<&str>,
+    ) -> Result<FactIngestOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl McpCallWritePort for RejectingStorage {
+    async fn persist_mcp_call_atomic(
+        &self,
+        _input: &McpCallLogInput,
+    ) -> Result<McpCallLogOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl McpCallReadPort for RejectingStorage {
+    async fn read_mcp_call_history(
+        &self,
+        _req: &McpCallHistoryRequest,
+    ) -> Result<McpCallHistoryResponse, StorageError> {
+        Ok(McpCallHistoryResponse { calls: Vec::new() })
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryAuthoringPort for RejectingStorage {
+    async fn author_derived(
+        &self,
+        _req: &AuthorDerivedRequest<'_>,
+    ) -> Result<AuthorDerivedOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn append_memory_edge(
+        &self,
+        _edge: &DerivedEdgeSpec<'_>,
+        _proof: EdgeWriteProof,
+    ) -> Result<EdgeId, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryReadPort for RejectingStorage {
+    async fn load_fact_text(
+        &self,
+        _owner: &Owner,
+        _memory_id: crate::MemoryId,
+    ) -> Result<Option<String>, StorageError> {
+        Ok(None)
+    }
+
+    async fn query_memories(
+        &self,
+        _req: &crate::verbs::query::QueryRequest,
+        _schemas: &[crate::verbs::schema::SchemaInfo],
+    ) -> Result<crate::verbs::query::QueryResponse, StorageError> {
+        Ok(crate::verbs::query::QueryResponse {
+            memories: Vec::new(),
+            goals: Vec::new(),
+            edges: Vec::new(),
+            next_cursor: None,
+            seq_high_water: None,
+        })
+    }
+
+    async fn search_memories(
+        &self,
+        _req: &crate::verbs::query::MemorySearchRequest,
+        _projections: &[crate::verbs::schema::MemorySearchProjection],
+    ) -> Result<Vec<crate::verbs::query::MemorySearchResult>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn walk_memory_lineage(
+        &self,
+        _read_owners: &[OwnerRef],
+        _req: &crate::verbs::query::MemoryLineageRequest,
+    ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError> {
+        Ok(crate::verbs::query::MemoryLineageResponse {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            truncated: false,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryInspectPort for RejectingStorage {
+    async fn load_memory_by_id(
+        &self,
+        _memory_id: crate::MemoryId,
+        _sidecars: &[SidecarSpec],
+    ) -> Result<Option<MemorySnapshot>, StorageError> {
+        Ok(None)
+    }
+}
+
+#[async_trait::async_trait]
+impl EmbeddingTextPort for RejectingStorage {
+    async fn load_embedding_text(
+        &self,
+        _owner: &Owner,
+        _entity_kind: EntityKind,
+        _memory_id: crate::MemoryId,
+    ) -> Result<Option<String>, StorageError> {
+        Ok(None)
+    }
+
+    async fn list_facts_missing_embedding(
+        &self,
+        _owner: &Owner,
+        _model_id: &str,
+        _limit: usize,
+    ) -> Result<Vec<crate::MemoryId>, StorageError> {
+        Ok(Vec::new())
+    }
+}
+
+#[async_trait::async_trait]
+impl EmbeddingWritePort for RejectingStorage {
+    async fn insert_embedding(
+        &self,
+        _owner: &Owner,
+        _entity: EmbeddableEntityRef,
+        _model_id: &str,
+        _dim: usize,
+        _vec: &[f32],
+    ) -> Result<EmbeddingWriteOutcome, StorageError> {
+        Ok(EmbeddingWriteOutcome {
+            embedding_version: 0,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl EmbeddingJobPort for RejectingStorage {
+    async fn claim_pending_embedding_jobs(
+        &self,
+        _model_id: &str,
+        _limit: i64,
+    ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn complete_embedding_job(&self, _claim: &EmbeddingJobClaim) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn fail_embedding_job(
+        &self,
+        _claim: &EmbeddingJobClaim,
+        _error: &str,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn enqueue_missing_embedding_jobs(
+        &self,
+        _owner: &Owner,
+        _model_id: &str,
+        _limit: i64,
+    ) -> Result<u64, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn count_pending_embedding_jobs(&self, _owner: &Owner) -> Result<u64, StorageError> {
+        Ok(0)
+    }
+}
+
+#[async_trait::async_trait]
+impl GoalWritePort for RejectingStorage {
+    async fn create_goal_atomic(
+        &self,
+        _req: &CreateGoalAtomicRequest<'_>,
+    ) -> Result<GoalWriteOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn transition_goal_atomic(
+        &self,
+        _req: &TransitionGoalAtomicRequest<'_>,
+    ) -> Result<GoalWriteOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn achieve_goal_atomic(
+        &self,
+        _req: &AchieveGoalAtomicRequest<'_>,
+    ) -> Result<GoalWriteOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn modify_goal_atomic(
+        &self,
+        _req: &ModifyGoalAtomicRequest<'_>,
+    ) -> Result<GoalWriteOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn decompose_goal_atomic(
+        &self,
+        _req: &DecomposeGoalAtomicRequest<'_>,
+    ) -> Result<DecomposeGoalOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl GoalReadPort for RejectingStorage {
+    async fn list_active_goals(
+        &self,
+        _read_owners: &[OwnerRef],
+        _self_perspective_memory_id: crate::MemoryId,
+        _limit: usize,
+    ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
+        Ok(Vec::new())
+    }
+}
+
+#[async_trait::async_trait]
+impl GoalWakeCandidatePort for RejectingStorage {
+    async fn list_goal_wake_candidates(
+        &self,
+        _req: &GoalWakeCandidateRequest<'_>,
+    ) -> Result<Vec<GoalWakeCandidate>, StorageError> {
+        Ok(Vec::new())
+    }
+}
+
+#[async_trait::async_trait]
+impl ChangeEventPort for RejectingStorage {
+    async fn change_history(
+        &self,
+        _read_owners: &[OwnerRef],
+        _req: &ChangeHistoryRequest,
+    ) -> Result<ChangeHistoryResponse, StorageError> {
+        Ok(ChangeHistoryResponse {
+            events: Vec::new(),
+            seq_high_water: None,
+        })
+    }
+
+    async fn list_change_events_after(
+        &self,
+        _read_owners: &[OwnerRef],
+        _after: uuid::Uuid,
+        _limit: usize,
+    ) -> Result<Vec<ChangeEventForWake>, StorageError> {
+        Ok(Vec::new())
+    }
+}
+
+#[async_trait::async_trait]
+impl EdgeReadPort for RejectingStorage {
+    async fn read_edges(
+        &self,
+        _read_owners: &[OwnerRef],
+        _req: &crate::verbs::query::EdgeReadRequest,
+    ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError> {
+        Ok(crate::verbs::query::EdgeReadResponse { edges: Vec::new() })
+    }
+
+    async fn edge_exists(
+        &self,
+        _read_owners: &[OwnerRef],
+        _req: &crate::verbs::query::EdgeExistsRequest,
+    ) -> Result<crate::verbs::query::EdgeExistsResponse, StorageError> {
+        Ok(crate::verbs::query::EdgeExistsResponse { exists: false })
+    }
+}
+
+#[async_trait::async_trait]
+impl CitationPort for RejectingStorage {
+    async fn fact_entity_id_for(
+        &self,
+        _owner: &Owner,
+        _schema_id: &SchemaId,
+        _schema_version: SchemaVersion,
+        _natural_key: &[String],
+    ) -> Result<Option<FactEntityId>, StorageError> {
+        Ok(None)
+    }
+
+    async fn facts_citing_object(
+        &self,
+        _read_owners: &[OwnerRef],
+        _cited_object_id: uuid::Uuid,
+        _sidecars: &[SidecarSpec],
+    ) -> Result<Vec<MemorySnapshot>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn citation_of_fact(
+        &self,
+        _fact_memory_id: crate::MemoryId,
+    ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
+        Ok(None)
+    }
+
+    async fn citation_of_entity_head(
+        &self,
+        _read_owners: &[OwnerRef],
+        _fact_entity_id: FactEntityId,
+    ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
+        Ok(None)
+    }
+}
+
+#[async_trait::async_trait]
+impl OwnerAccessReadPort for RejectingStorage {
+    async fn resolve_membership(
+        &self,
+        _member: &OwnerRef,
+    ) -> Result<Vec<MembershipRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn visible_to_any(
+        &self,
+        _entity: EntityId,
+        _read_owners: &[OwnerRef],
+    ) -> Result<bool, StorageError> {
+        Ok(false)
+    }
+
+    async fn home_owner(&self, _entity: EntityId) -> Result<Option<OwnerRef>, StorageError> {
+        Ok(None)
+    }
+}
+
+#[async_trait::async_trait]
+impl OwnerMembershipAdminPort for RejectingStorage {
+    async fn add_group_member(
+        &self,
+        _group_id: GroupId,
+        _member_user_id: UserId,
+        _relation: Relation,
+        _granted_by: uuid::Uuid,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn remove_group_member(
+        &self,
+        _group_id: GroupId,
+        _member_user_id: UserId,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn list_group_members(
+        &self,
+        _group_id: GroupId,
+    ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+        Ok(Vec::new())
+    }
+}
+
+#[async_trait::async_trait]
+impl SourceBatchPort for RejectingStorage {
+    async fn close_batch(
+        &self,
+        _principal: &OwnerRef,
+        _source_batch_id: SourceBatchId,
+    ) -> Result<CloseBatchOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl FactRetentionPort for RejectingStorage {
+    async fn upsert_fact_retention(
+        &self,
+        _owner: &Owner,
+        _seconds: i64,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn get_fact_retention(&self, _owner: &Owner) -> Result<Option<i64>, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn clear_fact_retention(&self, _owner: &Owner) -> Result<bool, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl ComplianceErasePort for RejectingStorage {
+    async fn record_compliance_outcome(
+        &self,
+        _audit: &crate::compliance::ComplianceAuditContext,
+        _outcome: &crate::compliance::ComplianceEraseOutcome,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn erase_group_owner_if_abandoned(
+        &self,
+        _auth: &crate::compliance::EraseAuthorization,
+        _group_id: GroupId,
+        _fact_sidecar_tables: &[String],
+        _goal_sidecar_tables: &[String],
+        _edge_sidecar_tables: &[String],
+        _citation_mapping_sidecar_tables: &[String],
+        _cited_object_sidecar_tables: &[String],
+    ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn erase_personal_owner_if_drop_verified(
+        &self,
+        _auth: &crate::compliance::EraseAuthorization,
+        _user_id: UserId,
+        _fact_sidecar_tables: &[String],
+        _goal_sidecar_tables: &[String],
+        _edge_sidecar_tables: &[String],
+        _citation_mapping_sidecar_tables: &[String],
+        _cited_object_sidecar_tables: &[String],
+    ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn erase_group_source_scope_if_owner_abandoned(
+        &self,
+        _auth: &crate::compliance::EraseAuthorization,
+        _group_id: GroupId,
+        _source_id: &SourceId,
+        _fact_sidecar_tables: &[String],
+        _goal_sidecar_tables: &[String],
+        _edge_sidecar_tables: &[String],
+        _citation_mapping_sidecar_tables: &[String],
+        _cited_object_sidecar_tables: &[String],
+    ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn erase_personal_source_scope_if_drop_verified(
+        &self,
+        _auth: &crate::compliance::EraseAuthorization,
+        _user_id: UserId,
+        _source_id: &SourceId,
+        _fact_sidecar_tables: &[String],
+        _goal_sidecar_tables: &[String],
+        _edge_sidecar_tables: &[String],
+        _citation_mapping_sidecar_tables: &[String],
+        _cited_object_sidecar_tables: &[String],
+    ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl ComplianceAdminPort for RejectingStorage {
+    async fn may_perform_compliance_erase(
+        &self,
+        _authz: &crate::AuthzContext,
+        _target: &ComplianceEraseTarget,
+    ) -> Result<bool, AccessError> {
+        Err(AccessError::Resolution(
+            "RejectingStorage rejects all auth".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl OwnerDropProofPort for RejectingStorage {
+    async fn verify_personal_owner_dropped(
+        &self,
+        _user_id: UserId,
+        _drop_event_id: &str,
+    ) -> Result<bool, AccessError> {
+        Err(AccessError::Resolution(
+            "RejectingStorage rejects all auth".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl RegistryProjectionPort for RejectingStorage {
+    async fn load_memory_batch_facts(
+        &self,
+        _owner: &Owner,
+        _memory_id: crate::MemoryId,
+        _sidecars: &[SidecarSpec],
+    ) -> Result<Vec<FactRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn load_abstraction_heads(
+        &self,
+        _owner: &Owner,
+        _sidecars: &[SidecarSpec],
+        _limit: usize,
+    ) -> Result<Vec<AbstractionRow>, StorageError> {
+        Ok(Vec::new())
+    }
+}
