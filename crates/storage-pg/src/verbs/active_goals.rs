@@ -84,7 +84,7 @@ pub(crate) async fn list_active_goals(
           LIMIT $5"
     ;
 
-    let rows: Vec<ActiveGoalRow> = sqlx::query_as(sql)
+    let rows: Vec<ActiveGoalRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(&read_owner_kinds)
         .bind(&read_owner_ids)
         .bind(self_perspective_memory_id.into_inner())

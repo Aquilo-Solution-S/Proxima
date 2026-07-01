@@ -26,41 +26,40 @@ VALID_PROOFS = (
 # the same proof vocabulary accepted in source comments; path+line+kind keeps
 # the allowlist narrow so adjacent new dynamic SQL still fails.
 ALLOWLISTED_SITE_LINES = {
-    ("crates/pg-testkit/src/lib.rs", 199, "format-sql"): "SQL-POLICY: PgIdent",
     ("crates/storage-pg/src/sidecars/macros.rs", 401, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
     ("crates/storage-pg/src/verbs/active_goals.rs", 87, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/change_history.rs", 48, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/change_history.rs", 74, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/compliance_erase.rs", 1037, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
-    ("crates/storage-pg/src/verbs/compliance_erase.rs", 1165, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
+    ("crates/storage-pg/src/verbs/compliance_erase.rs", 1092, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
+    ("crates/storage-pg/src/verbs/compliance_erase.rs", 1221, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
     ("crates/storage-pg/src/verbs/consolidate/events.rs", 36, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/consolidate/events.rs", 87, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/consolidate/memories.rs", 66, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/consolidate/memories.rs", 135, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
+    ("crates/storage-pg/src/verbs/consolidate/memories.rs", 136, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/fact_ingest.rs", 1129, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
     ("crates/storage-pg/src/verbs/goal_write.rs", 1788, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/goals.rs", 91, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/goals.rs", 103, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/goals.rs", 108, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/goals.rs", 114, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
+    ("crates/storage-pg/src/verbs/query/goals.rs", 93, "sql-push-str"): "SQL-POLICY: fixed-fragment",
+    ("crates/storage-pg/src/verbs/query/goals.rs", 106, "sql-push-str"): "SQL-POLICY: fixed-fragment",
+    ("crates/storage-pg/src/verbs/query/goals.rs", 113, "sql-push-str"): "SQL-POLICY: fixed-fragment",
+    ("crates/storage-pg/src/verbs/query/goals.rs", 121, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/query/lineage.rs", 153, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/query/lineage.rs", 175, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/query/lineage.rs", 209, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/query/memories.rs", 118, "sql-push-str"): "SQL-POLICY: PgIdent",
-    ("crates/storage-pg/src/verbs/query/memories.rs", 145, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
-    ("crates/storage-pg/src/verbs/query/memories.rs", 334, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/memories.rs", 374, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/memories.rs", 379, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/memories.rs", 465, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/memories.rs", 482, "sql-push-str"): "SQL-POLICY: fixed-fragment",
+    ("crates/storage-pg/src/verbs/query/memories.rs", 148, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
+    ("crates/storage-pg/src/verbs/query/memories.rs", 338, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
+    ("crates/storage-pg/src/verbs/query/memories.rs", 380, "sql-push-str"): "SQL-POLICY: fixed-fragment",
+    ("crates/storage-pg/src/verbs/query/memories.rs", 386, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
+    ("crates/storage-pg/src/verbs/query/memories.rs", 473, "sql-push-str"): "SQL-POLICY: fixed-fragment",
+    ("crates/storage-pg/src/verbs/query/memories.rs", 491, "sql-push-str"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/query/rows.rs", 177, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/search.rs", 207, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
-    ("crates/storage-pg/src/verbs/query/search.rs", 295, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
-    ("crates/storage-pg/src/verbs/query/search.rs", 342, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/search.rs", 414, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/search.rs", 426, "sql-push-str"): "SQL-POLICY: PgIdent",
-    ("crates/storage-pg/src/verbs/query/search.rs", 507, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/search.rs", 523, "sql-push-str"): "SQL-POLICY: fixed-fragment",
+    ("crates/storage-pg/src/verbs/query/search.rs", 208, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
+    ("crates/storage-pg/src/verbs/query/search.rs", 299, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
+    ("crates/storage-pg/src/verbs/query/search.rs", 348, "sql-push-str"): "SQL-POLICY: fixed-fragment",
+    ("crates/storage-pg/src/verbs/query/search.rs", 420, "sql-push-str"): "SQL-POLICY: fixed-fragment",
+    ("crates/storage-pg/src/verbs/query/search.rs", 432, "sql-push-str"): "SQL-POLICY: PgIdent",
+    ("crates/storage-pg/src/verbs/query/search.rs", 513, "sql-push-str"): "SQL-POLICY: fixed-fragment",
+    ("crates/storage-pg/src/verbs/query/search.rs", 529, "sql-push-str"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/tests/integration/fact_entity_edges_pg.rs", 427, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/tests/integration/fact_entity_ingest_pg.rs", 403, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("flavors/code/src/ingest/pg_sidecars.rs", 33, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
@@ -134,7 +133,10 @@ def safe_format_sql(path: Path, line: str, lines: list[str], index: int) -> bool
         return True
     if line.strip() == 'let sql = format!("SELECT count(*) FROM {table}");':
         return True
-    if line.strip() == 'Cow::Owned(format!("SELECT {version};")),':
+    if line.strip() in {
+        'Cow::Owned(format!("SELECT {version};")),',
+        'sqlx::AssertSqlSafe(format!("SELECT {version};")).into_sql_str(),',
+    }:
         return True
     if line.strip() == 'let sql = format!("SELECT memory_id FROM {table} WHERE goal_id = $1 LIMIT 1");':
         return True

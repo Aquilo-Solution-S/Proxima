@@ -368,7 +368,7 @@ async fn load_criterion_rows(
           ORDER BY criterion_index ASC"
     );
     let pool = code_store(ctx)?;
-    let rows: Vec<CriterionSqlRow> = sqlx::query_as(&sql)
+    let rows: Vec<CriterionSqlRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(parent_id.into_inner())
         .fetch_all(pool.pool())
         .await
@@ -540,7 +540,7 @@ async fn load_results(
           ORDER BY created_at ASC"
     );
     let pool = code_store(ctx)?;
-    let rows: Vec<ResultSqlRow> = sqlx::query_as(&sql)
+    let rows: Vec<ResultSqlRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(memory_id.into_inner())
         .fetch_all(pool.pool())
         .await

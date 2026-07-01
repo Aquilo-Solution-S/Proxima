@@ -1089,7 +1089,7 @@ async fn delete_fixed_by_selected(
         selected_column = selected_column.as_str()
     );
     // SQL-POLICY: PgIdent
-    let result = sqlx::query(&sql)
+    let result = sqlx::query(sqlx::AssertSqlSafe(sql))
         .execute(&mut **tx)
         .await
         .map_err(map_err)?;
@@ -1218,7 +1218,7 @@ async fn delete_embeddings(tx: &mut Tx<'_>, table: &str) -> Result<u64, StorageE
         table = table.as_str()
     );
     // SQL-POLICY: PgIdent
-    let result = sqlx::query(&sql)
+    let result = sqlx::query(sqlx::AssertSqlSafe(sql))
         .execute(&mut **tx)
         .await
         .map_err(map_err)?;

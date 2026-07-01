@@ -1785,7 +1785,7 @@ where
         "INSERT INTO {table} (memory_id, goal_id, transitioned_at)
          VALUES ($1, $2, $3)"
     );
-    sqlx::query(&sql)
+    sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(memory_id.into_inner())
         .bind(payload.goal_id())
         .bind(payload.transitioned_at())
@@ -1865,7 +1865,7 @@ async fn lifecycle_memory_for_goal(
         GoalLifecycleFact::Abandoned => "proxima_core.goal_abandoned_v1",
     };
     let sql = format!("SELECT memory_id FROM {table} WHERE goal_id = $1 LIMIT 1");
-    let row: Option<(uuid::Uuid,)> = sqlx::query_as(&sql)
+    let row: Option<(uuid::Uuid,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(goal_id.into_inner())
         .fetch_optional(&mut **tx)
         .await

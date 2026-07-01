@@ -204,7 +204,10 @@ async fn run_lexical(
     )
     .expect("write to String is infallible");
 
-    let mut q = bind_common(sqlx::query_as::<_, SearchRow>(&sql), req);
+    let mut q = bind_common(
+        sqlx::query_as::<_, SearchRow>(sqlx::AssertSqlSafe(sql)),
+        req,
+    );
     for projection in &projections {
         q = q.bind(projection.schema_id.as_str().to_string());
         q = q.bind(projection.schema_version.into_inner().cast_signed());
@@ -292,7 +295,10 @@ async fn run_semantic(
     )
     .expect("write to String is infallible");
 
-    let mut q = bind_common(sqlx::query_as::<_, SearchRow>(&sql), req);
+    let mut q = bind_common(
+        sqlx::query_as::<_, SearchRow>(sqlx::AssertSqlSafe(sql)),
+        req,
+    );
     for projection in &projections {
         q = q.bind(projection.schema_id.as_str().to_string());
         q = q.bind(projection.schema_version.into_inner().cast_signed());
