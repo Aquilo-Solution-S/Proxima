@@ -41,6 +41,7 @@ nav:
       - Environment Variables: reference/env-vars.md
       - MCP Tools: reference/mcp-tools.md
       - Compliance Status: reference/compliance-status.md
+      - v0.0.4 Runtime Matrix: reference/v004-kernel-alignment-runtime-matrix.md
   - Agent:
       - Quickstart: agent/quickstart.md
       - Proxima Memory Skill: skills/proxima-memory/SKILL.md

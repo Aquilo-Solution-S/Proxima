@@ -1,4 +1,5 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
+use crate::protocol::tool as protocol_tool;
 use crate::verbs::fact_ingest::FactWriteCommand;
 use crate::{Relation, SourceBatchId};
 use schemars::JsonSchema;
@@ -38,7 +39,7 @@ pub struct RecordUtteranceOutput {
 pub struct RecordUtteranceTool;
 
 impl McpTool for RecordUtteranceTool {
-    const NAME: &'static str = "core_record_utterance";
+    const NAME: &'static str = protocol_tool::CORE_RECORD_UTTERANCE;
     const DESCRIPTION: &'static str = "Append one raw conversation turn (utterance) as a Fact. Use `core_remember` for distilled observations rather than verbatim transcript.";
     type Args = RecordUtteranceArgs;
     type Output = RecordUtteranceOutput;

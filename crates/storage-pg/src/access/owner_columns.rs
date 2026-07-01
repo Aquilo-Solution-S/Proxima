@@ -3,7 +3,7 @@
 use proxima_core::{
     EntityId, GroupId, MembershipRow, OwnerRef, OwnerRefKind, Relation, StorageError, UserId,
 };
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::error::map_err;
 
@@ -55,6 +55,23 @@ pub(crate) async fn resolve_membership(
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
+pub(crate) async fn lock_group_membership_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    group_id: GroupId,
+) -> Result<(), StorageError> {
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('proxima-group-membership:' || $1::text, 0))",
+    )
+    .bind(group_id.into_inner())
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}
+
+/// # Errors
+///
+/// Returns `Internal` on sqlx failure.
 pub(crate) async fn add_group_member(
     pool: &PgPool,
     group_id: GroupId,
@@ -62,6 +79,8 @@ pub(crate) async fn add_group_member(
     relation: Relation,
     _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
+    let mut tx = pool.begin().await.map_err(map_err)?;
+    lock_group_membership_tx(&mut tx, group_id).await?;
     sqlx::query(
         "INSERT INTO proxima_core.group_memberships
             (group_id, member_user_id, relation)
@@ -71,9 +90,10 @@ pub(crate) async fn add_group_member(
     .bind(group_id.into_inner())
     .bind(member_user_id.into_inner())
     .bind(relation)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(map_err)?;
+    tx.commit().await.map_err(map_err)?;
     Ok(())
 }
 
@@ -85,6 +105,8 @@ pub(crate) async fn remove_group_member(
     group_id: GroupId,
     member_user_id: UserId,
 ) -> Result<(), StorageError> {
+    let mut tx = pool.begin().await.map_err(map_err)?;
+    lock_group_membership_tx(&mut tx, group_id).await?;
     sqlx::query(
         "DELETE FROM proxima_core.group_memberships
           WHERE group_id = $1
@@ -92,9 +114,10 @@ pub(crate) async fn remove_group_member(
     )
     .bind(group_id.into_inner())
     .bind(member_user_id.into_inner())
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(map_err)?;
+    tx.commit().await.map_err(map_err)?;
     Ok(())
 }
 

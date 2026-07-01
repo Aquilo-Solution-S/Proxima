@@ -4,7 +4,7 @@ Causa — Authorization (group-ownership realign; role-graded access)
 Access leaves the entity row entirely (spec §10). A Group maps each member to a
 `Role` (Causa.Owner): two capability ceilings over the access ladder F<A<P<G —
 how high one may READ and how high one may WRITE. Read and write are
-independent, so a source-ingest role (write Facts only) never widens into a
+independent, so an `Ingest` owner role (write Facts only) never widens into a
 general editor.
 
 Each entity has a SINGLE owning Group. There is no `is_home`/`reaches`/

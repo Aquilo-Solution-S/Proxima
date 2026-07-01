@@ -6,20 +6,17 @@ use crate::access::Relation;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
+use crate::protocol::{action as protocol_action, tool as protocol_tool};
 use crate::{GroupId, OwnerRef, UserId};
 
 use super::memory_spaces::{SpaceDefault, resolve_space_owner};
 use super::{DESTRUCTIVE_NON_IDEMPOTENT, READ_ONLY, WRITE_NON_IDEMPOTENT};
 
-const CORE_MEMBERSHIP_ADD_MEMBER_SCOPE_KEY: &str = "core_membership:add_member";
-const CORE_MEMBERSHIP_REMOVE_MEMBER_SCOPE_KEY: &str = "core_membership:remove_member";
-const CORE_MEMBERSHIP_LIST_MEMBERS_SCOPE_KEY: &str = "core_membership:list_members";
-
 pub const CORE_MEMBERSHIP_ACTIONS: &[CoreActionMeta] = &[
     CoreActionMeta {
         tool: CoreMembershipTool::NAME,
         action: "add_member",
-        scope_key: CORE_MEMBERSHIP_ADD_MEMBER_SCOPE_KEY,
+        scope_key: protocol_action::CORE_MEMBERSHIP_ADD_MEMBER,
         description: "Add one user membership relation to a Group space.",
         produces_schema_ids: &[],
         annotations: WRITE_NON_IDEMPOTENT,
@@ -27,7 +24,7 @@ pub const CORE_MEMBERSHIP_ACTIONS: &[CoreActionMeta] = &[
     CoreActionMeta {
         tool: CoreMembershipTool::NAME,
         action: "remove_member",
-        scope_key: CORE_MEMBERSHIP_REMOVE_MEMBER_SCOPE_KEY,
+        scope_key: protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER,
         description: "Remove all membership relations for one user in a Group space.",
         produces_schema_ids: &[],
         annotations: DESTRUCTIVE_NON_IDEMPOTENT,
@@ -35,7 +32,7 @@ pub const CORE_MEMBERSHIP_ACTIONS: &[CoreActionMeta] = &[
     CoreActionMeta {
         tool: CoreMembershipTool::NAME,
         action: "list_members",
-        scope_key: CORE_MEMBERSHIP_LIST_MEMBERS_SCOPE_KEY,
+        scope_key: protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS,
         description: "List users and relations for one Group space.",
         produces_schema_ids: &[],
         annotations: READ_ONLY,
@@ -97,7 +94,7 @@ pub struct MemberOutput {
 }
 
 impl McpTool for CoreMembershipTool {
-    const NAME: &'static str = "core_membership";
+    const NAME: &'static str = protocol_tool::CORE_MEMBERSHIP;
     const DESCRIPTION: &'static str =
         "Membership dispatcher — add_member/remove_member/list_members.";
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[

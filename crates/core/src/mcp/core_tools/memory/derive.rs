@@ -1,4 +1,5 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError, MemoryHandleClass};
+use crate::protocol::tool as protocol_tool;
 use crate::{
     AbstractionPayload, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
     CORE_DERIVED_FROM_RELATION, InputContractId, MemoryId, OperatorId, SchemaId, SchemaVersion,
@@ -25,14 +26,19 @@ const CORE_DERIVE_INPUT_CONTRACT_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes(
 fn core_derive_operator_id(kind: DerivedKind) -> OperatorId {
     OperatorId::new(uuid::Uuid::new_v5(
         &CORE_DERIVE_OPERATOR_NAMESPACE,
-        format!("core_derive:{}", kind.as_str()).as_bytes(),
+        format!("{}:{}", protocol_tool::CORE_DERIVE, kind.as_str()).as_bytes(),
     ))
 }
 
 fn core_derive_input_contract_id(kind: DerivedKind) -> InputContractId {
     InputContractId::new(uuid::Uuid::new_v5(
         &CORE_DERIVE_INPUT_CONTRACT_NAMESPACE,
-        format!("core_derive:{}:source-memories-v1", kind.as_str()).as_bytes(),
+        format!(
+            "{}:{}:source-memories-v1",
+            protocol_tool::CORE_DERIVE,
+            kind.as_str()
+        )
+        .as_bytes(),
     ))
 }
 
@@ -153,7 +159,7 @@ pub struct DeriveOutput {
 pub struct DeriveTool;
 
 impl McpTool for DeriveTool {
-    const NAME: &'static str = "core_derive";
+    const NAME: &'static str = protocol_tool::CORE_DERIVE;
     const DESCRIPTION: &'static str =
         "Author an Abstraction or Perspective derived from existing memory handles.";
     type Args = DeriveArgs;

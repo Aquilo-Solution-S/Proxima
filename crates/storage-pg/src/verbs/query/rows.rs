@@ -63,7 +63,9 @@ pub(super) fn edge_row_from_db(r: EdgeRowDb) -> Result<EdgeRow, StorageError> {
         r.source_goal_id,
         r.source_fact_entity_id,
     )?;
-    let target = if r.target_visible {
+    let target = if r.target_unavailable {
+        EdgeTargetProjection::Unavailable
+    } else if r.target_visible {
         EdgeTargetProjection::Visible {
             target: entity_ref_from_endpoint(
                 r.target_memory_id,
@@ -108,7 +110,8 @@ fn owner_from_parts(
 
 #[derive(Debug, sqlx::FromRow)]
 pub(super) struct GoalRowDb {
-    goal_id: uuid::Uuid,
+    pub(super) goal_id: uuid::Uuid,
+    pub(super) created_at: time::OffsetDateTime,
     schema_id: String,
     schema_version: i32,
     owner_kind: OwnerRefKind,
@@ -133,11 +136,13 @@ pub(super) struct EdgeRowDb {
     pub(super) target_goal_id: Option<uuid::Uuid>,
     pub(super) target_fact_entity_id: Option<uuid::Uuid>,
     pub(super) target_visible: bool,
+    pub(super) target_unavailable: bool,
 }
 
 #[derive(Debug, sqlx::FromRow)]
 pub(super) struct MemoryRowDb {
     pub(super) memory_id: uuid::Uuid,
+    pub(super) created_at: time::OffsetDateTime,
     owner_kind: OwnerRefKind,
     owner_id: Option<uuid::Uuid>,
     pub(super) schema_id: String,

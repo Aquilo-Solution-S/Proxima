@@ -1,3 +1,4 @@
+use proxima_core::protocol::{action as protocol_action, tool as protocol_tool};
 use proxima_core::verbs::goal_write::{
     GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalPayloadWrite, GoalWakeConfigWrite,
     GoalWakeToolId, GoalWakeTrigger, GoalWriteBuildError, IdempotencyKey,
@@ -99,24 +100,26 @@ fn product_goal_create_request_defaults_to_user_authorship_and_explicit_self_tar
 fn goal_wake_tool_id_requires_leaf_scope_for_grouped_core_tools() {
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
 
-    let err = GoalWakeToolId::parse("core_goal", &registry)
+    let err = GoalWakeToolId::parse(protocol_tool::CORE_GOAL, &registry)
         .expect_err("grouped action-dispatch tool requires an exact leaf scope key");
     assert!(err.message.contains("leaf action scope required"));
 
-    let leaf = GoalWakeToolId::parse("core_goal:set", &registry)
+    let leaf = GoalWakeToolId::parse(protocol_action::CORE_GOAL_SET, &registry)
         .expect("registered leaf action scope key is valid");
-    assert_eq!(leaf.as_str(), "core_goal:set");
+    assert_eq!(leaf.as_str(), protocol_action::CORE_GOAL_SET);
 
-    let flat = GoalWakeToolId::parse("core_search_memories", &registry)
+    let flat = GoalWakeToolId::parse(protocol_tool::CORE_SEARCH_MEMORIES, &registry)
         .expect("flat registered non-action tool is valid");
-    assert_eq!(flat.as_str(), "core_search_memories");
+    assert_eq!(flat.as_str(), protocol_tool::CORE_SEARCH_MEMORIES);
 }
 
 #[test]
 fn goal_wake_config_normalizes_tool_ids_and_rejects_duplicate_hard_memory() {
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-    let search = GoalWakeToolId::parse("core_search_memories", &registry).expect("valid tool");
-    let goal_set = GoalWakeToolId::parse("core_goal:set", &registry).expect("valid leaf action");
+    let search =
+        GoalWakeToolId::parse(protocol_tool::CORE_SEARCH_MEMORIES, &registry).expect("valid tool");
+    let goal_set = GoalWakeToolId::parse(protocol_action::CORE_GOAL_SET, &registry)
+        .expect("valid leaf action");
     let hard_memory = MemoryId::new(uuid::Uuid::now_v7());
 
     let config = GoalWakeConfigWrite::new(
@@ -135,7 +138,10 @@ fn goal_wake_config_normalizes_tool_ids_and_rejects_duplicate_hard_memory() {
             .iter()
             .map(GoalWakeToolId::as_str)
             .collect::<Vec<_>>(),
-        ["core_goal:set", "core_search_memories"]
+        [
+            protocol_action::CORE_GOAL_SET,
+            protocol_tool::CORE_SEARCH_MEMORIES
+        ]
     );
     assert_eq!(config.prompt(), "wake prompt");
 

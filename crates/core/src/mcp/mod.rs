@@ -21,6 +21,8 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 
 use crate::authz::AuthzContext;
+use crate::protocol::tool as protocol_tool;
+use crate::protocol::{resource as protocol_resource, resource_uri as protocol_resource_uri};
 use crate::{
     EdgeId, GoalId, MemoryId, Owner, ToolCtx, ToolError, ToolServices,
     verbs::schema::FlavorRegistryFrozen,
@@ -720,15 +722,16 @@ impl McpToolError {
                 | crate::error::ErrorCode::NotFound
                 | crate::error::ErrorCode::ToolNotRegistered
                 | crate::error::ErrorCode::TriggerConflict
-                | crate::error::ErrorCode::DuplicateTriggerInRequest => {
-                    McpToolErrorKind::InvalidRequest
-                }
+                | crate::error::ErrorCode::DuplicateTriggerInRequest
+                | crate::error::ErrorCode::Suppressed => McpToolErrorKind::InvalidRequest,
             },
             Self::Storage(storage) => match storage {
                 crate::StorageError::ConstraintViolation(_) | crate::StorageError::NotFound => {
                     McpToolErrorKind::InvalidInput
                 }
-                crate::StorageError::Conflict(_) => McpToolErrorKind::InvalidRequest,
+                crate::StorageError::Conflict(_) | crate::StorageError::Suppressed(_) => {
+                    McpToolErrorKind::InvalidRequest
+                }
                 crate::StorageError::Unavailable(_)
                 | crate::StorageError::Internal(_)
                 | crate::StorageError::V004ResetRequired { .. } => McpToolErrorKind::Internal,
@@ -1007,58 +1010,58 @@ pub struct CoreResourceMeta {
 
 pub const CORE_RESOURCES: &[CoreResourceMeta] = &[
     CoreResourceMeta {
-        uri_template: "proxima://schemas{?kind}",
+        uri_template: protocol_resource_uri::SCHEMAS,
         name: "proxima-schemas",
         title: "Proxima Schemas",
-        scope_key: "resource:schemas",
+        scope_key: protocol_resource::SCHEMAS,
         description: "Registered core and flavor schema catalog, optionally filtered by payload kind.",
         is_template: false,
     },
     CoreResourceMeta {
-        uri_template: "proxima://edge-types",
+        uri_template: protocol_resource_uri::EDGE_TYPES,
         name: "proxima-edge-types",
         title: "Proxima Edge Types",
-        scope_key: "resource:edge-types",
+        scope_key: protocol_resource::EDGE_TYPES,
         description: "Registered relation descriptors and relation classes.",
         is_template: false,
     },
     CoreResourceMeta {
-        uri_template: "proxima://tools",
+        uri_template: protocol_resource_uri::TOOLS,
         name: "proxima-tools",
         title: "Proxima Tools",
-        scope_key: "resource:tools",
+        scope_key: protocol_resource::TOOLS,
         description: "Registered substrate and flavor MCP tool catalog visible to the caller.",
         is_template: false,
     },
     CoreResourceMeta {
-        uri_template: "proxima://graph{?include_tombstoned}",
+        uri_template: protocol_resource_uri::GRAPH,
         name: "proxima-graph",
         title: "Proxima Graph",
-        scope_key: "resource:graph",
+        scope_key: protocol_resource::GRAPH,
         description: "Owner-scoped memory graph plus schema, edge-type, and tool catalogs.",
         is_template: false,
     },
     CoreResourceMeta {
-        uri_template: "proxima://memory/{id}{?expand_neighbors}",
+        uri_template: protocol_resource_uri::MEMORY,
         name: "proxima-memory",
         title: "Proxima Memory",
-        scope_key: "resource:memory",
+        scope_key: protocol_resource::MEMORY,
         description: "Owner-scoped memory by prefixed id, raw id, or handle.",
         is_template: true,
     },
     CoreResourceMeta {
-        uri_template: "proxima://memory/{id}/lineage{?direction,depth,limit}",
+        uri_template: protocol_resource_uri::MEMORY_LINEAGE,
         name: "proxima-memory-lineage",
         title: "Proxima Memory Lineage",
-        scope_key: "resource:memory-lineage",
+        scope_key: protocol_resource::MEMORY_LINEAGE,
         description: "Owner-scoped Provenance/Supersession lineage from a memory id or handle.",
         is_template: true,
     },
     CoreResourceMeta {
-        uri_template: "proxima://change-events{?since,limit}",
+        uri_template: protocol_resource_uri::CHANGE_EVENTS,
         name: "proxima-change-events",
         title: "Proxima Change Events",
-        scope_key: "resource:change-events",
+        scope_key: protocol_resource::CHANGE_EVENTS,
         description: "Owner-scoped change-event pull log.",
         is_template: true,
     },
@@ -1092,17 +1095,20 @@ pub fn core_tool_has_actions(tool: &str) -> bool {
 pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations> {
     let base = McpToolAnnotations::new().open_world(false);
     let annotations = match canonical_name {
-        "core_search_memories" | "core_memory_spaces" => base.read_only(true),
-
-        "core_derive" => base.read_only(false).destructive(false).idempotent(true),
-
-        "core_remember" | "core_record_utterance" | "core_goal" | "core_link" => {
-            base.read_only(false).destructive(false).idempotent(false)
+        protocol_tool::CORE_SEARCH_MEMORIES | protocol_tool::CORE_MEMORY_SPACES => {
+            base.read_only(true)
         }
 
-        "core_membership" => base.read_only(false).destructive(true).idempotent(false),
+        protocol_tool::CORE_DERIVE => base.read_only(false).destructive(false).idempotent(true),
 
-        "core_fact" => base.read_only(false).destructive(true).idempotent(true),
+        protocol_tool::CORE_REMEMBER
+        | protocol_tool::CORE_RECORD_UTTERANCE
+        | protocol_tool::CORE_GOAL
+        | protocol_tool::CORE_LINK => base.read_only(false).destructive(false).idempotent(false),
+
+        protocol_tool::CORE_MEMBERSHIP => base.read_only(false).destructive(true).idempotent(false),
+
+        protocol_tool::CORE_FACT => base.read_only(true).destructive(false).idempotent(true),
 
         _ => return None,
     };
@@ -1117,6 +1123,8 @@ mod tests {
     };
 
     use super::*;
+    use crate::protocol::tool as protocol_tool;
+    use crate::protocol::{action as protocol_action, resource as protocol_resource};
     use crate::{AuthPath, FlavorRegistry, OwnerRef, UserId};
 
     #[test]
@@ -1125,7 +1133,10 @@ mod tests {
             provider_safe_tool_name("core/emit_abstraction"),
             "core_emit_abstraction"
         );
-        assert_eq!(provider_safe_tool_name("core_remember"), "core_remember");
+        assert_eq!(
+            provider_safe_tool_name(protocol_tool::CORE_REMEMBER),
+            protocol_tool::CORE_REMEMBER
+        );
         assert_eq!(provider_safe_tool_name("a..b"), "a._b");
     }
 
@@ -1153,6 +1164,24 @@ mod tests {
                 .iter()
                 .all(|resource| resource.scope_key.starts_with("resource:"))
         );
+    }
+
+    #[test]
+    fn resource_constants_match_manifest_scope_keys() {
+        let expected = BTreeSet::from([
+            protocol_resource::SCHEMAS,
+            protocol_resource::EDGE_TYPES,
+            protocol_resource::TOOLS,
+            protocol_resource::GRAPH,
+            protocol_resource::MEMORY,
+            protocol_resource::MEMORY_LINEAGE,
+            protocol_resource::CHANGE_EVENTS,
+        ]);
+        let actual = all_core_resources()
+            .map(|resource| resource.scope_key)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -1191,11 +1220,15 @@ mod tests {
 
     #[test]
     fn core_actions_manifest_is_internally_consistent() {
-        let allowed_tools = BTreeSet::from(["core_goal", "core_fact", "core_membership"]);
+        let allowed_tools = BTreeSet::from([
+            protocol_tool::CORE_GOAL,
+            protocol_tool::CORE_FACT,
+            protocol_tool::CORE_MEMBERSHIP,
+        ]);
         let expected_counts = BTreeMap::from([
-            ("core_goal", 5_usize),
-            ("core_fact", 4),
-            ("core_membership", 3),
+            (protocol_tool::CORE_GOAL, 5_usize),
+            (protocol_tool::CORE_FACT, 3),
+            (protocol_tool::CORE_MEMBERSHIP, 3),
         ]);
         let mut seen_scope_keys = BTreeSet::new();
         let mut counts = BTreeMap::<&'static str, usize>::new();
@@ -1222,6 +1255,30 @@ mod tests {
         assert_eq!(counts, expected_counts);
     }
 
+    #[test]
+    fn core_action_constants_match_registered_catalog() {
+        let expected = BTreeSet::from([
+            protocol_action::CORE_FACT_CITATION_OF_FACT,
+            protocol_action::CORE_FACT_CITATION_OF_ENTITY_HEAD,
+            protocol_action::CORE_FACT_FACTS_CITING_OBJECT,
+            protocol_action::CORE_GOAL_SET,
+            protocol_action::CORE_GOAL_TRANSITION,
+            protocol_action::CORE_GOAL_MODIFY,
+            protocol_action::CORE_GOAL_MARK_ACHIEVED,
+            protocol_action::CORE_GOAL_DECOMPOSE,
+            protocol_action::CORE_MEMBERSHIP_ADD_MEMBER,
+            protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER,
+            protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS,
+        ]);
+        let actual = all_core_actions()
+            .map(|action| action.scope_key)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(actual, expected);
+        let retired = format!("{}:{}", protocol_tool::CORE_FACT, "tombstone");
+        assert!(!actual.contains(retired.as_str()));
+    }
+
     #[tokio::test]
     async fn dispatcher_rejects_cross_action_goal_fields_before_execution() {
         let ctx = prefixed_ctx();
@@ -1230,7 +1287,7 @@ mod tests {
             .registry
             .list_mcp_tools()
             .iter()
-            .find(|tool| tool.name == "core_goal")
+            .find(|tool| tool.name == protocol_tool::CORE_GOAL)
             .expect("core_goal registered");
 
         let err = (desc.call)(
@@ -1258,7 +1315,7 @@ mod tests {
             .registry
             .list_mcp_tools()
             .iter()
-            .find(|tool| tool.name == "core_fact")
+            .find(|tool| tool.name == protocol_tool::CORE_FACT)
             .expect("core_fact registered");
 
         let err = (desc.call)(

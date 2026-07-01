@@ -1,9 +1,9 @@
 # 02 — Memory
 
-Memory is the cognitive graph above Event Sources.
+Memory is the cognitive graph above source-ingested Facts.
 
 ```
-Reality ──EventSource──► Fact ──F→A──► Abstraction ──A→P──► Perspective
+Reality ──FactIngest──► Fact ──F→A──► Abstraction ──A→P──► Perspective
                                             └────A→Goal────► Goal
 ```
 
@@ -15,7 +15,7 @@ part the table names hide:
 
 | Term | What it is | Schema home | Produced by |
 |---|---|---|---|
-| **Fact** | An accepted observation. Never revised. Receipt metadata may link it to an Event Source, but receiptless Facts are valid. | `memories` (`kind` NULL, optional `receipt_id`) + optional `fact_receipts` | Fact write / receipt-backed EventSource ingest |
+| **Fact** | An accepted observation. Never revised. Receipt metadata may link it to a source identity, but receiptless Facts are valid. | `memories` (`kind` NULL, optional `receipt_id`) + optional `fact_receipts` | Fact write / receipt-backed FactIngest |
 | **Abstraction** | A re-derivable interpretation over Facts. | `memories` (`kind = 'Abstraction'`) | `F→A` operator |
 | **Perspective** | A re-derivable integration over Abstractions; the lens reads are taken through. Self is a query over Perspective rows and active Goal heads, not a row or authz carrier. | `memories` (`kind = 'Perspective'`) | `A→P` operator |
 | **Goal** | A desired end-state with a lifecycle (`state`). Goal↔Goal topology is ordinary Edge topology, not a Goal row field. | `goals` (its own table) | user / external / `A→Goal` operator |
@@ -95,7 +95,7 @@ Kind-specific content:
 | Abstraction | Typed `AbstractionPayload` sidecar + immutable `text` | none | operator-authored | allowed |
 | Perspective | Typed `PerspectivePayload` sidecar + immutable `text` | none | operator-authored | allowed |
 
-Facts are observations. Receipt-backed Facts come from Event Sources; receiptless
+Facts are observations. Receipt-backed Facts come from source identities; receiptless
 Facts are valid Fact writes without source-batch metadata. Fact identity is the
 UUIDv7 `memory_id`, not the content hash or optional `receipt_id`.
 `FactIngest` / `FactReceiptId` names are the current protocol vocabulary.

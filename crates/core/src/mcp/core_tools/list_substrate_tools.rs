@@ -127,6 +127,7 @@ fn action_visible(ctx: &McpToolCtx, tool: &str, action: &str) -> bool {
 mod tests {
     use super::*;
     use crate::mcp::{McpAuthorContext, McpToolExtensions, OutputMode};
+    use crate::protocol::{action as protocol_action, tool as protocol_tool};
     use crate::{AuthPath, AuthzContext, FlavorRegistry, OwnerRef, UserId};
     use std::sync::Arc;
 
@@ -171,14 +172,14 @@ mod tests {
         let core_goal = output
             .tools
             .iter()
-            .find(|tool| tool.tool_id == "core_goal")
+            .find(|tool| tool.tool_id == protocol_tool::CORE_GOAL)
             .expect("core_goal catalog item");
         let decompose = core_goal
             .actions
             .iter()
             .find(|action| action.action == "decompose")
             .expect("decompose action metadata");
-        assert_eq!(decompose.scope_key, "core_goal:decompose");
+        assert_eq!(decompose.scope_key, protocol_action::CORE_GOAL_DECOMPOSE);
         assert!(decompose.description.contains("child Goals"));
         assert_eq!(decompose.annotations.idempotent, Some(true));
         assert!(

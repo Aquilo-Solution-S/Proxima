@@ -329,7 +329,7 @@ let mapping = InlineCitationMappingDraft {
 
 let authorized = engine.authorize_fact_with_citation(
     authz,
-    Role::GraphWrite,
+    Relation::Ingest,
     draft,
     cited_object,
     mapping,

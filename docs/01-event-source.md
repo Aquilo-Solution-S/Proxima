@@ -1,10 +1,10 @@
-# 01 — Event Source
+# 01 — Fact Ingest Source Boundary
 
-The Event Source is the **membrane between Reality and the agent**. Reality is
-unknowable in itself; the agent only ever sees what an Event Source surfaces.
+A source is the **membrane between Reality and the agent**. Reality is
+unknowable in itself; the agent only ever sees what a source surfaces.
 This is the *only* path by which Reality enters the wheel.
 
-Receipt-backed Facts trace to an Event Source. Receiptless Fact writes are valid membrane admissions without source-batch receipt metadata; they remain Facts, but are not source-batch eligible.
+Receipt-backed Facts trace to a source identity. Receiptless Fact writes are valid membrane admissions without source-batch receipt metadata; they remain Facts, but are not source-batch eligible.
 
 ## Owner — scoping primitive
 
@@ -52,10 +52,9 @@ v1 constraints:
   whose membership auto-syncs with org membership. No organization owner
   variant.
 
-Per-memory ACL (`AccessGrant` table) is a v2+ extension layered above
-`Owner`; not in v1.
+No per-memory ACL or `AccessGrant` layer exists. Cross-owner access is represented by server-resolved group membership / `OwnerRoles` over concrete `OwnerRef`s.
 
-Owner remains the storage and graph isolation primitive. Owner-space grants are an authorization layer above Owner: the host resolves which `(subject, Owner, action)` grants exist, and Core enforces the resolved grants at verb/tool entry. Grants never add org semantics to Core. Edge rows are owned by their source endpoint; a registered descriptor may admit a foreign target only with its declared target gate (`None`, `Read`, or `Write`).
+Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Edge rows are owned by their source endpoint; a registered descriptor may admit a foreign target only with its declared target gate (`None`, `Read`, or `Write`).
 
 ### Owner resolution — the host's trust boundary
 
@@ -86,7 +85,7 @@ optional hardening.
 
 ## The contract
 
-An Event Source produces **typed, cited, deduplicable events** that the engine
+A source produces **typed, cited, deduplicable Fact observations** that the engine
 stores as Facts (memories of `kind = fact`). The typing comes from a
 **registered schema** in the schema registry (component 03) — the source
 declares which schema its events conform to, and the engine stores the typed
@@ -96,7 +95,7 @@ The source carries no interpretation; performs no abstraction; does not look
 across other sources.
 
 ```
-trait EventSource {
+trait FactSource {
     fn source_id(&self) -> SourceId;             // stable identifier
 
     // Pull mode: engine asks for events since cursor.
@@ -117,7 +116,7 @@ per-source `schema_version()` accessor — both would falsely encode "source
 not via a runtime accessor on the source.
 
 Each event the source produces becomes one Fact. The 1:1 mapping is mandatory
-*at the engine boundary*: no Event Source filters, deduplicates, or
+*at the engine boundary*: no source filters, deduplicates, or
 re-aggregates events into "richer" Facts. That work belongs to consolidation.
 
 A single Reality observation may produce **many events**, however. A PDF
@@ -212,7 +211,7 @@ replay during debugging — all produce the same receipt id, and the engine
 silently returns the prior Fact outcome. Receiptless Fact writes have no
 receipt id and do not replay.
 
-## What the Event Source must not do
+## What the source must not do
 
 These are violations of the contract, not stylistic preferences. The wheel
 fails if any of these leak into a source:
@@ -252,7 +251,7 @@ Different Realities, identical contract:
 | Jurisdiction | Court calendar | Hearing-scheduled events |
 
 The list is open-ended. Each new domain (or each new source within a domain)
-adds a new `EventSource` impl. Nothing in the engine changes.
+adds a new `FactSource` impl. Nothing in the engine changes.
 
 ## Push vs pull
 
@@ -337,10 +336,10 @@ on `delete_owner`) act only on non-trivial values.
 
 ## What this gives us
 
-A clean separation: anyone can write an Event Source for any Reality without
+A clean separation: anyone can write a source adapter for any Reality without
 touching the engine. The engine is fully domain-agnostic at the input
 boundary, and the cost of supporting a new Reality is exactly one
-`EventSource` implementation plus a `Citation` URI scheme.
+`FactSource` implementation plus a `Citation` URI scheme.
 
 ## Anchors
 

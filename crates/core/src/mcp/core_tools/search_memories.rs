@@ -7,6 +7,7 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::engine::SearchReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
+use crate::protocol::tool as protocol_tool;
 use crate::verbs::query::{
     EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
@@ -176,7 +177,7 @@ pub struct SearchMemoryOutput {
 }
 
 impl McpTool for SearchMemoriesTool {
-    const NAME: &'static str = "core_search_memories";
+    const NAME: &'static str = protocol_tool::CORE_SEARCH_MEMORIES;
     const DESCRIPTION: &'static str = "Search owner-scoped memories by lexical, semantic, or hybrid ranking. Defaults to current heads only; pass supersession=all for full history. Set include_body=true to hydrate body text in the same batched read.";
     type Args = SearchMemoriesArgs;
     type Output = SearchMemoriesOutput;
@@ -275,7 +276,7 @@ fn resolve_search_spaces(
         return Ok(vec![super::memory_spaces::resolve_space_owner(
             ctx,
             None,
-            super::memory_spaces::SpaceDefault::Identity,
+            super::memory_spaces::SpaceDefault::Current,
         )?]);
     }
     let mut seen = std::collections::HashSet::with_capacity(raw_spaces.len());

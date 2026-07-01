@@ -867,68 +867,6 @@ async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() 
 }
 
 #[tokio::test]
-async fn facade_core_fact_tombstone_is_idempotent() {
-    let db_name = unique_db_name("proxima_core_fact_tombstone_mcp");
-    create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
-
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = company_owner(Uuid::now_v7());
-        let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
-            .owner(owner)
-            .build()
-            .await?;
-        let tools = built.core_mcp_tools();
-        let authz = host_authz(&owner, ToolScope::All);
-
-        let remembered = call_test_model_tool(
-            &tools,
-            authz.clone(),
-            owner,
-            "core_remember",
-            serde_json::json!({
-                "title": "Tombstone surface",
-                "body": "Fact erased through core_fact tombstone.",
-                "tags": ["tombstone"],
-                "idempotency_key": "facade-core-fact-tombstone"
-            }),
-        )
-        .await?;
-        let memory = remembered["handle"].as_str().expect("remembered handle");
-
-        let first = call_test_model_tool(
-            &tools,
-            authz.clone(),
-            owner,
-            "core_fact",
-            serde_json::json!({ "action": "tombstone", "fact": memory, "confirm": true, "expect_handle": memory }),
-        )
-        .await?;
-        assert_eq!(first["fact_erased"], true);
-        assert_eq!(first["idempotent_replay"], false);
-
-        let second = call_test_model_tool(
-            &tools,
-            authz,
-            owner,
-            "core_fact",
-            serde_json::json!({ "action": "tombstone", "fact": memory, "confirm": true, "expect_handle": memory }),
-        )
-        .await?;
-        assert_eq!(second["fact_erased"], false);
-        assert_eq!(second["idempotent_replay"], true);
-
-        built.shutdown();
-        Ok(())
-    }
-    .await;
-
-    let _ = drop_db(&db_name).await;
-    result.expect("core_fact tombstone MCP facade integration test failed");
-}
-
-#[tokio::test]
 async fn facade_core_citation_readback_is_owner_scoped() {
     let db_name = unique_db_name("proxima_core_citation_mcp");
     create_db(&db_name).await.expect("PG required for tests");

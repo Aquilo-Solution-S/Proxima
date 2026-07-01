@@ -20,6 +20,7 @@ use proxima_core::mcp::McpTool;
 use proxima_core::mcp::core_tools::{
     CoreGoalTool, DeriveTool, LinkTool, MemorySpacesTool, RememberTool, SearchMemoriesTool,
 };
+use proxima_core::protocol::resource as protocol_resource;
 
 /// Canonical URI of the on-demand How-To resource.
 pub const HOW_TO_URI: &str = "proxima://how-to";
@@ -40,10 +41,6 @@ pub const HOW_TO_MIME: &str = "text/markdown";
 // registered tool names (the `memory` keep set in `apps/proxima-mcp` pins them too).
 const CODE_SEARCH_CHUNKS: &str = "proxima-code_search_chunks";
 const CODE_REGISTER_REPO: &str = "proxima-code_register_repo";
-const RESOURCE_MEMORY: &str = "resource:memory";
-const RESOURCE_MEMORY_LINEAGE: &str = "resource:memory-lineage";
-const RESOURCE_EDGE_TYPES: &str = "resource:edge-types";
-
 /// The advertised surface, distilled to the booleans the generators key off.
 /// Computed once from the resolved tool-id and resource scope-key sets so
 /// `build_instructions` and `how_to_markdown` agree on what is exposed. The
@@ -77,9 +74,9 @@ impl Surface {
             link: has_tool(LinkTool::NAME),
             search: has_tool(SearchMemoriesTool::NAME),
             memory_spaces: has_tool(MemorySpacesTool::NAME),
-            get_memory: has_resource(RESOURCE_MEMORY),
-            lineage: has_resource(RESOURCE_MEMORY_LINEAGE),
-            list_edge_types: has_resource(RESOURCE_EDGE_TYPES),
+            get_memory: has_resource(protocol_resource::MEMORY),
+            lineage: has_resource(protocol_resource::MEMORY_LINEAGE),
+            list_edge_types: has_resource(protocol_resource::EDGE_TYPES),
             goals: has_tool(CoreGoalTool::NAME),
             code: has_tool(CODE_SEARCH_CHUNKS) || has_tool(CODE_REGISTER_REPO),
         }
@@ -128,7 +125,7 @@ pub fn build_instructions(
 
     if s.remember || s.derive {
         if s.memory_spaces {
-            out.push_str("In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_search_memories`, `core_get_memory`, `core_derive`, and `core_link`. Omitted `space` preserves the current owner behavior for single-owner deployments. Cross-space derive/link may ground in readable handles outside the selected write space. ");
+            out.push_str("In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_link`; hydrate a memory by reading `proxima://memory/{id}`. Omitted `space` preserves the current owner behavior for single-owner deployments. Cross-space derive/link may ground in readable handles outside the selected write space. ");
         }
         if s.remember {
             out.push_str("`core_remember` appends a Fact (an observation). ");
@@ -224,7 +221,7 @@ pub fn how_to_markdown(
 
     push_law(&mut out, s);
     if s.memory_spaces {
-        out.push_str("## Memory spaces\n\nIn multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_search_memories`, `core_get_memory`, `core_derive`, and `core_link`. Omitted `space` preserves the current owner behavior for single-owner deployments. Space keys are selectors only; every write/read is re-authorized by the server. Cross-space derive/link may ground in readable handles outside the selected write space.\n\n");
+        out.push_str("## Memory spaces\n\nIn multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_link`; hydrate a memory by reading `proxima://memory/{id}`. Omitted `space` preserves the current owner behavior for single-owner deployments. Space keys are selectors only; every write/read is re-authorized by the server. Cross-space derive/link may ground in readable handles outside the selected write space.\n\n");
     }
     push_capture_table(&mut out, s);
     push_edges(&mut out, s);
@@ -428,9 +425,9 @@ mod tests {
 
     fn full_resource_set() -> BTreeSet<&'static str> {
         [
-            RESOURCE_MEMORY,
-            RESOURCE_MEMORY_LINEAGE,
-            RESOURCE_EDGE_TYPES,
+            protocol_resource::MEMORY,
+            protocol_resource::MEMORY_LINEAGE,
+            protocol_resource::EDGE_TYPES,
         ]
         .into_iter()
         .collect()
@@ -499,7 +496,7 @@ mod tests {
         ] {
             let s = build_instructions(&tools, &resources);
             for forbidden in [
-                "instantiate_personality",
+                "instantiate_personality", // PR9-RATCHET-ALLOW historical denied-tool regression fixture
                 "add_wake_entry",
                 "emit_execution_request",
                 "wake_execute",
@@ -524,7 +521,7 @@ mod tests {
     #[test]
     fn instructions_empty_when_no_memory_tools() {
         let tools = BTreeSet::new();
-        let resources: BTreeSet<&str> = [RESOURCE_EDGE_TYPES].into_iter().collect();
+        let resources: BTreeSet<&str> = [protocol_resource::EDGE_TYPES].into_iter().collect();
         assert!(build_instructions(&tools, &resources).is_empty());
     }
 

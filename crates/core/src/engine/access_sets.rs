@@ -165,7 +165,6 @@ pub(in crate::engine) mod tests {
 
     use crate::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
     use crate::close_batch::CloseBatchOutcome;
-    use crate::fact_cleanup::{CleanupDueFactsOutcome, TombstoneFactOutcome};
     use crate::goal_write::{
         AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
         DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest,
@@ -303,6 +302,7 @@ pub(in crate::engine) mod tests {
                 memories: Vec::new(),
                 goals: Vec::new(),
                 edges: Vec::new(),
+                next_cursor: None,
                 seq_high_water: None,
             })
         }
@@ -362,27 +362,17 @@ pub(in crate::engine) mod tests {
 
     #[async_trait::async_trait]
     impl EmbeddingWritePort for MembershipStorage {
-        async fn upsert_fact_embedding(
+        async fn insert_embedding(
             &self,
             _owner: &Owner,
-            _memory_id: MemoryId,
+            _entity: crate::EmbeddableEntityRef,
             _model_id: &str,
             _dim: usize,
             _vec: &[f32],
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn upsert_memory_embedding(
-            &self,
-            _owner: &Owner,
-            _entity_kind: EntityKind,
-            _memory_id: MemoryId,
-            _model_id: &str,
-            _dim: usize,
-            _vec: &[f32],
-        ) -> Result<(), StorageError> {
-            Ok(())
+        ) -> Result<crate::EmbeddingWriteOutcome, StorageError> {
+            Ok(crate::EmbeddingWriteOutcome {
+                embedding_version: 0,
+            })
         }
     }
 
@@ -674,28 +664,73 @@ pub(in crate::engine) mod tests {
 
     #[async_trait::async_trait]
     impl ComplianceErasePort for MembershipStorage {
-        async fn cleanup_due_facts(
+        async fn record_compliance_outcome(
             &self,
-            _owner: &Owner,
-            _fact_sidecar_tables: &[String],
-            _edge_sidecar_tables: &[String],
-            _citation_mapping_sidecar_tables: &[String],
-            _cited_object_sidecar_tables: &[String],
-        ) -> Result<CleanupDueFactsOutcome, StorageError> {
+            _audit: &proxima_core::compliance::ComplianceAuditContext,
+            _outcome: &proxima_core::compliance::ComplianceEraseOutcome,
+        ) -> Result<(), StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
         }
 
-        async fn tombstone_fact(
+        async fn erase_group_owner_if_abandoned(
             &self,
-            _owner: &Owner,
-            _fact_id: uuid::Uuid,
+            _auth: &proxima_core::compliance::EraseAuthorization,
+            _group_id: GroupId,
             _fact_sidecar_tables: &[String],
+            _goal_sidecar_tables: &[String],
             _edge_sidecar_tables: &[String],
             _citation_mapping_sidecar_tables: &[String],
             _cited_object_sidecar_tables: &[String],
-        ) -> Result<TombstoneFactOutcome, StorageError> {
+        ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+
+        async fn erase_personal_owner_if_drop_verified(
+            &self,
+            _auth: &proxima_core::compliance::EraseAuthorization,
+            _user_id: UserId,
+            _fact_sidecar_tables: &[String],
+            _goal_sidecar_tables: &[String],
+            _edge_sidecar_tables: &[String],
+            _citation_mapping_sidecar_tables: &[String],
+            _cited_object_sidecar_tables: &[String],
+        ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+
+        async fn erase_group_source_scope_if_owner_abandoned(
+            &self,
+            _auth: &proxima_core::compliance::EraseAuthorization,
+            _group_id: GroupId,
+            _source_id: &SourceId,
+            _fact_sidecar_tables: &[String],
+            _goal_sidecar_tables: &[String],
+            _edge_sidecar_tables: &[String],
+            _citation_mapping_sidecar_tables: &[String],
+            _cited_object_sidecar_tables: &[String],
+        ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+
+        async fn erase_personal_source_scope_if_drop_verified(
+            &self,
+            _auth: &proxima_core::compliance::EraseAuthorization,
+            _user_id: UserId,
+            _source_id: &SourceId,
+            _fact_sidecar_tables: &[String],
+            _goal_sidecar_tables: &[String],
+            _edge_sidecar_tables: &[String],
+            _citation_mapping_sidecar_tables: &[String],
+            _cited_object_sidecar_tables: &[String],
+        ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))

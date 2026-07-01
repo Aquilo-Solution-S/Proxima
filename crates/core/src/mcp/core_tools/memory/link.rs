@@ -1,4 +1,5 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
+use crate::protocol::tool as protocol_tool;
 use crate::{AppendMemoryEdgeRequestInput, EdgeAuthorshipKind, MemoryId, SidecarPayload};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -23,7 +24,7 @@ pub struct LinkArgs {
     pub confidence: u8,
     #[serde(default)]
     #[schemars(
-        description = "Memory space key from core_memory_spaces. The new edge is authored in this space; source and target handles may be in other readable spaces."
+        description = "Memory space key from core_memory_spaces. The key selects the write/read context; the persisted edge remains source-owned and source/target handles may be in other readable spaces."
     )]
     pub space: Option<String>,
 }
@@ -41,7 +42,7 @@ pub struct LinkOutput {
 pub struct LinkTool;
 
 impl McpTool for LinkTool {
-    const NAME: &'static str = "core_link";
+    const NAME: &'static str = protocol_tool::CORE_LINK;
     const DESCRIPTION: &'static str =
         "Author a typed agent-link-refers-to edge between two memory handles.";
     type Args = LinkArgs;

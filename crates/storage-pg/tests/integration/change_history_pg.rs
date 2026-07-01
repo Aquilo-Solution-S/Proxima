@@ -338,6 +338,7 @@ async fn query_high_water_includes_readable_non_world_source_edge_events()
                     supersession: SupersessionStatus::HeadsOnly,
                     tombstones: TombstoneFilter::PresentOnly,
                     limit: 10,
+                    page: proxima_core::verbs::query::QueryPage::default(),
                     include_payloads: false,
                     memory_ids: Vec::new(),
                     goal_ids: Vec::new(),

@@ -555,7 +555,7 @@ async fn engine_goalwrite_rejects_unauthorized_callers_before_write() {
                 product_request(&owner, target_self, "Practice every weekday."),
             )
             .await
-            .expect_err("explicit grant without memory.write is rejected");
+            .expect_err("missing write-capable owner role is rejected");
         assert_eq!(no_memory_write_err.code, ErrorCode::Forbidden);
 
         // Fail-closed: the zero-capability denied context (the unauthenticated

@@ -48,7 +48,6 @@ const CORE_FACT_ACTION_NAMES: &[&str] = &[
     "citation_of_fact",
     "citation_of_entity_head",
     "facts_citing_object",
-    "tombstone",
 ];
 const CORE_MEMBERSHIP_ACTION_NAMES: &[&str] = &["add_member", "remove_member", "list_members"];
 const DISPATCHER_TOOL_ACTIONS: &[(&str, &[&str])] = &[

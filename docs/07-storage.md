@@ -163,8 +163,9 @@ natural keys. Schema migration inserts into new sidecars and retires old
 sidecars; parent identity rows stay fixed.
 
 The only legitimate cognitive-history delete is explicit compliance
-erasure: whole Owner or Owner-scoped source-object deletion (13
-§Operations).
+erasure: whole abandoned group Owner, verified dropped personal Owner,
+or source-object scope inside that abandoned/dropped Owner (13 §Operations).
+Live owners refuse.
 
 <a id="content-hash-dedup"></a>
 
@@ -210,6 +211,7 @@ The vector store is independent from entity tables.
 | no FK from entity to embedding | entity writes never block on embedding |
 | embedding references entity id | embeddings can be swept, rebuilt, or dropped |
 | re-embedding writes a new row | entity row does not change |
+| latest head is metadata | `embedding_heads` can be rebuilt from `embeddings` |
 | multiple models may coexist | model comparison and rollout do not rewrite entities |
 | backend is pluggable | pgvector today, dedicated store later |
 
@@ -225,10 +227,12 @@ Postgres implementation:
 | column | `proxima_core.embeddings.vec vector(1024)` |
 | dimension | fixed 1024 (`mistral-embed`); no `dim` column |
 | key | `(entity_kind, entity_id, embedding_version, model_id)` |
+| head | `embedding_heads(entity_kind, entity_id, model_id) -> embedding_version` |
 | Fact write | memory row + receipt/sidecar are authoritative; embedding may be absent |
 | derived write | memory row + typed sidecar are authoritative; embedding may be rebuilt |
+| write | validate entity owner/text/live, take `(entity_kind, entity_id, model_id)` advisory lock, append next version, advance head |
 | index | `idx_embeddings_vec_hnsw` using `hnsw (vec vector_cosine_ops)` |
-| ranking | bind `'[...]'::vector`; score `1 - (vec <=> query)`; zero-vector NaN score clamps to `0.0` |
+| ranking | authorized eligible entities join current heads before bounded vector candidate `LIMIT`; score `1 - (vec <=> query)` |
 
 <a id="consequences-of-append-only"></a>
 

@@ -15,7 +15,6 @@ pub mod list_substrate_tools;
 pub mod membership;
 pub mod memory;
 pub mod memory_spaces;
-pub mod tombstone_fact;
 pub mod walk_memory_lineage;
 
 pub use fact::CoreFactTool;
@@ -43,6 +42,7 @@ const DESTRUCTIVE_NON_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
     .destructive(true)
     .idempotent(false)
     .open_world(false);
+#[allow(dead_code)]
 const DESTRUCTIVE_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
     .read_only(false)
     .destructive(true)

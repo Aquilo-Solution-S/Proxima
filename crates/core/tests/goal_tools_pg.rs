@@ -281,7 +281,7 @@ async fn goal_set_tool_requires_memory_write() -> TestResult {
                 )),
             )
             .await
-            .expect_err("explicit grant without memory.write is rejected");
+            .expect_err("missing write-capable owner role is rejected");
             match err {
                 McpToolError::Protocol(err) => assert_eq!(err.code, ErrorCode::Forbidden),
                 other => panic!("expected forbidden protocol error, got {other:?}"),

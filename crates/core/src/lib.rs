@@ -1,5 +1,4 @@
 //! Proxima engine core.
-#[cfg(feature = "test-fixtures")]
 extern crate self as proxima_core;
 
 pub mod access;
@@ -9,6 +8,7 @@ pub mod canonical_json;
 pub mod capability;
 pub mod change_event;
 pub mod citations;
+pub mod compliance;
 pub mod cursor;
 pub mod dependency;
 pub mod engine;
@@ -24,6 +24,7 @@ pub mod operator_proofs;
 pub mod owner;
 pub mod payload;
 pub mod payload_contract;
+pub mod protocol;
 pub mod read_models;
 pub mod relation;
 pub mod secrets;
@@ -41,6 +42,10 @@ pub use canonical_json::canonical_json_bytes;
 pub use capability::*;
 pub use change_event::*;
 pub use citations::*;
+pub use compliance::{
+    ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseRequest,
+    ComplianceEraseTarget,
+};
 pub use cursor::*;
 pub use dependency::*;
 pub use engine::*;
@@ -396,9 +401,10 @@ macro_rules! proxima_flavor {
 }
 
 pub use storage_ports::{
-    ChangeEventPort, CitationPort, ComplianceErasePort, EdgeReadPort, EmbeddingJobPort,
-    EmbeddingTextPort, EmbeddingWritePort, FactIngestPort, FactRetentionPort, GoalReadPort,
-    GoalWritePort, McpCallReadPort, McpCallWritePort, MemoryAuthoringPort, MemoryInspectPort,
-    MemoryReadPort, OwnerAccessReadPort, OwnerMembershipAdminPort, RegistryProjectionPort,
-    SourceBatchPort, StoragePorts,
+    ChangeEventPort, CitationPort, ComplianceAdminPort, ComplianceErasePort, EdgeReadPort,
+    EmbeddingJobPort, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort, FactIngestPort,
+    FactRetentionPort, GoalReadPort, GoalWritePort, McpCallReadPort, McpCallWritePort,
+    MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OwnerAccessReadPort,
+    OwnerDropProofPort, OwnerMembershipAdminPort, RegistryProjectionPort, SourceBatchPort,
+    StoragePorts,
 };

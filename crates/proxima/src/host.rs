@@ -12,6 +12,10 @@ pub use crate::runtime::{
 pub use crate::runtime_config::{
     McpSettings, ProximaError, RuntimeBuilder, RuntimeConfig, RuntimeParts,
 };
+pub use proxima_core::compliance::{
+    ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseRequest,
+    ComplianceEraseTarget,
+};
 pub use proxima_core::cursor::Cursor;
 pub use proxima_core::error::ProtocolError;
 pub use proxima_core::llm;
