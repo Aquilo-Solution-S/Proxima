@@ -446,6 +446,67 @@ async fn local_git_source_full_cycle() {
 }
 
 #[tokio::test]
+async fn head_snapshot_repeated_after_change_and_delete_is_idempotent() {
+    let (db_name, pg) = migrated_db().await;
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = test_owner();
+        let engine = build_engine(pg.clone());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+        let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
+
+        let repo = fixture_repo();
+        let repo_id = Uuid::now_v7();
+        let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner);
+
+        let initial = source.run_head_snapshot(&ingest_ctx).await?;
+        assert!(
+            initial.report.files_present_emitted >= 3,
+            "initial snapshot should index present files"
+        );
+
+        write_file(
+            repo.path(),
+            "src/lib.rs",
+            "pub fn hello() -> &'static str {\n    \"snapshot-v2\"\n}\n",
+        );
+        git(repo.path(), &["add", "src/lib.rs"]);
+        git(repo.path(), &["commit", "-q", "-m", "snapshot lib v2"]);
+
+        let changed = source.run_head_snapshot(&ingest_ctx).await?;
+        assert_eq!(changed.report.files_present_emitted, 1);
+        assert!(changed.report.chunks_emitted >= 1);
+
+        let unchanged = source.run_head_snapshot(&ingest_ctx).await?;
+        assert_eq!(unchanged.report.files_present_emitted, 0);
+        assert_eq!(unchanged.report.files_tombstoned, 0);
+        assert_eq!(unchanged.report.chunks_emitted, 0);
+        assert_eq!(unchanged.report.chunks_tombstoned, 0);
+
+        std::fs::remove_file(repo.path().join("src/main.ts"))?;
+        git(repo.path(), &["add", "-A"]);
+        git(repo.path(), &["commit", "-q", "-m", "snapshot delete main"]);
+
+        let deleted = source.run_head_snapshot(&ingest_ctx).await?;
+        assert_eq!(deleted.report.files_tombstoned, 1);
+        assert!(deleted.report.chunks_tombstoned >= 1);
+
+        let unchanged_after_delete = source.run_head_snapshot(&ingest_ctx).await?;
+        assert_eq!(unchanged_after_delete.report.files_present_emitted, 0);
+        assert_eq!(unchanged_after_delete.report.files_tombstoned, 0);
+        assert_eq!(unchanged_after_delete.report.chunks_emitted, 0);
+        assert_eq!(unchanged_after_delete.report.chunks_tombstoned, 0);
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("head_snapshot_repeated_after_change_and_delete_is_idempotent failed");
+}
+
+#[tokio::test]
 async fn polyglot_markdown_emits_file_revision_and_fallback_chunks() {
     // Subset of the above: tighter assertion on FileState::Present
     // for a markdown-only fixture.

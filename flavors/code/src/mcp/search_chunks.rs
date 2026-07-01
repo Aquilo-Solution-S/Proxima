@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EdgeTargetProjection};
-use proxima_core::{EdgeId, EntityRef, MemoryId};
+use proxima_core::{CORE_DERIVED_FROM_RELATION, EdgeId, EntityRef, MemoryId};
 use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use crate::payloads::{CodeChunkV1, FileState};
 
 use super::CodeToolCtxExt;
 use super::code_store;
-use super::sql::{map_storage, resolve_repo_identifier};
+use super::sql::{map_storage, owner_columns, resolve_repo_identifier};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeSearchChunksArgs {
@@ -107,44 +107,91 @@ impl Tool for CodeSearchChunksTool {
             let engine = super::engine(&ctx)?;
 
             let candidate_limit = i64::from(limit.saturating_mul(4).max(limit).min(200));
+            let (owner_kind, owner_id) = owner_columns(&ctx.owner());
             let rows: Vec<ChunkCandidateRow> = sqlx::query_as(
                 "WITH q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $1) AS tsq)
                  SELECT c.memory_id,
                         (
                             ts_rank_cd(to_tsvector('pg_catalog.simple'::regconfig, c.file_path || ' ' || c.text), q.tsq)
                             + CASE WHEN lower(c.file_path) = lower($1) THEN 10.0 ELSE 0.0 END
-                            + CASE WHEN lower(c.file_path) LIKE $4 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
-                            + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
+                            + CASE WHEN lower(c.file_path) LIKE $7 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
+                            + CASE WHEN lower(c.text) LIKE $7 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
                         )::real AS score
-                   FROM proxima_code.code_chunk_v1 c, q
-                  WHERE ($2::uuid IS NULL OR c.repo_id = $2)
-                    AND ($3::text IS NULL OR c.language = $3)
-                    AND ($5::text IS NULL OR c.chunk_type = $5)
+                   FROM proxima_code.code_chunk_v1 c
+                   JOIN proxima_core.memories m USING (memory_id)
+                   JOIN proxima_core.edges e
+                     ON e.source_memory_id = c.memory_id
+                    AND e.relation = $6
+                   JOIN proxima_code.file_revision_v1 fr
+                     ON fr.memory_id = e.target_memory_id
+                    AND fr.repo_id = c.repo_id
+                    AND fr.file_path = c.file_path
+                   JOIN proxima_core.memories fm
+                     ON fm.memory_id = fr.memory_id
+                   JOIN proxima_core.fact_receipts r
+                     ON r.receipt_id = fm.receipt_id
+                   JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                     ON eo.entity_id = m.memory_id,
+                        q
+                  WHERE eo.owner_kind = $2
+                    AND eo.owner_id IS NOT DISTINCT FROM $3
+                    AND ($4::uuid IS NULL OR c.repo_id = $4)
+                    AND c.state = 'Present'
+                    AND fr.state = 'Present'
+                    AND NOT EXISTS (
+                        SELECT 1
+                          FROM proxima_core.memories m2
+                          JOIN proxima_code.code_chunk_v1 c2 USING (memory_id)
+                         WHERE m2.schema_id = m.schema_id
+                           AND m2.owner_kind = m.owner_kind
+                           AND m2.owner_id IS NOT DISTINCT FROM m.owner_id
+                           AND c2.repo_id = c.repo_id
+                           AND c2.file_path = c.file_path
+                           AND c2.chunk_index = c.chunk_index
+                           AND m2.source_batch_id > m.source_batch_id
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1
+                          FROM proxima_code.file_revision_v1 fr2
+                          JOIN proxima_core.memories fm2
+                            ON fm2.memory_id = fr2.memory_id
+                          JOIN proxima_core.fact_receipts r2
+                            ON r2.receipt_id = fm2.receipt_id
+                         WHERE fm2.owner_kind = fm.owner_kind
+                           AND fm2.owner_id IS NOT DISTINCT FROM fm.owner_id
+                           AND fr2.repo_id = fr.repo_id
+                           AND fr2.file_path = fr.file_path
+                           AND r2.source_batch_id > r.source_batch_id
+                    )
+                    AND ($5::text IS NULL OR c.language = $5)
+                    AND ($8::text IS NULL OR c.chunk_type = $8)
                     AND (
-                        c.state = 'Tombstone'
-                        OR to_tsvector('pg_catalog.simple'::regconfig, c.file_path || ' ' || c.text) @@ q.tsq
-                        OR lower(c.file_path) LIKE $4 ESCAPE '\\'
-                        OR lower(c.text) LIKE $4 ESCAPE '\\'
+                        to_tsvector('pg_catalog.simple'::regconfig, c.file_path || ' ' || c.text) @@ q.tsq
+                        OR lower(c.file_path) LIKE $7 ESCAPE '\\'
+                        OR lower(c.text) LIKE $7 ESCAPE '\\'
                     )
                   ORDER BY score DESC, c.memory_id DESC
-                  LIMIT $6",
+                  LIMIT $9",
             )
-                .bind(query)
-                .bind(repo_id)
-                .bind(args.language.as_deref())
-                .bind(exact_pattern)
-                .bind(args.chunk_type.as_deref())
-                .bind(candidate_limit)
-                .fetch_all(pool.pool())
-                .await
-                .map_err(map_storage)?;
+            .bind(query)
+            .bind(owner_kind)
+            .bind(owner_id)
+            .bind(repo_id)
+            .bind(args.language.as_deref())
+            .bind(CORE_DERIVED_FROM_RELATION)
+            .bind(exact_pattern)
+            .bind(args.chunk_type.as_deref())
+            .bind(candidate_limit)
+            .fetch_all(pool.pool())
+            .await
+            .map_err(map_storage)?;
             let candidate_ids = rows.iter().map(|row| row.memory_id).collect::<Vec<_>>();
             let score_by_id = rows
                 .into_iter()
                 .map(|row| (row.memory_id, row.score))
                 .collect::<HashMap<_, _>>();
             let rows = pool
-                .authorized_abstraction_payloads_include_superseded::<CodeChunkV1>(
+                .authorized_abstraction_payloads::<CodeChunkV1>(
                     &engine,
                     ctx.authz(),
                     ctx.owner(),
@@ -152,17 +199,6 @@ impl Tool for CodeSearchChunksTool {
                     candidate_ids.len(),
                 )
                 .await?;
-            let tombstoned_keys = rows
-                .iter()
-                .filter(|(_, payload)| payload.state == FileState::Tombstone)
-                .map(|(_, payload)| {
-                    (
-                        payload.repo_id,
-                        payload.file_path.clone(),
-                        payload.chunk_index,
-                    )
-                })
-                .collect::<HashSet<_>>();
 
             let mut matches = Vec::new();
             let mut chunk_ids = Vec::with_capacity(rows.len());
@@ -173,9 +209,6 @@ impl Tool for CodeSearchChunksTool {
                     payload.file_path.clone(),
                     payload.chunk_index,
                 );
-                if tombstoned_keys.contains(&key) {
-                    continue;
-                }
                 if !seen_keys.insert(key) {
                     continue;
                 }
