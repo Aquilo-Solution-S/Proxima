@@ -10,7 +10,9 @@ use proxima_code::mcp::{
     CodeSearchChunksTool, CodeSearchCommitsTool,
 };
 use proxima_code::testkit::register_repo;
-use proxima_code::{CodeChunkV1, CodeFlavorStore, CommitV1, ExecutionRequestV1, FileRevisionV1};
+use proxima_code::{
+    CodeChunkV1, CodeFlavorStore, CommitV1, ExecutionRequestV1, FileRevisionV1, FileState,
+};
 use proxima_core::engine::Engine;
 use proxima_core::mcp::{
     HandleTable, McpAuthorContext, McpTool, McpToolCtx, McpToolError, McpToolExtensions, OutputMode,
@@ -20,9 +22,9 @@ use proxima_core::verbs::fact_ingest::{
 };
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
-    AbstractionPayload, AuthPath, AuthzContext, CORE_INSPIRES_RELATION, FactPayload,
-    FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner, SchemaId, SchemaVersion, SourceBatchId,
-    SourceId,
+    AbstractionPayload, AuthPath, AuthzContext, CORE_DERIVED_FROM_RELATION, CORE_INSPIRES_RELATION,
+    FactPayload, FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner, SchemaId, SchemaVersion,
+    SourceBatchId, SourceId,
 };
 use proxima_storage_pg::PgStorage;
 use serde_json::json;
@@ -210,6 +212,59 @@ async fn search_chunks_excludes_chunk_when_head_is_tombstone()
     assert!(
         matches.is_empty(),
         "tombstoned chunk must not surface via revived earlier revision"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn search_chunks_excludes_chunk_when_tombstone_has_no_language_and_filter_is_set()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let engine = engine_for_test(fixture.pg.clone());
+    let registry = registry_for_mcp();
+    let repo_id = Uuid::now_v7();
+
+    let present_chunk = ingest_code_chunk(
+        fixture.pg.pool_for_tests(),
+        &engine,
+        owner,
+        repo_id,
+        "src/atlas.rs",
+        0,
+        "fn atlas_edges_v1() {}",
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let tombstone_chunk = ingest_code_chunk_tombstone(
+        fixture.pg.pool_for_tests(),
+        &engine,
+        owner,
+        repo_id,
+        "src/atlas.rs",
+        0,
+    )
+    .await?;
+    assert!(
+        tombstone_chunk < present_chunk,
+        "fixture must cover deterministic UUID tie-breaker inversion"
+    );
+    force_same_memory_created_at(
+        fixture.pg.pool_for_tests(),
+        &[present_chunk, tombstone_chunk],
+    )
+    .await?;
+
+    let result = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry),
+        json!({ "query": "atlas_edges", "language": "rust", "limit": 10 }),
+    )
+    .await?;
+
+    let matches = result["matches"].as_array().expect("matches array");
+    assert!(
+        matches.is_empty(),
+        "language filter must not revive a present chunk hidden by a newer no-language tombstone"
     );
     Ok(())
 }
@@ -428,6 +483,71 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
     assert_eq!(bounded_chunks[0]["text"], "    call();");
     assert_eq!(bounded_chunks[0]["text_line_range"][0], 2);
     assert_eq!(bounded_chunks[0]["text_line_range"][1], 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn open_file_revision_returns_no_chunks_for_tombstone_head()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let engine = engine_for_test(fixture.pg.clone());
+    let registry = registry_for_mcp();
+    let repo_id = Uuid::now_v7();
+
+    ingest_file_revision(
+        fixture.pg.pool_for_tests(),
+        &engine,
+        owner,
+        repo_id,
+        "src/atlas.rs",
+        "v1",
+    )
+    .await?;
+    ingest_code_chunk(
+        fixture.pg.pool_for_tests(),
+        &engine,
+        owner,
+        repo_id,
+        "src/atlas.rs",
+        0,
+        "fn atlas_edges_v1() {}",
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    ingest_file_revision_tombstone(
+        fixture.pg.pool_for_tests(),
+        &engine,
+        owner,
+        repo_id,
+        "src/atlas.rs",
+        "v2",
+    )
+    .await?;
+    ingest_code_chunk_tombstone(
+        fixture.pg.pool_for_tests(),
+        &engine,
+        owner,
+        repo_id,
+        "src/atlas.rs",
+        0,
+    )
+    .await?;
+
+    let test_ctx = ctx(fixture.pg.clone(), owner, registry);
+    let repo_handle = test_ctx.format_flavor_object("proxima-code/repo", repo_id, 'R');
+    let result = run_tool::<CodeOpenFileRevisionTool>(
+        test_ctx,
+        json!({ "repo_handle": repo_handle, "file_path": "src/atlas.rs" }),
+    )
+    .await?;
+
+    assert_eq!(result["revision"]["state"], "Tombstone");
+    let chunks = result["chunks"].as_array().expect("chunks");
+    assert!(
+        chunks.is_empty(),
+        "tombstone file head must not return stale chunks"
+    );
     Ok(())
 }
 
@@ -1095,6 +1215,33 @@ async fn ingest_file_revision(
     Ok(memory_id)
 }
 
+async fn ingest_file_revision_tombstone(
+    pool: &PgPool,
+    engine: &Engine,
+    owner: Owner,
+    repo_id: Uuid,
+    file_path: &str,
+    indexed_commit_sha: &str,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let payload = format!("{file_path}:{indexed_commit_sha}:tombstone");
+    let memory_id =
+        fact_memory(engine, owner, FileRevisionV1::SCHEMA_ID, payload.as_bytes()).await?;
+    sqlx::query(
+        "INSERT INTO proxima_code.file_revision_v1
+            (memory_id, repo_id, file_path, language, content_sha256,
+             size_bytes, indexed_commit_sha, state)
+         VALUES ($1, $2, $3, NULL, $4, 0, $5, 'Tombstone')",
+    )
+    .bind(memory_id)
+    .bind(repo_id)
+    .bind(file_path)
+    .bind([0u8; 32].to_vec())
+    .bind(indexed_commit_sha)
+    .execute(pool)
+    .await?;
+    Ok(memory_id)
+}
+
 async fn ingest_code_chunk(
     pool: &PgPool,
     engine: &Engine,
@@ -1130,18 +1277,14 @@ struct ChunkFixture<'a> {
 
 async fn ingest_code_chunk_with_type(
     pool: &PgPool,
-    _engine: &Engine,
+    engine: &Engine,
     owner: Owner,
     chunk: ChunkFixture<'_>,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let file_revision =
+        ensure_present_file_revision(pool, engine, owner, chunk.repo_id, chunk.file_path).await?;
     let payload = format!("{}:{}:{}", chunk.file_path, chunk.chunk_index, chunk.text);
-    let memory_id = abstraction_memory(
-        pool,
-        &owner,
-        <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID,
-        &payload,
-    )
-    .await?;
+    let memory_id = code_chunk_memory(pool, &owner, &payload).await?;
     let line_count = i64::try_from(chunk.text.lines().count().max(1))?;
     sqlx::query(
         "INSERT INTO proxima_code.code_chunk_v1
@@ -1161,31 +1304,28 @@ async fn ingest_code_chunk_with_type(
     .bind(line_count)
     .execute(pool)
     .await?;
+    insert_derived_from_edge(pool, &owner, memory_id, file_revision).await?;
     Ok(memory_id)
 }
 
 async fn ingest_code_chunk_tombstone(
     pool: &PgPool,
-    _engine: &Engine,
+    engine: &Engine,
     owner: Owner,
     repo_id: Uuid,
     file_path: &str,
     chunk_index: i32,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let file_revision =
+        ensure_tombstone_file_revision(pool, engine, owner, repo_id, file_path).await?;
     let payload = format!("{file_path}:{chunk_index}:tombstone");
-    let memory_id = abstraction_memory(
-        pool,
-        &owner,
-        <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID,
-        &payload,
-    )
-    .await?;
+    let memory_id = code_chunk_memory(pool, &owner, &payload).await?;
     sqlx::query(
         "INSERT INTO proxima_code.code_chunk_v1
             (memory_id, repo_id, file_path, chunk_index, text, language,
              chunk_type, byte_range_start, byte_range_end,
              line_range_start, line_range_end, state)
-         VALUES ($1, $2, $3, $4, '', 'rust',
+         VALUES ($1, $2, $3, $4, '', NULL,
              'function', 0, 0, 1, 1, 'Tombstone')",
     )
     .bind(memory_id)
@@ -1194,7 +1334,162 @@ async fn ingest_code_chunk_tombstone(
     .bind(chunk_index)
     .execute(pool)
     .await?;
+    insert_derived_from_edge(pool, &owner, memory_id, file_revision).await?;
     Ok(memory_id)
+}
+
+async fn latest_file_revision(
+    pool: &PgPool,
+    owner: &Owner,
+    repo_id: Uuid,
+    file_path: &str,
+) -> Result<Option<(Uuid, FileState)>, Box<dyn std::error::Error>> {
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
+    Ok(sqlx::query_as(
+        "SELECT fr.memory_id, fr.state
+           FROM proxima_code.file_revision_v1 fr
+           JOIN proxima_core.memories m USING (memory_id)
+           JOIN proxima_core.fact_receipts r USING (receipt_id)
+          WHERE m.owner_kind = $1
+            AND m.owner_id IS NOT DISTINCT FROM $2
+            AND fr.repo_id = $3
+            AND fr.file_path = $4
+          ORDER BY r.source_batch_id DESC
+          LIMIT 1",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(repo_id)
+    .bind(file_path)
+    .fetch_optional(pool)
+    .await?)
+}
+
+async fn ensure_present_file_revision(
+    pool: &PgPool,
+    engine: &Engine,
+    owner: Owner,
+    repo_id: Uuid,
+    file_path: &str,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    if let Some((memory_id, FileState::Present)) =
+        latest_file_revision(pool, &owner, repo_id, file_path).await?
+    {
+        return Ok(memory_id);
+    }
+    ingest_file_revision(
+        pool,
+        engine,
+        owner,
+        repo_id,
+        file_path,
+        &format!("fixture-present-{}", Uuid::now_v7()),
+    )
+    .await
+}
+
+async fn ensure_tombstone_file_revision(
+    pool: &PgPool,
+    engine: &Engine,
+    owner: Owner,
+    repo_id: Uuid,
+    file_path: &str,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    if let Some((memory_id, FileState::Tombstone)) =
+        latest_file_revision(pool, &owner, repo_id, file_path).await?
+    {
+        return Ok(memory_id);
+    }
+    ingest_file_revision_tombstone(
+        pool,
+        engine,
+        owner,
+        repo_id,
+        file_path,
+        &format!("fixture-tombstone-{}", Uuid::now_v7()),
+    )
+    .await
+}
+
+async fn code_chunk_memory(
+    pool: &PgPool,
+    owner: &Owner,
+    payload: &str,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let memory_id = Uuid::new_v5(&Uuid::NAMESPACE_OID, payload.as_bytes());
+    let source_batch_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
+    sqlx::query(
+        "INSERT INTO proxima_core.source_batches
+            (id, source_id, owner_kind, owner_id, closed_at)
+         VALUES ($1, 'test/code-index', $2, $3, now())",
+    )
+    .bind(source_batch_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id,
+             prompt_version)
+         VALUES ($1, $2, $3, $4, 1, 'Abstraction', $5,
+             'FtoA', '00000000-0000-0000-0000-000000000491'::uuid,
+             $1, $6,
+             'test/code-index', 'test')
+         ON CONFLICT (memory_id) DO NOTHING",
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(<CodeChunkV1 as AbstractionPayload>::SCHEMA_ID)
+    .bind(payload)
+    .bind(source_batch_id)
+    .execute(pool)
+    .await?;
+    Ok(memory_id)
+}
+
+async fn insert_derived_from_edge(
+    pool: &PgPool,
+    owner: &Owner,
+    chunk_memory_id: Uuid,
+    file_revision_memory_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
+    sqlx::query(
+        "INSERT INTO proxima_core.edges
+            (edge_id, relation, relation_class, source_kind, source_memory_id,
+             target_kind, target_memory_id, authorship_kind, authorship_owner_memory_id,
+             owner_kind, owner_id)
+         VALUES ($1, $2, 'Provenance', 'Abstraction', $3,
+             'Fact', $4, 'OperatorFtoA', $3, $5, $6)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(chunk_memory_id)
+    .bind(file_revision_memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn force_same_memory_created_at(
+    pool: &PgPool,
+    memory_ids: &[Uuid],
+) -> Result<(), Box<dyn std::error::Error>> {
+    sqlx::query(
+        "UPDATE proxima_core.memories
+            SET created_at = '2026-01-01 00:00:00+00'::timestamptz
+          WHERE memory_id = ANY($1)",
+    )
+    .bind(memory_ids)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 async fn ingest_commit(

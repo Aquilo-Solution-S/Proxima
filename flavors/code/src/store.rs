@@ -91,6 +91,51 @@ impl CodeFlavorStore {
     where
         P: FactPayload + Clone,
     {
+        self.authorized_fact_payloads_with_tombstone_filter::<P>(
+            engine,
+            authz,
+            owner,
+            candidates,
+            TombstoneFilter::PresentOnly,
+            limit,
+        )
+        .await
+    }
+
+    pub(crate) async fn authorized_fact_payloads_include_tombstones<P>(
+        &self,
+        engine: &proxima_core::Engine,
+        authz: &AuthzContext,
+        owner: Owner,
+        candidates: &[uuid::Uuid],
+        limit: usize,
+    ) -> Result<Vec<(MemoryId, P)>, ToolError>
+    where
+        P: FactPayload + Clone,
+    {
+        self.authorized_fact_payloads_with_tombstone_filter::<P>(
+            engine,
+            authz,
+            owner,
+            candidates,
+            TombstoneFilter::IncludeTombstoned,
+            limit,
+        )
+        .await
+    }
+
+    async fn authorized_fact_payloads_with_tombstone_filter<P>(
+        &self,
+        engine: &proxima_core::Engine,
+        authz: &AuthzContext,
+        owner: Owner,
+        candidates: &[uuid::Uuid],
+        tombstones: TombstoneFilter,
+        limit: usize,
+    ) -> Result<Vec<(MemoryId, P)>, ToolError>
+    where
+        P: FactPayload + Clone,
+    {
         let payloads = self
             .authorized_payloads(
                 engine,
@@ -100,6 +145,7 @@ impl CodeFlavorStore {
                 EntityKind::Fact,
                 P::schema_id(),
                 SupersessionStatus::HeadsOnly,
+                tombstones,
                 limit,
             )
             .await?;
@@ -129,35 +175,7 @@ impl CodeFlavorStore {
                 EntityKind::Abstraction,
                 P::schema_id(),
                 SupersessionStatus::HeadsOnly,
-                limit,
-            )
-            .await?;
-        Ok(payloads
-            .into_iter()
-            .filter_map(|(id, payload)| payload.downcast_ref::<P>().cloned().map(|p| (id, p)))
-            .collect())
-    }
-
-    pub(crate) async fn authorized_abstraction_payloads_include_superseded<P>(
-        &self,
-        engine: &proxima_core::Engine,
-        authz: &AuthzContext,
-        owner: Owner,
-        candidates: &[uuid::Uuid],
-        limit: usize,
-    ) -> Result<Vec<(MemoryId, P)>, ToolError>
-    where
-        P: AbstractionPayload + Clone,
-    {
-        let payloads = self
-            .authorized_payloads(
-                engine,
-                authz,
-                owner,
-                candidates,
-                EntityKind::Abstraction,
-                P::schema_id(),
-                SupersessionStatus::IncludeSuperseded,
+                TombstoneFilter::PresentOnly,
                 limit,
             )
             .await?;
@@ -177,6 +195,7 @@ impl CodeFlavorStore {
         entity_kind: EntityKind,
         schema_id: SchemaId,
         supersession: SupersessionStatus,
+        tombstones: TombstoneFilter,
         limit: usize,
     ) -> Result<Vec<(MemoryId, SidecarPayload)>, ToolError> {
         let candidates = bounded_candidates(candidates, limit);
@@ -188,7 +207,7 @@ impl CodeFlavorStore {
         req.entity_kind = Some(entity_kind);
         req.schema_id = Some(schema_id);
         req.supersession = supersession;
-        req.tombstones = TombstoneFilter::PresentOnly;
+        req.tombstones = tombstones;
         req.limit = u32::try_from(candidates.len()).unwrap_or(u32::MAX);
         req.include_payloads = true;
         req.memory_ids = candidates.iter().copied().map(MemoryId::new).collect();

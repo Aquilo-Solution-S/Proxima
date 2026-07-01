@@ -208,7 +208,7 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `principal`,
+    /// Returns `Forbidden` when the context cannot access `requested_owner`,
     /// lacks `relation`, or the
     /// citation mapping targets a different cited-object
     /// schema; `UnknownSchema` when a citation schema is absent for the
@@ -218,12 +218,12 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         relation: Relation,
-        principal: OwnerRef,
+        requested_owner: OwnerRef,
         memory_id: MemoryId,
         cited_object: InlineCitedObjectDraft,
         mapping: InlineCitationMappingDraft,
     ) -> Result<AuthorizedCitationAttachment, ProtocolError> {
-        let requested = principal;
+        let requested = requested_owner;
         let permit = self.authorize_write(authz, &requested, relation).await?;
         let owner = *permit.owner();
         let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
@@ -562,10 +562,10 @@ impl Engine {
     pub async fn close_batch(
         &self,
         authz: &AuthzContext,
-        principal: OwnerRef,
+        requested_owner: OwnerRef,
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, ProtocolError> {
-        let requested = principal;
+        let requested = requested_owner;
         let permit = self
             .authorize_write(authz, &requested, Relation::Ingest)
             .await?;

@@ -144,13 +144,31 @@ impl<'a> CodeIngestContext<'a> {
         owner: Owner,
         repo_id: Uuid,
     ) -> Result<Vec<FileRevisionHead>, IngestError> {
+        let (owner_kind, owner_id) = owner.columns();
         let candidate_ids: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT memory_id
-               FROM proxima_code.file_revision_v1
-              WHERE repo_id = $1
-              ORDER BY file_path ASC, memory_id DESC
+            "SELECT fr.memory_id
+               FROM proxima_code.file_revision_v1 fr
+               JOIN proxima_core.memories m USING (memory_id)
+               JOIN proxima_core.fact_receipts r USING (receipt_id)
+              WHERE m.owner_kind = $1
+                AND m.owner_id IS NOT DISTINCT FROM $2
+                AND fr.repo_id = $3
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM proxima_code.file_revision_v1 fr2
+                      JOIN proxima_core.memories m2 USING (memory_id)
+                      JOIN proxima_core.fact_receipts r2 USING (receipt_id)
+                     WHERE m2.owner_kind = m.owner_kind
+                       AND m2.owner_id IS NOT DISTINCT FROM m.owner_id
+                       AND fr2.repo_id = fr.repo_id
+                       AND fr2.file_path = fr.file_path
+                       AND r2.source_batch_id > r.source_batch_id
+                )
+              ORDER BY fr.file_path ASC
               LIMIT 100000",
         )
+        .bind(owner_kind)
+        .bind(owner_id)
         .bind(repo_id)
         .fetch_all(self.pool())
         .await?;
@@ -158,7 +176,7 @@ impl<'a> CodeIngestContext<'a> {
         for chunk in candidate_ids.chunks(2_000) {
             payloads.extend(
                 self.store
-                    .authorized_fact_payloads::<FileRevisionV1>(
+                    .authorized_fact_payloads_include_tombstones::<FileRevisionV1>(
                         self.engine,
                         self.authz,
                         owner,
@@ -195,7 +213,7 @@ impl<'a> CodeIngestContext<'a> {
                JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
                  ON eo.entity_id = m.memory_id
               WHERE eo.owner_kind = $1
-                AND eo.owner_id = $2
+                AND eo.owner_id IS NOT DISTINCT FROM $2
                 AND s.repo_id = $3
                 AND s.file_path = $4
                 AND s.state = 'Present'
@@ -207,11 +225,11 @@ impl<'a> CodeIngestContext<'a> {
                         ON eo2.entity_id = m2.memory_id
                      WHERE m2.schema_id = m.schema_id
                        AND eo2.owner_kind = eo.owner_kind
-                       AND eo2.owner_id = eo.owner_id
+                       AND eo2.owner_id IS NOT DISTINCT FROM eo.owner_id
                        AND s2.repo_id = s.repo_id
                        AND s2.file_path = s.file_path
                        AND s2.chunk_index = s.chunk_index
-                       AND m2.created_at > m.created_at
+                       AND m2.source_batch_id > m.source_batch_id
                 )
               ORDER BY s.chunk_index ASC
               LIMIT 100000",
