@@ -51,6 +51,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **kernel**: Name principles 1/3/4/6 over existing axioms ([`04bac46`](https://github.com/Aquilo-Solution-S/Proxima/commit/04bac46378292f9358212e7cfda5a019b7535a4e)) by @HeinrichvH
 
 ### Bug Fixes
+- **flavors-code**: Hide stale chunks after tombstones ([`92c0f36`](https://github.com/Aquilo-Solution-S/Proxima/commit/92c0f367af0c4a74844b255347696a33a2eb213a))
 - **release**: Close v0.0.4 gate blockers ([`ba140df`](https://github.com/Aquilo-Solution-S/Proxima/commit/ba140df9dedd04a9c8e67986355852137253bf3b))
 - **storage-pg**: Preserve shared fact entities during erasure ([`9ef1bb6`](https://github.com/Aquilo-Solution-S/Proxima/commit/9ef1bb63c6bef104f2bb7194defe51e6906dabca)) by @HeinrichvH
 - **breaking:** **core**: Close round-5 security hole — derive supersedes cross-owner forge ([`9ec7421`](https://github.com/Aquilo-Solution-S/Proxima/commit/9ec7421270c994fe5d73de485eed736c0685f64d)) by @HeinrichvH
@@ -96,6 +97,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **kernel**: Rename Lean kernel Foundations -> Causa ([`cf18107`](https://github.com/Aquilo-Solution-S/Proxima/commit/cf18107b06344b219e038abdc771d19e0f57388b)) by @HeinrichvH
 
 ### Documentation
+- **changelog**: Stamp v0.0.4 ([`300a3f4`](https://github.com/Aquilo-Solution-S/Proxima/commit/300a3f405d2359f6c5a3a2dcafb63ce42843ae42))
 - **community**: Add GitHub health templates ([`c00249d`](https://github.com/Aquilo-Solution-S/Proxima/commit/c00249de72964be70b530b200ae28248ef393dd0)) by @HeinrichvH
 - **reference**: Move runtime matrix to local evidence ([`f171d5b`](https://github.com/Aquilo-Solution-S/Proxima/commit/f171d5ba4d0c91710e82aa754e17b8dd0a24c0a6)) by @HeinrichvH
 - **core**: Fix PR8 compose doc links ([`e2f4a1b`](https://github.com/Aquilo-Solution-S/Proxima/commit/e2f4a1b3072cfb5f6262617b643e37d013e1ce4a)) by @HeinrichvH
