@@ -2278,6 +2278,7 @@ name = "proxima-auth-oidc"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
  "axum",
  "base64",
  "jsonwebtoken",
@@ -2388,6 +2389,8 @@ dependencies = [
 name = "proxima-mcp"
 version = "0.1.0"
 dependencies = [
+ "aws-lc-rs",
+ "base64",
  "jsonwebtoken",
  "proxima",
  "proxima-auth-oidc",
