@@ -54,9 +54,9 @@ jobs:
         run: python3 scripts/check-doc-links.py
       - name: docs status labels
         run: python3 scripts/check-doc-status.py
-      - name: v0.0.4 architecture ratchets
+      - name: architecture guardrails
         run: |
-          python3 scripts/check-v004-architecture-ratchets.py
+          python3 scripts/check-architecture-guardrails.py
           python3 scripts/check-sql-policy.py
       - name: set up Lean/Lake
         uses: leanprover/lean-action@v1

@@ -17,7 +17,7 @@ fn world_owner_delete_request_maps_to_refused_outcome() {
 
 #[test]
 fn public_api_does_not_expose_forgeable_abandoned_owner_constructor() {
-    // The real assertion is enforced by scripts/check-v004-architecture-ratchets.py because
+    // The real assertion is enforced by scripts/check-architecture-guardrails.py because
     // compile-fail UI tests are not currently wired for this workspace.
     // This test still pins the intended public API: callers work with requests
     // and outcomes, not deletion witnesses.
