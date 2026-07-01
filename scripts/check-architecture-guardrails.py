@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""v0.0.4 architecture ratchets.
+"""Architecture guardrails.
 
 These checks intentionally scan source text rather than relying on compile-time
 reachability. A stale public vocabulary or bypass surface should be removed, not
@@ -283,11 +283,11 @@ def main() -> int:
     check_caller_supplied_audit(findings)
 
     if findings:
-        print("v0.0.4 architecture ratchet violations:", file=sys.stderr)
+        print("architecture guardrail violations:", file=sys.stderr)
         for finding in findings:
             print(f"  {finding.render()}", file=sys.stderr)
         return 1
-    print("v0.0.4 architecture ratchets passed")
+    print("architecture guardrails passed")
     return 0
 
 
