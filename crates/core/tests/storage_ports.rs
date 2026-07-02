@@ -550,6 +550,18 @@ impl FactRetentionPort for FactRetentionFake {
     async fn clear_fact_retention(&self, owner: &Owner) -> Result<bool, StorageError> {
         fake_error()
     }
+
+    async fn set_legal_hold(&self, owner: &Owner) -> Result<(), StorageError> {
+        fake_error()
+    }
+
+    async fn get_legal_hold(&self, owner: &Owner) -> Result<bool, StorageError> {
+        fake_error()
+    }
+
+    async fn clear_legal_hold(&self, owner: &Owner) -> Result<bool, StorageError> {
+        fake_error()
+    }
 }
 
 #[derive(Debug)]

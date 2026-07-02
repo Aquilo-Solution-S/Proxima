@@ -353,6 +353,18 @@ mod storage_port_tests_support {
         async fn clear_fact_retention(&self, _owner: &crate::Owner) -> Result<bool, StorageError> {
             Ok(false)
         }
+
+        async fn set_legal_hold(&self, _owner: &crate::Owner) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn get_legal_hold(&self, _owner: &crate::Owner) -> Result<bool, StorageError> {
+            Ok(false)
+        }
+
+        async fn clear_legal_hold(&self, _owner: &crate::Owner) -> Result<bool, StorageError> {
+            Ok(false)
+        }
     }
 
     #[derive(Debug)]

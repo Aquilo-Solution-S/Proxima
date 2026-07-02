@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::common::{create_db, db_url, drop_db, seed_memory, seed_memory_edge};
-use proxima_core::access::AccessError;
+use proxima_core::access::{AccessError, Role};
 use proxima_core::change_event::EdgeTargetProjection;
 use proxima_core::engine::Engine;
 use proxima_core::storage_ports::{
@@ -11,7 +11,7 @@ use proxima_core::storage_ports::{
     OwnerMembershipAdminPort, StoragePorts,
 };
 use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
-use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest};
+use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, QueryRequest};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     AuthPath, AuthzContext, ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal,
@@ -119,6 +119,81 @@ async fn audit_count(pg: &PgStorage) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.compliance_audit_log")
         .fetch_one(pg.pool_for_tests())
         .await
+}
+
+fn admin_authz_for(owner: OwnerRef) -> AuthzContext {
+    match owner {
+        OwnerRef::Personal(_) => AuthzContext::single_owner(&owner, AuthPath::System),
+        OwnerRef::Group(_) => AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin())],
+            AuthPath::HostBearer,
+        ),
+        OwnerRef::World => AuthzContext::denied(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OwnerContentCounts {
+    memories: i64,
+    goals: i64,
+    edges: i64,
+    fact_entities: i64,
+    receipts: i64,
+    source_batches: i64,
+    citations: i64,
+    cited_objects: i64,
+}
+
+async fn owner_content_counts(
+    pg: &PgStorage,
+    owner: OwnerRef,
+) -> Result<OwnerContentCounts, sqlx::Error> {
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
+    let (
+        memories,
+        goals,
+        edges,
+        fact_entities,
+        receipts,
+        source_batches,
+        citations,
+        cited_objects,
+    ): (i64, i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT
+            (SELECT count(*)::bigint FROM proxima_core.memories WHERE owner_kind = $1 AND owner_id IS NOT DISTINCT FROM $2),
+            (SELECT count(*)::bigint FROM proxima_core.goals WHERE owner_kind = $1 AND owner_id IS NOT DISTINCT FROM $2),
+            (SELECT count(*)::bigint FROM proxima_core.edges WHERE owner_kind = $1 AND owner_id IS NOT DISTINCT FROM $2),
+            (SELECT count(*)::bigint FROM proxima_core.fact_entities WHERE owner_kind = $1 AND owner_id IS NOT DISTINCT FROM $2),
+            (SELECT count(*)::bigint FROM proxima_core.fact_receipts WHERE owner_kind = $1 AND owner_id IS NOT DISTINCT FROM $2),
+            (SELECT count(*)::bigint FROM proxima_core.source_batches WHERE owner_kind = $1 AND owner_id IS NOT DISTINCT FROM $2),
+            (SELECT count(*)::bigint FROM proxima_core.citation_mappings WHERE owner_kind = $1 AND owner_id IS NOT DISTINCT FROM $2),
+            (SELECT count(*)::bigint FROM proxima_core.cited_objects WHERE owner_kind = $1 AND owner_id IS NOT DISTINCT FROM $2)",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    Ok(OwnerContentCounts {
+        memories,
+        goals,
+        edges,
+        fact_entities,
+        receipts,
+        source_batches,
+        citations,
+        cited_objects,
+    })
+}
+
+fn assert_legal_hold_refusal(outcome: &ComplianceEraseOutcome) {
+    assert!(matches!(
+        outcome,
+        ComplianceEraseOutcome::Refused {
+            reason: ComplianceEraseRefusal::LegalHoldActive,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -344,6 +419,294 @@ async fn world_owner_erase_refuses_and_audits() -> Result<(), Box<dyn std::error
                 .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(target_kind, "WorldOwner");
+
+        let held_owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        engine
+            .set_legal_hold(&admin_authz_for(held_owner), &held_owner)
+            .await?;
+        let held_outcome = engine
+            .erase_world_owner(&AuthzContext::for_subject(
+                UserId::new(Uuid::now_v7()),
+                AuthPath::HostBearer,
+            ))
+            .await?;
+        assert!(matches!(
+            held_outcome,
+            ComplianceEraseOutcome::Refused {
+                reason: ComplianceEraseRefusal::WorldOwner,
+                ..
+            }
+        ));
+        assert_eq!(audit_count(&pg).await?, 2);
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn legal_hold_round_trips_and_set_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await?;
+    let url = db_url(&db_name);
+    let result = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let engine = compliance_engine(&pg);
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let authz = admin_authz_for(owner);
+
+        assert!(!engine.get_legal_hold(&authz, &owner).await?);
+        engine.set_legal_hold(&authz, &owner).await?;
+        assert!(engine.get_legal_hold(&authz, &owner).await?);
+        engine.set_legal_hold(&authz, &owner).await?;
+        assert!(engine.get_legal_hold(&authz, &owner).await?);
+        assert!(engine.clear_legal_hold(&authz, &owner).await?);
+        assert!(!engine.get_legal_hold(&authz, &owner).await?);
+        assert!(!engine.clear_legal_hold(&authz, &owner).await?);
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn legal_hold_blocks_destructive_erase_verbs_without_deleting_rows()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await?;
+    let url = db_url(&db_name);
+    let result = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let engine = compliance_engine(&pg);
+
+        let group = GroupId::new(Uuid::now_v7());
+        let group_owner = OwnerRef::Group(group);
+        pg.ingest_fact_atomic(
+            &group_owner,
+            &receipt_draft("hold/group-a", Uuid::now_v7(), b"held-group-a"),
+            None,
+        )
+        .await?;
+        pg.ingest_fact_atomic(
+            &group_owner,
+            &receipt_draft("hold/group-b", Uuid::now_v7(), b"held-group-b"),
+            None,
+        )
+        .await?;
+        let group_authz = admin_authz_for(group_owner);
+        engine.set_legal_hold(&group_authz, &group_owner).await?;
+        let group_counts = owner_content_counts(&pg, group_owner).await?;
+
+        let outcome = engine
+            .erase_abandoned_group_owner(
+                &AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::HostBearer),
+                group,
+            )
+            .await?;
+        assert_legal_hold_refusal(&outcome);
+        assert_eq!(owner_content_counts(&pg, group_owner).await?, group_counts);
+
+        let outcome = engine
+            .erase_abandoned_group_source_scope(
+                &AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::HostBearer),
+                group,
+                SourceId::new("hold/group-a"),
+            )
+            .await?;
+        assert_legal_hold_refusal(&outcome);
+        assert_eq!(owner_content_counts(&pg, group_owner).await?, group_counts);
+
+        let user = UserId::new(Uuid::now_v7());
+        let personal_owner = OwnerRef::Personal(user);
+        pg.ingest_fact_atomic(
+            &personal_owner,
+            &receipt_draft("hold/personal-a", Uuid::now_v7(), b"held-personal-a"),
+            None,
+        )
+        .await?;
+        pg.ingest_fact_atomic(
+            &personal_owner,
+            &receipt_draft("hold/personal-b", Uuid::now_v7(), b"held-personal-b"),
+            None,
+        )
+        .await?;
+        let personal_authz = admin_authz_for(personal_owner);
+        engine
+            .set_legal_hold(&personal_authz, &personal_owner)
+            .await?;
+        let personal_counts = owner_content_counts(&pg, personal_owner).await?;
+
+        let outcome = engine
+            .erase_dropped_personal_owner(
+                &AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::HostBearer),
+                user,
+                "drop-ok".to_owned(),
+            )
+            .await?;
+        assert_legal_hold_refusal(&outcome);
+        assert_eq!(
+            owner_content_counts(&pg, personal_owner).await?,
+            personal_counts
+        );
+
+        let outcome = engine
+            .erase_dropped_personal_source_scope(
+                &AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::HostBearer),
+                user,
+                SourceId::new("hold/personal-a"),
+                "drop-ok".to_owned(),
+            )
+            .await?;
+        assert_legal_hold_refusal(&outcome);
+        assert_eq!(
+            owner_content_counts(&pg, personal_owner).await?,
+            personal_counts
+        );
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn legal_hold_does_not_block_reads_or_ordinary_writes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await?;
+    let url = db_url(&db_name);
+    let result = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let engine = compliance_engine(&pg);
+        let user = UserId::new(Uuid::now_v7());
+        let owner = OwnerRef::Personal(user);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        engine.set_legal_hold(&authz, &owner).await?;
+
+        let written = engine
+            .fact_ingest(
+                &authz,
+                receipt_draft("hold/write", Uuid::now_v7(), b"write-while-held"),
+            )
+            .await?;
+        let read = engine
+            .query(&authz, &QueryRequest::for_owner(owner))
+            .await?;
+        assert!(read.memories.iter().any(|row| row.id == written.memory_id));
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn clearing_legal_hold_restores_prior_erase_behavior()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await?;
+    let url = db_url(&db_name);
+    let result = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let engine = compliance_engine(&pg);
+        let group = GroupId::new(Uuid::now_v7());
+        let owner = OwnerRef::Group(group);
+        let written = pg
+            .ingest_fact_atomic(
+                &owner,
+                &receipt_draft("hold/clear", Uuid::now_v7(), b"clear-then-erase"),
+                None,
+            )
+            .await?;
+        let authz = admin_authz_for(owner);
+        engine.set_legal_hold(&authz, &owner).await?;
+
+        let refused = engine
+            .erase_abandoned_group_owner(
+                &AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::HostBearer),
+                group,
+            )
+            .await?;
+        assert_legal_hold_refusal(&refused);
+
+        assert!(engine.clear_legal_hold(&authz, &owner).await?);
+        let completed = engine
+            .erase_abandoned_group_owner(
+                &AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::HostBearer),
+                group,
+            )
+            .await?;
+        assert!(matches!(
+            completed,
+            ComplianceEraseOutcome::Completed { .. }
+        ));
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memories WHERE memory_id = $1",
+        )
+        .bind(written.memory_id.into_inner())
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(remaining, 0);
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn legal_hold_on_one_owner_does_not_affect_another_owner_erase()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await?;
+    let url = db_url(&db_name);
+    let result = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let engine = compliance_engine(&pg);
+        let held_group = GroupId::new(Uuid::now_v7());
+        let held_owner = OwnerRef::Group(held_group);
+        pg.ingest_fact_atomic(
+            &held_owner,
+            &receipt_draft("hold/owner-a", Uuid::now_v7(), b"held-owner-a"),
+            None,
+        )
+        .await?;
+        let held_counts = owner_content_counts(&pg, held_owner).await?;
+        engine
+            .set_legal_hold(&admin_authz_for(held_owner), &held_owner)
+            .await?;
+
+        let free_group = GroupId::new(Uuid::now_v7());
+        let free_owner = OwnerRef::Group(free_group);
+        let free = pg
+            .ingest_fact_atomic(
+                &free_owner,
+                &receipt_draft("hold/owner-b", Uuid::now_v7(), b"free-owner-b"),
+                None,
+            )
+            .await?;
+        let outcome = engine
+            .erase_abandoned_group_owner(
+                &AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::HostBearer),
+                free_group,
+            )
+            .await?;
+        assert!(matches!(outcome, ComplianceEraseOutcome::Completed { .. }));
+        let free_remaining: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memories WHERE memory_id = $1",
+        )
+        .bind(free.memory_id.into_inner())
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(free_remaining, 0);
+        assert_eq!(owner_content_counts(&pg, held_owner).await?, held_counts);
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;

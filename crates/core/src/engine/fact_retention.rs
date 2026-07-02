@@ -105,4 +105,164 @@ impl Engine {
             .await
             .map_err(|e| ProtocolError::internal(format!("clear_fact_retention: {e}")))
     }
+
+    /// Set an owner-scoped legal/security hold.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context cannot access `owner` or
+    /// lacks `Admin`, and `Internal` for storage failures.
+    pub async fn set_legal_hold(
+        &self,
+        authz: &AuthzContext,
+        owner: &Owner,
+    ) -> Result<(), ProtocolError> {
+        let permit = self.authorize_write(authz, owner, Relation::Admin).await?;
+        self.storage
+            .fact_retention
+            .fact_retention
+            .set_legal_hold(permit.owner())
+            .await
+            .map_err(|e| ProtocolError::internal(format!("set_legal_hold: {e}")))
+    }
+
+    /// Read whether an owner-scoped legal/security hold is active.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context cannot access `owner` or
+    /// lacks `Admin`, and `Internal` for storage failures.
+    pub async fn get_legal_hold(
+        &self,
+        authz: &AuthzContext,
+        owner: &Owner,
+    ) -> Result<bool, ProtocolError> {
+        let permit = self.authorize_write(authz, owner, Relation::Admin).await?;
+        self.storage
+            .fact_retention
+            .fact_retention
+            .get_legal_hold(permit.owner())
+            .await
+            .map_err(|e| ProtocolError::internal(format!("get_legal_hold: {e}")))
+    }
+
+    /// Clear an owner-scoped legal/security hold.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context cannot access `owner` or
+    /// lacks `Admin`, and `Internal` for storage failures.
+    pub async fn clear_legal_hold(
+        &self,
+        authz: &AuthzContext,
+        owner: &Owner,
+    ) -> Result<bool, ProtocolError> {
+        let permit = self.authorize_write(authz, owner, Relation::Admin).await?;
+        self.storage
+            .fact_retention
+            .fact_retention
+            .clear_legal_hold(permit.owner())
+            .await
+            .map_err(|e| ProtocolError::internal(format!("clear_legal_hold: {e}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::access::Role;
+    use crate::error::ErrorCode;
+    use crate::verbs::schema::FlavorRegistryFrozen;
+    use crate::{AuthPath, AuthzContext, OwnerRef, UserId};
+    use uuid::Uuid;
+
+    fn fresh_personal_owner() -> (UserId, Owner) {
+        let user = UserId::new(Uuid::now_v7());
+        (user, OwnerRef::Personal(user))
+    }
+
+    fn boot_engine() -> Engine {
+        Engine::new(FlavorRegistryFrozen::new())
+    }
+
+    #[tokio::test]
+    async fn legal_hold_rejects_owner_the_context_cannot_access() {
+        let (_principal, owner) = fresh_personal_owner();
+        let (_stranger, stranger_owner) = fresh_personal_owner();
+        let engine = boot_engine();
+        let stranger = AuthzContext::single_owner(&stranger_owner, AuthPath::System);
+
+        let err = engine
+            .set_legal_hold(&stranger, &owner)
+            .await
+            .expect_err("foreign owner must be rejected");
+        assert_eq!(err.code, ErrorCode::Forbidden);
+
+        let err = engine
+            .get_legal_hold(&stranger, &owner)
+            .await
+            .expect_err("foreign owner must be rejected");
+        assert_eq!(err.code, ErrorCode::Forbidden);
+
+        let err = engine
+            .clear_legal_hold(&stranger, &owner)
+            .await
+            .expect_err("foreign owner must be rejected");
+        assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn legal_hold_rejects_context_without_admin_role() {
+        let (subject, _personal_owner) = fresh_personal_owner();
+        let owner = OwnerRef::Group(crate::GroupId::new(Uuid::now_v7()));
+        let engine = boot_engine();
+        let authz = AuthzContext::for_subject_with_role(
+            subject,
+            [(owner, Role::viewer())],
+            AuthPath::HostBearer,
+        );
+
+        let err = engine
+            .set_legal_hold(&authz, &owner)
+            .await
+            .expect_err("missing admin role must be rejected");
+        assert_eq!(err.code, ErrorCode::Forbidden);
+
+        let err = engine
+            .get_legal_hold(&authz, &owner)
+            .await
+            .expect_err("missing admin role must be rejected");
+        assert_eq!(err.code, ErrorCode::Forbidden);
+
+        let err = engine
+            .clear_legal_hold(&authz, &owner)
+            .await
+            .expect_err("missing admin role must be rejected");
+        assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn legal_hold_authorized_context_reaches_storage() {
+        let (_subject, owner) = fresh_personal_owner();
+        let engine = boot_engine();
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+
+        let err = engine
+            .set_legal_hold(&authz, &owner)
+            .await
+            .expect_err("RejectingStorage rejects writes");
+        assert_eq!(err.code, ErrorCode::Internal);
+
+        let err = engine
+            .get_legal_hold(&authz, &owner)
+            .await
+            .expect_err("RejectingStorage rejects writes");
+        assert_eq!(err.code, ErrorCode::Internal);
+
+        let err = engine
+            .clear_legal_hold(&authz, &owner)
+            .await
+            .expect_err("RejectingStorage rejects writes");
+        assert_eq!(err.code, ErrorCode::Internal);
+    }
 }

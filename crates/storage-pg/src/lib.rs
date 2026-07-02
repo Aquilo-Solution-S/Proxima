@@ -1342,6 +1342,18 @@ impl FactRetentionPort for PgStorage {
     async fn clear_fact_retention(&self, owner: &Owner) -> Result<bool, StorageError> {
         verbs::fact_retention::clear_fact_retention(&self.pool, owner).await
     }
+
+    async fn set_legal_hold(&self, owner: &Owner) -> Result<(), StorageError> {
+        verbs::fact_retention::set_legal_hold(&self.pool, owner).await
+    }
+
+    async fn get_legal_hold(&self, owner: &Owner) -> Result<bool, StorageError> {
+        verbs::fact_retention::get_legal_hold(&self.pool, owner).await
+    }
+
+    async fn clear_legal_hold(&self, owner: &Owner) -> Result<bool, StorageError> {
+        verbs::fact_retention::clear_legal_hold(&self.pool, owner).await
+    }
 }
 
 #[async_trait::async_trait]
