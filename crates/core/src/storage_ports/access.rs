@@ -18,6 +18,22 @@ pub trait OwnerAccessReadPort: Send + Sync {
 }
 
 #[async_trait::async_trait]
+pub trait OwnerTransferPort: Send + Sync {
+    /// Transfer one memory or goal row's owner columns to
+    /// [`OwnerRef::World`] in a single statement, gated on the row
+    /// currently being owned by `from_owner`. Returns `true` when a row
+    /// existed under `from_owner` and was updated; `false` when no row
+    /// matched (already published, owner changed concurrently, tombstoned,
+    /// or absent) — the caller treats `false` as a clean, non-panicking
+    /// denial rather than a storage error.
+    async fn transfer_to_world(
+        &self,
+        entity: EntityId,
+        from_owner: OwnerRef,
+    ) -> Result<bool, StorageError>;
+}
+
+#[async_trait::async_trait]
 pub trait OwnerMembershipAdminPort: Send + Sync {
     async fn add_group_member(
         &self,

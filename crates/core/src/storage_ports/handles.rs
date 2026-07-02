@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::access::{OwnerAccessReadPort, OwnerMembershipAdminPort};
+use super::access::{OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort};
 use super::change::ChangeEventPort;
 use super::compliance::{
     ComplianceAdminPort, ComplianceErasePort, FactRetentionPort, OwnerDropProofPort,
@@ -30,6 +30,7 @@ pub type EdgeReadHandle = Arc<dyn EdgeReadPort>;
 pub type CitationHandle = Arc<dyn CitationPort>;
 pub type OwnerAccessReadHandle = Arc<dyn OwnerAccessReadPort>;
 pub type OwnerMembershipAdminHandle = Arc<dyn OwnerMembershipAdminPort>;
+pub type OwnerTransferHandle = Arc<dyn OwnerTransferPort>;
 pub type SourceBatchHandle = Arc<dyn SourceBatchPort>;
 pub type FactRetentionHandle = Arc<dyn FactRetentionPort>;
 pub type ComplianceEraseHandle = Arc<dyn ComplianceErasePort>;

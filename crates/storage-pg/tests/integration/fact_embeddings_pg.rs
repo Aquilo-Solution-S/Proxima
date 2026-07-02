@@ -143,6 +143,7 @@ fn compliance_engine_for(pg: proxima_storage_pg::PgStorage) -> proxima_core::Eng
         .citation(pg.clone())
         .owner_access_read(pg.clone())
         .owner_membership_admin(pg.clone())
+        .owner_transfer(pg.clone())
         .source_batch(pg.clone())
         .fact_retention(pg.clone())
         .compliance_erase(pg.clone())

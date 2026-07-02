@@ -27,7 +27,7 @@ use proxima_core::storage_ports::{
     EmbeddingTextPort, EmbeddingWritePort, FactIngestPort, FactRetentionPort, GoalReadPort,
     GoalWakeCandidatePort, GoalWritePort, McpCallReadPort, McpCallWritePort, MemoryAuthoringPort,
     MemoryInspectPort, MemoryReadPort, OwnerAccessReadPort, OwnerMembershipAdminPort,
-    RegistryProjectionPort, SourceBatchPort, StoragePorts,
+    OwnerTransferPort, RegistryProjectionPort, SourceBatchPort, StoragePorts,
 };
 use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
@@ -359,6 +359,7 @@ impl PgStorage {
             .citation(self.clone())
             .owner_access_read(self.clone())
             .owner_membership_admin(self.clone())
+            .owner_transfer(self.clone())
             .source_batch(self.clone())
             .fact_retention(self.clone())
             .compliance_erase(self.clone())
@@ -1484,6 +1485,17 @@ impl OwnerMembershipAdminPort for PgStorage {
         group_id: GroupId,
     ) -> Result<Vec<(UserId, Relation)>, StorageError> {
         access::owner_columns::list_group_members(&self.pool, group_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl OwnerTransferPort for PgStorage {
+    async fn transfer_to_world(
+        &self,
+        entity: EntityId,
+        from_owner: OwnerRef,
+    ) -> Result<bool, StorageError> {
+        access::owner_columns::transfer_to_world(&self.pool, entity, from_owner).await
     }
 }
 

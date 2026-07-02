@@ -6,7 +6,7 @@ use super::handles::{
     EdgeReadHandle, EmbeddingJobHandle, EmbeddingTextHandle, EmbeddingWriteHandle,
     FactIngestHandle, FactRetentionHandle, GoalReadHandle, GoalWriteHandle, McpCallReadHandle,
     McpCallWriteHandle, MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle,
-    OwnerAccessReadHandle, OwnerDropProofHandle, OwnerMembershipAdminHandle,
+    OwnerAccessReadHandle, OwnerDropProofHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
     RegistryProjectionHandle, SourceBatchHandle,
 };
 use super::rejecting::RejectingStorage;
@@ -30,6 +30,7 @@ pub struct StoragePorts {
     citation: CitationHandle,
     owner_access_read: OwnerAccessReadHandle,
     owner_membership_admin: OwnerMembershipAdminHandle,
+    owner_transfer: OwnerTransferHandle,
     source_batch: SourceBatchHandle,
     fact_retention: FactRetentionHandle,
     compliance_erase: ComplianceEraseHandle,
@@ -44,8 +45,11 @@ pub(crate) struct AccessReadStoragePorts {
 }
 
 #[derive(Clone)]
+#[allow(clippy::struct_field_names)] // all three ports are owner-* by domain, not incidental naming
 pub(crate) struct AccessAdminStoragePorts {
     pub owner_membership_admin: OwnerMembershipAdminHandle,
+    pub owner_access_read: OwnerAccessReadHandle,
+    pub owner_transfer: OwnerTransferHandle,
 }
 
 #[derive(Clone)]
@@ -138,6 +142,7 @@ pub struct StoragePortsBuilder {
     citation: Option<CitationHandle>,
     owner_access_read: Option<OwnerAccessReadHandle>,
     owner_membership_admin: Option<OwnerMembershipAdminHandle>,
+    owner_transfer: Option<OwnerTransferHandle>,
     source_batch: Option<SourceBatchHandle>,
     fact_retention: Option<FactRetentionHandle>,
     compliance_erase: Option<ComplianceEraseHandle>,
@@ -185,6 +190,7 @@ impl StoragePorts {
             citation: rejecting.clone(),
             owner_access_read: rejecting.clone(),
             owner_membership_admin: rejecting.clone(),
+            owner_transfer: rejecting.clone(),
             source_batch: rejecting.clone(),
             fact_retention: rejecting.clone(),
             compliance_erase: rejecting.clone(),
@@ -203,6 +209,8 @@ impl From<StoragePorts> for EngineStoragePorts {
             },
             access_admin: AccessAdminStoragePorts {
                 owner_membership_admin: ports.owner_membership_admin.clone(),
+                owner_access_read: ports.owner_access_read.clone(),
+                owner_transfer: ports.owner_transfer.clone(),
             },
             compliance: ComplianceStoragePorts {
                 compliance_erase: ports.compliance_erase.clone(),
@@ -347,6 +355,12 @@ impl StoragePortsBuilder {
     }
 
     #[must_use]
+    pub fn owner_transfer(mut self, handle: OwnerTransferHandle) -> Self {
+        self.owner_transfer = Some(handle);
+        self
+    }
+
+    #[must_use]
     pub fn source_batch(mut self, handle: SourceBatchHandle) -> Self {
         self.source_batch = Some(handle);
         self
@@ -430,6 +444,9 @@ impl StoragePortsBuilder {
             owner_membership_admin: self
                 .owner_membership_admin
                 .expect("owner_membership_admin storage port configured"),
+            owner_transfer: self
+                .owner_transfer
+                .expect("owner_transfer storage port configured"),
             source_batch: self
                 .source_batch
                 .expect("source_batch storage port configured"),
