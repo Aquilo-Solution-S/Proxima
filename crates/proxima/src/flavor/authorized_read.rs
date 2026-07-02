@@ -272,7 +272,7 @@ fn bounded_candidates(candidates: &[uuid::Uuid], _limit: usize) -> Vec<uuid::Uui
 /// a `NOT EXISTS` against the full table — each candidate's head status is
 /// globally correct regardless of which batch it lands in. Silent truncation
 /// here would be a correctness bug, not a cap: `code-chunk-v1` memory ids
-/// are deterministic UUIDv5 content hashes (see
+/// are deterministic `UUIDv5` content hashes (see
 /// `flavors/code/src/ingest/blobs.rs::code_slice_memory_id`), so no ordering
 /// of a truncated candidate window could guarantee the true head survives.
 ///
