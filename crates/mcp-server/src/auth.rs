@@ -163,7 +163,7 @@ mod tests {
     use async_trait::async_trait;
     use proxima_core::{
         AccessScope, AuthError, Engine, ErrorCode, FlavorRegistry, GetGraphReadRequest, GroupId,
-        OwnerRef, Role, UserId,
+        OwnerRef, Relation, Role, UserId,
     };
 
     fn fake_owner() -> Owner {
@@ -358,6 +358,51 @@ mod tests {
         let auth =
             McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
         assert!(auth.resolve("host-token").await.is_none());
+    }
+
+    /// Task-3 host-resolved boundary: a subject with no role at all on the
+    /// deployment-configured owner is rejected at resolve, not later at an
+    /// engine call. Same fail-closed shape as
+    /// `host_context_without_configured_owner_role_is_rejected`, restated
+    /// against the `server_resolved` vocabulary the default OIDC path now
+    /// always produces.
+    #[tokio::test]
+    async fn host_resolved_user_without_role_on_configured_owner_is_rejected() {
+        let owner = fake_group_owner();
+        let authz = AuthzContext::for_subject(fake_user(), AuthPath::HostBearer);
+        let auth =
+            McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
+
+        assert!(auth.resolve("host-token").await.is_none());
+    }
+
+    /// A host-resolved subject with only `Viewer` on the configured group
+    /// owner resolves (viewer is a real role), but a manage-only engine
+    /// operation on that owner must still fail.
+    #[tokio::test]
+    async fn host_resolved_user_with_viewer_role_cannot_manage_group() {
+        let owner = fake_group_owner();
+        let subject = fake_user();
+        let authz = host_group_context(subject, owner, Role::viewer());
+        let auth =
+            McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
+
+        let ctx = auth
+            .resolve("host-token")
+            .await
+            .expect("viewer role on the configured owner still resolves");
+        assert!(ctx.authz.can_access_owner(&owner));
+
+        let OwnerRef::Group(group) = owner else {
+            unreachable!("fake_group_owner is always a Group owner")
+        };
+        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+        let err = engine
+            .add_member(&ctx.authz, group, fake_user(), Relation::Editor)
+            .await
+            .expect_err("viewer role must not be able to manage group membership");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
     }
 
     #[tokio::test]
