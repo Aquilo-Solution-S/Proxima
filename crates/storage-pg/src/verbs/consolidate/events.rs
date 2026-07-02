@@ -3,7 +3,7 @@ use proxima_core::{Owner, OwnerRef, OwnerRefKind, StorageError};
 use sqlx::PgPool;
 use sqlx::Row;
 
-use crate::change_event::hydrate_change_event;
+use crate::change_event::{hydrate_change_event, hydrate_change_events_batch};
 use crate::error::map_err;
 
 pub async fn list_change_events_after(
@@ -44,14 +44,22 @@ pub async fn list_change_events_after(
         .await
         .map_err(map_err)?;
 
-    let mut out = Vec::with_capacity(rows.len());
-    for r in rows {
-        let seq: uuid::Uuid = r.try_get("seq").map_err(map_err)?;
-        if let Some(event) = hydrate_change_event(pool, read_owners, seq).await? {
-            out.push(ChangeEventForWake { event });
-        }
-    }
-    Ok(out)
+    let seqs: Vec<uuid::Uuid> = rows
+        .iter()
+        .map(|r| r.try_get("seq"))
+        .collect::<Result<_, _>>()
+        .map_err(map_err)?;
+
+    // `hydrate_change_events_batch` always returns `seq DESC`; wake
+    // consumers rely on the forward chronological order the query above
+    // already established (`ORDER BY ce.seq ASC`), so restore it here.
+    let mut events = hydrate_change_events_batch(pool, read_owners, &seqs).await?;
+    events.sort_by_key(|event| event.seq);
+
+    Ok(events
+        .into_iter()
+        .map(|event| ChangeEventForWake { event })
+        .collect())
 }
 
 fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<Option<uuid::Uuid>>) {
@@ -84,6 +92,9 @@ pub async fn list_change_events_for_replay(
              ORDER BY ce.seq ASC
              LIMIT $5"
     );
+    // SQL-POLICY: fixed-fragment — `sql` only interpolates the fixed
+    // `edge_event_visibility_predicate` fragment (positional `$N` binds
+    // only); explicit proof since this call's line shifts with edits above.
     let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(&read_owner_kinds)
         .bind(&read_owner_ids)

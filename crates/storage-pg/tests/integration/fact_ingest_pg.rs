@@ -308,6 +308,62 @@ async fn list_change_events_after_filters_by_read_owners() {
     result.expect("change_event pull read-owner filtering failed");
 }
 
+const ASCENDING_ORDER_EVENT_COUNT: usize = 6;
+
+/// `hydrate_change_events_batch` always returns rows ordered by `seq DESC`;
+/// `list_change_events_after` must restore ascending order for wake
+/// consumers regardless of that internal ordering (Task 7 batch-hydrate
+/// migration off the old per-row `hydrate_change_event` loop).
+#[tokio::test]
+async fn list_change_events_after_preserves_ascending_seq_order() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let storage = Arc::new(pg.clone()).storage_ports();
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let engine = Engine::new(registry).with_storage_ports(storage);
+
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let authz =
+            proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
+
+        let mut expected_seqs = Vec::with_capacity(ASCENDING_ORDER_EVENT_COUNT);
+        for _ in 0..ASCENDING_ORDER_EVENT_COUNT {
+            let outcome = engine.fact_ingest(&authz, fresh_draft(owner)).await?;
+            expected_seqs.push(outcome.change_event_seq);
+        }
+        expected_seqs.sort_unstable();
+
+        let rows = pg
+            .list_change_events_after(std::slice::from_ref(&owner), Uuid::nil(), 100)
+            .await?;
+        let seqs: Vec<Uuid> = rows.iter().map(|row| row.event.seq).collect();
+
+        assert_eq!(
+            seqs.len(),
+            ASCENDING_ORDER_EVENT_COUNT,
+            "all ingested events must be returned"
+        );
+        assert_eq!(
+            seqs, expected_seqs,
+            "list_change_events_after must return ascending seq order"
+        );
+        assert!(
+            seqs.windows(2).all(|w| w[0] < w[1]),
+            "seqs must be strictly ascending: {seqs:?}"
+        );
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("list_change_events_after ascending-order test failed");
+}
+
 async fn seed_membership(
     pool: &sqlx::PgPool,
     group: &OwnerRef,
