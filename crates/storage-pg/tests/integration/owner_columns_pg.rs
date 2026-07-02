@@ -707,6 +707,50 @@ async fn engine_publish_to_world_gates_admin_denies_rewrite_and_allows_ordinary_
     common::drop_db(&db).await.unwrap();
 }
 
+/// Personal-owner publish: a bare `for_subject` context (no resolver group
+/// roles) may publish the subject's OWN content — `Role::personal()`'s write
+/// ceiling clears `authorize_write(..., Relation::Admin)` for the subject's
+/// Personal owner — while another user cannot publish it, and post-publish
+/// the entity is World-owned and readable by strangers.
+#[tokio::test]
+async fn engine_publish_to_world_personal_owner_self_publish() {
+    let (pg, db) = common::fresh_pg().await;
+    let author = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let stranger = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let entity = seed_memory_owned(&pg, author).await;
+
+    let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        .with_storage_ports(Arc::new(pg.clone()).storage_ports());
+
+    let stranger_err = engine
+        .publish_to_world(&granted_authz(&stranger), entity)
+        .await
+        .expect_err("another user cannot publish someone else's personal content");
+    assert_eq!(stranger_err.code, ErrorCode::Forbidden);
+    assert_single_home(&pg, entity.uuid(), &author).await;
+
+    engine
+        .publish_to_world(&granted_authz(&author), entity)
+        .await
+        .expect("a personal owner may publish their own content with no explicit roles");
+    assert_single_home(&pg, entity.uuid(), &OwnerRef::World).await;
+    assert_no_live_entity_lacks_home(&pg).await;
+
+    let republish_err = engine
+        .publish_to_world(&granted_authz(&author), entity)
+        .await
+        .expect_err("World is never a write owner again — re-publish fails closed");
+    assert_eq!(republish_err.code, ErrorCode::Forbidden);
+
+    let stranger_reads = read_owners(&pg, &stranger).await;
+    assert!(
+        pg.visible_to_any(entity, &stranger_reads).await.unwrap(),
+        "a published personal entity is readable by an unrelated user"
+    );
+
+    common::drop_db(&db).await.unwrap();
+}
+
 #[tokio::test]
 async fn pg_owner_access_resolver_resolves_group_roles_via_owner_access_port() {
     let (pg, db) = common::fresh_pg().await;
