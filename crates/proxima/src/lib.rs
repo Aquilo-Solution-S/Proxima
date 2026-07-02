@@ -135,7 +135,7 @@ type PgSidecarRegisterFn = Box<dyn FnOnce(&mut PgSidecarRegistry) + Send>;
 /// Builder for an embedded engine.
 pub struct ProximaBuilder {
     config: EmbedConfig,
-    owner: Owner,
+    owner: Option<Owner>,
     registers: Vec<RegisterFn>,
     pg_sidecar_registers: Vec<PgSidecarRegisterFn>,
     migrators: Vec<NamedMigrator>,
@@ -166,7 +166,7 @@ pub struct EmbeddedProxima {
     pub registry: Arc<proxima_core::FlavorRegistryFrozen>,
     pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
     pub blobs: Option<CitedBlobStore>,
-    pub owner: Owner,
+    pub owner: Option<Owner>,
 }
 
 impl EmbeddedProxima {
@@ -196,6 +196,11 @@ impl std::fmt::Debug for EmbeddedProxima {
 impl ProximaBuilder {
     #[must_use]
     pub fn new(config: EmbedConfig, owner: Owner) -> Self {
+        Self::new_optional(config, Some(owner))
+    }
+
+    #[must_use]
+    pub(crate) fn new_optional(config: EmbedConfig, owner: Option<Owner>) -> Self {
         Self {
             config,
             owner,

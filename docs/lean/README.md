@@ -25,7 +25,7 @@ from the core (the minimization discipline) — a failing build is drift.
 | `Causa/Identity.lean` | ids, Event, append-only/immutable/supersedable classes, vector-store independence (docs 01, 07) |
 | `Causa/Memory.lean` | F/A/P kinds, ℓ, fact text/typing rules, supersession, owner-role read context (doc 02) |
 | `Causa/Goals.lean` | Goal states, lifecycle, DAG acyclicity, active set (doc 06) |
-| `Causa/Edges.lean` | relation classes, directionality matrix, single-owner scope, masks (doc 02) |
+| `Causa/Edges.lean` | relation classes, directionality matrix, source-owner scope, masks (doc 02) |
 | `Causa/Operators.lean` | F→A / A→P / A→Goal shapes, no downward writes, provenance obligations, batch gate (docs 02, 04) |
 | `Causa/Citations.lean` | Fact-only bibliography, 1:1 mapping, owner match (doc 11) |
 | `Causa/Compliance.lean` | erasure scopes, suppression guard, pause (doc 13) |

@@ -8,7 +8,8 @@ This table is a human reference. Source code and deployment manifests remain aut
 |---|---|---|---|---|
 | `DATABASE_URL` | storage | binary default: `postgres://postgres@localhost/proxima_dev` | any non-default DB | dev compose uses `postgres://proxima:proxima@localhost:5434/proxima` |
 | `PROXIMA_MCP_BIND` | MCP server | `127.0.0.1:31415` for `proxima-mcp` | custom listener / deployment | non-loopback requires `PROXIMA_EXPOSE_NETWORK=true` |
-| `PROXIMA_MCP_MASTER_TOKEN` | MCP auth | unset | loopback dev master-token auth | forbidden for standing network-exposed deployments |
+| `PROXIMA_MCP_MASTER_TOKEN` | MCP auth | unset | loopback dev master-token auth | requires `PROXIMA_MCP_MASTER_TOKEN_SUBJECT`; forbidden for standing network-exposed deployments |
+| `PROXIMA_MCP_MASTER_TOKEN_SUBJECT` | MCP auth | unset | `PROXIMA_MCP_MASTER_TOKEN` set | UUID `UserId` resolved through `OwnerAccessPort`; Personal owner key is `personal:<uuid>` |
 | `PROXIMA_EXPOSE_NETWORK` | MCP server | unset/false | non-loopback bind | fail-closed exposure gate |
 | `PROXIMA_ALLOWED_ORIGINS` | MCP HTTP | unset/deployment-specific | browser/front-door exposure | comma-separated; never wildcard in production |
 | `PROXIMA_ALLOWED_HOSTS` | MCP HTTP | public URL host + allowed origins | non-loopback exposure override | DNS-rebinding guard; loopback always permitted |
@@ -36,8 +37,8 @@ This table is a human reference. Source code and deployment manifests remain aut
 
 | Flag | Required when | Notes |
 |---|---|---|
-| `--owner-user <UUID>` | headless MCP host | fixed `OwnerRef::Personal` owner; no org field |
-| `--master-token <token>` | loopback dev master-token auth | do not use as standing network-exposed auth |
+| `--master-token <UUID>` | loopback dev master-token auth | do not use as standing network-exposed auth |
+| `--master-token-subject <UUID>` | `--master-token` set | `UserId` for resolver-backed master-token auth |
 
 ## Build/Test/Internal Variables
 

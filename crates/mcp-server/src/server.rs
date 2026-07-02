@@ -20,16 +20,13 @@ use proxima_core::mcp::{
 use proxima_core::protocol::{
     resource as protocol_resource, resource_path as protocol_resource_path,
 };
-use proxima_core::{AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner};
+use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen};
 use serde::Serialize;
-
-type ResolvedAuthz = AuthzContext;
 
 use crate::auth::McpAuthContext;
 
 #[derive(Clone)]
 pub struct McpToolHost {
-    owner: Owner,
     registry: Arc<FlavorRegistryFrozen>,
     extensions: McpToolExtensions,
     engine: Option<Arc<Engine>>,
@@ -38,7 +35,6 @@ pub struct McpToolHost {
 impl std::fmt::Debug for McpToolHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("McpToolHost")
-            .field("owner", &self.owner)
             .field("has_engine", &self.engine.is_some())
             .finish_non_exhaustive()
     }
@@ -46,13 +42,8 @@ impl std::fmt::Debug for McpToolHost {
 
 impl McpToolHost {
     #[must_use]
-    pub fn from_parts(
-        owner: Owner,
-        registry: Arc<FlavorRegistryFrozen>,
-        extensions: McpToolExtensions,
-    ) -> Self {
+    pub fn from_parts(registry: Arc<FlavorRegistryFrozen>, extensions: McpToolExtensions) -> Self {
         Self {
-            owner,
             registry,
             extensions,
             engine: None,
@@ -60,8 +51,8 @@ impl McpToolHost {
     }
 
     #[must_use]
-    pub fn from_engine(engine: Arc<Engine>, owner: Owner, extensions: McpToolExtensions) -> Self {
-        Self::from_parts(owner, Arc::new(engine.registry().clone()), extensions).with_engine(engine)
+    pub fn from_engine(engine: Arc<Engine>, extensions: McpToolExtensions) -> Self {
+        Self::from_parts(Arc::new(engine.registry().clone()), extensions).with_engine(engine)
     }
 
     #[must_use]
@@ -80,7 +71,6 @@ impl McpToolHost {
     /// `migrator()` before serving tool calls.
     pub async fn from_database_url(
         database_url: &str,
-        owner: Owner,
         registry: FlavorRegistry,
     ) -> Result<Self, crate::McpServerError> {
         let pg = proxima_storage_pg::PgStorage::connect(database_url).await?;
@@ -89,11 +79,7 @@ impl McpToolHost {
         let engine = Arc::new(
             Engine::new(frozen.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
         );
-        Ok(Self::from_engine(
-            engine,
-            owner,
-            McpToolExtensions::default(),
-        ))
+        Ok(Self::from_engine(engine, McpToolExtensions::default()))
     }
 
     #[must_use]
@@ -106,23 +92,10 @@ impl McpToolHost {
     /// Master-token, host-bearer, and unauthenticated test calls receive
     /// no handle table and `OutputMode::PrefixedIds`.
     #[must_use]
-    pub fn ctx_for(
-        &self,
-        author: McpAuthorContext,
-        owner: Option<Owner>,
-        auth: Option<&McpAuthContext>,
-    ) -> McpToolCtx {
-        let owner = owner.unwrap_or(self.owner);
-        // Wire requests always carry Some(auth): `mcp_auth_layer` 401s
-        // unauthenticated requests before dispatch, and the facade always
-        // passes Some(authz). A None here is either an in-crate test
-        // scaffold (test builds) or a transport that nested `/mcp` without
-        // the auth layer (a regression) — see `unauthenticated_authz`.
-        let authz = match auth {
-            Some(a) => a.authz.clone(),
-            None => Self::unauthenticated_authz(&owner),
-        };
-        let master_token_id = auth.and_then(|c| c.master_token_id);
+    pub fn ctx_for(&self, author: McpAuthorContext, auth: &McpAuthContext) -> McpToolCtx {
+        let owner = auth.owner;
+        let authz = auth.authz.clone();
+        let master_token_id = auth.master_token_id;
         McpToolCtx {
             owner,
             authz,
@@ -137,29 +110,6 @@ impl McpToolHost {
         }
     }
 
-    /// Authz for a host call that arrived without a bound
-    /// `McpAuthContext`.
-    ///
-    /// Release builds never legitimately reach this: the wire path is
-    /// gated by `mcp_auth_layer` (401 before dispatch) and the facade
-    /// always passes `Some(authz)`. If a future transport nests `/mcp`
-    /// without the auth layer and dispatches here, fail closed with a
-    /// zero-capability context instead of minting System admin. The
-    /// permissive test arm below is compiled out of release builds, so
-    /// the admin fallback cannot silently return.
-    #[cfg(not(test))]
-    fn unauthenticated_authz(owner: &Owner) -> ResolvedAuthz {
-        AuthzContext::denied_for_owner(owner)
-    }
-
-    /// Test scaffolds call the host directly without an auth layer and
-    /// rely on a full single-owner context. Compiled out of release
-    /// builds (see the release arm above).
-    #[cfg(test)]
-    fn unauthenticated_authz(owner: &Owner) -> ResolvedAuthz {
-        AuthzContext::single_owner(owner, AuthPath::HostBearer)
-    }
-
     /// # Errors
     ///
     /// Returns `ToolNotFound` or the called tool error.
@@ -170,14 +120,14 @@ impl McpToolHost {
         author: McpAuthorContext,
         auth: Option<McpAuthContext>,
     ) -> Result<serde_json::Value, ToolInvocationError> {
+        let auth = auth.ok_or_else(|| ToolInvocationError::NotAuthorized(name.to_string()))?;
         if let Some(descriptor) = self
             .registry
             .list_mcp_tools()
             .iter()
             .find(|d| tool_name_matches(d.name, name))
         {
-            let owner = auth.as_ref().map(|ctx| ctx.owner);
-            let ctx = self.ctx_for(author, owner, auth.as_ref());
+            let ctx = self.ctx_for(author, &auth);
             let call_fn = descriptor.call;
             let terminal: TerminalDispatch<'_> = Box::new(move |call| {
                 let ToolCall { args, ctx, .. } = call;
@@ -205,8 +155,9 @@ impl McpToolHost {
                 "unknown resource {uri}"
             )))
         })?;
-        let owner = auth.as_ref().map(|ctx| ctx.owner);
-        let ctx = self.ctx_for(author, owner, auth.as_ref());
+        let auth =
+            auth.ok_or_else(|| ToolInvocationError::NotAuthorized(parsed.scope_key().to_string()))?;
+        let ctx = self.ctx_for(author, &auth);
         let scope_key = parsed.scope_key();
 
         let terminal: TerminalDispatch<'_> = Box::new(move |call| {
@@ -424,7 +375,7 @@ mod tests {
     use super::*;
     use crate::auth::McpAuthContext;
     use proxima_core::mcp::McpAuthorContext;
-    use proxima_core::{FlavorRegistry, Owner, OwnerRef, ToolScope, UserId};
+    use proxima_core::{AuthzContext, FlavorRegistry, Owner, OwnerRef, ToolScope, UserId};
 
     fn fake_owner() -> Owner {
         OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
@@ -432,7 +383,6 @@ mod tests {
 
     fn make_server() -> McpToolHost {
         McpToolHost {
-            owner: fake_owner(),
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             extensions: McpToolExtensions::default(),
             engine: None,
@@ -440,7 +390,14 @@ mod tests {
     }
 
     fn master_token_auth(owner: Owner, token: uuid::Uuid) -> McpAuthContext {
-        McpAuthContext::for_master(token, owner)
+        McpAuthContext {
+            owner,
+            authz: AuthzContext::single_owner(&owner, AuthPath::MasterDev)
+                .narrowed_to_owner(owner)
+                .expect("personal owner narrows"),
+            model_id: None,
+            master_token_id: Some(token),
+        }
     }
 
     #[test]
@@ -549,14 +506,27 @@ mod tests {
         let token = uuid::Uuid::now_v7();
         let auth = master_token_auth(fake_owner(), token);
 
-        let ctx = server.ctx_for(author.clone(), None, Some(&auth));
+        let ctx = server.ctx_for(author, &auth);
         assert_eq!(ctx.master_token_id, Some(token));
         assert_eq!(ctx.mode, OutputMode::PrefixedIds);
         assert!(ctx.handles.is_none());
+    }
 
-        let ctx_no_auth = server.ctx_for(author, None, None);
-        assert_eq!(ctx_no_auth.master_token_id, None);
-        assert_eq!(ctx_no_auth.mode, OutputMode::PrefixedIds);
-        assert!(ctx_no_auth.handles.is_none());
+    #[tokio::test]
+    async fn call_tool_without_bound_auth_is_denied() {
+        let server = make_server();
+        let author = McpAuthorContext {
+            model_id: "test-model".into(),
+            client_name: "test-client".into(),
+            client_version: "0.1.0".into(),
+            caller_self_perspective: None,
+        };
+
+        let err = server
+            .call_tool("core_search_memories", serde_json::json!({}), author, None)
+            .await
+            .expect_err("missing bound owner/auth must deny");
+
+        assert!(matches!(err, ToolInvocationError::NotAuthorized(_)));
     }
 }

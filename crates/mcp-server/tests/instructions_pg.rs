@@ -13,8 +13,6 @@ use proxima_core::{FlavorRegistry, ToolScope};
 use proxima_mcp_server::{McpEdgeAuth, McpToolHost, default_allowlist, serve_streamable_http};
 use serde_json::json;
 
-use common::nil_owner;
-
 /// `initialize` and capture the full JSON-RPC response (the shared helper
 /// discards the body, but we need `result.instructions`).
 async fn initialize_capture(
@@ -26,6 +24,7 @@ async fn initialize_capture(
         .post(url)
         .header("Origin", "http://localhost")
         .header("Authorization", bearer)
+        .header("X-Proxima-Owner", common::nil_owner_header())
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
@@ -65,7 +64,7 @@ async fn start(
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
-    let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
+    let server = McpToolHost::from_database_url(&database_url, registry).await?;
     let (handle, addr) = serve_streamable_http(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
         server,
@@ -79,10 +78,11 @@ async fn start(
 #[tokio::test]
 async fn initialize_returns_instructions_and_how_to_resource()
 -> Result<(), Box<dyn std::error::Error>> {
-    let auth_store = Arc::new(McpEdgeAuth::headless());
+    let auth_store =
+        Arc::new(McpEdgeAuth::headless().with_owner_access(Arc::new(common::NilOwnerAccess)));
     let token = uuid::Uuid::new_v4();
     auth_store
-        .replace_local_master_token(token, nil_owner())
+        .replace_local_master_token(token, common::nil_subject())
         .await;
     let (handle, addr, db_name) = start(auth_store).await?;
 
@@ -170,10 +170,14 @@ async fn memory_profile_instructions_omit_excluded_tools() -> Result<(), Box<dyn
         .map(String::from)
         .collect(),
     );
-    let auth_store = Arc::new(McpEdgeAuth::headless().with_tool_scope(palette));
+    let auth_store = Arc::new(
+        McpEdgeAuth::headless()
+            .with_owner_access(Arc::new(common::NilOwnerAccess))
+            .with_tool_scope(palette),
+    );
     let token = uuid::Uuid::new_v4();
     auth_store
-        .replace_local_master_token(token, nil_owner())
+        .replace_local_master_token(token, common::nil_subject())
         .await;
     let (handle, addr, db_name) = start(auth_store).await?;
 

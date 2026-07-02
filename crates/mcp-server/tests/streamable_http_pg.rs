@@ -23,11 +23,12 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
-    let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
-    let auth_store = Arc::new(McpEdgeAuth::headless());
+    let server = McpToolHost::from_database_url(&database_url, registry).await?;
+    let auth_store =
+        Arc::new(McpEdgeAuth::headless().with_owner_access(Arc::new(common::NilOwnerAccess)));
     let token = uuid::Uuid::new_v4();
     auth_store
-        .replace_local_master_token(token, nil_owner())
+        .replace_local_master_token(token, common::nil_subject())
         .await;
     let (handle, addr) = serve_streamable_http(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
@@ -102,8 +103,9 @@ async fn missing_auth_returns_401() -> Result<(), Box<dyn std::error::Error>> {
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
-    let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
-    let auth_store = Arc::new(McpEdgeAuth::headless());
+    let server = McpToolHost::from_database_url(&database_url, registry).await?;
+    let auth_store =
+        Arc::new(McpEdgeAuth::headless().with_owner_access(Arc::new(common::NilOwnerAccess)));
     let (handle, addr) = serve_streamable_http(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
         server,
@@ -133,11 +135,12 @@ async fn disallowed_origin_returns_403_with_valid_token() -> Result<(), Box<dyn 
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
-    let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
-    let auth_store = Arc::new(McpEdgeAuth::headless());
+    let server = McpToolHost::from_database_url(&database_url, registry).await?;
+    let auth_store =
+        Arc::new(McpEdgeAuth::headless().with_owner_access(Arc::new(common::NilOwnerAccess)));
     let token = uuid::Uuid::new_v4();
     auth_store
-        .replace_local_master_token(token, nil_owner())
+        .replace_local_master_token(token, common::nil_subject())
         .await;
     let (handle, addr) = serve_streamable_http(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
@@ -170,11 +173,12 @@ async fn local_master_token_lists_all_tools_without_origin()
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
-    let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
-    let auth_store = Arc::new(McpEdgeAuth::headless());
+    let server = McpToolHost::from_database_url(&database_url, registry).await?;
+    let auth_store =
+        Arc::new(McpEdgeAuth::headless().with_owner_access(Arc::new(common::NilOwnerAccess)));
     let token = uuid::Uuid::new_v4();
     auth_store
-        .replace_local_master_token(token, nil_owner())
+        .replace_local_master_token(token, common::nil_subject())
         .await;
     let (handle, addr) = serve_streamable_http(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
@@ -261,9 +265,10 @@ async fn non_loopback_bind_refused_immediately() -> Result<(), Box<dyn std::erro
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
-    let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
+    let server = McpToolHost::from_database_url(&database_url, registry).await?;
     let bind: SocketAddr = "0.0.0.0:0".parse()?;
-    let auth_store = Arc::new(McpEdgeAuth::headless());
+    let auth_store =
+        Arc::new(McpEdgeAuth::headless().with_owner_access(Arc::new(common::NilOwnerAccess)));
     let err = serve_streamable_http(bind, server, default_allowlist(), auth_store)
         .await
         .expect_err("must refuse non-loopback");
@@ -382,8 +387,12 @@ async fn start_host_auth_server(
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
-    let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
-    let auth_store = Arc::new(McpEdgeAuth::headless().with_host(authenticator, nil_owner()));
+    let server = McpToolHost::from_database_url(&database_url, registry).await?;
+    let auth_store = Arc::new(
+        McpEdgeAuth::headless()
+            .with_owner_access(Arc::new(common::NilOwnerAccess))
+            .with_host(authenticator),
+    );
     let (handle, addr) = serve_streamable_http_with_revalidation(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
         server,
@@ -405,6 +414,7 @@ async fn open_standalone_sse(
         .get(url)
         .header("Origin", "http://localhost")
         .header("Authorization", bearer)
+        .header("X-Proxima-Owner", common::nil_owner_header())
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Mcp-Session-Id", session_id)
         .header("Accept", "text/event-stream")
@@ -422,6 +432,7 @@ async fn initialize_without_origin(
     let response = client
         .post(url)
         .header("Authorization", bearer)
+        .header("X-Proxima-Owner", common::nil_owner_header())
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
@@ -457,6 +468,7 @@ async fn initialized_without_origin(
     let response = client
         .post(url)
         .header("Authorization", bearer)
+        .header("X-Proxima-Owner", common::nil_owner_header())
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Mcp-Session-Id", session_id)
         .header("Content-Type", "application/json")
@@ -478,6 +490,7 @@ async fn post_rpc_without_origin(
     let mut request = client
         .post(url)
         .header("Authorization", bearer)
+        .header("X-Proxima-Owner", common::nil_owner_header())
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")

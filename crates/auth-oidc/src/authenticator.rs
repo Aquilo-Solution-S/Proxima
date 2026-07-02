@@ -11,10 +11,7 @@
 //! it: [`OidcAuthenticator::new`] maps the validated `(iss, sub)` through an
 //! issuer-aware [`OidcSubjectMap`] to a [`UserId`] and resolves
 //! [`proxima_core::OwnerRoles`] through an `OwnerAccessPort`, returning
-//! [`AuthzContext::server_resolved`]. [`OidcAuthenticator::single_owner`] is
-//! the mechanical migration path for a trivial single-tenant host: every
-//! accepted token maps to one fixed [`Owner`], matching the pre-split
-//! behavior byte-for-byte, with no resolver to compose.
+//! [`AuthzContext::server_resolved`].
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -23,7 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, Owner, OwnerAccessPort, OwnerRef,
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerAccessPort,
 };
 use serde::Deserialize;
 
@@ -121,25 +118,12 @@ impl OidcTokenValidator {
     }
 }
 
-enum IdentityResolution {
-    /// Mechanical migration path: every accepted token maps to this fixed
-    /// owner's subject, with no resolver to compose.
-    FixedOwner(Owner),
-    /// Default host-resolved path: the validated `(iss, sub)` maps through
-    /// `map` to a `UserId`, whose `OwnerRoles` are resolved through
-    /// `owner_access`.
-    SubjectMap {
-        map: OidcSubjectMap,
-        owner_access: Arc<dyn OwnerAccessPort>,
-    },
-}
-
-/// Validates Zitadel/OIDC bearer JWTs and shapes an [`AuthzContext`]. See
-/// the module docs for the two construction paths.
+/// Validates Zitadel/OIDC bearer JWTs and shapes an [`AuthzContext`].
 pub struct OidcAuthenticator {
     validator: OidcTokenValidator,
     allowed_subjects: Option<HashSet<String>>,
-    identity: IdentityResolution,
+    subject_map: OidcSubjectMap,
+    owner_access: Arc<dyn OwnerAccessPort>,
 }
 
 impl std::fmt::Debug for OidcAuthenticator {
@@ -171,36 +155,8 @@ impl OidcAuthenticator {
         Ok(Self {
             validator,
             allowed_subjects,
-            identity: IdentityResolution::SubjectMap {
-                map: subject_map,
-                owner_access,
-            },
-        })
-    }
-
-    /// Minimal single-tenant convenience: every accepted token maps to the
-    /// fixed `owner`'s subject, mirroring the pre-split
-    /// `OidcAuthConfig { owner, .. }` behavior byte-for-byte, with no
-    /// `OwnerAccessPort` to compose. `config.allowed_subjects` still gates
-    /// the token's actual `sub` claim; a non-`Personal` `owner` is accepted
-    /// at construction (matching prior behavior) but every `authenticate`
-    /// call then fails closed with `InvalidCredentials`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the OIDC issuer or explicit JWKS endpoint is
-    /// not HTTPS.
-    pub fn single_owner(
-        mut config: OidcAuthConfig,
-        keys: Arc<dyn KeyResolver>,
-        owner: Owner,
-    ) -> Result<Self, OidcConfigError> {
-        let allowed_subjects = std::mem::take(&mut config.allowed_subjects);
-        let validator = OidcTokenValidator::new(config, keys)?;
-        Ok(Self {
-            validator,
-            allowed_subjects,
-            identity: IdentityResolution::FixedOwner(owner),
+            subject_map,
+            owner_access,
         })
     }
 }
@@ -217,36 +173,25 @@ impl Authenticator for OidcAuthenticator {
             return Err(AuthError::InvalidCredentials);
         }
 
-        match &self.identity {
-            IdentityResolution::FixedOwner(owner) => {
-                let OwnerRef::Personal(subject) = *owner else {
-                    return Err(AuthError::InvalidCredentials);
-                };
-                tracing::debug!(sub = %claims.subject, "oidc token accepted (single-owner)");
-                Ok(AuthzContext::for_subject(subject, AuthPath::HostBearer)
-                    .with_expires_at(Some(claims.expires_at)))
-            }
-            IdentityResolution::SubjectMap { map, owner_access } => {
-                let Some(subject) = map.resolve(&claims.issuer, &claims.subject) else {
-                    tracing::debug!(
-                        sub = %claims.subject,
-                        iss = %claims.issuer,
-                        "oidc auth: token subject not in subject map"
-                    );
-                    return Err(AuthError::InvalidCredentials);
-                };
-                let roles = owner_access
-                    .resolve_roles_for_subject(subject)
-                    .await
-                    .map_err(|err| {
-                        tracing::warn!(error = %err, "oidc auth: owner-access resolution failed");
-                        AuthError::InvalidCredentials
-                    })?;
-                tracing::debug!(sub = %claims.subject, "oidc token accepted (host-resolved)");
-                Ok(AuthzContext::server_resolved(roles, AuthPath::HostBearer)
-                    .with_expires_at(Some(claims.expires_at)))
-            }
-        }
+        let Some(subject) = self.subject_map.resolve(&claims.issuer, &claims.subject) else {
+            tracing::debug!(
+                sub = %claims.subject,
+                iss = %claims.issuer,
+                "oidc auth: token subject not in subject map"
+            );
+            return Err(AuthError::InvalidCredentials);
+        };
+        let roles = self
+            .owner_access
+            .resolve_roles_for_subject(subject)
+            .await
+            .map_err(|err| {
+                tracing::warn!(error = %err, "oidc auth: owner-access resolution failed");
+                AuthError::InvalidCredentials
+            })?;
+        tracing::debug!(sub = %claims.subject, "oidc token accepted (host-resolved)");
+        Ok(AuthzContext::server_resolved(roles, AuthPath::HostBearer)
+            .with_expires_at(Some(claims.expires_at)))
     }
 }
 
@@ -282,10 +227,6 @@ mod tests {
         iss: String,
         aud: String,
         exp: u64,
-    }
-
-    fn test_owner() -> Owner {
-        OwnerRef::Personal(UserId::new(Uuid::new_v4()))
     }
 
     fn test_keys() -> TestKeys {
@@ -347,13 +288,18 @@ mod tests {
         )])))
     }
 
-    fn single_owner_authenticator(
+    fn mapped_authenticator(
         config: OidcAuthConfig,
         kid: &str,
         decoding: DecodingKey,
-        owner: Owner,
+        token_subject: &str,
+        subject: UserId,
+        roles: Vec<(Owner, Role)>,
     ) -> OidcAuthenticator {
-        OidcAuthenticator::single_owner(config, resolver(kid, decoding), owner)
+        let mut map = OidcSubjectMap::new();
+        map.insert(ISSUER, token_subject, subject).expect("insert");
+        let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(StaticOwnerAccess { subject, roles });
+        OidcAuthenticator::new(config, resolver(kid, decoding), map, owner_access)
             .expect("valid oidc config")
     }
 
@@ -456,10 +402,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn single_owner_authenticates_one_subject_against_fixed_owner() {
+    async fn mapped_subject_authenticates_with_personal_owner_access() {
         let keys = test_keys();
-        let owner = test_owner();
-        let auth = single_owner_authenticator(config(), KID, keys.decoding.clone(), owner);
+        let subject = UserId::new(Uuid::now_v7());
+        let owner = OwnerRef::Personal(subject);
+        let auth = mapped_authenticator(
+            config(),
+            KID,
+            keys.decoding.clone(),
+            "subject-1",
+            subject,
+            Vec::new(),
+        );
         let token = token(&keys, KID, ISSUER, AUDIENCE, "subject-1", future_exp());
 
         let ctx = auth
@@ -468,14 +422,23 @@ mod tests {
             .expect("authenticate valid token");
 
         assert_eq!(ctx.auth_path(), AuthPath::HostBearer);
+        assert_eq!(ctx.subject(), Some(subject));
         assert_eq!(ctx.principal(), owner);
+        assert!(ctx.can_access_owner(&owner));
         assert!(ctx.expires_at().is_some());
     }
 
     #[tokio::test]
     async fn rejects_wrong_audience() {
         let keys = test_keys();
-        let auth = single_owner_authenticator(config(), KID, keys.decoding.clone(), test_owner());
+        let auth = mapped_authenticator(
+            config(),
+            KID,
+            keys.decoding.clone(),
+            "subject-1",
+            UserId::new(Uuid::now_v7()),
+            Vec::new(),
+        );
         let token = token(
             &keys,
             KID,
@@ -494,7 +457,14 @@ mod tests {
     #[tokio::test]
     async fn rejects_wrong_issuer() {
         let keys = test_keys();
-        let auth = single_owner_authenticator(config(), KID, keys.decoding.clone(), test_owner());
+        let auth = mapped_authenticator(
+            config(),
+            KID,
+            keys.decoding.clone(),
+            "subject-1",
+            UserId::new(Uuid::now_v7()),
+            Vec::new(),
+        );
         let token = token(
             &keys,
             KID,
@@ -513,7 +483,14 @@ mod tests {
     #[tokio::test]
     async fn rejects_expired_token() {
         let keys = test_keys();
-        let auth = single_owner_authenticator(config(), KID, keys.decoding.clone(), test_owner());
+        let auth = mapped_authenticator(
+            config(),
+            KID,
+            keys.decoding.clone(),
+            "subject-1",
+            UserId::new(Uuid::now_v7()),
+            Vec::new(),
+        );
         let token = token(
             &keys,
             KID,
@@ -532,10 +509,16 @@ mod tests {
     #[tokio::test]
     async fn rejects_subject_not_in_allowlist() {
         let keys = test_keys();
-        let owner = test_owner();
         let mut config = config();
         config.allowed_subjects = Some(HashSet::from(["allowed-subject".to_owned()]));
-        let auth = single_owner_authenticator(config, KID, keys.decoding.clone(), owner);
+        let auth = mapped_authenticator(
+            config,
+            KID,
+            keys.decoding.clone(),
+            "subject-1",
+            UserId::new(Uuid::now_v7()),
+            Vec::new(),
+        );
         let token = token(&keys, KID, ISSUER, AUDIENCE, "subject-1", future_exp());
 
         assert_eq!(
@@ -547,10 +530,18 @@ mod tests {
     #[tokio::test]
     async fn rejects_unknown_kid() {
         let keys = test_keys();
-        let auth = OidcAuthenticator::single_owner(
+        let subject = UserId::new(Uuid::now_v7());
+        let mut map = OidcSubjectMap::new();
+        map.insert(ISSUER, "subject-1", subject).expect("insert");
+        let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(StaticOwnerAccess {
+            subject,
+            roles: Vec::new(),
+        });
+        let auth = OidcAuthenticator::new(
             config(),
             Arc::new(StaticJwksResolver::new(HashMap::new())),
-            test_owner(),
+            map,
+            owner_access,
         );
         let auth = auth.expect("valid oidc config");
         let token = token(&keys, KID, ISSUER, AUDIENCE, "subject-1", future_exp());

@@ -54,7 +54,7 @@ pub struct AppContext {
     pub engine: Arc<Engine>,
     pub(crate) pool: PgPool,
     pub blobs: Option<CitedBlobStore>,
-    pub owner: Owner,
+    pub owner: Option<Owner>,
 }
 
 impl AppContext {

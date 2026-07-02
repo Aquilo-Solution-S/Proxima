@@ -83,13 +83,12 @@ impl CoreMcpError {
 impl CoreMcpTools {
     #[must_use]
     pub fn new(
-        company_owner: Owner,
         registry: Arc<FlavorRegistryFrozen>,
         engine: Arc<Engine>,
         extensions: McpToolExtensions,
     ) -> Self {
         Self {
-            host: McpToolHost::from_parts(company_owner, registry, extensions).with_engine(engine),
+            host: McpToolHost::from_parts(registry, extensions).with_engine(engine),
         }
     }
 

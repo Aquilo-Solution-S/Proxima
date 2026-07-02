@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use proxima_core::{Owner, OwnerRef, UserId};
+use proxima_core::UserId;
 use uuid::Uuid;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:31415";
@@ -13,14 +13,14 @@ Usage:
 
 Proxima Streamable HTTP MCP server.
 
-Required:
-  --owner-user <UUID>      Fixed owner principal
-
 Auth (choose one mode):
   --master-token <UUID>    Local bearer token (or PROXIMA_MCP_MASTER_TOKEN);
                            clients send Authorization: Bearer pxm_<token>.
                            Loopback-only (mutually exclusive with network
                            exposure). Omit when using OIDC.
+  --master-token-subject <UUID>
+                           UserId subject for the local master token
+                           (or PROXIMA_MCP_MASTER_TOKEN_SUBJECT).
   (OIDC)                   Set PROXIMA_OIDC_ISSUER + PROXIMA_OIDC_AUDIENCE
                            (see Environment) for bearer-JWT auth instead.
 
@@ -64,6 +64,8 @@ Maintenance:
 
 Endpoint:
   http://127.0.0.1:31415/mcp
+  MCP initialize must include X-Proxima-Owner: personal:<uuid>,
+  group:<uuid>, or world. The server binds that owner to Mcp-Session-Id.
 
 Tools:
   core_search_memories
@@ -94,18 +96,18 @@ Optional:
 #[derive(Clone)]
 pub struct McpConfig {
     pub database_url: String,
-    pub owner: Owner,
     pub bind: Option<SocketAddr>,
     pub master_token: Option<Uuid>,
+    pub master_token_subject: Option<UserId>,
 }
 
 impl std::fmt::Debug for McpConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("McpConfig")
             .field("database_url", &"<redacted>")
-            .field("owner", &self.owner)
             .field("bind", &self.bind)
             .field("master_token", &self.master_token.map(|_| "<redacted>"))
+            .field("master_token_subject", &self.master_token_subject)
             .finish()
     }
 }
@@ -158,12 +160,12 @@ impl ArgsError {
 /// # Errors
 ///
 /// Returns `ArgsError` for help, unknown flags, missing values, missing
-/// required owner fields, UUID parse errors, or unreadable current dir.
+/// required token-pair fields, UUID parse errors, or unreadable current dir.
 pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, ArgsError> {
-    let mut owner_user: Option<Uuid> = None;
     let mut database_url: Option<String> = None;
     let mut bind: Option<SocketAddr> = None;
     let mut master_token: Option<Uuid> = None;
+    let mut master_token_subject: Option<UserId> = None;
 
     let mut iter = args.into_iter();
     while let Some(flag) = iter.next() {
@@ -174,9 +176,11 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
                     .next()
                     .ok_or_else(|| ArgsError::Invalid(format!("flag {f} expects a value")))?;
                 match f {
-                    "--owner-user" => owner_user = Some(Uuid::parse_str(&value)?),
                     "--database-url" => database_url = Some(value),
                     "--master-token" => master_token = Some(parse_master_token(&value)?),
+                    "--master-token-subject" => {
+                        master_token_subject = Some(UserId::new(Uuid::parse_str(&value)?));
+                    }
                     "--bind" => {
                         let parsed: SocketAddr = value.parse().map_err(|err| {
                             ArgsError::Invalid(format!("invalid --bind {value:?}: {err}"))
@@ -195,8 +199,6 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
         }
     }
 
-    let owner_user =
-        owner_user.ok_or_else(|| ArgsError::Invalid("--owner-user required".into()))?;
     let database_url = database_url.unwrap_or_else(|| {
         std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
     });
@@ -207,12 +209,32 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
             .map(|raw| parse_master_token(&raw))
             .transpose()?,
     };
+    let master_token_subject = match master_token_subject {
+        Some(subject) => Some(subject),
+        None => std::env::var("PROXIMA_MCP_MASTER_TOKEN_SUBJECT")
+            .ok()
+            .map(|raw| Uuid::parse_str(raw.trim()).map(UserId::new))
+            .transpose()?,
+    };
+    match (master_token, master_token_subject) {
+        (Some(_), None) => {
+            return Err(ArgsError::Invalid(
+                "--master-token requires --master-token-subject".into(),
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(ArgsError::Invalid(
+                "--master-token-subject requires --master-token".into(),
+            ));
+        }
+        _ => {}
+    }
 
     Ok(McpConfig {
         database_url,
-        owner: OwnerRef::Personal(UserId::new(owner_user)),
         bind,
         master_token,
+        master_token_subject,
     })
 }
 
@@ -298,37 +320,26 @@ mod tests {
     }
 
     #[test]
-    fn missing_owner_is_rejected() {
-        let err = parse_args(["--database-url".into(), "postgres://x/y".into()])
-            .expect_err("missing owner-user");
-        assert!(err.to_string().contains("--owner-user required"));
-    }
-
-    #[test]
     fn full_args_parse() {
+        let subject = uuid::Uuid::now_v7();
         let cfg = parse_args([
-            "--owner-user".into(),
-            uuid::Uuid::nil().to_string(),
             "--database-url".into(),
             "postgres://x/y".into(),
             "--master-token".into(),
             uuid::Uuid::nil().to_string(),
+            "--master-token-subject".into(),
+            subject.to_string(),
         ])
         .expect("valid args");
         assert_eq!(cfg.database_url, "postgres://x/y");
         assert!(cfg.bind.is_none());
         assert_eq!(cfg.master_token, Some(uuid::Uuid::nil()));
+        assert_eq!(cfg.master_token_subject, Some(UserId::new(subject)));
     }
 
     #[test]
     fn loopback_bind_parse() {
-        let cfg = parse_args([
-            "--owner-user".into(),
-            uuid::Uuid::nil().to_string(),
-            "--bind".into(),
-            "127.0.0.1:9999".into(),
-        ])
-        .expect("valid args");
+        let cfg = parse_args(["--bind".into(), "127.0.0.1:9999".into()]).expect("valid args");
         assert_eq!(
             cfg.bind,
             Some("127.0.0.1:9999".parse().expect("valid bind"))
@@ -337,25 +348,21 @@ mod tests {
 
     #[test]
     fn master_token_accepts_wire_prefix() {
+        let subject = uuid::Uuid::now_v7();
         let cfg = parse_args([
-            "--owner-user".into(),
-            uuid::Uuid::nil().to_string(),
             "--master-token".into(),
             "pxm_00000000-0000-0000-0000-000000000000".into(),
+            "--master-token-subject".into(),
+            subject.to_string(),
         ])
         .expect("valid args");
         assert_eq!(cfg.master_token, Some(uuid::Uuid::nil()));
+        assert_eq!(cfg.master_token_subject, Some(UserId::new(subject)));
     }
 
     #[test]
     fn non_loopback_bind_rejected() {
-        let err = parse_args([
-            "--owner-user".into(),
-            uuid::Uuid::nil().to_string(),
-            "--bind".into(),
-            "0.0.0.0:31415".into(),
-        ])
-        .expect_err("non-loopback");
+        let err = parse_args(["--bind".into(), "0.0.0.0:31415".into()]).expect_err("non-loopback");
         assert!(err.to_string().contains("loopback"));
     }
 

@@ -9,7 +9,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use proxima_core::{AuthPath, Authenticator, AuthzContext, Credentials, Owner, ToolScope};
+use proxima_core::{
+    AuthPath, Authenticator, AuthzContext, Credentials, Owner, OwnerAccessPort, ToolScope, UserId,
+};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -50,24 +52,36 @@ pub struct McpAuthContext {
 }
 
 impl McpAuthContext {
-    /// Context for a local dev master token: all tools, unrestricted access.
     #[must_use]
-    pub fn for_master(token: Uuid, owner: Owner) -> Self {
+    fn bound(
+        authz: AuthzContext,
+        owner: Owner,
+        model_id: Option<String>,
+        master_token_id: Option<Uuid>,
+    ) -> Self {
         Self {
-            authz: AuthzContext::single_owner(&owner, AuthPath::MasterDev),
             owner,
-            model_id: None,
-            master_token_id: Some(token),
+            authz,
+            model_id,
+            master_token_id,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedAuth {
+    authz: AuthzContext,
+    model_id: Option<String>,
+    master_token_id: Option<Uuid>,
 }
 
 /// Edge resolver replacing the probe-by-UUID auth store. Composition
 /// decides which paths exist: local master is always available, and a
 /// host authenticator is opt-in.
 pub struct McpEdgeAuth {
-    master_tokens: RwLock<HashMap<Uuid, Owner>>,
-    host: Option<(Arc<dyn Authenticator>, Owner)>,
+    master_tokens: RwLock<HashMap<Uuid, UserId>>,
+    owner_access: Option<Arc<dyn OwnerAccessPort>>,
+    host: Option<Arc<dyn Authenticator>>,
     tool_scope: ToolScope,
 }
 
@@ -85,6 +99,7 @@ impl McpEdgeAuth {
     pub fn headless() -> Self {
         Self {
             master_tokens: RwLock::new(HashMap::new()),
+            owner_access: None,
             host: None,
             tool_scope: ToolScope::All,
         }
@@ -100,22 +115,41 @@ impl McpEdgeAuth {
         self
     }
 
-    /// Attach a host authenticator for non-reserved bearer material.
-    /// Host output must carry `AuthPath::HostBearer` and an identity
-    /// that can access `owner`; anything else fails closed.
+    /// Attach the server-side owner resolver used by master-token
+    /// subjects. Host bearer authenticators may carry their own resolver.
     #[must_use]
-    pub fn with_host(mut self, authenticator: Arc<dyn Authenticator>, owner: Owner) -> Self {
-        self.host = Some((authenticator, owner));
+    pub fn with_owner_access(mut self, owner_access: Arc<dyn OwnerAccessPort>) -> Self {
+        self.owner_access = Some(owner_access);
         self
     }
 
-    pub async fn replace_local_master_token(&self, token: Uuid, owner: Owner) {
-        let mut guard = self.master_tokens.write().await;
-        guard.retain(|_, existing| existing != &owner);
-        guard.insert(token, owner);
+    /// Attach a host authenticator for non-reserved bearer material.
+    /// Host output must carry `AuthPath::HostBearer`; owner binding is
+    /// validated separately against the resolved role set.
+    #[must_use]
+    pub fn with_host(mut self, authenticator: Arc<dyn Authenticator>) -> Self {
+        self.host = Some(authenticator);
+        self
     }
 
-    pub async fn resolve(&self, raw_bearer: &str) -> Option<McpAuthContext> {
+    pub async fn replace_local_master_token(&self, token: Uuid, subject: UserId) {
+        let mut guard = self.master_tokens.write().await;
+        guard.retain(|_, existing| existing != &subject);
+        guard.insert(token, subject);
+    }
+
+    pub async fn resolve(&self, raw_bearer: &str, owner: Owner) -> Option<McpAuthContext> {
+        let resolved = self.resolve_unbound(raw_bearer).await?;
+        let authz = resolved.authz.narrowed_to_owner(owner)?;
+        Some(McpAuthContext::bound(
+            authz,
+            owner,
+            resolved.model_id,
+            resolved.master_token_id,
+        ))
+    }
+
+    async fn resolve_unbound(&self, raw_bearer: &str) -> Option<ResolvedAuth> {
         match parse_wire_token(raw_bearer) {
             WireToken::Master(token) => self.resolve_master(token).await,
             WireToken::Host(material) => self.resolve_host(material).await,
@@ -124,22 +158,25 @@ impl McpEdgeAuth {
     }
 
     pub(crate) fn host_authenticator(&self) -> Option<Arc<dyn Authenticator>> {
-        self.host
-            .as_ref()
-            .map(|(authenticator, _owner)| authenticator.clone())
+        self.host.clone()
     }
 
-    async fn resolve_master(&self, token: Uuid) -> Option<McpAuthContext> {
-        let owner = self.master_tokens.read().await.get(&token).copied()?;
-        let mut ctx = McpAuthContext::for_master(token, owner);
-        let tool_scope = ctx.authz.tool_scope().intersect(&self.tool_scope);
-        ctx.authz = ctx.authz.with_tool_scope(tool_scope);
-        Some(ctx)
+    async fn resolve_master(&self, token: Uuid) -> Option<ResolvedAuth> {
+        let subject = self.master_tokens.read().await.get(&token).copied()?;
+        let owner_access = self.owner_access.as_ref()?;
+        let roles = owner_access.resolve_roles_for_subject(subject).await.ok()?;
+        let authz = AuthzContext::server_resolved(roles, AuthPath::MasterDev)
+            .with_tool_scope(self.tool_scope.clone());
+        Some(ResolvedAuth {
+            authz,
+            model_id: None,
+            master_token_id: Some(token),
+        })
     }
 
-    async fn resolve_host(&self, material: String) -> Option<McpAuthContext> {
-        let (authenticator, owner) = self.host.as_ref()?;
-        let authz = authenticator
+    async fn resolve_host(&self, material: String) -> Option<ResolvedAuth> {
+        let authenticator = self.host.as_ref()?;
+        let mut authz = authenticator
             .authenticate(&Credentials::Bearer(material))
             .await
             .ok()?;
@@ -147,9 +184,8 @@ impl McpEdgeAuth {
             return None;
         }
         let tool_scope = authz.tool_scope().intersect(&self.tool_scope);
-        let authz = authz.narrowed_to_owner(*owner)?.with_tool_scope(tool_scope);
-        Some(McpAuthContext {
-            owner: authz.scoped_owner(*owner),
+        authz = authz.with_tool_scope(tool_scope);
+        Some(ResolvedAuth {
             authz,
             model_id: None,
             master_token_id: None,
@@ -162,8 +198,9 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use proxima_core::{
-        AccessScope, AuthError, Engine, ErrorCode, FlavorRegistry, GetGraphReadRequest, GroupId,
-        OwnerRef, Relation, Role, UserId,
+        AccessError, AccessScope, AuthError, Engine, ErrorCode, FlavorRegistry,
+        GetGraphReadRequest, GroupId, OwnerAccessPort, OwnerRef, OwnerRoles, Relation, Role,
+        UserId,
     };
 
     fn fake_owner() -> Owner {
@@ -199,6 +236,20 @@ mod tests {
         }
     }
 
+    struct StaticOwnerAccess {
+        roles: Vec<(OwnerRef, Role)>,
+    }
+
+    #[async_trait]
+    impl OwnerAccessPort for StaticOwnerAccess {
+        async fn resolve_roles_for_subject(
+            &self,
+            subject: UserId,
+        ) -> Result<OwnerRoles, AccessError> {
+            OwnerRoles::for_subject(subject, self.roles.iter().copied())
+        }
+    }
+
     #[test]
     fn parse_routes_reserved_prefixes_and_host_material() {
         let id = Uuid::now_v7();
@@ -220,13 +271,15 @@ mod tests {
 
     #[tokio::test]
     async fn master_token_resolves_only_via_master_prefix() {
-        let auth = McpEdgeAuth::headless();
-        let owner = fake_owner();
+        let subject = fake_user();
+        let owner = OwnerRef::Personal(subject);
+        let auth = McpEdgeAuth::headless()
+            .with_owner_access(Arc::new(StaticOwnerAccess { roles: vec![] }));
         let token = Uuid::now_v7();
-        auth.replace_local_master_token(token, owner).await;
+        auth.replace_local_master_token(token, subject).await;
 
         let ctx = auth
-            .resolve(&format!("{MASTER_TOKEN_PREFIX}{token}"))
+            .resolve(&format!("{MASTER_TOKEN_PREFIX}{token}"), owner)
             .await
             .expect("master resolves");
         assert_eq!(ctx.authz.auth_path(), AuthPath::MasterDev);
@@ -235,18 +288,19 @@ mod tests {
         assert!(ctx.authz.tool_scope().allows("anything"));
 
         assert!(
-            auth.resolve(&format!("{RESERVED_PXW_PREFIX}{token}"))
+            auth.resolve(&format!("{RESERVED_PXW_PREFIX}{token}"), owner)
                 .await
                 .is_none()
         );
-        assert!(auth.resolve(&token.to_string()).await.is_none());
+        assert!(auth.resolve(&token.to_string(), owner).await.is_none());
     }
 
     #[tokio::test]
     async fn former_wake_prefix_fails_closed() {
         let auth = McpEdgeAuth::headless();
+        let owner = fake_owner();
         assert!(
-            auth.resolve(&format!("{RESERVED_PXW_PREFIX}{}", Uuid::now_v7()))
+            auth.resolve(&format!("{RESERVED_PXW_PREFIX}{}", Uuid::now_v7()), owner)
                 .await
                 .is_none()
         );
@@ -255,17 +309,23 @@ mod tests {
     #[tokio::test]
     async fn host_material_fails_closed_without_host_authenticator() {
         let auth = McpEdgeAuth::headless();
-        assert!(auth.resolve("some-opaque-host-token").await.is_none());
+        assert!(
+            auth.resolve("some-opaque-host-token", fake_owner())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
     async fn host_path_accepts_host_bearer_scoped_to_owner() {
         let owner = fake_owner();
         let authz = host_owner_context(owner);
-        let auth =
-            McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }));
 
-        let ctx = auth.resolve("host-token").await.expect("host resolves");
+        let ctx = auth
+            .resolve("host-token", owner)
+            .await
+            .expect("host resolves");
         assert_eq!(ctx.authz.auth_path(), AuthPath::HostBearer);
         assert_eq!(ctx.owner, owner);
         assert!(ctx.master_token_id.is_none());
@@ -275,10 +335,12 @@ mod tests {
     async fn host_path_accepts_resolved_host_context_for_configured_owner() {
         let owner = fake_owner();
         let authz = host_owner_context(owner);
-        let auth =
-            McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }));
 
-        let ctx = auth.resolve("host-token").await.expect("host resolves");
+        let ctx = auth
+            .resolve("host-token", owner)
+            .await
+            .expect("host resolves");
         assert_eq!(ctx.owner, owner);
         assert!(ctx.authz.can_access_owner(&owner));
     }
@@ -287,10 +349,9 @@ mod tests {
     async fn host_context_without_configured_owner_role_is_rejected() {
         let owner = fake_group_owner();
         let authz = AuthzContext::for_subject(fake_user(), AuthPath::HostBearer);
-        let auth =
-            McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }));
 
-        assert!(auth.resolve("host-token").await.is_none());
+        assert!(auth.resolve("host-token", owner).await.is_none());
     }
 
     #[tokio::test]
@@ -299,9 +360,11 @@ mod tests {
         let other = fake_group_owner();
         let subject = fake_user();
         let authz = host_group_context(subject, other, Role::admin());
-        let auth =
-            McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), other);
-        let ctx = auth.resolve("host-token").await.expect("host resolves");
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }));
+        let ctx = auth
+            .resolve("host-token", other)
+            .await
+            .expect("host resolves");
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
 
         let err = engine
@@ -328,10 +391,12 @@ mod tests {
             [(owner, Role::admin()), (other, Role::admin())],
             AuthPath::HostBearer,
         );
-        let auth =
-            McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }));
 
-        let ctx = auth.resolve("host-token").await.expect("host resolves");
+        let ctx = auth
+            .resolve("host-token", owner)
+            .await
+            .expect("host resolves");
         assert!(ctx.authz.can_access_owner(&owner));
         assert!(!ctx.authz.can_access_owner(&other));
     }
@@ -341,10 +406,10 @@ mod tests {
         let owner = fake_owner();
         for path in [AuthPath::System, AuthPath::Wake, AuthPath::MasterDev] {
             let authz = AuthzContext::single_owner(&owner, path);
-            let auth = McpEdgeAuth::headless()
-                .with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
+            let auth =
+                McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }));
             assert!(
-                auth.resolve("host-token").await.is_none(),
+                auth.resolve("host-token", owner).await.is_none(),
                 "{path:?} must be rejected"
             );
         }
@@ -355,9 +420,8 @@ mod tests {
         let owner = fake_owner();
         let stranger = fake_owner();
         let authz = host_owner_context(stranger);
-        let auth =
-            McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
-        assert!(auth.resolve("host-token").await.is_none());
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }));
+        assert!(auth.resolve("host-token", owner).await.is_none());
     }
 
     /// Task-3 host-resolved boundary: a subject with no role at all on the
@@ -370,10 +434,9 @@ mod tests {
     async fn host_resolved_user_without_role_on_configured_owner_is_rejected() {
         let owner = fake_group_owner();
         let authz = AuthzContext::for_subject(fake_user(), AuthPath::HostBearer);
-        let auth =
-            McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }));
 
-        assert!(auth.resolve("host-token").await.is_none());
+        assert!(auth.resolve("host-token", owner).await.is_none());
     }
 
     /// A host-resolved subject with only `Viewer` on the configured group
@@ -384,11 +447,10 @@ mod tests {
         let owner = fake_group_owner();
         let subject = fake_user();
         let authz = host_group_context(subject, owner, Role::viewer());
-        let auth =
-            McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }));
 
         let ctx = auth
-            .resolve("host-token")
+            .resolve("host-token", owner)
             .await
             .expect("viewer role on the configured owner still resolves");
         assert!(ctx.authz.can_access_owner(&owner));
@@ -409,9 +471,8 @@ mod tests {
     async fn malformed_reserved_prefix_is_not_forwarded_to_host() {
         let owner = fake_owner();
         let authz = host_owner_context(owner);
-        let auth =
-            McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }), owner);
-        assert!(auth.resolve("pxw_not-a-uuid").await.is_none());
-        assert!(auth.resolve("pxm_not-a-uuid").await.is_none());
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }));
+        assert!(auth.resolve("pxw_not-a-uuid", owner).await.is_none());
+        assert!(auth.resolve("pxm_not-a-uuid", owner).await.is_none());
     }
 }

@@ -178,9 +178,9 @@ MCP dispatch contract:
 
 | Step | Contract |
 |---|---|
-| Auth | host `Authenticator` or master token |
-| Owner | from auth context; Owner = principal (doc 01) |
-| Tool scope | token capabilities intersected with deployment profile |
+| Auth | host `Authenticator` or loopback master token resolves `UserId` |
+| Owner | selected at session initialize, bound server-side, rechecked through `OwnerAccessPort` |
+| Tool scope | token capabilities intersected with deployment profile and bound-owner role |
 | Args | action-dispatch tools validate fields strictly (see Tool Schema Contract), then JSON decoded into typed args |
 | Output | serialized typed output |
 | Ids | prefixed ids (`F:/A:/P:/G:/E:` form, `OutputMode::PrefixedIds`) |

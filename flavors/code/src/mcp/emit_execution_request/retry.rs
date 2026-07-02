@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 
-use proxima_core::{EdgeId, FactPayload, Tool, ToolCtx, ToolError};
+use proxima_core::{AccessKind, EdgeId, FactPayload, Tool, ToolCtx, ToolError};
 
 use crate::payloads::ExecutionRequestV1;
 
 use super::super::sql::map_storage;
-use super::super::{CodeToolCtxExt, caller, code_store};
+use super::super::{CodeToolCtxExt, code_store};
 use super::context_validation::validate_evidence_in_owner;
 use super::edges::{append_authored_edge, append_target_edge};
 use super::ingest::ingest_execution_request;
@@ -35,9 +35,10 @@ impl Tool for CodeRetryExecutionRequestTool {
     ) -> futures::future::BoxFuture<'static, Result<CodeRetryExecutionRequestOutput, ToolError>>
     {
         Box::pin(async move {
-            if !caller(&ctx)?.is_master_token() {
-                return Err(ToolError::InvalidInput(
-                    "code_retry_execution_request requires a master-token shell-author call".into(),
+            if !ctx.authz().may_write(&ctx.owner(), AccessKind::Fact) {
+                return Err(ToolError::NotAuthorized(
+                    "code_retry_execution_request requires Fact write authority on the bound owner"
+                        .into(),
                 ));
             }
             let shell_author_root = ctx.caller_self_perspective().ok_or_else(|| {

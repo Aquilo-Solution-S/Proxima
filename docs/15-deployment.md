@@ -35,7 +35,6 @@ a narrower DML role.
 | Var | Required | Example | Purpose |
 |---|---|---|---|
 | `DATABASE_URL` | yes | `postgres://user:pass@host:5432/db` | Postgres connection string. |
-| `--owner-user <UUID>` | yes (CLI flag) | `550e8400-e29b-41d4-a716-446655440000` | Fixed `OwnerRef::Personal` owner; no org field. |
 | `PROXIMA_MCP_BIND` | yes | `0.0.0.0:8080` | MCP listener address. |
 | `PROXIMA_EXPOSE_NETWORK=true` | yes | `true` | Required for non-loopback bind. |
 | `PROXIMA_ALLOWED_ORIGINS` | yes | `https://claude.example.com,https://codex.example.com` | Comma-separated origin allowlist; never `*`. |
@@ -62,9 +61,10 @@ a narrower DML role.
 Do NOT set `PROXIMA_MCP_MASTER_TOKEN` in a deployment. With
 `PROXIMA_EXPOSE_NETWORK=true` the binary refuses to start if a master token
 is set (enforced by `RuntimeConfig::validate()`). The master token is
-the loopback-only dev path. Break-glass during a Zitadel outage: spin
-a throwaway loopback master-token pod against the same Postgres, never
-expose a standing token on `/mcp`.
+the loopback-only dev path and must be paired with
+`PROXIMA_MCP_MASTER_TOKEN_SUBJECT`. Break-glass during a Zitadel outage:
+spin a throwaway loopback master-token pod against the same Postgres,
+never expose a standing token on `/mcp`.
 
 ## Security guarantee
 
@@ -74,40 +74,21 @@ endpoints require an `aud`-bound Zitadel JWT, validated in-process.
 (RFC 9728). Defense in depth: the same JWT MUST be validated at the
 cluster edge (see [§Edge defense-in-depth](#edge-defense-in-depth)).
 
-> **Host-resolved OIDC identity, single-owner process scope.** A validated
-> token no longer maps to the configured owner automatically. `proxima-mcp`
-> pins one `OwnerRef::Personal` owner per process (`--owner-user`); the
-> token's `(iss, sub)` — the only stable OIDC identity pair — must resolve
-> through the configured issuer-aware subject map
-> (`PROXIMA_OIDC_SUBJECT_MAP_JSON` or the legacy `PROXIMA_OIDC_SUBJECT_MAP`
-> shorthand) to a Proxima `UserId`. That mapping is required, not optional:
-> the server refuses to start if `PROXIMA_OIDC_ISSUER` is set without
-> either one. Because the pinned owner is always `Personal`, only the one
-> subject whose mapped `UserId` equals the pinned owner's UUID can ever
-> authenticate against this process — any other resolvable subject is
-> denied even though its JWT validates cleanly (signature, `iss`, `aud`,
-> `exp` all pass); an absent subject-map entry fails closed, it does not
-> fall back to "any valid token". That one subject's access is Personal
-> self-access, kernel-derived rather than read off a membership row, and
-> reaches all currently registered MCP tools; destructive Fact actions are
-> absent from the tool surface and compliance erase stays Host API/admin-only.
-> Before network exposure, constrain the IdP audience to trusted principals
-> and/or set `PROXIMA_OIDC_ALLOWED_SUBJECTS` as an additional `sub`
-> allowlist layered on top of the subject map — it is never an identity
-> source by itself.
+> **Host-resolved OIDC identity, multi-owner session scope.** The token's
+> `(iss, sub)` resolves through `PROXIMA_OIDC_SUBJECT_MAP_JSON` or
+> `PROXIMA_OIDC_SUBJECT_MAP` to a Proxima `UserId`; `PgOwnerAccessResolver`
+> reads current group memberships into `OwnerRoles`. The client selects one
+> authorized owner during MCP `initialize` using `X-Proxima-Owner`:
+> `personal:<uuid>`, `group:<uuid>`, or `world`. The server binds that owner
+> to the returned `Mcp-Session-Id`. Every later request revalidates the bearer
+> and narrows the freshly resolved roles to the bound owner; membership
+> removal denies the next request, including an already-bound session. An
+> absent subject-map entry, invalid owner key, or non-member owner selection
+> fails closed.
 >
-> This is `proxima-mcp`'s own edge, which narrows every resolved identity
-> down to its one pinned owner. A host that wants many distinct subjects
-> mapped to many distinct owners — real multi-tenancy — does not get that
-> from this binary's edge; it embeds `proxima-auth-oidc`'s validation-only
-> `OidcTokenValidator`/`ValidatedOidcClaims`, its own `OidcSubjectMap`, and
-> an `OwnerAccessPort` implementation (the exported `PgOwnerAccessResolver`,
-> including its `has_role_for_owner` point-in-time role probe, is one such
-> implementation) directly, then shapes
-> `AuthzContext::server_resolved(...)` itself — see `MIGRATING.md` at the
-> repository root for the recomposition recipe and the preserved
-> `OidcAuthenticator::single_owner` mechanical-migration constructor for
-> hosts that were, and remain, genuinely single-tenant.
+> Tool advertisement is `frozen registry ∩ deployment ToolScope ∩ bound-owner
+> role`: read-only tools require read access; write/unknown tools require
+> Fact write access. Compliance erase stays Host API/admin-only.
 
 The inbound `Host` header is gated by rmcp's DNS-rebinding guard
 *before* auth runs: only loopback plus the resolved public host(s) are
@@ -131,7 +112,7 @@ docker run -p 8080:8080 \
   -e PROXIMA_OIDC_ISSUER=https://zitadel.example.com \
   -e PROXIMA_OIDC_AUDIENCE=https://proxima.example.com/mcp \
   -e PROXIMA_OIDC_SUBJECT_MAP=zitadel-subject-id:550e8400-e29b-41d4-a716-446655440000 \
-  proxima-mcp --owner-user 550e8400-e29b-41d4-a716-446655440000
+  proxima-mcp
 ```
 
 Memory-brain surface:
@@ -147,7 +128,7 @@ docker run -p 8080:8080 \
   -e PROXIMA_OIDC_AUDIENCE=https://proxima.example.com/mcp \
   -e PROXIMA_OIDC_SUBJECT_MAP=zitadel-subject-id:550e8400-e29b-41d4-a716-446655440000 \
   -e PROXIMA_TOOL_PROFILE=memory \
-  proxima-mcp --owner-user 550e8400-e29b-41d4-a716-446655440000
+  proxima-mcp
 ```
 
 `PROXIMA_TOOL_PROFILE=memory` shrinks the advertised MCP surface for
@@ -155,15 +136,10 @@ better LLM tool selection and lower operational blast radius. It is not a
 security boundary: every tool call remains gated by per-actor authz and
 role checks.
 
-`--owner-user` is the **single-tenant** form of the host owner-resolution
-invariant ([01 §Owner resolution](01-event-source.md#owner-resolution--the-hosts-trust-boundary)):
-the owner is pinned per process and the request carries no owner field,
-so no client input can select another tenant's Reality slice. A
-multi-tenant host that instead derives `Owner` from a token claim owns
-the *entire* cross-tenant boundary in that mapping — Core has no org
-column to cross-check it.
+MCP clients send `X-Proxima-Owner` on `initialize`; the bound owner is
+server-side session state, not a per-call tool argument.
 
-In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_link`; hydrate a memory through `proxima://memory/{id}`. Omitted `space` preserves the current owner behavior for single-owner deployments.
+In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_link`; hydrate a memory through `proxima://memory/{id}`. Omitted `space` preserves the current bound owner.
 
 ## Zitadel setup
 

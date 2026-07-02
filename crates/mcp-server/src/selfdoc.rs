@@ -125,7 +125,7 @@ pub fn build_instructions(
 
     if s.remember || s.derive {
         if s.memory_spaces {
-            out.push_str("In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_link`; hydrate a memory by reading `proxima://memory/{id}`. Omitted `space` preserves the current owner behavior for single-owner deployments. Cross-space derive/link may ground in readable handles outside the selected write space. ");
+            out.push_str("In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_link`; hydrate a memory by reading `proxima://memory/{id}`. Omitted `space` preserves the current bound owner. Cross-space derive/link may ground in readable handles outside the selected write space. ");
         }
         if s.remember {
             out.push_str("`core_remember` appends a Fact (an observation). ");
@@ -221,7 +221,7 @@ pub fn how_to_markdown(
 
     push_law(&mut out, s);
     if s.memory_spaces {
-        out.push_str("## Memory spaces\n\nIn multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_link`; hydrate a memory by reading `proxima://memory/{id}`. Omitted `space` preserves the current owner behavior for single-owner deployments. Space keys are selectors only; every write/read is re-authorized by the server. Cross-space derive/link may ground in readable handles outside the selected write space.\n\n");
+        out.push_str("## Memory spaces\n\nIn multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_link`; hydrate a memory by reading `proxima://memory/{id}`. Omitted `space` preserves the current bound owner. Space keys are selectors only; every write/read is re-authorized by the server. Cross-space derive/link may ground in readable handles outside the selected write space.\n\n");
     }
     push_capture_table(&mut out, s);
     push_edges(&mut out, s);

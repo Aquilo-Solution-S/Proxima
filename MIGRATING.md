@@ -132,12 +132,16 @@ path. Wire the result into the runtime the same way as before:
 ```rust
 proxima::Proxima::<MyApp>::app()
     .database_url(database_url)
-    .owner(default_owner)              // still required; see docs/01-event-source.md#owner-resolution--the-hosts-trust-boundary
+    .owner_access(owner_access.clone())
     .authenticator(Arc::new(authenticator))
     .with_mcp()
     .run()
     .await?;
 ```
+
+Embedded hosts that do not serve MCP may still configure a boot owner for
+host-owned direct calls. MCP serving ignores that boot owner and requires
+`OwnerAccessPort`.
 
 Multi-audience composition (branching on `aud` to run more than one
 identity class) is just running several `OidcTokenValidator`s that share
@@ -160,46 +164,40 @@ let authz = /* ... */.with_tool_scope(scope);
 granularity itself, so excluding a tool name also excludes every one of
 its actions — no partial-exclusion gap when a tool grows a new action.
 
-## 5. Single-owner hosts: the smallest correct recipe
+## 5. v0.0.6 MCP serving: fixed-owner serving removed
 
-For a genuinely single-tenant host — every accepted token maps to one
-fixed `Owner`, no per-subject resolution — skip `OidcSubjectMap` and
-`OwnerAccessPort` entirely and use `OidcAuthenticator::single_owner`. This
-is the mechanical replacement for a fixed-owner `OidcAuthConfig { owner,
-.. }` construction (e.g. a legacy `oidc_from_env`):
+`proxima-mcp --owner-user` is removed. `OidcAuthenticator::single_owner`
+and `IdentityResolution::FixedOwner` are removed. Serving has one path:
 
-```rust
-use std::sync::Arc;
-use proxima::{Owner, UserId};
-use proxima_auth_oidc::{HttpJwksResolver, OidcAuthConfig, OidcAuthenticator};
-
-fn single_owner_authenticator(
-    issuer: String,
-    audience: String,
-    owner_user_id: uuid::Uuid,
-) -> Result<OidcAuthenticator, Box<dyn std::error::Error>> {
-    let config = OidcAuthConfig {
-        issuer: issuer.clone(),
-        jwks_uri: None,
-        audience,
-        allowed_subjects: None,
-        leeway_secs: 60,
-    };
-    let keys = Arc::new(HttpJwksResolver::new(issuer, config.jwks_uri.clone())?);
-    let owner = Owner::Personal(UserId::new(owner_user_id));
-    Ok(OidcAuthenticator::single_owner(config, keys, owner)?)
-}
+```text
+bearer -> UserId -> OwnerAccessPort::resolve_roles_for_subject -> OwnerRoles
 ```
 
-**`owner` must be `Owner::Personal`.** A `Group` owner is accepted at
-construction (matching the pre-split behavior byte-for-byte) but every
-`authenticate()` call then fails closed with `InvalidCredentials` — this
-is not a compile error, it silently rejects every request. If your fixed
-owner is a group/company, use the host-resolved path in §4 with a
-single-entry `OidcSubjectMap` instead.
+MCP owner selection:
 
-This shape is exercised end to end by
-`crates/auth-oidc/src/authenticator.rs::tests::single_owner_authenticates_one_subject_against_fixed_owner`.
+| Step | Contract |
+|---|---|
+| initialize | client sends `X-Proxima-Owner: personal:<uuid>` / `group:<uuid>` / `world` |
+| session | server binds selected owner to `Mcp-Session-Id` |
+| later calls | no owner argument; bound owner is rechecked against fresh roles |
+| revocation | membership removal denies the next request |
+
+Loopback master-token auth now needs a subject:
+
+```sh
+proxima-mcp --master-token "$MASTER_TOKEN" --master-token-subject "$USER_ID"
+```
+
+Environment equivalent:
+
+```sh
+PROXIMA_MCP_MASTER_TOKEN="$MASTER_TOKEN"
+PROXIMA_MCP_MASTER_TOKEN_SUBJECT="$USER_ID"
+```
+
+`McpToolHost` no longer has a default owner. Embedded direct MCP calls
+must pass the owner explicitly per call through the existing direct-call
+API.
 
 ## 6. `proxima-storage-pg` raw write API requires `OwnerWritePermit`
 

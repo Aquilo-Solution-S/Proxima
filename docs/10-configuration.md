@@ -24,7 +24,7 @@ host injects for vector retrieval and an optional model-seat client.
 |---|---|---|
 | Postgres connection | binary-wide | `DATABASE_URL` |
 | MCP endpoint | binary-wide | bind addr, network exposure, origin allowlist |
-| MCP authentication | per request | host `Authenticator`, master token, or insecure single-owner |
+| MCP authentication | per request | host `Authenticator` or loopback master token, both resolver-backed |
 | Embedding client | binary-wide | optional `Arc<dyn EmbeddingClient>` injected at boot |
 | Anthropic model client | binary-wide | optional `Arc<dyn AnthropicClient>` host-injected; programmatic only |
 | Large artefact S3 storage | binary-wide | process env + AWS SDK credential chain |
@@ -50,7 +50,8 @@ Proxima::<App>::app().from_env().authenticator(auth).run().await?;
 |---|---|
 | `DATABASE_URL` | Postgres connection for core tables (`proxima_core` schema). |
 | `PROXIMA_MCP_BIND` | MCP socket address; enables the listener when set. |
-| `PROXIMA_MCP_MASTER_TOKEN` | Master bearer token for MCP when no host authenticator is wired. |
+| `PROXIMA_MCP_MASTER_TOKEN` | Loopback master bearer token for MCP. Requires `PROXIMA_MCP_MASTER_TOKEN_SUBJECT`. |
+| `PROXIMA_MCP_MASTER_TOKEN_SUBJECT` | UUID `UserId` resolved through `OwnerAccessPort` for master-token auth. |
 | `PROXIMA_EXPOSE_NETWORK` | Network exposure gate for non-loopback binds. |
 | `PROXIMA_ALLOWED_ORIGINS` | Comma-separated MCP origin allowlist. |
 | `PROXIMA_ALLOWED_HOSTS` | Comma-separated inbound `Host` allowlist (hostnames or `host:port`, no wildcards) for the DNS-rebinding guard; defaults to the host of `PROXIMA_PUBLIC_URL` + the allowed origins. Loopback always permitted. |
@@ -82,14 +83,13 @@ are specified by `crates/proxima` rustdoc and source:
 
 The Streamable HTTP MCP listener turns on when `PROXIMA_MCP_BIND` (or
 `with_mcp()` / `mcp_bind(..)`) is set. A non-loopback bind requires
-`PROXIMA_EXPOSE_NETWORK`. `validate()` fails closed unless one auth mode
-is present:
+`PROXIMA_EXPOSE_NETWORK`. Serving requires `OwnerAccessPort` plus one
+resolver-backed auth mode:
 
 | Mode | How | Identity model |
 |---|---|---|
-| Host `Authenticator` | `.authenticator(Arc<dyn Authenticator>)` | per-user actor resolved from the bearer (e.g. tenant JWT) over a shared company graph |
-| Master token | `--master-token` / `PROXIMA_MCP_MASTER_TOKEN` | single trusted bearer for the configured Owner |
-| Insecure single-owner | `.allow_insecure_single_owner()` | dev only; no auth, one Owner |
+| Host `Authenticator` | `.authenticator(Arc<dyn Authenticator>)` + `.owner_access(...)` | bearer subject resolves to current `OwnerRoles` |
+| Master token | `--master-token` + `--master-token-subject` / env pair | loopback bearer maps to `UserId`, then current `OwnerRoles` |
 
 Origins are gated by `PROXIMA_ALLOWED_ORIGINS`. The inbound `Host`
 header is independently gated by rmcp's DNS-rebinding guard: loopback
@@ -200,10 +200,12 @@ return presigned URLs only, never `bucket` or `object_key`.
 
 Owner access control is per-row on graph data (see
 [01 §Owner](01-event-source.md#owner--scoping-primitive)). `OwnerRef` is
-the row-scoping handle (Track B / S0 removed the tenant field from Core).
-Runtime config selects the binary's default owner and, under a host
-`Authenticator`, resolves a per-request actor from the bearer. There is
-no per-Owner inference/credential table — that surface was removed.
+the row-scoping handle. MCP serving does not configure a default owner:
+the bearer resolves to `OwnerRoles`, the client selects an authorized
+owner during `initialize` (`X-Proxima-Owner` for HTTP), and the server
+binds it to `Mcp-Session-Id`. Embedded hosts may still configure a boot
+owner for host-owned direct calls. There is no per-Owner
+inference/credential table.
 
 <a id="bootstrap"></a>
 ## Bootstrap
@@ -212,8 +214,8 @@ Boot sequence:
 
 1. Build-time registries are linked into the binary.
 2. `RuntimeBuilder` resolves config (`configure < env < explicit`) and
-   `validate()` fails closed on a missing Owner or an unauthenticated
-   exposed MCP bind.
+   `validate()` fails closed on MCP serving without `OwnerAccessPort` and
+   host auth or a master-token subject.
 3. Migrations create core tables.
 4. The embedding client, if injected, is wired; otherwise semantic search
    is disabled.
@@ -225,7 +227,7 @@ Boot sequence:
 | Shape | Config source |
 |---|---|
 | Embedded host app | host builds `Proxima<App>` programmatically over a local Engine/Postgres; injects its own authenticator + embedding client |
-| Headless MCP host | process env (`apps/proxima-mcp`) + master token or host authenticator |
+| Headless MCP host | process env (`apps/proxima-mcp`) + `OwnerAccessPort` + host authenticator or loopback master-token subject |
 | Hosted deployment | provisioned env/secrets + tenant authenticator |
 
 The same Engine contract applies in every shape: build-time types,

@@ -12,10 +12,16 @@ use http::HeaderMap;
 use http::header::{AUTHORIZATION, ORIGIN};
 use http_body::{Body as HttpBody, Frame};
 use http_body_util::{BodyStream, StreamBody};
-use proxima_core::{AuthPath, Authenticator, Identity, RevalidationConfig, revalidate_stream};
+use proxima_core::{
+    AuthPath, Authenticator, Identity, Owner, RevalidationConfig, revalidate_stream,
+};
 
 use crate::McpServerError;
 use crate::auth::McpEdgeAuth;
+use crate::session::{McpSessionBindings, parse_owner_key};
+
+const MCP_SESSION_ID_HEADER: &str = "Mcp-Session-Id";
+const PROXIMA_OWNER_HEADER: &str = "X-Proxima-Owner";
 
 #[derive(Clone, Debug)]
 pub struct OriginAllowlist {
@@ -133,6 +139,7 @@ pub type McpAuthLayer = FromFnLayer<
 #[derive(Clone, Debug)]
 pub struct McpAuthLayerState {
     auth: Arc<McpEdgeAuth>,
+    sessions: McpSessionBindings,
     allowlist: OriginAllowlist,
     revalidation: RevalidationConfig,
     www_authenticate: Option<http::HeaderValue>,
@@ -163,6 +170,23 @@ pub fn mcp_auth_layer_with_metadata(
     revalidation: RevalidationConfig,
     www_authenticate: Option<http::HeaderValue>,
 ) -> McpAuthLayer {
+    mcp_auth_layer_with_sessions(
+        auth,
+        McpSessionBindings::new(),
+        allowlist,
+        revalidation,
+        www_authenticate,
+    )
+}
+
+#[must_use = "apply the returned layer to the MCP router"]
+pub fn mcp_auth_layer_with_sessions(
+    auth: Arc<McpEdgeAuth>,
+    sessions: McpSessionBindings,
+    allowlist: OriginAllowlist,
+    revalidation: RevalidationConfig,
+    www_authenticate: Option<http::HeaderValue>,
+) -> McpAuthLayer {
     fn dispatch(
         state: State<McpAuthLayerState>,
         request: Request,
@@ -173,6 +197,7 @@ pub fn mcp_auth_layer_with_metadata(
     middleware::from_fn_with_state(
         McpAuthLayerState {
             auth,
+            sessions,
             allowlist,
             revalidation,
             www_authenticate,
@@ -189,12 +214,17 @@ async fn mcp_auth(
     let Some(token) = extract_bearer(&request) else {
         return unauthorized(&state);
     };
-    let Some(ctx) = state.auth.resolve(&token).await else {
-        return unauthorized(&state);
-    };
     if request.headers().contains_key(ORIGIN) && !state.allowlist.allows(request.headers()) {
         return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
     }
+    let Some((selected_owner, bind_new_session)) =
+        selected_owner(&state.sessions, request.headers()).await
+    else {
+        return (StatusCode::FORBIDDEN, "owner selection required or invalid").into_response();
+    };
+    let Some(ctx) = state.auth.resolve(&token, selected_owner).await else {
+        return unauthorized(&state);
+    };
     let identity = ctx.authz.identity_for_revalidation();
     let epoch_source = if ctx.authz.auth_path() == AuthPath::HostBearer {
         state.auth.host_authenticator()
@@ -202,12 +232,34 @@ async fn mcp_auth(
         None
     };
     request.extensions_mut().insert(ctx);
-    revalidate_response(
-        next.run(request).await,
-        identity,
-        epoch_source,
-        state.revalidation,
-    )
+    let response = next.run(request).await;
+    if bind_new_session
+        && let Some(session_id) = response_header_str(response.headers(), MCP_SESSION_ID_HEADER)
+    {
+        state.sessions.bind(session_id, selected_owner).await;
+    }
+    revalidate_response(response, identity, epoch_source, state.revalidation)
+}
+
+async fn selected_owner(
+    sessions: &McpSessionBindings,
+    headers: &HeaderMap,
+) -> Option<(Owner, bool)> {
+    let owner_header = request_header_str(headers, PROXIMA_OWNER_HEADER);
+    let session_id = request_header_str(headers, MCP_SESSION_ID_HEADER);
+    if let Some(session_id) = session_id {
+        let owner = sessions.owner_for(session_id).await?;
+        if let Some(raw_owner) = owner_header {
+            let requested = parse_owner_key(raw_owner)?;
+            if requested != owner {
+                return None;
+            }
+        }
+        return Some((owner, false));
+    }
+
+    let owner = owner_header.and_then(parse_owner_key)?;
+    Some((owner, true))
 }
 
 fn unauthorized(state: &McpAuthLayerState) -> Response {
@@ -226,6 +278,17 @@ fn revalidate_response(
     config: RevalidationConfig,
 ) -> Response {
     response.map(|body| Body::new(RevalidatedBody::new(body, identity, authenticator, config)))
+}
+
+fn request_header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers.get(name).and_then(|value| value.to_str().ok())
+}
+
+fn response_header_str(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned)
 }
 
 type FrameStream<D, E> = Pin<Box<dyn Stream<Item = Result<Frame<D>, E>> + Send>>;

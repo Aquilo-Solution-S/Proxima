@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use common::{create_db, db_url, drop_db};
 use proxima_core::mcp::{McpAuthorContext, McpToolExtensions};
-use proxima_core::{Engine, FlavorRegistry, Owner, OwnerRef, RelationClass, UserId};
+use proxima_core::{
+    AuthPath, AuthzContext, Engine, FlavorRegistry, Owner, OwnerRef, RelationClass, UserId,
+};
 use proxima_mcp_server::{McpAuthContext, McpToolHost};
 use proxima_storage_pg::PgStorage;
 
@@ -25,11 +27,18 @@ async fn core_read_resources_return_prefixed_ids_and_author()
     let engine = Arc::new(
         Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
     );
-    let server = McpToolHost::from_engine(engine, owner, McpToolExtensions::default());
+    let server = McpToolHost::from_engine(engine, McpToolExtensions::default());
     // The host is now the authoritative scope chokepoint, so reads need an
     // authenticated full-scope context (production always passes Some(auth);
     // a None context is unauthenticated and correctly denied).
-    let auth = McpAuthContext::for_master(uuid::Uuid::now_v7(), owner);
+    let auth = McpAuthContext {
+        owner,
+        authz: AuthzContext::single_owner(&owner, AuthPath::MasterDev)
+            .narrowed_to_owner(owner)
+            .expect("personal owner narrows"),
+        model_id: None,
+        master_token_id: Some(uuid::Uuid::now_v7()),
+    };
 
     let fetched = server
         .read_resource(

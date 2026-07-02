@@ -10,10 +10,10 @@ use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
     FactPayload, FlavorRegistry, FlavorRegistryError, GoalActivatedV1, MemoryId, SchemaId,
-    SchemaVersion, SourceBatchId,
+    SchemaVersion, SourceBatchId, UserId,
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
-use proxima_storage_pg::{PgSidecarKey, PgStorage};
+use proxima_storage_pg::{PgOwnerAccessResolver, PgSidecarKey, PgStorage};
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 use sqlx::{Connection, SqlSafeStr};
 use tokio::time::{Duration, Instant};
@@ -371,9 +371,10 @@ async fn facade_run_binds_loopback_mcp_and_sets_engine_url() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let running = Proxima::<GoalTestApp>::app()
-            .database_url(db_url)
+            .database_url(db_url.clone())
             .owner(company_owner(Uuid::now_v7()))
-            .allow_insecure_single_owner()
+            .owner_access(Arc::new(PgOwnerAccessResolver::connect_lazy(&db_url)?))
+            .master_token(Uuid::now_v7(), UserId::new(Uuid::now_v7()))
             .with_mcp()
             .mcp_bind("127.0.0.1:0".parse()?)
             .run()

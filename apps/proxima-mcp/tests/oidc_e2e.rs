@@ -78,11 +78,15 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         return Ok(());
     };
 
-    let owner: Owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let subject = UserId::new(Uuid::now_v7());
+    let owner: Owner = OwnerRef::Personal(subject);
+    let owner_key = owner_header(owner);
     let (enc, resolver) = keypair();
-    // Mechanical migration path: every accepted token maps to the fixed
-    // `owner`, mirroring the pre-Task-3 single-tenant behavior.
-    let authn = OidcAuthenticator::single_owner(
+    let mut subject_map = OidcSubjectMap::new();
+    subject_map.insert(ISSUER, "operator-sub", subject)?;
+    let owner_access: Arc<dyn OwnerAccessPort> =
+        Arc::new(PgOwnerAccessResolver::connect_lazy(&database_url)?);
+    let authn = OidcAuthenticator::new(
         OidcAuthConfig {
             issuer: ISSUER.to_string(),
             jwks_uri: None,
@@ -91,12 +95,13 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
             leeway_secs: 60,
         },
         Arc::new(resolver),
-        owner,
+        subject_map,
+        owner_access.clone(),
     )?;
 
     let running = Proxima::<ProximaMcpApp>::app()
         .database_url(database_url)
-        .owner(owner)
+        .owner_access(owner_access)
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.e2e.test".to_string(),
@@ -143,7 +148,7 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
 
     // 3. A valid JWT initializes and lists the Code-flavor tools.
     let bearer = format!("Bearer {}", mint(&enc, "operator-sub"));
-    let session = initialize(&client, &url, &bearer).await?;
+    let session = initialize(&client, &url, &bearer, &owner_key).await?;
     initialized(&client, &url, &session, &bearer).await?;
     let body = post_rpc(
         &client,
@@ -226,12 +231,13 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
         },
         Arc::new(resolver),
         subject_map,
-        owner_access,
+        owner_access.clone(),
     )?;
 
     let running = Proxima::<ProximaMcpApp>::app()
         .database_url(database_url.clone())
         .owner(group_owner)
+        .owner_access(owner_access)
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.e2e.test".to_string(),
@@ -267,7 +273,7 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
     let client = reqwest::Client::new();
 
     let bearer = format!("Bearer {}", mint(&enc, "group-member-sub"));
-    let session = initialize(&client, &url, &bearer).await?;
+    let session = initialize(&client, &url, &bearer, &owner_header(group_owner)).await?;
     initialized(&client, &url, &session, &bearer).await?;
     let body = post_rpc(
         &client,
@@ -293,11 +299,13 @@ async fn initialize(
     client: &reqwest::Client,
     url: &str,
     bearer: &str,
+    owner_key: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let response = client
         .post(url)
         .header("Origin", "http://localhost")
         .header("Authorization", bearer)
+        .header("X-Proxima-Owner", owner_key)
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
@@ -316,6 +324,14 @@ async fn initialize(
         .to_string();
     let _ = sse_json(response).await?;
     Ok(session_id)
+}
+
+fn owner_header(owner: Owner) -> String {
+    match owner {
+        OwnerRef::World => "world".to_string(),
+        OwnerRef::Personal(user) => format!("personal:{}", user.into_inner()),
+        OwnerRef::Group(group) => format!("group:{}", group.into_inner()),
+    }
 }
 
 async fn initialized(
