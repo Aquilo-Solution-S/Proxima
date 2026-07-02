@@ -2,8 +2,6 @@
 
 use std::collections::HashSet;
 
-use proxima_core::Owner;
-
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum OidcConfigError {
     #[error("{field} must be a valid URL: {parse_error}")]
@@ -15,12 +13,16 @@ pub enum OidcConfigError {
     InsecureUrl { field: &'static str, value: String },
 }
 
-/// Configuration for [`crate::OidcAuthenticator`].
+/// Configuration for [`crate::OidcTokenValidator`] / [`crate::OidcAuthenticator`].
 ///
-/// Every accepted token maps to [`Self::owner`] with full single-tenant
-/// capabilities: all roles and all tools. For network exposure, make the
-/// issuer/audience boundary trusted and set [`Self::allowed_subjects`] unless
-/// every valid subject for that audience should act as the single owner.
+/// Carries only the audited JWT-validation boundary (issuer, audience, JWKS,
+/// clock skew) plus an optional `sub` allowlist. It no longer carries an
+/// identity mapping: [`crate::OidcAuthenticator::new`] maps the validated
+/// `(iss, sub)` through a [`crate::OidcSubjectMap`] and an
+/// `OwnerAccessPort`, and [`crate::OidcAuthenticator::single_owner`] maps
+/// every accepted token to one fixed [`proxima_core::Owner`] passed
+/// separately. [`Self::allowed_subjects`] is always an additional allowlist
+/// gate on the token's actual `sub`, never an identity source.
 #[derive(Clone, Debug)]
 pub struct OidcAuthConfig {
     /// Exact `iss` claim required (e.g. `https://zitadel.example.com`).
@@ -30,10 +32,8 @@ pub struct OidcAuthConfig {
     pub jwks_uri: Option<String>,
     /// Required value in the token `aud` (RFC 8707 resource id).
     pub audience: String,
-    /// Fixed single-tenant owner every accepted token maps to.
-    pub owner: Owner,
-    /// Optional `sub` allowlist; `None` => accept any valid token, which then
-    /// receives full capabilities as the configured single owner.
+    /// Optional `sub` allowlist; `None` => accept any valid token for this
+    /// issuer/audience (identity is still resolved separately).
     pub allowed_subjects: Option<HashSet<String>>,
     /// Clock-skew tolerance in seconds (default 60).
     pub leeway_secs: u64,
@@ -92,8 +92,6 @@ fn test_allows_loopback_http(_url: &reqwest::Url) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use proxima_core::{OwnerRef, UserId};
-
     use super::*;
 
     fn config(issuer: &str, jwks_uri: Option<&str>) -> OidcAuthConfig {
@@ -101,7 +99,6 @@ mod tests {
             issuer: issuer.to_string(),
             jwks_uri: jwks_uri.map(ToOwned::to_owned),
             audience: "proxima-api".to_string(),
-            owner: OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7())),
             allowed_subjects: None,
             leeway_secs: 60,
         }
