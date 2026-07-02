@@ -91,6 +91,42 @@ pub async fn read_mcp_call_history(
     engine.read_mcp_call_history(authz, req).await
 }
 
+/// Load one owner-scoped opaque source cursor through an embedded engine.
+///
+/// Cursor state is projector write-state; the engine gates this read through
+/// owner `Ingest` authorization before touching storage.
+///
+/// # Errors
+///
+/// Returns `Forbidden` when `authz` cannot write `owner` with `Ingest`, or
+/// `Internal` on storage failure.
+pub async fn load_source_cursor(
+    engine: &Engine,
+    authz: &AuthzContext,
+    owner: &Owner,
+    source: &str,
+) -> Result<Option<Cursor>, ProtocolError> {
+    engine.load_source_cursor(authz, owner, source).await
+}
+
+/// Store one owner-scoped opaque source cursor through an embedded engine.
+///
+/// # Errors
+///
+/// Returns `Forbidden` when `authz` cannot write `owner` with `Ingest`, or
+/// `Internal` on storage failure.
+pub async fn store_source_cursor(
+    engine: &Engine,
+    authz: &AuthzContext,
+    owner: &Owner,
+    source: &str,
+    cursor: &Cursor,
+) -> Result<(), ProtocolError> {
+    engine
+        .store_source_cursor(authz, owner, source, cursor)
+        .await
+}
+
 type RegisterFn =
     Box<dyn FnOnce(&mut FlavorRegistry) -> Result<(), proxima_core::FlavorRegistryError> + Send>;
 type PgSidecarRegisterFn = Box<dyn FnOnce(&mut PgSidecarRegistry) + Send>;

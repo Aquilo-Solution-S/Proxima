@@ -145,6 +145,7 @@ fn compliance_engine_for(pg: proxima_storage_pg::PgStorage) -> proxima_core::Eng
         .owner_membership_admin(pg.clone())
         .owner_transfer(pg.clone())
         .source_batch(pg.clone())
+        .source_cursor(pg.clone())
         .fact_retention(pg.clone())
         .compliance_erase(pg.clone())
         .compliance_admin(Arc::new(AllowComplianceAdmin))

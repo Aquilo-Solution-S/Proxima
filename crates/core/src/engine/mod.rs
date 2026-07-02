@@ -14,6 +14,7 @@ mod memory_authoring;
 mod pipeline;
 mod query;
 mod read_verbs;
+mod source_cursors;
 #[cfg(test)]
 mod storage_port_tests;
 

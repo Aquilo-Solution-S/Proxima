@@ -5,6 +5,7 @@ use super::change::ChangeEventPort;
 use super::compliance::{
     ComplianceAdminPort, ComplianceErasePort, FactRetentionPort, OwnerDropProofPort,
 };
+use super::cursors::SourceCursorPort;
 use super::embeddings::{EmbeddingJobPort, EmbeddingTextPort, EmbeddingWritePort};
 use super::fact::{FactIngestPort, SourceBatchPort};
 use super::goals::{GoalReadPort, GoalWritePort};
@@ -32,6 +33,7 @@ pub type OwnerAccessReadHandle = Arc<dyn OwnerAccessReadPort>;
 pub type OwnerMembershipAdminHandle = Arc<dyn OwnerMembershipAdminPort>;
 pub type OwnerTransferHandle = Arc<dyn OwnerTransferPort>;
 pub type SourceBatchHandle = Arc<dyn SourceBatchPort>;
+pub type SourceCursorHandle = Arc<dyn SourceCursorPort>;
 pub type FactRetentionHandle = Arc<dyn FactRetentionPort>;
 pub type ComplianceEraseHandle = Arc<dyn ComplianceErasePort>;
 pub type RegistryProjectionHandle = Arc<dyn RegistryProjectionPort>;

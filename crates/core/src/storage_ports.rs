@@ -7,6 +7,7 @@ mod access;
 mod bundle;
 mod change;
 mod compliance;
+mod cursors;
 mod embeddings;
 mod fact;
 mod goals;
@@ -26,6 +27,7 @@ pub use change::ChangeEventPort;
 pub use compliance::{
     ComplianceAdminPort, ComplianceErasePort, FactRetentionPort, OwnerDropProofPort,
 };
+pub use cursors::SourceCursorPort;
 pub use embeddings::{
     EmbeddingJobPort, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort,
     EmbeddingWriteProof,
@@ -38,7 +40,7 @@ pub use handles::{
     FactIngestHandle, FactRetentionHandle, GoalReadHandle, GoalWriteHandle, McpCallReadHandle,
     McpCallWriteHandle, MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle,
     OwnerAccessReadHandle, OwnerDropProofHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
-    RegistryProjectionHandle, SourceBatchHandle,
+    RegistryProjectionHandle, SourceBatchHandle, SourceCursorHandle,
 };
 pub use mcp::{McpCallReadPort, McpCallWritePort};
 pub use memory::{
