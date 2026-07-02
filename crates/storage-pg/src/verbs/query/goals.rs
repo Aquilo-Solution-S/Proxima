@@ -42,6 +42,12 @@ pub(super) async fn query_goals(
     } else {
         u64::from(req.limit)
     };
+    // Owner join below uses IS NOT DISTINCT FROM: `goals.owner_id` is NULL
+    // for a World-owned row (0008_v005 dropped goals_world_not_write_owner_chk;
+    // World is a persisted owner via Engine::publish_to_world), and `s.id` is
+    // NULL for the World member of the caller's read-owner set. Plain `=`
+    // would silently hide every published Goal (NULL = NULL is NULL) — the
+    // same trap fixed in memories.rs.
     let mut sql = format!(
         "SELECT page.goal_id, page.created_at, page.schema_id, page.schema_version, \
                 page.owner_kind, page.owner_id, \
@@ -61,7 +67,7 @@ pub(super) async fn query_goals(
                 AND e.relation = 'core/depends-on' \
                 AND e.target_goal_id IS NOT NULL \
               WHERE g.owner_kind = s.kind \
-                AND g.owner_id = s.id"
+                AND g.owner_id IS NOT DISTINCT FROM s.id"
     );
     // Bindings: $1=owner_kind, $2=owner_id; the remaining params are pushed
     // in order, so optional filters and keyset cursors remain bound values.
