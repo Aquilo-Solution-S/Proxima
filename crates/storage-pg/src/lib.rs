@@ -86,6 +86,9 @@ pub mod query {
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures;
 pub mod verbs;
+/// Stable, discoverable re-export of the exported `OwnerAccessPort` adapter
+/// (see [`access::PgOwnerAccessResolver`]) for embedding hosts.
+pub use access::PgOwnerAccessResolver;
 pub use sidecars::{
     PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, core_pg_sidecars,
     register_core_pg_sidecars,

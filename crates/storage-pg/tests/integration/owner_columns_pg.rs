@@ -11,10 +11,10 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::{
     AuthPath, AuthzContext, Engine, EntityId, EntityKind, ErrorCode, FlavorRegistry, GroupId,
-    MemoryId, MemoryOperatorKind, Owner, OwnerRef, OwnerRefKind, Relation, Role, SchemaId,
-    SchemaVersion, SourceBatchId, SourceId, UserId,
+    MemoryId, MemoryOperatorKind, Owner, OwnerAccessPort, OwnerRef, OwnerRefKind, Relation, Role,
+    SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
-use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::{PgOwnerAccessResolver, PgStorage};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -446,6 +446,108 @@ async fn owner_columns_written_on_goal_create() {
 
     assert_single_home(&pg, outcome.goal_id.into_inner(), &owner).await;
     assert_no_live_entity_lacks_home(&pg).await;
+
+    common::drop_db(&db).await.unwrap();
+}
+
+#[tokio::test]
+async fn pg_owner_access_resolver_resolves_group_roles_via_owner_access_port() {
+    let (pg, db) = common::fresh_pg().await;
+    let subject = UserId::new(Uuid::now_v7());
+    let group = GroupId::new(Uuid::now_v7());
+
+    seed_membership(&pg, group, &OwnerRef::Personal(subject), Relation::Editor).await;
+
+    let resolver = PgOwnerAccessResolver::new(pg.pool_for_tests().clone());
+    let roles = resolver
+        .resolve_roles_for_subject(subject)
+        .await
+        .expect("resolves group roles");
+
+    assert!(roles.may_write(
+        &OwnerRef::Group(group),
+        proxima_core::AccessKind::Perspective
+    ));
+    assert!(!roles.may_manage(&OwnerRef::Group(group)));
+    assert!(roles.may_read(&OwnerRef::World, proxima_core::AccessKind::Goal));
+
+    common::drop_db(&db).await.unwrap();
+}
+
+#[tokio::test]
+async fn pg_owner_access_resolver_resolve_roles_is_empty_for_unknown_subject() {
+    let (pg, db) = common::fresh_pg().await;
+    let subject = UserId::new(Uuid::now_v7());
+
+    let resolver = PgOwnerAccessResolver::new(pg.pool_for_tests().clone());
+    let roles = resolver
+        .resolve_roles_for_subject(subject)
+        .await
+        .expect("resolves with no membership rows");
+
+    assert!(
+        roles
+            .writable_owners(proxima_core::AccessKind::Perspective)
+            .iter()
+            .all(|owner| !matches!(owner, OwnerRef::Group(_)))
+    );
+
+    common::drop_db(&db).await.unwrap();
+}
+
+#[tokio::test]
+async fn has_role_for_owner_is_a_positive_and_negative_point_in_time_probe() {
+    let (pg, db) = common::fresh_pg().await;
+    let admin = UserId::new(Uuid::now_v7());
+    let viewer = UserId::new(Uuid::now_v7());
+    let group = GroupId::new(Uuid::now_v7());
+    let other_group = GroupId::new(Uuid::now_v7());
+
+    seed_membership(&pg, group, &OwnerRef::Personal(admin), Relation::Admin).await;
+    seed_membership(&pg, group, &OwnerRef::Personal(viewer), Relation::Viewer).await;
+
+    let resolver = PgOwnerAccessResolver::new(pg.pool_for_tests().clone());
+
+    assert!(
+        resolver
+            .has_role_for_owner(admin, OwnerRef::Group(group), Relation::Admin)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !resolver
+            .has_role_for_owner(admin, OwnerRef::Group(group), Relation::Editor)
+            .await
+            .unwrap(),
+        "exact-relation probe must not treat Admin as satisfying an Editor probe"
+    );
+    assert!(
+        !resolver
+            .has_role_for_owner(viewer, OwnerRef::Group(group), Relation::Admin)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !resolver
+            .has_role_for_owner(admin, OwnerRef::Group(other_group), Relation::Admin)
+            .await
+            .unwrap(),
+        "membership on a different group must not satisfy the probe"
+    );
+    assert!(
+        !resolver
+            .has_role_for_owner(admin, OwnerRef::Personal(admin), Relation::Admin)
+            .await
+            .unwrap(),
+        "Personal owners carry no membership row; the probe fails closed"
+    );
+    assert!(
+        !resolver
+            .has_role_for_owner(admin, OwnerRef::World, Relation::Viewer)
+            .await
+            .unwrap(),
+        "World carries no membership row; the probe fails closed"
+    );
 
     common::drop_db(&db).await.unwrap();
 }
