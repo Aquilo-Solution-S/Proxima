@@ -198,7 +198,15 @@ fn edge_draft_from_spec<'a>(
     }
 }
 
-async fn validate_derived_draft_edges_in_tx(
+/// Shared operator proof-ledger validation for BOTH derived-write paths:
+/// the flavor-SDK in-tx tier (`append_derived_with_edges_in_tx`) and the
+/// engine port (`PgStorage::author_derived` in `lib.rs`). Checkpoint 2 of
+/// the v0.0.5 hardening pass found the engine port carrying its own
+/// near-duplicate of this validation that had silently missed the Task 8
+/// `created_at` strict-time gate — one validator, `pub(crate)`, kills that
+/// drift class structurally (same spirit as the `engine::authorize_action`
+/// consolidation).
+pub(crate) async fn validate_derived_draft_edges_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
     edges: &[DerivedEdgeSpec<'_>],
@@ -388,7 +396,10 @@ fn operator_edge_authorship_values() -> [&'static str; 4] {
     ]
 }
 
-async fn validate_derived_edge_replay_equivalent(
+/// Shared idempotent-replay edge-proof equivalence check, used by both
+/// derived-write paths (see `validate_derived_draft_edges_in_tx` — same
+/// consolidation, same drift-class rationale).
+pub(crate) async fn validate_derived_edge_replay_equivalent(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
     edges: &[DerivedEdgeSpec<'_>],

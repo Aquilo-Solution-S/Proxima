@@ -38,9 +38,10 @@ use std::sync::Arc;
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::storage::DerivedEdgeSpec;
 use proxima_core::{
-    AbstractionPayload, AgentDerivationV1, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind,
-    EntityKind, FlavorRegistry, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner,
-    SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, StorageError,
+    AbstractionPayload, AgentDerivationV1, AuthPath, AuthzContext, CORE_DERIVED_FROM_RELATION,
+    EdgeAuthorshipKind, EntityKind, ErrorCode, FlavorRegistry, InputContractId, MemoryId,
+    MemoryOperatorKind, OperatorId, Owner, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId,
+    StorageError,
 };
 use proxima_storage_pg::verbs::derive_append::{
     DerivedDraft, DerivedOutcome, append_derived_with_edges_in_tx,
@@ -427,6 +428,103 @@ async fn author_derived_rejects_operator_input_created_at_not_strictly_before_ou
         assert_eq!(
             persisted_output_rows, 0,
             "rejected derivation must persist no output row"
+        );
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+/// ENGINE-path sibling of the flavor-path fixture above (Checkpoint 2
+/// finding 1): `PgStorage::author_derived` — the port `Engine::
+/// author_derived_authorized` reaches via MCP `core_derive` — historically
+/// validated proof rows through its own inline SELECT in
+/// `crates/storage-pg/src/lib.rs`, which lacked the `created_at`
+/// strict-time gate the flavor path (`append_derived_with_edges_in_tx`)
+/// gained in Task 8. This test drives the full engine path with a
+/// future-`created_at` input and pins the typed rejection + zero persisted
+/// rows.
+#[tokio::test]
+async fn engine_author_derived_rejects_operator_input_created_at_not_strictly_before_output()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = owner_fixture();
+        let future_created_at = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+        let future_input = insert_source_abstraction_with_created_at(
+            &pg,
+            &owner,
+            "engine-future-operator-input",
+            future_created_at,
+        )
+        .await?;
+        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            .with_storage_ports(Arc::new(pg.clone()).storage_ports());
+        let relation = engine
+            .registry()
+            .resolve_relation(CORE_DERIVED_FROM_RELATION)
+            .expect("core derived-from relation registered");
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let output_memory_id = MemoryId::new(Uuid::now_v7());
+        let edges = [proxima_core::AuthorDerivedEdgeInput {
+            relation,
+            source_kind: EntityKind::Abstraction,
+            source_memory_id: output_memory_id,
+            target_kind: EntityKind::Abstraction,
+            target_memory_id: future_input,
+            authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
+            authorship_owner_memory_id: Some(future_input),
+        }];
+
+        let err = engine
+            .author_derived_authorized(
+                &authz,
+                proxima_core::AuthorDerivedRequestInput {
+                    memory_id: output_memory_id,
+                    owner,
+                    kind: EntityKind::Abstraction,
+                    text: "derived".into(),
+                    schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
+                    schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+                    operator_kind: MemoryOperatorKind::AtoA,
+                    operator_id: OperatorId::new(Uuid::now_v7()),
+                    input_contract_id: InputContractId::new(Uuid::now_v7()),
+                    source_batch_id: None,
+                    model_id: "test-model",
+                    prompt_version: "operator-proofs-pg",
+                    sidecar_payload: SidecarPayload::abstraction(AgentDerivationV1 {
+                        title: "derived".into(),
+                        body: "derived".into(),
+                        tags: Vec::new(),
+                        idempotency_key: None,
+                        source_memory_ids: vec![future_input.into_inner()],
+                        model_id: "test-model".into(),
+                        client_name: "test".into(),
+                        client_version: "1".into(),
+                    }),
+                    supersedes: None,
+                    edges: &edges,
+                },
+            )
+            .await
+            .expect_err(
+                "engine-path derivation over a future-created_at input violates strict \
+                 derivation time",
+            );
+        assert_eq!(err.code, ErrorCode::InvalidArgument, "unexpected {err:?}");
+        assert!(
+            err.to_string().contains("must be created strictly before"),
+            "unexpected {err:?}"
+        );
+        let persisted_output_rows: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM proxima_core.memories WHERE memory_id = $1")
+                .bind(output_memory_id.into_inner())
+                .fetch_one(pg.pool_for_tests())
+                .await?;
+        assert_eq!(
+            persisted_output_rows, 0,
+            "rejected engine-path derivation must persist no output row"
         );
         Ok::<(), Box<dyn std::error::Error>>(())
     }
