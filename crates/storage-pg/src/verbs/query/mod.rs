@@ -21,6 +21,7 @@ use proxima_core::{
 };
 use sqlx::{Executor, PgConnection, PgPool, Postgres};
 
+mod abstraction_heads;
 mod citations;
 mod edges;
 mod goals;
@@ -29,6 +30,7 @@ mod memories;
 mod rows;
 mod search;
 
+pub use abstraction_heads::authorized_code_chunk_head_candidates;
 pub(crate) use citations::{citation_of_entity_head, citation_of_fact, facts_citing_object};
 pub use edges::MAX_SNAPSHOT_EDGES;
 pub(crate) use edges::{edge_exists, read_edges};
