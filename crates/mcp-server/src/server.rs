@@ -183,14 +183,9 @@ impl McpToolHost {
                 let ToolCall { args, ctx, .. } = call;
                 call_fn(ctx, args)
             });
-            return Next::new(self.registry.request_behaviors(), terminal)
-                .run(ToolCall {
-                    name: descriptor.name.to_string(),
-                    args,
-                    ctx,
-                })
-                .await
-                .map_err(Into::into);
+            return self
+                .dispatch_through_behaviors(descriptor.name.to_string(), args, ctx, terminal)
+                .await;
         }
 
         Err(ToolInvocationError::ToolNotFound(name.to_string()))
@@ -213,26 +208,56 @@ impl McpToolHost {
         let owner = auth.as_ref().map(|ctx| ctx.owner);
         let ctx = self.ctx_for(author, owner, auth.as_ref());
         let scope_key = parsed.scope_key();
-        if !ctx.authz.tool_scope().allows(scope_key) {
-            return Err(ToolInvocationError::NotAuthorized(scope_key.to_string()));
-        }
 
-        match parsed {
-            ParsedResource::Schemas(args) => resource_output_value(list_schemas(ctx, args).await?),
-            ParsedResource::EdgeTypes(args) => {
-                resource_output_value(list_edge_types(ctx, args).await?)
-            }
-            ParsedResource::Tools(args) => {
-                resource_output_value(list_substrate_tools(ctx, args).await?)
-            }
-            ParsedResource::Graph(args) => resource_output_value(get_graph(ctx, args).await?),
-            ParsedResource::Memory(args) => resource_output_value(get_memory(ctx, args).await?),
-            ParsedResource::MemoryLineage(args) => {
-                resource_output_value(walk_memory_lineage(ctx, args).await?)
-            }
-            ParsedResource::ChangeEvents(args) => {
-                resource_output_value(list_change_events(ctx, args).await?)
-            }
+        let terminal: TerminalDispatch<'_> = Box::new(move |call| {
+            Box::pin(async move { dispatch_resource(parsed, call.ctx).await })
+        });
+        self.dispatch_through_behaviors(
+            scope_key.to_string(),
+            serde_json::json!({ "uri": uri }),
+            ctx,
+            terminal,
+        )
+        .await
+    }
+
+    /// Run a call through the shared `RequestBehavior` onion (currently just
+    /// `ScopeGateBehavior`, plus any flavor-registered behaviors) and the
+    /// given terminal dispatch. Both `call_tool` and `read_resource` funnel
+    /// through here so allow/deny/log behavior matches for tools and
+    /// resources alike — `read_resource` used to run its own hand-rolled
+    /// scope check outside this chain.
+    async fn dispatch_through_behaviors<'a>(
+        &'a self,
+        name: String,
+        args: serde_json::Value,
+        ctx: McpToolCtx,
+        terminal: TerminalDispatch<'a>,
+    ) -> Result<serde_json::Value, ToolInvocationError> {
+        Next::new(self.registry.request_behaviors(), terminal)
+            .run(ToolCall { name, args, ctx })
+            .await
+            .map_err(Into::into)
+    }
+}
+
+async fn dispatch_resource(
+    parsed: ParsedResource,
+    ctx: McpToolCtx,
+) -> Result<serde_json::Value, McpToolError> {
+    match parsed {
+        ParsedResource::Schemas(args) => resource_output_value(list_schemas(ctx, args).await?),
+        ParsedResource::EdgeTypes(args) => resource_output_value(list_edge_types(ctx, args).await?),
+        ParsedResource::Tools(args) => {
+            resource_output_value(list_substrate_tools(ctx, args).await?)
+        }
+        ParsedResource::Graph(args) => resource_output_value(get_graph(ctx, args).await?),
+        ParsedResource::Memory(args) => resource_output_value(get_memory(ctx, args).await?),
+        ParsedResource::MemoryLineage(args) => {
+            resource_output_value(walk_memory_lineage(ctx, args).await?)
+        }
+        ParsedResource::ChangeEvents(args) => {
+            resource_output_value(list_change_events(ctx, args).await?)
         }
     }
 }
@@ -384,15 +409,12 @@ fn query_lineage_direction(query: &[(&str, &str)]) -> Option<WalkMemoryLineageDi
     }
 }
 
-fn resource_output_value<T>(output: T) -> Result<serde_json::Value, ToolInvocationError>
+fn resource_output_value<T>(output: T) -> Result<serde_json::Value, McpToolError>
 where
     T: Serialize,
 {
-    serde_json::to_value(output).map_err(|err| {
-        ToolInvocationError::Tool(McpToolError::Other(format!(
-            "serialize resource output: {err}"
-        )))
-    })
+    serde_json::to_value(output)
+        .map_err(|err| McpToolError::Other(format!("serialize resource output: {err}")))
 }
 
 #[cfg(test)]
@@ -402,7 +424,7 @@ mod tests {
     use super::*;
     use crate::auth::McpAuthContext;
     use proxima_core::mcp::McpAuthorContext;
-    use proxima_core::{FlavorRegistry, Owner, OwnerRef, UserId};
+    use proxima_core::{FlavorRegistry, Owner, OwnerRef, ToolScope, UserId};
 
     fn fake_owner() -> Owner {
         OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
@@ -475,6 +497,44 @@ mod tests {
             let parsed = parse_resource_uri(uri).expect("resource parses");
             assert_eq!(parsed.scope_key(), scope_key);
         }
+    }
+
+    /// Task 7: `read_resource` now traverses the same `RequestBehavior`
+    /// onion (`ScopeGateBehavior`) as `call_tool`, instead of a hand-rolled
+    /// scope check outside the chain. An out-of-palette caller must still
+    /// be denied, and denial must still surface as `NotAuthorized` keyed by
+    /// the resource's scope key — matching the pre-refactor error shape.
+    #[tokio::test]
+    async fn read_resource_denies_out_of_palette_scope() {
+        let server = make_server();
+        let owner = fake_owner();
+        let author = McpAuthorContext {
+            model_id: "test-model".into(),
+            client_name: "test-client".into(),
+            client_version: "0.1.0".into(),
+            caller_self_perspective: None,
+        };
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System)
+            .with_tool_scope(ToolScope::Palette(Vec::new()));
+        let auth = McpAuthContext {
+            owner,
+            authz,
+            model_id: None,
+            master_token_id: None,
+        };
+
+        let err = server
+            .read_resource("proxima://schemas", author, Some(auth))
+            .await
+            .expect_err("empty palette must deny resource reads");
+
+        assert!(
+            matches!(
+                err,
+                ToolInvocationError::NotAuthorized(ref key) if key == protocol_resource::SCHEMAS
+            ),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[tokio::test]
