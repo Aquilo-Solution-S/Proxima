@@ -21,6 +21,39 @@ pub fn owner_arrays(owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<Option<uuid:
     owners.iter().map(owner_binds).unzip()
 }
 
+/// Fail closed when a NEW `memories`/`goals` entity row would be created
+/// under [`OwnerRef::World`].
+///
+/// Kernel law: World is universally readable and never a write owner. The
+/// v0.0.5 baseline correction (`0008_v005.sql`) dropped the blanket
+/// `world_not_write_owner_chk` from `memories`/`goals` so the
+/// publish-to-World owner TRANSFER (`transfer_to_world`, an UPDATE) can
+/// persist World ownership — which also removed the DB-level backstop
+/// against raw storage-verb callers (e.g. `flavors/code`, which invokes
+/// these verbs directly and bypasses `Engine::authorize_write`'s World
+/// short-circuit). This helper restores that backstop one layer up: every
+/// row-creating verb choke point calls it before its INSERT.
+///
+/// Deliberately NOT wired into [`owner_binds`]: rows that legitimately
+/// reference a World-owned entity post-publish, and the transfer UPDATE
+/// itself, must keep encoding World.
+///
+/// # Errors
+///
+/// Returns [`StorageError::ConstraintViolation`] — the same error class
+/// the dropped DDL CHECK produced — when `owner` is [`OwnerRef::World`].
+pub(crate) fn reject_world_write_owner(owner: &OwnerRef) -> Result<(), StorageError> {
+    if matches!(owner, OwnerRef::World) {
+        return Err(StorageError::ConstraintViolation(
+            "World is read-only and never a write owner; new entity rows cannot be created \
+             under OwnerRef::World (the publish-to-World owner transfer is the only path \
+             that sets it)"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.

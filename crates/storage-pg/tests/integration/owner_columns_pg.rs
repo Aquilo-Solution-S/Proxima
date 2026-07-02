@@ -6,14 +6,17 @@ use proxima_core::verbs::goal_write::{
     CreateGoalAtomicRequest, GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft,
     GoalState, GoalTopologyWrite,
 };
+use proxima_core::verbs::persist_mcp_call::McpCallLogInput;
 use proxima_core::verbs::query::{
     MemorySearchRequest, QueryRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
 use proxima_core::{
     AuthPath, AuthzContext, Engine, EntityId, EntityKind, ErrorCode, FlavorRegistry, GroupId,
-    MemoryId, MemoryOperatorKind, Owner, OwnerAccessPort, OwnerRef, OwnerRefKind, Relation, Role,
-    SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+    InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner, OwnerAccessPort, OwnerRef,
+    OwnerRefKind, Relation, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError,
+    UserId,
 };
+use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_with_edges_in_tx};
 use proxima_storage_pg::{PgOwnerAccessResolver, PgStorage};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -512,6 +515,138 @@ async fn transfer_to_world_moves_goal_row() {
     assert!(moved, "goal row transfers under its current owner");
     assert_single_home(&pg, entity.uuid(), &OwnerRef::World).await;
     assert_no_live_entity_lacks_home(&pg).await;
+
+    common::drop_db(&db).await.unwrap();
+}
+
+fn assert_world_write_rejected(err: &StorageError) {
+    match err {
+        StorageError::ConstraintViolation(msg) => assert!(
+            msg.contains("World is read-only and never a write owner"),
+            "expected the World write-owner backstop, got: {msg}"
+        ),
+        other => panic!("expected ConstraintViolation from the World backstop, got {other:?}"),
+    }
+}
+
+/// Raw-verb backstop: `flavors/code`-style direct storage calls (no engine,
+/// no `authorize_write`) must not be able to CREATE a memories row under
+/// World now that the DDL check is gone (`0008_v005.sql`).
+#[tokio::test]
+async fn world_owner_rejected_on_raw_fact_ingest_verb() {
+    let (pg, db) = common::fresh_pg().await;
+
+    let err = proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic(
+        pg.pool_for_tests(),
+        &OwnerRef::World,
+        &fresh_fact_draft(OwnerRef::World),
+        None,
+    )
+    .await
+    .expect_err("raw fact ingest under World must fail closed");
+    assert_world_write_rejected(&err);
+
+    let world_memories: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM proxima_core.memories WHERE owner_kind = 'world'")
+            .fetch_one(pg.pool_for_tests())
+            .await
+            .unwrap();
+    assert_eq!(world_memories, 0, "no World-owned memories row was created");
+
+    common::drop_db(&db).await.unwrap();
+}
+
+/// Raw-verb backstop for the derived-memory surface `flavors/code` calls
+/// directly (`append_derived_with_edges_in_tx`).
+#[tokio::test]
+async fn world_owner_rejected_on_raw_derive_append_verb() {
+    let (pg, db) = common::fresh_pg().await;
+
+    let draft = DerivedDraft {
+        memory_id: Uuid::now_v7(),
+        owner: OwnerRef::World,
+        kind: EntityKind::Abstraction,
+        schema_id: SchemaId::new("test/world-guard-abstraction-v1".into()),
+        schema_version: SchemaVersion::new(1),
+        text: "world-owned derived rows must be rejected".to_string(),
+        operator_kind: MemoryOperatorKind::AtoA,
+        operator_id: OperatorId::new(Uuid::now_v7()),
+        input_contract_id: InputContractId::new(Uuid::now_v7()),
+        source_batch_id: None,
+        model_id: "test-model",
+        prompt_version: "v1",
+        supersedes: None,
+        embedding: None,
+        embedding_model_id: None,
+    };
+    let mut tx = pg.pool_for_tests().begin().await.unwrap();
+    let err = append_derived_with_edges_in_tx(&mut tx, &draft, &[], |_tx, _outcome| {
+        Box::pin(async { Ok(()) })
+    })
+    .await
+    .expect_err("raw derived append under World must fail closed");
+    assert_world_write_rejected(&err);
+    tx.rollback().await.unwrap();
+
+    common::drop_db(&db).await.unwrap();
+}
+
+/// Raw-verb backstop for goal creation: the goals DDL check is also gone,
+/// so the verb layer must reject a NEW World-owned goal row.
+#[tokio::test]
+async fn world_owner_rejected_on_raw_goal_write_verb() {
+    let (pg, db) = common::fresh_pg().await;
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+
+    let err = pg
+        .create_goal_atomic(&CreateGoalAtomicRequest {
+            draft: fresh_goal_draft(OwnerRef::World),
+            context: GoalAtomicContext {
+                registry: &registry,
+                embedding_model_id: None,
+                author_self_perspective_id: None,
+            },
+        })
+        .await
+        .expect_err("goal creation under World must fail closed");
+    assert_world_write_rejected(&err);
+
+    let world_goals: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM proxima_core.goals WHERE owner_kind = 'world'")
+            .fetch_one(pg.pool_for_tests())
+            .await
+            .unwrap();
+    assert_eq!(world_goals, 0, "no World-owned goals row was created");
+
+    common::drop_db(&db).await.unwrap();
+}
+
+/// Raw-verb backstop for the MCP-call-log Fact row (also a new memories row).
+#[tokio::test]
+async fn world_owner_rejected_on_raw_persist_mcp_call_verb() {
+    let (pg, db) = common::fresh_pg().await;
+    let now = time::OffsetDateTime::now_utc();
+
+    let err = proxima_storage_pg::verbs::persist_mcp_call::persist_mcp_call_atomic(
+        pg.pool_for_tests(),
+        &McpCallLogInput {
+            owner: OwnerRef::World,
+            actor_oid: "test-oid".into(),
+            actor_upn: "test@example.invalid".into(),
+            tool_name: "test_tool".into(),
+            ok: true,
+            error: None,
+            latency_ms: 1,
+            io_body: b"{}".to_vec(),
+            io_byte_len_original: 2,
+            io_truncated: false,
+            observed_at: now,
+            occurred_at: now,
+        },
+    )
+    .await
+    .expect_err("mcp-call persistence under World must fail closed");
+    assert_world_write_rejected(&err);
 
     common::drop_db(&db).await.unwrap();
 }

@@ -35,6 +35,7 @@ pub async fn persist_mcp_call_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     input: &McpCallLogInput,
 ) -> Result<McpCallLogOutcome, StorageError> {
+    crate::access::owner_columns::reject_world_write_owner(&input.owner)?;
     let io_content_hash = input.io_content_hash();
     let receipt_id = input.receipt_id();
     let receipt_id_bytes = receipt_id.into_inner();
