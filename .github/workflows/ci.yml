@@ -72,6 +72,10 @@ jobs:
           test: false
       - name: lean kernel
         run: cd docs/lean && lake build
+      - name: lean axiom pin
+        run: |
+          python3 scripts/check-lean-axioms.py --self-test
+          python3 scripts/check-lean-axioms.py
 
   deny:
     name: cargo-deny (advisories + licenses + bans + sources)
