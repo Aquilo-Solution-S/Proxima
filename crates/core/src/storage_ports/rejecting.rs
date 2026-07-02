@@ -5,13 +5,14 @@ use super::compliance::{
 };
 use super::embeddings::{
     EmbeddingJobPort, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort,
+    EmbeddingWriteProof,
 };
 use super::fact::{FactIngestPort, SourceBatchPort};
 use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
 use super::mcp::{McpCallReadPort, McpCallWritePort};
 use super::memory::{
     CitationPort, EdgeReadPort, EdgeWriteProof, MemoryAuthoringPort, MemoryInspectPort,
-    MemoryReadPort,
+    MemoryReadPort, OperatorWriteProof,
 };
 use super::registry::RegistryProjectionPort;
 use crate::SourceBatchId;
@@ -105,6 +106,7 @@ impl MemoryAuthoringPort for RejectingStorage {
     async fn author_derived(
         &self,
         _req: &AuthorDerivedRequest<'_>,
+        _proof: OperatorWriteProof,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -208,6 +210,7 @@ impl EmbeddingWritePort for RejectingStorage {
         _model_id: &str,
         _dim: usize,
         _vec: &[f32],
+        _proof: EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError> {
         Ok(EmbeddingWriteOutcome {
             embedding_version: 0,

@@ -1,4 +1,4 @@
-pub use super::proof::EdgeWriteProof;
+pub use super::proof::{EdgeWriteProof, OperatorWriteProof};
 
 use crate::dependency::MemoryDependency;
 use crate::read_models::{MemorySnapshot, SidecarSpec};
@@ -12,9 +12,13 @@ use crate::{
 
 #[async_trait::async_trait]
 pub trait MemoryAuthoringPort: Send + Sync {
+    /// Append one already-authorized derived memory. Public callers cannot
+    /// forge `OperatorWriteProof`; route through
+    /// `Engine::author_derived_authorized` instead.
     async fn author_derived(
         &self,
         req: &AuthorDerivedRequest<'_>,
+        proof: OperatorWriteProof,
     ) -> Result<AuthorDerivedOutcome, StorageError>;
 
     /// Append one already-authorized memory edge. Public callers cannot forge

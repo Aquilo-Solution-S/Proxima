@@ -219,7 +219,11 @@ impl Engine {
     /// Returns `Internal` when the embedding client fails,
     /// `ConstraintViolation` on embedding dimension mismatch, and storage
     /// errors from the atomic write.
-    pub async fn author_derived(
+    ///
+    /// Engine-internal raw write. Callers outside `author_derived_authorized`
+    /// would bypass owner write authorization; there is no public API for
+    /// this method.
+    pub(in crate::engine) async fn author_derived(
         &self,
         req: AuthorDerivedRequestInput<'_>,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
@@ -306,7 +310,10 @@ impl Engine {
         self.storage()
             .memory_authoring
             .memory_authoring
-            .author_derived(&storage_req)
+            .author_derived(
+                &storage_req,
+                crate::storage_ports::OperatorWriteProof::new(),
+            )
             .await
     }
 
