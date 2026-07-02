@@ -1,199 +1,218 @@
 # Kernel Coverage Matrix — docs → axioms
 
+Runtime enforcement values (added Task 8 of the v0.0.5 hardening plan):
+`enforced` — a concrete runtime mechanism (Rust check, DB constraint/schema shape,
+or true structural absence of the offending capability) prevents violation, named
+in the cell. `guardrail` — a checked-in script/CI check catches regressions rather
+than a live request-path gate. `excluded` — no runtime carrier exists anywhere
+(app/flavor/consumer responsibility, deferred protocol, or documentation-only
+record); this mirrors the row's existing kernel-side "excluded" only when that
+exclusion is also true at runtime — several rows the kernel excludes from its
+proof scope are nonetheless runtime-enforced (e.g. a Postgres constraint), and
+those are marked `enforced`, not `excluded`. `planned` — accepted future work
+named in `docs/superpowers/plans/2026-07-02-proxima-hardening-roadmap.md`; used
+only where a row's subject matter maps directly onto one of those named items
+(Task 12 legal/security hold is the one confirmed match — see CO-9/10 below).
+
 ## universe.md (U)
 
-| ID | Invariant | Carrier |
-|---|---|---|
-| U-1 | Layering strict & irreversible; no lower-layer memory from higher layer | theorem `fact_memory_kind` + theorem `operator_memory_output_not_fact` + `legalClasses` upward-False cells; header comments Memory.lean |
-| U-2 | Causal claims perspective-relative; no semantic/causal Fact→Fact; Perspective is locus of causal claims | `legalClasses` Fact→Fact cell (no Causal/Interpretive) + `operatorEdgeShape` PerspectiveLink arm; Edges.lean header |
-| U-3 | Dreaming = flavor-declared consolidation; no Dream entity/relation/pipeline | structural absence; Operators.lean header comment |
-| U-4 | Reality enters as typed Facts | `Fact` subtype (`Memory` with kind `.Fact`) + `operator_memory_output_not_fact`; `Flavor.OptionalFactReceipt` witnesses optional event/receipt metadata without certifying external truth |
+| ID | Invariant | Carrier | Runtime enforcement |
+|---|---|---|---|
+| U-1 | Layering strict & irreversible; no lower-layer memory from higher layer | theorem `fact_memory_kind` + theorem `operator_memory_output_not_fact` + `legalClasses` upward-False cells; header comments Memory.lean | enforced — `memories.kind`/`EntityKind` split + operator-output-kind checks in `validate_operator_memory_invocation_request` and `storage-pg/verbs/derive_append.rs` |
+| U-2 | Causal claims perspective-relative; no semantic/causal Fact→Fact; Perspective is locus of causal claims | `legalClasses` Fact→Fact cell (no Causal/Interpretive) + `operatorEdgeShape` PerspectiveLink arm; Edges.lean header | enforced — `validate_relation_shape`/`RelationDescriptor` class checks reject Fact→Fact Causal/Interpretive edges at write time |
+| U-3 | Dreaming = flavor-declared consolidation; no Dream entity/relation/pipeline | structural absence; Operators.lean header comment | enforced — structural absence (no `Dream` type/table anywhere in the workspace) |
+| U-4 | Reality enters as typed Facts | `Fact` subtype (`Memory` with kind `.Fact`) + `operator_memory_output_not_fact`; `Flavor.OptionalFactReceipt` witnesses optional event/receipt metadata without certifying external truth | enforced — Fact-only ingest verbs (`verbs::fact_ingest`) are the sole Fact-creating path; `memories.kind IS NULL` schema branch |
 
 ## 01 — Source / Fact ingest (ES)
 
-| ID | Invariant | Carrier |
-|---|---|---|
-| ES-1 | Group org → no kernel face | excluded: org has no kernel face and (Track B / S0) is absent from Core storage and identity — `OwnerRef` / resolved `Owner := Group` carry no org predicate; tenancy is a flavor/app concern. Decisions `2026-06-11-org-out-of-kernel.md`, S0 collapse, owner-ontology realign 2026-06-28 (was THEOREM `owner_org_denormalized` when Owner carried org) |
-| ES-2 | Visibility rule (group membership) | def `visible` (`o r ≠ none`, i.e. holds any `Role`) + theorem `visible_personal` |
-| ES-3 | org never enters access or identity | structural: org absent from `OwnerRef`, `OwnerState`, and resolved `Owner := Group` — decisions `2026-06-11-org-out-of-kernel.md`, owner realign 2026-06-28 |
-| ES-4 | source-ingest dedup key deterministic over source/owner/payload | excluded: source/flavor ingest metadata after D1; no core `FactReceiptId` entity |
-| ES-5 | Batch id unique within (source, owner) | excluded: per-scope engine validation with no kernel-observable face; F→A gate carries owner dimension (`ftoa_batch_exclusive`); wake context dimension deferred after D4 |
-| ES-6 | Facts are typed observations, not operator derivations | `Fact` subtype + `operator_memory_output_not_fact`; `Flavor.OptionalFactReceipt` models arbitrary observed-source receipts as optional metadata |
-| ES-7 | 1:1 source-ingest receipt→Fact materialization | partial: `Flavor.OptionalFactReceipt` proves receipt payloads attach only to Fact rows; exact source materialization/idempotency remains source/flavor ingest implementation |
-| ES-8 | Source must not abstract/interpret/cross-join/relevance-filter/persist | excluded: source/flavor ingest contract; kernel carries the consequence via `operator_memory_output_not_fact` + no downward operator writes |
-| ES-9 | Compliance metadata: every source declares 4 fields; Facts inherit | excluded: engine registration totality (CO-39..45 rows); source identity is engine-side — kernel `SourceId` axiom retired 2026-06-28 (unused once Compliance dropped `DeleteSourceScope`) |
-| ES-10 | Idempotency keys content-derived/opaque, never natural-person identifiers | excluded: source/flavor ingest concern with no kernel carrier (suppression docstring retired 2026-06-28 with the `SuppressionKey` axioms) |
-| ES-11 | Facts' typing frozen at insert; engine does not migrate Facts across schema versions | `Immutable Memory`-stance via `AppendOnly Memory` + accessor totality (`memory_schema` fixed per row); migration mechanics excluded (SR-50..55 exclusion block) |
-| ES-12 | No legacy org-principal variant; org-wide = `<org>-everyone` group | structural: stable ownership uses `OwnerRef.world` / `OwnerRef.personal u` / `OwnerRef.group id`; no Org variant. Resolved owner is a Group (`User → Option Role`). Realign 2026-06-28 |
-| ES-13 | Per-memory ACL / `AccessGrant` layer is absent | structural absence + Owner.lean header comment |
-| ES-14 | Push vs pull is source-side implementation detail | excluded: engine |
-| ES-15 | Bootstrap/founding-goal is flavor onboarding | excluded: app-layer |
-| AUTH-SHARE | One owner per entity; sharing IS group membership (no share set above the owner) | structural: entity rows should carry one stable `OwnerRef`; `OwnerState.resolve` yields the single resolved Group for access. Read-only share = viewer-role membership, publish = `.world`. No `Scope`/`reaches` multi-owner layer — realign 2026-06-28 |
-| AUTH-READ | Read = role read-ceiling over the kind, in the server-resolved owning group | defs `may_read` over resolved `Owner` and `may_read_in` over stable `OwnerRef` + `OwnerState.resolve`; role model `Role` (`Role.mayRead`) |
-| AUTH-WRITE | Write = role write-ceiling in the server-resolved single owning group | defs `may_write` over resolved `Owner` and `may_write_in` over stable `OwnerRef` + `OwnerState.resolve`; `Role.mayWrite` |
-| AUTH-MANAGE | Meta-management = managing a group's membership/role map | defs `may_manage` / `may_manage_in`; personal groups forbidden; `Role.manage` flag + `Role.admin` preset |
-| AUTH-MANAGE-P | Personal groups forbid meta-management | THEOREMs `personal_forbids_manage`, `owner_state_personal_forbids_manage`; structural — `may_manage` requires `¬ Owner.isPersonal`, and `personal.manage = false` |
-| AUTH-MANAGE-W | World group forbids meta-management | THEOREMs `world_forbids_manage`, `owner_state_world_forbids_manage`; structural — every World member is `viewer` (`manage = false`), independent of the personal-group rule |
-| AUTH-1 | Write ⊆ read (whoever may write may read) | THEOREMs `may_write_implies_read`, `may_write_in_implies_read_in`, from structural field `Role.write_le_read` after owner-state resolution |
-| AUTH-2 | World is read-only (never a write target) | THEOREMs `world_read_only`, `owner_state_world_read_only`, from `world := fun _ => some Role.viewer` and `OwnerState.world_resolves` |
-| AUTH-3 | World is universally readable | THEOREMs `world_universally_readable`, `owner_state_world_universally_readable`, from World's `viewer` read ceiling covering every kind |
-| AUTH-4 | Per-memory ACL / owner-space grants absent — access is role-graded group membership | structural: no `AccessGrant`/`MemoryAction`; `Group := User → Option Role`; realign 2026-06-28 |
-| AUTH-EDGE | Edge write admission = source write + registered descriptor-selected target gate | defs `edge_write_admitted`, `targetAccessSatisfied`; THEOREMs `edge_write_admitted_core_valid`, `edge_write_admitted_source_write` under `RelationRegistry` |
-| AUTH-EDGE-READ | Edge read is source-local; target projection is separately gated/redacted | defs `edge_read_admitted`, `edge_target_readable`, `edge_target_available`, `edge_target_redacted`; THEOREMs `edge_read_admitted_source_owned`, `target_unreadable_redacts_edge_target`, `target_abandoned_redacts_edge_target` |
-| NEST-1 | Group nesting needs no new primitive — a nested group resolves to an ordinary `Owner` | def `Role.meet`/`Role.join` (role lattice) + `Group.mount`/`Group.union`; the kernel sees only the resolved `Owner`, nesting is host composition (Level 2, 2026-06-28) |
-| NEST-2 | Capped mounting cannot escalate write authority | THEOREM `mount_cannot_escalate` — if the cap may not write kind `k`, no member of the mounted group gains write `k` (meet caps the write ceiling) |
-| NEST-3 | Union grants at least each side's access | THEOREM `union_grants_each` — read via either group ⇒ read via the union (join never lowers a member's capability); write case analogous |
+| ID | Invariant | Carrier | Runtime enforcement |
+|---|---|---|---|
+| ES-1 | Group org → no kernel face | excluded: org has no kernel face and (Track B / S0) is absent from Core storage and identity — `OwnerRef` / resolved `Owner := Group` carry no org predicate; tenancy is a flavor/app concern. Decisions `2026-06-11-org-out-of-kernel.md`, S0 collapse, owner-ontology realign 2026-06-28 (was THEOREM `owner_org_denormalized` when Owner carried org) | enforced — structural: no org field on `OwnerRef`/storage schema; `check-architecture-guardrails.py check_stale_access` guards regression |
+| ES-2 | Visibility rule (group membership) | def `visible` (`o r ≠ none`, i.e. holds any `Role`) + theorem `visible_personal` | enforced — `Role::may_read`/`OwnerRoles`/`Engine::resolve_access` |
+| ES-3 | org never enters access or identity | structural: org absent from `OwnerRef`, `OwnerState`, and resolved `Owner := Group` — decisions `2026-06-11-org-out-of-kernel.md`, owner realign 2026-06-28 | enforced — same as ES-1 (structural absence + `check_stale_access` guardrail) |
+| ES-4 | source-ingest dedup key deterministic over source/owner/payload | excluded: source/flavor ingest metadata after D1; no core `FactReceiptId` entity | excluded — dedup-key generation is caller-owned, no Proxima runtime check |
+| ES-5 | Batch id unique within (source, owner) | excluded: per-scope engine validation with no kernel-observable face; F→A gate carries owner dimension (`ftoa_batch_exclusive`); wake context dimension deferred after D4 | enforced — `memories_ftoa_batch_exclusive_uidx` unique index (`migrations/0001_init.sql`) + `derive_append.rs::validate_ftoa_input_batch` |
+| ES-6 | Facts are typed observations, not operator derivations | `Fact` subtype + `operator_memory_output_not_fact`; `Flavor.OptionalFactReceipt` models arbitrary observed-source receipts as optional metadata | enforced — Fact-only ingest path + `validate_operator_memory_invocation_request` rejects operator output kind Fact |
+| ES-7 | 1:1 source-ingest receipt→Fact materialization | partial: `Flavor.OptionalFactReceipt` proves receipt payloads attach only to Fact rows; exact source materialization/idempotency remains source/flavor ingest implementation | excluded — 1:1 materialization/idempotency is source/flavor ingest implementation, not core-checked |
+| ES-8 | Source must not abstract/interpret/cross-join/relevance-filter/persist | excluded: source/flavor ingest contract; kernel carries the consequence via `operator_memory_output_not_fact` + no downward operator writes | excluded — source authoring discipline, not runtime-checked (the downward-write consequence itself is covered by U-1/CN-5) |
+| ES-9 | Compliance metadata: every source declares 4 fields; Facts inherit | excluded: engine registration totality (CO-39..45 rows); source identity is engine-side — kernel `SourceId` axiom retired 2026-06-28 (unused once Compliance dropped `DeleteSourceScope`) | enforced — schema registration totality at flavor-registry freeze (`FlavorRegistry::freeze_or_panic_for_tests`) |
+| ES-10 | Idempotency keys content-derived/opaque, never natural-person identifiers | excluded: source/flavor ingest concern with no kernel carrier (suppression docstring retired 2026-06-28 with the `SuppressionKey` axioms) | excluded — idempotency-key content is caller-supplied, unchecked |
+| ES-11 | Facts' typing frozen at insert; engine does not migrate Facts across schema versions | `Immutable Memory`-stance via `AppendOnly Memory` + accessor totality (`memory_schema` fixed per row); migration mechanics excluded (SR-50..55 exclusion block) | enforced — `memories.schema_id`/`schema_version` columns, no update verb exists |
+| ES-12 | No legacy org-principal variant; org-wide = `<org>-everyone` group | structural: stable ownership uses `OwnerRef.world` / `OwnerRef.personal u` / `OwnerRef.group id`; no Org variant. Resolved owner is a Group (`User → Option Role`). Realign 2026-06-28 | enforced — `OwnerRef` Rust enum has no Org variant (compile-time) |
+| ES-13 | Per-memory ACL / `AccessGrant` layer is absent | structural absence + Owner.lean header comment | enforced — structural absence, no ACL/grant table in schema |
+| ES-14 | Push vs pull is source-side implementation detail | excluded: engine | excluded — unchecked implementation detail |
+| ES-15 | Bootstrap/founding-goal is flavor onboarding | excluded: app-layer | excluded — app-layer, unchecked |
+| AUTH-SHARE | One owner per entity; sharing IS group membership (no share set above the owner) | structural: entity rows should carry one stable `OwnerRef`; `OwnerState.resolve` yields the single resolved Group for access. Read-only share = viewer-role membership, publish = `.world`. No `Scope`/`reaches` multi-owner layer — realign 2026-06-28 | enforced — one `owner_kind`/`owner_id` column pair per row (schema) + `Engine::resolve_access` single-resolution path |
+| AUTH-READ | Read = role read-ceiling over the kind, in the server-resolved owning group | defs `may_read` over resolved `Owner` and `may_read_in` over stable `OwnerRef` + `OwnerState.resolve`; role model `Role` (`Role.mayRead`) | enforced — `Role::may_read`/`OwnerRoles::may_read`/`Engine::resolve_access` |
+| AUTH-WRITE | Write = role write-ceiling in the server-resolved single owning group | defs `may_write` over resolved `Owner` and `may_write_in` over stable `OwnerRef` + `OwnerState.resolve`; `Role.mayWrite` | enforced — `Role::may_write`/`Engine::authorize_write` gate every engine-orchestrated write verb; the flavor-SDK raw write-tier (`append_derived_with_edges_in_tx` and siblings) is not yet permit-sealed — tracked as v0.0.6 debt (spec §8 Open Debt), not a coverage gap in the gate itself |
+| AUTH-MANAGE | Meta-management = managing a group's membership/role map | defs `may_manage` / `may_manage_in`; personal groups forbidden; `Role.manage` flag + `Role.admin` preset | enforced — `OwnerRoles::may_manage`/`engine/access_admin.rs` membership verbs |
+| AUTH-MANAGE-P | Personal groups forbid meta-management | THEOREMs `personal_forbids_manage`, `owner_state_personal_forbids_manage`; structural — `may_manage` requires `¬ Owner.isPersonal`, and `personal.manage = false` | enforced — `OwnerRoles::may_manage` rejects `OwnerRef::Personal` unconditionally |
+| AUTH-MANAGE-W | World group forbids meta-management | THEOREMs `world_forbids_manage`, `owner_state_world_forbids_manage`; structural — every World member is `viewer` (`manage = false`), independent of the personal-group rule | enforced — `OwnerRoles::may_manage` rejects `OwnerRef::World`; `Role::viewer()` has `manage = false` |
+| AUTH-1 | Write ⊆ read (whoever may write may read) | THEOREMs `may_write_implies_read`, `may_write_in_implies_read_in`, from structural field `Role.write_le_read` after owner-state resolution | enforced — `Role::new` rejects `write.rank() > read.rank()` at construction |
+| AUTH-2 | World is read-only (never a write target) | THEOREMs `world_read_only`, `owner_state_world_read_only`, from `world := fun _ => some Role.viewer` and `OwnerState.world_resolves` | enforced — `Role::viewer()` write=None for World + `reject_world_write_owner` fail-closed backstop at storage-pg verb entry points |
+| AUTH-3 | World is universally readable | THEOREMs `world_universally_readable`, `owner_state_world_universally_readable`, from World's `viewer` read ceiling covering every kind | enforced — World auto-inserted as `Role::viewer()` read for every subject (`OwnerRoles::for_subject`/`empty_for_subject`) |
+| AUTH-4 | Per-memory ACL / owner-space grants absent — access is role-graded group membership | structural: no `AccessGrant`/`MemoryAction`; `Group := User → Option Role`; realign 2026-06-28 | enforced — structural absence, no `AccessGrant`/`MemoryAction` type; `OwnerRoles` is the sole role map |
+| AUTH-EDGE | Edge write admission = source write + registered descriptor-selected target gate | defs `edge_write_admitted`, `targetAccessSatisfied`; THEOREMs `edge_write_admitted_core_valid`, `edge_write_admitted_source_write` under `RelationRegistry` | enforced — `validate_relation_owner_policy` + `authorize_edge_target_policy` at edge-write verbs |
+| AUTH-EDGE-READ | Edge read is source-local; target projection is separately gated/redacted | defs `edge_read_admitted`, `edge_target_readable`, `edge_target_available`, `edge_target_redacted`; THEOREMs `edge_read_admitted_source_owned`, `target_unreadable_redacts_edge_target`, `target_abandoned_redacts_edge_target` | enforced — `EdgeTargetProjection` redaction in read/query verbs |
+| NEST-1 | Group nesting needs no new primitive — a nested group resolves to an ordinary `Owner` | def `Role.meet`/`Role.join` (role lattice) + `Group.mount`/`Group.union`; the kernel sees only the resolved `Owner`, nesting is host composition (Level 2, 2026-06-28) | excluded — no group-nesting/mounting runtime exists (groups are flat membership rows); this is a host-composition capability not yet built |
+| NEST-2 | Capped mounting cannot escalate write authority | THEOREM `mount_cannot_escalate` — if the cap may not write kind `k`, no member of the mounted group gains write `k` (meet caps the write ceiling) | excluded — same, no mounting runtime to guard |
+| NEST-3 | Union grants at least each side's access | THEOREM `union_grants_each` — read via either group ⇒ read via the union (join never lowers a member's capability); write case analogous | excluded — same, no mounting runtime to guard |
 
 ## 02 — Memory (ME)
 
-| ID | Invariant | Carrier |
-|---|---|---|
-| ME-1 | Fact is Memory with kind `.Fact` | subtype `Fact := { m : Memory // memory_kind m = .Fact }` + theorem `fact_memory_kind`; runtime SQL currently encodes the Fact branch as `memories.kind IS NULL` while preserving the kernel distinction from derived kinds |
-| ME-2 | Fact owner is the memory row owner | structural: `Fact.memory` projects to `Memory.owner`; source/event owner inheritance moved out of core by D1 |
-| ME-3 | Optional free text is a Memory field for F/A/P; no kind-based text axiom | structure field `Memory.text : Option Text` + accessor `memory_text` |
-| ME-4 | Facts never supersede / never superseded | THEOREM `facts_never_supersede` (Edges.lean, from valid Supersession-class edge + matrix) |
-| ME-5a | Supersession same kind | THEOREM `supersession_same_kind` over `EdgeCoreValid registry` rows |
-| ME-5b | Supersession same owner | THEOREM `supersession_same_owner` over `EdgeCoreValid registry` rows, via descriptor `RelationOwnerPolicy.SameOwner` for Supersession |
-| ME-6 | Personality is not a materialized Memory author/owner slot | structural absence: no `PersonalityInstance`, no `personality_owner`, no `memory_authoring_personality`; D4 comment Memory.lean |
-| ME-7 | Facts below Perspectives; no personality read-scope matrix | theorem `principle_1_facts_below_perspective`; structural absence of `read_scope`/`personality_may_read`; wake trigger/context reads use `Wake.Firing.trigger_read` and `each_injected_read` over actual memory owners |
-| ME-8 | Materialized personality matrix removed | structural absence of `read_scope` and matrix-version state; wake context/read semantics are role-graded Owner checks in `Wake.Firing`, not a personality matrix |
-| ME-9 | Edge scope source-owned; Supersession intra-Owner | row-validity predicate `EdgeSourceOwned` + descriptor owner policy `RelationOwnerPolicy`; projection THEOREMs `edge_source_owned`, `supersession_intra_owner` over `EdgeCoreValid registry` |
-| ME-10 | ℓ(source) ≥ ℓ(target) for valid memory edges | THEOREM `edge_layer_rule` (from `EdgeCoreValid registry` + matrix empty upward cells); FactEntity endpoints are Fact-like through `NodeRef.memoryKind?` |
-| ME-11 | Class-legality matrix (9 cells) | def `legalClasses` + THEOREMS `edge_class_legal_for_node` / `edge_class_legal` (from `EdgeHasClass registry` + descriptor `masksTightenOnly`) |
-| ME-12 | Supersession same endpoint shape (incl. Goal→Goal) | row-validity predicate `EdgeSupersessionEndpointShapeValid` + THEOREM `supersession_same_endpoint_shape`; FactEntity/Fact endpoints cannot supersede |
-| ME-13 | Edges immutable v1 | `Edge` structure + instances `Immutable Edge`, `AppendOnly Edge` |
-| ME-14 | Descriptor masks tighten, never relax | structure `RelationDescriptor` with `sourceBinding`/`targetBinding`, `endpointAdmitted`, and proof field `masksTightenOnly`; row witness `EdgeValidWith`; projection THEOREMS `edge_respects_mask`, `source_follow_head_endpoint_is_fact`, `target_follow_head_endpoint_is_fact` |
-| ME-15 | Causal chain is a query, not an entity; materialized = cache only | structural absence + Edges.lean header |
-| ME-16 | Memory id is identity | structure field `Memory.id` + table/store invariant `MemoryIdUnique` |
-| ME-17 | Personality is emergent from Perspective/wake context, not a stored instance | structural absence in Memory.lean/Principles.lean; no Personality module; `selfPerspectives` queries existing Perspective rows by owner |
-| ME-18 | Cross-context supersession policy | excluded: wake/Perspective context semantics deferred after D4; no personality instance axis in kernel |
-| ME-19 | Relation registry: unregistered relations invalid | structure `RelationRegistry` with registered descriptor set + id uniqueness; `EdgeCoreValid registry` / `EdgeHasClass registry` require descriptor membership before a row is valid. Core relation table content still deferred to build-time vocabulary rows. |
-| ME-20 | Core relations table (derived-from/supersedes/inspires/authored) | excluded: vocabulary content, not law — flavors/core register ids; classes pinned by `RelationClass` |
-| ME-K1 | Text-bearing Memory rows can be model-independent knowledge artifacts | `KnowledgeContent := Text`; `InterpreterKind` / `InterpreterClass`; `KnowledgeArtifact` requires `memory_text carrier = some text` plus class-level recoverability; THEOREMs `knowledge_artifact_has_text`, `knowledge_artifact_model_independent`, `knowledge_artifact_recoverable_by_its_kind` |
-| ME-K2 | Long-term knowledge artifact = admitted text-bearing Memory row, not one model cache | def `KnowledgeArtifactIn memories artifact`; THEOREM `long_term_knowledge_artifact_has_text_memory`; no `Truth`/`Knows`/specific LLM or human instance in core |
+| ID | Invariant | Carrier | Runtime enforcement |
+|---|---|---|---|
+| ME-1 | Fact is Memory with kind `.Fact` | subtype `Fact := { m : Memory // memory_kind m = .Fact }` + theorem `fact_memory_kind`; runtime SQL currently encodes the Fact branch as `memories.kind IS NULL` while preserving the kernel distinction from derived kinds | enforced — `memories.kind IS NULL` discriminator + `memories_variant_chk` |
+| ME-2 | Fact owner is the memory row owner | structural: `Fact.memory` projects to `Memory.owner`; source/event owner inheritance moved out of core by D1 | enforced — `owner_kind`/`owner_id` columns co-located on the same `memories` row |
+| ME-3 | Optional free text is a Memory field for F/A/P; no kind-based text axiom | structure field `Memory.text : Option Text` + accessor `memory_text` | enforced — `memories.text` nullable column |
+| ME-4 | Facts never supersede / never superseded | THEOREM `facts_never_supersede` (Edges.lean, from valid Supersession-class edge + matrix) | enforced — `memories_variant_chk` forbids `supersedes` on Fact rows (kind IS NULL branch requires `supersedes IS NULL`) |
+| ME-5a | Supersession same kind | THEOREM `supersession_same_kind` over `EdgeCoreValid registry` rows | enforced — `validate_supersedes_in_owner` requires matching `kind` |
+| ME-5b | Supersession same owner | THEOREM `supersession_same_owner` over `EdgeCoreValid registry` rows, via descriptor `RelationOwnerPolicy.SameOwner` for Supersession | enforced — `validate_supersedes_in_owner` requires matching `owner_kind`/`owner_id` |
+| ME-6 | Personality is not a materialized Memory author/owner slot | structural absence: no `PersonalityInstance`, no `personality_owner`, no `memory_authoring_personality`; D4 comment Memory.lean | guardrail — `check-architecture-guardrails.py check_personality_authz` bans personality vocabulary in authz-bearing modules; structural absence of a `PersonalityInstance` type |
+| ME-7 | Facts below Perspectives; no personality read-scope matrix | theorem `principle_1_facts_below_perspective`; structural absence of `read_scope`/`personality_may_read`; wake trigger/context reads use `Wake.Firing.trigger_read` and `each_injected_read` over actual memory owners | guardrail — `check_personality_authz` + structural absence of `read_scope` |
+| ME-8 | Materialized personality matrix removed | structural absence of `read_scope` and matrix-version state; wake context/read semantics are role-graded Owner checks in `Wake.Firing`, not a personality matrix | guardrail — `check_personality_authz` |
+| ME-9 | Edge scope source-owned; Supersession intra-Owner | row-validity predicate `EdgeSourceOwned` + descriptor owner policy `RelationOwnerPolicy`; projection THEOREMs `edge_source_owned`, `supersedes_intra_owner` over `EdgeCoreValid registry` | enforced — `validate_relation_owner_policy` at edge-write verbs |
+| ME-10 | ℓ(source) ≥ ℓ(target) for valid memory edges | THEOREM `edge_layer_rule` (from `EdgeCoreValid registry` + matrix empty upward cells); FactEntity endpoints are Fact-like through `NodeRef.memoryKind?` | enforced — `validate_relation_shape`/`EndpointBinding::Pin` kind checks at edge-write time |
+| ME-11 | Class-legality matrix (9 cells) | def `legalClasses` + THEOREMS `edge_class_legal_for_node` / `edge_class_legal` (from `EdgeHasClass registry` + descriptor `masksTightenOnly`) | enforced — `RelationClass`/`validate_operator_edge_shape` class-legality checks |
+| ME-12 | Supersession same endpoint shape (incl. Goal→Goal) | row-validity predicate `EdgeSupersessionEndpointShapeValid` + THEOREM `supersession_same_endpoint_shape`; FactEntity/Fact endpoints cannot supersede | enforced — `validate_supersedes_in_owner` kind/shape match |
+| ME-13 | Edges immutable v1 | `Edge` structure + instances `Immutable Edge`, `AppendOnly Edge` | enforced — no UPDATE/DELETE verb exists on `proxima_core.edges` |
+| ME-14 | Descriptor masks tighten, never relax | structure `RelationDescriptor` with `sourceBinding`/`targetBinding`, `endpointAdmitted`, and proof field `masksTightenOnly`; row witness `EdgeValidWith`; projection THEOREMS `edge_respects_mask`, `source_follow_head_endpoint_is_fact`, `target_follow_head_endpoint_is_fact` | enforced — `RelationDescriptor::validate_edge_shape` mask checks at edge-write time |
+| ME-15 | Causal chain is a query, not an entity; materialized = cache only | structural absence + Edges.lean header | excluded — read-path design stance, no dedicated runtime guard |
+| ME-16 | Memory id is identity | structure field `Memory.id` + table/store invariant `MemoryIdUnique` | enforced — `memories_pkey` PRIMARY KEY (memory_id) |
+| ME-17 | Personality is emergent from Perspective/wake context, not a stored instance | structural absence in Memory.lean/Principles.lean; no Personality module; `selfPerspectives` queries existing Perspective rows by owner | guardrail — `check_personality_authz` |
+| ME-18 | Cross-context supersession policy | excluded: wake/Perspective context semantics deferred after D4; no personality instance axis in kernel | excluded — deferred, no runtime check |
+| ME-19 | Relation registry: unregistered relations invalid | structure `RelationRegistry` with registered descriptor set + id uniqueness; `EdgeCoreValid registry` / `EdgeHasClass registry` require descriptor membership before a row is valid. Core relation table content still deferred to build-time vocabulary rows. | enforced — `RelationRegistry::resolve_relation` returns `None` for unregistered relations, rejected before write |
+| ME-20 | Core relations table (derived-from/supersedes/inspires/authored) | excluded: vocabulary content, not law — flavors/core register ids; classes pinned by `RelationClass` | excluded — vocabulary content, not independently checked |
+| ME-K1 | Text-bearing Memory rows can be model-independent knowledge artifacts | `KnowledgeContent := Text`; `InterpreterKind` / `InterpreterClass`; `KnowledgeArtifact` requires `memory_text carrier = some text` plus class-level recoverability; THEOREMs `knowledge_artifact_has_text`, `knowledge_artifact_model_independent`, `knowledge_artifact_recoverable_by_its_kind` | excluded — classification stance, no runtime check |
+| ME-K2 | Long-term knowledge artifact = admitted text-bearing Memory row, not one model cache | def `KnowledgeArtifactIn memories artifact`; THEOREM `long_term_knowledge_artifact_has_text_memory`; no `Truth`/`Knows`/specific LLM or human instance in core | excluded — classification stance, no runtime check |
 
 ## 04 — Consolidation (CN)
 
-| ID | Invariant | Carrier |
-|---|---|---|
-| CN-1 | F→A edge shape | def `operatorEdgeShape` + row-validity predicate `EdgeOperatorShapeValid`; full shape THEOREM `ftoa_edge_shape` |
-| CN-2 | A→P edge shape | same merged carrier under `RelationRegistry`; full shape THEOREM `atop_edge_shape` |
-| CN-3 | A→Goal evidence shape (Structural class) | `operatorEdgeShape` OperatorAtoGoal arm + `EdgeOperatorShapeValid` |
-| CN-4 | frame/PerspectiveLink shape | `operatorEdgeShape` PerspectiveLink arm + `EdgeOperatorShapeValid` |
-| CN-5 | No downward writes | theorem `operator_memory_output_not_fact` + `EdgeOperatorShapeValid` + ME-1 Fact subtype |
-| CN-6 | Derived memories have valid provenance | table-scoped `MemoryGraphValid.derivedProvenance`; per-kind shape THEOREMs `abstraction_has_provenance`, `perspective_has_provenance` require admitted memory/edge tables |
-| CN-7 | Cross-domain join is typed Abstraction | comment (shape carried by CN-6 + U-2 matrix) |
-| CN-8 | F→A batch-gate exclusivity per (owner, batch, input contract, operator, output schema) | axiom `ftoa_batch_exclusive`; wake context dimension deferred after D4, no personality dim |
-| CN-8b | Operator invocation input completeness | `OperatorInvocation` ledger witness + `InvocationInGraph` / `InvocationShapeValid` / `InvocationEdgeShapeValid` / `InvocationProvenanceComplete`; THEOREMs `invocation_memory_input_provenance_persisted`, `invocation_goal_input_evidence_persisted` |
-| CN-9 | Atomic invocation (all-or-nothing outputs) | excluded: storage-layer transaction contract (same stance as WH event/projection atomicity); Lean only validates an admitted invocation ledger/manifest |
-| CN-10 | Retry/changed-prompt = new derivation, never mutation | `AppendOnly Memory` + comment Operators.lean |
-| CN-11 | Wake dispatcher loop, cursors, depth bound, runtime tables | excluded: engine runtime |
-| CN-12 | Prompt locality (core ships no domain prompts) | excluded: engine/flavor split mechanics; spirit carried by CF-A |
+| ID | Invariant | Carrier | Runtime enforcement |
+|---|---|---|---|
+| CN-1 | F→A edge shape | def `operatorEdgeShape` + row-validity predicate `EdgeOperatorShapeValid`; full shape THEOREM `ftoa_edge_shape` | enforced — `validate_derived_draft_edges_in_tx` shape checks + `operator_edge_shape_violations` regression scan (test fixture) |
+| CN-2 | A→P edge shape | same merged carrier under `RelationRegistry`; full shape THEOREM `atop_edge_shape` | enforced — same mechanism, AtoP branch |
+| CN-3 | A→Goal evidence shape (Structural class) | `operatorEdgeShape` OperatorAtoGoal arm + `EdgeOperatorShapeValid` | enforced — `GoalEvidenceValid`-mirroring evidence-edge checks in `engine/goal_write.rs` |
+| CN-4 | frame/PerspectiveLink shape | `operatorEdgeShape` PerspectiveLink arm + `EdgeOperatorShapeValid` | excluded — no PerspectiveLink-specific verb exists beyond the general edge-shape gate |
+| CN-5 | No downward writes | theorem `operator_memory_output_not_fact` + `EdgeOperatorShapeValid` + ME-1 Fact subtype | enforced — `validate_operator_memory_invocation_request`/`derive_append.rs` reject operator output kind Fact |
+| CN-6 | Derived memories have valid provenance | table-scoped `MemoryGraphValid.derivedProvenance`; per-kind shape THEOREMs `abstraction_has_provenance`, `perspective_has_provenance` require admitted memory/edge tables | enforced — `OperatorInvocationManifest::validate` `MissingProvenanceEdge` check + `validate_derived_draft_edges_in_tx` |
+| CN-7 | Cross-domain join is typed Abstraction | comment (shape carried by CN-6 + U-2 matrix) | excluded — carried by CN-6/U-2, no dedicated check |
+| CN-8 | F→A batch-gate exclusivity per (owner, batch, input contract, operator, output schema) | axiom `ftoa_batch_exclusive`; wake context dimension deferred after D4, no personality dim | enforced — `memories_ftoa_batch_exclusive_uidx` unique index |
+| CN-8b | Operator invocation input completeness | `OperatorInvocation` ledger witness + `InvocationInGraph` / `InvocationShapeValid` / `InvocationEdgeShapeValid` / `InvocationProvenanceComplete`; THEOREMs `invocation_memory_input_provenance_persisted`, `invocation_goal_input_evidence_persisted` | enforced — `OperatorInvocationManifest::validate` + `validate_derived_draft_edges_in_tx` (Task 8 closes the created_at-strictness gap; see Provenance N1 in Causa/Provenance.lean and `load_live_input_proof_rows_in_tx`) |
+| CN-9 | Atomic invocation (all-or-nothing outputs) | excluded: storage-layer transaction contract (same stance as WH event/projection atomicity); Lean only validates an admitted invocation ledger/manifest | enforced — single Postgres `Transaction<'_, Postgres>` wraps `append_derived_with_edges_in_tx` end-to-end |
+| CN-10 | Retry/changed-prompt = new derivation, never mutation | `AppendOnly Memory` + comment Operators.lean | enforced — no UPDATE verb on `memories`; every retry mints a fresh `memory_id` |
+| CN-11 | Wake dispatcher loop, cursors, depth bound, runtime tables | excluded: engine runtime | excluded — engine runtime, no dedicated proof-adjacent check |
+| CN-12 | Prompt locality (core ships no domain prompts) | excluded: engine/flavor split mechanics; spirit carried by CF-A | excluded — repository-layout convention, unchecked by a script |
 
 ## 06 — Goals (GO)
 
-| ID | Invariant | Carrier |
-|---|---|---|
-| GO-1 | Supersession same owner | table validity `GoalSupersessionResolved` + `GoalSupersessionValid`; projection THEOREM `goal_supersession_same_owner` |
-| GO-2 | Valid lifecycle transition | def `goalTransitionAdmitted` + table validity `GoalSupersessionResolved` + `GoalSupersessionValid`; projection THEOREM `goal_supersession_admitted` |
-| GO-3 | Goal DAG acyclic | retired from Goal row: no legacy parent table; Goal↔Goal topology is Edge topology/relation validation |
-| GO-4 | Parents same owner | retired with Goal-local parents; Edge ownership + descriptor masks govern Goal↔Goal relation legality |
-| GO-5 | Every transition new row; no in-place mutation | `AppendOnly Goal`; supersession stores prior `GoalId` and current state is a table query |
-| GO-6 | Goal is not Memory | structural: distinct Types |
-| GO-7 | Self is a query, never an entity/cache | structural absence + `selfGoals` / `selfPerspectives` query defs and projection theorems in Goals.lean |
-| GO-8 | Active set definition (heads, state=Active) | table-scoped defs `goalIsHead`, `activeGoals`; supersession traversal `GoalSupersessionReachable` + `activeGoalHeadFrom` |
-| GO-9 | Goal id is identity | table validity `GoalIdUnique`; projection THEOREM `goal_id_injective` |
-| GO-10 | Authorship vocabulary | inductive `GoalAuthorship` |
-| GO-11 | GoalWrite protocol (request_id idempotency, conflict detection, stream visibility) | excluded from Goal ontology: request-id/body replay is protocol/write-atom state (doc 14), not a Goal row invariant; item 10 resolved by keeping it out of `Goal`/Self |
-| GO-12 | Assignment = causal `core/inspires` edge Goal→Self-Perspective; instance-scoped active_goals query | `goalAssignedToPerspective` + `activeGoalsForSelf`: query starts at Causal Goal→Perspective assignment edges, follows `GoalSupersessionReachable`, returns Active heads; no Self row/relation-id axiom |
-| GO-13 | Goal-scoped wake policy; planner-first | `Goal.wake : Option WakeConfig` + `Wake.Firing.wake_config` bind firing to the Goal-owned config; `actor_member` is any server-resolved role/grant in the Goal owner, not owner equality or Goal-write; `trigger_read`/`each_injected_read` use actual memory owners; `each_authzd` gates emitted Facts; `each_action_allowed` pins invoked Actions to `WakeConfig.toolset`; dispatcher scheduling remains engine runtime |
-| GO-14 | Goal assignment/evidence scope | Goal rows carry Owner; assignment/evidence is Edge topology. `GoalEvidenceValid` requires `SystemOperator` Goals to have table-resolved Goal→Fact/Abstraction Structural evidence; `goal_evidence_not_perspective` excludes Perspective evidence |
-| GO-17 | Root Goal creation shape | `GoalRootValid` + THEOREM `goal_root_active`: roots (`supersedes = none`) are Active only |
-| GO-18 | Terminal close Fact table validity | `GoalTerminalCloseFactValid` + projection THEOREMS: close Fact is a memory-table Fact with same Owner as terminal Goal |
+| ID | Invariant | Carrier | Runtime enforcement |
+|---|---|---|---|
+| GO-1 | Supersession same owner | table validity `GoalSupersessionResolved` + `GoalSupersessionValid`; projection THEOREM `goal_supersession_same_owner` | enforced — same-owner check in `engine/goal_write.rs` transition/supersession path |
+| GO-2 | Valid lifecycle transition | def `goalTransitionAdmitted` + table validity `GoalSupersessionResolved` + `GoalSupersessionValid`; projection THEOREM `goal_supersession_admitted` | enforced — lifecycle-transition validation in `engine/goal_write.rs::transition_goal_atomic` |
+| GO-3 | Goal DAG acyclic | retired from Goal row: no legacy parent table; Goal↔Goal topology is Edge topology/relation validation | excluded — retired; acyclicity now carried by Edge-topology checks (ME-10/ME-11), no Goal-specific check |
+| GO-4 | Parents same owner | retired with Goal-local parents; Edge ownership + descriptor masks govern Goal↔Goal relation legality | excluded — retired; carried by AUTH-EDGE/ME-9 |
+| GO-5 | Every transition new row; no in-place mutation | `AppendOnly Goal`; supersession stores prior `GoalId` and current state is a table query | enforced — no UPDATE verb on `goals`; every transition inserts a new row |
+| GO-6 | Goal is not Memory | structural: distinct Types | enforced — `Goal`/`Memory` are distinct Rust types and distinct tables |
+| GO-7 | Self is a query, never an entity/cache | structural absence + `selfGoals` / `selfPerspectives` query defs and projection theorems in Goals.lean | enforced — structural absence, no `Self` table/type; equivalent queries run at read time |
+| GO-8 | Active set definition (heads, state=Active) | table-scoped defs `goalIsHead`, `activeGoals`; supersession traversal `GoalSupersessionReachable` + `activeGoalHeadFrom` | enforced — head/state query in goal read verbs + `idx_goals_owner_state_created` |
+| GO-9 | Goal id is identity | table validity `GoalIdUnique`; projection THEOREM `goal_id_injective` | enforced — `goals_pkey` PRIMARY KEY (goal_id) |
+| GO-10 | Authorship vocabulary | inductive `GoalAuthorship` | enforced — `authorship_kind`/`authorship_origin` columns + typed Rust enum |
+| GO-11 | GoalWrite protocol (request_id idempotency, conflict detection, stream visibility) | excluded from Goal ontology: request-id/body replay is protocol/write-atom state (doc 14), not a Goal row invariant; item 10 resolved by keeping it out of `Goal`/Self | enforced — `idempotency_conflict` request-id replay check in `engine/goal_write.rs` (mechanism exists at runtime even though the kernel declines to model it as a Goal-row law) |
+| GO-12 | Assignment = causal `core/inspires` edge Goal→Self-Perspective; instance-scoped active_goals query | `goalAssignedToPerspective` + `activeGoalsForSelf`: query starts at Causal Goal→Perspective assignment edges, follows `GoalSupersessionReachable`, returns Active heads; no Self row/relation-id axiom | excluded — query-time traversal, no dedicated write-time guard beyond ordinary edge/goal checks |
+| GO-13 | Goal-scoped wake policy; planner-first | `Goal.wake : Option WakeConfig` + `Wake.Firing.wake_config` bind firing to the Goal-owned config; `actor_member` is any server-resolved role/grant in the Goal owner, not owner equality or Goal-write; `trigger_read`/`each_injected_read` use actual memory owners; `each_authzd` gates emitted Facts; `each_action_allowed` pins invoked Actions to `WakeConfig.toolset`; dispatcher scheduling remains engine runtime | excluded — `WakeConfig` is stored/editable per Goal, but the firing-time gates (`actor_member`, `each_authzd`, `each_action_allowed`) describe an execution loop this runtime does not run in-process (brain-hub contraction: external harnesses drive decisions, Proxima only serves config) |
+| GO-14 | Goal assignment/evidence scope | Goal rows carry Owner; assignment/evidence is Edge topology. `GoalEvidenceValid` requires `SystemOperator` Goals to have table-resolved Goal→Fact/Abstraction Structural evidence; `goal_evidence_not_perspective` excludes Perspective evidence | enforced — evidence-edge validation in `engine/goal_write.rs` (Structural class, Fact/Abstraction only) |
+| GO-17 | Root Goal creation shape | `GoalRootValid` + THEOREM `goal_root_active`: roots (`supersedes = none`) are Active only | enforced — root-goal creation shape check in `engine/goal_write.rs` |
+| GO-18 | Terminal close Fact table validity | `GoalTerminalCloseFactValid` + projection THEOREMS: close Fact is a memory-table Fact with same Owner as terminal Goal | enforced — terminal close-Fact shape check in `engine/goal_write.rs` |
 
 ## 03 — Schema Registry (SR) — in-kernel rows
 
-| ID | Invariant | Carrier |
-|---|---|---|
-| SR-1 | Registry frozen at startup, no runtime registration | partial: relation-descriptor admission is now a kernel parameter (`RelationRegistry`); wake `Action` values are allowed only by the Goal's `WakeConfig.toolset` (`wake_invoked_actions_allowed`), while concrete schema/tool/source/prompt registry freeze and flavor linking remain build-time engine mechanics (Composition.lean deleted 2026-06-28, D16) |
-| SR-2 | Every memory payload schema-typed | structure field `Memory.schema : SchemaRef` (accessor totality — every row carries an opaque schema tag). Schema registration in the active registry remains engine admission, not yet a kernel rule (D16) |
-| SR-8 | Schema ids flavor-qualified | excluded: namespacing is engine id-minting (collision-freedom = "the engine mints distinct ids"), not kernel ontology (D16) |
-| SR-11/16 | F/A/P may carry optional free text; sidecars may carry opaque typed payload | structure field `Memory.text : Option Text`; `Flavor.OptionalMemorySidecar`, `OptionalGoalSidecar`, and `OptionalEdgeSidecar` are constructive optional wrappers whose payloads are forgotten by kernel invariants; no sidecar-required law |
-| SR-13 | Fact identity ≠ payload hash; UUIDv7 | structure field `Memory.id` + table/store invariant `MemoryIdUnique` + ST-22 comment |
-| SR-14/44 | Fact has no supersedes | THEOREM `facts_never_supersede` |
-| SR-24 | relation_class closed, not flavor-extensible | inductive `RelationClass` (note: doc 03 does NOT enumerate classes — doc 02's five are authoritative; no contradiction, verified 2026-06-11 against doc 03 §EdgePayload verbatim) |
-| SR-25 | Edges immutable v1 | `Immutable Edge` |
-| SR-30..33 | special_category per schema, author-declared | excluded: GDPR controller/engine concern (`schema_special_category` cut 2026-06-28, D16) — the kernel never reasons over special-category |
-| SR-43 | Stateful Fact: each observation a new Fact | `FactEntity` current head is a `Fact` (`factEntityCurrentIsFact`); `FactEntity` is a head aggregate, not replacement/supersession of Fact rows |
-| SR-46 | Tombstone is a Fact (deletion is observed state) | comment Identity.lean / excluded detail: stateful-schema mechanics |
-| SR-49 | Memory row stores schema id+version+kind | accessors `memory_schema`, `memory_kind` |
-| SR-56/57 | Layer/kind change in migration forbidden | excluded: migration mechanics; spirit = kind is fixed per memory (accessor totality, immutability) |
+| ID | Invariant | Carrier | Runtime enforcement |
+|---|---|---|---|
+| SR-1 | Registry frozen at startup, no runtime registration | partial: relation-descriptor admission is now a kernel parameter (`RelationRegistry`); wake `Action` values are allowed only by the Goal's `WakeConfig.toolset` (`wake_invoked_actions_allowed`), while concrete schema/tool/source/prompt registry freeze and flavor linking remain build-time engine mechanics (Composition.lean deleted 2026-06-28, D16) | guardrail — `check-architecture-guardrails.py check_runtime_registration` bans `register_*runtime*`/`install_*plugin`/`proxima_core.tools` surfaces; `FlavorRegistry::freeze_or_panic_for_tests` freezes at boot |
+| SR-2 | Every memory payload schema-typed | structure field `Memory.schema : SchemaRef` (accessor totality — every row carries an opaque schema tag). Schema registration in the active registry remains engine admission, not yet a kernel rule (D16) | enforced — `memories.schema_id` NOT NULL column |
+| SR-8 | Schema ids flavor-qualified | excluded: namespacing is engine id-minting (collision-freedom = "the engine mints distinct ids"), not kernel ontology (D16) | excluded — id-minting convention, not runtime-checked |
+| SR-11/16 | F/A/P may carry optional free text; sidecars may carry opaque typed payload | structure field `Memory.text : Option Text`; `Flavor.OptionalMemorySidecar`, `OptionalGoalSidecar`, and `OptionalEdgeSidecar` are constructive optional wrappers whose payloads are forgotten by kernel invariants; no sidecar-required law | enforced — `memories.text` nullable column; sidecar tables are separate/optional |
+| SR-13 | Fact identity ≠ payload hash; UUIDv7 | structure field `Memory.id` + table/store invariant `MemoryIdUnique` + ST-22 comment | enforced — `memories_pkey` PRIMARY KEY(memory_id), never a payload hash |
+| SR-14/44 | Fact has no supersedes | THEOREM `facts_never_supersede` | enforced — `memories_variant_chk` forbids `supersedes` on Fact rows |
+| SR-24 | relation_class closed, not flavor-extensible | inductive `RelationClass` (note: doc 03 does NOT enumerate classes — doc 02's five are authoritative; no contradiction, verified 2026-06-11 against doc 03 §EdgePayload verbatim) | excluded — closed Rust enum by design choice, not independently runtime-checked beyond exhaustive matching |
+| SR-25 | Edges immutable v1 | `Immutable Edge` | enforced — no UPDATE/DELETE verb on `edges` |
+| SR-30..33 | special_category per schema, author-declared | excluded: GDPR controller/engine concern (`schema_special_category` cut 2026-06-28, D16) — the kernel never reasons over special-category | excluded — controller/legal concern, no kernel-relevant runtime check |
+| SR-43 | Stateful Fact: each observation a new Fact | `FactEntity` current head is a `Fact` (`factEntityCurrentIsFact`); `FactEntity` is a head aggregate, not replacement/supersession of Fact rows | enforced — `fact_entities` head-aggregate table + natural-key unique index |
+| SR-46 | Tombstone is a Fact (deletion is observed state) | comment Identity.lean / excluded detail: stateful-schema mechanics | excluded — stateful-schema detail, no dedicated check beyond the Fact-append path already covered |
+| SR-49 | Memory row stores schema id+version+kind | accessors `memory_schema`, `memory_kind` | enforced — `memories.schema_id`/`schema_version`/`kind` columns |
+| SR-56/57 | Layer/kind change in migration forbidden | excluded: migration mechanics; spirit = kind is fixed per memory (accessor totality, immutability) | excluded — migration mechanics, unchecked |
 
 ## 08 — Core & Flavors (CF) — in-kernel rows
 
-| ID | Invariant | Carrier |
-|---|---|---|
-| CF-G | Payload opacity — the domainless boundary | structural ABSENCE: `SchemaRef` (Identity) is an opaque per-row tag with NO accessor at all (no resolution, no payload, no capabilities); `Flavor.OptionalMemorySidecar` / `OptionalGoalSidecar` / `OptionalEdgeSidecar` prove sidecar payload changes do not affect kernel-visible rows |
-| CF-* (compliance) | A flavor must comply with the basic rules | THEOREMS in `Causa.Flavor` — a concrete flavor's rows discharge the universal invariants (`fact_is_fact`, `abstraction_grounded`, `published_readable`/`published_read_only`, `wipeable_when_abandoned`) via only pre-existing theorems; the rules quantify over every row, so compliance is derived, never axiomatized |
-| CF-OPEN | Substrate is OPEN — any app integrates as a flavor with zero kernel change and no new axiom | `Causa.Flavor` constructive witness: a flavor's vocabulary is inhabitants of existing types (`SchemaRef`/`RelationId`) taken as PARAMETERS, not axioms; `#print axioms` on the flavor theorems names only pre-existing kernel axioms — never one named `flavor`. That machine-checked absence IS the openness (D16/D18) |
-| CF-43..46 | Goal entity core-owned; flavor owns payload/tools | structural: Goal lives in the kernel; payloads opaque |
-| CF-60 | Cross-flavor reads obey Owner/access surface | Owner/read authorization (Causa.Authorization); no materialized personality read-scope after D4 |
+| ID | Invariant | Carrier | Runtime enforcement |
+|---|---|---|---|
+| CF-G | Payload opacity — the domainless boundary | structural ABSENCE: `SchemaRef` (Identity) is an opaque per-row tag with NO accessor at all (no resolution, no payload, no capabilities); `Flavor.OptionalMemorySidecar` / `OptionalGoalSidecar` / `OptionalEdgeSidecar` prove sidecar payload changes do not affect kernel-visible rows | guardrail — `check-sql-policy.py` + `check-architecture-guardrails.py check_flavor_core_sql` bar flavor SQL touching `proxima_core.*` outside the authorized facade |
+| CF-* (compliance) | A flavor must comply with the basic rules | THEOREMS in `Causa.Flavor` — a concrete flavor's rows discharge the universal invariants (`fact_is_fact`, `abstraction_grounded`, `published_readable`/`published_read_only`, `wipeable_when_abandoned`) via only pre-existing theorems; the rules quantify over every row, so compliance is derived, never axiomatized | excluded — compliance-theorem discharge is a Lean-side proof property over hypothetical flavor rows, no runtime counterpart |
+| CF-OPEN | Substrate is OPEN — any app integrates as a flavor with zero kernel change and no new axiom | `Causa.Flavor` constructive witness: a flavor's vocabulary is inhabitants of existing types (`SchemaRef`/`RelationId`) taken as PARAMETERS, not axioms; `#print axioms` on the flavor theorems names only pre-existing kernel axioms — never one named `flavor`. That machine-checked absence IS the openness (D16/D18) | guardrail — `scripts/check-lean-axioms.py` (Task 8) pins the kernel's declared axiom set in CI; `#print axioms` commands in `Causa/Flavor.lean` |
+| CF-43..46 | Goal entity core-owned; flavor owns payload/tools | structural: Goal lives in the kernel; payloads opaque | enforced — `goals` is a core-owned table; payload sidecar tables are separate/optional |
+| CF-60 | Cross-flavor reads obey Owner/access surface | Owner/read authorization (Causa.Authorization); no materialized personality read-scope after D4 | enforced — `Role`/`OwnerRoles`-mirroring read authorization applies uniformly regardless of caller flavor; `check_personality_authz` guardrail bars a materialized read-scope from reappearing |
 
 ## 07 — Storage (ST) — in-kernel rows
 
-| ID | Invariant | Carrier |
-|---|---|---|
-| ST-1..4 | Fresh ids; immutable identity; supersession = new row | `Memory.id` + `MemoryIdUnique`, `Goal.id` + `GoalIdUnique`, classes `Immutable`/`AppendOnly`; memory supersession is `memorySupersedes` over Supersession-class edges; Goal supersession stores prior `GoalId` |
-| ST-5 | Edges insert-only | `Immutable Edge`, `AppendOnly Edge` |
-| ST-6 | source-ingest dedup key deterministic; duplicate = replay | excluded: source/flavor ingest metadata after D1; no core `FactReceiptId` entity |
-| ST-7/8 | CitedObject/CitationMapping ids, insert-only, one mapping per Fact | structural ids + scoped defs `CitedObjectIdUnique`/`CitationMappingIdUnique`/`CitationMappingUniqueByFact`, `Immutable`/`AppendOnly` instances + theorem `citation_unique_per_fact` |
-| ST-9 | Owner identity columns (principal kind + id) | `OwnerRef` is the stable stored owner reference (`world` / `personal u` / `group id`); `OwnerState.resolve` maps it to resolved `Owner := Group` for access. The exact SQL column shape is engine storage. org has no kernel face — decisions `2026-06-11-org-out-of-kernel.md`, S0 collapse, owner realign 2026-06-28 |
-| ST-10 | Edge ownership: source-owned rows; only Supersession forbids cross-owner target | row-validity predicates `EdgeSourceOwned`, `EdgeSupersessionIntraOwner`; non-Supersession cross-owner targets are allowed by source-owned Edge policy; target erasure/visibility affects `edge_target_redacted`, not `edge_owner` |
-| ST-11 | INSERT-only cognitive lifecycle | class `AppendOnly` + instances |
-| ST-13 | Only compliance erasure deletes | Compliance.lean: def `abandoned` is the SOLE delete trigger (owning group empty) + THEOREMs `drop_personal_abandoned`, `source_abandoned_cascades_to_edge`, `target_abandoned_does_not_abandon_source_owned_edge`, `world_never_abandoned` — target abandonment redacts/suppresses target projection only |
-| ST-14 | Stateful current-state = head query, never replacement | `FactEntity` carries `current : Fact`; `FactEntityNaturalKeyUnique` is the natural-key table guard; Fact rows remain immutable observations |
-| ST-15..17 | Vector-store independence (targets F/A/P AND Goals) | structural ABSENCE: no kernel `Embedding` entity, no `Memory → Embedding` accessor — embeddings are engine-side (`EmbeddingTarget`/`Embedding`/`embedding_target` retired 2026-06-28; the invariant was always the absence, never the declared type) |
-| ST-22/23 | Content hash/dedup key not Fact identity; collision semantics | `Memory.id` remains Fact identity; `FactEntityId` is a fresh `Id` surrogate and natural key is only a uniqueness guard; source/flavor ingest dedup key excluded after D1 |
-| ST-FE | FactEntity endpoint alignment | `NodeRef.factEntity`, `EndpointBinding.FollowHead`, `endpointBindingAligned`, `followHeadEndpointIsFact`; `NodeRefInTables` requires admitted FactEntity endpoints to have admitted current Fact heads |
-| ST-26 | Supersession logical; current state = query | defs `memorySupersedes`/`memoryIsHead`, table-scoped `goalIsHead`/`activeGoals` pattern + comment |
+| ID | Invariant | Carrier | Runtime enforcement |
+|---|---|---|---|
+| ST-1..4 | Fresh ids; immutable identity; supersession = new row | `Memory.id` + `MemoryIdUnique`, `Goal.id` + `GoalIdUnique`, classes `Immutable`/`AppendOnly`; memory supersession is `memorySupersedes` over Supersession-class edges; Goal supersession stores prior `GoalId` | enforced — `memories_pkey`/`goals_pkey` PRIMARY KEY + no UPDATE verb; supersession is a `supersedes` FK column, not row mutation |
+| ST-5 | Edges insert-only | `Immutable Edge`, `AppendOnly Edge` | enforced — no UPDATE/DELETE verb on `edges` |
+| ST-6 | source-ingest dedup key deterministic; duplicate = replay | excluded: source/flavor ingest metadata after D1; no core `FactReceiptId` entity | excluded — source/flavor ingest metadata, not core-checked |
+| ST-7/8 | CitedObject/CitationMapping ids, insert-only, one mapping per Fact | structural ids + scoped defs `CitedObjectIdUnique`/`CitationMappingIdUnique`/`CitationMappingUniqueByFact`, `Immutable`/`AppendOnly` instances + theorem `citation_unique_per_fact` | enforced — `citation_mappings_pkey`, `citation_mappings_one_per_fact` UNIQUE(memory_id), `cited_objects_pkey` |
+| ST-9 | Owner identity columns (principal kind + id) | `OwnerRef` is the stable stored owner reference (`world` / `personal u` / `group id`); `OwnerState.resolve` maps it to resolved `Owner := Group` for access. The exact SQL column shape is engine storage. org has no kernel face — decisions `2026-06-11-org-out-of-kernel.md`, S0 collapse, owner realign 2026-06-28 | enforced — `owner_kind`/`owner_id` columns on every owned table; `check_stale_access` guardrail bars stale org/principal vocabulary |
+| ST-10 | Edge ownership: source-owned rows; only Supersession forbids cross-owner target | row-validity predicates `EdgeSourceOwned`, `EdgeSupersessionIntraOwner`; non-Supersession cross-owner targets are allowed by source-owned Edge policy; target erasure/visibility affects `edge_target_redacted`, not `edge_owner` | enforced — `validate_relation_owner_policy` (Supersession-only cross-owner-target ban) |
+| ST-11 | INSERT-only cognitive lifecycle | class `AppendOnly` + instances | enforced — no UPDATE/DELETE verb on `memories`/`goals`/`edges` |
+| ST-13 | Only compliance erasure deletes | Compliance.lean: def `abandoned` is the SOLE delete trigger (owning group empty) + THEOREMs `drop_personal_abandoned`, `source_abandoned_cascades_to_edge`, `target_abandoned_does_not_abandon_source_owned_edge`, `world_never_abandoned` — target abandonment redacts/suppresses target projection only | enforced — `engine/compliance.rs`/`storage-pg/verbs/compliance_erase.rs` abandonment-gated `erase_*` family; `check_public_witnesses`/`check_caller_supplied_audit` guardrails bar forgeable witnesses and caller-supplied audit metadata |
+| ST-14 | Stateful current-state = head query, never replacement | `FactEntity` carries `current : Fact`; `FactEntityNaturalKeyUnique` is the natural-key table guard; Fact rows remain immutable observations | enforced — `fact_entities` head-aggregate table + natural-key unique index |
+| ST-15..17 | Vector-store independence (targets F/A/P AND Goals) | structural ABSENCE: no kernel `Embedding` entity, no `Memory → Embedding` accessor — embeddings are engine-side (`EmbeddingTarget`/`Embedding`/`embedding_target` retired 2026-06-28; the invariant was always the absence, never the declared type) | enforced — structural absence, no `Embedding` type in `proxima-core`'s public vocabulary (embeddings live only in storage-pg) |
+| ST-22/23 | Content hash/dedup key not Fact identity; collision semantics | `Memory.id` remains Fact identity; `FactEntityId` is a fresh `Id` surrogate and natural key is only a uniqueness guard; source/flavor ingest dedup key excluded after D1 | enforced — `memories_pkey` on a fresh UUID, never a payload hash; dedup key itself is excluded (ST-6) |
+| ST-FE | FactEntity endpoint alignment | `NodeRef.factEntity`, `EndpointBinding.FollowHead`, `endpointBindingAligned`, `followHeadEndpointIsFact`; `NodeRefInTables` requires admitted FactEntity endpoints to have admitted current Fact heads | enforced — `source_fact_entity_id`/`target_fact_entity_id` edge columns + `missing_endpoint_violations` regression scan (test fixture) |
+| ST-26 | Supersession logical; current state = query | defs `memorySupersedes`/`memoryIsHead`, table-scoped `goalIsHead`/`activeGoals` pattern + comment | enforced — `supersedes` column + head query, no in-place row replacement |
 
 ## 11 — Citations (CI)
 
-| ID | Invariant | Carrier |
-|---|---|---|
-| CI-1 | Fact-only citation (citation ⇒ Fact; OPTIONAL on Facts since 2026-06-13) | structural `CitationMapping.fact : Fact`; THEOREMs `citation_fact_is_fact`, `citation_implies_fact` over table-scoped choice-def `memory_citation` |
-| CI-2 | At most one mapping per Fact in a valid mapping table; target is Fact; no orphans | validity predicate `CitationMappingUniqueByFact`; THEOREMs `citation_points_back`, `citation_points_to_row`, `citation_reverse_total`, `citation_unique_per_fact` |
-| CI-3 | A/P cite transitively via provenance | table-scoped `GroundsInFact` / `memory_grounds_in_facts` over `MemoryGraphValid`; citation closure remains a query over admitted provenance paths |
-| CI-7/8 | Owner scoping; Fact owner = object owner | structural field `CitationMapping.owner_match`; THEOREM `citation_owner_match` |
-| CI-9 | One object ↔ N mappings | structural absence of object-side restriction |
-| CI-12/13 | Edges do not cite | structural absence of citation accessor on Edge |
-| CI-14 | Operator provenance = row metadata, not citation | comment Operators.lean |
-| CI-4/5/6/10/11 | content-hash idempotency mechanics | excluded: engine (hash invisible below opacity boundary) |
-| CI-15/16 | S3 bytes, presigned URLs | excluded: engine storage |
+| ID | Invariant | Carrier | Runtime enforcement |
+|---|---|---|---|
+| CI-1 | Fact-only citation (citation ⇒ Fact; OPTIONAL on Facts since 2026-06-13) | structural `CitationMapping.fact : Fact`; THEOREMs `citation_fact_is_fact`, `citation_implies_fact` over table-scoped choice-def `memory_citation` | enforced — `memories_variant_chk` forbids `citation_mapping_id` on non-Fact rows |
+| CI-2 | At most one mapping per Fact in a valid mapping table; target is Fact; no orphans | validity predicate `CitationMappingUniqueByFact`; THEOREMs `citation_points_back`, `citation_points_to_row`, `citation_reverse_total`, `citation_unique_per_fact` | enforced — `citation_mappings_one_per_fact` UNIQUE(memory_id) + FK to `cited_objects` |
+| CI-3 | A/P cite transitively via provenance | table-scoped `GroundsInFact` / `memory_grounds_in_facts` over `MemoryGraphValid`; citation closure remains a query over admitted provenance paths | excluded — query-time traversal, no independent write-time check |
+| CI-7/8 | Owner scoping; Fact owner = object owner | structural field `CitationMapping.owner_match`; THEOREM `citation_owner_match` | enforced — `cited_objects_unique_per_owner` constraint + owner-stamped citation-attach path in `engine/ingest.rs` |
+| CI-9 | One object ↔ N mappings | structural absence of object-side restriction | enforced — structural absence (no unique constraint restricting `cited_object_id` fan-in) |
+| CI-12/13 | Edges do not cite | structural absence of citation accessor on Edge | enforced — structural absence, no citation column on `edges` |
+| CI-14 | Operator provenance = row metadata, not citation | comment Operators.lean | enforced — operator provenance lives in `memories.operator_kind`/`operator_id`/edges, a disjoint column family from `citation_mapping_id` (`memories_variant_chk` keeps them mutually exclusive) |
+| CI-4/5/6/10/11 | content-hash idempotency mechanics | excluded: engine (hash invisible below opacity boundary) | excluded — engine-internal hash mechanics, no kernel-relevant check |
+| CI-15/16 | S3 bytes, presigned URLs | excluded: engine storage | excluded — engine storage detail, unchecked |
 
 ## 13 — Compliance (CO)
 
-| ID | Invariant | Carrier |
-|---|---|---|
-| CO-1 | Cognitive lifecycle append-only | classes + instances (ST-11 row) |
-| CO-7 / ST-13 | Erasure = ABANDONMENT (reference count zero): an entity whose owning group has no members is wipeable; a user dropping abandons their personal group | def `abandoned` (`∀ u, o u = none`) + THEOREM `drop_personal_abandoned` over `Group.drop`; source cascade THEOREM `source_abandoned_cascades_to_edge`; target erasure/redaction THEOREMs `target_abandoned_redacts_edge_target`, `target_abandoned_does_not_abandon_source_owned_edge`; retention boundary THEOREM `world_never_abandoned`. Realign 2026-06-28 — replaces axioms `erased`/`erasure_removes_cognitive` + THEOREM `erasure_removes_edges` |
-| CO-2/3/4/5/6, CO-8, CO-12/13/14 | Admin op surface / scope / outcomes / source-scope delete | excluded: admin op & outcome protocol — the kernel rule is the `abandoned` predicate, not an op/outcome enum (`ComplianceOp`/`ComplianceOutcome`/`DeleteSourceScope` retired 2026-06-28) |
-| CO-9/10 | Pause/resume semantics | excluded: runtime dispatch gate, NOT erasure (`paused` axiom retired 2026-06-28) |
-| CO-15/16/17/18/20 | Suppression / dedup-key retention + re-ingest block | excluded: source/flavor ingest boundary (`SuppressionKey`/`SuppressionEntry`/`suppression_key` retired 2026-06-28) |
-| CO-19/29 | Suppression/audit survive erasure indefinitely | excluded: audit & suppression are engine tables, never cognitive rows — they survive by not being kernel entities at all |
-| CO-11, CO-21..28, CO-30..58 | Export, audit content, side effects, vocabulary fields, owner policy, GDPR mappings | excluded: controller/engine obligations and legal commentary; ES-9 carries the kernel-relevant face |
+| ID | Invariant | Carrier | Runtime enforcement |
+|---|---|---|---|
+| CO-1 | Cognitive lifecycle append-only | classes + instances (ST-11 row) | enforced — no UPDATE/DELETE verb on `memories`/`goals`/`edges` |
+| CO-7 / ST-13 | Erasure = ABANDONMENT (reference count zero): an entity whose owning group has no members is wipeable; a user dropping abandons their personal group | def `abandoned` (`∀ u, o u = none`) + THEOREM `drop_personal_abandoned` over `Group.drop`; source cascade THEOREM `source_abandoned_cascades_to_edge`; target erasure/redaction THEOREMs `target_abandoned_redacts_edge_target`, `target_abandoned_does_not_abandon_source_owned_edge`; retention boundary THEOREM `world_never_abandoned`. Realign 2026-06-28 — replaces axioms `erased`/`erasure_removes_cognitive` + THEOREM `erasure_removes_edges` | enforced — `engine/compliance.rs`'s five `erase_*` verbs (`erase_world_owner`, `erase_abandoned_group_owner`, `erase_dropped_personal_owner`, `erase_abandoned_group_source_scope`, `erase_dropped_personal_source_scope`) are the sole delete trigger; `check_public_witnesses`/`check_caller_supplied_audit` guardrails bar forgeable witnesses |
+| CO-2/3/4/5/6, CO-8, CO-12/13/14 | Admin op surface / scope / outcomes / source-scope delete | excluded: admin op & outcome protocol — the kernel rule is the `abandoned` predicate, not an op/outcome enum (`ComplianceOp`/`ComplianceOutcome`/`DeleteSourceScope` retired 2026-06-28) | excluded — retired protocol, no runtime enum |
+| CO-9/10 | Pause/resume semantics | excluded: runtime dispatch gate, NOT erasure (`paused` axiom retired 2026-06-28) | planned — Task 12 legal/security hold (per-owner hold flag narrows every physical-destruction path, i.e. the five `erase_*` verbs); not yet implemented on this branch. The retired dispatch-pause axiom this row originally carried stays excluded — hold is a distinct, narrower, erasure-only mechanism |
+| CO-15/16/17/18/20 | Suppression / dedup-key retention + re-ingest block | excluded: source/flavor ingest boundary (`SuppressionKey`/`SuppressionEntry`/`suppression_key` retired 2026-06-28) | excluded — retired, no runtime |
+| CO-19/29 | Suppression/audit survive erasure indefinitely | excluded: audit & suppression are engine tables, never cognitive rows — they survive by not being kernel entities at all | excluded — engine tables outside cognitive rows, no kernel-relevant check |
+| CO-11, CO-21..28, CO-30..58 | Export, audit content, side effects, vocabulary fields, owner policy, GDPR mappings | excluded: controller/engine obligations and legal commentary; ES-9 carries the kernel-relevant face | excluded — controller/legal commentary, no runtime check |
 
 ### r1 additions (codex review, 2026-06-11)
 
-| ID | Invariant | Carrier |
-|---|---|---|
-| GO-2b | Stale prior cannot be lifecycle head / one successor per prior id | table validity `GoalSuccessorUnique`; THEOREMs `goal_supersession_prior_is_head`, `goal_superseded_not_head` |
-| GO-15 | Goal title/text core retrieval text | structure fields + accessors `goal_title`, `goal_text` |
-| GO-16 | Operator-authored Goals do not carry materialized authoring personality | structural absence: no `goal_authoring_personality`; evidence carried by A→Goal edges |
-| CI-17 | Cited objects / mappings schema-registered | structure fields `cited_object_schema`/`citation_mapping_schema : SchemaRef` (schema-typed); registration is engine admission (D16) |
-| ST-EdgeId | source-ingest edges content-hash id vs UUIDv7 (AGENTS.md inv. 17) | inductive `EdgeId` sum + row-validity predicate `EdgeIdAuthorshipValid` + projection THEOREM `edge_id_authorship_split` |
+| ID | Invariant | Carrier | Runtime enforcement |
+|---|---|---|---|
+| GO-2b | Stale prior cannot be lifecycle head / one successor per prior id | table validity `GoalSuccessorUnique`; THEOREMs `goal_supersession_prior_is_head`, `goal_superseded_not_head` | enforced — one-successor-per-prior check in `engine/goal_write.rs` supersession path |
+| GO-15 | Goal title/text core retrieval text | structure fields + accessors `goal_title`, `goal_text` | enforced — `goals.title`/`goals.text` NOT NULL columns |
+| GO-16 | Operator-authored Goals do not carry materialized authoring personality | structural absence: no `goal_authoring_personality`; evidence carried by A→Goal edges | enforced — structural absence, no `goal_authoring_personality` column |
+| CI-17 | Cited objects / mappings schema-registered | structure fields `cited_object_schema`/`citation_mapping_schema : SchemaRef` (schema-typed); registration is engine admission (D16) | enforced — `cited_objects`/`citation_mappings` schema_id/schema_version NOT NULL columns |
+| ST-EdgeId | source-ingest edges content-hash id vs UUIDv7 (AGENTS.md inv. 17) | inductive `EdgeId` sum + row-validity predicate `EdgeIdAuthorshipValid` + projection THEOREM `edge_id_authorship_split` | enforced — `edges.edge_id`/`authorship_kind` columns carry the content-hash-vs-UUIDv7 split at the source/flavor ingest layer |
 
 ## Principle surface map
+
+Principles aggregate multiple ID rows above under one named surface property;
+they are cross-cutting summaries, not independent coverage rows, so this table
+does not carry its own `Runtime enforcement` column — see the constituent ID
+rows (named in each principle's row below) for enforcement values.
 
 | Principle | Named surface prop | Kernel carrier |
 |---|---|---|
