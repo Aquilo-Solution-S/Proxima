@@ -36,12 +36,14 @@ fn baseline_schema_contains_pr7_operator_proof_carriers() {
 use std::sync::Arc;
 
 use crate::common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::storage::{AuthorDerivedRequest, DerivedEdgeSpec};
-use proxima_core::storage_ports::MemoryAuthoringPort;
+use proxima_core::storage::DerivedEdgeSpec;
 use proxima_core::{
     AbstractionPayload, AgentDerivationV1, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind,
     EntityKind, FlavorRegistry, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner,
     SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, StorageError,
+};
+use proxima_storage_pg::verbs::derive_append::{
+    DerivedDraft, DerivedOutcome, append_derived_with_edges_in_tx,
 };
 use uuid::Uuid;
 
@@ -59,6 +61,7 @@ async fn replay_rejects_changed_operator_edge_set() -> Result<(), Box<dyn std::e
         let input_contract_id = InputContractId::new(Uuid::now_v7());
 
         let first = author_test_abstraction(
+            &pg,
             &engine,
             owner,
             memory_id,
@@ -72,6 +75,7 @@ async fn replay_rejects_changed_operator_edge_set() -> Result<(), Box<dyn std::e
         assert!(!first.idempotent_replay);
 
         let err = author_test_abstraction(
+            &pg,
             &engine,
             owner,
             memory_id,
@@ -108,6 +112,7 @@ async fn replay_rejects_omitted_operator_edge_set() -> Result<(), Box<dyn std::e
         let input_contract_id = InputContractId::new(Uuid::now_v7());
 
         author_test_abstraction_multi(
+            &pg,
             &engine,
             owner,
             memory_id,
@@ -120,6 +125,7 @@ async fn replay_rejects_omitted_operator_edge_set() -> Result<(), Box<dyn std::e
         .await?;
 
         let err = author_test_abstraction_multi(
+            &pg,
             &engine,
             owner,
             memory_id,
@@ -158,6 +164,7 @@ async fn replay_rejects_persisted_wrong_operator_authorship_edge()
         let input_contract_id = InputContractId::new(Uuid::now_v7());
 
         author_test_abstraction(
+            &pg,
             &engine,
             owner,
             memory_id,
@@ -187,6 +194,7 @@ async fn replay_rejects_persisted_wrong_operator_authorship_edge()
         .await?;
 
         let err = author_test_abstraction(
+            &pg,
             &engine,
             owner,
             memory_id,
@@ -261,30 +269,35 @@ async fn author_derived_rejects_extra_same_output_wrong_operator_authorship()
                 sidecar_payload: None,
             },
         ];
-        let req = AuthorDerivedRequest {
-            memory_id,
+        let draft = DerivedDraft {
+            memory_id: memory_id.into_inner(),
             owner,
             kind: EntityKind::Abstraction,
-            text: "derived".into(),
             schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
             schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+            text: "derived".into(),
             operator_kind: MemoryOperatorKind::AtoA,
             operator_id,
             input_contract_id,
             source_batch_id: None,
             model_id: "test-model",
             prompt_version: "operator-proofs-pg",
-            sidecar_payload,
             supersedes: None,
             embedding: None,
             embedding_model_id: None,
-            edges: &edges,
         };
-
-        let err = pg
-            .author_derived(&req)
-            .await
-            .expect_err("same-output wrong operator authorship must be rejected");
+        let sidecars = pg.sidecars().clone();
+        let mut tx = pg.pool_for_tests().begin().await?;
+        let err = append_derived_with_edges_in_tx(&mut tx, &draft, &edges, move |tx, outcome| {
+            Box::pin(async move {
+                sidecars
+                    .insert_memory_sidecar(tx, outcome.memory_id, &sidecar_payload)
+                    .await
+            })
+        })
+        .await
+        .expect_err("same-output wrong operator authorship must be rejected");
+        tx.rollback().await?;
         assert!(
             err.to_string()
                 .contains("authorship kind does not match operator phase"),
@@ -310,6 +323,7 @@ async fn ftoa_requires_closed_matching_batch_and_conflicts_on_distinct_output()
         let operator_id = OperatorId::new(Uuid::now_v7());
         let input_contract_id = InputContractId::new(Uuid::now_v7());
         let open_err = author_test_abstraction(
+            &pg,
             &engine,
             owner,
             MemoryId::new(Uuid::now_v7()),
@@ -326,6 +340,7 @@ async fn ftoa_requires_closed_matching_batch_and_conflicts_on_distinct_output()
         let closed_batch = SourceBatchId::new(Uuid::now_v7());
         let fact = insert_fact(&pg, &owner, closed_batch, true, "closed-ftoa").await?;
         let first = author_test_abstraction(
+            &pg,
             &engine,
             owner,
             MemoryId::new(Uuid::now_v7()),
@@ -339,6 +354,7 @@ async fn ftoa_requires_closed_matching_batch_and_conflicts_on_distinct_output()
         assert!(!first.idempotent_replay);
 
         let conflict = author_test_abstraction(
+            &pg,
             &engine,
             owner,
             MemoryId::new(Uuid::now_v7()),
@@ -424,6 +440,7 @@ async fn graph_fixture_flags_invalid_atogoal_fact_target() -> Result<(), Box<dyn
 
 #[allow(clippy::too_many_arguments)] // test helper mirrors operator proof request dimensions
 async fn author_test_abstraction(
+    pg: &proxima_storage_pg::PgStorage,
     engine: &proxima_core::Engine,
     owner: Owner,
     memory_id: MemoryId,
@@ -432,8 +449,9 @@ async fn author_test_abstraction(
     operator_id: OperatorId,
     input_contract_id: InputContractId,
     source_batch_id: Option<SourceBatchId>,
-) -> Result<proxima_core::AuthorDerivedOutcome, StorageError> {
+) -> Result<DerivedOutcome, StorageError> {
     author_test_abstraction_multi(
+        pg,
         engine,
         owner,
         memory_id,
@@ -446,8 +464,15 @@ async fn author_test_abstraction(
     .await
 }
 
+// Exercises `MemoryAuthoringPort::author_derived`'s underlying replay/conflict
+// logic directly via the storage-pg append verb (mirrors
+// `derive_append_pg.rs`) rather than through the Engine, since
+// `Engine::author_derived` is a private, proof-carrier-gated helper and
+// these tests assert on the raw `StorageError` variants the storage layer
+// raises.
 #[allow(clippy::too_many_arguments)] // test helper mirrors operator proof request dimensions
 async fn author_test_abstraction_multi(
+    pg: &proxima_storage_pg::PgStorage,
     engine: &proxima_core::Engine,
     owner: Owner,
     memory_id: MemoryId,
@@ -456,7 +481,7 @@ async fn author_test_abstraction_multi(
     operator_id: OperatorId,
     input_contract_id: InputContractId,
     source_batch_id: Option<SourceBatchId>,
-) -> Result<proxima_core::AuthorDerivedOutcome, StorageError> {
+) -> Result<DerivedOutcome, StorageError> {
     let relation = engine
         .registry()
         .resolve_relation(CORE_DERIVED_FROM_RELATION)
@@ -465,7 +490,8 @@ async fn author_test_abstraction_multi(
     let edges = inputs
         .iter()
         .copied()
-        .map(|input| proxima_core::AuthorDerivedEdgeInput {
+        .map(|input| DerivedEdgeSpec {
+            owner: &owner,
             relation,
             source_kind: EntityKind::Abstraction,
             source_memory_id: memory_id,
@@ -473,36 +499,54 @@ async fn author_test_abstraction_multi(
             target_memory_id: input,
             authorship_kind: operator_kind.edge_authorship(),
             authorship_owner_memory_id: Some(input),
+            sidecar_payload: None,
         })
         .collect::<Vec<_>>();
-    engine
-        .author_derived(proxima_core::AuthorDerivedRequestInput {
-            memory_id,
-            owner,
-            kind: EntityKind::Abstraction,
-            text: "derived".into(),
-            schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
-            schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
-            operator_kind,
-            operator_id,
-            input_contract_id,
-            source_batch_id,
-            model_id: "test-model",
-            prompt_version: "operator-proofs-pg",
-            sidecar_payload: SidecarPayload::abstraction(AgentDerivationV1 {
-                title: "derived".into(),
-                body: "derived".into(),
-                tags: Vec::new(),
-                idempotency_key: None,
-                source_memory_ids: inputs.iter().map(|input| input.into_inner()).collect(),
-                model_id: "test-model".into(),
-                client_name: "test".into(),
-                client_version: "1".into(),
-            }),
-            supersedes: None,
-            edges: &edges,
-        })
+    let draft = DerivedDraft {
+        memory_id: memory_id.into_inner(),
+        owner,
+        kind: EntityKind::Abstraction,
+        schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
+        schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+        text: "derived".into(),
+        operator_kind,
+        operator_id,
+        input_contract_id,
+        source_batch_id,
+        model_id: "test-model",
+        prompt_version: "operator-proofs-pg",
+        supersedes: None,
+        embedding: None,
+        embedding_model_id: None,
+    };
+    let sidecar = SidecarPayload::abstraction(AgentDerivationV1 {
+        title: "derived".into(),
+        body: "derived".into(),
+        tags: Vec::new(),
+        idempotency_key: None,
+        source_memory_ids: inputs.iter().map(|input| input.into_inner()).collect(),
+        model_id: "test-model".into(),
+        client_name: "test".into(),
+        client_version: "1".into(),
+    });
+    let sidecars = pg.sidecars().clone();
+    let mut tx = pg
+        .pool_for_tests()
+        .begin()
         .await
+        .map_err(|err| StorageError::Internal(format!("begin operator proof tx: {err}")))?;
+    let outcome = append_derived_with_edges_in_tx(&mut tx, &draft, &edges, move |tx, outcome| {
+        Box::pin(async move {
+            sidecars
+                .insert_memory_sidecar(tx, outcome.memory_id, &sidecar)
+                .await
+        })
+    })
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|err| StorageError::Internal(format!("commit operator proof tx: {err}")))?;
+    Ok(outcome)
 }
 
 async fn insert_source_abstraction(

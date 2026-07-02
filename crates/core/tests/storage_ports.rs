@@ -81,6 +81,7 @@ impl MemoryAuthoringPort for MemoryAuthoringFake {
     async fn author_derived(
         &self,
         req: &AuthorDerivedRequest<'_>,
+        _proof: proxima_core::storage_ports::OperatorWriteProof,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
         fake_error()
     }
@@ -233,6 +234,7 @@ impl EmbeddingWritePort for EmbeddingWriteFake {
         model_id: &str,
         dim: usize,
         vec: &[f32],
+        _proof: proxima_core::storage_ports::EmbeddingWriteProof,
     ) -> Result<proxima_core::EmbeddingWriteOutcome, StorageError> {
         let _ = (model_id, dim, vec);
         fake_error()

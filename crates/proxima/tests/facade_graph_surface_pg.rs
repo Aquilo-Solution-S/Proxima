@@ -375,30 +375,33 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         }];
         let derived_outcome = built
             .engine
-            .author_derived(AuthorDerivedRequestInput {
-                memory_id: derived_id,
-                owner,
-                kind: EntityKind::Abstraction,
-                text: "Single facade dependency is enough for flavor authors.".to_string(),
-                schema_id: SchemaId::new(FacadeAbstraction::SCHEMA_ID.to_string()),
-                schema_version: SchemaVersion::new(FacadeAbstraction::SCHEMA_VERSION),
-                operator_kind: MemoryOperatorKind::FtoA,
-                operator_id: OperatorId::new(Uuid::now_v7()),
-                input_contract_id: InputContractId::new(Uuid::now_v7()),
-                source_batch_id: Some(proxima_core::SourceBatchId::new(source_batch_id)),
-                model_id: "facade-test",
-                prompt_version: "v1",
-                sidecar_payload: SidecarPayload::abstraction(FacadeAbstraction {
-                    title: "Facade surface".to_string(),
-                    body: "Single facade dependency is enough for flavor authors.".to_string(),
-                    source_count: 1,
-                }),
-                supersedes: None,
-                edges: &derived_edges,
-            })
+            .author_derived_authorized(
+                &authz,
+                AuthorDerivedRequestInput {
+                    memory_id: derived_id,
+                    owner,
+                    kind: EntityKind::Abstraction,
+                    text: "Single facade dependency is enough for flavor authors.".to_string(),
+                    schema_id: SchemaId::new(FacadeAbstraction::SCHEMA_ID.to_string()),
+                    schema_version: SchemaVersion::new(FacadeAbstraction::SCHEMA_VERSION),
+                    operator_kind: MemoryOperatorKind::FtoA,
+                    operator_id: OperatorId::new(Uuid::now_v7()),
+                    input_contract_id: InputContractId::new(Uuid::now_v7()),
+                    source_batch_id: Some(proxima_core::SourceBatchId::new(source_batch_id)),
+                    model_id: "facade-test",
+                    prompt_version: "v1",
+                    sidecar_payload: SidecarPayload::abstraction(FacadeAbstraction {
+                        title: "Facade surface".to_string(),
+                        body: "Single facade dependency is enough for flavor authors.".to_string(),
+                        source_count: 1,
+                    }),
+                    supersedes: None,
+                    edges: &derived_edges,
+                },
+            )
             .await?;
         assert_eq!(derived_outcome.memory_id, derived_id);
-        assert_eq!(derived_outcome.edge_count, 1);
+        assert_eq!(derived_outcome.edge_ids.len(), 1);
 
         let embedding_rows: i64 = sqlx::query_scalar(
             "SELECT count(*)

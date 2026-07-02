@@ -8,8 +8,8 @@ use proxima_code::testkit::build_engine;
 use proxima_code::{CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1};
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::{
-    AbstractionPayload, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind,
-    InputContractId, MemoryId, MemoryOperatorKind, OperatorId, SchemaId, SchemaVersion,
+    AbstractionPayload, AuthPath, AuthzContext, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind,
+    EntityKind, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, SchemaId, SchemaVersion,
     SidecarPayload,
 };
 use uuid::Uuid;
@@ -80,27 +80,31 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
         authorship_owner_memory_id: Some(MemoryId::new(goal_activated_memory_id)),
     }];
     let old_payload = plan_payload(repo_id, goal_activated_memory_id, plan_key, "old plan");
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let old_outcome = engine
-        .author_derived(proxima_core::AuthorDerivedRequestInput {
-            memory_id: old_memory_id,
-            owner,
-            kind: EntityKind::Abstraction,
-            text: old_payload.summary.clone(),
-            schema_id: SchemaId::new(CodeExecutionPlanV1::SCHEMA_ID.into()),
-            schema_version: SchemaVersion::new(CodeExecutionPlanV1::SCHEMA_VERSION),
-            operator_kind: MemoryOperatorKind::AtoA,
-            operator_id: OperatorId::new(Uuid::now_v7()),
-            input_contract_id: InputContractId::new(Uuid::now_v7()),
-            source_batch_id: None,
-            model_id: "test-planner",
-            prompt_version: "proxima-code/test-plan-v1",
-            sidecar_payload: SidecarPayload::abstraction(old_payload),
-            supersedes: None,
-            edges: &old_edges,
-        })
+        .author_derived_authorized(
+            &authz,
+            proxima_core::AuthorDerivedRequestInput {
+                memory_id: old_memory_id,
+                owner,
+                kind: EntityKind::Abstraction,
+                text: old_payload.summary.clone(),
+                schema_id: SchemaId::new(CodeExecutionPlanV1::SCHEMA_ID.into()),
+                schema_version: SchemaVersion::new(CodeExecutionPlanV1::SCHEMA_VERSION),
+                operator_kind: MemoryOperatorKind::AtoA,
+                operator_id: OperatorId::new(Uuid::now_v7()),
+                input_contract_id: InputContractId::new(Uuid::now_v7()),
+                source_batch_id: None,
+                model_id: "test-planner",
+                prompt_version: "proxima-code/test-plan-v1",
+                sidecar_payload: SidecarPayload::abstraction(old_payload),
+                supersedes: None,
+                edges: &old_edges,
+            },
+        )
         .await
         .expect("old plan authored");
-    assert_eq!(old_outcome.edge_count, 1);
+    assert_eq!(old_outcome.edge_ids.len(), 1);
 
     let new_edges = [proxima_core::AuthorDerivedEdgeInput {
         relation,
@@ -113,26 +117,29 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     }];
     let new_payload = plan_payload(repo_id, goal_activated_memory_id, plan_key, "new plan");
     let new_outcome = engine
-        .author_derived(proxima_core::AuthorDerivedRequestInput {
-            memory_id: new_memory_id,
-            owner,
-            kind: EntityKind::Abstraction,
-            text: new_payload.summary.clone(),
-            schema_id: SchemaId::new(CodeExecutionPlanV1::SCHEMA_ID.into()),
-            schema_version: SchemaVersion::new(CodeExecutionPlanV1::SCHEMA_VERSION),
-            operator_kind: MemoryOperatorKind::AtoA,
-            operator_id: OperatorId::new(Uuid::now_v7()),
-            input_contract_id: InputContractId::new(Uuid::now_v7()),
-            source_batch_id: None,
-            model_id: "test-planner",
-            prompt_version: "proxima-code/test-plan-v1",
-            sidecar_payload: SidecarPayload::abstraction(new_payload),
-            supersedes: Some(old_memory_id),
-            edges: &new_edges,
-        })
+        .author_derived_authorized(
+            &authz,
+            proxima_core::AuthorDerivedRequestInput {
+                memory_id: new_memory_id,
+                owner,
+                kind: EntityKind::Abstraction,
+                text: new_payload.summary.clone(),
+                schema_id: SchemaId::new(CodeExecutionPlanV1::SCHEMA_ID.into()),
+                schema_version: SchemaVersion::new(CodeExecutionPlanV1::SCHEMA_VERSION),
+                operator_kind: MemoryOperatorKind::AtoA,
+                operator_id: OperatorId::new(Uuid::now_v7()),
+                input_contract_id: InputContractId::new(Uuid::now_v7()),
+                source_batch_id: None,
+                model_id: "test-planner",
+                prompt_version: "proxima-code/test-plan-v1",
+                sidecar_payload: SidecarPayload::abstraction(new_payload),
+                supersedes: Some(old_memory_id),
+                edges: &new_edges,
+            },
+        )
         .await
         .expect("new plan authored");
-    assert_eq!(new_outcome.edge_count, 2);
+    assert_eq!(new_outcome.edge_ids.len(), 1);
 
     let supersedes: Option<Uuid> =
         sqlx::query_scalar("SELECT supersedes FROM proxima_core.memories WHERE memory_id = $1")

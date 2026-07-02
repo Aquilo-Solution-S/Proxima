@@ -15,6 +15,7 @@ use proxima_core::{
     EntityKind, FactPayload, FlavorRegistry, GoalId, GroupId, Owner, OwnerRef, PayloadKeyBuilder,
     SourceBatchId, UserId,
 };
+use proxima_storage_pg::verbs::fact_embeddings::{insert_embedding, insert_memory_embedding};
 use proxima_storage_pg::{
     EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
 };
@@ -596,7 +597,13 @@ async fn concurrent_reembedding_allocates_contiguous_versions()
         let second_vec = padded_embedding([0.0, 1.0, 0.0]);
         let (first, second) = tokio::try_join!(
             async move {
-                pg_a.insert_memory_embedding(
+                let mut tx = pg_a.pool_for_tests().begin().await.map_err(|err| {
+                    proxima_core::StorageError::Internal(format!(
+                        "begin embedding insert tx: {err}"
+                    ))
+                })?;
+                let outcome = insert_memory_embedding(
+                    &mut tx,
                     &owner_a,
                     EntityKind::Fact,
                     memory_id,
@@ -604,10 +611,22 @@ async fn concurrent_reembedding_allocates_contiguous_versions()
                     EMBEDDING_DIM,
                     &first_vec,
                 )
-                .await
+                .await?;
+                tx.commit().await.map_err(|err| {
+                    proxima_core::StorageError::Internal(format!(
+                        "commit embedding insert tx: {err}"
+                    ))
+                })?;
+                Ok::<_, proxima_core::StorageError>(outcome)
             },
             async move {
-                pg_b.insert_memory_embedding(
+                let mut tx = pg_b.pool_for_tests().begin().await.map_err(|err| {
+                    proxima_core::StorageError::Internal(format!(
+                        "begin embedding insert tx: {err}"
+                    ))
+                })?;
+                let outcome = insert_memory_embedding(
+                    &mut tx,
                     &owner_b,
                     EntityKind::Fact,
                     memory_id,
@@ -615,7 +634,13 @@ async fn concurrent_reembedding_allocates_contiguous_versions()
                     EMBEDDING_DIM,
                     &second_vec,
                 )
-                .await
+                .await?;
+                tx.commit().await.map_err(|err| {
+                    proxima_core::StorageError::Internal(format!(
+                        "commit embedding insert tx: {err}"
+                    ))
+                })?;
+                Ok::<_, proxima_core::StorageError>(outcome)
             }
         )?;
         let mut outcome_versions = vec![first.embedding_version, second.embedding_version];
@@ -656,15 +681,17 @@ async fn goal_embedding_uses_goal_id_not_memory_id() -> Result<(), Box<dyn std::
         let owner = owner_fixture();
         let goal_uuid = Uuid::now_v7();
         let goal_id = insert_goal_for_embedding(&pg, &owner, goal_uuid).await?;
-        let outcome = pg
-            .insert_embedding(
-                &owner,
-                EmbeddableEntityRef::Goal(goal_id),
-                "stub-fact-embed",
-                EMBEDDING_DIM,
-                &padded_embedding([0.25, 0.5, 0.75]),
-            )
-            .await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
+        let outcome = insert_embedding(
+            &mut tx,
+            &owner,
+            EmbeddableEntityRef::Goal(goal_id),
+            "stub-fact-embed",
+            EMBEDDING_DIM,
+            &padded_embedding([0.25, 0.5, 0.75]),
+        )
+        .await?;
+        tx.commit().await?;
 
         assert_eq!(outcome.embedding_version, 1);
         assert_eq!(
@@ -715,7 +742,9 @@ async fn compliance_erase_removes_embeddings_heads_and_jobs()
         let outcome = pg
             .ingest_fact_atomic(&owner, &fact_draft(&owner, "erase embedding rows"), None)
             .await?;
-        pg.insert_memory_embedding(
+        let mut tx = pg.pool_for_tests().begin().await?;
+        insert_memory_embedding(
+            &mut tx,
             &owner,
             EntityKind::Fact,
             outcome.memory_id,
@@ -724,6 +753,7 @@ async fn compliance_erase_removes_embeddings_heads_and_jobs()
             &padded_embedding([1.0, 0.0, 0.0]),
         )
         .await?;
+        tx.commit().await?;
         let (owner_kind, owner_id) = owner.columns();
         sqlx::query(
             "INSERT INTO proxima_core.embedding_jobs
@@ -811,7 +841,9 @@ async fn upsert_memory_embedding_noops_after_source_memory_deleted()
             .await?;
 
         let embedding = vec![0.125; EMBEDDING_DIM];
-        pg.upsert_memory_embedding(
+        let mut tx = pg.pool_for_tests().begin().await?;
+        insert_memory_embedding(
+            &mut tx,
             &owner,
             EntityKind::Fact,
             outcome.memory_id,
@@ -820,6 +852,7 @@ async fn upsert_memory_embedding_noops_after_source_memory_deleted()
             &embedding,
         )
         .await?;
+        tx.commit().await?;
 
         assert_eq!(
             pg.load_embedding_text(&owner, EntityKind::Fact, outcome.memory_id)
@@ -1097,7 +1130,9 @@ async fn reconcile_embeddings_enqueues_missing_facts_idempotently()
             )
             .await?;
         let other_model_embedding = vec![0.125; EMBEDDING_DIM];
-        pg.upsert_memory_embedding(
+        let mut tx = pg.pool_for_tests().begin().await?;
+        insert_memory_embedding(
+            &mut tx,
             &owner,
             EntityKind::Fact,
             stale.memory_id,
@@ -1106,6 +1141,7 @@ async fn reconcile_embeddings_enqueues_missing_facts_idempotently()
             &other_model_embedding,
         )
         .await?;
+        tx.commit().await?;
 
         assert_eq!(
             count_embedding_jobs_for_model(pg.pool_for_tests(), "stub-fact-embed").await?,
@@ -1298,7 +1334,9 @@ async fn reconcile_limit_skips_existing_heads_before_bounding()
         let missing = engine
             .fact_ingest(&authz, fact_draft(&owner, "missing after covered"))
             .await?;
-        pg.upsert_memory_embedding(
+        let mut tx = pg.pool_for_tests().begin().await?;
+        insert_memory_embedding(
+            &mut tx,
             &owner,
             EntityKind::Fact,
             covered.memory_id,
@@ -1307,6 +1345,7 @@ async fn reconcile_limit_skips_existing_heads_before_bounding()
             &vec![0.25; EMBEDDING_DIM],
         )
         .await?;
+        tx.commit().await?;
 
         let outcome = pg
             .reconcile_embeddings(EmbeddingReconcileOptions {
