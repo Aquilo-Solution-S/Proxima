@@ -596,6 +596,17 @@ pub(in crate::engine) mod tests {
 
     #[async_trait::async_trait]
     impl OwnerMembershipAdminPort for MembershipStorage {
+        async fn bootstrap_group_admin(
+            &self,
+            _group_id: GroupId,
+            _first_admin_user_id: UserId,
+            _granted_by: uuid::Uuid,
+        ) -> Result<(), StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+
         async fn add_group_member(
             &self,
             _group_id: GroupId,

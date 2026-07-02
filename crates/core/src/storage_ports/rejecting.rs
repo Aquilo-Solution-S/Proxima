@@ -435,6 +435,17 @@ impl OwnerAccessReadPort for RejectingStorage {
 
 #[async_trait::async_trait]
 impl OwnerMembershipAdminPort for RejectingStorage {
+    async fn bootstrap_group_admin(
+        &self,
+        _group_id: GroupId,
+        _first_admin_user_id: UserId,
+        _granted_by: uuid::Uuid,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
     async fn add_group_member(
         &self,
         _group_id: GroupId,

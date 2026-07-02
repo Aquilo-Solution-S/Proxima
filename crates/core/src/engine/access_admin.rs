@@ -1,5 +1,5 @@
 use crate::access::{EntityId, Relation};
-use crate::authz::{AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome};
+use crate::authz::{AuthPath, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome};
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
 use crate::{GroupId, OwnerRef, UserId};
@@ -7,6 +7,44 @@ use crate::{GroupId, OwnerRef, UserId};
 use super::Engine;
 
 impl Engine {
+    /// Seed the first Admin membership for a fresh group.
+    ///
+    /// Host-only bootstrap: this verb is not registered as an MCP tool. It
+    /// admits exactly one Admin row only when the group currently has no Admin;
+    /// later membership mutations must use [`Self::add_member`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when an authorization veto denies the bootstrap,
+    /// `InvalidArgument` when the group already has an Admin, and `Internal`
+    /// for storage failures.
+    pub async fn bootstrap_group_admin(
+        &self,
+        group: GroupId,
+        first_admin: UserId,
+    ) -> Result<(), ProtocolError> {
+        let authz = AuthzContext::for_subject(first_admin, AuthPath::System);
+        let group_owner = OwnerRef::Group(group);
+        let member_principal = OwnerRef::Personal(first_admin);
+        self.veto_and_observe_access_admin(
+            &authz,
+            &group_owner,
+            &group_owner,
+            Relation::Admin,
+            AuthzOperation::Membership {
+                group,
+                member: member_principal,
+                relation: Relation::Admin,
+            },
+        )?;
+        self.storage()
+            .access_admin
+            .owner_membership_admin
+            .bootstrap_group_admin(group, first_admin, first_admin.into_inner())
+            .await
+            .map_err(bootstrap_storage_error)
+    }
+
     /// Add a user to a group with one relation.
     ///
     /// # Errors
@@ -219,4 +257,48 @@ fn actor_uuid(authz: &AuthzContext) -> uuid::Uuid {
 
 fn storage_error(context: &str, err: &StorageError) -> ProtocolError {
     ProtocolError::internal(format!("{context}: {err}"))
+}
+
+fn bootstrap_storage_error(err: StorageError) -> ProtocolError {
+    match err {
+        StorageError::ConstraintViolation(message) | StorageError::Conflict(message) => {
+            ProtocolError::invalid_argument("group", message)
+        }
+        StorageError::Suppressed(message) => ProtocolError::suppressed(message),
+        StorageError::NotFound => ProtocolError::not_found("group not found"),
+        StorageError::Unavailable(message) | StorageError::Internal(message) => {
+            ProtocolError::internal(message)
+        }
+        StorageError::V004ResetRequired { details } => ProtocolError::internal(details),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::FlavorRegistry;
+
+    #[test]
+    fn access_admin_bootstrap_group_admin_is_not_mcp_exposed() {
+        let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
+
+        for tool in frozen.list_mcp_tools() {
+            assert_ne!(
+                tool.name, "bootstrap_group_admin",
+                "bootstrap_group_admin must remain host-only"
+            );
+            for spec in tool.action_arg_specs {
+                assert_ne!(
+                    spec.action, "bootstrap_group_admin",
+                    "bootstrap_group_admin must not be exposed as an MCP action"
+                );
+            }
+            assert!(
+                !tool
+                    .args_schema
+                    .to_string()
+                    .contains("bootstrap_group_admin"),
+                "bootstrap_group_admin must not appear in MCP schemas"
+            );
+        }
+    }
 }
