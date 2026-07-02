@@ -135,7 +135,7 @@ impl Engine {
                 edges: &edges,
             })
             .await
-            .map_err(|err| ProtocolError::internal(err.to_string()))?;
+            .map_err(map_derived_storage_error)?;
 
         let edge_ids = if outcome.idempotent_replay || target_ids.is_empty() {
             Vec::new()
@@ -578,6 +578,30 @@ fn validate_operator_memory_invocation_request(
     Ok(())
 }
 
+/// Maps `author_derived`'s raw storage error onto the public `ProtocolError`
+/// surface, mirroring `engine::goal_write::map_goal_storage_error`.
+///
+/// `ConstraintViolation`/`Conflict` are caller-fixable (a malformed operator
+/// invocation manifest, an idempotent-replay proof mismatch) and must
+/// surface as `InvalidArgument`, not `Internal` — an unconditional
+/// `ProtocolError::internal` here would mask a rejected-before-persistence
+/// client error as a 5xx-shaped internal failure.
+fn map_derived_storage_error(err: StorageError) -> ProtocolError {
+    match err {
+        StorageError::NotFound => {
+            ProtocolError::not_found("operator invocation referenced row not found")
+        }
+        StorageError::ConstraintViolation(message) | StorageError::Conflict(message) => {
+            ProtocolError::invalid_argument("operator_invocation", message)
+        }
+        StorageError::Suppressed(message) => ProtocolError::suppressed(message),
+        StorageError::Unavailable(message) | StorageError::Internal(message) => {
+            ProtocolError::internal(message)
+        }
+        StorageError::V004ResetRequired { details } => ProtocolError::internal(details),
+    }
+}
+
 fn write_relation_for_entity_kind(kind: EntityKind) -> Relation {
     match kind {
         EntityKind::Fact => Relation::Ingest,
@@ -669,6 +693,51 @@ mod tests {
             client_name: "test".into(),
             client_version: "1".into(),
         })
+    }
+
+    /// `validate_operator_memory_invocation_request`'s F→A/`source_batch_id`
+    /// arm is unreachable through the public `author_derived_authorized`
+    /// path: that wrapper's `effective_operator_source_batch_id` always
+    /// recomputes `source_batch_id` from the declared F→A input edges before
+    /// calling `author_derived`, so a caller can never make it through with
+    /// `source_batch_id: None` while also supplying F→A inputs — and with
+    /// zero inputs, the wrapper fails earlier still (`EmptyInputs`/"F→A
+    /// operator invocation requires source inputs"). This test exercises
+    /// the private raw path directly (same crate, `pub(in crate::engine)`)
+    /// to pin the defensive check itself; see
+    /// `author_derived_authorized_rejects_operator_ftoa_without_source_batch_via_public_api`
+    /// in `crates/core/tests/engine_memory_authoring.rs` for the
+    /// publicly-observable consequence of the same "F→A without a batch"
+    /// scenario.
+    #[tokio::test]
+    async fn author_derived_rejects_operator_ftoa_missing_source_batch() {
+        let engine = engine();
+        let owner = owner();
+        let err = engine
+            .author_derived(AuthorDerivedRequestInput {
+                memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+                owner,
+                kind: EntityKind::Abstraction,
+                text: "body".into(),
+                schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
+                schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+                operator_kind: MemoryOperatorKind::FtoA,
+                operator_id: OperatorId::new(uuid::Uuid::now_v7()),
+                input_contract_id: InputContractId::new(uuid::Uuid::now_v7()),
+                source_batch_id: None,
+                model_id: "test-model",
+                prompt_version: "test",
+                sidecar_payload: derivation_sidecar(),
+                supersedes: None,
+                edges: &[],
+            })
+            .await
+            .expect_err("F→A invocation without source_batch_id is invalid before storage");
+
+        assert!(
+            matches!(&err, StorageError::ConstraintViolation(msg) if msg.contains("requires source_batch_id")),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
