@@ -174,8 +174,8 @@ def check_runtime_registration(findings: list[Finding]) -> None:
 
 
 def iter_rust_string_literals(text: str):
-    """Yield ``(start_line, literal_text)`` for each Rust string / raw-string /
-    byte-string literal in ``text``, in source order.
+    """Yield ``(start_line, start_offset, literal_text)`` for each Rust string /
+    raw-string / byte-string literal in ``text``, in source order.
 
     A regex applied line-by-line cannot see a raw string whose opening
     delimiter and offending text land on different lines (multi-line SQL
@@ -215,7 +215,7 @@ def iter_rust_string_literals(text: str):
             literal = text[start:] if end == -1 else text[start : end + len(closer)]
             line += literal.count("\n")
             i = n if end == -1 else end + len(closer)
-            yield start_line, literal
+            yield start_line, start, literal
             continue
         str_match = re.match(r'[bB]?"', text[i:])
         if str_match:
@@ -233,7 +233,7 @@ def iter_rust_string_literals(text: str):
             literal = text[start:j]
             line += literal.count("\n")
             i = j
-            yield start_line, literal
+            yield start_line, start, literal
             continue
         if ch == "'":
             char_match = re.match(r"'(?:\\.|[^'\\])'", text[i:])
@@ -252,11 +252,31 @@ def flavor_core_sql_hits(text: str) -> list[tuple[int, int, str]]:
     (`proxima_core::verbs`) and must stay allowed everywhere.
     """
     hits: list[tuple[int, int, str]] = []
-    for start_line, literal in iter_rust_string_literals(text):
+    for start_line, _start_offset, literal in iter_rust_string_literals(text):
         if "proxima_core." not in literal:
             continue
         hits.append((start_line, start_line + literal.count("\n"), literal))
     return hits
+
+
+def allow_marker_lines(text: str) -> set[int]:
+    """Line numbers carrying a PR9-RATCHET-ALLOW marker outside every string
+    literal.
+
+    Marker text INSIDE a literal (e.g. a `-- PR9-RATCHET-ALLOW` SQL comment
+    within a flagged raw string) must never suppress the finding on that
+    literal, otherwise the scanned content could self-authorize.
+    """
+    literal_spans = [
+        (start_offset, start_offset + len(literal))
+        for _start_line, start_offset, literal in iter_rust_string_literals(text)
+    ]
+    marker_lines: set[int] = set()
+    for match in re.finditer(re.escape(ALLOW), text):
+        if any(start <= match.start() < end for start, end in literal_spans):
+            continue
+        marker_lines.add(text.count("\n", 0, match.start()) + 1)
+    return marker_lines
 
 
 def check_flavor_core_sql(findings: list[Finding]) -> None:
@@ -268,7 +288,7 @@ def check_flavor_core_sql(findings: list[Finding]) -> None:
         rel = path.relative_to(ROOT).as_posix()
         text = path.read_text(encoding="utf-8")
         lines = text.splitlines()
-        allow_lines = {line_no for line_no, line in enumerate(lines, 1) if ALLOW in line}
+        allow_lines = allow_marker_lines(text)
         allowance = ALLOWLISTED_FLAVOR_CORE_SQL.get(rel)
         for start_line, end_line, literal in flavor_core_sql_hits(text):
             if allow_lines & set(range(start_line, end_line + 1)):
