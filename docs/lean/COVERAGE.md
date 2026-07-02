@@ -209,21 +209,22 @@ only where a row's subject matter maps directly onto one of those named items
 
 ## Principle surface map
 
-Principles aggregate multiple ID rows above under one named surface property;
-they are cross-cutting summaries, not independent coverage rows, so this table
-does not carry its own `Runtime enforcement` column — see the constituent ID
-rows (named in each principle's row below) for enforcement values.
+Principles aggregate multiple ID rows above under one named surface property
+(cross-cutting summaries, not independent coverage rows), so this table's
+`Runtime enforcement` values are ROLLUPS of the named constituent ID rows —
+the constituent row is the authoritative cell; a principle whose parts differ
+says `mixed` and names which part is which.
 
-| Principle | Named surface prop | Kernel carrier |
-|---|---|---|
-| P1 | `principle_1_facts_below_perspective` | `MemoryKind.layer` theorem: Fact layer below Perspective. |
-| P2 | `principle_2_operator_goals_carry_evidence` | `EdgeOperatorShapeValid` + `operatorEdgeShape .OperatorAtoGoal`; WEAKENED to operator-derived Goals only, with goal measurement/justification left to a decider. |
-| P3 | `principle_3_operators_never_output_facts`; `principle_3b_goal_close_is_an_act`; `principle_3c_causal_closure_is_perspectival`; `principle_epistemic_operator_output_not_fact` | `operator_memory_output_not_fact` over `EdgeOperatorShapeValid`; `terminal_goal_closes_with_fact` + `goal_close_fact`; `causal_goal_edge_perspectival` over `EdgeCoreValid`; epistemic corollary names the induction-as-representation bound (not Hume solved). |
-| P4 | `principle_4_facts_connect_non_interpretively`; `principle_epistemic_fact_to_fact_not_causal`; `principle_epistemic_fact_to_fact_not_interpretive`; `principle_epistemic_supersession_cannot_touch_facts` | `legalClasses .Fact .Fact` excludes Causal/Interpretive Fact→Fact edges; `facts_never_supersede` excludes Fact endpoints from Supersession. |
-| P5 | `principle_5_memories_grounded_in_facts`; `principle_epistemic_abstraction_grounded_in_facts`; `principle_epistemic_perspective_has_abstraction_provenance` | `MemoryGraphValid` bundles memory/goal/FactEntity/edge table validity, FactEntity head presence, endpoint presence, derived-row provenance, and strict derivation time; `memory_grounds_in_facts`, `abstraction_grounds_in_facts`, and `perspective_has_provenance` prove admitted rows bottom out in Facts / Perspectives trace to Abstractions. |
-| P6 | `principle_6a_derivation_provenance_strictly_upward`; `principle_6b_personality_read_scope_removed` | `edge_layer_rule` over `EdgeCoreValid`; structural absence of `read_scope`/`personality_may_read`; wake context deferred. |
-| P7 | `principle_7_personality_is_not_entity` | structural absence: no personality row/type/instance; no Personality module; Self projections are queries over existing Goal/Perspective rows. |
-| P8 | `principle_8_knowledge_artifact_model_independent`; `principle_8b_long_term_knowledge_artifact_has_text_memory` | `KnowledgeArtifact` + `InterpreterClass` witness semantic uptake at class level; `KnowledgeArtifactIn` proves admitted text-bearing Memory carrier. |
+| Principle | Named surface prop | Kernel carrier | Runtime enforcement |
+|---|---|---|---|
+| P1 | `principle_1_facts_below_perspective` | `MemoryKind.layer` theorem: Fact layer below Perspective. | enforced — rollup of U-1/ME-10 (layering gates at write time) |
+| P2 | `principle_2_operator_goals_carry_evidence` | `EdgeOperatorShapeValid` + `operatorEdgeShape .OperatorAtoGoal`; WEAKENED to operator-derived Goals only, with goal measurement/justification left to a decider. | mixed — evidence shape enforced (rollup of CN-3/GO-14); goal measurement/justification excluded (decider, see exclusions below) |
+| P3 | `principle_3_operators_never_output_facts`; `principle_3b_goal_close_is_an_act`; `principle_3c_causal_closure_is_perspectival`; `principle_epistemic_operator_output_not_fact` | `operator_memory_output_not_fact` over `EdgeOperatorShapeValid`; `terminal_goal_closes_with_fact` + `goal_close_fact`; `causal_goal_edge_perspectival` over `EdgeCoreValid`; epistemic corollary names the induction-as-representation bound (not Hume solved). | enforced — rollup of CN-5 (no downward writes), GO-18 (terminal close Fact), U-2 (perspectival causal claims) |
+| P4 | `principle_4_facts_connect_non_interpretively`; `principle_epistemic_fact_to_fact_not_causal`; `principle_epistemic_fact_to_fact_not_interpretive`; `principle_epistemic_supersession_cannot_touch_facts` | `legalClasses .Fact .Fact` excludes Causal/Interpretive Fact→Fact edges; `facts_never_supersede` excludes Fact endpoints from Supersession. | enforced — rollup of U-2 (Fact→Fact class legality) + ME-4/SR-14/44 (Facts never supersede) |
+| P5 | `principle_5_memories_grounded_in_facts`; `principle_epistemic_abstraction_grounded_in_facts`; `principle_epistemic_perspective_has_abstraction_provenance` | `MemoryGraphValid` bundles memory/goal/FactEntity/edge table validity, FactEntity head presence, endpoint presence, derived-row provenance, and strict derivation time; `memory_grounds_in_facts`, `abstraction_grounds_in_facts`, and `perspective_has_provenance` prove admitted rows bottom out in Facts / Perspectives trace to Abstractions. | enforced — rollup of CN-6 (provenance completeness) + CN-8b (invocation ledger, incl. the Task 8 derivation-time strictness check in `derive_append.rs`) |
+| P6 | `principle_6a_derivation_provenance_strictly_upward`; `principle_6b_personality_read_scope_removed` | `edge_layer_rule` over `EdgeCoreValid`; structural absence of `read_scope`/`personality_may_read`; wake context deferred. | mixed — 6a enforced (rollup of ME-10); 6b guardrail (rollup of ME-7/ME-8); wake-context conditioning excluded (deferred, see exclusions below) |
+| P7 | `principle_7_personality_is_not_entity` | structural absence: no personality row/type/instance; no Personality module; Self projections are queries over existing Goal/Perspective rows. | guardrail — rollup of ME-6/ME-17 (`check_personality_authz` bans the vocabulary from reappearing in authz-bearing modules) |
+| P8 | `principle_8_knowledge_artifact_model_independent`; `principle_8b_long_term_knowledge_artifact_has_text_memory` | `KnowledgeArtifact` + `InterpreterClass` witness semantic uptake at class level; `KnowledgeArtifactIn` proves admitted text-bearing Memory carrier. | excluded — rollup of ME-K1/ME-K2 (classification stance, no runtime check) |
 
 Principle decider exclusions:
 - P2 goal measurement/justification.
