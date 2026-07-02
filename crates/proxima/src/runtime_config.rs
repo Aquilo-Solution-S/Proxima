@@ -523,6 +523,12 @@ pub enum ProximaError {
     Security(String),
     #[error("mcp: {0}")]
     Mcp(String),
+    /// The target database still carries pre-v0.0.4 Proxima schema
+    /// artifacts and must be exported and reset before this host can boot.
+    /// See `MIGRATING.md`. Kept distinct from [`Self::Storage`] so hosts
+    /// can match on it instead of parsing the storage error string.
+    #[error("database requires a v0.0.4 reset before boot (see MIGRATING.md): {details}")]
+    V004ResetRequired { details: String },
 }
 
 impl From<EmbedError> for ProximaError {
@@ -532,6 +538,7 @@ impl From<EmbedError> for ProximaError {
             EmbedError::Registry(err) => Self::Registry(err),
             EmbedError::Storage(err) => Self::Storage(err),
             EmbedError::Engine(err) => Self::Engine(err),
+            EmbedError::V004ResetRequired { details } => Self::V004ResetRequired { details },
         }
     }
 }

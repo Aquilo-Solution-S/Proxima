@@ -235,7 +235,9 @@ impl ProximaBuilder {
     /// # Errors
     ///
     /// Returns `EmbedError::Storage` for connection or migration
-    /// failures and `EmbedError::Engine` when engine startup fails.
+    /// failures, `EmbedError::V004ResetRequired` when the target database
+    /// still carries pre-v0.0.4 schema artifacts (see `MIGRATING.md`), and
+    /// `EmbedError::Engine` when engine startup fails.
     pub async fn boot(self) -> Result<EmbeddedProxima, EmbedError> {
         let Self {
             config,
@@ -249,10 +251,10 @@ impl ProximaBuilder {
 
         let pg = PgStorage::connect(&config.database_url)
             .await
-            .map_err(|e| EmbedError::Storage(e.to_string()))?;
+            .map_err(embed_storage_error)?;
         run_core_and_flavor_migrations(&pg, migrators)
             .await
-            .map_err(|e| EmbedError::Storage(e.to_string()))?;
+            .map_err(embed_migration_error)?;
 
         let mut registry = FlavorRegistry::new();
         for register in registers {
@@ -267,7 +269,7 @@ impl ProximaBuilder {
         }
         let pg_sidecars = pg_sidecars
             .freeze_against(registry.schemas())
-            .map_err(|e| EmbedError::Storage(e.to_string()))?;
+            .map_err(embed_storage_error)?;
         let pg_sidecars = Arc::new(pg_sidecars);
         let pg = pg.with_sidecars(pg_sidecars.as_ref().clone());
 
@@ -312,6 +314,37 @@ pub enum EmbedError {
     Storage(String),
     #[error("engine: {0}")]
     Engine(String),
+    /// The target database still carries pre-v0.0.4 Proxima schema
+    /// artifacts (or a stale baseline checksum) and must be exported and
+    /// reset before this host can boot. Preserved as a typed variant
+    /// (distinct from the generic [`Self::Storage`] string) so upgrading
+    /// hosts can match on it and print `MIGRATING.md` guidance instead of
+    /// treating it as an opaque storage failure. See `MIGRATING.md`.
+    #[error("database requires a v0.0.4 reset before boot (see MIGRATING.md): {details}")]
+    V004ResetRequired { details: String },
+}
+
+/// Map a storage error onto [`EmbedError`], preserving the typed
+/// [`proxima_core::StorageError::V004ResetRequired`] signal instead of
+/// collapsing it into the generic [`EmbedError::Storage`] string.
+fn embed_storage_error(err: proxima_core::StorageError) -> EmbedError {
+    match err {
+        proxima_core::StorageError::V004ResetRequired { details } => {
+            EmbedError::V004ResetRequired { details }
+        }
+        other => EmbedError::Storage(other.to_string()),
+    }
+}
+
+/// Map a migration-facade error onto [`EmbedError`], unwrapping the core
+/// preflight check so a stale pre-v0.0.4 database still surfaces as
+/// [`EmbedError::V004ResetRequired`] through `boot()` rather than a generic
+/// storage string.
+fn embed_migration_error(err: MigrationError) -> EmbedError {
+    match err {
+        MigrationError::CorePreflight(storage_err) => embed_storage_error(storage_err),
+        other => EmbedError::Storage(other.to_string()),
+    }
 }
 
 #[cfg(test)]

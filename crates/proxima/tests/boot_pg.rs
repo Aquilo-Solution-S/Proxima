@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use proxima::flavor::FlavorBundle;
 use proxima::{
-    AppInfo, EmbedConfig, FlavorApp, NamedMigrator, PayloadKind, Proxima, ProximaBuilder,
-    company_owner, run_core_and_flavor_migrations,
+    AppInfo, EmbedConfig, EmbedError, FlavorApp, NamedMigrator, PayloadKind, Proxima,
+    ProximaBuilder, company_owner, run_core_and_flavor_migrations,
 };
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
@@ -247,6 +247,69 @@ async fn pre_v004_database_fails_closed_in_migration_facade() {
 
     let _ = drop_db(&db_name).await;
     result.expect("migration facade fail-closed test failed");
+}
+
+#[tokio::test]
+async fn pre_v004_database_surfaces_typed_reset_error_through_boot() {
+    let db_name = unique_db_name("proxima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&db_url).await?;
+        sqlx::query("CREATE SCHEMA proxima_core")
+            .execute(pg.pool_for_tests())
+            .await?;
+        sqlx::query(
+            "CREATE TABLE public._sqlx_migrations (
+                 version bigint PRIMARY KEY,
+                 description text NOT NULL,
+                 installed_on timestamptz NOT NULL DEFAULT now(),
+                 success boolean NOT NULL,
+                 checksum bytea NOT NULL,
+                 execution_time bigint NOT NULL
+             )",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+        sqlx::query(
+            "INSERT INTO public._sqlx_migrations
+                 (version, description, success, checksum, execution_time)
+             VALUES (1, 'init', true, decode('00', 'hex'), 0)",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+        pg.pool_for_tests().close().await;
+        drop(pg);
+
+        let config = EmbedConfig {
+            database_url: db_url.clone(),
+            s3: None,
+        };
+        let owner = company_owner(Uuid::now_v7());
+
+        let err = ProximaBuilder::new(config, owner)
+            .boot()
+            .await
+            .expect_err("pre-v0.0.4 DB must fail closed through boot()");
+
+        match err {
+            EmbedError::V004ResetRequired { details } => {
+                assert!(
+                    details.contains("v0.0.4"),
+                    "reset details should explain the v0.0.4 baseline mismatch, got: {details}"
+                );
+            }
+            other => {
+                panic!("expected EmbedError::V004ResetRequired, boot() collapsed it to: {other:?}")
+            }
+        }
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("typed reset error propagation test failed");
 }
 
 #[tokio::test]
