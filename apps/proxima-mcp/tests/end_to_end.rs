@@ -1,11 +1,15 @@
+mod common;
+
 use std::net::{Ipv4Addr, SocketAddr};
 
 use proxima_core::{OwnerRef, UserId};
 use serde_json::json;
 
+use common::require_env_or_skip;
+
 #[tokio::test]
 async fn run_with_handle_serves_tools_list() -> Result<(), Box<dyn std::error::Error>> {
-    let Ok(database_url) = std::env::var("DATABASE_URL") else {
+    let Some(database_url) = require_env_or_skip("DATABASE_URL") else {
         eprintln!("skipping run_with_handle_serves_tools_list: DATABASE_URL not set");
         return Ok(());
     };
