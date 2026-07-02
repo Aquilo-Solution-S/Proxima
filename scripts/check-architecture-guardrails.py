@@ -22,20 +22,13 @@ ALLOW = "PR9-RATCHET-ALLOW"
 # entry needs an ISO `expires` date and a `reason`; once an entry expires it
 # stops suppressing findings and the failure renders the expiration date so
 # reviewers see why it started failing.
-ALLOWLISTED_FLAVOR_CORE_SQL: dict[str, dict[str, str]] = {
-    "flavors/code/src/mcp/search_chunks.rs": {
-        "expires": "2026-07-31",
-        "reason": "until Task 5 lands the authorized flavor-read facade",
-    },
-    "flavors/code/src/mcp/open_file_revision.rs": {
-        "expires": "2026-07-31",
-        "reason": "until Task 5 lands the authorized flavor-read facade",
-    },
-    "flavors/code/src/local_git_source.rs": {
-        "expires": "2026-07-31",
-        "reason": "until Task 5 lands the authorized flavor-read facade",
-    },
-}
+#
+# v0.0.5 Task 5 migrated the three prior entries here (search_chunks.rs,
+# open_file_revision.rs, local_git_source.rs) onto
+# `proxima::flavor::authorized_*` — production `flavors/code/src` now holds
+# zero raw `proxima_core.*` SQL, so this allowlist is empty until the next
+# dated exemption is actually needed.
+ALLOWLISTED_FLAVOR_CORE_SQL: dict[str, dict[str, str]] = {}
 
 
 @dataclass(frozen=True)
