@@ -648,11 +648,16 @@ async fn author_derived_authorized_rejects_operator_edge_sourced_from_wrong_memo
             .await
             .expect_err("edge sourced from a memory other than the output is invalid");
 
-        assert_eq!(err.code, ErrorCode::InvalidArgument, "unexpected error: {err}");
+        assert_eq!(
+            err.code,
+            ErrorCode::InvalidArgument,
+            "unexpected error: {err}"
+        );
         assert!(
-            err.to_string().contains("missing provenance edge") || err.to_string().contains(
-                "operator provenance edge source must be the output memory"
-            ),
+            err.to_string().contains("missing provenance edge")
+                || err
+                    .to_string()
+                    .contains("operator provenance edge source must be the output memory"),
             "unexpected error: {err}"
         );
         assert_eq!(memory_count(&pg, memory_id).await?, 0);
@@ -740,11 +745,16 @@ async fn author_derived_authorized_rejects_operator_input_missing_provenance_edg
             .await
             .expect_err("a declared input with no provenance edge to the output is invalid");
 
-        assert_eq!(err.code, ErrorCode::InvalidArgument, "unexpected error: {err}");
+        assert_eq!(
+            err.code,
+            ErrorCode::InvalidArgument,
+            "unexpected error: {err}"
+        );
         assert!(
-            err.to_string().contains("missing provenance edge") || err.to_string().contains(
-                "operator provenance edge source must be the output memory"
-            ),
+            err.to_string().contains("missing provenance edge")
+                || err
+                    .to_string()
+                    .contains("operator provenance edge source must be the output memory"),
             "unexpected error: {err}"
         );
         assert_eq!(memory_count(&pg, memory_id).await?, 0);
@@ -809,7 +819,11 @@ async fn author_derived_authorized_rejects_operator_ftoa_without_source_batch_vi
             .await
             .expect_err("F→A invocation without any source batch is invalid before storage");
 
-        assert_eq!(err.code, ErrorCode::InvalidArgument, "unexpected error: {err}");
+        assert_eq!(
+            err.code,
+            ErrorCode::InvalidArgument,
+            "unexpected error: {err}"
+        );
         assert_eq!(memory_count(&pg, memory_id).await?, 0);
         Ok::<(), Box<dyn std::error::Error>>(())
     }
