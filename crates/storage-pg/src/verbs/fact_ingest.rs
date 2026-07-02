@@ -401,14 +401,16 @@ where
 
 /// Run the `FactIngest` body inside an already-open transaction. The
 /// caller owns `tx` and is responsible for committing or rolling back.
-/// Flavors use this to bundle the typed sidecar insert with the core
-/// Fact materialization in a single atomic write.
+///
+/// Crate-private: raw-owner write with no proof/authz param; in-crate
+/// callers only (`ingest_fact_atomic`, goal-write side effects). External
+/// flavors bundle sidecars via the `FactIngestContext`-based helpers.
 ///
 /// # Errors
 ///
 /// Constraint violations map to `ConstraintViolation`; sqlx failures
 /// map to `Internal`.
-pub async fn ingest_fact_command_in_tx(
+pub(crate) async fn ingest_fact_command_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     draft: &FactWriteCommand,
@@ -429,12 +431,16 @@ pub async fn ingest_fact_command_in_tx(
 /// already-open transaction, deriving a Fact-entity head from the
 /// sidecar row after the sidecar insert succeeds.
 ///
+/// Crate-private: raw-owner write with no proof/authz param; the only
+/// caller is `ingest_fact_with_sidecar`, which carries the owner inside
+/// its `FactIngestContext`.
+///
 /// # Errors
 ///
 /// Returns storage errors from Fact materialization, sidecar
 /// insertion, Fact-entity derivation, or embedding enqueue. The caller
 /// owns transaction rollback/commit.
-pub async fn ingest_fact_with_derived_sidecar_in_tx<F>(
+pub(crate) async fn ingest_fact_with_derived_sidecar_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     draft: &FactWriteCommand,
