@@ -135,6 +135,14 @@ pub(crate) async fn append_derived_in_tx(
 /// Append one operator-derived memory with its declared output→input ledger
 /// edges in the same transaction.
 ///
+/// Flavor-SDK in-tx write tier: validates the operator proof ledger (edge
+/// shape, input liveness, F→A batch closure, supersedes owner/kind) but does
+/// NOT authorize the caller against the owner. Stays `pub` because
+/// `proxima-code` persists derived memories inside multi-write transactions
+/// through it (`ingest::blobs`, `mcp::emit_execution_request`); sealing this
+/// tier behind a permit is flavor-boundary work, not the engine-verb proof
+/// gate.
+///
 /// # Errors
 ///
 /// Returns `ConstraintViolation` when the operator proof shape does not match
