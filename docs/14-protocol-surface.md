@@ -52,7 +52,7 @@ Canonical substrate tools:
 | `core_link` | write registered relation edge |
 | `core_search_memories` | search memories; may include neighbor edges, per-result tags, lexical-degradation status, and selected memory-space labels |
 | `core_memory_spaces` | list server-issued memory-space keys with labels and coarse unrestricted-access flags |
-| `core_membership` | group roster dispatcher: `add_member`, `remove_member`, `list_members`; host/controller scoped |
+| `core_membership` | group roster + owner-transfer dispatcher: `add_member`, `remove_member`, `list_members`, `publish_to_world`; host/controller scoped |
 | `core_goal` | goal action dispatcher: `set`, `transition`, `modify`, `mark_achieved`, `decompose` |
 | `core_fact` | Fact action dispatcher: `citation_of_fact`, `citation_of_entity_head`, `facts_citing_object` |
 
@@ -342,7 +342,11 @@ access.
 Per-call dispatch enforces `call.owner` inside the resolved Owner set.
 Signup, MFA, billing, and tenancy services live in front of the engine;
 `core_membership` mutates the explicit group roster when the host exposes
-that controller-scoped tool.
+that controller-scoped tool. Its `publish_to_world` action transfers a
+memory or goal's owner to `OwnerRef::World` — an irreversible owner
+transfer, not an ACL flag or share row; World is universally readable and
+never a write owner again afterward. It requires write/manage authority
+(`Relation::Admin`) on the entity's current owner.
 
 ## Error Envelope
 

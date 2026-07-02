@@ -7,9 +7,9 @@ use proxima_core::engine::Engine;
 use proxima_core::mcp::core_tools::get_memory::{GetMemoryArgs, get_memory};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
-    AgentNoteV1, AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FactPayload,
-    FlavorRegistry, FlavorRegistryFrozen, McpToolError, MemoryId, Owner, OwnerRef, SchemaId,
-    UserId,
+    AgentNoteV1, AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, ErrorCode,
+    FactPayload, FlavorRegistry, FlavorRegistryFrozen, GroupId, McpToolError, MemoryId, Owner,
+    OwnerRef, OwnerRefKind, Role, SchemaId, UserId,
 };
 use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgSidecarFuture,
@@ -1153,6 +1153,276 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // linear PG flow: author + pre-publish deny + publish + owner-column assert + re-publish deny + post-publish read read best together
+async fn publish_to_world_transfers_owner_denies_rewrite_and_allows_ordinary_reads()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
+    let handles = Arc::new(HandleTable::new());
+    let author = author_ctx();
+    let engine = engine_for_registry(&frozen, &pg);
+
+    let group = GroupId::new(Uuid::now_v7());
+    let group_owner = OwnerRef::Group(group);
+    let admin_subject = UserId::new(Uuid::now_v7());
+    let admin_authz = AuthzContext::for_subject_with_role(
+        admin_subject,
+        [(group_owner, Role::admin())],
+        AuthPath::HostBearer,
+    );
+
+    // author a Fact under the Group.
+    let remembered = call_tool_as(
+        &pg,
+        &group_owner,
+        admin_authz.clone(),
+        &handles,
+        &frozen,
+        author.clone(),
+        Some(engine.clone()),
+        "core_remember",
+        json!({
+            "title": "Group catalog fact",
+            "body": "A Fact authored under a Group, destined for a deliberate publish.",
+            "tags": [],
+            "space": format!("group:{}", group.into_inner()),
+            "idempotency_key": "publish-smoke-fact"
+        }),
+    )
+    .await?;
+    let handle = remembered["handle"].as_str().expect("handle").to_string();
+    let memory_id = handles
+        .resolve_memory(&handle)
+        .expect("resolves the just-created Fact handle");
+
+    // an ordinary outsider with zero group role cannot read it yet.
+    let outsider_subject = UserId::new(Uuid::now_v7());
+    let outsider_authz = AuthzContext::for_subject(outsider_subject, AuthPath::HostBearer);
+    let pre_publish_read = get_memory(
+        outsider_ctx(
+            &pg,
+            &handles,
+            &frozen,
+            author.clone(),
+            &engine,
+            outsider_authz.clone(),
+        ),
+        GetMemoryArgs {
+            memory: handle.clone(),
+            expand_neighbors: false,
+            space: None,
+        },
+    )
+    .await;
+    match pre_publish_read {
+        Err(McpToolError::Protocol(err)) => assert_eq!(err.code, ErrorCode::Forbidden),
+        other => panic!("expected forbidden before publish, got {other:?}"),
+    }
+
+    // publish requires admin authority on the current (Group) owner.
+    call_tool_as(
+        &pg,
+        &group_owner,
+        admin_authz.clone(),
+        &handles,
+        &frozen,
+        author.clone(),
+        Some(engine.clone()),
+        "core_membership",
+        json!({"action": "publish_to_world", "entity": handle}),
+    )
+    .await?;
+
+    // owner columns encode World.
+    let (owner_kind, owner_id): (OwnerRefKind, Option<Uuid>) = sqlx::query_as(
+        "SELECT owner_kind, owner_id FROM proxima_core.memories WHERE memory_id = $1",
+    )
+    .bind(memory_id.into_inner())
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    assert_eq!(owner_kind, OwnerRefKind::World);
+    assert_eq!(owner_id, None);
+
+    // writes are denied: re-publishing an already-World entity is Forbidden,
+    // proving World is never granted write authority by this verb.
+    let republish = call_tool_as(
+        &pg,
+        &group_owner,
+        admin_authz.clone(),
+        &handles,
+        &frozen,
+        author.clone(),
+        Some(engine.clone()),
+        "core_membership",
+        json!({"action": "publish_to_world", "entity": handle}),
+    )
+    .await;
+    match republish {
+        Err(McpToolError::Protocol(err)) => assert_eq!(err.code, ErrorCode::Forbidden),
+        other => panic!("expected forbidden re-publish, got {other:?}"),
+    }
+
+    // reads now work for the same ordinary outsider.
+    let post_publish_read = get_memory(
+        outsider_ctx(&pg, &handles, &frozen, author, &engine, outsider_authz),
+        GetMemoryArgs {
+            memory: handle,
+            expand_neighbors: false,
+            space: None,
+        },
+    )
+    .await?;
+    assert!(
+        post_publish_read
+            .text
+            .as_deref()
+            .is_some_and(|text| text.contains("Group catalog fact")),
+        "post-publish read returns the same Fact content: {post_publish_read:?}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn core_membership_add_member_denies_missing_resolver_role()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
+    let handles = Arc::new(HandleTable::new());
+    let owner = nil_owner();
+    let group = GroupId::new(Uuid::now_v7());
+    let member = UserId::new(Uuid::now_v7());
+
+    // `single_owner`/`for_subject` on a Personal owner has World+Personal
+    // roles only — no resolver role on `group`.
+    let err = call_tool_with_engine(
+        &pg,
+        &owner,
+        &handles,
+        &frozen,
+        author_ctx(),
+        Some(engine_for_registry(&frozen, &pg)),
+        "core_membership",
+        json!({
+            "action": "add_member",
+            "group": format!("group:{}", group.into_inner()),
+            "member": member.into_inner().to_string(),
+            "relation": "viewer"
+        }),
+    )
+    .await
+    .expect_err("add_member without a resolver role on the group must be denied");
+    match err {
+        McpToolError::Protocol(err) => assert_eq!(err.code, ErrorCode::Forbidden),
+        other => panic!("expected forbidden protocol error, got {other:?}"),
+    }
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn core_membership_remove_member_denies_missing_resolver_role()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
+    let handles = Arc::new(HandleTable::new());
+    let owner = nil_owner();
+    let group = GroupId::new(Uuid::now_v7());
+    let member = UserId::new(Uuid::now_v7());
+
+    let err = call_tool_with_engine(
+        &pg,
+        &owner,
+        &handles,
+        &frozen,
+        author_ctx(),
+        Some(engine_for_registry(&frozen, &pg)),
+        "core_membership",
+        json!({
+            "action": "remove_member",
+            "group": format!("group:{}", group.into_inner()),
+            "member": member.into_inner().to_string(),
+        }),
+    )
+    .await
+    .expect_err("remove_member without a resolver role on the group must be denied");
+    match err {
+        McpToolError::Protocol(err) => assert_eq!(err.code, ErrorCode::Forbidden),
+        other => panic!("expected forbidden protocol error, got {other:?}"),
+    }
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn core_membership_list_members_denies_missing_resolver_role()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
+    let handles = Arc::new(HandleTable::new());
+    let owner = nil_owner();
+    let group = GroupId::new(Uuid::now_v7());
+
+    let err = call_tool_with_engine(
+        &pg,
+        &owner,
+        &handles,
+        &frozen,
+        author_ctx(),
+        Some(engine_for_registry(&frozen, &pg)),
+        "core_membership",
+        json!({
+            "action": "list_members",
+            "group": format!("group:{}", group.into_inner()),
+        }),
+    )
+    .await
+    .expect_err("list_members without a resolver role on the group must be denied");
+    match err {
+        McpToolError::Protocol(err) => assert_eq!(err.code, ErrorCode::Forbidden),
+        other => panic!("expected forbidden protocol error, got {other:?}"),
+    }
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+fn outsider_ctx(
+    pg: &proxima_storage_pg::PgStorage,
+    handles: &Arc<HandleTable>,
+    registry: &Arc<proxima_core::FlavorRegistryFrozen>,
+    author: McpAuthorContext,
+    engine: &Arc<Engine>,
+    authz: AuthzContext,
+) -> McpToolCtx {
+    let subject = authz.subject().expect("subject-bearing authz");
+    McpToolCtx {
+        owner: OwnerRef::Personal(subject),
+        authz,
+        handles: Some(handles.clone()),
+        mode: OutputMode::Handles,
+        registry: registry.clone(),
+        author,
+        caller_self_perspective: None,
+        master_token_id: None,
+        extensions: McpToolExtensions::with(pg.pool_for_tests().clone()),
+        engine: Some(engine.clone()),
+    }
+}
+
 async fn call_tool(
     pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,
@@ -1277,6 +1547,37 @@ async fn call_tool_with_engine(
     name: &str,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, proxima_core::McpToolError> {
+    call_tool_as(
+        pg,
+        owner,
+        AuthzContext::single_owner(owner, AuthPath::System),
+        handles,
+        registry,
+        author,
+        engine,
+        name,
+        args,
+    )
+    .await
+}
+
+/// Generalization of [`call_tool_with_engine`] that takes an explicit
+/// `AuthzContext` instead of deriving one via `single_owner` — needed for
+/// group-owned spaces (`single_owner` only mints Personal-owner contexts)
+/// and for contexts deliberately built via `for_subject`/`for_subject_with_role`
+/// to exercise the server-resolved authz path directly.
+#[allow(clippy::too_many_arguments)]
+async fn call_tool_as(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    authz: AuthzContext,
+    handles: &Arc<HandleTable>,
+    registry: &Arc<proxima_core::FlavorRegistryFrozen>,
+    author: McpAuthorContext,
+    engine: Option<Arc<Engine>>,
+    name: &str,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, proxima_core::McpToolError> {
     let descriptor = registry
         .list_mcp_tools()
         .iter()
@@ -1285,7 +1586,7 @@ async fn call_tool_with_engine(
     (descriptor.call)(
         McpToolCtx {
             owner: *owner,
-            authz: AuthzContext::single_owner(owner, AuthPath::System),
+            authz,
             handles: Some(handles.clone()),
             mode: OutputMode::Handles,
             registry: registry.clone(),

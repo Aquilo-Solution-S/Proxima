@@ -27,6 +27,7 @@ pub mod action {
     pub const CORE_MEMBERSHIP_ADD_MEMBER: &str = "core_membership:add_member";
     pub const CORE_MEMBERSHIP_REMOVE_MEMBER: &str = "core_membership:remove_member";
     pub const CORE_MEMBERSHIP_LIST_MEMBERS: &str = "core_membership:list_members";
+    pub const CORE_MEMBERSHIP_PUBLISH_TO_WORLD: &str = "core_membership:publish_to_world";
 }
 
 pub mod resource {
