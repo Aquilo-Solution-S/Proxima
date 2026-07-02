@@ -1000,3 +1000,81 @@ async fn ensure_fact_embedding_for_handle(
         .await?;
     Ok(())
 }
+
+/// v0.0.5 Task 5: the authorized flavor-read facade
+/// (`proxima::flavor::authorized_memory_ids` and friends) routes candidate
+/// filtering through `Engine::query`, which must treat a World-owned
+/// (published) memory as visible to any caller, not just its original
+/// owner. This is the read half of the raw-PgPool boundary breach fix —
+/// a flavor's own owner-equality-only candidate SQL would have hidden a
+/// published memory from a non-owner caller even though it is supposed to
+/// be universally readable.
+#[tokio::test]
+async fn facade_authorized_read_surfaces_world_published_fact_to_non_owner() {
+    let db_name = unique_db_name("proxima_authorized_read_world");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let other_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<EmptyApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .build()
+            .await?;
+        let tools = built.core_mcp_tools();
+        let authz = host_authz(&owner, ToolScope::All);
+
+        let remembered = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_remember",
+            serde_json::json!({
+                "title": "Publish candidate",
+                "body": "world-visible body unique needle",
+                "tags": [],
+                "idempotency_key": "facade-authorized-read-world-publish"
+            }),
+        )
+        .await?;
+        let handle = remembered["handle"].as_str().expect("remembered handle");
+        let memory_id = handle
+            .strip_prefix("F:")
+            .expect("prefixed fact handle")
+            .parse::<Uuid>()?;
+
+        built
+            .engine
+            .publish_to_world(&authz, proxima_core::EntityId::Memory(MemoryId::new(memory_id)))
+            .await?;
+
+        // A caller with no relationship to `owner` — not a group co-member,
+        // no share, nothing — must still see the now-World-owned Fact
+        // through the same authorized-read helper the Code flavor calls.
+        let other_authz = host_authz(&other_owner, ToolScope::All);
+        let visible = proxima::flavor::authorized_memory_ids(
+            &built.engine,
+            &other_authz,
+            other_owner,
+            &[memory_id],
+            proxima_core::verbs::query::EntityKind::Fact,
+            None,
+            10,
+        )
+        .await?;
+        assert_eq!(
+            visible,
+            vec![MemoryId::new(memory_id)],
+            "a World-published Fact must surface through the authorized-read facade for a non-owner caller"
+        );
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("authorized-read World visibility test failed");
+}
