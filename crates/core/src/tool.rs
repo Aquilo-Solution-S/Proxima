@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 
+use crate::access::AccessKind;
+use crate::storage_ports::OwnerWritePermit;
 use crate::{AuthzContext, Engine, FlavorRegistryFrozen, MemoryId, Owner};
 
 #[derive(Clone, Default)]
@@ -156,6 +158,29 @@ impl ToolCtx {
     #[must_use]
     pub fn engine(&self) -> Option<Arc<Engine>> {
         self.engine.clone()
+    }
+
+    /// Authorize this tool context for a storage-tier owner write.
+    ///
+    /// The permit is minted by the engine from this context's real transport
+    /// authorization and scoped owner; flavor code cannot construct it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ToolError::Other`] when the tool was not wired with an engine
+    /// and [`ToolError::Protocol`] when authorization fails.
+    pub async fn owner_write_permit(
+        &self,
+        kind: AccessKind,
+    ) -> Result<OwnerWritePermit, ToolError> {
+        let engine = self
+            .engine
+            .as_ref()
+            .ok_or_else(|| ToolError::Other("tool context has no engine".into()))?;
+        engine
+            .authorize_owner_write(&self.authz, &self.owner, kind)
+            .await
+            .map_err(ToolError::Protocol)
     }
 
     #[must_use]

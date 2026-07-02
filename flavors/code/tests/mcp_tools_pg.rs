@@ -876,7 +876,7 @@ async fn run_tool<T: McpTool>(
 }
 
 fn ctx(pg: PgStorage, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpToolCtx {
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
     let engine = Arc::new(engine_for_test(pg));
     McpToolCtx {
@@ -908,7 +908,7 @@ fn shell_ctx(
     master_token_id: Uuid,
     caller_self_perspective: MemoryId,
 ) -> McpToolCtx {
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
     let engine = Arc::new(engine_for_test(pg));
     McpToolCtx {
@@ -1150,7 +1150,7 @@ async fn fact_memory(
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     Ok(engine
         .fact_ingest(
-            &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+            &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::HostBearer),
             fact_draft(owner, schema_id, payload),
         )
         .await?

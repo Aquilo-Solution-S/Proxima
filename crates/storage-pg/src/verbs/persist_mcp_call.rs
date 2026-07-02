@@ -1,5 +1,6 @@
 //! Atomic `persist_mcp_call` storage verb.
 
+use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::persist_mcp_call::{
     MCP_CALL_CITATION_SCHEMA, MCP_CALL_FACT_SCHEMA, MCP_CALL_IO_SCHEMA, MCP_CALL_SOURCE_ID,
     McpCallLogInput, McpCallLogOutcome,
@@ -17,10 +18,11 @@ use crate::error::{internal, map_err};
 /// Returns [`StorageError`] if any storage write fails.
 pub async fn persist_mcp_call_atomic(
     pool: &PgPool,
+    permit: &OwnerWritePermit,
     input: &McpCallLogInput,
 ) -> Result<McpCallLogOutcome, StorageError> {
     let mut tx = pool.begin().await.map_err(internal)?;
-    let outcome = persist_mcp_call_in_tx(&mut tx, input).await?;
+    let outcome = persist_mcp_call_in_tx(&mut tx, permit, input).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }
@@ -33,8 +35,12 @@ pub async fn persist_mcp_call_atomic(
 #[allow(clippy::too_many_lines)]
 pub async fn persist_mcp_call_in_tx(
     tx: &mut Transaction<'_, Postgres>,
+    permit: &OwnerWritePermit,
     input: &McpCallLogInput,
 ) -> Result<McpCallLogOutcome, StorageError> {
+    let mut stamped = input.clone();
+    stamped.owner = *permit.owner();
+    let input = &stamped;
     crate::access::owner_columns::reject_world_write_owner(&input.owner)?;
     let io_content_hash = input.io_content_hash();
     let receipt_id = input.receipt_id();

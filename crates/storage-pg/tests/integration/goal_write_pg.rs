@@ -1,6 +1,6 @@
 //! End-to-end core Goal storage atoms against a transient PG database.
 
-use crate::common::{create_db, db_url, drop_db};
+use crate::common::{create_db, db_url, drop_db, owner_write_permit};
 
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::goal_write::{
@@ -92,6 +92,12 @@ fn goal_context(registry: &FlavorRegistryFrozen, self_id: MemoryId) -> GoalAtomi
     }
 }
 
+async fn goal_permit(owner: &Owner) -> Result<OwnerWritePermit, StorageError> {
+    owner_write_permit(owner, proxima_core::AccessKind::Goal)
+        .await
+        .map_err(|err| StorageError::Internal(err.to_string()))
+}
+
 fn operator_authorship() -> GoalAuthorship {
     GoalAuthorship::System(SystemOrigin::Operator {
         operator_id: OperatorId::new(Uuid::now_v7()),
@@ -169,20 +175,24 @@ async fn create_goal(
     self_id: MemoryId,
     mut draft: GoalDraft,
 ) -> Result<GoalWriteOutcome, proxima_core::StorageError> {
+    let permit = goal_permit(&draft.owner()).await?;
     draft.topology = GoalTopologyWrite::new(
         GoalAssignmentTarget::perspective(self_id),
         draft.topology.dependencies().to_vec(),
         draft.topology.evidence().to_vec(),
     )
     .map_err(|err| StorageError::ConstraintViolation(err.message))?;
-    pg.create_goal_atomic(&CreateGoalAtomicRequest {
-        draft,
-        context: GoalAtomicContext {
-            registry,
-            embedding_model_id: None,
-            author_self_perspective_id: Some(self_id),
+    pg.create_goal_atomic(
+        &CreateGoalAtomicRequest {
+            draft,
+            context: GoalAtomicContext {
+                registry,
+                embedding_model_id: None,
+                author_self_perspective_id: Some(self_id),
+            },
         },
-    })
+        &permit,
+    )
     .await
 }
 
@@ -195,14 +205,18 @@ async fn achieve_goal(
     request_id: &str,
     evidence: Vec<proxima_core::verbs::goal_write::GoalEvidenceRef>,
 ) -> Result<GoalWriteOutcome, proxima_core::StorageError> {
-    pg.achieve_goal_atomic(&AchieveGoalAtomicRequest {
-        owner,
-        prior_goal_id,
-        authorship: GoalAuthorship::User,
-        request_id: IdempotencyKey::new(request_id).expect("valid idempotency key"),
-        context: goal_context(registry, self_id),
-        evidence,
-    })
+    let permit = goal_permit(&owner).await?;
+    pg.achieve_goal_atomic(
+        &AchieveGoalAtomicRequest {
+            owner,
+            prior_goal_id,
+            authorship: GoalAuthorship::User,
+            request_id: IdempotencyKey::new(request_id).expect("valid idempotency key"),
+            context: goal_context(registry, self_id),
+            evidence,
+        },
+        &permit,
+    )
     .await
 }
 
@@ -215,14 +229,18 @@ async fn transition_goal(
     next_state: GoalState,
     request_id: &str,
 ) -> Result<GoalWriteOutcome, proxima_core::StorageError> {
-    pg.transition_goal_atomic(&TransitionGoalAtomicRequest {
-        owner,
-        prior_goal_id,
-        next_state,
-        authorship: GoalAuthorship::User,
-        request_id: IdempotencyKey::new(request_id).expect("valid idempotency key"),
-        context: goal_context(registry, self_id),
-    })
+    let permit = goal_permit(&owner).await?;
+    pg.transition_goal_atomic(
+        &TransitionGoalAtomicRequest {
+            owner,
+            prior_goal_id,
+            next_state,
+            authorship: GoalAuthorship::User,
+            request_id: IdempotencyKey::new(request_id).expect("valid idempotency key"),
+            context: goal_context(registry, self_id),
+        },
+        &permit,
+    )
     .await
 }
 
@@ -234,14 +252,18 @@ async fn decompose_goal(
     parent_goal_id: proxima_core::GoalId,
     children: Vec<ChildGoalDraft>,
 ) -> Result<DecomposeGoalOutcome, proxima_core::StorageError> {
-    pg.decompose_goal_atomic(&DecomposeGoalAtomicRequest {
-        owner,
-        parent_goal_id,
-        authorship: GoalAuthorship::User,
-        context: goal_context(registry, self_id),
-        topology: goal_topology(self_id, Vec::new(), Vec::new()),
-        children,
-    })
+    let permit = goal_permit(&owner).await?;
+    pg.decompose_goal_atomic(
+        &DecomposeGoalAtomicRequest {
+            owner,
+            parent_goal_id,
+            authorship: GoalAuthorship::User,
+            context: goal_context(registry, self_id),
+            topology: goal_topology(self_id, Vec::new(), Vec::new()),
+            children,
+        },
+        &permit,
+    )
     .await
 }
 
@@ -414,20 +436,24 @@ async fn goal_transition_atom_writes_superseding_goal() {
             fresh_draft(&owner, "req-prior".to_string()),
         )
         .await?;
+        let permit = goal_permit(&owner).await?;
 
         let transitioned = pg
-            .transition_goal_atomic(&TransitionGoalAtomicRequest {
-                owner,
-                prior_goal_id: prior.goal_id,
-                next_state: GoalState::Paused,
-                authorship: GoalAuthorship::User,
-                request_id: IdempotencyKey::new("req-paused").expect("valid idempotency key"),
-                context: GoalAtomicContext {
-                    registry: &registry,
-                    embedding_model_id: None,
-                    author_self_perspective_id: Some(self_id),
+            .transition_goal_atomic(
+                &TransitionGoalAtomicRequest {
+                    owner,
+                    prior_goal_id: prior.goal_id,
+                    next_state: GoalState::Paused,
+                    authorship: GoalAuthorship::User,
+                    request_id: IdempotencyKey::new("req-paused").expect("valid idempotency key"),
+                    context: GoalAtomicContext {
+                        registry: &registry,
+                        embedding_model_id: None,
+                        author_self_perspective_id: Some(self_id),
+                    },
                 },
-            })
+                &permit,
+            )
             .await?;
         assert!(!transitioned.idempotent_replay);
         assert_ne!(transitioned.goal_id, prior.goal_id);
@@ -440,18 +466,21 @@ async fn goal_transition_atom_writes_superseding_goal() {
         assert_eq!(row, (Some(prior.goal_id.into_inner()), GoalState::Paused));
 
         let replay = pg
-            .transition_goal_atomic(&TransitionGoalAtomicRequest {
-                owner,
-                prior_goal_id: prior.goal_id,
-                next_state: GoalState::Paused,
-                authorship: GoalAuthorship::User,
-                request_id: IdempotencyKey::new("req-paused").expect("valid idempotency key"),
-                context: GoalAtomicContext {
-                    registry: &registry,
-                    embedding_model_id: None,
-                    author_self_perspective_id: Some(self_id),
+            .transition_goal_atomic(
+                &TransitionGoalAtomicRequest {
+                    owner,
+                    prior_goal_id: prior.goal_id,
+                    next_state: GoalState::Paused,
+                    authorship: GoalAuthorship::User,
+                    request_id: IdempotencyKey::new("req-paused").expect("valid idempotency key"),
+                    context: GoalAtomicContext {
+                        registry: &registry,
+                        embedding_model_id: None,
+                        author_self_perspective_id: Some(self_id),
+                    },
                 },
-            })
+                &permit,
+            )
             .await?;
         assert!(replay.idempotent_replay);
         assert_eq!(replay.goal_id, transitioned.goal_id);
@@ -658,17 +687,21 @@ async fn goal_achieve_operator_authorship_writes_atogoal_evidence_edges() {
             fresh_draft(&owner, "req-operator-achieve-prior".to_string()),
         )
         .await?;
+        let permit = goal_permit(&owner).await?;
 
         let outcome = pg
-            .achieve_goal_atomic(&AchieveGoalAtomicRequest {
-                owner,
-                prior_goal_id: prior.goal_id,
-                authorship: operator_authorship(),
-                request_id: IdempotencyKey::new("req-operator-achieve")
-                    .expect("valid idempotency key"),
-                context: goal_context(&registry, self_id),
-                evidence: vec![GoalEvidenceRef::new(evidence_id)],
-            })
+            .achieve_goal_atomic(
+                &AchieveGoalAtomicRequest {
+                    owner,
+                    prior_goal_id: prior.goal_id,
+                    authorship: operator_authorship(),
+                    request_id: IdempotencyKey::new("req-operator-achieve")
+                        .expect("valid idempotency key"),
+                    context: goal_context(&registry, self_id),
+                    evidence: vec![GoalEvidenceRef::new(evidence_id)],
+                },
+                &permit,
+            )
             .await?;
 
         let row: (String,) = sqlx::query_as(
@@ -715,28 +748,35 @@ async fn goal_achieve_operator_replay_conflicts_on_changed_evidence() {
         )
         .await?;
         let authorship = operator_authorship();
+        let permit = goal_permit(&owner).await?;
 
-        pg.achieve_goal_atomic(&AchieveGoalAtomicRequest {
-            owner,
-            prior_goal_id: prior.goal_id,
-            authorship: authorship.clone(),
-            request_id: IdempotencyKey::new("req-operator-achieve-replay")
-                .expect("valid idempotency key"),
-            context: goal_context(&registry, self_id),
-            evidence: vec![GoalEvidenceRef::new(evidence_a)],
-        })
-        .await?;
-
-        let err = pg
-            .achieve_goal_atomic(&AchieveGoalAtomicRequest {
+        pg.achieve_goal_atomic(
+            &AchieveGoalAtomicRequest {
                 owner,
                 prior_goal_id: prior.goal_id,
-                authorship,
+                authorship: authorship.clone(),
                 request_id: IdempotencyKey::new("req-operator-achieve-replay")
                     .expect("valid idempotency key"),
                 context: goal_context(&registry, self_id),
-                evidence: vec![GoalEvidenceRef::new(evidence_b)],
-            })
+                evidence: vec![GoalEvidenceRef::new(evidence_a)],
+            },
+            &permit,
+        )
+        .await?;
+
+        let err = pg
+            .achieve_goal_atomic(
+                &AchieveGoalAtomicRequest {
+                    owner,
+                    prior_goal_id: prior.goal_id,
+                    authorship,
+                    request_id: IdempotencyKey::new("req-operator-achieve-replay")
+                        .expect("valid idempotency key"),
+                    context: goal_context(&registry, self_id),
+                    evidence: vec![GoalEvidenceRef::new(evidence_b)],
+                },
+                &permit,
+            )
             .await
             .expect_err("same operator achieve request with changed evidence conflicts");
         assert!(
@@ -891,17 +931,21 @@ async fn goal_transition_rejects_operator_authorship_without_evidence() {
             fresh_draft(&owner, "req-operator-transition-prior".to_string()),
         )
         .await?;
+        let permit = goal_permit(&owner).await?;
 
         let err = pg
-            .transition_goal_atomic(&TransitionGoalAtomicRequest {
-                owner,
-                prior_goal_id: prior.goal_id,
-                next_state: GoalState::Paused,
-                authorship: operator_authorship(),
-                request_id: IdempotencyKey::new("req-operator-transition")
-                    .expect("valid idempotency key"),
-                context: goal_context(&registry, self_id),
-            })
+            .transition_goal_atomic(
+                &TransitionGoalAtomicRequest {
+                    owner,
+                    prior_goal_id: prior.goal_id,
+                    next_state: GoalState::Paused,
+                    authorship: operator_authorship(),
+                    request_id: IdempotencyKey::new("req-operator-transition")
+                        .expect("valid idempotency key"),
+                    context: goal_context(&registry, self_id),
+                },
+                &permit,
+            )
             .await
             .expect_err("operator transition has no evidence carrier");
         assert!(
@@ -1380,18 +1424,22 @@ async fn goal_modify_atom_writes_replacement() {
             "Modified goal text",
             br#"{"changed":true}"#,
         );
+        let permit = goal_permit(&owner).await?;
 
         let outcome = pg
-            .modify_goal_atomic(&ModifyGoalAtomicRequest {
-                owner,
-                prior_goal_id: prior.goal_id,
-                replacement: replacement.clone(),
-                authorship: GoalAuthorship::User,
-                request_id: IdempotencyKey::new("req-modify").expect("valid idempotency key"),
-                context: goal_context(&registry, self_id),
-                evidence: Some(evidence.clone()),
-                wake: None,
-            })
+            .modify_goal_atomic(
+                &ModifyGoalAtomicRequest {
+                    owner,
+                    prior_goal_id: prior.goal_id,
+                    replacement: replacement.clone(),
+                    authorship: GoalAuthorship::User,
+                    request_id: IdempotencyKey::new("req-modify").expect("valid idempotency key"),
+                    context: goal_context(&registry, self_id),
+                    evidence: Some(evidence.clone()),
+                    wake: None,
+                },
+                &permit,
+            )
             .await?;
         assert!(!outcome.idempotent_replay);
         assert_ne!(outcome.goal_id, prior.goal_id);
@@ -1410,16 +1458,19 @@ async fn goal_modify_atom_writes_replacement() {
         assert_eq!(row.4, replacement.payload);
 
         let replay = pg
-            .modify_goal_atomic(&ModifyGoalAtomicRequest {
-                owner,
-                prior_goal_id: prior.goal_id,
-                replacement,
-                authorship: GoalAuthorship::User,
-                request_id: IdempotencyKey::new("req-modify").expect("valid idempotency key"),
-                context: goal_context(&registry, self_id),
-                evidence: Some(evidence),
-                wake: None,
-            })
+            .modify_goal_atomic(
+                &ModifyGoalAtomicRequest {
+                    owner,
+                    prior_goal_id: prior.goal_id,
+                    replacement,
+                    authorship: GoalAuthorship::User,
+                    request_id: IdempotencyKey::new("req-modify").expect("valid idempotency key"),
+                    context: goal_context(&registry, self_id),
+                    evidence: Some(evidence),
+                    wake: None,
+                },
+                &permit,
+            )
             .await?;
         assert!(replay.idempotent_replay);
         assert_eq!(replay.goal_id, outcome.goal_id);
@@ -1458,23 +1509,27 @@ async fn goal_modify_operator_authorship_writes_atogoal_evidence_edges() {
             fresh_draft(&owner, "req-operator-modify-prior".to_string()),
         )
         .await?;
+        let permit = goal_permit(&owner).await?;
 
         let outcome = pg
-            .modify_goal_atomic(&ModifyGoalAtomicRequest {
-                owner,
-                prior_goal_id: prior.goal_id,
-                replacement: replacement_payload(
-                    "Operator modified",
-                    "Operator modified text",
-                    br#"{"operator":true}"#,
-                ),
-                authorship: operator_authorship(),
-                request_id: IdempotencyKey::new("req-operator-modify")
-                    .expect("valid idempotency key"),
-                context: goal_context(&registry, self_id),
-                evidence: Some(vec![GoalEvidenceRef::new(evidence_id)]),
-                wake: None,
-            })
+            .modify_goal_atomic(
+                &ModifyGoalAtomicRequest {
+                    owner,
+                    prior_goal_id: prior.goal_id,
+                    replacement: replacement_payload(
+                        "Operator modified",
+                        "Operator modified text",
+                        br#"{"operator":true}"#,
+                    ),
+                    authorship: operator_authorship(),
+                    request_id: IdempotencyKey::new("req-operator-modify")
+                        .expect("valid idempotency key"),
+                    context: goal_context(&registry, self_id),
+                    evidence: Some(vec![GoalEvidenceRef::new(evidence_id)]),
+                    wake: None,
+                },
+                &permit,
+            )
             .await?;
 
         let row: (String,) = sqlx::query_as(
@@ -1526,32 +1581,39 @@ async fn goal_modify_operator_replay_conflicts_on_changed_evidence() {
             "Operator modified replay text",
             br#"{"operator":true}"#,
         );
+        let permit = goal_permit(&owner).await?;
 
-        pg.modify_goal_atomic(&ModifyGoalAtomicRequest {
-            owner,
-            prior_goal_id: prior.goal_id,
-            replacement: replacement.clone(),
-            authorship: authorship.clone(),
-            request_id: IdempotencyKey::new("req-operator-modify-replay")
-                .expect("valid idempotency key"),
-            context: goal_context(&registry, self_id),
-            evidence: Some(vec![GoalEvidenceRef::new(evidence_a)]),
-            wake: None,
-        })
-        .await?;
-
-        let err = pg
-            .modify_goal_atomic(&ModifyGoalAtomicRequest {
+        pg.modify_goal_atomic(
+            &ModifyGoalAtomicRequest {
                 owner,
                 prior_goal_id: prior.goal_id,
-                replacement,
-                authorship,
+                replacement: replacement.clone(),
+                authorship: authorship.clone(),
                 request_id: IdempotencyKey::new("req-operator-modify-replay")
                     .expect("valid idempotency key"),
                 context: goal_context(&registry, self_id),
-                evidence: Some(vec![GoalEvidenceRef::new(evidence_b)]),
+                evidence: Some(vec![GoalEvidenceRef::new(evidence_a)]),
                 wake: None,
-            })
+            },
+            &permit,
+        )
+        .await?;
+
+        let err = pg
+            .modify_goal_atomic(
+                &ModifyGoalAtomicRequest {
+                    owner,
+                    prior_goal_id: prior.goal_id,
+                    replacement,
+                    authorship,
+                    request_id: IdempotencyKey::new("req-operator-modify-replay")
+                        .expect("valid idempotency key"),
+                    context: goal_context(&registry, self_id),
+                    evidence: Some(vec![GoalEvidenceRef::new(evidence_b)]),
+                    wake: None,
+                },
+                &permit,
+            )
             .await
             .expect_err("same operator modify request with changed evidence conflicts");
         assert!(

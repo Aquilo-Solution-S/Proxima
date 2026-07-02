@@ -17,7 +17,7 @@ use proxima_core::mcp::core_tools::goal::{
 };
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
-    AuthPath, AuthzContext, CORE_DEPENDS_ON_RELATION, EntityKind, FlavorRegistry,
+    AccessKind, AuthPath, AuthzContext, CORE_DEPENDS_ON_RELATION, EntityKind, FlavorRegistry,
     FlavorRegistryFrozen, GoalId, GroupId, McpTool, McpToolError, MemoryId, MemoryOperatorKind,
     Owner, OwnerRef, OwnerRefKind, Relation, Role, UserId,
 };
@@ -495,8 +495,18 @@ impl ToolHarness {
         let OwnerRef::Personal(user) = viewer else {
             unreachable!("viewer is a user");
         };
+        let seed_authz = AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(self.owner, Role::admin())],
+            AuthPath::HostBearer,
+        );
+        let seed_permit = self
+            .engine
+            .authorize_owner_write(&seed_authz, &self.owner, AccessKind::Goal)
+            .await
+            .expect("seed membership write permit");
         self.pg
-            .add_group_member(*group, user, Relation::Viewer, Uuid::now_v7())
+            .add_group_member(&seed_permit, *group, user, Relation::Viewer, Uuid::now_v7())
             .await
             .expect("seed viewer membership");
         AuthzContext::for_subject_with_role(
@@ -512,11 +522,11 @@ impl ToolHarness {
 
     fn owner_admin_authz(&self) -> ResolvedAuthz {
         match self.owner {
-            OwnerRef::Personal(subject) => AuthzContext::for_subject(subject, AuthPath::System),
+            OwnerRef::Personal(subject) => AuthzContext::for_subject(subject, AuthPath::HostBearer),
             OwnerRef::Group(_) => AuthzContext::for_subject_with_role(
                 UserId::new(Uuid::now_v7()),
                 [(self.owner, Role::admin())],
-                AuthPath::System,
+                AuthPath::HostBearer,
             ),
             OwnerRef::World => AuthzContext::denied_for_owner(&self.owner),
         }

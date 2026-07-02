@@ -51,7 +51,7 @@ async fn receiptless_fact_ingest_creates_fresh_queryable_facts() {
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage_ports(storage);
         let authz =
-            proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
+            proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::HostBearer);
 
         let command = receiptless_command();
         let first = engine.fact_ingest(&authz, command.clone()).await?;

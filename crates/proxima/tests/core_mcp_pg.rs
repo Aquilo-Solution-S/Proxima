@@ -198,7 +198,17 @@ async fn seed_group_membership(
     let OwnerRef::Personal(user) = subject else {
         panic!("group membership can only seed user members");
     };
-    pg.add_group_member(*group, *user, relation, Uuid::now_v7())
+    let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+    let authz = AuthzContext::for_subject_with_role(
+        UserId::new(Uuid::now_v7()),
+        [(*space_owner, Role::admin())],
+        AuthPath::HostBearer,
+    );
+    let permit = engine
+        .authorize_owner_write(&authz, space_owner, proxima_core::AccessKind::Goal)
+        .await
+        .expect("seed group membership permit");
+    pg.add_group_member(&permit, *group, *user, relation, Uuid::now_v7())
         .await
         .expect("seed group membership");
 }

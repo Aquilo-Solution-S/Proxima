@@ -1,6 +1,6 @@
 //! End-to-end `FactIngest` against a transient PG database.
 
-use crate::common::{create_db, db_url, drop_db};
+use crate::common::{create_db, db_url, drop_db, owner_write_permit};
 use std::sync::Arc;
 
 use proxima_core::engine::Engine;
@@ -105,7 +105,10 @@ async fn fact_ingest_writes_fact_and_change_event() {
 
         let outcome = engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 draft.clone(),
             )
             .await?;
@@ -113,7 +116,10 @@ async fn fact_ingest_writes_fact_and_change_event() {
 
         let replay = engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 draft.clone(),
             )
             .await?;
@@ -125,7 +131,10 @@ async fn fact_ingest_writes_fact_and_change_event() {
         bad.schema_id = SchemaId::new("test/unregistered".into());
         let err = engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 bad,
             )
             .await
@@ -172,17 +181,24 @@ async fn list_change_events_for_replay_respects_bounds_and_owner() {
 
         let first = engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 fresh_draft(owner),
             )
             .await?;
         let second = engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 fresh_draft(owner),
             )
             .await?;
-        pg.ingest_fact_atomic(&other_owner, &fresh_draft(other_owner), None)
+        let other_permit = owner_write_permit(&other_owner, proxima_core::AccessKind::Fact).await?;
+        pg.ingest_fact_atomic(&other_permit, &fresh_draft(other_owner), None)
             .await?;
 
         let rows = pg
@@ -235,7 +251,7 @@ async fn list_change_events_after_scopes_by_principal() {
             .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(
                     &stored_owner,
-                    proxima_core::AuthPath::System,
+                    proxima_core::AuthPath::HostBearer,
                 ),
                 fresh_draft(stored_owner),
             )
@@ -278,14 +294,14 @@ async fn list_change_events_after_filters_by_read_owners() {
         let group_authz = proxima_core::AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
             [(g1, Role::admin())],
-            proxima_core::AuthPath::System,
+            proxima_core::AuthPath::HostBearer,
         )
         .narrowed_to_owner(g1)
         .expect("admin role narrows to target owner");
         let group_event = engine.fact_ingest(&group_authz, fresh_draft(g1)).await?;
         let p_event = engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&p, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(&p, proxima_core::AuthPath::HostBearer),
                 fresh_draft(p),
             )
             .await?;
@@ -329,7 +345,7 @@ async fn list_change_events_after_preserves_ascending_seq_order() {
 
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let authz =
-            proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
+            proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::HostBearer);
 
         let mut expected_seqs = Vec::with_capacity(ASCENDING_ORDER_EVENT_COUNT);
         for _ in 0..ASCENDING_ORDER_EVENT_COUNT {

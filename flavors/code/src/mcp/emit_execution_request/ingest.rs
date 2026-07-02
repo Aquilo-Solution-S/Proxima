@@ -1,3 +1,4 @@
+use proxima_core::access::AccessKind;
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
 use proxima_core::{FactPayload, SourceBatchId, ToolCtx, ToolError};
 use proxima_storage_pg::sidecars::PgMemorySidecar;
@@ -26,8 +27,8 @@ where
     P: FactPayload + PgMemorySidecar + Clone,
 {
     let embedding_client = ctx.engine().and_then(|engine| engine.embed_client());
-    let owner = ctx.owner();
-    let ingest_ctx = FactIngestContext::new(&owner, source_id, SourceBatchId::new(Uuid::now_v7()))
+    let permit = ctx.owner_write_permit(AccessKind::Fact).await?;
+    let ingest_ctx = FactIngestContext::new(&permit, source_id, SourceBatchId::new(Uuid::now_v7()))
         .embedding_model_id(embedding_client.as_ref().map(|client| client.model_id()));
     let citation = CitationSpec::v1_for_payload(cited_object_schema, payload, mapping_schema);
     ingest_fact_with_sidecar(tx, &ingest_ctx, payload, citation)

@@ -1,7 +1,10 @@
-use crate::access::{EntityId, Relation, world};
-use crate::authz::{AuthPath, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome};
+use crate::access::{AccessKind, EntityId, Relation, world};
+use crate::authz::{
+    AuthPath, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome, SystemAuthority,
+};
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
+use crate::storage_ports::OwnerWritePermit;
 use crate::{Owner, OwnerRef};
 
 use super::Engine;
@@ -15,6 +18,7 @@ pub struct MemoryPermit {
     owner: Owner,
     requested: Owner,
     relation: Relation,
+    owner_write: Option<OwnerWritePermit>,
 }
 
 #[derive(Debug, Clone)]
@@ -31,25 +35,31 @@ pub enum PermitMode {
 /// only this module's authorization gates can mint it.
 #[derive(Debug)]
 pub struct WritePermit {
-    owner: OwnerRef,
     relation: Relation,
+    owner_write: OwnerWritePermit,
 }
 
 impl WritePermit {
     #[must_use]
     pub fn owner(&self) -> &OwnerRef {
-        &self.owner
+        self.owner_write.owner()
     }
 
     #[must_use]
     pub fn relation(&self) -> Relation {
         self.relation
     }
+
+    #[must_use]
+    pub const fn owner_write_permit(&self) -> &OwnerWritePermit {
+        &self.owner_write
+    }
 }
 
 impl From<WritePermit> for MemoryPermit {
     fn from(permit: WritePermit) -> Self {
-        Self::owner_scoped(permit.owner, permit.owner, permit.relation)
+        let owner = *permit.owner_write.owner();
+        Self::owner_scoped_with_write(permit.owner_write, owner, permit.relation)
     }
 }
 
@@ -79,6 +89,22 @@ impl MemoryPermit {
             owner,
             requested,
             relation,
+            owner_write: None,
+        }
+    }
+
+    fn owner_scoped_with_write(
+        owner_write: OwnerWritePermit,
+        requested: Owner,
+        relation: Relation,
+    ) -> Self {
+        let owner = *owner_write.owner();
+        Self {
+            mode: PermitMode::OwnerScoped,
+            owner,
+            requested,
+            relation,
+            owner_write: Some(owner_write),
         }
     }
 
@@ -99,9 +125,49 @@ impl MemoryPermit {
     pub fn relation(&self) -> Relation {
         self.relation
     }
+
+    #[must_use]
+    pub fn owner_write_permit(&self) -> Option<&OwnerWritePermit> {
+        self.owner_write.as_ref()
+    }
 }
 
 impl Engine {
+    /// Storage-tier owner-write gate. `System` contexts require the
+    /// boot-time witness; membership-backed and dev-token contexts do not.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when `authz` cannot write `owner`, when `owner` is
+    /// World, or when `authz` uses `System` without a runtime witness.
+    pub async fn authorize_owner_write(
+        &self,
+        authz: &AuthzContext,
+        owner: &OwnerRef,
+        kind: AccessKind,
+    ) -> Result<OwnerWritePermit, ProtocolError> {
+        self.authorize_owner_write_inner(authz, owner, kind, None)
+            .await
+    }
+
+    /// Storage-tier owner-write gate for host-held System authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when `authz` cannot write `owner` or when `owner`
+    /// is World.
+    pub async fn authorize_owner_write_with_system_authority(
+        &self,
+        authz: &AuthzContext,
+        owner: &OwnerRef,
+        kind: AccessKind,
+        authority: &SystemAuthority,
+    ) -> Result<OwnerWritePermit, ProtocolError> {
+        let _ = authority;
+        self.authorize_owner_write_inner(authz, owner, kind, Some(authority))
+            .await
+    }
+
     /// Targeted write/config gate over the resolved access sets.
     pub(in crate::engine) async fn authorize_write(
         &self,
@@ -109,6 +175,37 @@ impl Engine {
         owner: &OwnerRef,
         required: Relation,
     ) -> Result<WritePermit, ProtocolError> {
+        let kind = access_kind_for_write_relation(required)?;
+        let owner_write = self.authorize_owner_write(authz, owner, kind).await?;
+        Ok(WritePermit {
+            relation: required,
+            owner_write,
+        })
+    }
+
+    async fn authorize_owner_write_inner(
+        &self,
+        authz: &AuthzContext,
+        owner: &OwnerRef,
+        kind: AccessKind,
+        system_authority: Option<&SystemAuthority>,
+    ) -> Result<OwnerWritePermit, ProtocolError> {
+        let required = write_relation_for_access_kind(kind);
+        if authz.auth_path() == AuthPath::System && system_authority.is_none() {
+            let input = AuthzInput {
+                authz,
+                requested: owner,
+                resolved: owner,
+                relation: required,
+                operation: AuthzOperation::Relation { relation: required },
+            };
+            self.registry
+                .run_authorization_observers(&input, AuthzOutcome::DeniedGrant);
+            return Err(ProtocolError::forbidden(
+                "System write authority requires a runtime SystemAuthority witness",
+            ));
+        }
+
         if authz.auth_path() == AuthPath::Denied {
             let input = AuthzInput {
                 authz,
@@ -171,10 +268,7 @@ impl Engine {
 
         self.registry
             .run_authorization_observers(&input, AuthzOutcome::Allowed);
-        Ok(WritePermit {
-            owner: resolved,
-            relation: required,
-        })
+        Ok(OwnerWritePermit::new(resolved, kind))
     }
 
     /// Read gate returning the resolved owner set visible to this context.
@@ -339,11 +433,31 @@ fn storage_error(context: &str, err: &StorageError) -> ProtocolError {
     ProtocolError::internal(format!("{context}: {err}"))
 }
 
+fn access_kind_for_write_relation(relation: Relation) -> Result<AccessKind, ProtocolError> {
+    match relation {
+        Relation::Ingest => Ok(AccessKind::Fact),
+        Relation::Editor => Ok(AccessKind::Perspective),
+        Relation::Admin => Ok(AccessKind::Goal),
+        Relation::Viewer => Err(ProtocolError::invalid_argument(
+            "relation",
+            "Viewer is not a write relation",
+        )),
+    }
+}
+
+const fn write_relation_for_access_kind(kind: AccessKind) -> Relation {
+    match kind {
+        AccessKind::Fact => Relation::Ingest,
+        AccessKind::Abstraction | AccessKind::Perspective => Relation::Editor,
+        AccessKind::Goal => Relation::Admin,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use crate::access::{AccessScope, EntityId, Relation, world};
+    use crate::access::{AccessKind, AccessScope, EntityId, Relation, world};
     use crate::authz::{
         AuthPath, AuthorizationHook, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome,
         AuthzVeto, OwnerResolver, ToolScope,
@@ -519,6 +633,64 @@ mod tests {
 
         assert_eq!(permit.owner(), &p);
         assert_eq!(permit.relation(), Relation::Editor);
+    }
+
+    #[tokio::test]
+    async fn authorize_owner_write_denies_system_without_authority() {
+        let engine = engine();
+        let owner = owner();
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+
+        let err = engine
+            .authorize_owner_write(&authz, &owner, AccessKind::Fact)
+            .await
+            .expect_err("plain System auth must not mint storage write permits");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
+        assert_eq!(
+            err.message,
+            "System write authority requires a runtime SystemAuthority witness"
+        );
+    }
+
+    #[tokio::test]
+    async fn authorize_owner_write_allows_system_with_authority() {
+        let (engine, authority) = engine().into_system_authority();
+        let owner = owner();
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+
+        let permit = engine
+            .authorize_owner_write_with_system_authority(
+                &authz,
+                &owner,
+                AccessKind::Perspective,
+                &authority,
+            )
+            .await
+            .expect("host-held SystemAuthority should admit System writes");
+
+        assert_eq!(permit.owner(), &owner);
+        assert_eq!(permit.access_kind(), AccessKind::Perspective);
+    }
+
+    #[tokio::test]
+    async fn authorize_owner_write_denies_world() {
+        let p = owner();
+        let authz = AuthzContext::scoped_access(
+            p,
+            [p, world()],
+            ToolScope::All,
+            AccessScope::Unrestricted,
+            AuthPath::HostBearer,
+        );
+
+        let err = engine()
+            .authorize_owner_write(&authz, &world(), AccessKind::Fact)
+            .await
+            .expect_err("World must never receive an owner write permit");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
+        assert_eq!(err.message, "World is read-only and never a write owner");
     }
 
     #[tokio::test]

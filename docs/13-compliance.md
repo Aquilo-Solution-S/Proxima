@@ -50,7 +50,7 @@ Refusal is a valid compliance result, not a substrate failure.
 | Field | Contract |
 |---|---|
 | scope | one `OwnerRef` |
-| active state | present owner hold row; set/clear require compliance-erase operator authority (`ComplianceAdminPort` approval or `AuthPath::System`); get requires owner `Admin` |
+| active state | present owner hold row; set/clear require compliance-erase operator approval plus owner `Admin` write authority; get requires owner `Admin` |
 | gated paths | substantive owner-memory physical destruction: current `erase_*` compliance family (`delete_owner`, `delete_source_scope`) |
 | refusal | typed `ComplianceEraseRefusal::LegalHoldActive`; no destructive statement runs |
 | non-effects | no change to abandonment law, drop proof, reads, ordinary writes, embedding work-queue consumption, suppression checks, export, or audit retention |

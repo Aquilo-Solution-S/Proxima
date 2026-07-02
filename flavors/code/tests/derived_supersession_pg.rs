@@ -80,7 +80,7 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
         authorship_owner_memory_id: Some(MemoryId::new(goal_activated_memory_id)),
     }];
     let old_payload = plan_payload(repo_id, goal_activated_memory_id, plan_key, "old plan");
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let old_outcome = engine
         .author_derived_authorized(
             &authz,

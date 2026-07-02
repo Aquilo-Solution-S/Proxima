@@ -1488,7 +1488,7 @@ async fn call_tool_prefixed(
     (descriptor.call)(
         McpToolCtx {
             owner: *owner,
-            authz: AuthzContext::single_owner(owner, AuthPath::System),
+            authz: AuthzContext::single_owner(owner, AuthPath::HostBearer),
             handles: None,
             mode: OutputMode::PrefixedIds,
             registry: registry.clone(),
@@ -1515,7 +1515,7 @@ async fn read_memory_prefixed(
     let output = get_memory(
         McpToolCtx {
             owner: *owner,
-            authz: AuthzContext::single_owner(owner, AuthPath::System),
+            authz: AuthzContext::single_owner(owner, AuthPath::HostBearer),
             handles: None,
             mode: OutputMode::PrefixedIds,
             registry: registry.clone(),
@@ -1550,7 +1550,7 @@ async fn call_tool_with_engine(
     call_tool_as(
         pg,
         owner,
-        AuthzContext::single_owner(owner, AuthPath::System),
+        AuthzContext::single_owner(owner, AuthPath::HostBearer),
         handles,
         registry,
         author,

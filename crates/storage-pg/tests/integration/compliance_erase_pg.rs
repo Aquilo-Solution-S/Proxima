@@ -2,21 +2,24 @@
 
 use std::sync::Arc;
 
-use crate::common::{create_db, db_url, drop_db, seed_memory, seed_memory_edge};
+use crate::common::{
+    create_db, db_url, drop_db, owner_write_permit, seed_memory, seed_memory_edge,
+};
 use proxima_core::access::{AccessError, Role};
 use proxima_core::change_event::EdgeTargetProjection;
 use proxima_core::engine::Engine;
 use proxima_core::storage_ports::{
     ComplianceAdminPort, EdgeReadPort, FactIngestPort, OwnerDropProofPort,
-    OwnerMembershipAdminPort, StoragePorts,
+    OwnerMembershipAdminPort, OwnerWritePermit, StoragePorts,
 };
 use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
 use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, QueryRequest};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
-    AuthPath, AuthzContext, ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal,
-    ComplianceEraseTarget, EdgeId, EntityKind, GroupId, OwnerRef, Relation, RelationClass,
-    SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+    AccessKind, AuthPath, AuthzContext, ComplianceEraseCounts, ComplianceEraseOutcome,
+    ComplianceEraseRefusal, ComplianceEraseTarget, EdgeId, EntityKind, FactIngestOutcome, GroupId,
+    OwnerRef, Relation, RelationClass, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    StorageError, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -128,7 +131,7 @@ async fn audit_count(pg: &PgStorage) -> Result<i64, sqlx::Error> {
 
 fn admin_authz_for(owner: OwnerRef) -> AuthzContext {
     match owner {
-        OwnerRef::Personal(_) => AuthzContext::single_owner(&owner, AuthPath::System),
+        OwnerRef::Personal(user_id) => AuthzContext::for_subject(user_id, AuthPath::HostBearer),
         OwnerRef::Group(_) => AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
             [(owner, Role::admin())],
@@ -136,6 +139,35 @@ fn admin_authz_for(owner: OwnerRef) -> AuthzContext {
         ),
         OwnerRef::World => AuthzContext::denied(),
     }
+}
+
+async fn fact_permit(owner: &OwnerRef) -> Result<OwnerWritePermit, StorageError> {
+    owner_write_permit(owner, AccessKind::Fact)
+        .await
+        .map_err(|err| StorageError::Internal(err.to_string()))
+}
+
+async fn seed_fact(
+    pg: &PgStorage,
+    owner: &OwnerRef,
+    draft: &FactWriteCommand,
+) -> Result<FactIngestOutcome, StorageError> {
+    let permit = fact_permit(owner).await?;
+    pg.ingest_fact_atomic(&permit, draft, None).await
+}
+
+async fn seed_group_member(
+    pg: &PgStorage,
+    group: GroupId,
+    member: UserId,
+    relation: Relation,
+) -> Result<(), StorageError> {
+    let owner = OwnerRef::Group(group);
+    let permit = owner_write_permit(&owner, AccessKind::Goal)
+        .await
+        .map_err(|err| StorageError::Internal(err.to_string()))?;
+    pg.add_group_member(&permit, group, member, relation, Uuid::now_v7())
+        .await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,8 +291,7 @@ async fn group_owner_with_member_is_refused_and_audited() -> Result<(), Box<dyn 
         let engine = compliance_engine(&pg);
         let group = GroupId::new(Uuid::now_v7());
         let member = UserId::new(Uuid::now_v7());
-        pg.add_group_member(group, member, Relation::Admin, Uuid::now_v7())
-            .await?;
+        seed_group_member(&pg, group, member, Relation::Admin).await?;
         let authz = AuthzContext::for_subject(member, AuthPath::HostBearer);
 
         let outcome = engine.erase_abandoned_group_owner(&authz, group).await?;
@@ -293,7 +324,7 @@ async fn abandoned_group_owner_erases_owned_fact_and_suppresses_reingest()
         let owner = OwnerRef::Group(group);
         let authz = AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::HostBearer);
         let draft = receipt_draft("test/source", Uuid::now_v7(), b"erase-me");
-        let first = pg.ingest_fact_atomic(&owner, &draft, None).await?;
+        let first = seed_fact(&pg, &owner, &draft).await?;
 
         let outcome = engine.erase_abandoned_group_owner(&authz, group).await?;
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
@@ -312,7 +343,7 @@ async fn abandoned_group_owner_erases_owned_fact_and_suppresses_reingest()
         assert_eq!(remaining, 0);
 
         let suppressed = pg
-            .ingest_fact_atomic(&owner, &draft, None)
+            .ingest_fact_atomic(&fact_permit(&owner).await?, &draft, None)
             .await
             .expect_err("suppression must block reingest before receipt replay");
         assert!(matches!(
@@ -487,6 +518,7 @@ async fn owner_admin_can_read_but_not_set_or_clear_legal_hold()
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
         let engine = engine_without_compliance_admin(&pg);
+        let operator_engine = compliance_engine(&pg);
         let group = GroupId::new(Uuid::now_v7());
         let owner = OwnerRef::Group(group);
         let owner_admin = AuthzContext::for_subject_with_role(
@@ -494,7 +526,7 @@ async fn owner_admin_can_read_but_not_set_or_clear_legal_hold()
             [(owner, Role::admin())],
             AuthPath::HostBearer,
         );
-        let operator = AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::System);
+        let operator = admin_authz_for(owner);
 
         assert!(!engine.get_legal_hold(&owner_admin, &owner).await?);
         let set_err = engine
@@ -507,7 +539,7 @@ async fn owner_admin_can_read_but_not_set_or_clear_legal_hold()
             "denied set must leave hold inactive"
         );
 
-        engine.set_legal_hold(&operator, &owner).await?;
+        operator_engine.set_legal_hold(&operator, &owner).await?;
         assert!(engine.get_legal_hold(&owner_admin, &owner).await?);
         let clear_err = engine
             .clear_legal_hold(&owner_admin, &owner)
@@ -519,7 +551,7 @@ async fn owner_admin_can_read_but_not_set_or_clear_legal_hold()
             "denied clear must leave hold active"
         );
 
-        assert!(engine.clear_legal_hold(&operator, &owner).await?);
+        assert!(operator_engine.clear_legal_hold(&operator, &owner).await?);
         assert!(!engine.get_legal_hold(&owner_admin, &owner).await?);
         Ok::<(), Box<dyn std::error::Error>>(())
     }
@@ -541,16 +573,16 @@ async fn legal_hold_blocks_destructive_erase_verbs_without_deleting_rows()
 
         let group = GroupId::new(Uuid::now_v7());
         let group_owner = OwnerRef::Group(group);
-        pg.ingest_fact_atomic(
+        seed_fact(
+            &pg,
             &group_owner,
             &receipt_draft("hold/group-a", Uuid::now_v7(), b"held-group-a"),
-            None,
         )
         .await?;
-        pg.ingest_fact_atomic(
+        seed_fact(
+            &pg,
             &group_owner,
             &receipt_draft("hold/group-b", Uuid::now_v7(), b"held-group-b"),
-            None,
         )
         .await?;
         let group_authz = admin_authz_for(group_owner);
@@ -578,16 +610,16 @@ async fn legal_hold_blocks_destructive_erase_verbs_without_deleting_rows()
 
         let user = UserId::new(Uuid::now_v7());
         let personal_owner = OwnerRef::Personal(user);
-        pg.ingest_fact_atomic(
+        seed_fact(
+            &pg,
             &personal_owner,
             &receipt_draft("hold/personal-a", Uuid::now_v7(), b"held-personal-a"),
-            None,
         )
         .await?;
-        pg.ingest_fact_atomic(
+        seed_fact(
+            &pg,
             &personal_owner,
             &receipt_draft("hold/personal-b", Uuid::now_v7(), b"held-personal-b"),
-            None,
         )
         .await?;
         let personal_authz = admin_authz_for(personal_owner);
@@ -641,7 +673,7 @@ async fn legal_hold_does_not_block_reads_or_ordinary_writes()
         let engine = compliance_engine(&pg);
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         engine.set_legal_hold(&authz, &owner).await?;
 
         let written = engine
@@ -673,13 +705,12 @@ async fn clearing_legal_hold_restores_prior_erase_behavior()
         let engine = compliance_engine(&pg);
         let group = GroupId::new(Uuid::now_v7());
         let owner = OwnerRef::Group(group);
-        let written = pg
-            .ingest_fact_atomic(
-                &owner,
-                &receipt_draft("hold/clear", Uuid::now_v7(), b"clear-then-erase"),
-                None,
-            )
-            .await?;
+        let written = seed_fact(
+            &pg,
+            &owner,
+            &receipt_draft("hold/clear", Uuid::now_v7(), b"clear-then-erase"),
+        )
+        .await?;
         let authz = admin_authz_for(owner);
         engine.set_legal_hold(&authz, &owner).await?;
 
@@ -728,10 +759,10 @@ async fn legal_hold_on_one_owner_does_not_affect_another_owner_erase()
         let engine = compliance_engine(&pg);
         let held_group = GroupId::new(Uuid::now_v7());
         let held_owner = OwnerRef::Group(held_group);
-        pg.ingest_fact_atomic(
+        seed_fact(
+            &pg,
             &held_owner,
             &receipt_draft("hold/owner-a", Uuid::now_v7(), b"held-owner-a"),
-            None,
         )
         .await?;
         let held_counts = owner_content_counts(&pg, held_owner).await?;
@@ -741,13 +772,12 @@ async fn legal_hold_on_one_owner_does_not_affect_another_owner_erase()
 
         let free_group = GroupId::new(Uuid::now_v7());
         let free_owner = OwnerRef::Group(free_group);
-        let free = pg
-            .ingest_fact_atomic(
-                &free_owner,
-                &receipt_draft("hold/owner-b", Uuid::now_v7(), b"free-owner-b"),
-                None,
-            )
-            .await?;
+        let free = seed_fact(
+            &pg,
+            &free_owner,
+            &receipt_draft("hold/owner-b", Uuid::now_v7(), b"free-owner-b"),
+        )
+        .await?;
         let outcome = engine
             .erase_abandoned_group_owner(
                 &AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::HostBearer),
@@ -784,8 +814,8 @@ async fn group_source_scope_erases_only_requested_source_and_suppresses_new_batc
         let owner = OwnerRef::Group(group);
         let erased_draft = receipt_draft("test/source-a", Uuid::now_v7(), b"erase-source-a");
         let kept_draft = receipt_draft("test/source-b", Uuid::now_v7(), b"keep-source-b");
-        let erased = pg.ingest_fact_atomic(&owner, &erased_draft, None).await?;
-        let kept = pg.ingest_fact_atomic(&owner, &kept_draft, None).await?;
+        let erased = seed_fact(&pg, &owner, &erased_draft).await?;
+        let kept = seed_fact(&pg, &owner, &kept_draft).await?;
         let surviving_edge = seed_memory_edge(
             &pg,
             &owner,
@@ -835,7 +865,7 @@ async fn group_source_scope_erases_only_requested_source_and_suppresses_new_batc
 
         let replay = receipt_draft("test/source-a", Uuid::now_v7(), b"new-source-a");
         let suppressed = pg
-            .ingest_fact_atomic(&owner, &replay, None)
+            .ingest_fact_atomic(&fact_permit(&owner).await?, &replay, None)
             .await
             .expect_err("owner/source suppression blocks new batches before dedup");
         assert!(matches!(
@@ -862,9 +892,9 @@ async fn seed_shared_fact_entity_fixture(
 ) -> Result<SharedFactEntityFixture, Box<dyn std::error::Error>> {
     let erased_draft = receipt_draft("test/shared-entity-a", Uuid::now_v7(), b"shared-v1");
     let kept_draft = receipt_draft("test/shared-entity-b", Uuid::now_v7(), b"shared-v2");
-    let erased = pg.ingest_fact_atomic(&owner, &erased_draft, None).await?;
+    let erased = seed_fact(pg, &owner, &erased_draft).await?;
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    let kept = pg.ingest_fact_atomic(&owner, &kept_draft, None).await?;
+    let kept = seed_fact(pg, &owner, &kept_draft).await?;
     let fact_entity_id = Uuid::now_v7();
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
     sqlx::query(
@@ -1005,8 +1035,8 @@ async fn personal_source_scope_with_verified_drop_erases_only_scope()
         let owner = OwnerRef::Personal(user);
         let erased_draft = receipt_draft("personal/source-a", Uuid::now_v7(), b"erase-personal-a");
         let kept_draft = receipt_draft("personal/source-b", Uuid::now_v7(), b"keep-personal-b");
-        let erased = pg.ingest_fact_atomic(&owner, &erased_draft, None).await?;
-        let kept = pg.ingest_fact_atomic(&owner, &kept_draft, None).await?;
+        let erased = seed_fact(&pg, &owner, &erased_draft).await?;
+        let kept = seed_fact(&pg, &owner, &kept_draft).await?;
 
         let outcome = engine
             .erase_dropped_personal_source_scope(

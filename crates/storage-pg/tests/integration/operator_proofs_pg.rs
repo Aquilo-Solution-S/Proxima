@@ -35,7 +35,7 @@ fn baseline_schema_contains_pr7_operator_proof_carriers() {
 
 use std::sync::Arc;
 
-use crate::common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit};
 use proxima_core::storage::DerivedEdgeSpec;
 use proxima_core::{
     AbstractionPayload, AgentDerivationV1, AuthPath, AuthzContext, CORE_DERIVED_FROM_RELATION,
@@ -289,13 +289,20 @@ async fn author_derived_rejects_extra_same_output_wrong_operator_authorship()
         };
         let sidecars = pg.sidecars().clone();
         let mut tx = pg.pool_for_tests().begin().await?;
-        let err = append_derived_with_edges_in_tx(&mut tx, &draft, &edges, move |tx, outcome| {
-            Box::pin(async move {
-                sidecars
-                    .insert_memory_sidecar(tx, outcome.memory_id, &sidecar_payload)
-                    .await
-            })
-        })
+        let permit = owner_write_permit(&owner, proxima_core::AccessKind::Abstraction).await?;
+        let err = append_derived_with_edges_in_tx(
+            &mut tx,
+            &permit,
+            &draft,
+            &edges,
+            move |tx, outcome| {
+                Box::pin(async move {
+                    sidecars
+                        .insert_memory_sidecar(tx, outcome.memory_id, &sidecar_payload)
+                        .await
+                })
+            },
+        )
         .await
         .expect_err("same-output wrong operator authorship must be rejected");
         tx.rollback().await?;
@@ -465,7 +472,7 @@ async fn engine_author_derived_rejects_operator_input_created_at_not_strictly_be
             .registry()
             .resolve_relation(CORE_DERIVED_FROM_RELATION)
             .expect("core derived-from relation registered");
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let output_memory_id = MemoryId::new(Uuid::now_v7());
         let edges = [proxima_core::AuthorDerivedEdgeInput {
             relation,
@@ -686,19 +693,23 @@ async fn author_test_abstraction_multi(
         client_version: "1".into(),
     });
     let sidecars = pg.sidecars().clone();
+    let permit = owner_write_permit(&draft.owner, proxima_core::AccessKind::Abstraction)
+        .await
+        .map_err(|err| StorageError::Internal(err.to_string()))?;
     let mut tx = pg
         .pool_for_tests()
         .begin()
         .await
         .map_err(|err| StorageError::Internal(format!("begin operator proof tx: {err}")))?;
-    let outcome = append_derived_with_edges_in_tx(&mut tx, &draft, &edges, move |tx, outcome| {
-        Box::pin(async move {
-            sidecars
-                .insert_memory_sidecar(tx, outcome.memory_id, &sidecar)
-                .await
+    let outcome =
+        append_derived_with_edges_in_tx(&mut tx, &permit, &draft, &edges, move |tx, outcome| {
+            Box::pin(async move {
+                sidecars
+                    .insert_memory_sidecar(tx, outcome.memory_id, &sidecar)
+                    .await
+            })
         })
-    })
-    .await?;
+        .await?;
     tx.commit()
         .await
         .map_err(|err| StorageError::Internal(format!("commit operator proof tx: {err}")))?;

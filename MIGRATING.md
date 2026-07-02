@@ -201,7 +201,7 @@ single-entry `OidcSubjectMap` instead.
 This shape is exercised end to end by
 `crates/auth-oidc/src/authenticator.rs::tests::single_owner_authenticates_one_subject_against_fixed_owner`.
 
-## 6. `proxima-storage-pg` raw write API narrowed (no consumer-visible change expected)
+## 6. `proxima-storage-pg` raw write API requires `OwnerWritePermit`
 
 These were never part of the supported Host API or Flavor SDK tiers (see
 [public-api.md](docs/reference/public-api.md#supported-tiers)), but if
@@ -209,16 +209,38 @@ something depended on them anyway:
 
 | Symbol | Was | Now |
 |---|---|---|
+| `verbs::fact_ingest::ingest_fact` / `ingest_fact_in_tx` / `ingest_fact_for_owner` | engine/authz/owner arguments | `&OwnerWritePermit` + payload + optional embedding model |
+| `verbs::derive_append::append_derived_with_edges_in_tx` | raw owner in `DerivedDraft` was enough | `&OwnerWritePermit` + `DerivedDraft` + operator edge proofs |
+| `verbs::edge_write::append_owner_checked_*` | raw `&Owner` authority | `&OwnerWritePermit` authority |
+| `verbs::close_batch::close_batch`, `verbs::persist_mcp_call::persist_mcp_call_atomic`, source cursor / retention / legal-hold write verbs | raw owner authority | `&OwnerWritePermit` authority |
 | `verbs::fact_embeddings::insert_embedding` | `pub` | `pub(crate)` — use the proof-gated `EmbeddingWritePort` |
 | `verbs::fact_embeddings::insert_memory_embedding` | `pub` | `pub(crate)` — use the proof-gated `EmbeddingWritePort` |
 | `verbs::fact_embeddings::insert_fact_embedding` / `upsert_fact_embedding` / `upsert_memory_embedding` / `insert_goal_embedding` | `pub` | deleted (zero remaining callers; use the proof-gated port) |
 | `verbs::fact_ingest::ingest_fact_command_in_tx` | `pub` | `pub(crate)` |
 | `verbs::fact_ingest::ingest_fact_with_derived_sidecar_in_tx` | `pub` | `pub(crate)` |
 
-`ingest_fact` and `ingest_fact_in_tx` (`crates/storage-pg/src/verbs/fact_ingest.rs`)
-are unchanged and still `pub` — they're the supported low-level entry
-points if you're writing storage-backend code, not flavor code. Flavor and
-host code should go through `Engine::fact_ingest` / the facade instead.
+Permit minting is an engine operation:
+
+```rust
+let permit = engine
+    .authorize_owner_write(&authz, &owner, proxima_core::AccessKind::Fact)
+    .await?;
+
+proxima_storage_pg::verbs::fact_ingest::ingest_fact_in_tx(
+    &mut tx,
+    &permit,
+    &payload,
+    None,
+    |tx, outcome| Box::pin(async move { /* sidecar write */ Ok(()) }),
+)
+.await?;
+```
+
+`AuthPath::System` no longer mints storage write permits by shape alone.
+Hosts that intentionally need System writes hold
+`BuiltProxima::system_authority()` / `RunningProxima::system_authority()`
+and call `Engine::authorize_owner_write_with_system_authority(...)`.
+Flavor tools and MCP-wire code do not receive this witness.
 
 ## 7. Flavor authors: raw SQL against `proxima_core.*` is guardrail-denied
 

@@ -1,6 +1,6 @@
 //! Auth-gated Fact ingest with typed inline citation sidecars.
 
-use crate::common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit};
 use proxima_core::CitationPort;
 use proxima_core::verbs::fact_ingest::{
     FactReceiptDraft, FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
@@ -293,35 +293,28 @@ async fn seed_membership(
 
 async fn ingest_plain_fact_for_attach(
     pg: &proxima_storage_pg::PgStorage,
-    engine: &Engine,
-    authz: &AuthzContext,
+    owner: &Owner,
 ) -> Result<proxima_core::FactIngestOutcome, Box<dyn std::error::Error>> {
     let fact = TestFact {
         note: "plain fact".to_string(),
     };
     let note = fact.note.clone();
+    let permit = owner_write_permit(owner, proxima_core::AccessKind::Fact).await?;
     let mut tx = pg.pool_for_tests().begin().await?;
-    let fact_outcome = ingest_fact_in_tx(
-        &mut tx,
-        engine,
-        authz,
-        Relation::Ingest,
-        &fact,
-        move |tx, outcome| {
-            Box::pin(async move {
-                sqlx::query(
-                    "INSERT INTO public.inline_cited_fact_sidecar (memory_id, note)
+    let fact_outcome = ingest_fact_in_tx(&mut tx, &permit, &fact, None, move |tx, outcome| {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO public.inline_cited_fact_sidecar (memory_id, note)
                          VALUES ($1, $2)",
-                )
-                .bind(outcome.memory_id.into_inner())
-                .bind(note)
-                .execute(&mut **tx)
-                .await
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
-                Ok(())
-            })
-        },
-    )
+            )
+            .bind(outcome.memory_id.into_inner())
+            .bind(note)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+            Ok(())
+        })
+    })
     .await?;
     tx.commit().await?;
     Ok(fact_outcome)
@@ -352,7 +345,7 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
 
         let engine = engine();
         let owner = owner_fixture();
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let first = engine
             .authorize_fact_with_citation(
                 &authz,
@@ -447,9 +440,9 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
 
         let engine = engine();
         let owner = owner_fixture();
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
-        let fact_outcome = ingest_plain_fact_for_attach(&pg, &engine, &authz).await?;
+        let fact_outcome = ingest_plain_fact_for_attach(&pg, &owner).await?;
         assert!(
             pg.citation_of_fact(fact_outcome.memory_id).await?.is_none(),
             "plain Fact starts uncited"
@@ -564,7 +557,7 @@ async fn facts_citing_object_filters_by_read_owners() -> Result<(), Box<dyn std:
         let group_authz = AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
             [(g1, Role::admin())],
-            AuthPath::System,
+            AuthPath::HostBearer,
         )
         .narrowed_to_owner(g1)
         .expect("group admin narrows to target owner");
@@ -579,7 +572,7 @@ async fn facts_citing_object_filters_by_read_owners() -> Result<(), Box<dyn std:
             .await?;
         let p_authorized = engine
             .authorize_fact_with_citation(
-                &AuthzContext::single_owner(&p, AuthPath::System),
+                &AuthzContext::single_owner(&p, AuthPath::HostBearer),
                 Relation::Ingest,
                 draft(&p, "p fact"),
                 cited_object(),
@@ -666,7 +659,7 @@ async fn fact_sidecar_failure_rolls_back_whole_inline_citation_ingest()
 
         let engine = engine();
         let owner = owner_fixture();
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let authorized = engine
             .authorize_fact_with_citation(
                 &authz,

@@ -35,6 +35,7 @@ mod runtime;
 mod runtime_config;
 
 pub use host::*;
+pub use proxima_core::authz::SystemAuthority;
 
 use std::sync::Arc;
 
@@ -159,6 +160,7 @@ impl std::fmt::Debug for ProximaBuilder {
 /// A booted embedded engine plus its companion handles.
 pub struct EmbeddedProxima {
     pub engine: Arc<Engine>,
+    pub system_authority: SystemAuthority,
     pub handle: EngineHandle,
     pool: PgPool,
     pub registry: Arc<proxima_core::FlavorRegistryFrozen>,
@@ -168,6 +170,11 @@ pub struct EmbeddedProxima {
 }
 
 impl EmbeddedProxima {
+    #[must_use]
+    pub const fn system_authority(&self) -> &SystemAuthority {
+        &self.system_authority
+    }
+
     /// Test-only backend pool access for integration fixtures.
     #[cfg(any(test, feature = "testkit", debug_assertions))]
     #[must_use]
@@ -318,6 +325,7 @@ impl ProximaBuilder {
             engine = engine.with_anthropic(client);
         }
 
+        let (engine, system_authority) = engine.into_system_authority();
         let engine = Arc::new(engine);
         let handle = engine
             .clone()
@@ -329,6 +337,7 @@ impl ProximaBuilder {
         let blobs = config.s3.map(|s3| CitedBlobStore::new(pool.clone(), s3));
         Ok(EmbeddedProxima {
             engine,
+            system_authority,
             handle,
             pool,
             registry,

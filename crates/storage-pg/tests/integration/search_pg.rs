@@ -861,10 +861,11 @@ async fn ingest_fact_memory(
         Citation, CitationMappingHint, CitedObjectHint, FactWriteCommand,
     };
 
+    let permit = crate::common::owner_write_permit(owner, proxima_core::AccessKind::Fact).await?;
     let now = time::OffsetDateTime::now_utc();
     let outcome = pg
         .ingest_fact_atomic(
-            owner,
+            &permit,
             &FactWriteCommand {
                 schema_id: SchemaId::new(schema_id.to_string()),
                 schema_version: SchemaVersion::new(1),

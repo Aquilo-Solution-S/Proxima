@@ -56,7 +56,7 @@ impl Engine {
             .ingest
             .fact_ingest
             .ingest_fact_atomic(
-                authorized.permit().owner(),
+                authorized.owner_write_permit(),
                 authorized.draft(),
                 embedding_model_id,
             )
@@ -418,6 +418,7 @@ impl Engine {
     /// Returns storage errors from enqueueing missing jobs.
     pub async fn backfill_fact_embeddings(
         &self,
+        authz: &AuthzContext,
         owner: &Owner,
         limit: usize,
     ) -> Result<usize, StorageError> {
@@ -426,11 +427,15 @@ impl Engine {
         };
         let limit = i64::try_from(limit)
             .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
+        let permit = self
+            .authorize_write(authz, owner, Relation::Ingest)
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
         let enqueued = self
             .storage
             .ingest
             .embedding_job
-            .enqueue_missing_embedding_jobs(owner, client.model_id(), limit)
+            .enqueue_missing_embedding_jobs(permit.owner_write_permit(), client.model_id(), limit)
             .await?;
         usize::try_from(enqueued)
             .map_err(|_| StorageError::Internal("enqueued count does not fit usize".into()))
@@ -545,7 +550,7 @@ impl Engine {
         self.storage
             .ingest
             .mcp_call_write
-            .persist_mcp_call_atomic(&input)
+            .persist_mcp_call_atomic(permit.owner_write_permit(), &input)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
@@ -574,7 +579,7 @@ impl Engine {
             .storage
             .ingest
             .source_batch
-            .close_batch(permit.owner(), source_batch_id)
+            .close_batch(permit.owner_write_permit(), source_batch_id)
             .await
             .map_err(|e| match e {
                 StorageError::NotFound => ProtocolError::not_found("source batch not found"),
@@ -657,7 +662,7 @@ mod tests {
         let mut registry = FlavorRegistry::new();
         registry.add_fact_schema_or_panic_for_tests::<TestFact>();
         let engine = Engine::new(registry.freeze_or_panic_for_tests());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let draft = FactWriteCommand::from_payload(
             "test/source",
             SourceBatchId::new(uuid::Uuid::now_v7()),
@@ -670,7 +675,7 @@ mod tests {
         let authorized = engine
             .authorize_fact_ingest(&authz, Relation::Ingest, draft)
             .await
-            .expect("single-owner System context should authorize ingest");
+            .expect("single-owner host context should authorize ingest");
 
         assert_eq!(authorized.permit().owner(), &owner);
     }

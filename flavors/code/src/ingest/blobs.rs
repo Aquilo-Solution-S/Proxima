@@ -1,3 +1,4 @@
+use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
 use proxima_core::{
     AbstractionPayload, CORE_DERIVED_FROM_RELATION, DerivedEdgeSpec, EdgeAuthorshipKind,
@@ -69,26 +70,26 @@ fn code_slice_input_contract_id(
 /// batch row was ever inserted).
 pub async fn close_local_git_batch(
     pool: &PgPool,
-    owner: &Owner,
+    permit: &OwnerWritePermit,
     source_batch_id: SourceBatchId,
 ) -> Result<(), IngestError> {
-    match proxima_storage_pg::verbs::close_batch::close_batch(pool, owner, source_batch_id).await {
+    match proxima_storage_pg::verbs::close_batch::close_batch(pool, permit, source_batch_id).await {
         Ok(_) | Err(proxima_core::StorageError::NotFound) => Ok(()),
         Err(e) => Err(e.into()),
     }
 }
 
 fn local_git_context(
-    owner: &Owner,
+    permit: &OwnerWritePermit,
     source_batch_id: SourceBatchId,
     observed_at: time::OffsetDateTime,
 ) -> FactIngestContext<'_> {
-    FactIngestContext::new(owner, LOCAL_GIT_SOURCE_ID, source_batch_id).observed_at(observed_at)
+    FactIngestContext::new(permit, LOCAL_GIT_SOURCE_ID, source_batch_id).observed_at(observed_at)
 }
 
 async fn ingest_local_git_fact<P>(
     pool: &PgPool,
-    owner: &Owner,
+    permit: &OwnerWritePermit,
     source_batch_id: SourceBatchId,
     payload: &P,
     citation: CitationSpec,
@@ -97,7 +98,7 @@ async fn ingest_local_git_fact<P>(
 where
     P: FactPayload + PgMemorySidecar + Clone,
 {
-    let ctx = local_git_context(owner, source_batch_id, observed_at);
+    let ctx = local_git_context(permit, source_batch_id, observed_at);
     let mut tx = pool.begin().await?;
     let outcome = ingest_fact_with_sidecar(&mut tx, &ctx, payload, citation).await?;
     tx.commit().await?;
@@ -109,14 +110,14 @@ where
 /// CitationMapping.
 pub async fn ingest_commit(
     pool: &PgPool,
-    owner: &Owner,
+    permit: &OwnerWritePermit,
     source_batch_id: SourceBatchId,
     payload: &CommitV1,
     observed_at: time::OffsetDateTime,
 ) -> Result<FactIngestOutcome, IngestError> {
     ingest_local_git_fact(
         pool,
-        owner,
+        permit,
         source_batch_id,
         payload,
         CitationSpec::v1(
@@ -134,14 +135,14 @@ pub async fn ingest_commit(
 /// CitationMapping. Tombstones cite the null blob (`[0u8; 32]`).
 pub async fn ingest_file_revision(
     pool: &PgPool,
-    owner: &Owner,
+    permit: &OwnerWritePermit,
     source_batch_id: SourceBatchId,
     payload: &FileRevisionV1,
     observed_at: time::OffsetDateTime,
 ) -> Result<FactIngestOutcome, IngestError> {
     ingest_local_git_fact(
         pool,
-        owner,
+        permit,
         source_batch_id,
         payload,
         CitationSpec::v1(
@@ -164,12 +165,13 @@ pub async fn ingest_file_revision(
 /// an event, source batch, or Fact citation.
 pub async fn append_code_slice(
     pool: &PgPool,
-    owner: &Owner,
+    permit: &OwnerWritePermit,
     source_batch_id: SourceBatchId,
     payload: &CodeChunkV1,
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,
 ) -> Result<DerivedOutcome, IngestError> {
+    let owner = permit.owner();
     let memory_id = code_slice_memory_id(payload, source_file_revision);
     let output_memory_id = MemoryId::new(memory_id);
     let mut tx = pool.begin().await?;
@@ -214,14 +216,15 @@ pub async fn append_code_slice(
         ));
     }
     let sidecar_payload = payload.clone();
-    let outcome = append_derived_with_edges_in_tx(&mut tx, &draft, &edges, move |tx, outcome| {
-        Box::pin(async move {
-            sidecar_payload
-                .insert_memory_sidecar(tx, outcome.memory_id)
-                .await
+    let outcome =
+        append_derived_with_edges_in_tx(&mut tx, permit, &draft, &edges, move |tx, outcome| {
+            Box::pin(async move {
+                sidecar_payload
+                    .insert_memory_sidecar(tx, outcome.memory_id)
+                    .await
+            })
         })
-    })
-    .await?;
+        .await?;
     tx.commit().await?;
     Ok(outcome)
 }

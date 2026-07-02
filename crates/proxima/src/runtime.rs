@@ -8,6 +8,7 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::response::IntoResponse;
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
+use proxima_core::authz::SystemAuthority;
 use proxima_core::mcp::McpToolExtensions;
 use proxima_core::{
     AnthropicClient, AuthPath, Authenticator, AuthzContext, EmbeddingClient, FlavorRegistryFrozen,
@@ -208,6 +209,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         Ok(BuiltProxima {
             service,
             engine: booted.engine,
+            system_authority: booted.system_authority,
             handle: booted.handle,
             pool: booted.pool,
             registry: booted.registry,
@@ -284,6 +286,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
 
         Ok(RunningProxima {
             engine: booted.engine,
+            system_authority: booted.system_authority,
             handle: booted.handle,
             pool: booted.pool,
             registry: booted.registry,
@@ -314,6 +317,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
 pub struct BuiltProxima {
     pub service: Option<Router>,
     pub engine: Arc<Engine>,
+    pub system_authority: SystemAuthority,
     pub handle: EngineHandle,
     pool: PgPool,
     pub registry: Arc<FlavorRegistryFrozen>,
@@ -339,7 +343,12 @@ impl BuiltProxima {
     #[must_use]
     pub fn single_owner_authz(&self) -> Option<AuthzContext> {
         self.insecure_single_owner
-            .then(|| insecure_single_owner_authz(&self.owner, AuthPath::System))
+            .then(|| insecure_single_owner_authz(&self.owner, AuthPath::HostBearer))
+    }
+
+    #[must_use]
+    pub const fn system_authority(&self) -> &SystemAuthority {
+        &self.system_authority
     }
 
     #[must_use]
@@ -384,6 +393,7 @@ impl std::fmt::Debug for BuiltProxima {
 /// Running app with an optional facade listener.
 pub struct RunningProxima {
     pub engine: Arc<Engine>,
+    pub system_authority: SystemAuthority,
     pub handle: EngineHandle,
     pool: PgPool,
     pub registry: Arc<FlavorRegistryFrozen>,
@@ -416,7 +426,12 @@ impl RunningProxima {
     #[must_use]
     pub fn single_owner_authz(&self) -> Option<AuthzContext> {
         self.insecure_single_owner
-            .then(|| insecure_single_owner_authz(&self.owner, AuthPath::System))
+            .then(|| insecure_single_owner_authz(&self.owner, AuthPath::HostBearer))
+    }
+
+    #[must_use]
+    pub const fn system_authority(&self) -> &SystemAuthority {
+        &self.system_authority
     }
 
     #[must_use]

@@ -21,7 +21,10 @@ use jsonwebtoken::DecodingKey;
 use proxima::{Proxima, ResourceServerMetadata};
 use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, StaticJwksResolver};
 use proxima_core::storage_ports::OwnerMembershipAdminPort;
-use proxima_core::{GroupId, Owner, OwnerAccessPort, OwnerRef, Relation, UserId};
+use proxima_core::{
+    AccessKind, AuthPath, AuthzContext, Engine, FlavorRegistry, GroupId, Owner, OwnerAccessPort,
+    OwnerRef, Relation, Role, UserId,
+};
 use proxima_mcp::ProximaMcpApp;
 use proxima_storage_pg::{PgOwnerAccessResolver, PgStorage};
 use serde_json::json;
@@ -245,8 +248,17 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
         unreachable!("group_owner is always Group")
     };
     let storage = PgStorage::connect(&database_url).await?;
+    let permit_engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+    let permit_authz = AuthzContext::for_subject_with_role(
+        UserId::new(Uuid::now_v7()),
+        [(group_owner, Role::admin())],
+        AuthPath::HostBearer,
+    );
+    let permit = permit_engine
+        .authorize_owner_write(&permit_authz, &group_owner, AccessKind::Goal)
+        .await?;
     storage
-        .add_group_member(group_id, subject, Relation::Editor, Uuid::now_v7())
+        .add_group_member(&permit, group_id, subject, Relation::Editor, Uuid::now_v7())
         .await?;
 
     let addr = running.mcp_addr.ok_or("missing MCP listener address")?;

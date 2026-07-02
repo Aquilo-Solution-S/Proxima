@@ -57,7 +57,7 @@ impl Engine {
         self.storage
             .fact_retention
             .fact_retention
-            .upsert_fact_retention(permit.owner(), seconds)
+            .upsert_fact_retention(permit.owner_write_permit(), seconds)
             .await
             .map_err(|e| ProtocolError::internal(format!("set_fact_retention: {e}")))
     }
@@ -113,7 +113,7 @@ impl Engine {
         self.storage
             .fact_retention
             .fact_retention
-            .clear_fact_retention(permit.owner())
+            .clear_fact_retention(permit.owner_write_permit())
             .await
             .map_err(|e| ProtocolError::internal(format!("clear_fact_retention: {e}")))
     }
@@ -135,10 +135,11 @@ impl Engine {
                 "compliance controller authorization required",
             ));
         }
+        let permit = self.authorize_write(authz, owner, Relation::Admin).await?;
         self.storage
             .fact_retention
             .fact_retention
-            .set_legal_hold(owner)
+            .set_legal_hold(permit.owner_write_permit())
             .await
             .map_err(|e| ProtocolError::internal(format!("set_legal_hold: {e}")))
     }
@@ -180,10 +181,11 @@ impl Engine {
                 "compliance controller authorization required",
             ));
         }
+        let permit = self.authorize_write(authz, owner, Relation::Admin).await?;
         self.storage
             .fact_retention
             .fact_retention
-            .clear_legal_hold(owner)
+            .clear_legal_hold(permit.owner_write_permit())
             .await
             .map_err(|e| ProtocolError::internal(format!("clear_legal_hold: {e}")))
     }
@@ -264,7 +266,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legal_hold_authorized_context_reaches_storage() {
+    async fn legal_hold_system_context_without_authority_is_denied_before_storage() {
         let (_subject, owner) = fresh_personal_owner();
         let engine = boot_engine();
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
@@ -272,20 +274,20 @@ mod tests {
         let err = engine
             .set_legal_hold(&authz, &owner)
             .await
-            .expect_err("RejectingStorage rejects writes");
-        assert_eq!(err.code, ErrorCode::Internal);
+            .expect_err("System write without runtime authority must be rejected");
+        assert_eq!(err.code, ErrorCode::Forbidden);
 
         let err = engine
             .get_legal_hold(&authz, &owner)
             .await
-            .expect_err("RejectingStorage rejects writes");
-        assert_eq!(err.code, ErrorCode::Internal);
+            .expect_err("System write without runtime authority must be rejected");
+        assert_eq!(err.code, ErrorCode::Forbidden);
 
         let err = engine
             .clear_legal_hold(&authz, &owner)
             .await
-            .expect_err("RejectingStorage rejects writes");
-        assert_eq!(err.code, ErrorCode::Internal);
+            .expect_err("System write without runtime authority must be rejected");
+        assert_eq!(err.code, ErrorCode::Forbidden);
     }
 
     #[tokio::test]

@@ -188,7 +188,7 @@ pub(in crate::engine) mod tests {
     impl FactIngestPort for MembershipStorage {
         async fn ingest_fact_atomic(
             &self,
-            _owner: &OwnerRef,
+            _permit: &crate::storage_ports::OwnerWritePermit,
             _draft: &FactWriteCommand,
             _embedding_model_id: Option<&str>,
         ) -> Result<FactIngestOutcome, StorageError> {
@@ -224,6 +224,7 @@ pub(in crate::engine) mod tests {
     impl McpCallWritePort for MembershipStorage {
         async fn persist_mcp_call_atomic(
             &self,
+            _permit: &crate::storage_ports::OwnerWritePermit,
             _input: &McpCallLogInput,
         ) -> Result<McpCallLogOutcome, StorageError> {
             Err(StorageError::Internal(
@@ -247,6 +248,7 @@ pub(in crate::engine) mod tests {
         async fn author_derived(
             &self,
             _req: &AuthorDerivedRequest<'_>,
+            _permit: &crate::storage_ports::OwnerWritePermit,
             _proof: crate::storage_ports::OperatorWriteProof,
         ) -> Result<AuthorDerivedOutcome, StorageError> {
             Err(StorageError::Internal(
@@ -257,6 +259,7 @@ pub(in crate::engine) mod tests {
         async fn append_memory_edge(
             &self,
             _edge: &DerivedEdgeSpec<'_>,
+            _permit: &crate::storage_ports::OwnerWritePermit,
             _proof: crate::storage_ports::EdgeWriteProof,
         ) -> Result<EdgeId, StorageError> {
             Err(StorageError::Internal(
@@ -411,7 +414,7 @@ pub(in crate::engine) mod tests {
 
         async fn enqueue_missing_embedding_jobs(
             &self,
-            _owner: &Owner,
+            _permit: &crate::storage_ports::OwnerWritePermit,
             _model_id: &str,
             _limit: i64,
         ) -> Result<u64, StorageError> {
@@ -430,6 +433,7 @@ pub(in crate::engine) mod tests {
         async fn create_goal_atomic(
             &self,
             _req: &CreateGoalAtomicRequest<'_>,
+            _permit: &crate::storage_ports::OwnerWritePermit,
         ) -> Result<GoalWriteOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
@@ -439,6 +443,7 @@ pub(in crate::engine) mod tests {
         async fn transition_goal_atomic(
             &self,
             _req: &TransitionGoalAtomicRequest<'_>,
+            _permit: &crate::storage_ports::OwnerWritePermit,
         ) -> Result<GoalWriteOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
@@ -448,6 +453,7 @@ pub(in crate::engine) mod tests {
         async fn achieve_goal_atomic(
             &self,
             _req: &AchieveGoalAtomicRequest<'_>,
+            _permit: &crate::storage_ports::OwnerWritePermit,
         ) -> Result<GoalWriteOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
@@ -457,6 +463,7 @@ pub(in crate::engine) mod tests {
         async fn modify_goal_atomic(
             &self,
             _req: &ModifyGoalAtomicRequest<'_>,
+            _permit: &crate::storage_ports::OwnerWritePermit,
         ) -> Result<GoalWriteOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
@@ -466,6 +473,7 @@ pub(in crate::engine) mod tests {
         async fn decompose_goal_atomic(
             &self,
             _req: &DecomposeGoalAtomicRequest<'_>,
+            _permit: &crate::storage_ports::OwnerWritePermit,
         ) -> Result<DecomposeGoalOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
@@ -609,6 +617,7 @@ pub(in crate::engine) mod tests {
 
         async fn add_group_member(
             &self,
+            _permit: &crate::storage_ports::OwnerWritePermit,
             _group_id: GroupId,
             _member_user_id: UserId,
             _relation: Relation,
@@ -621,6 +630,7 @@ pub(in crate::engine) mod tests {
 
         async fn remove_group_member(
             &self,
+            _permit: &crate::storage_ports::OwnerWritePermit,
             _group_id: GroupId,
             _member_user_id: UserId,
         ) -> Result<(), StorageError> {
@@ -641,8 +651,8 @@ pub(in crate::engine) mod tests {
     impl OwnerTransferPort for MembershipStorage {
         async fn transfer_to_world(
             &self,
+            _permit: &crate::storage_ports::OwnerWritePermit,
             _entity: EntityId,
-            _from_owner: OwnerRef,
         ) -> Result<bool, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
@@ -654,7 +664,7 @@ pub(in crate::engine) mod tests {
     impl SourceBatchPort for MembershipStorage {
         async fn close_batch(
             &self,
-            _principal: &OwnerRef,
+            _permit: &crate::storage_ports::OwnerWritePermit,
             _source_batch_id: SourceBatchId,
         ) -> Result<CloseBatchOutcome, StorageError> {
             Err(StorageError::Internal(
@@ -677,7 +687,7 @@ pub(in crate::engine) mod tests {
 
         async fn store_source_cursor(
             &self,
-            _owner: &Owner,
+            _permit: &crate::storage_ports::OwnerWritePermit,
             _source: &str,
             _cursor: &Cursor,
         ) -> Result<(), StorageError> {
@@ -691,7 +701,7 @@ pub(in crate::engine) mod tests {
     impl FactRetentionPort for MembershipStorage {
         async fn upsert_fact_retention(
             &self,
-            _owner: &Owner,
+            _permit: &crate::storage_ports::OwnerWritePermit,
             _seconds: i64,
         ) -> Result<(), StorageError> {
             Err(StorageError::Internal(
@@ -705,13 +715,19 @@ pub(in crate::engine) mod tests {
             ))
         }
 
-        async fn clear_fact_retention(&self, _owner: &Owner) -> Result<bool, StorageError> {
+        async fn clear_fact_retention(
+            &self,
+            _permit: &crate::storage_ports::OwnerWritePermit,
+        ) -> Result<bool, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
         }
 
-        async fn set_legal_hold(&self, _owner: &Owner) -> Result<(), StorageError> {
+        async fn set_legal_hold(
+            &self,
+            _permit: &crate::storage_ports::OwnerWritePermit,
+        ) -> Result<(), StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
@@ -723,7 +739,10 @@ pub(in crate::engine) mod tests {
             ))
         }
 
-        async fn clear_legal_hold(&self, _owner: &Owner) -> Result<bool, StorageError> {
+        async fn clear_legal_hold(
+            &self,
+            _permit: &crate::storage_ports::OwnerWritePermit,
+        ) -> Result<bool, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))

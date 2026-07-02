@@ -3,6 +3,7 @@
 use proxima_core::llm::EMBEDDING_DIM;
 use std::collections::BTreeSet;
 
+use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{
     DerivedEdgeSpec, EdgeAuthorshipKind, EntityKind, InputContractId, MemoryId, MemoryOperatorKind,
     OperatorId, Owner, OwnerRefKind, RelationClass, SchemaId, SchemaVersion, SourceBatchId,
@@ -62,12 +63,14 @@ pub struct DerivedOutcome {
 /// Returns storage constraint/internal errors from Postgres.
 pub(crate) async fn append_derived_in_tx(
     tx: &mut Transaction<'_, Postgres>,
+    permit: &OwnerWritePermit,
     draft: &DerivedDraft<'_>,
     sidecar: impl for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
         &'t DerivedOutcome,
     ) -> PgSidecarFuture<'t>,
 ) -> Result<DerivedOutcome, StorageError> {
+    validate_permit_owner(permit, &draft.owner)?;
     crate::access::owner_columns::reject_world_write_owner(&draft.owner)?;
     let (owner_kind, owner_id) = crate::access::owner_columns::owner_binds(&draft.owner);
     if let Some(prior) = draft.supersedes {
@@ -157,6 +160,7 @@ pub(crate) async fn append_derived_in_tx(
 /// metadata or ledger edges, and storage errors from Postgres.
 pub async fn append_derived_with_edges_in_tx(
     tx: &mut Transaction<'_, Postgres>,
+    permit: &OwnerWritePermit,
     draft: &DerivedDraft<'_>,
     edges: &[DerivedEdgeSpec<'_>],
     sidecar: impl for<'t> FnOnce(
@@ -164,9 +168,10 @@ pub async fn append_derived_with_edges_in_tx(
         &'t DerivedOutcome,
     ) -> PgSidecarFuture<'t>,
 ) -> Result<DerivedOutcome, StorageError> {
+    validate_permit_owner(permit, &draft.owner)?;
     crate::access::owner_columns::reject_world_write_owner(&draft.owner)?;
     validate_derived_draft_edges_in_tx(tx, draft, edges).await?;
-    let outcome = append_derived_in_tx(tx, draft, sidecar).await?;
+    let outcome = append_derived_in_tx(tx, permit, draft, sidecar).await?;
     if outcome.idempotent_replay {
         validate_derived_edge_replay_equivalent(tx, draft, edges).await?;
         return Ok(outcome);
@@ -176,6 +181,16 @@ pub async fn append_derived_with_edges_in_tx(
         crate::verbs::edge_append::append_edge_in_tx(tx.as_mut(), &draft).await?;
     }
     Ok(outcome)
+}
+
+fn validate_permit_owner(permit: &OwnerWritePermit, owner: &Owner) -> Result<(), StorageError> {
+    if permit.owner() == owner {
+        Ok(())
+    } else {
+        Err(StorageError::ConstraintViolation(
+            "derived draft owner does not match owner write permit".into(),
+        ))
+    }
 }
 
 fn edge_draft_from_spec<'a>(

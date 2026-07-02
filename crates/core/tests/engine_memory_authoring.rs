@@ -83,7 +83,7 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
         authorship_owner_memory_id: Some(source_abstraction),
     }];
 
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let outcome = engine
         .author_derived_authorized(
             &authz,
@@ -192,7 +192,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
         authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
         authorship_owner_memory_id: Some(source_abstraction),
     }];
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let old = engine
         .author_derived_authorized(
             &authz,
@@ -375,7 +375,7 @@ async fn author_derived_authorized_enforces_intra_owner_same_kind_supersedes()
 
         let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
-        let authz = AuthzContext::single_owner(&attacker, AuthPath::System);
+        let authz = AuthzContext::single_owner(&attacker, AuthPath::HostBearer);
 
         let foreign_new_id = MemoryId::new(Uuid::now_v7());
         let foreign_err = engine
@@ -527,7 +527,7 @@ async fn assert_embedding_row(
 async fn author_derived_rejects_empty_operator_inputs() {
     let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
     let owner = owner_fixture();
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let err = engine
         .author_derived_authorized(
             &authz,
@@ -598,7 +598,7 @@ async fn author_derived_authorized_rejects_operator_edge_sourced_from_wrong_memo
             .registry()
             .resolve_relation(CORE_DERIVED_FROM_RELATION)
             .expect("core relation registered");
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let memory_id = MemoryId::new(Uuid::now_v7());
 
         // The edge's declared source is `unrelated_memory`, not `memory_id`
@@ -684,7 +684,7 @@ async fn author_derived_authorized_rejects_operator_input_missing_provenance_edg
             .registry()
             .resolve_relation(CORE_DERIVED_FROM_RELATION)
             .expect("core relation registered");
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let memory_id = MemoryId::new(Uuid::now_v7());
 
         // input_a is correctly provenanced (source == output memory_id).
@@ -783,7 +783,7 @@ async fn author_derived_authorized_rejects_operator_ftoa_without_source_batch_vi
         let owner = owner_fixture();
         let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let memory_id = MemoryId::new(Uuid::now_v7());
 
         let err = engine
@@ -841,7 +841,7 @@ async fn ingest_fact_with_sidecar_writes_fact_and_note_sidecar()
     let owner = owner_fixture();
     let registry = FlavorRegistry::new();
     let engine = proxima_core::Engine::new(registry.freeze_or_panic_for_tests());
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let note = AgentNoteV1 {
         note_id: Uuid::now_v7(),
         title: "Note title".into(),

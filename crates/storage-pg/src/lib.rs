@@ -26,7 +26,8 @@ use proxima_core::storage_ports::{
     EmbeddingTextPort, EmbeddingWritePort, FactIngestPort, FactRetentionPort, GoalReadPort,
     GoalWakeCandidatePort, GoalWritePort, McpCallReadPort, McpCallWritePort, MemoryAuthoringPort,
     MemoryInspectPort, MemoryReadPort, OwnerAccessReadPort, OwnerMembershipAdminPort,
-    OwnerTransferPort, RegistryProjectionPort, SourceBatchPort, SourceCursorPort, StoragePorts,
+    OwnerTransferPort, OwnerWritePermit, RegistryProjectionPort, SourceBatchPort, SourceCursorPort,
+    StoragePorts,
 };
 use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
@@ -426,15 +427,25 @@ fn edge_draft_from_spec<'a>(edge: &'a DerivedEdgeSpec<'a>) -> verbs::edge_append
     }
 }
 
+fn validate_permit_owner(permit: &OwnerWritePermit, owner: &Owner) -> Result<(), StorageError> {
+    if permit.owner() == owner {
+        Ok(())
+    } else {
+        Err(StorageError::ConstraintViolation(
+            "request owner does not match owner write permit".into(),
+        ))
+    }
+}
+
 #[async_trait::async_trait]
 impl FactIngestPort for PgStorage {
     async fn ingest_fact_atomic(
         &self,
-        owner: &Owner,
+        permit: &OwnerWritePermit,
         draft: &FactWriteCommand,
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
-        verbs::fact_ingest::ingest_fact_atomic(&self.pool, owner, draft, embedding_model_id).await
+        verbs::fact_ingest::ingest_fact_atomic(&self.pool, permit, draft, embedding_model_id).await
     }
 
     async fn ingest_fact_with_typed_sidecar(
@@ -496,9 +507,10 @@ impl FactIngestPort for PgStorage {
 impl McpCallWritePort for PgStorage {
     async fn persist_mcp_call_atomic(
         &self,
+        permit: &OwnerWritePermit,
         input: &McpCallLogInput,
     ) -> Result<McpCallLogOutcome, StorageError> {
-        verbs::persist_mcp_call::persist_mcp_call_atomic(&self.pool, input).await
+        verbs::persist_mcp_call::persist_mcp_call_atomic(&self.pool, permit, input).await
     }
 }
 
@@ -517,6 +529,7 @@ impl MemoryAuthoringPort for PgStorage {
     async fn author_derived(
         &self,
         req: &AuthorDerivedRequest<'_>,
+        permit: &OwnerWritePermit,
         _proof: proxima_core::storage_ports::OperatorWriteProof,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
         let mut tx = self.pool.begin().await.map_err(internal)?;
@@ -545,15 +558,19 @@ impl MemoryAuthoringPort for PgStorage {
             .await?;
         let sidecars = self.sidecars.clone();
         let sidecar_payload = req.sidecar_payload.clone();
-        let outcome =
-            verbs::derive_append::append_derived_in_tx(&mut tx, &draft, move |tx, outcome| {
+        let outcome = verbs::derive_append::append_derived_in_tx(
+            &mut tx,
+            permit,
+            &draft,
+            move |tx, outcome| {
                 Box::pin(async move {
                     sidecars
                         .insert_memory_sidecar(tx, outcome.memory_id, &sidecar_payload)
                         .await
                 })
-            })
-            .await?;
+            },
+        )
+        .await?;
         let mut edge_count = 0;
         if outcome.idempotent_replay {
             verbs::derive_append::validate_derived_edge_replay_equivalent(
@@ -593,8 +610,14 @@ impl MemoryAuthoringPort for PgStorage {
     async fn append_memory_edge(
         &self,
         edge: &DerivedEdgeSpec<'_>,
+        permit: &OwnerWritePermit,
         _proof: proxima_core::storage_ports::EdgeWriteProof,
     ) -> Result<EdgeId, StorageError> {
+        if edge.owner != permit.owner() {
+            return Err(StorageError::ConstraintViolation(
+                "edge owner does not match owner write permit".into(),
+            ));
+        }
         if edge.authorship_kind.is_operator() {
             return Err(StorageError::ConstraintViolation(
                 "operator-authored edges require an operator proof-carrier write path".into(),
@@ -1035,11 +1058,11 @@ impl EmbeddingJobPort for PgStorage {
 
     async fn enqueue_missing_embedding_jobs(
         &self,
-        owner: &Owner,
+        permit: &OwnerWritePermit,
         model_id: &str,
         limit: i64,
     ) -> Result<u64, StorageError> {
-        verbs::fact_embeddings::enqueue_missing_embedding_jobs(&self.pool, owner, model_id, limit)
+        verbs::fact_embeddings::enqueue_missing_embedding_jobs(&self.pool, permit, model_id, limit)
             .await
     }
 
@@ -1053,36 +1076,46 @@ impl GoalWritePort for PgStorage {
     async fn create_goal_atomic(
         &self,
         req: &CreateGoalAtomicRequest<'_>,
+        permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
-        verbs::goal_write::create_goal_atomic(&self.pool, &self.sidecars, req).await
+        validate_permit_owner(permit, &req.draft.owner())?;
+        verbs::goal_write::create_goal_atomic(&self.pool, &self.sidecars, req, permit).await
     }
 
     async fn transition_goal_atomic(
         &self,
         req: &TransitionGoalAtomicRequest<'_>,
+        permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
-        verbs::goal_write::transition_goal_atomic(&self.pool, &self.sidecars, req).await
+        validate_permit_owner(permit, &req.owner)?;
+        verbs::goal_write::transition_goal_atomic(&self.pool, &self.sidecars, req, permit).await
     }
 
     async fn achieve_goal_atomic(
         &self,
         req: &AchieveGoalAtomicRequest<'_>,
+        permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
-        verbs::goal_write::achieve_goal_atomic(&self.pool, &self.sidecars, req).await
+        validate_permit_owner(permit, &req.owner)?;
+        verbs::goal_write::achieve_goal_atomic(&self.pool, &self.sidecars, req, permit).await
     }
 
     async fn modify_goal_atomic(
         &self,
         req: &ModifyGoalAtomicRequest<'_>,
+        permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
-        verbs::goal_write::modify_goal_atomic(&self.pool, &self.sidecars, req).await
+        validate_permit_owner(permit, &req.owner)?;
+        verbs::goal_write::modify_goal_atomic(&self.pool, &self.sidecars, req, permit).await
     }
 
     async fn decompose_goal_atomic(
         &self,
         req: &DecomposeGoalAtomicRequest<'_>,
+        permit: &OwnerWritePermit,
     ) -> Result<DecomposeGoalOutcome, StorageError> {
-        verbs::goal_write::decompose_goal_atomic(&self.pool, &self.sidecars, req).await
+        validate_permit_owner(permit, &req.owner)?;
+        verbs::goal_write::decompose_goal_atomic(&self.pool, &self.sidecars, req, permit).await
     }
 }
 
@@ -1256,11 +1289,13 @@ impl OwnerMembershipAdminPort for PgStorage {
 
     async fn add_group_member(
         &self,
+        permit: &OwnerWritePermit,
         group_id: GroupId,
         member_user_id: UserId,
         relation: Relation,
         granted_by: uuid::Uuid,
     ) -> Result<(), StorageError> {
+        validate_permit_owner(permit, &OwnerRef::Group(group_id))?;
         access::owner_columns::add_group_member(
             &self.pool,
             group_id,
@@ -1273,9 +1308,11 @@ impl OwnerMembershipAdminPort for PgStorage {
 
     async fn remove_group_member(
         &self,
+        permit: &OwnerWritePermit,
         group_id: GroupId,
         member_user_id: UserId,
     ) -> Result<(), StorageError> {
+        validate_permit_owner(permit, &OwnerRef::Group(group_id))?;
         access::owner_columns::remove_group_member(&self.pool, group_id, member_user_id).await
     }
 
@@ -1291,10 +1328,10 @@ impl OwnerMembershipAdminPort for PgStorage {
 impl OwnerTransferPort for PgStorage {
     async fn transfer_to_world(
         &self,
+        permit: &OwnerWritePermit,
         entity: EntityId,
-        from_owner: OwnerRef,
     ) -> Result<bool, StorageError> {
-        access::owner_columns::transfer_to_world(&self.pool, entity, from_owner).await
+        access::owner_columns::transfer_to_world(&self.pool, entity, *permit.owner()).await
     }
 }
 
@@ -1302,10 +1339,10 @@ impl OwnerTransferPort for PgStorage {
 impl SourceBatchPort for PgStorage {
     async fn close_batch(
         &self,
-        principal: &OwnerRef,
+        permit: &OwnerWritePermit,
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError> {
-        verbs::close_batch::close_batch(&self.pool, principal, source_batch_id).await
+        verbs::close_batch::close_batch(&self.pool, permit, source_batch_id).await
     }
 }
 
@@ -1321,38 +1358,42 @@ impl SourceCursorPort for PgStorage {
 
     async fn store_source_cursor(
         &self,
-        owner: &Owner,
+        permit: &OwnerWritePermit,
         source: &str,
         cursor: &Cursor,
     ) -> Result<(), StorageError> {
-        verbs::source_cursors::store_source_cursor(&self.pool, owner, source, cursor).await
+        verbs::source_cursors::store_source_cursor(&self.pool, permit, source, cursor).await
     }
 }
 
 #[async_trait::async_trait]
 impl FactRetentionPort for PgStorage {
-    async fn upsert_fact_retention(&self, owner: &Owner, seconds: i64) -> Result<(), StorageError> {
-        verbs::fact_retention::upsert_fact_retention(&self.pool, owner, seconds).await
+    async fn upsert_fact_retention(
+        &self,
+        permit: &OwnerWritePermit,
+        seconds: i64,
+    ) -> Result<(), StorageError> {
+        verbs::fact_retention::upsert_fact_retention(&self.pool, permit, seconds).await
     }
 
     async fn get_fact_retention(&self, owner: &Owner) -> Result<Option<i64>, StorageError> {
         verbs::fact_retention::get_fact_retention(&self.pool, owner).await
     }
 
-    async fn clear_fact_retention(&self, owner: &Owner) -> Result<bool, StorageError> {
-        verbs::fact_retention::clear_fact_retention(&self.pool, owner).await
+    async fn clear_fact_retention(&self, permit: &OwnerWritePermit) -> Result<bool, StorageError> {
+        verbs::fact_retention::clear_fact_retention(&self.pool, permit).await
     }
 
-    async fn set_legal_hold(&self, owner: &Owner) -> Result<(), StorageError> {
-        verbs::fact_retention::set_legal_hold(&self.pool, owner).await
+    async fn set_legal_hold(&self, permit: &OwnerWritePermit) -> Result<(), StorageError> {
+        verbs::fact_retention::set_legal_hold(&self.pool, permit).await
     }
 
     async fn get_legal_hold(&self, owner: &Owner) -> Result<bool, StorageError> {
         verbs::fact_retention::get_legal_hold(&self.pool, owner).await
     }
 
-    async fn clear_legal_hold(&self, owner: &Owner) -> Result<bool, StorageError> {
-        verbs::fact_retention::clear_legal_hold(&self.pool, owner).await
+    async fn clear_legal_hold(&self, permit: &OwnerWritePermit) -> Result<bool, StorageError> {
+        verbs::fact_retention::clear_legal_hold(&self.pool, permit).await
     }
 }
 

@@ -5,7 +5,7 @@
 use proxima_core::FactReceiptDraft;
 use std::sync::Arc;
 
-use crate::common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit};
 use proxima_core::engine::Engine;
 use proxima_core::mcp::core_tools::list_change_events::{ListChangeEventsArgs, list_change_events};
 use proxima_core::mcp::{McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
@@ -495,7 +495,7 @@ where
     let payload_value =
         serde_json::to_value(payload).map_err(|err| StorageError::Internal(err.to_string()))?;
     let draft = draft_for_payload::<F>(owner, &payload_value);
-    let authz = AuthzContext::single_owner(owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(owner, AuthPath::HostBearer);
     let authorized = engine
         .authorize_fact_ingest(&authz, Relation::Ingest, draft)
         .await
@@ -550,10 +550,11 @@ async fn append_follow_head_edge_for_relation(
         .resolve_relation(relation_id)
         .expect("follow relation");
     let edge_id = Uuid::now_v7();
+    let permit = owner_write_permit(owner, proxima_core::AccessKind::Fact).await?;
     let mut tx = pg.pool_for_tests().begin().await?;
     append_owner_checked_edge(
         &mut tx,
-        owner,
+        &permit,
         EdgeId::new(edge_id),
         relation,
         CheckedEdgeEndpoint::fact_entity(proxima_core::FactEntityId::new(source_fact_entity_id)),
@@ -596,10 +597,11 @@ async fn append_pinned_edge_for_relation(
         .resolve_relation(relation_id)
         .expect("pin relation");
     let edge_id = Uuid::now_v7();
+    let permit = owner_write_permit(owner, proxima_core::AccessKind::Fact).await?;
     let mut tx = pg.pool_for_tests().begin().await?;
     append_owner_checked_edge(
         &mut tx,
-        owner,
+        &permit,
         EdgeId::new(edge_id),
         relation,
         CheckedEdgeEndpoint::fact(MemoryId::new(source_memory_id)),
@@ -699,7 +701,7 @@ async fn follow_head_edge_writes_log_and_graph_resolves_to_latest_head()
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let source_v2 = ingest_fact(&pg, &engine, &owner, &fact("source", "v2", "Present")).await?;
 
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let mut req = QueryRequest::for_owner(owner);
         req.limit = 100;
         let response = engine.query(&authz, &req).await?;
@@ -739,7 +741,7 @@ async fn follow_head_tombstoned_head_uses_existing_visibility()
         let owner = owner_fixture();
         let registry = registry_for_test();
         let engine = engine_for(&pg, registry.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
         let source = ingest_fact(&pg, &engine, &owner, &fact("source", "v1", "Present")).await?;
         let target_v1 = ingest_fact(&pg, &engine, &owner, &fact("target", "v1", "Present")).await?;
@@ -844,10 +846,11 @@ async fn required_tag_rejects_endpoint_schema_missing_tag() -> Result<(), Box<dy
             .resolve_relation(TEST_FOLLOW_ACTOR_RELATION)
             .expect("tagged follow relation");
 
+        let permit = owner_write_permit(&owner, proxima_core::AccessKind::Fact).await?;
         let mut tx = pg.pool_for_tests().begin().await?;
         let err = append_owner_checked_edge(
             &mut tx,
-            &owner,
+            &permit,
             EdgeId::new(Uuid::now_v7()),
             relation,
             CheckedEdgeEndpoint::fact_entity(proxima_core::FactEntityId::new(source_entity)),
@@ -1033,10 +1036,11 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
         let follow_relation = registry
             .resolve_relation(TEST_FOLLOW_RELATION)
             .expect("follow relation");
+        let permit = owner_write_permit(&owner, proxima_core::AccessKind::Fact).await?;
         let mut tx = pg.pool_for_tests().begin().await?;
         let err = append_owner_checked_edge(
             &mut tx,
-            &owner,
+            &permit,
             EdgeId::new(Uuid::now_v7()),
             follow_relation,
             CheckedEdgeEndpoint::fact(source.memory_id),
@@ -1053,7 +1057,7 @@ async fn endpoint_guards_reject_binding_mismatch_and_invalid_fact_entities()
             .expect("pin relation");
         let err = append_owner_checked_edge(
             &mut tx,
-            &owner,
+            &permit,
             EdgeId::new(Uuid::now_v7()),
             pin_relation,
             CheckedEdgeEndpoint::fact_entity(proxima_core::FactEntityId::new(source_entity)),
@@ -1209,7 +1213,7 @@ async fn change_history_and_list_change_events_preserve_fact_entity_endpoints()
 
         let ctx = McpToolCtx {
             owner,
-            authz: AuthzContext::single_owner(&owner, AuthPath::System),
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
             handles: None,
             mode: OutputMode::RawIds,
             registry: Arc::new(registry),
@@ -1291,7 +1295,7 @@ async fn pin_relations_still_round_trip_memory_endpoints() -> Result<(), Box<dyn
             )
         );
 
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let mut req = QueryRequest::for_owner(owner);
         req.limit = 100;
         let response = engine.query(&authz, &req).await?;

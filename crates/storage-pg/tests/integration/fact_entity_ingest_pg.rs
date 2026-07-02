@@ -438,7 +438,7 @@ where
     let payload_value =
         serde_json::to_value(payload).map_err(|err| StorageError::Internal(err.to_string()))?;
     let draft = draft_for::<P>(owner, &payload_value);
-    let authz = AuthzContext::single_owner(owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(owner, AuthPath::HostBearer);
     let authorized = engine
         .authorize_fact_ingest(&authz, Relation::Ingest, draft)
         .await
@@ -727,7 +727,7 @@ async fn replay_is_idempotent_and_does_not_mint_or_move_entity() {
         let draft = draft_for::<FileRevisionV1>(&owner, &payload_value);
         let authorized = engine
             .authorize_fact_ingest(
-                &AuthzContext::single_owner(&owner, AuthPath::System),
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 Relation::Ingest,
                 draft,
             )

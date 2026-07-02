@@ -41,6 +41,8 @@ mod git;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use proxima_core::access::AccessKind;
+use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{AuthzContext, Cursor, Engine, MemoryId, Owner, SourceBatchId, ToolError};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -137,6 +139,13 @@ impl<'a> CodeIngestContext<'a> {
 
     fn pool(&self) -> &PgPool {
         self.store.pool()
+    }
+
+    async fn owner_write_permit(&self, owner: &Owner) -> Result<OwnerWritePermit, IngestError> {
+        self.engine
+            .authorize_owner_write(self.authz, owner, AccessKind::Fact)
+            .await
+            .map_err(IngestError::from)
     }
 
     async fn file_revision_heads(
@@ -386,6 +395,7 @@ impl LocalGitSource {
         let head_tree_sha = git::tree_sha(&self.repo_path, "HEAD")?;
         let now = time::OffsetDateTime::now_utc();
         let batch_id = SourceBatchId::new(Uuid::now_v7());
+        let permit = ctx.owner_write_permit(&self.owner).await?;
         let head_files = git::ls_files(&self.repo_path, "HEAD")?;
         let present_paths: HashSet<String> =
             head_files.iter().map(|(path, _)| path.clone()).collect();
@@ -411,6 +421,7 @@ impl LocalGitSource {
             pending_present.push(
                 self.ingest_present_blob(
                     pool,
+                    &permit,
                     &head_sha,
                     batch_id,
                     now,
@@ -429,6 +440,7 @@ impl LocalGitSource {
                 pending_deleted.push(
                     self.tombstone_deleted_path(
                         pool,
+                        &permit,
                         &head_sha,
                         batch_id,
                         now,
@@ -441,13 +453,13 @@ impl LocalGitSource {
             }
         }
 
-        crate::ingest::close_local_git_batch(pool, &self.owner, batch_id).await?;
+        crate::ingest::close_local_git_batch(pool, &permit, batch_id).await?;
         for pending in pending_present {
-            self.derive_present_blob(ctx, batch_id, pending, &mut report)
+            self.derive_present_blob(ctx, &permit, batch_id, pending, &mut report)
                 .await?;
         }
         for pending in pending_deleted {
-            self.derive_deleted_path(ctx, batch_id, pending, &mut report)
+            self.derive_deleted_path(ctx, &permit, batch_id, pending, &mut report)
                 .await?;
         }
         let cursor = encode_cursor(&CodeCursor {
@@ -477,6 +489,7 @@ impl LocalGitSource {
         let pool = ctx.pool();
         let now = time::OffsetDateTime::now_utc();
         let batch_id = SourceBatchId::new(Uuid::now_v7());
+        let permit = ctx.owner_write_permit(&self.owner).await?;
 
         // Diff this commit against its first parent (or against the
         // empty tree for a root commit, where `ls-tree` of the commit
@@ -506,7 +519,7 @@ impl LocalGitSource {
             committer_time: commit_info.committer_time,
             message: commit_info.message.clone(),
         };
-        let outcome = ingest_commit(pool, &self.owner, batch_id, &commit_payload, now).await?;
+        let outcome = ingest_commit(pool, &permit, batch_id, &commit_payload, now).await?;
         if outcome.idempotent_replay {
             report.commits_replayed += 1;
         } else {
@@ -523,6 +536,7 @@ impl LocalGitSource {
             match self
                 .ingest_changed_path(
                     pool,
+                    &permit,
                     commit_info,
                     batch_id,
                     now,
@@ -543,6 +557,7 @@ impl LocalGitSource {
             pending_deleted.push(
                 self.tombstone_deleted_path(
                     pool,
+                    &permit,
                     &commit_info.sha,
                     batch_id,
                     now,
@@ -555,13 +570,13 @@ impl LocalGitSource {
         }
 
         // Close this commit's batch before any F→A derivation consumes it.
-        crate::ingest::close_local_git_batch(pool, &self.owner, batch_id).await?;
+        crate::ingest::close_local_git_batch(pool, &permit, batch_id).await?;
         for pending in pending_present {
-            self.derive_present_blob(ctx, batch_id, pending, report)
+            self.derive_present_blob(ctx, &permit, batch_id, pending, report)
                 .await?;
         }
         for pending in pending_deleted {
-            self.derive_deleted_path(ctx, batch_id, pending, report)
+            self.derive_deleted_path(ctx, &permit, batch_id, pending, report)
                 .await?;
         }
         Ok(())
@@ -573,6 +588,7 @@ impl LocalGitSource {
     async fn ingest_changed_path(
         &self,
         pool: &PgPool,
+        permit: &OwnerWritePermit,
         commit_info: &CommitInfo,
         batch_id: SourceBatchId,
         now: time::OffsetDateTime,
@@ -585,6 +601,7 @@ impl LocalGitSource {
             return self
                 .tombstone_deleted_path(
                     pool,
+                    permit,
                     &commit_info.sha,
                     batch_id,
                     now,
@@ -597,6 +614,7 @@ impl LocalGitSource {
         };
         self.ingest_present_blob(
             pool,
+            permit,
             &commit_info.sha,
             batch_id,
             now,
@@ -616,6 +634,7 @@ impl LocalGitSource {
     async fn ingest_present_blob(
         &self,
         pool: &PgPool,
+        permit: &OwnerWritePermit,
         indexed_commit_sha: &str,
         batch_id: SourceBatchId,
         now: time::OffsetDateTime,
@@ -639,8 +658,7 @@ impl LocalGitSource {
             indexed_commit_sha: indexed_commit_sha.to_string(),
             state: FileState::Present,
         };
-        let file_revision =
-            ingest_file_revision(pool, &self.owner, batch_id, &rev_payload, now).await?;
+        let file_revision = ingest_file_revision(pool, permit, batch_id, &rev_payload, now).await?;
         report.files_present_emitted += 1;
 
         let analysis_key = (content_sha256, language.clone());
@@ -675,6 +693,7 @@ impl LocalGitSource {
     async fn derive_present_blob(
         &self,
         ctx: &CodeIngestContext<'_>,
+        permit: &OwnerWritePermit,
         batch_id: SourceBatchId,
         pending: PendingPresentBlob,
         report: &mut IndexReport,
@@ -696,7 +715,7 @@ impl LocalGitSource {
                     tombstone_chunk(self.repo_id, &pending.path, prior, pending.language.clone());
                 append_code_slice(
                     pool,
-                    &self.owner,
+                    permit,
                     batch_id,
                     &tomb,
                     pending.file_revision,
@@ -725,7 +744,7 @@ impl LocalGitSource {
             };
             let outcome = append_code_slice(
                 pool,
-                &self.owner,
+                permit,
                 batch_id,
                 &payload,
                 pending.file_revision,
@@ -781,7 +800,7 @@ impl LocalGitSource {
 
             ingest_calls_edge(
                 pool,
-                &self.owner,
+                permit,
                 &CallEdgeDraft {
                     source_memory_id: caller.memory_id.into_inner(),
                     target_memory_id: callee.memory_id.into_inner(),
@@ -803,6 +822,7 @@ impl LocalGitSource {
     async fn tombstone_deleted_path(
         &self,
         pool: &PgPool,
+        permit: &OwnerWritePermit,
         commit_sha: &str,
         batch_id: SourceBatchId,
         now: time::OffsetDateTime,
@@ -819,8 +839,7 @@ impl LocalGitSource {
             indexed_commit_sha: commit_sha.to_string(),
             state: FileState::Tombstone,
         };
-        let file_revision =
-            ingest_file_revision(pool, &self.owner, batch_id, &rev_payload, now).await?;
+        let file_revision = ingest_file_revision(pool, permit, batch_id, &rev_payload, now).await?;
         report.files_tombstoned += 1;
 
         Ok(PendingDeletedPath {
@@ -834,6 +853,7 @@ impl LocalGitSource {
     async fn derive_deleted_path(
         &self,
         ctx: &CodeIngestContext<'_>,
+        permit: &OwnerWritePermit,
         batch_id: SourceBatchId,
         pending: PendingDeletedPath,
         report: &mut IndexReport,
@@ -846,7 +866,7 @@ impl LocalGitSource {
             let tomb = tombstone_chunk(self.repo_id, &pending.path, prior, None);
             append_code_slice(
                 pool,
-                &self.owner,
+                permit,
                 batch_id,
                 &tomb,
                 pending.file_revision,

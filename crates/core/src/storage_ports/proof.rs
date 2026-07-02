@@ -1,3 +1,39 @@
+use crate::Owner;
+use crate::access::AccessKind;
+
+/// Sealed owner-write carrier for storage-tier writes.
+///
+/// Engine authorization is the only constructor. Storage backends use the
+/// stamped owner from this permit rather than accepting caller-supplied owner
+/// authority.
+#[derive(Debug)]
+pub struct OwnerWritePermit {
+    owner: Owner,
+    access_kind: AccessKind,
+    _private: (),
+}
+
+impl OwnerWritePermit {
+    #[must_use]
+    pub(crate) const fn new(owner: Owner, access_kind: AccessKind) -> Self {
+        Self {
+            owner,
+            access_kind,
+            _private: (),
+        }
+    }
+
+    #[must_use]
+    pub const fn owner(&self) -> &Owner {
+        &self.owner
+    }
+
+    #[must_use]
+    pub const fn access_kind(&self) -> AccessKind {
+        self.access_kind
+    }
+}
+
 /// Unforgeable witness that engine admission already enforced the relation
 /// descriptor's source-owner, owner-policy, and target-access gates before a
 /// storage backend performs the atomic edge append.

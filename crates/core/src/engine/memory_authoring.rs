@@ -3,6 +3,7 @@ use crate::access::Relation;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, StorageError};
+use crate::storage_ports::OwnerWritePermit;
 use crate::{
     CORE_SUPERSEDES_RELATION, EdgeAuthorshipKind, EdgeId, EndpointBinding, EntityId, EntityKind,
     InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner, RegisteredRelation,
@@ -117,23 +118,26 @@ impl Engine {
             .map(|edge| edge.relation.descriptor.relation.as_str());
 
         let outcome = self
-            .author_derived(AuthorDerivedRequestInput {
-                memory_id: req.memory_id,
-                owner,
-                kind: req.kind,
-                text: req.text,
-                schema_id: req.schema_id,
-                schema_version: req.schema_version,
-                operator_kind: req.operator_kind,
-                operator_id: req.operator_id,
-                input_contract_id: req.input_contract_id,
-                source_batch_id,
-                model_id: req.model_id,
-                prompt_version: req.prompt_version,
-                sidecar_payload: req.sidecar_payload,
-                supersedes: req.supersedes,
-                edges: &edges,
-            })
+            .author_derived(
+                write_permit.owner_write_permit(),
+                AuthorDerivedRequestInput {
+                    memory_id: req.memory_id,
+                    owner,
+                    kind: req.kind,
+                    text: req.text,
+                    schema_id: req.schema_id,
+                    schema_version: req.schema_version,
+                    operator_kind: req.operator_kind,
+                    operator_id: req.operator_id,
+                    input_contract_id: req.input_contract_id,
+                    source_batch_id,
+                    model_id: req.model_id,
+                    prompt_version: req.prompt_version,
+                    sidecar_payload: req.sidecar_payload,
+                    supersedes: req.supersedes,
+                    edges: &edges,
+                },
+            )
             .await
             .map_err(map_derived_storage_error)?;
 
@@ -171,7 +175,8 @@ impl Engine {
         req: AppendMemoryEdgeRequestInput<'_>,
     ) -> Result<EdgeId, ProtocolError> {
         let (owner, source_kind) = self.load_memory_owner_kind(req.source_memory_id).await?;
-        self.authorize_write(authz, &owner, write_relation_for_entity_kind(source_kind))
+        let write_permit = self
+            .authorize_write(authz, &owner, write_relation_for_entity_kind(source_kind))
             .await?;
         let (target_owner, target_kind) = self
             .authorize_edge_target_policy(authz, req.relation, req.target_memory_id)
@@ -205,7 +210,11 @@ impl Engine {
         self.storage()
             .memory_authoring
             .memory_authoring
-            .append_memory_edge(&edge, crate::storage_ports::EdgeWriteProof::new())
+            .append_memory_edge(
+                &edge,
+                write_permit.owner_write_permit(),
+                crate::storage_ports::EdgeWriteProof::new(),
+            )
             .await
             .map_err(|err| ProtocolError::internal(err.to_string()))
     }
@@ -225,6 +234,7 @@ impl Engine {
     /// this method.
     pub(in crate::engine) async fn author_derived(
         &self,
+        permit: &OwnerWritePermit,
         req: AuthorDerivedRequestInput<'_>,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
         validate_operator_memory_invocation_request(&req)?;
@@ -312,6 +322,7 @@ impl Engine {
             .memory_authoring
             .author_derived(
                 &storage_req,
+                permit,
                 crate::storage_ports::OperatorWriteProof::new(),
             )
             .await
@@ -713,24 +724,28 @@ mod tests {
     async fn author_derived_rejects_operator_ftoa_missing_source_batch() {
         let engine = engine();
         let owner = owner();
+        let permit = OwnerWritePermit::new(owner, crate::access::AccessKind::Perspective);
         let err = engine
-            .author_derived(AuthorDerivedRequestInput {
-                memory_id: MemoryId::new(uuid::Uuid::now_v7()),
-                owner,
-                kind: EntityKind::Abstraction,
-                text: "body".into(),
-                schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
-                schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
-                operator_kind: MemoryOperatorKind::FtoA,
-                operator_id: OperatorId::new(uuid::Uuid::now_v7()),
-                input_contract_id: InputContractId::new(uuid::Uuid::now_v7()),
-                source_batch_id: None,
-                model_id: "test-model",
-                prompt_version: "test",
-                sidecar_payload: derivation_sidecar(),
-                supersedes: None,
-                edges: &[],
-            })
+            .author_derived(
+                &permit,
+                AuthorDerivedRequestInput {
+                    memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+                    owner,
+                    kind: EntityKind::Abstraction,
+                    text: "body".into(),
+                    schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
+                    schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+                    operator_kind: MemoryOperatorKind::FtoA,
+                    operator_id: OperatorId::new(uuid::Uuid::now_v7()),
+                    input_contract_id: InputContractId::new(uuid::Uuid::now_v7()),
+                    source_batch_id: None,
+                    model_id: "test-model",
+                    prompt_version: "test",
+                    sidecar_payload: derivation_sidecar(),
+                    supersedes: None,
+                    edges: &[],
+                },
+            )
             .await
             .expect_err("F→A invocation without source_batch_id is invalid before storage");
 

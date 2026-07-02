@@ -113,7 +113,8 @@ async fn seed_file_revision_state(
     state: FileState,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     // 1. FactIngest creates the memories row + supporting plumbing.
-    let authz = proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
+    let authz =
+        proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::HostBearer);
     let draft = fresh_draft(owner, FileRevisionV1::SCHEMA_ID, seed);
     let outcome = engine.fact_ingest(&authz, draft).await?;
     let memory_id = outcome.memory_id.into_inner();
@@ -239,7 +240,10 @@ async fn heads_only_returns_latest_per_natural_key() {
         };
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &req,
             )
             .await?;
@@ -277,7 +281,10 @@ async fn heads_only_returns_latest_per_natural_key() {
         };
         let resp_all = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &req_all,
             )
             .await?;
@@ -315,7 +322,7 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
                 .fact_ingest(
                     &proxima_core::AuthzContext::single_owner(
                         &owner,
-                        proxima_core::AuthPath::System,
+                        proxima_core::AuthPath::HostBearer,
                     ),
                     draft,
                 )
@@ -339,7 +346,10 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
         };
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &req,
             )
             .await?;
@@ -407,7 +417,10 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
         };
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &req,
             )
             .await?;
@@ -469,7 +482,10 @@ async fn owner_snapshot_heads_only_folds_stateful_fact_schemas() {
         req.limit = 100;
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &req,
             )
             .await?;
@@ -496,7 +512,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
         let storage = Arc::new(pg.clone()).storage_ports();
         let (_user, owner) = make_owner();
         let authz =
-            proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
+            proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::HostBearer);
         let engine = Engine::new(registry_for_test()).with_storage_ports(storage);
         let repo_id = Uuid::now_v7();
 
@@ -618,7 +634,10 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
         req.limit = 100;
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &req,
             )
             .await?;
@@ -629,7 +648,10 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
         req.tombstones = TombstoneFilter::IncludeTombstoned;
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &req,
             )
             .await?;
@@ -679,7 +701,10 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
         req.limit = 1;
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &req,
             )
             .await?;
@@ -688,7 +713,10 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
         req.tombstones = TombstoneFilter::IncludeTombstoned;
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &req,
             )
             .await?;

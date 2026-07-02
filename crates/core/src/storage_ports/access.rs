@@ -1,4 +1,5 @@
 use crate::storage::StorageError;
+use crate::storage_ports::OwnerWritePermit;
 use crate::{EntityId, GroupId, MembershipRow, OwnerRef, Relation, UserId};
 
 #[async_trait::async_trait]
@@ -28,8 +29,8 @@ pub trait OwnerTransferPort: Send + Sync {
     /// denial rather than a storage error.
     async fn transfer_to_world(
         &self,
+        permit: &OwnerWritePermit,
         entity: EntityId,
-        from_owner: OwnerRef,
     ) -> Result<bool, StorageError>;
 }
 
@@ -44,6 +45,7 @@ pub trait OwnerMembershipAdminPort: Send + Sync {
 
     async fn add_group_member(
         &self,
+        permit: &OwnerWritePermit,
         group_id: GroupId,
         member_user_id: UserId,
         relation: Relation,
@@ -52,6 +54,7 @@ pub trait OwnerMembershipAdminPort: Send + Sync {
 
     async fn remove_group_member(
         &self,
+        permit: &OwnerWritePermit,
         group_id: GroupId,
         member_user_id: UserId,
     ) -> Result<(), StorageError>;

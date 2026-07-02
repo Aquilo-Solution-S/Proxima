@@ -249,7 +249,7 @@ impl ToolHarness {
     fn ctx(&self) -> McpToolCtx {
         McpToolCtx {
             owner: self.owner,
-            authz: AuthzContext::single_owner(&self.owner, AuthPath::System),
+            authz: AuthzContext::single_owner(&self.owner, AuthPath::HostBearer),
             handles: Some(self.handles.clone()),
             mode: OutputMode::Handles,
             registry: self.registry.clone(),

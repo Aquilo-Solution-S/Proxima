@@ -16,6 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOW = "PR9-RATCHET-ALLOW"
+OWNER_WRITE_PERMIT = "OwnerWritePermit"
 
 # Dated exemptions for flavor code that still reads `proxima_core.*` tables
 # directly instead of going through an authorized flavor-read facade. Every
@@ -404,6 +405,134 @@ def check_caller_supplied_audit(findings: list[Finding]) -> None:
                 findings.append(Finding(compliance, line_no, "public ComplianceAuditContext constructor", line))
 
 
+def rust_signature_for(text: str, name: str) -> tuple[int, str] | None:
+    match = re.search(
+        rf"(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+{re.escape(name)}(?:<[^>{{}}]*>)?\s*\(",
+        text,
+    )
+    if match is None:
+        return None
+    start = match.start()
+    brace = text.find("{", match.end())
+    semi = text.find(";", match.end())
+    ends = [idx for idx in (brace, semi) if idx != -1]
+    if not ends:
+        end = len(text)
+    else:
+        end = min(ends)
+    return text.count("\n", 0, start) + 1, text[start:end]
+
+
+def require_owner_write_permit(
+    findings: list[Finding],
+    rel_path: str,
+    names: list[str],
+    *,
+    rule: str,
+) -> None:
+    path = ROOT / rel_path
+    if not path.exists():
+        findings.append(Finding(path, 1, rule, "expected file missing"))
+        return
+    text = path.read_text(encoding="utf-8")
+    for name in names:
+        found = rust_signature_for(text, name)
+        if found is None:
+            findings.append(Finding(path, 1, rule, f"expected write surface `{name}` missing"))
+            continue
+        line_no, signature = found
+        if OWNER_WRITE_PERMIT not in signature:
+            first = signature.splitlines()[0]
+            findings.append(Finding(path, line_no, rule, f"{name} lacks &OwnerWritePermit: {first}"))
+
+
+def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
+    storage_port_methods = {
+        "crates/core/src/storage_ports/fact.rs": [
+            "ingest_fact_atomic",
+            "close_batch",
+        ],
+        "crates/core/src/storage_ports/mcp.rs": ["persist_mcp_call_atomic"],
+        "crates/core/src/storage_ports/memory.rs": [
+            "author_derived",
+            "append_memory_edge",
+        ],
+        "crates/core/src/storage_ports/embeddings.rs": ["enqueue_missing_embedding_jobs"],
+        "crates/core/src/storage_ports/goals.rs": [
+            "create_goal_atomic",
+            "transition_goal_atomic",
+            "achieve_goal_atomic",
+            "modify_goal_atomic",
+            "decompose_goal_atomic",
+        ],
+        "crates/core/src/storage_ports/access.rs": [
+            "transfer_to_world",
+            "add_group_member",
+            "remove_group_member",
+        ],
+        "crates/core/src/storage_ports/cursors.rs": ["store_source_cursor"],
+        "crates/core/src/storage_ports/compliance.rs": [
+            "upsert_fact_retention",
+            "clear_fact_retention",
+            "set_legal_hold",
+            "clear_legal_hold",
+        ],
+    }
+    storage_pg_verbs = {
+        "crates/storage-pg/src/verbs/fact_ingest.rs": [
+            "ingest_fact_atomic",
+            "ingest_fact_in_tx",
+            "ingest_fact_for_owner_in_tx",
+            "ingest_fact",
+            "ingest_fact_for_owner",
+        ],
+        "crates/storage-pg/src/verbs/derive_append.rs": [
+            "append_derived_in_tx",
+            "append_derived_with_edges_in_tx",
+        ],
+        "crates/storage-pg/src/verbs/edge_write.rs": [
+            "append_owner_checked_memory_edge",
+            "append_owner_checked_edge",
+            "append_owner_checked_typed_memory_edge",
+            "append_owner_checked_typed_edge",
+        ],
+        "crates/storage-pg/src/verbs/close_batch.rs": ["close_batch"],
+        "crates/storage-pg/src/verbs/persist_mcp_call.rs": [
+            "persist_mcp_call_atomic",
+            "persist_mcp_call_in_tx",
+        ],
+        "crates/storage-pg/src/verbs/fact_retention.rs": [
+            "upsert_fact_retention",
+            "clear_fact_retention",
+            "set_legal_hold",
+            "clear_legal_hold",
+        ],
+        "crates/storage-pg/src/verbs/fact_embeddings.rs": ["enqueue_missing_embedding_jobs"],
+        "crates/storage-pg/src/verbs/source_cursors.rs": ["store_source_cursor"],
+        "crates/storage-pg/src/verbs/goal_write.rs": [
+            "create_goal_atomic",
+            "transition_goal_atomic",
+            "achieve_goal_atomic",
+            "modify_goal_atomic",
+            "decompose_goal_atomic",
+        ],
+    }
+    for rel_path, names in storage_port_methods.items():
+        require_owner_write_permit(
+            findings,
+            rel_path,
+            names,
+            rule="storage port write method lacks OwnerWritePermit",
+        )
+    for rel_path, names in storage_pg_verbs.items():
+        require_owner_write_permit(
+            findings,
+            rel_path,
+            names,
+            rule="storage-pg write verb lacks OwnerWritePermit",
+        )
+
+
 def run_self_test() -> int:
     """Assert the flavor core SQL detector fires on its committed fixture.
 
@@ -432,6 +561,14 @@ def run_self_test() -> int:
         failures.append(
             f"expected exactly 2 flagged literals (`proxima_core::` Rust paths must stay allowed), got {len(hits)}"
         )
+    good = "pub async fn write(\n    permit: &OwnerWritePermit,\n) -> Result<(), StorageError> { Ok(()) }"
+    bad = "pub async fn write(\n    owner: &Owner,\n) -> Result<(), StorageError> { Ok(()) }"
+    good_sig = rust_signature_for(good, "write")
+    bad_sig = rust_signature_for(bad, "write")
+    if good_sig is None or OWNER_WRITE_PERMIT not in good_sig[1]:
+        failures.append("OwnerWritePermit positive signature fixture not recognized")
+    if bad_sig is None or OWNER_WRITE_PERMIT in bad_sig[1]:
+        failures.append("OwnerWritePermit missing-signature fixture not detected")
     if failures:
         for failure in failures:
             print(f"self-test failed: {failure}: {rel}", file=sys.stderr)
@@ -462,6 +599,7 @@ def main() -> int:
     check_tombstone_tool(findings)
     check_public_witnesses(findings)
     check_caller_supplied_audit(findings)
+    check_owner_write_permit_surfaces(findings)
 
     if findings:
         print("architecture guardrail violations:", file=sys.stderr)

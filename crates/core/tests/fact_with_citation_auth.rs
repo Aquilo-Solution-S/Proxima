@@ -154,7 +154,7 @@ fn mapping(schema_id: SchemaId) -> InlineCitationMappingDraft {
 #[tokio::test]
 async fn authorize_fact_with_citation_rejects_kind_mismatch() {
     let owner = owner();
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let mut cited_object = cited_object();
     cited_object.schema_id = TestFact::schema_id();
     cited_object.schema_version = SchemaVersion::new(TestFact::SCHEMA_VERSION);
@@ -176,7 +176,7 @@ async fn authorize_fact_with_citation_rejects_kind_mismatch() {
 #[tokio::test]
 async fn authorize_fact_with_citation_derives_cited_object_content_hash() {
     let owner = owner();
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let expected = TestCitedObject {
         body: "object".to_string(),
     }
@@ -199,7 +199,7 @@ async fn authorize_fact_with_citation_derives_cited_object_content_hash() {
 #[tokio::test]
 async fn authorize_fact_with_citation_rejects_mapping_target_mismatch() {
     let owner = owner();
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
     let err = engine()
         .authorize_fact_with_citation(
@@ -218,7 +218,7 @@ async fn authorize_fact_with_citation_rejects_mapping_target_mismatch() {
 #[tokio::test]
 async fn authorize_citation_attachment_accepts_valid_pair() {
     let owner = owner();
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let memory_id = proxima_core::MemoryId::new(Uuid::now_v7());
     let expected = TestCitedObject {
         body: "object".to_string(),
@@ -249,7 +249,7 @@ async fn authorize_citation_attachment_accepts_valid_pair() {
 #[tokio::test]
 async fn authorize_citation_attachment_rejects_mapping_target_mismatch() {
     let owner = owner();
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
     let err = engine()
         .authorize_citation_attachment(
@@ -269,7 +269,7 @@ async fn authorize_citation_attachment_rejects_mapping_target_mismatch() {
 #[tokio::test]
 async fn authorize_fact_with_citation_rejects_unknown_schema_ids() {
     let owner = owner();
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let mut cited_object = cited_object();
     cited_object.schema_id = SchemaId::new("test/unknown-cited-object".to_string());
 

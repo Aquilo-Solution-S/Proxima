@@ -13,13 +13,14 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{
     AuthorizedCitationAttachment, AuthorizedInlineCitationMapping, AuthorizedInlineCitedObject,
     Citation, CitationSpec, FactIngestOutcome, FactWriteCommand,
 };
 use proxima_core::{
-    AuthorizedFactWithCitation, AuthorizedFactWrite, AuthzContext, Engine, EntityKind, FactPayload,
-    FactReceiptId, MemoryId, Owner, OwnerRefKind, Relation, SourceBatchId, StorageError,
+    AuthorizedFactWithCitation, AuthorizedFactWrite, EntityKind, FactPayload, FactReceiptId,
+    MemoryId, Owner, OwnerRefKind, SourceBatchId, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -48,30 +49,23 @@ pub trait PgFactSidecar: FactPayload + Sized {
 /// Common context for typed Fact ingest helpers.
 #[derive(Debug, Clone)]
 pub struct FactIngestContext<'a> {
-    pub owner: &'a Owner,
+    pub permit: &'a OwnerWritePermit,
     pub source_id: &'a str,
     pub source_batch_id: SourceBatchId,
     pub observed_at: time::OffsetDateTime,
     pub embedding_model_id: Option<&'a str>,
 }
 
-fn authz_for_owner(authz: &AuthzContext, owner: &Owner) -> Result<AuthzContext, StorageError> {
-    if authz.principal() == *owner {
-        return Ok(authz.clone());
-    }
-    authz.clone().narrowed_to_owner(*owner).ok_or_else(|| {
-        StorageError::ConstraintViolation(
-            "requested owner is not available in authz context".into(),
-        )
-    })
-}
-
 impl<'a> FactIngestContext<'a> {
     /// Build a context with `observed_at = now` and no embedding model.
     #[must_use]
-    pub fn new(owner: &'a Owner, source_id: &'a str, source_batch_id: SourceBatchId) -> Self {
+    pub fn new(
+        permit: &'a OwnerWritePermit,
+        source_id: &'a str,
+        source_batch_id: SourceBatchId,
+    ) -> Self {
         Self {
-            owner,
+            permit,
             source_id,
             source_batch_id,
             observed_at: time::OffsetDateTime::now_utc(),
@@ -164,12 +158,12 @@ impl PendingCitation<'_> {
 /// map to `Internal`.
 pub async fn ingest_fact_atomic(
     pool: &PgPool,
-    owner: &Owner,
+    permit: &OwnerWritePermit,
     draft: &FactWriteCommand,
     embedding_model_id: Option<&str>,
 ) -> Result<FactIngestOutcome, StorageError> {
     let mut tx = pool.begin().await.map_err(internal)?;
-    let outcome = ingest_fact_command_in_tx(&mut tx, owner, draft, embedding_model_id).await?;
+    let outcome = ingest_fact_command_in_tx(&mut tx, permit, draft, embedding_model_id).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }
@@ -245,10 +239,9 @@ where
 /// materialization, or sidecar insertion.
 pub async fn ingest_fact_in_tx<P, F>(
     tx: &mut Transaction<'_, Postgres>,
-    engine: &Engine,
-    authz: &AuthzContext,
-    relation: Relation,
+    permit: &OwnerWritePermit,
     payload: &P,
+    embedding_model_id: Option<&str>,
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -258,8 +251,7 @@ where
         &'t FactIngestOutcome,
     ) -> FactIngestSidecarFuture<'t>,
 {
-    let owner = authz.principal();
-    ingest_fact_for_owner_in_tx(tx, engine, authz, &owner, relation, payload, sidecar).await
+    ingest_fact_for_owner_in_tx(tx, permit, payload, embedding_model_id, sidecar).await
 }
 
 /// Transaction-scoped uncited Fact ingest helper for an explicit target owner.
@@ -270,11 +262,9 @@ where
 /// insertion, or embedding enqueue.
 pub async fn ingest_fact_for_owner_in_tx<P, F>(
     tx: &mut Transaction<'_, Postgres>,
-    engine: &Engine,
-    authz: &AuthzContext,
-    owner: &Owner,
-    relation: Relation,
+    permit: &OwnerWritePermit,
     payload: &P,
+    embedding_model_id: Option<&str>,
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -291,14 +281,21 @@ where
         payload,
         now,
     );
-    let effective_authz = authz_for_owner(authz, owner)?;
-    let authorized = engine
-        .authorize_fact_ingest(&effective_authz, relation, draft)
-        .await
-        .map_err(internal)?;
-    let embedding_client = engine.embed_client();
-    let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
-    ingest_fact_with_sidecar_in_tx(tx, &authorized, embedding_model_id, sidecar).await
+    let natural_key_columns = P::natural_key_columns()
+        .iter()
+        .copied()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let derive_inputs = FactEntityDeriveInputs {
+        sidecar_table: P::sidecar_table(),
+        natural_key_columns: &natural_key_columns,
+    };
+    let options = IngestCoreOptions {
+        embedding_model_id,
+        derive_inputs: Some(derive_inputs),
+        citation_plan: CitationPlan::DraftHint,
+    };
+    ingest_core(tx, permit.owner(), &draft, options, sidecar).await
 }
 
 /// Pool-scoped uncited Fact ingest helper. Opens its own transaction;
@@ -310,10 +307,9 @@ where
 /// insertion, or transaction commit.
 pub async fn ingest_fact<P, F>(
     pool: &PgPool,
-    engine: &Engine,
-    authz: &AuthzContext,
-    relation: Relation,
+    permit: &OwnerWritePermit,
     payload: &P,
+    embedding_model_id: Option<&str>,
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -323,8 +319,7 @@ where
         &'t FactIngestOutcome,
     ) -> FactIngestSidecarFuture<'t>,
 {
-    let owner = authz.principal();
-    ingest_fact_for_owner(pool, engine, authz, &owner, relation, payload, sidecar).await
+    ingest_fact_for_owner(pool, permit, payload, embedding_model_id, sidecar).await
 }
 
 /// Pool-scoped uncited Fact ingest helper for an explicit target owner.
@@ -335,11 +330,9 @@ where
 /// insertion, or transaction commit.
 pub async fn ingest_fact_for_owner<P, F>(
     pool: &PgPool,
-    engine: &Engine,
-    authz: &AuthzContext,
-    owner: &Owner,
-    relation: Relation,
+    permit: &OwnerWritePermit,
     payload: &P,
+    embedding_model_id: Option<&str>,
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -351,8 +344,7 @@ where
 {
     let mut tx = pool.begin().await.map_err(internal)?;
     let outcome =
-        ingest_fact_for_owner_in_tx(&mut tx, engine, authz, owner, relation, payload, sidecar)
-            .await?;
+        ingest_fact_for_owner_in_tx(&mut tx, permit, payload, embedding_model_id, sidecar).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }
@@ -383,7 +375,7 @@ where
     let sidecar_payload = payload.clone();
     ingest_fact_with_derived_sidecar_in_tx(
         tx,
-        ctx.owner,
+        ctx.permit,
         &draft,
         ctx.embedding_model_id,
         P::sidecar_table(),
@@ -412,7 +404,7 @@ where
 /// map to `Internal`.
 pub(crate) async fn ingest_fact_command_in_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    permit: &OwnerWritePermit,
     draft: &FactWriteCommand,
     embedding_model_id: Option<&str>,
 ) -> Result<FactIngestOutcome, StorageError> {
@@ -421,7 +413,7 @@ pub(crate) async fn ingest_fact_command_in_tx(
         derive_inputs: None,
         citation_plan: CitationPlan::DraftHint,
     };
-    ingest_core(tx, owner, draft, options, |_tx, _outcome| {
+    ingest_core(tx, permit.owner(), draft, options, |_tx, _outcome| {
         Box::pin(async { Ok(()) })
     })
     .await
@@ -442,7 +434,7 @@ pub(crate) async fn ingest_fact_command_in_tx(
 /// owns transaction rollback/commit.
 pub(crate) async fn ingest_fact_with_derived_sidecar_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    permit: &OwnerWritePermit,
     draft: &FactWriteCommand,
     embedding_model_id: Option<&str>,
     sidecar_table: Option<&str>,
@@ -469,7 +461,7 @@ where
         derive_inputs: Some(derive_inputs),
         citation_plan: CitationPlan::DraftHint,
     };
-    ingest_core(tx, owner, draft, options, sidecar).await
+    ingest_core(tx, permit.owner(), draft, options, sidecar).await
 }
 
 /// Run gated Fact ingest plus typed inline citation sidecars inside an
@@ -510,7 +502,7 @@ where
     };
     ingest_core(
         tx,
-        authorized.permit().owner(),
+        authorized.owner_write_permit().owner(),
         draft,
         options,
         fact_sidecar,
@@ -534,7 +526,7 @@ pub async fn attach_citation_in_tx(
 ) -> Result<AttachCitationOutcome, StorageError> {
     let memory_id = authorized.memory_id();
     let memory_uuid = memory_id.into_inner();
-    let owner = authorized.owner();
+    let owner = authorized.owner_write_permit().owner();
     let (owner_kind, owner_id) = owner_binds(owner);
 
     let existing_mapping_id = sqlx::query_scalar::<_, Option<uuid::Uuid>>(
@@ -739,7 +731,14 @@ where
         derive_inputs: Some(derive_inputs),
         citation_plan: CitationPlan::DraftHint,
     };
-    ingest_core(tx, authorized.permit().owner(), draft, options, sidecar).await
+    ingest_core(
+        tx,
+        authorized.owner_write_permit().owner(),
+        draft,
+        options,
+        sidecar,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_lines)]

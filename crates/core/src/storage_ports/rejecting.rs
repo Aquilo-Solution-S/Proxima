@@ -15,6 +15,7 @@ use super::memory::{
     CitationPort, EdgeReadPort, EdgeWriteProof, MemoryAuthoringPort, MemoryInspectPort,
     MemoryReadPort, OperatorWriteProof,
 };
+use super::proof::OwnerWritePermit;
 use super::registry::RegistryProjectionPort;
 use crate::SourceBatchId;
 use crate::access::AccessError;
@@ -48,7 +49,7 @@ pub(super) struct RejectingStorage;
 impl FactIngestPort for RejectingStorage {
     async fn ingest_fact_atomic(
         &self,
-        _owner: &Owner,
+        _permit: &OwnerWritePermit,
         _draft: &FactWriteCommand,
         _embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
@@ -84,6 +85,7 @@ impl FactIngestPort for RejectingStorage {
 impl McpCallWritePort for RejectingStorage {
     async fn persist_mcp_call_atomic(
         &self,
+        _permit: &OwnerWritePermit,
         _input: &McpCallLogInput,
     ) -> Result<McpCallLogOutcome, StorageError> {
         Err(StorageError::Internal(
@@ -107,6 +109,7 @@ impl MemoryAuthoringPort for RejectingStorage {
     async fn author_derived(
         &self,
         _req: &AuthorDerivedRequest<'_>,
+        _permit: &OwnerWritePermit,
         _proof: OperatorWriteProof,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
         Err(StorageError::Internal(
@@ -117,6 +120,7 @@ impl MemoryAuthoringPort for RejectingStorage {
     async fn append_memory_edge(
         &self,
         _edge: &DerivedEdgeSpec<'_>,
+        _permit: &OwnerWritePermit,
         _proof: EdgeWriteProof,
     ) -> Result<EdgeId, StorageError> {
         Err(StorageError::Internal(
@@ -249,7 +253,7 @@ impl EmbeddingJobPort for RejectingStorage {
 
     async fn enqueue_missing_embedding_jobs(
         &self,
-        _owner: &Owner,
+        _permit: &OwnerWritePermit,
         _model_id: &str,
         _limit: i64,
     ) -> Result<u64, StorageError> {
@@ -268,6 +272,7 @@ impl GoalWritePort for RejectingStorage {
     async fn create_goal_atomic(
         &self,
         _req: &CreateGoalAtomicRequest<'_>,
+        _permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -277,6 +282,7 @@ impl GoalWritePort for RejectingStorage {
     async fn transition_goal_atomic(
         &self,
         _req: &TransitionGoalAtomicRequest<'_>,
+        _permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -286,6 +292,7 @@ impl GoalWritePort for RejectingStorage {
     async fn achieve_goal_atomic(
         &self,
         _req: &AchieveGoalAtomicRequest<'_>,
+        _permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -295,6 +302,7 @@ impl GoalWritePort for RejectingStorage {
     async fn modify_goal_atomic(
         &self,
         _req: &ModifyGoalAtomicRequest<'_>,
+        _permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -304,6 +312,7 @@ impl GoalWritePort for RejectingStorage {
     async fn decompose_goal_atomic(
         &self,
         _req: &DecomposeGoalAtomicRequest<'_>,
+        _permit: &OwnerWritePermit,
     ) -> Result<DecomposeGoalOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -449,6 +458,7 @@ impl OwnerMembershipAdminPort for RejectingStorage {
 
     async fn add_group_member(
         &self,
+        _permit: &OwnerWritePermit,
         _group_id: GroupId,
         _member_user_id: UserId,
         _relation: Relation,
@@ -461,6 +471,7 @@ impl OwnerMembershipAdminPort for RejectingStorage {
 
     async fn remove_group_member(
         &self,
+        _permit: &OwnerWritePermit,
         _group_id: GroupId,
         _member_user_id: UserId,
     ) -> Result<(), StorageError> {
@@ -481,8 +492,8 @@ impl OwnerMembershipAdminPort for RejectingStorage {
 impl OwnerTransferPort for RejectingStorage {
     async fn transfer_to_world(
         &self,
+        _permit: &OwnerWritePermit,
         _entity: EntityId,
-        _from_owner: OwnerRef,
     ) -> Result<bool, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -494,7 +505,7 @@ impl OwnerTransferPort for RejectingStorage {
 impl SourceBatchPort for RejectingStorage {
     async fn close_batch(
         &self,
-        _principal: &OwnerRef,
+        _permit: &OwnerWritePermit,
         _source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError> {
         Err(StorageError::Internal(
@@ -517,7 +528,7 @@ impl SourceCursorPort for RejectingStorage {
 
     async fn store_source_cursor(
         &self,
-        _owner: &Owner,
+        _permit: &OwnerWritePermit,
         _source: &str,
         _cursor: &crate::Cursor,
     ) -> Result<(), StorageError> {
@@ -531,7 +542,7 @@ impl SourceCursorPort for RejectingStorage {
 impl FactRetentionPort for RejectingStorage {
     async fn upsert_fact_retention(
         &self,
-        _owner: &Owner,
+        _permit: &OwnerWritePermit,
         _seconds: i64,
     ) -> Result<(), StorageError> {
         Err(StorageError::Internal(
@@ -545,13 +556,13 @@ impl FactRetentionPort for RejectingStorage {
         ))
     }
 
-    async fn clear_fact_retention(&self, _owner: &Owner) -> Result<bool, StorageError> {
+    async fn clear_fact_retention(&self, _permit: &OwnerWritePermit) -> Result<bool, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
         ))
     }
 
-    async fn set_legal_hold(&self, _owner: &Owner) -> Result<(), StorageError> {
+    async fn set_legal_hold(&self, _permit: &OwnerWritePermit) -> Result<(), StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
         ))
@@ -563,7 +574,7 @@ impl FactRetentionPort for RejectingStorage {
         ))
     }
 
-    async fn clear_legal_hold(&self, _owner: &Owner) -> Result<bool, StorageError> {
+    async fn clear_legal_hold(&self, _permit: &OwnerWritePermit) -> Result<bool, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
         ))
