@@ -77,3 +77,27 @@ CREATE TABLE proxima_core.source_cursors (
 
 COMMENT ON TABLE proxima_core.source_cursors IS
   'Owner-scoped opaque source resume cursors for host projectors. Proxima persists and returns cursor bytea verbatim; it never interprets, validates, decodes, normalizes, or derives ordering from cursor bytes. Fresh writes remain engine-authorized owner writes; World cannot own cursor rows.';
+
+-- ---------------------------------------------------------------------------
+-- Task 12: owner-scoped legal/security holds
+-- ---------------------------------------------------------------------------
+-- A hold is an operator-controlled legal instrument that narrows physical
+-- destruction permission only. It never changes abandonment law, reads, writes,
+-- or source-scope semantics. The compliance erase transaction checks this table
+-- under an owner-scoped advisory lock before any destructive statement.
+
+ALTER TYPE proxima_core.compliance_erase_refusal ADD VALUE IF NOT EXISTS 'LegalHoldActive';
+
+CREATE TABLE proxima_core.owner_legal_holds (
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
+    hold_active boolean DEFAULT true NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT owner_legal_holds_active_chk CHECK (hold_active),
+    CONSTRAINT owner_legal_holds_owner_ref_shape_chk CHECK (((owner_kind = 'world'::proxima_core.owner_ref_kind AND owner_id IS NULL) OR (owner_kind IN ('personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind) AND owner_id IS NOT NULL))),
+    CONSTRAINT owner_legal_holds_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind)),
+    CONSTRAINT owner_legal_holds_pkey PRIMARY KEY (owner_kind, owner_id)
+);
+
+COMMENT ON TABLE proxima_core.owner_legal_holds IS
+  'Owner-scoped legal/security holds. A present row is an active hold and blocks only physical compliance erase transactions for that owner; reads, writes, abandonment law, and suppression law are unchanged. Operators own the legal judgment behind setting or clearing the hold.';

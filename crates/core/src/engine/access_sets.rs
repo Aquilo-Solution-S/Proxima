@@ -710,6 +710,24 @@ pub(in crate::engine) mod tests {
                 "MembershipStorage rejects writes".into(),
             ))
         }
+
+        async fn set_legal_hold(&self, _owner: &Owner) -> Result<(), StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+
+        async fn get_legal_hold(&self, _owner: &Owner) -> Result<bool, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+
+        async fn clear_legal_hold(&self, _owner: &Owner) -> Result<bool, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
     }
 
     #[async_trait::async_trait]

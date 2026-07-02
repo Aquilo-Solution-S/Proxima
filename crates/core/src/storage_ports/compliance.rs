@@ -10,6 +10,12 @@ pub trait FactRetentionPort: Send + Sync {
     async fn get_fact_retention(&self, owner: &Owner) -> Result<Option<i64>, StorageError>;
 
     async fn clear_fact_retention(&self, owner: &Owner) -> Result<bool, StorageError>;
+
+    async fn set_legal_hold(&self, owner: &Owner) -> Result<(), StorageError>;
+
+    async fn get_legal_hold(&self, owner: &Owner) -> Result<bool, StorageError>;
+
+    async fn clear_legal_hold(&self, owner: &Owner) -> Result<bool, StorageError>;
 }
 
 #[allow(clippy::too_many_arguments)]

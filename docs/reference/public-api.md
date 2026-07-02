@@ -72,6 +72,23 @@ All storage erase paths require sealed `EraseAuthorization` (see
 [13 Compliance](../13-compliance.md) and
 [14 Compliance Admin Surface](../14-protocol-surface.md#compliance-admin-surface)).
 
+Legal/security holds are host-side owner config:
+
+| Engine verb | Effect |
+|---|---|
+| `set_legal_hold(authz, owner)` | idempotently activates a per-owner hold |
+| `get_legal_hold(authz, owner)` | returns the active hold flag |
+| `clear_legal_hold(authz, owner)` | clears the hold; returns whether a row existed |
+
+While active, the hold suspends physical destruction for exactly the
+current compliance `erase_*` family. The four destructive owner/source
+erase paths return `ComplianceEraseOutcome::Refused { reason:
+ComplianceEraseRefusal::LegalHoldActive, .. }` and delete nothing.
+`erase_world_owner` remains refusal-only with `WorldOwner`; reads and
+ordinary writes are unchanged. Future physical-destruction paths must
+inherit the same storage-transaction gate before they can exist.
+Operators own the legal judgment; Proxima guarantees only the mechanics.
+
 `ComplianceEraseTarget` has no `World` variant: `WorldOwner` exists only as
 a target that is always refused and audited (`crates/core/src/compliance.rs`).
 Personal- and group-scoped erasure never reaches a `World`-owned row. See
