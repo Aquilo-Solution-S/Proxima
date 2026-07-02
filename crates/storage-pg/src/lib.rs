@@ -10,7 +10,6 @@ extern crate self as proxima_storage_pg;
 #[doc(hidden)]
 pub use proxima_core as core;
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -46,31 +45,20 @@ use proxima_core::verbs::query::{
     QueryRequest, QueryResponse,
 };
 use proxima_core::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EdgeAuthorshipKind,
-    EdgeEndpointKindRow, EdgeId, EmbeddingJobClaim, EntityId, EntityKind, FactEntityId,
-    FactSourceBatchRow, GroupId, MembershipRow, MemoryDependency, MemoryGraphPayloadRow, MemoryId,
-    MemoryKindRow, NeighborEdgeRow, Owner, OwnerRef, Relation, RelationClass, SchemaId,
-    SchemaVersion, SourceBatchId, SourceId, StorageError, UserId,
+    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EdgeEndpointKindRow, EdgeId,
+    EmbeddingJobClaim, EntityId, FactEntityId, FactSourceBatchRow, GroupId, MembershipRow,
+    MemoryDependency, MemoryGraphPayloadRow, MemoryId, MemoryKindRow, NeighborEdgeRow, Owner,
+    OwnerRef, Relation, SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError, UserId,
 };
 use proxima_core::{EmbeddableEntityRef, EmbeddingWriteOutcome, SidecarPayload};
+use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{PgPool, Postgres, Transaction};
 pub use verbs::fact_embeddings::{
     EmbeddingInlineDrainOutcome, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
     EmbeddingReconcileScope,
 };
 
 use crate::error::internal;
-
-type StoredEdgeProofRow = (
-    String,
-    EntityKind,
-    uuid::Uuid,
-    EntityKind,
-    uuid::Uuid,
-    EdgeAuthorshipKind,
-    Option<uuid::Uuid>,
-);
 
 #[doc(hidden)]
 pub mod access;
@@ -437,221 +425,6 @@ fn edge_draft_from_spec<'a>(edge: &'a DerivedEdgeSpec<'a>) -> verbs::edge_append
     }
 }
 
-fn operator_edge_authorship_values() -> [&'static str; 4] {
-    [
-        proxima_core::EdgeAuthorshipKind::OperatorFtoA.as_str(),
-        proxima_core::EdgeAuthorshipKind::OperatorAtoA.as_str(),
-        proxima_core::EdgeAuthorshipKind::OperatorAtoP.as_str(),
-        proxima_core::EdgeAuthorshipKind::OperatorAtoGoal.as_str(),
-    ]
-}
-
-fn operator_proof_edges<'a>(req: &'a AuthorDerivedRequest<'a>) -> Vec<&'a DerivedEdgeSpec<'a>> {
-    let expected_authorship = req.operator_kind.edge_authorship();
-    req.edges
-        .iter()
-        .filter(|edge| {
-            edge.source_memory_id == req.memory_id && edge.authorship_kind == expected_authorship
-        })
-        .collect()
-}
-
-#[allow(clippy::too_many_lines)] // storage-side proof validation is one linear SQL-backed invariant check
-async fn validate_author_derived_storage_request(
-    tx: &mut Transaction<'_, Postgres>,
-    req: &AuthorDerivedRequest<'_>,
-) -> Result<(), StorageError> {
-    let proof_edges = operator_proof_edges(req);
-    if proof_edges.is_empty() {
-        return Err(StorageError::ConstraintViolation(
-            "operator invocation inputs must be nonempty".into(),
-        ));
-    }
-
-    let expected_input_kind = req.operator_kind.phase().input_kind();
-    let expected_authorship = req.operator_kind.edge_authorship();
-    for edge in req.edges {
-        if edge.source_memory_id == req.memory_id
-            && edge.relation.descriptor.class == RelationClass::Provenance
-            && edge.authorship_kind.is_operator()
-            && edge.authorship_kind != expected_authorship
-        {
-            return Err(StorageError::ConstraintViolation(
-                "operator provenance edge authorship kind does not match operator phase".into(),
-            ));
-        }
-    }
-    let mut input_ids = Vec::with_capacity(proof_edges.len());
-    let mut seen = BTreeSet::new();
-    for edge in &proof_edges {
-        if edge.relation.descriptor.class != RelationClass::Provenance {
-            return Err(StorageError::ConstraintViolation(
-                "operator proof edges must use Provenance relations".into(),
-            ));
-        }
-        if edge.source_kind != req.kind {
-            return Err(StorageError::ConstraintViolation(
-                "operator proof edge source kind must match output kind".into(),
-            ));
-        }
-        if edge.target_kind != expected_input_kind {
-            return Err(StorageError::ConstraintViolation(format!(
-                "operator proof edge target kind must be {expected_input_kind:?}"
-            )));
-        }
-        if edge.authorship_kind != expected_authorship {
-            return Err(StorageError::ConstraintViolation(
-                "operator proof edge authorship kind does not match operator phase".into(),
-            ));
-        }
-        if !seen.insert(edge.target_memory_id) {
-            return Err(StorageError::ConstraintViolation(
-                "operator invocation inputs must be unique".into(),
-            ));
-        }
-        input_ids.push(edge.target_memory_id.into_inner());
-    }
-
-    let rows: Vec<(uuid::Uuid, Option<EntityKind>, Option<uuid::Uuid>, bool)> = sqlx::query_as(
-        "SELECT m.memory_id, m.kind, fr.source_batch_id, sb.closed_at IS NOT NULL
-           FROM proxima_core.memories m
-           LEFT JOIN proxima_core.fact_receipts fr ON fr.receipt_id = m.receipt_id
-           LEFT JOIN proxima_core.source_batches sb ON sb.id = fr.source_batch_id
-          WHERE m.memory_id = ANY($1::uuid[])
-            AND m.tombstoned_at IS NULL",
-    )
-    .bind(&input_ids)
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(crate::error::map_err)?;
-
-    if rows.len() != input_ids.len() {
-        return Err(StorageError::ConstraintViolation(
-            "operator invocation inputs must exist and be live".into(),
-        ));
-    }
-
-    let mut ftoa_batch = None;
-    for (memory_id, actual_kind, source_batch_id, closed) in rows {
-        let actual = actual_kind.unwrap_or(EntityKind::Fact);
-        if actual != expected_input_kind {
-            return Err(StorageError::ConstraintViolation(format!(
-                "invalid input kind for {:?}: expected {expected_input_kind:?}, got {actual:?}",
-                MemoryId::new(memory_id)
-            )));
-        }
-        if req.operator_kind == proxima_core::MemoryOperatorKind::FtoA {
-            let source_batch_id = source_batch_id.ok_or_else(|| {
-                StorageError::ConstraintViolation(
-                    "F→A operator inputs must be receipted Facts".into(),
-                )
-            })?;
-            if !closed {
-                return Err(StorageError::ConstraintViolation(
-                    "F→A operator source batch must be closed".into(),
-                ));
-            }
-            match ftoa_batch {
-                Some(existing) if existing != source_batch_id => {
-                    return Err(StorageError::ConstraintViolation(
-                        "F→A operator inputs must belong to one source batch".into(),
-                    ));
-                }
-                Some(_) => {}
-                None => ftoa_batch = Some(source_batch_id),
-            }
-        }
-    }
-
-    if req.operator_kind == proxima_core::MemoryOperatorKind::FtoA {
-        let expected = ftoa_batch.ok_or_else(|| {
-            StorageError::ConstraintViolation("F→A operator source batch is required".into())
-        })?;
-        if req.source_batch_id.map(SourceBatchId::into_inner) != Some(expected) {
-            return Err(StorageError::ConstraintViolation(
-                "F→A operator source_batch_id must match input Facts".into(),
-            ));
-        }
-    } else if req.source_batch_id.is_some() {
-        return Err(StorageError::ConstraintViolation(
-            "source_batch_id is only valid for F→A operator invocations".into(),
-        ));
-    }
-
-    Ok(())
-}
-
-async fn validate_author_derived_replay_edges(
-    tx: &mut Transaction<'_, Postgres>,
-    req: &AuthorDerivedRequest<'_>,
-) -> Result<(), StorageError> {
-    let expected_authorship = req.operator_kind.edge_authorship();
-    let expected = req
-        .edges
-        .iter()
-        .filter(|edge| {
-            edge.source_memory_id == req.memory_id
-                && edge.authorship_kind == expected_authorship
-                && edge.relation.descriptor.class == RelationClass::Provenance
-        })
-        .map(|edge| {
-            (
-                edge.relation.descriptor.relation.as_str().to_string(),
-                format!("{:?}", edge.source_kind),
-                edge.source_memory_id.into_inner(),
-                format!("{:?}", edge.target_kind),
-                edge.target_memory_id.into_inner(),
-                format!("{:?}", edge.authorship_kind),
-                edge.authorship_owner_memory_id.map(MemoryId::into_inner),
-            )
-        })
-        .collect::<BTreeSet<_>>();
-    let rows: Vec<StoredEdgeProofRow> = sqlx::query_as(
-        "SELECT relation, source_kind, source_memory_id, target_kind, target_memory_id,
-                authorship_kind, authorship_owner_memory_id
-           FROM proxima_core.edges
-          WHERE source_memory_id = $1
-            AND relation_class = 'Provenance'
-            AND authorship_kind::text = ANY($2::text[])",
-    )
-    .bind(req.memory_id.into_inner())
-    .bind(operator_edge_authorship_values())
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(crate::error::map_err)?;
-    let actual = rows
-        .into_iter()
-        .map(
-            |(
-                relation,
-                source_kind,
-                source_memory_id,
-                target_kind,
-                target_memory_id,
-                authorship_kind,
-                authorship_owner_memory_id,
-            )| {
-                (
-                    relation,
-                    format!("{source_kind:?}"),
-                    source_memory_id,
-                    format!("{target_kind:?}"),
-                    target_memory_id,
-                    format!("{authorship_kind:?}"),
-                    authorship_owner_memory_id,
-                )
-            },
-        )
-        .collect::<BTreeSet<_>>();
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(StorageError::Conflict(
-            "derived memory idempotent replay edge proof mismatch".into(),
-        ))
-    }
-}
-
 #[async_trait::async_trait]
 impl FactIngestPort for PgStorage {
     async fn ingest_fact_atomic(
@@ -746,7 +519,6 @@ impl MemoryAuthoringPort for PgStorage {
         _proof: proxima_core::storage_ports::OperatorWriteProof,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
         let mut tx = self.pool.begin().await.map_err(internal)?;
-        validate_author_derived_storage_request(&mut tx, req).await?;
         let draft = verbs::derive_append::DerivedDraft {
             memory_id: req.memory_id.into_inner(),
             owner: req.owner,
@@ -764,6 +536,12 @@ impl MemoryAuthoringPort for PgStorage {
             embedding: req.embedding.clone(),
             embedding_model_id: req.embedding_model_id,
         };
+        // ONE validator for both derived-write paths (this engine port and
+        // the flavor-SDK `append_derived_with_edges_in_tx`): the port used
+        // to carry its own near-duplicate proof validation here, which
+        // silently missed the Task 8 created_at strict-time gate.
+        verbs::derive_append::validate_derived_draft_edges_in_tx(&mut tx, &draft, req.edges)
+            .await?;
         let sidecars = self.sidecars.clone();
         let sidecar_payload = req.sidecar_payload.clone();
         let outcome =
@@ -777,7 +555,10 @@ impl MemoryAuthoringPort for PgStorage {
             .await?;
         let mut edge_count = 0;
         if outcome.idempotent_replay {
-            validate_author_derived_replay_edges(&mut tx, req).await?;
+            verbs::derive_append::validate_derived_edge_replay_equivalent(
+                &mut tx, &draft, req.edges,
+            )
+            .await?;
         } else {
             for edge in req.edges {
                 let draft = edge_draft_from_spec(edge);
