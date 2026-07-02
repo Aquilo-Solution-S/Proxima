@@ -36,8 +36,6 @@ ALLOWLISTED_SITE_LINES = {
     ("crates/storage-pg/src/verbs/consolidate/events.rs", 87, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/consolidate/memories.rs", 66, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/consolidate/memories.rs", 136, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/fact_ingest.rs", 1129, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
-    ("crates/storage-pg/src/verbs/goal_write.rs", 1788, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/query/goals.rs", 93, "sql-push-str"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/query/goals.rs", 106, "sql-push-str"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/query/goals.rs", 113, "sql-push-str"): "SQL-POLICY: fixed-fragment",
