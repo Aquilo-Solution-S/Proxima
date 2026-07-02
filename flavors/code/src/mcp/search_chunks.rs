@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EdgeTargetProjection};
-use proxima_core::{CORE_DERIVED_FROM_RELATION, EdgeId, EntityRef, MemoryId};
+use proxima_core::{EdgeId, EntityRef, MemoryId};
 use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use crate::payloads::{CodeChunkV1, FileState};
 
 use super::CodeToolCtxExt;
 use super::code_store;
-use super::sql::{map_storage, owner_columns, resolve_repo_identifier};
+use super::sql::{map_storage, resolve_repo_identifier};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeSearchChunksArgs {
@@ -106,79 +106,43 @@ impl Tool for CodeSearchChunksTool {
             let pool = code_store(&ctx)?;
             let engine = super::engine(&ctx)?;
 
-            let candidate_limit = i64::from(limit.saturating_mul(4).max(limit).min(200));
-            let (owner_kind, owner_id) = owner_columns(&ctx.owner());
+            // Sidecar-only candidate scan (no owner filter, no core-table
+            // supersession dedup): full-text/path rank over every `Present`
+            // chunk row matching the search predicates, across any owner,
+            // any historical revision. `authorized_abstraction_head_candidates`
+            // below narrows this to the owner-or-World head per
+            // (repo_id, file_path, chunk_index) via a `source_batch_id`
+            // recency comparison (`code-chunk-v1` never sets
+            // `memories.supersedes` — each derived chunk ties 1:1 to its
+            // exact source file revision rather than declaring a successor),
+            // so the raw candidate window is widened well past `limit` to
+            // leave headroom for historical duplicates collapsing away.
+            let candidate_limit = i64::from(limit.saturating_mul(20).max(limit).min(1_000));
             let rows: Vec<ChunkCandidateRow> = sqlx::query_as(
                 "WITH q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $1) AS tsq)
                  SELECT c.memory_id,
                         (
                             ts_rank_cd(to_tsvector('pg_catalog.simple'::regconfig, c.file_path || ' ' || c.text), q.tsq)
                             + CASE WHEN lower(c.file_path) = lower($1) THEN 10.0 ELSE 0.0 END
-                            + CASE WHEN lower(c.file_path) LIKE $7 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
-                            + CASE WHEN lower(c.text) LIKE $7 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
+                            + CASE WHEN lower(c.file_path) LIKE $4 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
+                            + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
                         )::real AS score
-                   FROM proxima_code.code_chunk_v1 c
-                   JOIN proxima_core.memories m USING (memory_id)
-                   JOIN proxima_core.edges e
-                     ON e.source_memory_id = c.memory_id
-                    AND e.relation = $6
-                   JOIN proxima_code.file_revision_v1 fr
-                     ON fr.memory_id = e.target_memory_id
-                    AND fr.repo_id = c.repo_id
-                    AND fr.file_path = c.file_path
-                   JOIN proxima_core.memories fm
-                     ON fm.memory_id = fr.memory_id
-                   JOIN proxima_core.fact_receipts r
-                     ON r.receipt_id = fm.receipt_id
-                   JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
-                     ON eo.entity_id = m.memory_id,
-                        q
-                  WHERE eo.owner_kind = $2
-                    AND eo.owner_id IS NOT DISTINCT FROM $3
-                    AND ($4::uuid IS NULL OR c.repo_id = $4)
-                    AND c.state = 'Present'
-                    AND fr.state = 'Present'
-                    AND NOT EXISTS (
-                        SELECT 1
-                          FROM proxima_core.memories m2
-                          JOIN proxima_code.code_chunk_v1 c2 USING (memory_id)
-                         WHERE m2.schema_id = m.schema_id
-                           AND m2.owner_kind = m.owner_kind
-                           AND m2.owner_id IS NOT DISTINCT FROM m.owner_id
-                           AND c2.repo_id = c.repo_id
-                           AND c2.file_path = c.file_path
-                           AND c2.chunk_index = c.chunk_index
-                           AND m2.source_batch_id > m.source_batch_id
-                    )
-                    AND NOT EXISTS (
-                        SELECT 1
-                          FROM proxima_code.file_revision_v1 fr2
-                          JOIN proxima_core.memories fm2
-                            ON fm2.memory_id = fr2.memory_id
-                          JOIN proxima_core.fact_receipts r2
-                            ON r2.receipt_id = fm2.receipt_id
-                         WHERE fm2.owner_kind = fm.owner_kind
-                           AND fm2.owner_id IS NOT DISTINCT FROM fm.owner_id
-                           AND fr2.repo_id = fr.repo_id
-                           AND fr2.file_path = fr.file_path
-                           AND r2.source_batch_id > r.source_batch_id
-                    )
-                    AND ($5::text IS NULL OR c.language = $5)
-                    AND ($8::text IS NULL OR c.chunk_type = $8)
+                   FROM proxima_code.code_chunk_v1 c, q
+                  WHERE c.state = 'Present'
+                    AND ($2::uuid IS NULL OR c.repo_id = $2)
+                    AND ($3::text IS NULL OR c.language = $3)
+                    AND ($5::text IS NULL OR c.chunk_type = $5)
                     AND (
                         to_tsvector('pg_catalog.simple'::regconfig, c.file_path || ' ' || c.text) @@ q.tsq
-                        OR lower(c.file_path) LIKE $7 ESCAPE '\\'
-                        OR lower(c.text) LIKE $7 ESCAPE '\\'
+                        OR lower(c.file_path) LIKE $4 ESCAPE '\\'
+                        OR lower(c.text) LIKE $4 ESCAPE '\\'
                     )
                   ORDER BY score DESC, c.memory_id DESC
-                  LIMIT $9",
+                  LIMIT $6",
             )
             .bind(query)
-            .bind(owner_kind)
-            .bind(owner_id)
             .bind(repo_id)
             .bind(args.language.as_deref())
-            .bind(CORE_DERIVED_FROM_RELATION)
             .bind(exact_pattern)
             .bind(args.chunk_type.as_deref())
             .bind(candidate_limit)
@@ -190,13 +154,25 @@ impl Tool for CodeSearchChunksTool {
                 .into_iter()
                 .map(|row| (row.memory_id, row.score))
                 .collect::<HashMap<_, _>>();
+            let head_id_set = pool
+                .authorized_code_chunk_head_candidates(ctx.owner(), &candidate_ids)
+                .await?
+                .into_iter()
+                .collect::<HashSet<_>>();
+            // Preserve the score-descending order from the candidate scan;
+            // the head-candidate narrowing above returns an unordered set.
+            let head_ids = candidate_ids
+                .iter()
+                .copied()
+                .filter(|id| head_id_set.contains(id))
+                .collect::<Vec<_>>();
             let rows = pool
                 .authorized_abstraction_payloads::<CodeChunkV1>(
                     &engine,
                     ctx.authz(),
                     ctx.owner(),
-                    &candidate_ids,
-                    candidate_ids.len(),
+                    &head_ids,
+                    head_ids.len(),
                 )
                 .await?;
 

@@ -1,4 +1,5 @@
-use proxima_core::{CORE_DERIVED_FROM_RELATION, Tool, ToolCtx, ToolError};
+use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest};
+use proxima_core::{CORE_DERIVED_FROM_RELATION, EntityRef, Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -6,7 +7,7 @@ use crate::payloads::{CodeChunkV1, FileRevisionV1, FileState};
 
 use super::CodeToolCtxExt;
 use super::code_store;
-use super::sql::{map_storage, owner_columns, resolve_repo_identifier};
+use super::sql::{map_storage, resolve_repo_identifier};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeOpenFileRevisionArgs {
@@ -91,24 +92,22 @@ impl Tool for CodeOpenFileRevisionTool {
             let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
             let pool = code_store(&ctx)?;
             let engine = super::engine(&ctx)?;
-            let (owner_kind, owner_id) = owner_columns(&ctx.owner());
 
+            // Sidecar-only candidate scan (no owner filter — `memory_id` is a
+            // UUIDv7 for Fact rows, so ordering by it is a valid recency
+            // proxy without touching `proxima_core.*`). The authorized fetch
+            // below resolves the true owner-or-World head via
+            // `FileRevisionV1::natural_key_columns` heads-only supersession.
             let revision_candidates: Vec<MemoryCandidateRow> = sqlx::query_as(
                 "SELECT fr.memory_id
                    FROM proxima_code.file_revision_v1 fr
-                   JOIN proxima_core.memories m USING (memory_id)
-                   LEFT JOIN proxima_core.fact_receipts r USING (receipt_id)
                   WHERE fr.repo_id = $1
                     AND fr.file_path = $2
-                    AND m.owner_kind = $3
-                    AND m.owner_id IS NOT DISTINCT FROM $4
-                  ORDER BY r.source_batch_id DESC NULLS LAST, m.created_at DESC
+                  ORDER BY fr.memory_id DESC
                   LIMIT 200",
             )
             .bind(repo_id)
             .bind(&args.file_path)
-            .bind(owner_kind)
-            .bind(owner_id)
             .fetch_all(pool.pool())
             .await
             .map_err(map_storage)?;
@@ -165,54 +164,34 @@ impl Tool for CodeOpenFileRevisionTool {
 
             let revision_memory_id = revision_memory_id
                 .ok_or_else(|| ToolError::Other("authorized revision disappeared".into()))?;
-            let chunk_rows: Vec<ChunkCandidateRow> = sqlx::query_as(
-                "SELECT c.memory_id
-                   FROM proxima_code.code_chunk_v1 c
-                   JOIN proxima_core.memories m USING (memory_id)
-                   JOIN proxima_core.edges e
-                     ON e.source_memory_id = c.memory_id
-                    AND e.target_memory_id = $5
-                    AND e.relation = $6
-                   JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
-                     ON eo.entity_id = m.memory_id
-                  WHERE eo.owner_kind = $1
-                    AND eo.owner_id IS NOT DISTINCT FROM $2
-                    AND c.repo_id = $3
-                    AND c.file_path = $4
-                    AND c.state = 'Present'
-                    AND NOT EXISTS (
-                        SELECT 1
-                          FROM proxima_core.memories m2
-                          JOIN proxima_code.code_chunk_v1 c2 USING (memory_id)
-                         WHERE m2.schema_id = m.schema_id
-                           AND m2.owner_kind = m.owner_kind
-                           AND m2.owner_id IS NOT DISTINCT FROM m.owner_id
-                           AND c2.repo_id = c.repo_id
-                           AND c2.file_path = c.file_path
-                           AND c2.chunk_index = c.chunk_index
-                           AND m2.source_batch_id > m.source_batch_id
-                    )
-                    AND (
-                        $7::bigint IS NULL
-                        OR (c.line_range_end >= $7 AND c.line_range_start <= $8)
-                    )
-                  ORDER BY c.chunk_index ASC
-                  LIMIT 2000",
-            )
-            .bind(owner_kind)
-            .bind(owner_id)
-            .bind(repo_id)
-            .bind(&args.file_path)
-            .bind(revision_memory_id.into_inner())
-            .bind(CORE_DERIVED_FROM_RELATION)
-            .bind(line_window.map(|window| window.0))
-            .bind(line_window.map(|window| window.1))
-            .fetch_all(pool.pool())
-            .await
-            .map_err(map_storage)?;
-            let chunk_ids = chunk_rows
-                .iter()
-                .map(|row| row.memory_id)
+
+            // The current head file revision's own `derived-from` in-edges
+            // are exactly its current chunk set (each commit's F->A pass
+            // re-derives the full chunk set for every file it touches), so
+            // no separate core-table dedup is needed here — restricting to
+            // this one authorized revision id is precise on its own.
+            let derived_edges = engine
+                .read_edges(
+                    ctx.authz(),
+                    &EdgeReadRequest {
+                        owner: ctx.owner(),
+                        edge_ids: Vec::new(),
+                        filter: EdgeFilter {
+                            relation: Some(CORE_DERIVED_FROM_RELATION.to_string()),
+                            source: None,
+                            target: Some(EntityRef::Memory(revision_memory_id)),
+                        },
+                        limit: 2_000,
+                    },
+                )
+                .await?;
+            let chunk_ids = derived_edges
+                .edges
+                .into_iter()
+                .filter_map(|edge| match edge.source {
+                    EntityRef::Memory(id) => Some(id.into_inner()),
+                    EntityRef::Goal(_) | EntityRef::FactEntity(_) => None,
+                })
                 .collect::<Vec<_>>();
             let mut chunks = pool
                 .authorized_abstraction_payloads::<CodeChunkV1>(
@@ -225,9 +204,17 @@ impl Tool for CodeOpenFileRevisionTool {
                 .await?
                 .into_iter()
                 .filter(|(_, row)| {
+                    let in_line_window = match line_window {
+                        Some((start, end)) => {
+                            i64::from(row.line_range_end) >= start
+                                && i64::from(row.line_range_start) <= end
+                        }
+                        None => true,
+                    };
                     row.repo_id == repo_id
                         && row.file_path == args.file_path
                         && row.state == FileState::Present
+                        && in_line_window
                 })
                 .map(|(memory_id, row)| {
                     let (text, text_line_range) = project_text(
@@ -327,10 +314,5 @@ fn truncate_utf8_bytes(text: String, max_text_bytes: Option<usize>) -> String {
 
 #[derive(Debug, sqlx::FromRow)]
 struct MemoryCandidateRow {
-    memory_id: uuid::Uuid,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct ChunkCandidateRow {
     memory_id: uuid::Uuid,
 }
