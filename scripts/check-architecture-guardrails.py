@@ -7,6 +7,7 @@ left around behind an adapter.
 """
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from dataclasses import dataclass
@@ -242,6 +243,22 @@ def iter_rust_string_literals(text: str):
         i += 1
 
 
+def flavor_core_sql_hits(text: str) -> list[tuple[int, int, str]]:
+    """Return ``(start_line, end_line, literal)`` for every string literal
+    containing a schema-qualified ``proxima_core.`` reference.
+
+    A literal dot after `proxima_core` is a schema-qualified SQL identifier
+    (`proxima_core.memories`); a colon there is Rust path syntax
+    (`proxima_core::verbs`) and must stay allowed everywhere.
+    """
+    hits: list[tuple[int, int, str]] = []
+    for start_line, literal in iter_rust_string_literals(text):
+        if "proxima_core." not in literal:
+            continue
+        hits.append((start_line, start_line + literal.count("\n"), literal))
+    return hits
+
+
 def check_flavor_core_sql(findings: list[Finding]) -> None:
     flavors = ROOT / "flavors"
     if not flavors.exists():
@@ -253,13 +270,7 @@ def check_flavor_core_sql(findings: list[Finding]) -> None:
         lines = text.splitlines()
         allow_lines = {line_no for line_no, line in enumerate(lines, 1) if ALLOW in line}
         allowance = ALLOWLISTED_FLAVOR_CORE_SQL.get(rel)
-        for start_line, literal in iter_rust_string_literals(text):
-            # A literal dot after `proxima_core` is a schema-qualified SQL
-            # identifier (`proxima_core.memories`); a colon there is Rust path
-            # syntax (`proxima_core::verbs`) and must stay allowed everywhere.
-            if "proxima_core." not in literal:
-                continue
-            end_line = start_line + literal.count("\n")
+        for start_line, end_line, literal in flavor_core_sql_hits(text):
             if allow_lines & set(range(start_line, end_line + 1)):
                 continue
             snippet = lines[start_line - 1].strip() if start_line - 1 < len(lines) else literal.strip()
@@ -380,7 +391,54 @@ def check_caller_supplied_audit(findings: list[Finding]) -> None:
                 findings.append(Finding(compliance, line_no, "public ComplianceAuditContext constructor", line))
 
 
+def run_self_test() -> int:
+    """Assert the flavor core SQL detector fires on its committed fixture.
+
+    Runs the raw detection logic (no allowlist, no ALLOW markers) so a
+    regression in the whole-literal tokenizer cannot hide behind either
+    suppression path. Green requires: the multi-line raw-string evasion case
+    detected, the single-line case detected, and `proxima_core::` Rust paths
+    not flagged.
+    """
+    fixture = ROOT / "scripts/fixtures/architecture-guardrails/flavor_core_sql.rs"
+    rel = fixture.relative_to(ROOT)
+    text = fixture.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    hits = flavor_core_sql_hits(text)
+    for start_line, _end_line, _literal in hits:
+        print(f"{rel}:{start_line}: flavor raw proxima_core SQL: {lines[start_line - 1].strip()}")
+    failures: list[str] = []
+    if not any(
+        end_line > start_line and "proxima_core." not in literal.splitlines()[0]
+        for start_line, end_line, literal in hits
+    ):
+        failures.append("multi-line raw-string evasion case not detected")
+    if not any(start_line == end_line for start_line, end_line, _literal in hits):
+        failures.append("single-line literal case not detected")
+    if len(hits) != 2:
+        failures.append(
+            f"expected exactly 2 flagged literals (`proxima_core::` Rust paths must stay allowed), got {len(hits)}"
+        )
+    if failures:
+        for failure in failures:
+            print(f"self-test failed: {failure}: {rel}", file=sys.stderr)
+        return 1
+    print(f"self-test detected {len(hits)} flavor raw proxima_core SQL literals", file=sys.stderr)
+    return 0
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="assert the flavor core SQL detector fires on its fixture; exits zero when it does",
+    )
+    args = parser.parse_args()
+
+    if args.self_test:
+        return run_self_test()
+
     findings: list[Finding] = []
     check_stale_access(findings)
     check_personality_authz(findings)
