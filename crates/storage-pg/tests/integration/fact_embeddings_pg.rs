@@ -11,11 +11,9 @@ use proxima_core::llm::{EMBEDDING_DIM, EMBEDDING_JOB_MAX_ATTEMPTS, EmbeddingClie
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
-    AuthPath, AuthzContext, ComplianceEraseOutcome, ComplianceEraseTarget, EmbeddableEntityRef,
-    EntityKind, FactPayload, FlavorRegistry, GoalId, GroupId, Owner, OwnerRef, PayloadKeyBuilder,
-    SourceBatchId, UserId,
+    AuthPath, AuthzContext, ComplianceEraseOutcome, ComplianceEraseTarget, EntityKind, FactPayload,
+    FlavorRegistry, GroupId, Owner, OwnerRef, PayloadKeyBuilder, SourceBatchId, UserId,
 };
-use proxima_storage_pg::verbs::fact_embeddings::{insert_embedding, insert_memory_embedding};
 use proxima_storage_pg::{
     EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
 };
@@ -319,30 +317,60 @@ async fn load_embedding_vec_text(
     .await
 }
 
-async fn insert_goal_for_embedding(
-    pg: &proxima_storage_pg::PgStorage,
+fn vector_literal(vec: &[f32]) -> String {
+    let mut out = String::with_capacity(vec.len().saturating_mul(8).saturating_add(2));
+    out.push('[');
+    for (idx, value) in vec.iter().enumerate() {
+        if idx > 0 {
+            out.push(',');
+        }
+        out.push_str(&value.to_string());
+    }
+    out.push(']');
+    out
+}
+
+/// Seed one embedding row plus its head row directly. The proof-gated write
+/// path is exercised by the in-crate `verbs::fact_embeddings` tests; external
+/// tests only need pre-existing rows as fixtures.
+async fn seed_embedding_row_with_head(
+    pool: &sqlx::PgPool,
     owner: &Owner,
-    goal_id: Uuid,
-) -> Result<GoalId, sqlx::Error> {
+    entity_kind: EntityKind,
+    memory_id: proxima_core::MemoryId,
+    model_id: &str,
+    vec: &[f32],
+) -> Result<(), sqlx::Error> {
     let (owner_kind, owner_id) = owner.columns();
+    let literal = vector_literal(vec);
     sqlx::query(
-        "INSERT INTO proxima_core.goals
-            (goal_id, owner_kind, owner_id, schema_id, schema_version,
-             title, text, payload, state, authorship_kind, request_id,
-             idempotency_key)
-         VALUES ($1, $2, $3, 'proxima-test/goal-embedding-v1', 1,
-                 'Embedding goal', 'Embedding goal text', $4,
-                 'Active', 'User', $5, $6)",
+        "INSERT INTO proxima_core.embeddings
+            (entity_kind, entity_id, embedding_version, model_id, vec,
+             owner_kind, owner_id)
+         VALUES ($1, $2, 1, $3, $4::vector, $5, $6)",
     )
-    .bind(goal_id)
+    .bind(entity_kind)
+    .bind(memory_id.into_inner())
+    .bind(model_id)
+    .bind(&literal)
     .bind(owner_kind)
     .bind(owner_id)
-    .bind(br#"{"goal":true}"#.to_vec())
-    .bind(format!("goal-embedding:{goal_id}"))
-    .bind(format!("goal-embedding:{goal_id}"))
-    .execute(pg.pool_for_tests())
+    .execute(pool)
     .await?;
-    Ok(GoalId::new(goal_id))
+    sqlx::query(
+        "INSERT INTO proxima_core.embedding_heads
+            (entity_kind, entity_id, model_id, embedding_version,
+             owner_kind, owner_id)
+         VALUES ($1, $2, $3, 1, $4, $5)",
+    )
+    .bind(entity_kind)
+    .bind(memory_id.into_inner())
+    .bind(model_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 async fn reconcile_stub_fact_embeddings(
@@ -576,163 +604,6 @@ async fn reembedding_appends_version_and_advances_head_without_mutating_v1()
 }
 
 #[tokio::test]
-async fn concurrent_reembedding_allocates_contiguous_versions()
--> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = owner_fixture();
-        let engine = engine_for(pg.clone(), None);
-        let outcome = engine
-            .fact_ingest(
-                &AuthzContext::single_owner(&owner, AuthPath::System),
-                fact_draft(&owner, "concurrent embedding fact"),
-            )
-            .await?;
-        let pg_a = pg.clone();
-        let pg_b = pg.clone();
-        let owner_a = owner;
-        let owner_b = owner;
-        let memory_id = outcome.memory_id;
-        let first_vec = padded_embedding([1.0, 0.0, 0.0]);
-        let second_vec = padded_embedding([0.0, 1.0, 0.0]);
-        let (first, second) = tokio::try_join!(
-            async move {
-                let mut tx = pg_a.pool_for_tests().begin().await.map_err(|err| {
-                    proxima_core::StorageError::Internal(format!(
-                        "begin embedding insert tx: {err}"
-                    ))
-                })?;
-                let outcome = insert_memory_embedding(
-                    &mut tx,
-                    &owner_a,
-                    EntityKind::Fact,
-                    memory_id,
-                    "stub-fact-embed",
-                    EMBEDDING_DIM,
-                    &first_vec,
-                )
-                .await?;
-                tx.commit().await.map_err(|err| {
-                    proxima_core::StorageError::Internal(format!(
-                        "commit embedding insert tx: {err}"
-                    ))
-                })?;
-                Ok::<_, proxima_core::StorageError>(outcome)
-            },
-            async move {
-                let mut tx = pg_b.pool_for_tests().begin().await.map_err(|err| {
-                    proxima_core::StorageError::Internal(format!(
-                        "begin embedding insert tx: {err}"
-                    ))
-                })?;
-                let outcome = insert_memory_embedding(
-                    &mut tx,
-                    &owner_b,
-                    EntityKind::Fact,
-                    memory_id,
-                    "stub-fact-embed",
-                    EMBEDDING_DIM,
-                    &second_vec,
-                )
-                .await?;
-                tx.commit().await.map_err(|err| {
-                    proxima_core::StorageError::Internal(format!(
-                        "commit embedding insert tx: {err}"
-                    ))
-                })?;
-                Ok::<_, proxima_core::StorageError>(outcome)
-            }
-        )?;
-        let mut outcome_versions = vec![first.embedding_version, second.embedding_version];
-        outcome_versions.sort_unstable();
-        assert_eq!(outcome_versions, vec![1, 2]);
-        assert_eq!(
-            load_embedding_versions(
-                pg.pool_for_tests(),
-                EntityKind::Fact,
-                memory_id.into_inner(),
-                "stub-fact-embed",
-            )
-            .await?,
-            vec![1, 2]
-        );
-        assert_eq!(
-            load_embedding_head_version(
-                pg.pool_for_tests(),
-                EntityKind::Fact,
-                memory_id.into_inner(),
-                "stub-fact-embed",
-            )
-            .await?,
-            Some(2)
-        );
-        Ok(())
-    }
-    .await;
-    drop(pg);
-    drop_db(&db_name).await?;
-    result
-}
-
-#[tokio::test]
-async fn goal_embedding_uses_goal_id_not_memory_id() -> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = owner_fixture();
-        let goal_uuid = Uuid::now_v7();
-        let goal_id = insert_goal_for_embedding(&pg, &owner, goal_uuid).await?;
-        let mut tx = pg.pool_for_tests().begin().await?;
-        let outcome = insert_embedding(
-            &mut tx,
-            &owner,
-            EmbeddableEntityRef::Goal(goal_id),
-            "stub-fact-embed",
-            EMBEDDING_DIM,
-            &padded_embedding([0.25, 0.5, 0.75]),
-        )
-        .await?;
-        tx.commit().await?;
-
-        assert_eq!(outcome.embedding_version, 1);
-        assert_eq!(
-            load_embedding_versions(
-                pg.pool_for_tests(),
-                EntityKind::Goal,
-                goal_uuid,
-                "stub-fact-embed",
-            )
-            .await?,
-            vec![1]
-        );
-        assert_eq!(
-            load_embedding_head_version(
-                pg.pool_for_tests(),
-                EntityKind::Goal,
-                goal_uuid,
-                "stub-fact-embed",
-            )
-            .await?,
-            Some(1)
-        );
-        let memory_rows: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.memories WHERE memory_id = $1",
-        )
-        .bind(goal_uuid)
-        .fetch_one(pg.pool_for_tests())
-        .await?;
-        assert_eq!(
-            memory_rows, 0,
-            "goal embedding validation must not use memories"
-        );
-        Ok(())
-    }
-    .await;
-    drop(pg);
-    drop_db(&db_name).await?;
-    result
-}
-
-#[tokio::test]
 async fn compliance_erase_removes_embeddings_heads_and_jobs()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
@@ -742,18 +613,15 @@ async fn compliance_erase_removes_embeddings_heads_and_jobs()
         let outcome = pg
             .ingest_fact_atomic(&owner, &fact_draft(&owner, "erase embedding rows"), None)
             .await?;
-        let mut tx = pg.pool_for_tests().begin().await?;
-        insert_memory_embedding(
-            &mut tx,
+        seed_embedding_row_with_head(
+            pg.pool_for_tests(),
             &owner,
             EntityKind::Fact,
             outcome.memory_id,
             "stub-fact-embed",
-            EMBEDDING_DIM,
             &padded_embedding([1.0, 0.0, 0.0]),
         )
         .await?;
-        tx.commit().await?;
         let (owner_kind, owner_id) = owner.columns();
         sqlx::query(
             "INSERT INTO proxima_core.embedding_jobs
@@ -789,80 +657,6 @@ async fn compliance_erase_removes_embeddings_heads_and_jobs()
         .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(remaining_embeddings, 0);
-        Ok(())
-    }
-    .await;
-    drop(pg);
-    drop_db(&db_name).await?;
-    result
-}
-
-#[tokio::test]
-async fn upsert_memory_embedding_noops_after_source_memory_deleted()
--> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = owner_fixture();
-        let engine = engine_for(
-            pg.clone(),
-            Some(Arc::new(ConstantEmbedding::prefixed(
-                "stub-fact-embed",
-                &[0.25, 0.5, 0.75],
-            ))),
-        );
-        let outcome = engine
-            .fact_ingest(
-                &AuthzContext::single_owner(&owner, AuthPath::System),
-                fact_draft(&owner, "deleted before embedding write"),
-            )
-            .await?;
-        let claims = pg
-            .claim_pending_embedding_jobs("stub-fact-embed", 1)
-            .await?;
-        assert_eq!(claims.len(), 1);
-        assert_eq!(claims[0].entity_id, outcome.memory_id);
-        assert_eq!(
-            pg.load_embedding_text(&owner, EntityKind::Fact, outcome.memory_id)
-                .await?,
-            Some("deleted before embedding write".to_string()),
-        );
-
-        sqlx::query(
-            "DELETE FROM proxima_core.embedding_jobs
-              WHERE entity_kind = 'Fact'
-                AND entity_id = $1",
-        )
-        .bind(outcome.memory_id.into_inner())
-        .execute(pg.pool_for_tests())
-        .await?;
-        sqlx::query("DELETE FROM proxima_core.memories WHERE memory_id = $1")
-            .bind(outcome.memory_id.into_inner())
-            .execute(pg.pool_for_tests())
-            .await?;
-
-        let embedding = vec![0.125; EMBEDDING_DIM];
-        let mut tx = pg.pool_for_tests().begin().await?;
-        insert_memory_embedding(
-            &mut tx,
-            &owner,
-            EntityKind::Fact,
-            outcome.memory_id,
-            "stub-fact-embed",
-            EMBEDDING_DIM,
-            &embedding,
-        )
-        .await?;
-        tx.commit().await?;
-
-        assert_eq!(
-            pg.load_embedding_text(&owner, EntityKind::Fact, outcome.memory_id)
-                .await?,
-            None,
-        );
-        assert_eq!(
-            count_fact_embeddings(pg.pool_for_tests(), outcome.memory_id).await?,
-            0
-        );
         Ok(())
     }
     .await;
@@ -1130,18 +924,15 @@ async fn reconcile_embeddings_enqueues_missing_facts_idempotently()
             )
             .await?;
         let other_model_embedding = vec![0.125; EMBEDDING_DIM];
-        let mut tx = pg.pool_for_tests().begin().await?;
-        insert_memory_embedding(
-            &mut tx,
+        seed_embedding_row_with_head(
+            pg.pool_for_tests(),
             &owner,
             EntityKind::Fact,
             stale.memory_id,
             "other-model",
-            EMBEDDING_DIM,
             &other_model_embedding,
         )
         .await?;
-        tx.commit().await?;
 
         assert_eq!(
             count_embedding_jobs_for_model(pg.pool_for_tests(), "stub-fact-embed").await?,
@@ -1334,18 +1125,15 @@ async fn reconcile_limit_skips_existing_heads_before_bounding()
         let missing = engine
             .fact_ingest(&authz, fact_draft(&owner, "missing after covered"))
             .await?;
-        let mut tx = pg.pool_for_tests().begin().await?;
-        insert_memory_embedding(
-            &mut tx,
+        seed_embedding_row_with_head(
+            pg.pool_for_tests(),
             &owner,
             EntityKind::Fact,
             covered.memory_id,
             "stub-fact-embed",
-            EMBEDDING_DIM,
             &vec![0.25; EMBEDDING_DIM],
         )
         .await?;
-        tx.commit().await?;
 
         let outcome = pg
             .reconcile_embeddings(EmbeddingReconcileOptions {

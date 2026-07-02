@@ -4,7 +4,7 @@
 //! `PgStorage` struct, connection lifecycle, and migration runner,
 //! then delegates each narrow storage port method to its per-verb
 //! implementation.
-#[cfg(feature = "test-fixtures")]
+#[cfg(any(test, feature = "test-fixtures"))]
 extern crate self as proxima_storage_pg;
 
 #[doc(hidden)]
@@ -83,7 +83,7 @@ pub mod sidecars;
 pub mod query {
     pub use crate::verbs::query::{MAX_SNAPSHOT_EDGES, fact_entity_id_for};
 }
-#[cfg(feature = "test-fixtures")]
+#[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures;
 pub mod verbs;
 pub use sidecars::{
