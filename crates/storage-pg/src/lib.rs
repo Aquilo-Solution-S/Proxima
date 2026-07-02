@@ -81,7 +81,9 @@ mod pg_ident;
 mod pgvector;
 pub mod sidecars;
 pub mod query {
-    pub use crate::verbs::query::{MAX_SNAPSHOT_EDGES, fact_entity_id_for};
+    pub use crate::verbs::query::{
+        MAX_SNAPSHOT_EDGES, authorized_code_chunk_head_candidates, fact_entity_id_for,
+    };
 }
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures;

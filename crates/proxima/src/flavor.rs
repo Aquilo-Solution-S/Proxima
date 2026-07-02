@@ -20,3 +20,9 @@ pub use proxima_storage_pg::sidecars::{
 pub use proxima_storage_pg::{
     PgSidecarRegistry, PgSidecarRegistryFrozen, register_core_pg_sidecars,
 };
+
+mod authorized_read;
+pub use authorized_read::{
+    authorized_abstraction_payloads, authorized_code_chunk_head_candidates,
+    authorized_fact_payloads, authorized_fact_payloads_include_tombstones, authorized_memory_ids,
+};
