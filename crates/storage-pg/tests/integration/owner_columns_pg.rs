@@ -279,19 +279,42 @@ async fn group_membership_bootstrap_first_admin_succeeds_once_and_conflicts_seco
     let second_admin = UserId::new(Uuid::now_v7());
     let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
         .with_storage_ports(Arc::new(pg.clone()).storage_ports());
+    let bootstrap_authz = system_authz();
 
     engine
-        .bootstrap_group_admin(group, first_admin)
+        .bootstrap_group_admin(&bootstrap_authz, group, first_admin)
         .await
         .expect("fresh group admits exactly one first admin");
     assert_eq!(admin_members(&pg, group).await, vec![first_admin]);
 
     let err = engine
-        .bootstrap_group_admin(group, second_admin)
+        .bootstrap_group_admin(&bootstrap_authz, group, second_admin)
         .await
         .expect_err("second bootstrap must conflict");
     assert_bootstrap_conflict(&err);
     assert_eq!(admin_members(&pg, group).await, vec![first_admin]);
+
+    common::drop_db(&db).await.unwrap();
+}
+
+#[tokio::test]
+async fn group_membership_bootstrap_requires_operator_authority() {
+    let (pg, db) = common::fresh_pg().await;
+    let group = GroupId::new(Uuid::now_v7());
+    let first_admin = UserId::new(Uuid::now_v7());
+    let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        .with_storage_ports(Arc::new(pg.clone()).storage_ports());
+    let unapproved = AuthzContext::for_subject(first_admin, AuthPath::HostBearer);
+
+    let err = engine
+        .bootstrap_group_admin(&unapproved, group, first_admin)
+        .await
+        .expect_err("non-System, non-approved caller must not bootstrap group admin");
+    assert_eq!(err.code, ErrorCode::Forbidden);
+    assert!(
+        admin_members(&pg, group).await.is_empty(),
+        "denied bootstrap must not insert a membership row"
+    );
 
     common::drop_db(&db).await.unwrap();
 }
@@ -321,7 +344,7 @@ async fn group_membership_bootstrap_conflicts_after_admin_added_via_add_member()
         .expect("existing admin can add a later admin through normal path");
 
     let err = engine
-        .bootstrap_group_admin(group, bootstrap_candidate)
+        .bootstrap_group_admin(&system_authz(), group, bootstrap_candidate)
         .await
         .expect_err("bootstrap must conflict once any admin exists");
     assert_bootstrap_conflict(&err);
@@ -338,9 +361,10 @@ async fn group_membership_bootstrap_concurrent_calls_admit_single_admin() {
     let second_admin = UserId::new(Uuid::now_v7());
     let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
         .with_storage_ports(Arc::new(pg.clone()).storage_ports());
+    let authz = system_authz();
 
-    let first = engine.bootstrap_group_admin(group, first_admin);
-    let second = engine.bootstrap_group_admin(group, second_admin);
+    let first = engine.bootstrap_group_admin(&authz, group, first_admin);
+    let second = engine.bootstrap_group_admin(&authz, group, second_admin);
     let (first_result, second_result) = tokio::join!(first, second);
     let results = [first_result, second_result];
 
@@ -374,7 +398,7 @@ async fn group_membership_bootstrap_preserves_later_add_member_authz_path() {
         .with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
     engine
-        .bootstrap_group_admin(group, first_admin)
+        .bootstrap_group_admin(&system_authz(), group, first_admin)
         .await
         .expect("fresh group bootstrap succeeds");
     let resolver = PgOwnerAccessResolver::new(pg.pool_for_tests().clone());
@@ -1196,6 +1220,10 @@ fn granted_authz(principal: &OwnerRef) -> ResolvedAuthz {
         panic!("test principal must be a user");
     };
     AuthzContext::for_subject(user, AuthPath::HostBearer)
+}
+
+fn system_authz() -> ResolvedAuthz {
+    AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::System)
 }
 
 fn authz_with_role(principal: &OwnerRef, owner: OwnerRef, role: Role) -> ResolvedAuthz {

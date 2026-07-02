@@ -98,6 +98,11 @@ fn compliance_engine(pg: &PgStorage) -> Engine {
         .with_storage_ports(storage_ports_with_compliance(pg))
 }
 
+fn engine_without_compliance_admin(pg: &PgStorage) -> Engine {
+    Engine::new(FlavorRegistryFrozen::with_schemas(schemas_for_test()))
+        .with_storage_ports(Arc::new(pg.clone()).storage_ports())
+}
+
 fn receipt_draft(source_id: &str, batch: Uuid, payload: &[u8]) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
@@ -465,6 +470,57 @@ async fn legal_hold_round_trips_and_set_is_idempotent() -> Result<(), Box<dyn st
         assert!(engine.clear_legal_hold(&authz, &owner).await?);
         assert!(!engine.get_legal_hold(&authz, &owner).await?);
         assert!(!engine.clear_legal_hold(&authz, &owner).await?);
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn owner_admin_can_read_but_not_set_or_clear_legal_hold()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await?;
+    let url = db_url(&db_name);
+    let result = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let engine = engine_without_compliance_admin(&pg);
+        let group = GroupId::new(Uuid::now_v7());
+        let owner = OwnerRef::Group(group);
+        let owner_admin = AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin())],
+            AuthPath::HostBearer,
+        );
+        let operator = AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::System);
+
+        assert!(!engine.get_legal_hold(&owner_admin, &owner).await?);
+        let set_err = engine
+            .set_legal_hold(&owner_admin, &owner)
+            .await
+            .expect_err("owner admin without operator authority cannot set hold");
+        assert_eq!(set_err.code, proxima_core::ErrorCode::Forbidden);
+        assert!(
+            !engine.get_legal_hold(&owner_admin, &owner).await?,
+            "denied set must leave hold inactive"
+        );
+
+        engine.set_legal_hold(&operator, &owner).await?;
+        assert!(engine.get_legal_hold(&owner_admin, &owner).await?);
+        let clear_err = engine
+            .clear_legal_hold(&owner_admin, &owner)
+            .await
+            .expect_err("owner admin without operator authority cannot clear hold");
+        assert_eq!(clear_err.code, proxima_core::ErrorCode::Forbidden);
+        assert!(
+            engine.get_legal_hold(&owner_admin, &owner).await?,
+            "denied clear must leave hold active"
+        );
+
+        assert!(engine.clear_legal_hold(&operator, &owner).await?);
+        assert!(!engine.get_legal_hold(&owner_admin, &owner).await?);
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;

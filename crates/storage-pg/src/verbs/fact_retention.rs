@@ -118,7 +118,7 @@ pub(crate) async fn legal_hold_active_tx(
 /// # Errors
 ///
 /// Returns `StorageError::Internal` or `ConstraintViolation` for SQL failures.
-pub async fn set_legal_hold(pool: &PgPool, owner: &Owner) -> Result<(), StorageError> {
+pub(crate) async fn set_legal_hold(pool: &PgPool, owner: &Owner) -> Result<(), StorageError> {
     let mut tx = pool.begin().await.map_err(map_err)?;
     lock_legal_hold_tx(&mut tx, owner).await?;
     let (owner_kind, owner_id) = owner.columns();
@@ -144,7 +144,7 @@ pub async fn set_legal_hold(pool: &PgPool, owner: &Owner) -> Result<(), StorageE
 /// # Errors
 ///
 /// Returns `StorageError::Internal` for SQL failures.
-pub async fn get_legal_hold(pool: &PgPool, owner: &Owner) -> Result<bool, StorageError> {
+pub(crate) async fn get_legal_hold(pool: &PgPool, owner: &Owner) -> Result<bool, StorageError> {
     let (owner_kind, owner_id) = owner.columns();
     sqlx::query_scalar(
         "SELECT EXISTS (
@@ -167,7 +167,7 @@ pub async fn get_legal_hold(pool: &PgPool, owner: &Owner) -> Result<bool, Storag
 /// # Errors
 ///
 /// Returns `StorageError::Internal` for SQL failures.
-pub async fn clear_legal_hold(pool: &PgPool, owner: &Owner) -> Result<bool, StorageError> {
+pub(crate) async fn clear_legal_hold(pool: &PgPool, owner: &Owner) -> Result<bool, StorageError> {
     let mut tx = pool.begin().await.map_err(map_err)?;
     lock_legal_hold_tx(&mut tx, owner).await?;
     let (owner_kind, owner_id) = owner.columns();

@@ -66,7 +66,7 @@ impl Engine {
         Ok(outcome)
     }
 
-    async fn compliance_controller_authorized(
+    pub(in crate::engine) async fn compliance_controller_authorized(
         &self,
         authz: &AuthzContext,
         target: &ComplianceEraseTarget,

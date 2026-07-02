@@ -50,14 +50,17 @@ Refusal is a valid compliance result, not a substrate failure.
 | Field | Contract |
 |---|---|
 | scope | one `OwnerRef` |
-| active state | present owner hold row; admin-only set/clear/get |
-| gated paths | physical destruction only: current `erase_*` compliance family (`delete_owner`, `delete_source_scope`) |
+| active state | present owner hold row; set/clear require compliance-erase operator authority (`ComplianceAdminPort` approval or `AuthPath::System`); get requires owner `Admin` |
+| gated paths | substantive owner-memory physical destruction: current `erase_*` compliance family (`delete_owner`, `delete_source_scope`) |
 | refusal | typed `ComplianceEraseRefusal::LegalHoldActive`; no destructive statement runs |
-| non-effects | no change to abandonment law, drop proof, reads, ordinary writes, suppression checks, export, or audit retention |
+| non-effects | no change to abandonment law, drop proof, reads, ordinary writes, embedding work-queue consumption, suppression checks, export, or audit retention |
 | race boundary | checked inside the storage compliance-erase transaction under the owner legal-hold lock before deletion |
 
 Forward rule: any future physical-destruction path must inherit the
 same in-transaction owner hold gate before it can exist.
+Exception: transient work-queue rows (`proxima_core.embedding_jobs`) are
+consumed by ordinary embedding-pipeline operation; legal holds do not
+suspend that pipeline.
 
 Operator rule: the controller/operator owns the legal judgment
 (litigation hold, GDPR erasure duty, regulator instruction). Proxima
@@ -143,11 +146,13 @@ code path explicitly implements it.
 | pause flag | `false` | paused owners skip future operator dispatch and wake execution |
 | residency allowlist | empty | empty means unrestricted; non-empty constrains future residency checks |
 | retention override | absent | absent inherits source retention policy |
-| legal/security hold | absent | active row suspends physical destruction for the owner-scoped `erase_*` family only |
+| legal/security hold | absent | active row suspends substantive owner-memory physical destruction for the owner-scoped `erase_*` family only; transient `proxima_core.embedding_jobs` may still be consumed |
 | consent state | empty opaque value | controller-managed; substrate stores, controller interprets |
 | legal-consequence override | `false` | future override for automated legal-consequence blocking |
 
-Updates are admin-only, audited, and not visible to operators.
+Policy updates are admin-only except legal-hold set/clear, which require
+compliance-erase operator authority. Policy state is audited and not visible
+to operators; owner Admins may read legal-hold state.
 Fresh Owners with no policy row use the all-permissive defaults.
 
 ## Deferred enforcement
