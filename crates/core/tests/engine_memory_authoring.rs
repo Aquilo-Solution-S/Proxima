@@ -568,6 +568,257 @@ async fn author_derived_rejects_empty_operator_inputs() {
     );
 }
 
+/// Task 8 operator-provenance fixtures.
+///
+/// Cases 1 ("missing output-to-input provenance edge") and 2 ("edge source
+/// not equal to output memory") from the hardening plan collapse onto the
+/// SAME runtime check in this data model: `AuthorDerivedRequestInput`'s
+/// `edges` array supplies both the manifest's `inputs` list AND its
+/// `output_edges` list from the same element (`OperatorInvocationManifest`
+/// in `crates/core/src/operator_proofs.rs`), so an edge whose
+/// `source_memory_id` is not the output memory is, by construction, an
+/// input with no provenance edge back to the output —
+/// `OperatorProofError::MissingProvenanceEdge` fires for both framings. The
+/// two tests below exercise it at different edge-list multiplicities (one
+/// bad edge in isolation; one bad edge alongside a correctly-sourced one)
+/// so the check is pinned as regression coverage from both angles rather
+/// than testing the identical single-edge shape twice.
+#[tokio::test]
+async fn author_derived_authorized_rejects_operator_edge_sourced_from_wrong_memory()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = owner_fixture();
+        let real_input = insert_source_abstraction(&pg, &owner).await?;
+        let unrelated_memory =
+            insert_source_memory(&pg, &owner, EntityKind::Abstraction, "unrelated").await?;
+        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            .with_storage_ports(Arc::new(pg.clone()).storage_ports());
+        let relation = engine
+            .registry()
+            .resolve_relation(CORE_DERIVED_FROM_RELATION)
+            .expect("core relation registered");
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let memory_id = MemoryId::new(Uuid::now_v7());
+
+        // The edge's declared source is `unrelated_memory`, not `memory_id`
+        // (the actual output) — the input it claims to provenance
+        // (`real_input`) therefore has no edge pointing back to the real
+        // output.
+        let edges = [proxima_core::AuthorDerivedEdgeInput {
+            relation,
+            source_kind: EntityKind::Abstraction,
+            source_memory_id: unrelated_memory,
+            target_kind: EntityKind::Abstraction,
+            target_memory_id: real_input,
+            authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
+            authorship_owner_memory_id: Some(real_input),
+        }];
+
+        let err = engine
+            .author_derived_authorized(
+                &authz,
+                proxima_core::AuthorDerivedRequestInput {
+                    memory_id,
+                    owner,
+                    kind: EntityKind::Abstraction,
+                    text: "derived".into(),
+                    schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
+                    schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+                    operator_kind: MemoryOperatorKind::AtoA,
+                    operator_id: OperatorId::new(Uuid::now_v7()),
+                    input_contract_id: InputContractId::new(Uuid::now_v7()),
+                    source_batch_id: None,
+                    model_id: "test-model",
+                    prompt_version: "test",
+                    sidecar_payload: SidecarPayload::abstraction(AgentDerivationV1 {
+                        title: "Derived".into(),
+                        body: "Body".into(),
+                        tags: Vec::new(),
+                        idempotency_key: None,
+                        source_memory_ids: vec![real_input.into_inner()],
+                        model_id: "test-model".into(),
+                        client_name: "test".into(),
+                        client_version: "1".into(),
+                    }),
+                    supersedes: None,
+                    edges: &edges,
+                },
+            )
+            .await
+            .expect_err("edge sourced from a memory other than the output is invalid");
+
+        assert_eq!(err.code, ErrorCode::InvalidArgument, "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("missing provenance edge") || err.to_string().contains(
+                "operator provenance edge source must be the output memory"
+            ),
+            "unexpected error: {err}"
+        );
+        assert_eq!(memory_count(&pg, memory_id).await?, 0);
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn author_derived_authorized_rejects_operator_input_missing_provenance_edge_to_output()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = owner_fixture();
+        let input_a = insert_source_abstraction(&pg, &owner).await?;
+        let input_b =
+            insert_source_memory(&pg, &owner, EntityKind::Abstraction, "second input").await?;
+        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            .with_storage_ports(Arc::new(pg.clone()).storage_ports());
+        let relation = engine
+            .registry()
+            .resolve_relation(CORE_DERIVED_FROM_RELATION)
+            .expect("core relation registered");
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let memory_id = MemoryId::new(Uuid::now_v7());
+
+        // input_a is correctly provenanced (source == output memory_id).
+        // input_b's edge is sourced from input_a instead of the output, so
+        // input_b never gets a provenance edge back to the real output —
+        // a second, unrelated declared input silently loses its proof.
+        let edges = [
+            proxima_core::AuthorDerivedEdgeInput {
+                relation,
+                source_kind: EntityKind::Abstraction,
+                source_memory_id: memory_id,
+                target_kind: EntityKind::Abstraction,
+                target_memory_id: input_a,
+                authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
+                authorship_owner_memory_id: Some(input_a),
+            },
+            proxima_core::AuthorDerivedEdgeInput {
+                relation,
+                source_kind: EntityKind::Abstraction,
+                source_memory_id: input_a,
+                target_kind: EntityKind::Abstraction,
+                target_memory_id: input_b,
+                authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
+                authorship_owner_memory_id: Some(input_b),
+            },
+        ];
+
+        let err = engine
+            .author_derived_authorized(
+                &authz,
+                proxima_core::AuthorDerivedRequestInput {
+                    memory_id,
+                    owner,
+                    kind: EntityKind::Abstraction,
+                    text: "derived".into(),
+                    schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
+                    schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+                    operator_kind: MemoryOperatorKind::AtoA,
+                    operator_id: OperatorId::new(Uuid::now_v7()),
+                    input_contract_id: InputContractId::new(Uuid::now_v7()),
+                    source_batch_id: None,
+                    model_id: "test-model",
+                    prompt_version: "test",
+                    sidecar_payload: SidecarPayload::abstraction(AgentDerivationV1 {
+                        title: "Derived".into(),
+                        body: "Body".into(),
+                        tags: Vec::new(),
+                        idempotency_key: None,
+                        source_memory_ids: vec![input_a.into_inner(), input_b.into_inner()],
+                        model_id: "test-model".into(),
+                        client_name: "test".into(),
+                        client_version: "1".into(),
+                    }),
+                    supersedes: None,
+                    edges: &edges,
+                },
+            )
+            .await
+            .expect_err("a declared input with no provenance edge to the output is invalid");
+
+        assert_eq!(err.code, ErrorCode::InvalidArgument, "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("missing provenance edge") || err.to_string().contains(
+                "operator provenance edge source must be the output memory"
+            ),
+            "unexpected error: {err}"
+        );
+        assert_eq!(memory_count(&pg, memory_id).await?, 0);
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+/// Publicly-observable half of the "F→A without source batch" fixture (see
+/// `author_derived_rejects_operator_ftoa_missing_source_batch` in
+/// `crates/core/src/engine/memory_authoring.rs` for the internal check this
+/// complements). `author_derived_authorized` never reaches that internal
+/// check with `source_batch_id: None` for F→A: `effective_operator_source_batch_id`
+/// recomputes the batch from declared F→A input edges first, and with zero
+/// edges it fails even earlier ("F→A operator invocation requires source
+/// inputs"). Either way, a caller cannot get an F→A derivation through the
+/// public API without a legitimate closed source batch.
+#[tokio::test]
+async fn author_derived_authorized_rejects_operator_ftoa_without_source_batch_via_public_api()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = owner_fixture();
+        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            .with_storage_ports(Arc::new(pg.clone()).storage_ports());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let memory_id = MemoryId::new(Uuid::now_v7());
+
+        let err = engine
+            .author_derived_authorized(
+                &authz,
+                proxima_core::AuthorDerivedRequestInput {
+                    memory_id,
+                    owner,
+                    kind: EntityKind::Abstraction,
+                    text: "derived".into(),
+                    schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
+                    schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+                    operator_kind: MemoryOperatorKind::FtoA,
+                    operator_id: OperatorId::new(Uuid::now_v7()),
+                    input_contract_id: InputContractId::new(Uuid::now_v7()),
+                    source_batch_id: None,
+                    model_id: "test-model",
+                    prompt_version: "test",
+                    sidecar_payload: SidecarPayload::abstraction(AgentDerivationV1 {
+                        title: "Derived".into(),
+                        body: "Body".into(),
+                        tags: Vec::new(),
+                        idempotency_key: None,
+                        source_memory_ids: Vec::new(),
+                        model_id: "test-model".into(),
+                        client_name: "test".into(),
+                        client_version: "1".into(),
+                    }),
+                    supersedes: None,
+                    edges: &[],
+                },
+            )
+            .await
+            .expect_err("F→A invocation without any source batch is invalid before storage");
+
+        assert_eq!(err.code, ErrorCode::InvalidArgument, "unexpected error: {err}");
+        assert_eq!(memory_count(&pg, memory_id).await?, 0);
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
+}
+
 #[tokio::test]
 async fn ingest_fact_with_sidecar_writes_fact_and_note_sidecar()
 -> Result<(), Box<dyn std::error::Error>> {
