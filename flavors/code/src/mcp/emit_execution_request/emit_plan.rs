@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use proxima_core::access::AccessKind;
 use proxima_core::{AbstractionPayload, EdgeId, FactPayload, MemoryId, Tool, ToolCtx, ToolError};
 
 use crate::payloads::{
@@ -189,10 +190,12 @@ impl Tool for CodeEmitExecutionPlanTool {
                         outcome
                     }
                 };
+                let edge_permit = ctx.owner_write_permit(AccessKind::Perspective).await?;
                 plan_edge_ids.push(
                     append_plan_fact_evidence_edge(
                         &mut tx,
                         &ctx,
+                        &edge_permit,
                         plan_memory_id,
                         outcome.memory_id,
                     )

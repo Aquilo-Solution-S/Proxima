@@ -3,6 +3,7 @@
 //! This is the public storage-pg edge write surface. Raw `EdgeDraft` /
 //! endpoint-column assembly stays crate-private in `edge_append`.
 
+use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{
     EdgeAuthorshipKind, EdgeId, EdgePayload, EntityKind, FactEntityId, GoalId, MemoryId, Owner,
     OwnerRefKind, RegisteredRelation, RelationOwnerPolicy, RelationTargetAccessPolicy,
@@ -127,7 +128,7 @@ impl From<MemoryEndpoint> for CheckedEdgeEndpoint {
 #[allow(clippy::too_many_arguments)]
 pub async fn append_owner_checked_memory_edge(
     tx: &mut sqlx::PgConnection,
-    owner: &Owner,
+    permit: &OwnerWritePermit,
     edge_id: EdgeId,
     relation: RegisteredRelation<'_>,
     source: MemoryEndpoint,
@@ -137,7 +138,7 @@ pub async fn append_owner_checked_memory_edge(
 ) -> Result<EdgeId, StorageError> {
     append_owner_checked_edge(
         tx,
-        owner,
+        permit,
         edge_id,
         relation,
         source.into(),
@@ -158,7 +159,7 @@ pub async fn append_owner_checked_memory_edge(
 #[allow(clippy::too_many_arguments)]
 pub async fn append_owner_checked_edge(
     tx: &mut sqlx::PgConnection,
-    owner: &Owner,
+    permit: &OwnerWritePermit,
     edge_id: EdgeId,
     relation: RegisteredRelation<'_>,
     source: CheckedEdgeEndpoint,
@@ -166,6 +167,7 @@ pub async fn append_owner_checked_edge(
     authorship_kind: EdgeAuthorshipKind,
     authorship_owner_memory_id: Option<MemoryId>,
 ) -> Result<EdgeId, StorageError> {
+    let owner = permit.owner();
     validate_owner_checked_edge(tx, owner, relation, source, target).await?;
     let draft = edge_draft(
         owner,
@@ -190,7 +192,7 @@ pub async fn append_owner_checked_edge(
 #[allow(clippy::too_many_arguments)]
 pub async fn append_owner_checked_typed_memory_edge<E: EdgePayload + PgEdgeSidecar + Clone>(
     tx: &mut sqlx::PgConnection,
-    owner: &Owner,
+    permit: &OwnerWritePermit,
     edge_id: EdgeId,
     relation: RegisteredRelation<'_>,
     source: MemoryEndpoint,
@@ -201,7 +203,7 @@ pub async fn append_owner_checked_typed_memory_edge<E: EdgePayload + PgEdgeSidec
 ) -> Result<EdgeId, StorageError> {
     append_owner_checked_typed_edge(
         tx,
-        owner,
+        permit,
         edge_id,
         relation,
         source.into(),
@@ -222,7 +224,7 @@ pub async fn append_owner_checked_typed_memory_edge<E: EdgePayload + PgEdgeSidec
 #[allow(clippy::too_many_arguments)]
 pub async fn append_owner_checked_typed_edge<E: EdgePayload + PgEdgeSidecar + Clone>(
     tx: &mut sqlx::PgConnection,
-    owner: &Owner,
+    permit: &OwnerWritePermit,
     edge_id: EdgeId,
     relation: RegisteredRelation<'_>,
     source: CheckedEdgeEndpoint,
@@ -231,6 +233,7 @@ pub async fn append_owner_checked_typed_edge<E: EdgePayload + PgEdgeSidecar + Cl
     authorship_owner_memory_id: Option<MemoryId>,
     payload: &E,
 ) -> Result<EdgeId, StorageError> {
+    let owner = permit.owner();
     validate_owner_checked_edge(tx, owner, relation, source, target).await?;
     let payload_schema = relation.descriptor.payload_schema.as_ref().ok_or_else(|| {
         StorageError::ConstraintViolation(format!(

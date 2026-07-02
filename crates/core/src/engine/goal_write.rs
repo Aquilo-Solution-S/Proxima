@@ -4,6 +4,7 @@ use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
 use crate::storage_ports::GoalCommandStoragePorts;
+use crate::storage_ports::OwnerWritePermit;
 use crate::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, GoalAtomicContext, GoalAuthorship, GoalCreateRequest, GoalDraft,
@@ -135,7 +136,10 @@ impl Engine {
         self.storage()
             .goal_command
             .goal_write
-            .create_goal_atomic(&CreateGoalAtomicRequest { draft, context })
+            .create_goal_atomic(
+                &CreateGoalAtomicRequest { draft, context },
+                permit.owner_write_permit(),
+            )
             .await
             .map_err(map_goal_storage_error)
     }
@@ -172,6 +176,7 @@ impl Engine {
                 request_id: req.request_id.clone(),
                 context,
             },
+            permit.owner_write_permit(),
         )
         .await
     }
@@ -203,14 +208,17 @@ impl Engine {
         self.storage()
             .goal_command
             .goal_write
-            .achieve_goal_atomic(&AchieveGoalAtomicRequest {
-                owner: *permit.owner(),
-                prior_goal_id: req.prior_goal_id,
-                authorship: req.authorship.clone(),
-                request_id: req.request_id.clone(),
-                context,
-                evidence: req.evidence.clone(),
-            })
+            .achieve_goal_atomic(
+                &AchieveGoalAtomicRequest {
+                    owner: *permit.owner(),
+                    prior_goal_id: req.prior_goal_id,
+                    authorship: req.authorship.clone(),
+                    request_id: req.request_id.clone(),
+                    context,
+                    evidence: req.evidence.clone(),
+                },
+                permit.owner_write_permit(),
+            )
             .await
             .map_err(map_goal_storage_error)
     }
@@ -247,16 +255,19 @@ impl Engine {
         self.storage()
             .goal_command
             .goal_write
-            .modify_goal_atomic(&ModifyGoalAtomicRequest {
-                owner: *permit.owner(),
-                prior_goal_id: req.prior_goal_id,
-                replacement: self.normalize_payload_write(req.replacement.clone())?,
-                wake: req.wake.clone(),
-                authorship: req.authorship.clone(),
-                request_id: req.request_id.clone(),
-                context,
-                evidence: req.evidence.clone(),
-            })
+            .modify_goal_atomic(
+                &ModifyGoalAtomicRequest {
+                    owner: *permit.owner(),
+                    prior_goal_id: req.prior_goal_id,
+                    replacement: self.normalize_payload_write(req.replacement.clone())?,
+                    wake: req.wake.clone(),
+                    authorship: req.authorship.clone(),
+                    request_id: req.request_id.clone(),
+                    context,
+                    evidence: req.evidence.clone(),
+                },
+                permit.owner_write_permit(),
+            )
             .await
             .map_err(map_goal_storage_error)
     }
@@ -293,14 +304,17 @@ impl Engine {
         self.storage()
             .goal_command
             .goal_write
-            .decompose_goal_atomic(&DecomposeGoalAtomicRequest {
-                owner: *permit.owner(),
-                parent_goal_id: req.parent_goal_id,
-                authorship: req.authorship.clone(),
-                context,
-                topology: req.topology.clone(),
-                children,
-            })
+            .decompose_goal_atomic(
+                &DecomposeGoalAtomicRequest {
+                    owner: *permit.owner(),
+                    parent_goal_id: req.parent_goal_id,
+                    authorship: req.authorship.clone(),
+                    context,
+                    topology: req.topology.clone(),
+                    children,
+                },
+                permit.owner_write_permit(),
+            )
             .await
             .map_err(map_goal_storage_error)
     }
@@ -367,14 +381,17 @@ impl Engine {
             .storage()
             .goal_command
             .goal_write
-            .create_goal_atomic(&CreateGoalAtomicRequest {
-                draft,
-                context: GoalAtomicContext {
-                    registry: self.registry(),
-                    embedding_model_id,
-                    author_self_perspective_id,
+            .create_goal_atomic(
+                &CreateGoalAtomicRequest {
+                    draft,
+                    context: GoalAtomicContext {
+                        registry: self.registry(),
+                        embedding_model_id,
+                        author_self_perspective_id,
+                    },
                 },
-            })
+                permit.owner_write_permit(),
+            )
             .await
             .map_err(map_goal_storage_error)?;
         Ok(outcome)
@@ -627,10 +644,11 @@ fn map_goal_build_error(err: GoalWriteBuildError) -> ProtocolError {
 pub(in crate::engine) async fn transition_goal_authorized(
     ports: &GoalCommandStoragePorts,
     req: &TransitionGoalAtomicRequest<'_>,
+    permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, ProtocolError> {
     ports
         .goal_write
-        .transition_goal_atomic(req)
+        .transition_goal_atomic(req, permit)
         .await
         .map_err(map_goal_storage_error)
 }
@@ -769,7 +787,7 @@ mod tests {
 
         let err = engine
             .author_self_perspective_authorized(
-                &AuthzContext::single_owner(&owner, AuthPath::System),
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 Some(memory_id),
             )
             .await
@@ -791,7 +809,7 @@ mod tests {
 
         let authorized = engine
             .author_self_perspective_authorized(
-                &AuthzContext::single_owner(&owner, AuthPath::System),
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 Some(memory_id),
             )
             .await
@@ -823,7 +841,7 @@ mod tests {
 
         let err = engine
             .create_goal_from_payload_write(
-                &AuthzContext::single_owner(&owner, AuthPath::System),
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 &req,
             )
             .await
@@ -858,7 +876,10 @@ mod tests {
         };
 
         let err = engine
-            .decompose_goal(&AuthzContext::single_owner(&owner, AuthPath::System), &req)
+            .decompose_goal(
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+                &req,
+            )
             .await
             .expect_err("foreign target Perspective must be rejected before write");
 
@@ -875,7 +896,7 @@ mod tests {
             true,
             EntityKind::Perspective,
         ));
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let permit = engine
             .authorize_write(&authz, &owner, Relation::Editor)
             .await

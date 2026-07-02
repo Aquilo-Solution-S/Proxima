@@ -3,7 +3,10 @@
 use std::path::Path;
 use std::process::Command;
 
-use proxima_core::{Owner, OwnerRef, UserId};
+use proxima_core::storage_ports::OwnerWritePermit;
+use proxima_core::{
+    AccessKind, AuthPath, AuthzContext, Engine, FlavorRegistry, Owner, OwnerRef, Role, UserId,
+};
 use proxima_pg_testkit::{
     FNV_OFFSET_BASIS, create_db_from_template, db_url, drop_db, ensure_template, fnv1a64_extend,
 };
@@ -58,6 +61,23 @@ pub fn git(repo: &Path, args: &[&str]) {
         "git {args:?} failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+pub async fn owner_write_permit(
+    owner: &Owner,
+    kind: AccessKind,
+) -> Result<OwnerWritePermit, Box<dyn std::error::Error>> {
+    let authz = match owner {
+        OwnerRef::Personal(user_id) => AuthzContext::for_subject(*user_id, AuthPath::HostBearer),
+        OwnerRef::Group(_) => AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(*owner, Role::admin())],
+            AuthPath::HostBearer,
+        ),
+        OwnerRef::World => AuthzContext::denied_for_owner(owner),
+    };
+    let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+    Ok(engine.authorize_owner_write(&authz, owner, kind).await?)
 }
 
 pub async fn insert_home(

@@ -234,7 +234,7 @@ mod tests {
     fn test_ctx(tool_scope: ToolScope) -> McpToolCtx {
         let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let authz =
-            AuthzContext::single_owner(&owner, AuthPath::System).with_tool_scope(tool_scope);
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer).with_tool_scope(tool_scope);
         McpToolCtx {
             owner,
             authz,

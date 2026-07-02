@@ -21,7 +21,7 @@ struct FactIngestFake;
 impl FactIngestPort for FactIngestFake {
     async fn ingest_fact_atomic(
         &self,
-        owner: &Owner,
+        _permit: &OwnerWritePermit,
         draft: &FactWriteCommand,
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
@@ -54,6 +54,7 @@ struct OperatorMcpCallWriteFake;
 impl McpCallWritePort for OperatorMcpCallWriteFake {
     async fn persist_mcp_call_atomic(
         &self,
+        _permit: &OwnerWritePermit,
         input: &McpCallLogInput,
     ) -> Result<McpCallLogOutcome, StorageError> {
         fake_error()
@@ -81,6 +82,7 @@ impl MemoryAuthoringPort for MemoryAuthoringFake {
     async fn author_derived(
         &self,
         req: &AuthorDerivedRequest<'_>,
+        _permit: &OwnerWritePermit,
         _proof: proxima_core::storage_ports::OperatorWriteProof,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
         fake_error()
@@ -89,6 +91,7 @@ impl MemoryAuthoringPort for MemoryAuthoringFake {
     async fn append_memory_edge(
         &self,
         edge: &DerivedEdgeSpec<'_>,
+        _permit: &OwnerWritePermit,
         _proof: proxima_core::storage_ports::EdgeWriteProof,
     ) -> Result<EdgeId, StorageError> {
         fake_error()
@@ -268,7 +271,7 @@ impl EmbeddingJobPort for EmbeddingJobFake {
 
     async fn enqueue_missing_embedding_jobs(
         &self,
-        owner: &Owner,
+        _permit: &OwnerWritePermit,
         model_id: &str,
         limit: i64,
     ) -> Result<u64, StorageError> {
@@ -288,6 +291,7 @@ impl GoalWritePort for GoalWriteFake {
     async fn create_goal_atomic(
         &self,
         req: &CreateGoalAtomicRequest<'_>,
+        _permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
         fake_error()
     }
@@ -295,6 +299,7 @@ impl GoalWritePort for GoalWriteFake {
     async fn transition_goal_atomic(
         &self,
         req: &TransitionGoalAtomicRequest<'_>,
+        _permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
         fake_error()
     }
@@ -302,6 +307,7 @@ impl GoalWritePort for GoalWriteFake {
     async fn achieve_goal_atomic(
         &self,
         req: &AchieveGoalAtomicRequest<'_>,
+        _permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
         fake_error()
     }
@@ -309,6 +315,7 @@ impl GoalWritePort for GoalWriteFake {
     async fn modify_goal_atomic(
         &self,
         req: &ModifyGoalAtomicRequest<'_>,
+        _permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
         fake_error()
     }
@@ -316,6 +323,7 @@ impl GoalWritePort for GoalWriteFake {
     async fn decompose_goal_atomic(
         &self,
         req: &DecomposeGoalAtomicRequest<'_>,
+        _permit: &OwnerWritePermit,
     ) -> Result<DecomposeGoalOutcome, StorageError> {
         fake_error()
     }
@@ -473,6 +481,7 @@ impl OwnerMembershipAdminPort for OwnerMembershipAdminFake {
 
     async fn add_group_member(
         &self,
+        _permit: &OwnerWritePermit,
         group_id: GroupId,
         member_user_id: UserId,
         relation: Relation,
@@ -483,6 +492,7 @@ impl OwnerMembershipAdminPort for OwnerMembershipAdminFake {
 
     async fn remove_group_member(
         &self,
+        _permit: &OwnerWritePermit,
         group_id: GroupId,
         member_user_id: UserId,
     ) -> Result<(), StorageError> {
@@ -504,7 +514,7 @@ struct SourceBatchFake;
 impl SourceBatchPort for SourceBatchFake {
     async fn close_batch(
         &self,
-        owner: &OwnerRef,
+        _permit: &OwnerWritePermit,
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError> {
         fake_error()
@@ -526,7 +536,7 @@ impl SourceCursorPort for SourceCursorFake {
 
     async fn store_source_cursor(
         &self,
-        owner: &Owner,
+        _permit: &OwnerWritePermit,
         source: &str,
         cursor: &Cursor,
     ) -> Result<(), StorageError> {
@@ -539,7 +549,11 @@ struct FactRetentionFake;
 
 #[async_trait::async_trait]
 impl FactRetentionPort for FactRetentionFake {
-    async fn upsert_fact_retention(&self, owner: &Owner, seconds: i64) -> Result<(), StorageError> {
+    async fn upsert_fact_retention(
+        &self,
+        _permit: &OwnerWritePermit,
+        seconds: i64,
+    ) -> Result<(), StorageError> {
         fake_error()
     }
 
@@ -547,11 +561,11 @@ impl FactRetentionPort for FactRetentionFake {
         fake_error()
     }
 
-    async fn clear_fact_retention(&self, owner: &Owner) -> Result<bool, StorageError> {
+    async fn clear_fact_retention(&self, _permit: &OwnerWritePermit) -> Result<bool, StorageError> {
         fake_error()
     }
 
-    async fn set_legal_hold(&self, owner: &Owner) -> Result<(), StorageError> {
+    async fn set_legal_hold(&self, _permit: &OwnerWritePermit) -> Result<(), StorageError> {
         fake_error()
     }
 
@@ -559,7 +573,7 @@ impl FactRetentionPort for FactRetentionFake {
         fake_error()
     }
 
-    async fn clear_legal_hold(&self, owner: &Owner) -> Result<bool, StorageError> {
+    async fn clear_legal_hold(&self, _permit: &OwnerWritePermit) -> Result<bool, StorageError> {
         fake_error()
     }
 }

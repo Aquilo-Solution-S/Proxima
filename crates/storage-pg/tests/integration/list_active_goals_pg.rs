@@ -1,4 +1,4 @@
-use crate::common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit};
 
 use proxima_core::relation::CORE_INSPIRES_RELATION;
 use proxima_core::storage_ports::*;
@@ -88,10 +88,11 @@ async fn link_goal_to_self(
     let relation = registry
         .resolve_relation(CORE_INSPIRES_RELATION)
         .expect("core/inspires relation");
+    let permit = owner_write_permit(owner, proxima_core::AccessKind::Goal).await?;
     let mut tx = pg.pool_for_tests().begin().await?;
     append_owner_checked_edge(
         &mut tx,
-        owner,
+        &permit,
         proxima_core::EdgeId::new(Uuid::now_v7()),
         relation,
         CheckedEdgeEndpoint::goal(goal_id),

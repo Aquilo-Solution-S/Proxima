@@ -64,7 +64,7 @@ impl Engine {
         self.storage
             .source_cursor
             .source_cursor
-            .store_source_cursor(permit.owner(), source, cursor)
+            .store_source_cursor(permit.owner_write_permit(), source, cursor)
             .await
             .map_err(|e| ProtocolError::internal(format!("store_source_cursor: {e}")))
     }

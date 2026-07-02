@@ -200,7 +200,7 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         let path = repo.path().to_string_lossy().into_owned();
         register_repo(pg.pool_for_tests(), &owner, repo_id, &path, "fixture").await?;
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
         let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
 
@@ -320,7 +320,7 @@ async fn limited_local_ingestion_advances_one_commit_per_poll() {
         let repo_id = Uuid::now_v7();
         let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner);
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
         let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
 

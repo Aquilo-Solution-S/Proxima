@@ -105,7 +105,7 @@ fn read_set_authz(
         .into_iter()
         .filter(|owner| matches!(owner, OwnerRef::Group(_)))
         .map(|owner| (owner, Role::viewer()));
-    AuthzContext::for_subject_with_role(user, roles, AuthPath::System)
+    AuthzContext::for_subject_with_role(user, roles, AuthPath::HostBearer)
 }
 
 #[tokio::test]
@@ -126,9 +126,9 @@ async fn change_history_returns_owner_scoped_newest_first() {
         let engine1 = build_engine(storage.clone(), owner1, OwnerRef::Personal(user1));
         let engine2 = build_engine(storage, owner2, OwnerRef::Personal(user2));
         let authz1 =
-            proxima_core::AuthzContext::single_owner(&owner1, proxima_core::AuthPath::System);
+            proxima_core::AuthzContext::single_owner(&owner1, proxima_core::AuthPath::HostBearer);
         let authz2 =
-            proxima_core::AuthzContext::single_owner(&owner2, proxima_core::AuthPath::System);
+            proxima_core::AuthzContext::single_owner(&owner2, proxima_core::AuthPath::HostBearer);
 
         for body in [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()] {
             engine1

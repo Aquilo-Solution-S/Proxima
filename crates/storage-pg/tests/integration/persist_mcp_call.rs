@@ -15,10 +15,12 @@ async fn persist_writes_fact_inline_io_citation_and_change_event() {
         pg.run_migrations().await?;
 
         let owner = crate::common::owner_fixture();
+        let permit =
+            crate::common::owner_write_permit(&owner, proxima_core::AccessKind::Fact).await?;
         let io_body = br#"{"input":{"q":"x"},"output":{"ok":true},"error":null}"#.to_vec();
         let input = sample_input(&owner, io_body.clone(), false, None);
 
-        let outcome = persist_mcp_call_atomic(pg.pool_for_tests(), &input).await?;
+        let outcome = persist_mcp_call_atomic(pg.pool_for_tests(), &permit, &input).await?;
 
         assert!(!outcome.idempotent_replay);
 
@@ -89,6 +91,8 @@ async fn distinct_calls_share_one_cited_object() {
         pg.run_migrations().await?;
 
         let owner = crate::common::owner_fixture();
+        let permit =
+            crate::common::owner_write_permit(&owner, proxima_core::AccessKind::Fact).await?;
         let now = time::OffsetDateTime::now_utc();
         let io_body = br#"{"input":{"q":"same"},"output":{"ok":true},"error":null}"#.to_vec();
         let mut first_input = sample_input(&owner, io_body.clone(), false, None);
@@ -98,8 +102,8 @@ async fn distinct_calls_share_one_cited_object() {
         second_input.observed_at = now + time::Duration::milliseconds(5);
         second_input.occurred_at = now + time::Duration::milliseconds(5);
 
-        let first = persist_mcp_call_atomic(pg.pool_for_tests(), &first_input).await?;
-        let second = persist_mcp_call_atomic(pg.pool_for_tests(), &second_input).await?;
+        let first = persist_mcp_call_atomic(pg.pool_for_tests(), &permit, &first_input).await?;
+        let second = persist_mcp_call_atomic(pg.pool_for_tests(), &permit, &second_input).await?;
 
         assert!(!first.idempotent_replay);
         assert!(!second.idempotent_replay);
@@ -142,6 +146,8 @@ async fn identical_event_replays_idempotently() {
         pg.run_migrations().await?;
 
         let owner = crate::common::owner_fixture();
+        let permit =
+            crate::common::owner_write_permit(&owner, proxima_core::AccessKind::Fact).await?;
         let input = sample_input(
             &owner,
             br#"{"input":{"q":"same"},"output":{"ok":true},"error":null}"#.to_vec(),
@@ -149,8 +155,8 @@ async fn identical_event_replays_idempotently() {
             None,
         );
 
-        let first = persist_mcp_call_atomic(pg.pool_for_tests(), &input).await?;
-        let second = persist_mcp_call_atomic(pg.pool_for_tests(), &input).await?;
+        let first = persist_mcp_call_atomic(pg.pool_for_tests(), &permit, &input).await?;
+        let second = persist_mcp_call_atomic(pg.pool_for_tests(), &permit, &input).await?;
 
         assert!(!first.idempotent_replay);
         assert!(second.idempotent_replay);
@@ -181,11 +187,13 @@ async fn truncated_io_round_trips_original_byte_len() {
         pg.run_migrations().await?;
 
         let owner = crate::common::owner_fixture();
+        let permit =
+            crate::common::owner_write_permit(&owner, proxima_core::AccessKind::Fact).await?;
         let io_body = br#"{"input":"large","output":"truncated"}"#.to_vec();
         let original_len = u64::try_from(io_body.len()).unwrap() + 4096;
         let input = sample_input(&owner, io_body.clone(), true, Some(original_len));
 
-        let outcome = persist_mcp_call_atomic(pg.pool_for_tests(), &input).await?;
+        let outcome = persist_mcp_call_atomic(pg.pool_for_tests(), &permit, &input).await?;
 
         let cited: (Vec<u8>, i64, bool) = sqlx::query_as(
             "SELECT body, byte_len, truncated FROM proxima_core.cited_mcp_call_io_v1 \
@@ -214,6 +222,8 @@ async fn storage_trait_exposes_mcp_call_persist() {
         pg.run_migrations().await?;
 
         let owner = crate::common::owner_fixture();
+        let permit =
+            crate::common::owner_write_permit(&owner, proxima_core::AccessKind::Fact).await?;
         let input = sample_input(
             &owner,
             br#"{"input":{},"output":{"via":"trait"},"error":null}"#.to_vec(),
@@ -221,7 +231,7 @@ async fn storage_trait_exposes_mcp_call_persist() {
             None,
         );
 
-        let outcome = pg.persist_mcp_call_atomic(&input).await?;
+        let outcome = pg.persist_mcp_call_atomic(&permit, &input).await?;
 
         assert!(!outcome.idempotent_replay);
         assert_ne!(outcome.fact_memory_id.into_inner(), uuid::Uuid::nil());

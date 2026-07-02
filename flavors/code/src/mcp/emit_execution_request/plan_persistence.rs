@@ -1,4 +1,6 @@
+use proxima_core::access::AccessKind;
 use proxima_core::relation::{CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION};
+use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{
     AbstractionPayload, DerivedEdgeSpec, EdgeAuthorshipKind, EdgeId, EntityKind, MemoryId,
     MemoryOperatorKind, Owner, RegisteredRelation, SchemaVersion, ToolCtx, ToolError,
@@ -75,6 +77,7 @@ pub(super) async fn append_execution_plan(
     payload: &CodeExecutionPlanV1,
 ) -> Result<PlanAppendOutcome, ToolError> {
     let owner = ctx.owner();
+    let permit = ctx.owner_write_permit(AccessKind::Perspective).await?;
     let caller = caller(ctx)?;
     let memory_id =
         execution_plan_memory_id(&owner, payload.repo_id, goal_activated_memory_id, plan_key);
@@ -106,21 +109,23 @@ pub(super) async fn append_execution_plan(
         derived_relation,
     )];
     let sidecar_payload = payload.clone();
-    let outcome = append_derived_with_edges_in_tx(tx, &draft, &proof_edges, move |tx, outcome| {
-        Box::pin(async move {
-            sidecar_payload
-                .insert_memory_sidecar(tx, outcome.memory_id)
-                .await
+    let outcome =
+        append_derived_with_edges_in_tx(tx, &permit, &draft, &proof_edges, move |tx, outcome| {
+            Box::pin(async move {
+                sidecar_payload
+                    .insert_memory_sidecar(tx, outcome.memory_id)
+                    .await
+            })
         })
-    })
-    .await
-    .map_err(ToolError::Storage)?;
+        .await
+        .map_err(ToolError::Storage)?;
     let mut edge_ids = Vec::new();
     if !outcome.idempotent_replay {
-        edge_ids.push(append_plan_authored_edge(tx, ctx, planner_root, memory_id).await?);
+        edge_ids.push(append_plan_authored_edge(tx, ctx, &permit, planner_root, memory_id).await?);
         for memory_id in evidence {
             edge_ids.push(
-                append_plan_fact_evidence_edge(tx, ctx, outcome.memory_id, *memory_id).await?,
+                append_plan_fact_evidence_edge(tx, ctx, &permit, outcome.memory_id, *memory_id)
+                    .await?,
             );
         }
     }
@@ -134,6 +139,7 @@ pub(super) async fn append_execution_plan(
 async fn append_plan_authored_edge(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &ToolCtx,
+    permit: &OwnerWritePermit,
     planner_root: MemoryId,
     plan_memory_id: MemoryId,
 ) -> Result<Uuid, ToolError> {
@@ -144,7 +150,7 @@ async fn append_plan_authored_edge(
     let edge_id = Uuid::now_v7();
     append_owner_checked_memory_edge(
         tx.as_mut(),
-        &ctx.owner(),
+        permit,
         EdgeId::new(edge_id),
         relation,
         MemoryEndpoint::perspective(planner_root),
@@ -179,6 +185,7 @@ fn execution_plan_proof_edge<'a>(
 pub(super) async fn append_plan_fact_evidence_edge(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &ToolCtx,
+    permit: &OwnerWritePermit,
     plan_memory_id: MemoryId,
     target_memory_id: MemoryId,
 ) -> Result<Uuid, ToolError> {
@@ -189,7 +196,7 @@ pub(super) async fn append_plan_fact_evidence_edge(
     let edge_id = Uuid::now_v7();
     append_owner_checked_memory_edge(
         tx.as_mut(),
-        &ctx.owner(),
+        permit,
         EdgeId::new(edge_id),
         relation,
         MemoryEndpoint::abstraction(plan_memory_id),

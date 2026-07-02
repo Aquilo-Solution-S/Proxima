@@ -108,7 +108,7 @@ async fn drain_embedding_jobs_without_client_is_noop() {
 async fn query_verb_returns_empty_for_configured_owner() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner);
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
     let resp = engine
         .query(&authz, &QueryRequest::for_owner(owner))
@@ -126,7 +126,7 @@ async fn query_verb_returns_empty_for_configured_owner() {
 async fn query_scopes_reads_to_authz_context_not_client_principal() {
     let (principal, configured) = fresh_owner();
     let engine = boot_engine(principal, configured);
-    let authz = AuthzContext::single_owner(&configured, AuthPath::System);
+    let authz = AuthzContext::single_owner(&configured, AuthPath::HostBearer);
     let (_, foreign) = fresh_owner();
 
     // Group-ownership read model: reads are scoped to the authenticated
@@ -166,7 +166,7 @@ async fn change_history_ignores_client_principal_as_access_vector() {
     let (principal, owner_a) = fresh_owner();
     let engine = boot_engine(principal, owner_a);
     let (_, owner_b) = fresh_owner();
-    let authz = AuthzContext::single_owner(&owner_a, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner_a, AuthPath::HostBearer);
     let response = engine
         .change_history(
             &authz,
@@ -239,7 +239,7 @@ async fn persist_mcp_call_rejects_owner_the_context_cannot_access() {
     // A context scoped to a different owner must not write the log,
     // even though the caller supplied `owner` in the input.
     let (_, stranger_owner) = fresh_owner();
-    let stranger = AuthzContext::single_owner(&stranger_owner, AuthPath::System);
+    let stranger = AuthzContext::single_owner(&stranger_owner, AuthPath::HostBearer);
 
     let err = engine
         .persist_mcp_call(&stranger, sample_mcp_input(&owner))
@@ -265,7 +265,7 @@ async fn persist_mcp_call_rejects_context_without_graph_write_role() {
 async fn persist_mcp_call_authorized_context_clears_the_gate() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner);
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     // A context that clears the authz gate reaches storage; RejectingStorage
     // then rejects the write with Internal — distinguishing "gate
     // opened" from "gate blocked" (Forbidden).
@@ -300,7 +300,7 @@ async fn read_mcp_call_history_rejects_context_without_graph_read_role() {
 async fn read_mcp_call_history_rejects_zero_limit_as_invalid_argument() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner);
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
     let err = engine
         .read_mcp_call_history(
@@ -323,7 +323,7 @@ async fn fact_retention_rejects_owner_the_context_cannot_access() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner);
     let (_, stranger_owner) = fresh_owner();
-    let stranger = AuthzContext::single_owner(&stranger_owner, AuthPath::System);
+    let stranger = AuthzContext::single_owner(&stranger_owner, AuthPath::HostBearer);
 
     let err = engine
         .set_fact_retention(&stranger, &owner, 86_400)
@@ -373,7 +373,7 @@ async fn fact_retention_rejects_context_without_admin_role() {
 async fn fact_retention_authorized_context_clears_the_gate() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner);
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
     let err = engine
         .set_fact_retention(&authz, &owner, 86_400)

@@ -133,11 +133,11 @@ async fn ingest_note_fact(
         time::OffsetDateTime::now_utc(),
     );
     let authz = match *owner {
-        OwnerRef::Personal(subject) => AuthzContext::for_subject(subject, AuthPath::System),
+        OwnerRef::Personal(subject) => AuthzContext::for_subject(subject, AuthPath::HostBearer),
         OwnerRef::Group(_) => AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
             [(*owner, Role::admin())],
-            AuthPath::System,
+            AuthPath::HostBearer,
         )
         .narrowed_to_owner(*owner)
         .expect("group admin narrows to target owner"),

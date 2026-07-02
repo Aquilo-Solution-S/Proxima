@@ -10,8 +10,9 @@
 //! reads `closed_at` directly off `source_batches`. We add a
 //! `change_event` here once a consumer needs the live signal.
 
+use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
-use proxima_core::{OwnerRef, SourceBatchId, StorageError};
+use proxima_core::{SourceBatchId, StorageError};
 use sqlx::PgPool;
 
 use crate::access::owner_columns::owner_binds;
@@ -23,10 +24,10 @@ use crate::error::map_err;
 /// `Internal` on sqlx failure.
 pub async fn close_batch(
     pool: &PgPool,
-    principal: &OwnerRef,
+    permit: &OwnerWritePermit,
     source_batch_id: SourceBatchId,
 ) -> Result<CloseBatchOutcome, StorageError> {
-    let (owner_kind, owner_id) = owner_binds(principal);
+    let (owner_kind, owner_id) = owner_binds(permit.owner());
     let batch_id = source_batch_id.into_inner();
 
     // Read current closed_at under owner scope.

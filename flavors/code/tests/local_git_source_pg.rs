@@ -181,7 +181,7 @@ async fn local_git_source_full_cycle() {
         let owner = test_owner();
 
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
         let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
 
@@ -255,7 +255,10 @@ async fn local_git_source_full_cycle() {
         };
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &q,
             )
             .await?;
@@ -328,7 +331,10 @@ async fn local_git_source_full_cycle() {
         };
         let resp_all = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &q_all,
             )
             .await?;
@@ -452,7 +458,7 @@ async fn head_snapshot_repeated_after_change_and_delete_is_idempotent() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
         let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
 
@@ -526,7 +532,7 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
         let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
 
@@ -627,7 +633,7 @@ async fn polyglot_markdown_emits_file_revision_and_fallback_chunks() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
         let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
 

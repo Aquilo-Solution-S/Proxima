@@ -9,11 +9,12 @@ use proxima_core::FactIngestPort;
 #[path = "../../../src/test_fixtures.rs"]
 mod storage_pg_test_fixtures;
 
+use proxima_core::storage_ports::OwnerWritePermit;
 pub use proxima_core::test_fixtures::owner_fixture;
 use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
 use proxima_core::{
-    EdgeId, EntityKind, MemoryId, Owner, RelationClass, SchemaId, SchemaVersion, SourceBatchId,
-    SourceId,
+    AccessKind, AuthPath, AuthzContext, EdgeId, Engine, EntityKind, FlavorRegistry, MemoryId,
+    Owner, OwnerRef, RelationClass, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
 #[allow(unused_imports)]
 pub use proxima_pg_testkit::{
@@ -27,6 +28,23 @@ pub use storage_pg_test_fixtures::core_template_name;
 
 pub async fn fresh_pg() -> (PgStorage, String) {
     storage_pg_test_fixtures::fresh_pg("proxima_test").await
+}
+
+pub async fn owner_write_permit(
+    owner: &Owner,
+    kind: AccessKind,
+) -> Result<OwnerWritePermit, Box<dyn std::error::Error>> {
+    let authz = match owner {
+        OwnerRef::Personal(user_id) => AuthzContext::for_subject(*user_id, AuthPath::HostBearer),
+        OwnerRef::Group(_) => AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(*owner, Role::admin())],
+            AuthPath::HostBearer,
+        ),
+        OwnerRef::World => AuthzContext::denied_for_owner(owner),
+    };
+    let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+    Ok(engine.authorize_owner_write(&authz, owner, kind).await?)
 }
 
 pub async fn insert_home(
@@ -95,7 +113,8 @@ pub async fn seed_memory(
             }),
             citation: None,
         };
-        let outcome = pg.ingest_fact_atomic(owner, &draft, None).await?;
+        let permit = owner_write_permit(owner, AccessKind::Fact).await?;
+        let outcome = pg.ingest_fact_atomic(&permit, &draft, None).await?;
         return Ok(outcome.memory_id);
     }
 

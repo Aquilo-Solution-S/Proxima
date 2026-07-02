@@ -87,7 +87,13 @@ impl Engine {
         self.storage()
             .access_admin
             .owner_membership_admin
-            .add_group_member(group, member, relation, actor_uuid(authz))
+            .add_group_member(
+                permit.owner_write_permit(),
+                group,
+                member,
+                relation,
+                actor_uuid(authz),
+            )
             .await
             .map_err(|err| storage_error("add_group_member", &err))
     }
@@ -135,7 +141,7 @@ impl Engine {
         self.storage()
             .access_admin
             .owner_membership_admin
-            .remove_group_member(group, member)
+            .remove_group_member(permit.owner_write_permit(), group, member)
             .await
             .map_err(|err| storage_error("remove_group_member", &err))
     }
@@ -217,7 +223,7 @@ impl Engine {
             .storage()
             .access_admin
             .owner_transfer
-            .transfer_to_world(entity, *permit.owner())
+            .transfer_to_world(permit.owner_write_permit(), entity)
             .await
             .map_err(|err| storage_error("transfer_to_world", &err))?;
 

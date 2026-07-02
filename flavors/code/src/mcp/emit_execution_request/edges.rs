@@ -1,3 +1,4 @@
+use proxima_core::access::AccessKind;
 use proxima_core::relation::{
     CORE_AUTHORED_RELATION, CORE_DEPENDS_ON_RELATION, CORE_DERIVED_FROM_RELATION,
 };
@@ -23,9 +24,10 @@ pub(super) async fn append_acceptance_criteria_edge(
             ))
         })?;
     let edge_id = Uuid::now_v7();
+    let permit = ctx.owner_write_permit(AccessKind::Fact).await?;
     append_owner_checked_memory_edge(
         tx.as_mut(),
-        &ctx.owner(),
+        &permit,
         EdgeId::new(edge_id),
         relation,
         MemoryEndpoint::fact(request_memory_id),
@@ -49,9 +51,10 @@ pub(super) async fn append_authored_edge(
         .resolve_relation(CORE_AUTHORED_RELATION)
         .ok_or_else(|| ToolError::Other("core/authored relation not registered".into()))?;
     let edge_id = Uuid::now_v7();
+    let permit = ctx.owner_write_permit(AccessKind::Perspective).await?;
     append_owner_checked_memory_edge(
         tx.as_mut(),
-        &ctx.owner(),
+        &permit,
         EdgeId::new(edge_id),
         relation,
         MemoryEndpoint::perspective(planner_root),
@@ -79,9 +82,10 @@ pub(super) async fn append_target_edge(
             ))
         })?;
     let edge_id = Uuid::now_v7();
+    let permit = ctx.owner_write_permit(AccessKind::Perspective).await?;
     append_owner_checked_memory_edge(
         tx.as_mut(),
-        &ctx.owner(),
+        &permit,
         EdgeId::new(edge_id),
         relation,
         MemoryEndpoint::perspective(target_root),
@@ -105,9 +109,10 @@ pub(super) async fn append_derived_edge(
         .resolve_relation(CORE_DERIVED_FROM_RELATION)
         .ok_or_else(|| ToolError::Other("core/derived-from relation not registered".into()))?;
     let edge_id = Uuid::now_v7();
+    let permit = ctx.owner_write_permit(AccessKind::Fact).await?;
     append_owner_checked_memory_edge(
         tx.as_mut(),
-        &ctx.owner(),
+        &permit,
         EdgeId::new(edge_id),
         relation,
         MemoryEndpoint::fact(request_memory_id),
@@ -134,9 +139,10 @@ pub(super) async fn append_dependency_edge(
     name.extend_from_slice(dependent_memory_id.into_inner().as_bytes());
     name.extend_from_slice(dependency_memory_id.into_inner().as_bytes());
     let edge_id = Uuid::new_v5(&Uuid::NAMESPACE_OID, &name);
+    let permit = ctx.owner_write_permit(AccessKind::Fact).await?;
     append_owner_checked_memory_edge(
         tx.as_mut(),
-        &ctx.owner(),
+        &permit,
         EdgeId::new(edge_id),
         relation,
         MemoryEndpoint::fact(dependent_memory_id),

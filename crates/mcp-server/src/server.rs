@@ -157,7 +157,7 @@ impl McpToolHost {
     /// builds (see the release arm above).
     #[cfg(test)]
     fn unauthenticated_authz(owner: &Owner) -> ResolvedAuthz {
-        AuthzContext::single_owner(owner, AuthPath::System)
+        AuthzContext::single_owner(owner, AuthPath::HostBearer)
     }
 
     /// # Errors
@@ -514,7 +514,7 @@ mod tests {
             client_version: "0.1.0".into(),
             caller_self_perspective: None,
         };
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System)
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer)
             .with_tool_scope(ToolScope::Palette(Vec::new()));
         let auth = McpAuthContext {
             owner,

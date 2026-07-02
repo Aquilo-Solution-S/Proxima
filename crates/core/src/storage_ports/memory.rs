@@ -1,4 +1,4 @@
-pub use super::proof::{EdgeWriteProof, OperatorWriteProof};
+pub use super::proof::{EdgeWriteProof, OperatorWriteProof, OwnerWritePermit};
 
 use crate::dependency::MemoryDependency;
 use crate::read_models::{MemorySnapshot, SidecarSpec};
@@ -18,6 +18,7 @@ pub trait MemoryAuthoringPort: Send + Sync {
     async fn author_derived(
         &self,
         req: &AuthorDerivedRequest<'_>,
+        permit: &OwnerWritePermit,
         proof: OperatorWriteProof,
     ) -> Result<AuthorDerivedOutcome, StorageError>;
 
@@ -26,6 +27,7 @@ pub trait MemoryAuthoringPort: Send + Sync {
     async fn append_memory_edge(
         &self,
         edge: &DerivedEdgeSpec<'_>,
+        permit: &OwnerWritePermit,
         proof: EdgeWriteProof,
     ) -> Result<EdgeId, StorageError>;
 

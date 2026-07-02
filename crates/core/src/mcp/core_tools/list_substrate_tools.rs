@@ -150,7 +150,7 @@ mod tests {
         let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let ctx = McpToolCtx {
             owner,
-            authz: AuthzContext::single_owner(&owner, AuthPath::System),
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
             handles: None,
             mode: OutputMode::PrefixedIds,
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),

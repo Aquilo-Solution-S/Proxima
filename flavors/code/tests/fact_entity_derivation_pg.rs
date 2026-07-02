@@ -1,11 +1,11 @@
 mod common;
 
-use common::{migrated_db, test_owner};
+use common::{migrated_db, owner_write_permit, test_owner};
 use proxima_code::testkit::{
     append_code_slice, close_local_git_batch, ingest_commit, ingest_file_revision,
 };
 use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
-use proxima_core::{AbstractionPayload, FactPayload, Owner, SourceBatchId};
+use proxima_core::{AbstractionPayload, AccessKind, FactPayload, Owner, SourceBatchId};
 use proxima_pg_testkit::drop_db;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -152,11 +152,12 @@ async fn code_stateful_ingest_derives_fact_entity_heads() {
         let repo_id = Uuid::now_v7();
         let observed_at = time::OffsetDateTime::now_utc();
         let file_path = "src/a.rs";
+        let permit = owner_write_permit(&owner, AccessKind::Fact).await?;
 
         let first_file = file_revision(repo_id, file_path, "v1");
         let first_outcome = ingest_file_revision(
             pg.pool_for_tests(),
-            &owner,
+            &permit,
             source_batch_id(),
             &first_file,
             observed_at,
@@ -182,7 +183,7 @@ async fn code_stateful_ingest_derives_fact_entity_heads() {
         let second_batch = source_batch_id();
         let second_outcome = ingest_file_revision(
             pg.pool_for_tests(),
-            &owner,
+            &permit,
             second_batch,
             &second_file,
             observed_at,
@@ -203,11 +204,11 @@ async fn code_stateful_ingest_derives_fact_entity_heads() {
                 .is_some()
         );
 
-        close_local_git_batch(pg.pool_for_tests(), &owner, second_batch).await?;
+        close_local_git_batch(pg.pool_for_tests(), &permit, second_batch).await?;
         let chunk = code_chunk(repo_id, file_path, 0);
         let chunk_outcome = append_code_slice(
             pg.pool_for_tests(),
-            &owner,
+            &permit,
             second_batch,
             &chunk,
             second_outcome.memory_id,
@@ -233,7 +234,7 @@ async fn code_stateful_ingest_derives_fact_entity_heads() {
         let commit = commit(repo_id);
         ingest_commit(
             pg.pool_for_tests(),
-            &owner,
+            &permit,
             source_batch_id(),
             &commit,
             observed_at,

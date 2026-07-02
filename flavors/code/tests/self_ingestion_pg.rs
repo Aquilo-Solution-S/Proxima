@@ -139,7 +139,7 @@ async fn self_ingestion_streams_proxima_main() {
         let owner = test_owner();
 
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
         let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
         let _storage_ports = Arc::new(pg.clone()).storage_ports();

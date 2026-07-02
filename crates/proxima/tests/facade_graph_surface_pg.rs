@@ -12,7 +12,7 @@ use proxima::{
 };
 use proxima_core::{
     AuthorDerivedEdgeInput, AuthorDerivedRequestInput, EdgeAuthorshipKind, EdgeTargetProjection,
-    EndpointBinding, EntityKind, EntityRef, MemoryOperatorKind, Relation, Role, UserId,
+    EndpointBinding, EntityKind, EntityRef, MemoryOperatorKind, Role, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::query::fact_entity_id_for;
@@ -306,8 +306,12 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         let authz = AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
             [(owner, Role::admin())],
-            AuthPath::System,
+            AuthPath::HostBearer,
         );
+        let fact_permit = built
+            .engine
+            .authorize_owner_write(&authz, &owner, proxima_core::AccessKind::Fact)
+            .await?;
 
         let fact = FacadeFact {
             note_id: Uuid::now_v7(),
@@ -317,11 +321,9 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         let fact_for_sidecar = fact.clone();
         let fact_outcome = proxima_storage_pg::verbs::fact_ingest::ingest_fact_for_owner(
             built.pool_for_tests(),
-            built.engine.as_ref(),
-            &authz,
-            &owner,
-            Relation::Ingest,
+            &fact_permit,
             &fact,
+            None,
             move |tx, outcome| {
                 Box::pin(async move {
                     fact_for_sidecar
@@ -354,7 +356,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         .await?;
         proxima_storage_pg::verbs::close_batch::close_batch(
             built.pool_for_tests(),
-            &owner,
+            &fact_permit,
             proxima_core::SourceBatchId::new(source_batch_id),
         )
         .await?;

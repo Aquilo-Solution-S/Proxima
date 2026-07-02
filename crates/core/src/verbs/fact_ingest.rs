@@ -7,6 +7,7 @@
 use uuid::Uuid;
 
 use crate::engine::MemoryPermit;
+use crate::storage_ports::OwnerWritePermit;
 use crate::{
     FactPayload, FactReceiptId, MemoryId, Owner, OwnerRefKind, SchemaId, SchemaVersion,
     SidecarPayload, SourceBatchId, SourceId,
@@ -160,6 +161,17 @@ impl AuthorizedFactWrite {
         &self.permit
     }
 
+    /// # Panics
+    ///
+    /// Panics only if this authorized wrapper was not constructed through the
+    /// engine fact-ingest authorization path.
+    #[must_use]
+    pub fn owner_write_permit(&self) -> &OwnerWritePermit {
+        self.permit
+            .owner_write_permit()
+            .expect("AuthorizedFactWrite is constructed from a write permit")
+    }
+
     #[must_use]
     pub fn draft(&self) -> &FactWriteCommand {
         &self.draft
@@ -290,6 +302,17 @@ impl AuthorizedCitationAttachment {
         &self.permit
     }
 
+    /// # Panics
+    ///
+    /// Panics only if this authorized wrapper was not constructed through the
+    /// engine citation-attachment authorization path.
+    #[must_use]
+    pub fn owner_write_permit(&self) -> &OwnerWritePermit {
+        self.permit
+            .owner_write_permit()
+            .expect("AuthorizedCitationAttachment is constructed from a write permit")
+    }
+
     #[must_use]
     pub const fn memory_id(&self) -> MemoryId {
         self.memory_id
@@ -346,6 +369,17 @@ impl AuthorizedFactWithCitation {
     #[must_use]
     pub fn permit(&self) -> &MemoryPermit {
         &self.permit
+    }
+
+    /// # Panics
+    ///
+    /// Panics only if this authorized wrapper was not constructed through the
+    /// engine fact-with-citation authorization path.
+    #[must_use]
+    pub fn owner_write_permit(&self) -> &OwnerWritePermit {
+        self.permit
+            .owner_write_permit()
+            .expect("AuthorizedFactWithCitation is constructed from a write permit")
     }
 
     #[must_use]

@@ -1,21 +1,26 @@
 use crate::access::AccessError;
 use crate::compliance::ComplianceEraseTarget;
 use crate::storage::StorageError;
+use crate::storage_ports::OwnerWritePermit;
 use crate::{GroupId, Owner, SourceId, UserId};
 
 #[async_trait::async_trait]
 pub trait FactRetentionPort: Send + Sync {
-    async fn upsert_fact_retention(&self, owner: &Owner, seconds: i64) -> Result<(), StorageError>;
+    async fn upsert_fact_retention(
+        &self,
+        permit: &OwnerWritePermit,
+        seconds: i64,
+    ) -> Result<(), StorageError>;
 
     async fn get_fact_retention(&self, owner: &Owner) -> Result<Option<i64>, StorageError>;
 
-    async fn clear_fact_retention(&self, owner: &Owner) -> Result<bool, StorageError>;
+    async fn clear_fact_retention(&self, permit: &OwnerWritePermit) -> Result<bool, StorageError>;
 
-    async fn set_legal_hold(&self, owner: &Owner) -> Result<(), StorageError>;
+    async fn set_legal_hold(&self, permit: &OwnerWritePermit) -> Result<(), StorageError>;
 
     async fn get_legal_hold(&self, owner: &Owner) -> Result<bool, StorageError>;
 
-    async fn clear_legal_hold(&self, owner: &Owner) -> Result<bool, StorageError>;
+    async fn clear_legal_hold(&self, permit: &OwnerWritePermit) -> Result<bool, StorageError>;
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -458,7 +458,7 @@ async fn query_cursor_second_page_has_no_overlap() {
         let owner = personal_owner();
         let seeded = seed_memory_rows(&pg, owner, None, 7, 0, "page").await?;
         let engine = engine_for(&pg);
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let mut req = QueryRequest::for_owner(owner);
         req.entity_kind = Some(EntityKind::Fact);
         req.limit = 3;
@@ -521,7 +521,10 @@ async fn mixed_query_rejects_cursor() {
     });
 
     let err = engine
-        .query(&AuthzContext::single_owner(&owner, AuthPath::System), &req)
+        .query(
+            &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+            &req,
+        )
         .await
         .expect_err("mixed Query must reject a cursor before storage dispatch");
     assert_eq!(err.code, ErrorCode::InvalidArgument);
@@ -532,7 +535,7 @@ async fn mixed_query_rejects_cursor() {
 async fn cursor_kind_mismatch_rejects() {
     let owner = personal_owner();
     let engine = Engine::new(FlavorRegistryFrozen::new());
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
     let mut goal_req = QueryRequest::for_owner(owner);
     goal_req.entity_kind = Some(EntityKind::Goal);

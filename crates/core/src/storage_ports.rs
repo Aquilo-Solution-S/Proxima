@@ -47,4 +47,5 @@ pub use memory::{
     CitationPort, EdgeReadPort, EdgeWriteProof, MemoryAuthoringPort, MemoryInspectPort,
     MemoryReadPort, OperatorWriteProof,
 };
+pub use proof::OwnerWritePermit;
 pub use registry::RegistryProjectionPort;

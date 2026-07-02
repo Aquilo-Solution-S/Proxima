@@ -32,7 +32,7 @@ async fn record_utterance_persists_sidecar_and_embedding_job()
     let output = (descriptor.call)(
         McpToolCtx {
             owner,
-            authz: AuthzContext::single_owner(&owner, AuthPath::System),
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
             handles: Some(Arc::new(HandleTable::new())),
             mode: OutputMode::Handles,
             registry: frozen,

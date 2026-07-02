@@ -7,6 +7,7 @@ use proxima_core::goal::payloads::{
 };
 use proxima_core::goal::relations::CORE_MOTIVATED_BY_RELATION;
 use proxima_core::relation::{CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION};
+use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
@@ -187,6 +188,7 @@ pub(crate) async fn create_goal_atomic(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &CreateGoalAtomicRequest<'_>,
+    permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, StorageError> {
     let mut tx = pool.begin().await.map_err(internal)?;
     let evidence =
@@ -232,6 +234,7 @@ pub(crate) async fn create_goal_atomic(
         let lifecycle_memory_id = Some(
             emit_lifecycle_fact(
                 &mut tx,
+                permit,
                 req.context,
                 &req.draft.owner(),
                 inserted.goal_id,
@@ -292,6 +295,7 @@ pub(crate) async fn transition_goal_atomic(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &TransitionGoalAtomicRequest<'_>,
+    permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, StorageError> {
     if matches!(req.next_state, GoalState::Achieved) {
         return Err(StorageError::ConstraintViolation(
@@ -329,6 +333,7 @@ pub(crate) async fn transition_goal_atomic(
     let lifecycle = GoalLifecycleFact::for_state(req.next_state);
     let outcome = lifecycle_outcome(
         &mut tx,
+        permit,
         &req.owner,
         req.context,
         inserted,
@@ -344,6 +349,7 @@ pub(crate) async fn achieve_goal_atomic(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &AchieveGoalAtomicRequest<'_>,
+    permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, StorageError> {
     if req.evidence.is_empty() {
         return Err(StorageError::ConstraintViolation(
@@ -399,6 +405,7 @@ pub(crate) async fn achieve_goal_atomic(
             &mut tx,
             AchieveGoalNonReplay {
                 owner: &req.owner,
+                permit,
                 context: req.context,
                 inserted,
                 evidence: &evidence,
@@ -414,6 +421,7 @@ pub(crate) async fn achieve_goal_atomic(
 
 struct AchieveGoalNonReplay<'a> {
     owner: &'a Owner,
+    permit: &'a OwnerWritePermit,
     context: GoalAtomicContext<'a>,
     inserted: InsertedGoal,
     evidence: &'a [EvidenceTarget],
@@ -428,6 +436,7 @@ async fn achieve_goal_non_replay(
     let lifecycle_memory_id = Some(
         emit_lifecycle_fact(
             tx,
+            args.permit,
             args.context,
             args.owner,
             args.inserted.goal_id,
@@ -485,6 +494,7 @@ pub(crate) async fn modify_goal_atomic(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &ModifyGoalAtomicRequest<'_>,
+    permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, StorageError> {
     let mut tx = pool.begin().await.map_err(internal)?;
     let evidence = match &req.evidence {
@@ -546,6 +556,7 @@ pub(crate) async fn modify_goal_atomic(
         let lifecycle_memory_id = Some(
             emit_lifecycle_fact(
                 &mut tx,
+                permit,
                 req.context,
                 &req.owner,
                 inserted.goal_id,
@@ -599,6 +610,7 @@ pub(crate) async fn decompose_goal_atomic(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &DecomposeGoalAtomicRequest<'_>,
+    permit: &OwnerWritePermit,
 ) -> Result<DecomposeGoalOutcome, StorageError> {
     let mut tx = pool.begin().await.map_err(internal)?;
     validate_active_head(&mut tx, &req.owner, req.parent_goal_id).await?;
@@ -648,6 +660,7 @@ pub(crate) async fn decompose_goal_atomic(
             let lifecycle_memory_id = Some(
                 emit_lifecycle_fact(
                     &mut tx,
+                    permit,
                     req.context,
                     &req.owner,
                     inserted.goal_id,
@@ -1705,6 +1718,7 @@ async fn outgoing_motivated_by_evidence(
 
 async fn emit_lifecycle_fact(
     tx: &mut Transaction<'_, Postgres>,
+    permit: &OwnerWritePermit,
     context: GoalAtomicContext<'_>,
     owner: &Owner,
     goal_id: GoalId,
@@ -1717,34 +1731,35 @@ async fn emit_lifecycle_fact(
                 goal_id: goal_id.into_inner(),
                 transitioned_at: now,
             };
-            ingest_lifecycle_fact(tx, context, owner, &payload).await
+            ingest_lifecycle_fact(tx, permit, context, owner, &payload).await
         }
         GoalLifecycleFact::Paused => {
             let payload = GoalPausedV1 {
                 goal_id: goal_id.into_inner(),
                 transitioned_at: now,
             };
-            ingest_lifecycle_fact(tx, context, owner, &payload).await
+            ingest_lifecycle_fact(tx, permit, context, owner, &payload).await
         }
         GoalLifecycleFact::Achieved => {
             let payload = GoalAchievedV1 {
                 goal_id: goal_id.into_inner(),
                 transitioned_at: now,
             };
-            ingest_lifecycle_fact(tx, context, owner, &payload).await
+            ingest_lifecycle_fact(tx, permit, context, owner, &payload).await
         }
         GoalLifecycleFact::Abandoned => {
             let payload = GoalAbandonedV1 {
                 goal_id: goal_id.into_inner(),
                 transitioned_at: now,
             };
-            ingest_lifecycle_fact(tx, context, owner, &payload).await
+            ingest_lifecycle_fact(tx, permit, context, owner, &payload).await
         }
     }
 }
 
 async fn ingest_lifecycle_fact<T>(
     tx: &mut Transaction<'_, Postgres>,
+    permit: &OwnerWritePermit,
     context: GoalAtomicContext<'_>,
     owner: &Owner,
     payload: &T,
@@ -1766,7 +1781,12 @@ where
         }),
         citation: None,
     };
-    let outcome = ingest_fact_command_in_tx(tx, owner, &draft, context.embedding_model_id).await?;
+    if permit.owner() != owner {
+        return Err(StorageError::ConstraintViolation(
+            "OwnerWritePermit owner does not match lifecycle Fact owner".into(),
+        ));
+    }
+    let outcome = ingest_fact_command_in_tx(tx, permit, &draft, context.embedding_model_id).await?;
     if !outcome.idempotent_replay {
         insert_lifecycle_sidecar(tx, outcome.memory_id, payload).await?;
     }
@@ -1801,6 +1821,7 @@ where
 
 async fn lifecycle_outcome(
     tx: &mut Transaction<'_, Postgres>,
+    permit: &OwnerWritePermit,
     owner: &Owner,
     context: GoalAtomicContext<'_>,
     inserted: InsertedGoal,
@@ -1817,7 +1838,7 @@ async fn lifecycle_outcome(
         .await;
     }
     let lifecycle_memory_id =
-        Some(emit_lifecycle_fact(tx, context, owner, inserted.goal_id, lifecycle).await?);
+        Some(emit_lifecycle_fact(tx, permit, context, owner, inserted.goal_id, lifecycle).await?);
     let mut edge_ids = Vec::new();
     edge_ids
         .push(append_goal_to_self_edge(tx, context, owner, inserted.goal_id, assignment).await?);

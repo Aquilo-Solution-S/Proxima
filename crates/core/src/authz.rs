@@ -134,6 +134,24 @@ pub enum AuthPath {
     Denied,
 }
 
+/// Runtime-held witness for issuing owner-write permits from
+/// [`AuthPath::System`] contexts.
+///
+/// Public `AuthzContext` constructors intentionally remain available for
+/// tests and trusted host adapters. Permit issuance is the containment line:
+/// a caller-shaped `System` context is not enough without this witness.
+#[derive(Debug)]
+pub struct SystemAuthority {
+    _private: (),
+}
+
+impl SystemAuthority {
+    #[must_use]
+    pub(crate) const fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthzContext {
     identity: Identity,

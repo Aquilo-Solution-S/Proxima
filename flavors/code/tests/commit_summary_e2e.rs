@@ -5,10 +5,10 @@
 
 mod common;
 
-use common::{migrated_db, test_owner};
+use common::{migrated_db, owner_write_permit, test_owner};
 use proxima_code::testkit::{ingest_commit, register_repo};
 use proxima_code::{CommitSummaryV1, CommitV1};
-use proxima_core::SourceBatchId;
+use proxima_core::{AccessKind, SourceBatchId};
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
 
@@ -27,6 +27,7 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
             "e2e",
         )
         .await?;
+        let permit = owner_write_permit(&owner, AccessKind::Fact).await?;
 
         let now = time::OffsetDateTime::now_utc();
         let commit_payload = CommitV1 {
@@ -43,7 +44,7 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
         };
         let commit_outcome = ingest_commit(
             pg.pool_for_tests(),
-            &owner,
+            &permit,
             SourceBatchId::new(Uuid::now_v7()),
             &commit_payload,
             now,

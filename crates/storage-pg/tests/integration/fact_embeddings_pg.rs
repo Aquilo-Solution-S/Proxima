@@ -19,7 +19,7 @@ use proxima_storage_pg::{
 };
 use uuid::Uuid;
 
-use crate::common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct TestFactV1 {
@@ -403,12 +403,15 @@ async fn fact_ingest_with_embed_client_enqueues_pending_embedding_job_once()
         let draft = fact_draft(&owner, "rendered fact");
         let outcome = engine
             .fact_ingest(
-                &AuthzContext::single_owner(&owner, AuthPath::System),
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 draft.clone(),
             )
             .await?;
         let replay = engine
-            .fact_ingest(&AuthzContext::single_owner(&owner, AuthPath::System), draft)
+            .fact_ingest(
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+                draft,
+            )
             .await?;
 
         assert!(!outcome.idempotent_replay);
@@ -479,7 +482,7 @@ async fn drain_embedding_jobs_writes_embedding_and_deletes_job()
         );
         let outcome = engine
             .fact_ingest(
-                &AuthzContext::single_owner(&owner, AuthPath::System),
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 fact_draft(&owner, "drained fact"),
             )
             .await?;
@@ -537,7 +540,7 @@ async fn reembedding_appends_version_and_advances_head_without_mutating_v1()
         );
         let outcome = engine
             .fact_ingest(
-                &AuthzContext::single_owner(&owner, AuthPath::System),
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 fact_draft(&owner, "reembedded fact"),
             )
             .await?;
@@ -612,8 +615,9 @@ async fn compliance_erase_removes_embeddings_heads_and_jobs()
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let group = GroupId::new(Uuid::now_v7());
         let owner = OwnerRef::Group(group);
+        let permit = owner_write_permit(&owner, proxima_core::AccessKind::Fact).await?;
         let outcome = pg
-            .ingest_fact_atomic(&owner, &fact_draft(&owner, "erase embedding rows"), None)
+            .ingest_fact_atomic(&permit, &fact_draft(&owner, "erase embedding rows"), None)
             .await?;
         seed_embedding_row_with_head(
             pg.pool_for_tests(),
@@ -675,7 +679,7 @@ async fn failed_embedding_jobs_retry_until_attempt_cap() -> Result<(), Box<dyn s
         let engine = engine_for(pg.clone(), Some(Arc::new(FailingEmbedding)));
         let outcome = engine
             .fact_ingest(
-                &AuthzContext::single_owner(&owner, AuthPath::System),
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 fact_draft(&owner, "failing fact"),
             )
             .await?;
@@ -735,7 +739,7 @@ async fn claimed_embedding_job_is_not_claimed_again() -> Result<(), Box<dyn std:
         );
         let outcome = engine
             .fact_ingest(
-                &AuthzContext::single_owner(&owner, AuthPath::System),
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 fact_draft(&owner, "skip locked fact"),
             )
             .await?;
@@ -778,7 +782,7 @@ async fn stale_processing_embedding_job_is_reclaimed() -> Result<(), Box<dyn std
         );
         let outcome = engine
             .fact_ingest(
-                &AuthzContext::single_owner(&owner, AuthPath::System),
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 fact_draft(&owner, "stale processing fact"),
             )
             .await?;
@@ -824,13 +828,13 @@ async fn fact_embedding_backfill_heals_no_client_ingest() -> Result<(), Box<dyn 
         let engine = engine_for(pg.clone(), None);
         let first = engine
             .fact_ingest(
-                &AuthzContext::single_owner(&owner, AuthPath::System),
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 fact_draft(&owner, "backfill fact one"),
             )
             .await?;
         let second = engine
             .fact_ingest(
-                &AuthzContext::single_owner(&owner, AuthPath::System),
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 fact_draft(&owner, "backfill fact two"),
             )
             .await?;
@@ -854,7 +858,8 @@ async fn fact_embedding_backfill_heals_no_client_ingest() -> Result<(), Box<dyn 
                 &[0.25, 0.5, 0.75],
             ))))
             .await;
-        assert_eq!(engine.backfill_fact_embeddings(&owner, 1).await?, 1);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        assert_eq!(engine.backfill_fact_embeddings(&authz, &owner, 1).await?, 1);
         assert_eq!(
             count_embedding_jobs(pg.pool_for_tests(), first.memory_id).await?
                 + count_embedding_jobs(pg.pool_for_tests(), second.memory_id).await?,
@@ -875,7 +880,10 @@ async fn fact_embedding_backfill_heals_no_client_ingest() -> Result<(), Box<dyn 
             1
         );
 
-        assert_eq!(engine.backfill_fact_embeddings(&owner, 10).await?, 1);
+        assert_eq!(
+            engine.backfill_fact_embeddings(&authz, &owner, 10).await?,
+            1
+        );
         let drain = engine.drain_embedding_jobs(10).await?;
         assert_eq!(drain.processed, 1);
         assert_eq!(drain.failed, 0);
@@ -914,14 +922,14 @@ async fn reconcile_embeddings_enqueues_missing_facts_idempotently()
         ] {
             engine
                 .fact_ingest(
-                    &AuthzContext::single_owner(&owner, AuthPath::System),
+                    &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                     fact_draft(&owner, label),
                 )
                 .await?;
         }
         let stale = engine
             .fact_ingest(
-                &AuthzContext::single_owner(&owner, AuthPath::System),
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 fact_draft(&owner, "reconcile stale fact"),
             )
             .await?;
@@ -1008,7 +1016,7 @@ async fn reconcile_embedding_drain_writes_fact_embeddings() -> Result<(), Box<dy
         let engine = engine_for(pg.clone(), None);
         let outcome = engine
             .fact_ingest(
-                &AuthzContext::single_owner(&owner, AuthPath::System),
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 fact_draft(&owner, "reconcile drain fact"),
             )
             .await?;
@@ -1051,14 +1059,14 @@ async fn count_pending_embedding_jobs_counts_outstanding() -> Result<(), Box<dyn
         for label in ["pending count one", "pending count two"] {
             engine
                 .fact_ingest(
-                    &AuthzContext::single_owner(&owner, AuthPath::System),
+                    &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                     fact_draft(&owner, label),
                 )
                 .await?;
         }
         engine
             .fact_ingest(
-                &AuthzContext::single_owner(&other_owner, AuthPath::System),
+                &AuthzContext::single_owner(&other_owner, AuthPath::HostBearer),
                 fact_draft(&other_owner, "other owner pending count"),
             )
             .await?;
@@ -1088,7 +1096,7 @@ async fn fact_ingest_without_embed_client_still_succeeds() -> Result<(), Box<dyn
         let engine = engine_for(pg.clone(), None);
         let outcome = engine
             .fact_ingest(
-                &AuthzContext::single_owner(&owner, AuthPath::System),
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 fact_draft(&owner, "no client fact"),
             )
             .await?;
@@ -1120,7 +1128,7 @@ async fn reconcile_limit_skips_existing_heads_before_bounding()
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner_fixture();
         let engine = engine_for(pg.clone(), None);
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let covered = engine
             .fact_ingest(&authz, fact_draft(&owner, "already covered"))
             .await?;

@@ -6,22 +6,25 @@ use proxima_core::verbs::goal_write::{
     CreateGoalAtomicRequest, GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft,
     GoalState, GoalTopologyWrite,
 };
-use proxima_core::verbs::persist_mcp_call::McpCallLogInput;
 use proxima_core::verbs::query::{
     MemorySearchRequest, QueryRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
 use proxima_core::{
     AuthPath, AuthzContext, Engine, EntityId, EntityKind, ErrorCode, FlavorRegistry, GroupId,
-    InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner, OwnerAccessPort, OwnerRef,
-    OwnerRefKind, Relation, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError,
-    UserId,
+    MemoryId, MemoryOperatorKind, Owner, OwnerAccessPort, OwnerRef, OwnerRefKind, Relation, Role,
+    SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
-use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_with_edges_in_tx};
 use proxima_storage_pg::{PgOwnerAccessResolver, PgStorage};
 use std::sync::Arc;
 use uuid::Uuid;
 
 type ResolvedAuthz = AuthzContext;
+
+async fn owner_write_permit(owner: &Owner, kind: proxima_core::AccessKind) -> OwnerWritePermit {
+    common::owner_write_permit(owner, kind)
+        .await
+        .expect("test write permit")
+}
 
 fn fresh_fact_draft(_owner: Owner) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
@@ -195,7 +198,9 @@ async fn group_membership_verbs_round_trip_and_engine_gates_admin_editor() {
         unreachable!("outsider is user")
     };
 
-    pg.add_group_member(group, viewer_id, Relation::Viewer, Uuid::now_v7())
+    let group_owner = OwnerRef::Group(group);
+    let permit = owner_write_permit(&group_owner, proxima_core::AccessKind::Goal).await;
+    pg.add_group_member(&permit, group, viewer_id, Relation::Viewer, Uuid::now_v7())
         .await
         .unwrap();
     assert_eq!(
@@ -212,13 +217,15 @@ async fn group_membership_verbs_round_trip_and_engine_gates_admin_editor() {
         "viewer membership enters S_read and reaches group-owned entity"
     );
 
-    pg.remove_group_member(group, viewer_id).await.unwrap();
-    assert!(pg.list_group_members(group).await.unwrap().is_empty());
-
-    pg.add_group_member(group, admin_id, Relation::Admin, Uuid::now_v7())
+    pg.remove_group_member(&permit, group, viewer_id)
         .await
         .unwrap();
-    pg.add_group_member(group, viewer_id, Relation::Viewer, Uuid::now_v7())
+    assert!(pg.list_group_members(group).await.unwrap().is_empty());
+
+    pg.add_group_member(&permit, group, admin_id, Relation::Admin, Uuid::now_v7())
+        .await
+        .unwrap();
+    pg.add_group_member(&permit, group, viewer_id, Relation::Viewer, Uuid::now_v7())
         .await
         .unwrap();
     let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
@@ -330,9 +337,17 @@ async fn group_membership_bootstrap_conflicts_after_admin_added_via_add_member()
     let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
         .with_storage_ports(Arc::new(pg.clone()).storage_ports());
 
-    pg.add_group_member(group, seeded_admin, Relation::Admin, Uuid::now_v7())
-        .await
-        .expect("seed prerequisite admin");
+    let group_owner = OwnerRef::Group(group);
+    let permit = owner_write_permit(&group_owner, proxima_core::AccessKind::Goal).await;
+    pg.add_group_member(
+        &permit,
+        group,
+        seeded_admin,
+        Relation::Admin,
+        Uuid::now_v7(),
+    )
+    .await
+    .expect("seed prerequisite admin");
     engine
         .add_member(
             &authz_with_role(&seeded_admin_owner, OwnerRef::Group(group), Role::admin()),
@@ -434,15 +449,17 @@ async fn discovery_reads_filter_by_owner_read_set() {
 
     let mut f1_draft = fresh_fact_draft(OwnerRef::Group(g1));
     f1_draft.rendered_text = Some("boundaryneedle group fact".to_string());
+    let g1_owner = OwnerRef::Group(g1);
+    let fact_permit = owner_write_permit(&g1_owner, proxima_core::AccessKind::Fact).await;
     let f1 = pg
-        .ingest_fact_atomic(&OwnerRef::Group(g1), &f1_draft, None)
+        .ingest_fact_atomic(&fact_permit, &f1_draft, None)
         .await
         .unwrap()
         .memory_id;
     let mut hidden_target_draft = fresh_fact_draft(OwnerRef::Group(g1));
     hidden_target_draft.rendered_text = Some("unreadable edge target".to_string());
     let hidden_target = pg
-        .ingest_fact_atomic(&OwnerRef::Group(g1), &hidden_target_draft, None)
+        .ingest_fact_atomic(&fact_permit, &hidden_target_draft, None)
         .await
         .unwrap()
         .memory_id;
@@ -560,9 +577,10 @@ async fn discovery_reads_filter_by_owner_read_set() {
 async fn owner_columns_written_on_fact_ingest() {
     let (pg, db) = common::fresh_pg().await;
     let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let permit = owner_write_permit(&owner, proxima_core::AccessKind::Fact).await;
 
     let outcome = pg
-        .ingest_fact_atomic(&owner, &fresh_fact_draft(owner), None)
+        .ingest_fact_atomic(&permit, &fresh_fact_draft(owner), None)
         .await
         .unwrap();
 
@@ -579,6 +597,7 @@ async fn owner_columns_written_on_goal_create() {
     let self_id = insert_self(&pg, &owner).await;
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let mut draft = fresh_goal_draft(owner);
+    let permit = owner_write_permit(&owner, proxima_core::AccessKind::Goal).await;
     draft.topology = GoalTopologyWrite::new(
         GoalAssignmentTarget::perspective(self_id),
         Vec::new(),
@@ -587,14 +606,17 @@ async fn owner_columns_written_on_goal_create() {
     .expect("empty test topology is valid");
 
     let outcome = pg
-        .create_goal_atomic(&CreateGoalAtomicRequest {
-            draft,
-            context: GoalAtomicContext {
-                registry: &registry,
-                embedding_model_id: None,
-                author_self_perspective_id: Some(self_id),
+        .create_goal_atomic(
+            &CreateGoalAtomicRequest {
+                draft,
+                context: GoalAtomicContext {
+                    registry: &registry,
+                    embedding_model_id: None,
+                    author_self_perspective_id: Some(self_id),
+                },
             },
-        })
+            &permit,
+        )
         .await
         .unwrap();
 
@@ -608,12 +630,11 @@ async fn owner_columns_written_on_goal_create() {
 async fn transfer_to_world_moves_memory_row_and_stale_owner_replay_no_ops() {
     let (pg, db) = common::fresh_pg().await;
     let group = GroupId::new(Uuid::now_v7());
+    let owner = OwnerRef::Group(group);
+    let permit = owner_write_permit(&owner, proxima_core::AccessKind::Goal).await;
     let entity = seed_memory_owned(&pg, OwnerRef::Group(group)).await;
 
-    let moved = pg
-        .transfer_to_world(entity, OwnerRef::Group(group))
-        .await
-        .unwrap();
+    let moved = pg.transfer_to_world(&permit, entity).await.unwrap();
     assert!(
         moved,
         "first transfer moves the row under its current owner"
@@ -621,10 +642,7 @@ async fn transfer_to_world_moves_memory_row_and_stale_owner_replay_no_ops() {
     assert_single_home(&pg, entity.uuid(), &OwnerRef::World).await;
     assert_no_live_entity_lacks_home(&pg).await;
 
-    let stale_replay = pg
-        .transfer_to_world(entity, OwnerRef::Group(group))
-        .await
-        .unwrap();
+    let stale_replay = pg.transfer_to_world(&permit, entity).await.unwrap();
     assert!(
         !stale_replay,
         "a transfer keyed on the now-stale prior owner finds no matching row"
@@ -642,6 +660,7 @@ async fn transfer_to_world_moves_goal_row() {
     let self_id = insert_self(&pg, &owner).await;
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let mut draft = fresh_goal_draft(owner);
+    let permit = owner_write_permit(&owner, proxima_core::AccessKind::Goal).await;
     draft.topology = GoalTopologyWrite::new(
         GoalAssignmentTarget::perspective(self_id),
         Vec::new(),
@@ -650,34 +669,27 @@ async fn transfer_to_world_moves_goal_row() {
     .expect("empty test topology is valid");
 
     let outcome = pg
-        .create_goal_atomic(&CreateGoalAtomicRequest {
-            draft,
-            context: GoalAtomicContext {
-                registry: &registry,
-                embedding_model_id: None,
-                author_self_perspective_id: Some(self_id),
+        .create_goal_atomic(
+            &CreateGoalAtomicRequest {
+                draft,
+                context: GoalAtomicContext {
+                    registry: &registry,
+                    embedding_model_id: None,
+                    author_self_perspective_id: Some(self_id),
+                },
             },
-        })
+            &permit,
+        )
         .await
         .unwrap();
     let entity = EntityId::Goal(outcome.goal_id);
 
-    let moved = pg.transfer_to_world(entity, owner).await.unwrap();
+    let moved = pg.transfer_to_world(&permit, entity).await.unwrap();
     assert!(moved, "goal row transfers under its current owner");
     assert_single_home(&pg, entity.uuid(), &OwnerRef::World).await;
     assert_no_live_entity_lacks_home(&pg).await;
 
     common::drop_db(&db).await.unwrap();
-}
-
-fn assert_world_write_rejected(err: &StorageError) {
-    match err {
-        StorageError::ConstraintViolation(msg) => assert!(
-            msg.contains("World is read-only and never a write owner"),
-            "expected the World write-owner backstop, got: {msg}"
-        ),
-        other => panic!("expected ConstraintViolation from the World backstop, got {other:?}"),
-    }
 }
 
 /// Raw-verb backstop: `flavors/code`-style direct storage calls (no engine,
@@ -687,15 +699,9 @@ fn assert_world_write_rejected(err: &StorageError) {
 async fn world_owner_rejected_on_raw_fact_ingest_verb() {
     let (pg, db) = common::fresh_pg().await;
 
-    let err = proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic(
-        pg.pool_for_tests(),
-        &OwnerRef::World,
-        &fresh_fact_draft(OwnerRef::World),
-        None,
-    )
-    .await
-    .expect_err("raw fact ingest under World must fail closed");
-    assert_world_write_rejected(&err);
+    common::owner_write_permit(&OwnerRef::World, proxima_core::AccessKind::Fact)
+        .await
+        .expect_err("World Fact write permit must not be minted");
 
     let world_memories: i64 =
         sqlx::query_scalar("SELECT count(*) FROM proxima_core.memories WHERE owner_kind = 'world'")
@@ -711,33 +717,11 @@ async fn world_owner_rejected_on_raw_fact_ingest_verb() {
 /// directly (`append_derived_with_edges_in_tx`).
 #[tokio::test]
 async fn world_owner_rejected_on_raw_derive_append_verb() {
-    let (pg, db) = common::fresh_pg().await;
+    let (_pg, db) = common::fresh_pg().await;
 
-    let draft = DerivedDraft {
-        memory_id: Uuid::now_v7(),
-        owner: OwnerRef::World,
-        kind: EntityKind::Abstraction,
-        schema_id: SchemaId::new("test/world-guard-abstraction-v1".into()),
-        schema_version: SchemaVersion::new(1),
-        text: "world-owned derived rows must be rejected".to_string(),
-        operator_kind: MemoryOperatorKind::AtoA,
-        operator_id: OperatorId::new(Uuid::now_v7()),
-        input_contract_id: InputContractId::new(Uuid::now_v7()),
-        source_batch_id: None,
-        model_id: "test-model",
-        prompt_version: "v1",
-        supersedes: None,
-        embedding: None,
-        embedding_model_id: None,
-    };
-    let mut tx = pg.pool_for_tests().begin().await.unwrap();
-    let err = append_derived_with_edges_in_tx(&mut tx, &draft, &[], |_tx, _outcome| {
-        Box::pin(async { Ok(()) })
-    })
-    .await
-    .expect_err("raw derived append under World must fail closed");
-    assert_world_write_rejected(&err);
-    tx.rollback().await.unwrap();
+    common::owner_write_permit(&OwnerRef::World, proxima_core::AccessKind::Abstraction)
+        .await
+        .expect_err("World Abstraction write permit must not be minted");
 
     common::drop_db(&db).await.unwrap();
 }
@@ -747,20 +731,10 @@ async fn world_owner_rejected_on_raw_derive_append_verb() {
 #[tokio::test]
 async fn world_owner_rejected_on_raw_goal_write_verb() {
     let (pg, db) = common::fresh_pg().await;
-    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
 
-    let err = pg
-        .create_goal_atomic(&CreateGoalAtomicRequest {
-            draft: fresh_goal_draft(OwnerRef::World),
-            context: GoalAtomicContext {
-                registry: &registry,
-                embedding_model_id: None,
-                author_self_perspective_id: None,
-            },
-        })
+    common::owner_write_permit(&OwnerRef::World, proxima_core::AccessKind::Goal)
         .await
-        .expect_err("goal creation under World must fail closed");
-    assert_world_write_rejected(&err);
+        .expect_err("World Goal write permit must not be minted");
 
     let world_goals: i64 =
         sqlx::query_scalar("SELECT count(*) FROM proxima_core.goals WHERE owner_kind = 'world'")
@@ -775,29 +749,11 @@ async fn world_owner_rejected_on_raw_goal_write_verb() {
 /// Raw-verb backstop for the MCP-call-log Fact row (also a new memories row).
 #[tokio::test]
 async fn world_owner_rejected_on_raw_persist_mcp_call_verb() {
-    let (pg, db) = common::fresh_pg().await;
-    let now = time::OffsetDateTime::now_utc();
+    let (_pg, db) = common::fresh_pg().await;
 
-    let err = proxima_storage_pg::verbs::persist_mcp_call::persist_mcp_call_atomic(
-        pg.pool_for_tests(),
-        &McpCallLogInput {
-            owner: OwnerRef::World,
-            actor_oid: "test-oid".into(),
-            actor_upn: "test@example.invalid".into(),
-            tool_name: "test_tool".into(),
-            ok: true,
-            error: None,
-            latency_ms: 1,
-            io_body: b"{}".to_vec(),
-            io_byte_len_original: 2,
-            io_truncated: false,
-            observed_at: now,
-            occurred_at: now,
-        },
-    )
-    .await
-    .expect_err("mcp-call persistence under World must fail closed");
-    assert_world_write_rejected(&err);
+    common::owner_write_permit(&OwnerRef::World, proxima_core::AccessKind::Fact)
+        .await
+        .expect_err("World MCP-call Fact write permit must not be minted");
 
     common::drop_db(&db).await.unwrap();
 }
@@ -917,6 +873,7 @@ async fn engine_query_surfaces_world_published_goal_to_non_owner() {
     let self_id = insert_self(&pg, &author).await;
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let mut draft = fresh_goal_draft(author);
+    let permit = owner_write_permit(&author, proxima_core::AccessKind::Goal).await;
     draft.topology = GoalTopologyWrite::new(
         GoalAssignmentTarget::perspective(self_id),
         Vec::new(),
@@ -924,14 +881,17 @@ async fn engine_query_surfaces_world_published_goal_to_non_owner() {
     )
     .expect("empty test topology is valid");
     let outcome = pg
-        .create_goal_atomic(&CreateGoalAtomicRequest {
-            draft,
-            context: GoalAtomicContext {
-                registry: &registry,
-                embedding_model_id: None,
-                author_self_perspective_id: Some(self_id),
+        .create_goal_atomic(
+            &CreateGoalAtomicRequest {
+                draft,
+                context: GoalAtomicContext {
+                    registry: &registry,
+                    embedding_model_id: None,
+                    author_self_perspective_id: Some(self_id),
+                },
             },
-        })
+            &permit,
+        )
         .await
         .unwrap();
     let goal_id = outcome.goal_id;

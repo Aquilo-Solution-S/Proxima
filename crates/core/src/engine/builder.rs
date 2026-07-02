@@ -5,6 +5,7 @@ use tokio::sync::RwLock;
 
 use super::{EmbeddingClientReloader, Engine, EngineMcpListener};
 use crate::FlavorRegistryError;
+use crate::authz::SystemAuthority;
 use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage_ports::{EngineStoragePorts, StoragePorts};
 use crate::verbs::schema::FlavorRegistryFrozen;
@@ -24,6 +25,14 @@ impl Engine {
             mcp_listener: None,
             mcp_url: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Split out the host-held System write witness while the caller still
+    /// owns the engine value. Tool contexts receive only shared engine handles,
+    /// so they cannot extract this after boot.
+    #[must_use]
+    pub fn into_system_authority(self) -> (Self, SystemAuthority) {
+        (self, SystemAuthority::new())
     }
 
     /// Test-only infallible composite assembly.

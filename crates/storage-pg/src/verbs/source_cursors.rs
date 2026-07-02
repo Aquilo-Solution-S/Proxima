@@ -1,3 +1,4 @@
+use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{Cursor, Owner, StorageError};
 use sqlx::PgPool;
 
@@ -37,10 +38,11 @@ pub(crate) async fn load_source_cursor(
 /// Returns `StorageError::Internal` or `ConstraintViolation` for SQL failures.
 pub(crate) async fn store_source_cursor(
     pool: &PgPool,
-    owner: &Owner,
+    permit: &OwnerWritePermit,
     source: &str,
     cursor: &Cursor,
 ) -> Result<(), StorageError> {
+    let owner = permit.owner();
     let (owner_kind, owner_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.source_cursors

@@ -62,6 +62,7 @@ impl GoalWritePort for GoalFake {
     async fn create_goal_atomic(
         &self,
         _req: &crate::verbs::goal_write::CreateGoalAtomicRequest<'_>,
+        _permit: &crate::storage_ports::OwnerWritePermit,
     ) -> Result<crate::verbs::goal_write::GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal("goal fake rejects writes".into()))
     }
@@ -69,6 +70,7 @@ impl GoalWritePort for GoalFake {
     async fn transition_goal_atomic(
         &self,
         _req: &crate::verbs::goal_write::TransitionGoalAtomicRequest<'_>,
+        _permit: &crate::storage_ports::OwnerWritePermit,
     ) -> Result<crate::verbs::goal_write::GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal("goal fake rejects writes".into()))
     }
@@ -76,6 +78,7 @@ impl GoalWritePort for GoalFake {
     async fn achieve_goal_atomic(
         &self,
         _req: &crate::verbs::goal_write::AchieveGoalAtomicRequest<'_>,
+        _permit: &crate::storage_ports::OwnerWritePermit,
     ) -> Result<crate::verbs::goal_write::GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal("goal fake rejects writes".into()))
     }
@@ -83,6 +86,7 @@ impl GoalWritePort for GoalFake {
     async fn modify_goal_atomic(
         &self,
         _req: &crate::verbs::goal_write::ModifyGoalAtomicRequest<'_>,
+        _permit: &crate::storage_ports::OwnerWritePermit,
     ) -> Result<crate::verbs::goal_write::GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal("goal fake rejects writes".into()))
     }
@@ -90,6 +94,7 @@ impl GoalWritePort for GoalFake {
     async fn decompose_goal_atomic(
         &self,
         _req: &crate::verbs::goal_write::DecomposeGoalAtomicRequest<'_>,
+        _permit: &crate::storage_ports::OwnerWritePermit,
     ) -> Result<crate::verbs::goal_write::DecomposeGoalOutcome, StorageError> {
         Err(StorageError::Internal("goal fake rejects writes".into()))
     }
@@ -181,8 +186,10 @@ async fn goal_helper_accepts_only_goal_command_handles() {
             author_self_perspective_id: None,
         },
     };
+    let permit =
+        crate::storage_ports::OwnerWritePermit::new(req.owner, crate::access::AccessKind::Goal);
 
-    let err = super::goal_write::transition_goal_authorized(&ports, &req)
+    let err = super::goal_write::transition_goal_authorized(&ports, &req, &permit)
         .await
         .expect_err("goal fake should reject writes");
 
@@ -275,7 +282,7 @@ mod storage_port_tests_support {
 
         async fn enqueue_missing_embedding_jobs(
             &self,
-            _owner: &crate::Owner,
+            _permit: &crate::storage_ports::OwnerWritePermit,
             _model_id: &str,
             _limit: i64,
         ) -> Result<u64, StorageError> {
@@ -337,7 +344,7 @@ mod storage_port_tests_support {
     impl crate::FactRetentionPort for FactRetentionFake {
         async fn upsert_fact_retention(
             &self,
-            _owner: &crate::Owner,
+            _permit: &crate::storage_ports::OwnerWritePermit,
             _seconds: i64,
         ) -> Result<(), StorageError> {
             Ok(())
@@ -350,11 +357,17 @@ mod storage_port_tests_support {
             Ok(None)
         }
 
-        async fn clear_fact_retention(&self, _owner: &crate::Owner) -> Result<bool, StorageError> {
+        async fn clear_fact_retention(
+            &self,
+            _permit: &crate::storage_ports::OwnerWritePermit,
+        ) -> Result<bool, StorageError> {
             Ok(false)
         }
 
-        async fn set_legal_hold(&self, _owner: &crate::Owner) -> Result<(), StorageError> {
+        async fn set_legal_hold(
+            &self,
+            _permit: &crate::storage_ports::OwnerWritePermit,
+        ) -> Result<(), StorageError> {
             Ok(())
         }
 
@@ -362,7 +375,10 @@ mod storage_port_tests_support {
             Ok(false)
         }
 
-        async fn clear_legal_hold(&self, _owner: &crate::Owner) -> Result<bool, StorageError> {
+        async fn clear_legal_hold(
+            &self,
+            _permit: &crate::storage_ports::OwnerWritePermit,
+        ) -> Result<bool, StorageError> {
             Ok(false)
         }
     }

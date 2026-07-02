@@ -1,3 +1,4 @@
+use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{EdgeAuthorshipKind, EdgeId, MemoryId, Owner};
 use proxima_storage_pg::verbs::edge_write::{
     MemoryEndpoint, append_owner_checked_typed_memory_edge,
@@ -99,9 +100,10 @@ fn calls_edge_id(
 /// same call edge id.
 pub async fn ingest_calls_edge(
     pool: &PgPool,
-    owner: &Owner,
+    permit: &OwnerWritePermit,
     edge: &CallEdgeDraft,
 ) -> Result<(), IngestError> {
+    let owner = permit.owner();
     let registry = schema_registry();
     let relation = registry
         .resolve_relation("proxima-code/calls")
@@ -126,7 +128,7 @@ pub async fn ingest_calls_edge(
     let mut tx = pool.begin().await?;
     append_owner_checked_typed_memory_edge(
         tx.as_mut(),
-        owner,
+        permit,
         EdgeId::new(edge_id),
         relation,
         MemoryEndpoint::abstraction(MemoryId::new(edge.source_memory_id)),

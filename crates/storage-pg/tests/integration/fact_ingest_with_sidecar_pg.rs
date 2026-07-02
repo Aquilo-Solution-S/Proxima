@@ -3,7 +3,7 @@
 use proxima_core::storage_ports::*;
 use std::sync::Arc;
 
-use crate::common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit};
 use proxima_core::verbs::fact_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
@@ -123,7 +123,10 @@ async fn seed_group_membership(
     let OwnerRef::Personal(user) = subject else {
         panic!("group membership can only seed user members");
     };
-    pg.add_group_member(*group, *user, relation, Uuid::now_v7())
+    let permit = owner_write_permit(space_owner, proxima_core::AccessKind::Goal)
+        .await
+        .expect("seed group membership permit");
+    pg.add_group_member(&permit, *group, *user, relation, Uuid::now_v7())
         .await
         .expect("seed group membership");
 }
@@ -183,7 +186,6 @@ async fn authz_rejection_writes_nothing() -> Result<(), Box<dyn std::error::Erro
         (0, 0)
     );
 
-    drop(engine);
     drop(pg);
     drop_db(&db_name).await?;
     Ok(())
@@ -225,7 +227,6 @@ async fn source_ingest_only_authorizes_fact_ingest_with_write_grant()
     assert_eq!(err.code, ErrorCode::Forbidden);
     assert!(err.message.contains("requires editor on this owner"));
 
-    drop(engine);
     drop(pg);
     drop_db(&db_name).await?;
     Ok(())
@@ -240,7 +241,7 @@ async fn sidecar_failure_rolls_back_fact() -> Result<(), Box<dyn std::error::Err
     let draft = fresh_draft(&owner);
     let authorized = engine
         .authorize_fact_ingest(
-            &AuthzContext::single_owner(&owner, AuthPath::System),
+            &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
             Relation::Ingest,
             draft,
         )
@@ -286,8 +287,7 @@ async fn ingest_fact_writes_uncited_fact_and_sidecar() -> Result<(), Box<dyn std
     .await?;
 
     let owner = owner_fixture();
-    let engine = engine_for(&pg);
-    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let permit = owner_write_permit(&owner, proxima_core::AccessKind::Fact).await?;
     let payload = UncitedFactPayload {
         note: format!("uncited fact {}", Uuid::now_v7()),
     };
@@ -295,10 +295,9 @@ async fn ingest_fact_writes_uncited_fact_and_sidecar() -> Result<(), Box<dyn std
 
     let outcome = ingest_fact(
         pg.pool_for_tests(),
-        &engine,
-        &authz,
-        Relation::Ingest,
+        &permit,
         &payload,
+        None,
         move |tx, outcome| {
             Box::pin(async move {
                 sqlx::query(
@@ -353,7 +352,6 @@ async fn ingest_fact_writes_uncited_fact_and_sidecar() -> Result<(), Box<dyn std
     assert_eq!(citation_mappings, 0);
     assert_eq!(sidecars, 1);
 
-    drop(engine);
     drop(pg);
     drop_db(&db_name).await?;
     Ok(())

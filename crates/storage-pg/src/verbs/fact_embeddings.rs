@@ -1,4 +1,5 @@
 use proxima_core::llm::{EMBEDDING_DIM, EMBEDDING_JOB_MAX_ATTEMPTS, EmbeddingClient};
+use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{
     EmbeddableEntityRef, EmbeddingJobClaim, EmbeddingWriteOutcome, EntityKind, MemoryId, Owner,
     OwnerRefKind, StorageError,
@@ -652,7 +653,7 @@ pub async fn fail_embedding_job(
 /// failures through the shared mapper.
 pub async fn enqueue_missing_embedding_jobs(
     pool: &PgPool,
-    owner: &Owner,
+    permit: &OwnerWritePermit,
     model_id: &str,
     limit: i64,
 ) -> Result<u64, StorageError> {
@@ -660,7 +661,7 @@ pub async fn enqueue_missing_embedding_jobs(
     if limit == 0 {
         return Ok(0);
     }
-    let (owner_kind, owner_id) = owner_parts(owner);
+    let (owner_kind, owner_id) = owner_parts(permit.owner());
     let result = sqlx::query(
         "WITH missing AS (
              SELECT m.memory_id
@@ -867,11 +868,12 @@ async fn embed_claim(
 // external test binaries cannot reach them without a forgeable-proof surface.
 #[cfg(test)]
 mod pg_tests {
+    use proxima_core::storage_ports::OwnerWritePermit;
     use proxima_core::test_fixtures::owner_fixture;
     use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
     use proxima_core::{
-        EntityKind, FactIngestPort, GoalId, Owner, SchemaId, SchemaVersion, SourceBatchId,
-        SourceId, StorageError,
+        AccessKind, AuthPath, AuthzContext, Engine, EntityKind, FactIngestPort, FlavorRegistry,
+        GoalId, Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError,
     };
     use proxima_pg_testkit::drop_db;
     use uuid::Uuid;
@@ -903,6 +905,20 @@ mod pg_tests {
             }),
             citation: None,
         }
+    }
+
+    async fn owner_fact_write_permit(owner: &Owner) -> Result<OwnerWritePermit, StorageError> {
+        let Owner::Personal(user_id) = owner else {
+            return Err(StorageError::Internal(
+                "fact embedding test helper expects a personal owner".into(),
+            ));
+        };
+        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+        let authz = AuthzContext::for_subject(*user_id, AuthPath::HostBearer);
+        engine
+            .authorize_owner_write(&authz, owner, AccessKind::Fact)
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))
     }
 
     async fn load_embedding_versions(
@@ -994,8 +1010,9 @@ mod pg_tests {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
             let outcome = pg
-                .ingest_fact_atomic(&owner, &fact_draft("concurrent embedding fact"), None)
+                .ingest_fact_atomic(&permit, &fact_draft("concurrent embedding fact"), None)
                 .await?;
             let pool_a = pg.pool_for_tests().clone();
             let pool_b = pg.pool_for_tests().clone();
@@ -1139,9 +1156,10 @@ mod pg_tests {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
             let outcome = pg
                 .ingest_fact_atomic(
-                    &owner,
+                    &permit,
                     &fact_draft("deleted before embedding write"),
                     Some("stub-fact-embed"),
                 )

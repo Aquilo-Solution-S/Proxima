@@ -40,7 +40,7 @@ fn test_ctx(handles: Arc<HandleTable>) -> ToolCtx {
     services.insert(McpToolCaller::new("test/model".into(), false));
     ToolCtx::new(
         owner,
-        AuthzContext::single_owner(&owner, AuthPath::System),
+        AuthzContext::single_owner(&owner, AuthPath::HostBearer),
         Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
         services,
     )

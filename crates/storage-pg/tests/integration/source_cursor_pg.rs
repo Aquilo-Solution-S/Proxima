@@ -1,10 +1,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit};
 use proxima_core::storage_ports::SourceCursorPort;
 use proxima_core::{
-    AuthPath, AuthzContext, Cursor, Engine, ErrorCode, FlavorRegistry, Owner, OwnerRef, UserId,
+    AccessKind, AuthPath, AuthzContext, Cursor, Engine, ErrorCode, FlavorRegistry, Owner, OwnerRef,
+    UserId,
 };
 
 fn engine_for(pg: proxima_storage_pg::PgStorage) -> Engine {
@@ -37,10 +38,11 @@ async fn source_cursor_round_trips_opaque_bytes() -> Result<(), Box<dyn std::err
     let (pg, db_name) = fresh_pg().await;
     let result = async {
         let owner = owner_fixture();
+        let permit = owner_write_permit(&owner, AccessKind::Fact).await?;
         let bytes = vec![0x00, 0xff, 0xfe, b'A', 0x80, 0x00, 0x7f];
         let cursor = Cursor::from_bytes(bytes.clone());
 
-        pg.store_source_cursor(&owner, "evidence/projector", &cursor)
+        pg.store_source_cursor(&permit, "evidence/projector", &cursor)
             .await?;
         let loaded = pg
             .load_source_cursor(&owner, "evidence/projector")
@@ -61,15 +63,16 @@ async fn source_cursor_upsert_replaces_bytes_and_advances_timestamp()
     let (pg, db_name) = fresh_pg().await;
     let result = async {
         let owner = owner_fixture();
+        let permit = owner_write_permit(&owner, AccessKind::Fact).await?;
         let source = "evidence/projector";
         let first = Cursor::from_bytes(vec![0xff, 0x00, 0x01]);
         let second = Cursor::from_bytes(vec![0x02, 0xfe, 0xfd, 0x00]);
 
-        pg.store_source_cursor(&owner, source, &first).await?;
+        pg.store_source_cursor(&permit, source, &first).await?;
         let first_updated_at = cursor_updated_at(&pg, &owner, source).await?;
         tokio::time::sleep(Duration::from_millis(10)).await;
 
-        pg.store_source_cursor(&owner, source, &second).await?;
+        pg.store_source_cursor(&permit, source, &second).await?;
         let loaded = pg
             .load_source_cursor(&owner, source)
             .await?
@@ -110,18 +113,20 @@ async fn source_cursor_storage_keys_by_owner_and_engine_denies_cross_owner()
     let result = async {
         let owner_a = owner_fixture();
         let owner_b = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let permit_a = owner_write_permit(&owner_a, AccessKind::Fact).await?;
+        let permit_b = owner_write_permit(&owner_b, AccessKind::Fact).await?;
         let source = "evidence/projector";
         let cursor_b = Cursor::from_bytes(vec![0xff, 0x10, 0x00]);
         let cursor_a = Cursor::from_bytes(vec![0x01, 0x02, 0x03]);
 
-        pg.store_source_cursor(&owner_b, source, &cursor_b).await?;
+        pg.store_source_cursor(&permit_b, source, &cursor_b).await?;
         assert_eq!(
             pg.load_source_cursor(&owner_a, source).await?,
             None,
             "owner A must not read owner B's row through storage owner scoping"
         );
 
-        pg.store_source_cursor(&owner_a, source, &cursor_a).await?;
+        pg.store_source_cursor(&permit_a, source, &cursor_a).await?;
         assert_eq!(
             pg.load_source_cursor(&owner_b, source)
                 .await?
@@ -132,7 +137,7 @@ async fn source_cursor_storage_keys_by_owner_and_engine_denies_cross_owner()
         );
 
         let engine = engine_for(pg.clone());
-        let authz_a = AuthzContext::single_owner(&owner_a, AuthPath::System);
+        let authz_a = AuthzContext::single_owner(&owner_a, AuthPath::HostBearer);
         let engine_cursor_a = Cursor::from_bytes(vec![0x7f, 0x00, 0x80]);
         engine
             .store_source_cursor(&authz_a, &owner_a, source, &engine_cursor_a)

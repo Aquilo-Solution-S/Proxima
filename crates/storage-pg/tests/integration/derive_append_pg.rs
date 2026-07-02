@@ -1,4 +1,4 @@
-use crate::common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit};
 use proxima_core::storage::StorageError;
 use proxima_core::{
     AgentDerivationV1, CORE_DERIVED_FROM_RELATION, DerivedEdgeSpec, EntityKind, FlavorRegistry,
@@ -104,7 +104,16 @@ async fn append_with_sidecar(
     let edges = [derived_edge(&draft.owner, draft, source, relation)];
     let sidecars = sidecars.clone();
     let sidecar = sidecar.clone();
-    append_derived_with_edges_in_tx(tx, draft, &edges, move |tx, outcome| {
+    let access_kind = match draft.kind {
+        EntityKind::Fact => proxima_core::AccessKind::Fact,
+        EntityKind::Abstraction => proxima_core::AccessKind::Abstraction,
+        EntityKind::Perspective => proxima_core::AccessKind::Perspective,
+        EntityKind::Goal => proxima_core::AccessKind::Goal,
+    };
+    let permit = owner_write_permit(&draft.owner, access_kind)
+        .await
+        .map_err(|err| StorageError::Internal(err.to_string()))?;
+    append_derived_with_edges_in_tx(tx, &permit, draft, &edges, move |tx, outcome| {
         Box::pin(async move {
             sidecars
                 .insert_memory_sidecar(tx, outcome.memory_id, &sidecar)

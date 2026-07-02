@@ -3,7 +3,7 @@
 use proxima_core::storage_ports::*;
 use std::sync::Arc;
 
-use crate::common::{create_db, db_url, drop_db};
+use crate::common::{create_db, db_url, drop_db, owner_write_permit};
 
 use proxima_core::authz::AuthPath;
 use proxima_core::verbs::goal_write::{
@@ -137,7 +137,10 @@ async fn seed_group_membership(
     let OwnerRef::Personal(user) = subject else {
         panic!("group membership can only seed user members");
     };
-    pg.add_group_member(*group, *user, relation, Uuid::now_v7())
+    let permit = owner_write_permit(space_owner, proxima_core::AccessKind::Goal)
+        .await
+        .expect("seed group membership permit");
+    pg.add_group_member(&permit, *group, *user, relation, Uuid::now_v7())
         .await
         .expect("seed group membership");
 }
@@ -165,7 +168,7 @@ async fn boot_registered(
     let authz = AuthzContext::for_subject_with_role(
         UserId::new(Uuid::now_v7()),
         [(owner, Role::admin())],
-        AuthPath::System,
+        AuthPath::HostBearer,
     );
     Ok((pg, owner, target_self, engine, authz))
 }
@@ -351,7 +354,7 @@ async fn engine_goalwrite_requires_readable_evidence_before_write() {
         let no_read_authz = AuthzContext::for_subject_with_role(
             subject,
             [(owner, Role::admin())],
-            AuthPath::System,
+            AuthPath::HostBearer,
         );
 
         let err = engine
@@ -368,7 +371,7 @@ async fn engine_goalwrite_requires_readable_evidence_before_write() {
         let readable_authz = AuthzContext::for_subject_with_role(
             subject,
             [(owner, Role::admin()), (evidence_owner, Role::viewer())],
-            AuthPath::System,
+            AuthPath::HostBearer,
         );
         let outcome = engine
             .create_goal(
@@ -498,7 +501,7 @@ async fn engine_goalwrite_rejects_unregistered_goal_schema() {
         let target_self = insert_self(&pg, &owner).await?;
         let engine =
             Engine::compose_or_panic_for_tests(Arc::new(pg).storage_ports(), |_registry| {});
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
         let err = engine
             .create_goal(
@@ -535,7 +538,7 @@ async fn engine_goalwrite_rejects_unauthorized_callers_before_write() {
         let owner_authz = AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
             [(owner, Role::admin())],
-            AuthPath::System,
+            AuthPath::HostBearer,
         );
         let cross_owner = engine
             .create_goal(

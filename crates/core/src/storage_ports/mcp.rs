@@ -1,4 +1,5 @@
 use crate::storage::StorageError;
+use crate::storage_ports::OwnerWritePermit;
 use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 
@@ -6,6 +7,7 @@ use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 pub trait McpCallWritePort: Send + Sync {
     async fn persist_mcp_call_atomic(
         &self,
+        permit: &OwnerWritePermit,
         input: &McpCallLogInput,
     ) -> Result<McpCallLogOutcome, StorageError>;
 }

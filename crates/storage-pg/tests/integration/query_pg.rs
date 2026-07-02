@@ -283,14 +283,20 @@ async fn query_returns_stored_schema_version() {
         draft.schema_version = SchemaVersion::new(2);
         engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 draft,
             )
             .await?;
 
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &QueryRequest::for_owner(owner),
             )
             .await?;
@@ -339,13 +345,19 @@ async fn query_returns_fact_rows() {
 
         let outcome1 = engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 draft1.clone(),
             )
             .await?;
         let outcome2 = engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 draft2.clone(),
             )
             .await?;
@@ -354,7 +366,10 @@ async fn query_returns_fact_rows() {
         let req = QueryRequest::for_owner(owner);
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &req,
             )
             .await?;
@@ -397,14 +412,20 @@ async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exc
 
         let first = engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 fresh_draft(owner),
             )
             .await?
             .memory_id;
         let second = engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 {
                     let mut draft = fresh_draft(owner);
                     draft.payload = b"second".to_vec();
@@ -424,7 +445,10 @@ async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exc
         req.limit = 2;
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &req,
             )
             .await?;
@@ -464,14 +488,20 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
 
         let outside = engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 fresh_draft(owner),
             )
             .await?
             .memory_id;
         let inside_a = engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 {
                     let mut draft = fresh_draft(owner);
                     draft.payload = b"inside-a".to_vec();
@@ -484,7 +514,10 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
             .memory_id;
         let inside_b = engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 {
                     let mut draft = fresh_draft(owner);
                     draft.payload = b"inside-b".to_vec();
@@ -509,7 +542,10 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
         req.limit = 2;
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &req,
             )
             .await?;
@@ -548,14 +584,20 @@ async fn query_edge_id_hydration_returns_requested_edge_without_visible_nodes() 
 
         let a = engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 fresh_draft(owner),
             )
             .await?
             .memory_id;
         let b = engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 {
                     let mut draft = fresh_draft(owner);
                     draft.payload = b"target".to_vec();
@@ -573,7 +615,10 @@ async fn query_edge_id_hydration_returns_requested_edge_without_visible_nodes() 
         req.edge_ids = vec![edge_id];
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &req,
             )
             .await?;
@@ -607,14 +652,20 @@ async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
 
         let a = engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 fresh_draft(owner),
             )
             .await?
             .memory_id;
         let b = engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 {
                     let mut draft = fresh_draft(owner);
                     draft.payload = b"second".to_vec();
@@ -633,7 +684,10 @@ async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
         req.limit = 2;
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &req,
             )
             .await?;
@@ -674,7 +728,7 @@ async fn query_owner_scope_is_principal() {
             .fact_ingest(
                 &proxima_core::AuthzContext::single_owner(
                     &stored_owner,
-                    proxima_core::AuthPath::System,
+                    proxima_core::AuthPath::HostBearer,
                 ),
                 draft.clone(),
             )
@@ -684,7 +738,7 @@ async fn query_owner_scope_is_principal() {
             .query(
                 &proxima_core::AuthzContext::single_owner(
                     &stored_owner,
-                    proxima_core::AuthPath::System,
+                    proxima_core::AuthPath::HostBearer,
                 ),
                 &QueryRequest::for_owner(requested_owner),
             )
@@ -723,7 +777,10 @@ async fn query_filter_abstraction_returns_empty() {
         let draft = fresh_draft(owner);
         engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 draft,
             )
             .await?;
@@ -746,7 +803,10 @@ async fn query_filter_abstraction_returns_empty() {
         };
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &req,
             )
             .await?;
@@ -813,7 +873,10 @@ async fn query_heads_only_ignores_cross_owner_supersedes_successor() {
         };
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&victim, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &victim,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &req,
             )
             .await?;
@@ -865,7 +928,7 @@ async fn query_goals_filter_by_schema_id() {
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage_ports(storage);
         let authz =
-            proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
+            proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::HostBearer);
 
         // Seed a goal under "test/goal_blob" v1.
         seed_goal(
@@ -979,7 +1042,10 @@ async fn query_returns_stored_goal_schema_version() {
 
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &QueryRequest::for_owner(owner),
             )
             .await?;
@@ -1019,7 +1085,10 @@ async fn query_filter_nonexistent_schema_returns_empty() {
         let draft = fresh_draft(owner);
         engine
             .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 draft,
             )
             .await?;
@@ -1042,7 +1111,10 @@ async fn query_filter_nonexistent_schema_returns_empty() {
         };
         let resp = engine
             .query(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &proxima_core::AuthzContext::single_owner(
+                    &owner,
+                    proxima_core::AuthPath::HostBearer,
+                ),
                 &req,
             )
             .await?;

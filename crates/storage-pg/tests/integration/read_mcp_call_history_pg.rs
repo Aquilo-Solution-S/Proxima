@@ -72,7 +72,7 @@ async fn seed_history_fixture(
     pg: &PgStorage,
     owner1: &Owner,
     owner2: &Owner,
-) -> Result<(), proxima_core::StorageError> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let base = time::OffsetDateTime::now_utc();
     let seeds = [
         (
@@ -134,7 +134,7 @@ async fn seed_call(
     tool_name: &str,
     io_body: Vec<u8>,
     observed_at: time::OffsetDateTime,
-) -> Result<(), proxima_core::StorageError> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let input = McpCallLogInput {
         owner: *owner,
         actor_oid: actor_oid.into(),
@@ -149,6 +149,7 @@ async fn seed_call(
         observed_at,
         occurred_at: observed_at,
     };
-    persist_mcp_call_atomic(pool, &input).await?;
+    let permit = crate::common::owner_write_permit(owner, proxima_core::AccessKind::Fact).await?;
+    persist_mcp_call_atomic(pool, &permit, &input).await?;
     Ok(())
 }

@@ -1,3 +1,4 @@
+use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{Owner, StorageError};
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -12,9 +13,10 @@ type Tx<'a> = Transaction<'a, Postgres>;
 /// Returns `StorageError::Internal` or `ConstraintViolation` for SQL failures.
 pub async fn upsert_fact_retention(
     pool: &PgPool,
-    owner: &Owner,
+    permit: &OwnerWritePermit,
     seconds: i64,
 ) -> Result<(), StorageError> {
+    let owner = permit.owner();
     let (owner_kind, owner_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.owner_fact_retention
@@ -59,7 +61,11 @@ pub async fn get_fact_retention(pool: &PgPool, owner: &Owner) -> Result<Option<i
 /// # Errors
 ///
 /// Returns `StorageError::Internal` for SQL failures.
-pub async fn clear_fact_retention(pool: &PgPool, owner: &Owner) -> Result<bool, StorageError> {
+pub async fn clear_fact_retention(
+    pool: &PgPool,
+    permit: &OwnerWritePermit,
+) -> Result<bool, StorageError> {
+    let owner = permit.owner();
     let (owner_kind, owner_id) = owner.columns();
     let result = sqlx::query(
         "DELETE FROM proxima_core.owner_fact_retention
@@ -118,7 +124,11 @@ pub(crate) async fn legal_hold_active_tx(
 /// # Errors
 ///
 /// Returns `StorageError::Internal` or `ConstraintViolation` for SQL failures.
-pub(crate) async fn set_legal_hold(pool: &PgPool, owner: &Owner) -> Result<(), StorageError> {
+pub(crate) async fn set_legal_hold(
+    pool: &PgPool,
+    permit: &OwnerWritePermit,
+) -> Result<(), StorageError> {
+    let owner = permit.owner();
     let mut tx = pool.begin().await.map_err(map_err)?;
     lock_legal_hold_tx(&mut tx, owner).await?;
     let (owner_kind, owner_id) = owner.columns();
@@ -167,7 +177,11 @@ pub(crate) async fn get_legal_hold(pool: &PgPool, owner: &Owner) -> Result<bool,
 /// # Errors
 ///
 /// Returns `StorageError::Internal` for SQL failures.
-pub(crate) async fn clear_legal_hold(pool: &PgPool, owner: &Owner) -> Result<bool, StorageError> {
+pub(crate) async fn clear_legal_hold(
+    pool: &PgPool,
+    permit: &OwnerWritePermit,
+) -> Result<bool, StorageError> {
+    let owner = permit.owner();
     let mut tx = pool.begin().await.map_err(map_err)?;
     lock_legal_hold_tx(&mut tx, owner).await?;
     let (owner_kind, owner_id) = owner.columns();

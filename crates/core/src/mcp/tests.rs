@@ -284,7 +284,7 @@ mod manifest_tests {
         let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         McpToolCtx {
             owner,
-            authz: AuthzContext::single_owner(&owner, AuthPath::System),
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
             handles: None,
             mode: OutputMode::PrefixedIds,
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
@@ -320,7 +320,7 @@ mod ctx_engine_tests {
         let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let ctx = McpToolCtx {
             owner,
-            authz: AuthzContext::single_owner(&owner, AuthPath::System),
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
             handles: Some(Arc::new(HandleTable::new())),
             mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
@@ -346,7 +346,7 @@ mod ctx_engine_tests {
         ));
         let ctx = McpToolCtx {
             owner,
-            authz: AuthzContext::single_owner(&owner, AuthPath::System),
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
             handles: Some(Arc::new(HandleTable::new())),
             mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),

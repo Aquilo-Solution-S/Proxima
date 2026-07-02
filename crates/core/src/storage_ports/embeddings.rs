@@ -1,6 +1,7 @@
 pub use super::proof::EmbeddingWriteProof;
 
 use crate::storage::{EmbeddingJobClaim, StorageError};
+use crate::storage_ports::OwnerWritePermit;
 use crate::{EmbeddableEntityRef, EntityKind, Owner};
 
 #[async_trait::async_trait]
@@ -137,7 +138,7 @@ pub trait EmbeddingJobPort: Send + Sync {
 
     async fn enqueue_missing_embedding_jobs(
         &self,
-        owner: &Owner,
+        permit: &OwnerWritePermit,
         model_id: &str,
         limit: i64,
     ) -> Result<u64, StorageError>;

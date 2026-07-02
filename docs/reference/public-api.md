@@ -21,8 +21,20 @@ Unsupported:
 |---|---|
 | raw `sqlx::PgPool` | not stable Host API or Flavor SDK |
 | aggregate `Storage` / `StorageHandle` | removed; Engine owns storage ports |
+| `proxima-storage-pg` raw write verbs | backend API only; every owner write requires `OwnerWritePermit` minted by `Engine::authorize_owner_write` |
 | flavor raw SQL against `proxima_core.*` | denied for every site. The [authorized flavor-read facade](#authorized-flavor-read-facade) replaced the last raw `flavors/code` reads against `proxima_core.*`; `scripts/check-architecture-guardrails.py`'s dated-exemption allowlist is empty, and any new raw `proxima_core.*` site in flavor code fails the guardrail (no temporary exemption path is open) |
 | runtime plugin/tool/schema registration | denied; flavor composition is build-time |
+
+## Owner Write Permit Boundary
+
+| Item | Contract |
+|---|---|
+| `OwnerWritePermit` | sealed storage-tier proof: `(OwnerRef, AccessKind)`; constructor is not public |
+| minting path | `Engine::authorize_owner_write(authz, owner, kind)` after server-resolved owner access |
+| `AuthPath::System` | cannot mint by public `AuthzContext` shape alone; requires host-held `SystemAuthority` via `Engine::authorize_owner_write_with_system_authority` |
+| host witness | `BuiltProxima::system_authority()` / `RunningProxima::system_authority()` expose a borrowed witness to embedding hosts |
+| wire/flavor boundary | MCP tools and flavor `ToolCtx` do not receive `SystemAuthority`; normal membership/HostBearer paths need no witness |
+| guardrail | `scripts/check-architecture-guardrails.py` fails if listed storage write traits or `storage-pg` write verbs lose `OwnerWritePermit` |
 
 Machine checks:
 
@@ -76,9 +88,13 @@ Legal/security holds are host-side owner config:
 
 | Engine verb | Effect |
 |---|---|
-| `set_legal_hold(authz, owner)` | idempotently activates a per-owner hold; requires compliance-erase operator authority (`ComplianceAdminPort` approval or `AuthPath::System`) |
+| `set_legal_hold(authz, owner)` | idempotently activates a per-owner hold; requires compliance-erase operator approval plus owner `Admin` write authority |
 | `get_legal_hold(authz, owner)` | returns the active hold flag; requires owner `Admin` |
-| `clear_legal_hold(authz, owner)` | clears the hold and returns whether a row existed; requires compliance-erase operator authority |
+| `clear_legal_hold(authz, owner)` | clears the hold and returns whether a row existed; requires compliance-erase operator approval plus owner `Admin` write authority |
+
+`set_legal_hold` / `clear_legal_hold` also require an owner `Admin` write
+permit for the target owner; compliance authority alone is not an owner write
+grant.
 
 While active, the hold suspends substantive owner-memory physical destruction
 for exactly the current compliance `erase_*` family. The four destructive
