@@ -191,6 +191,8 @@ async fn fresh_v004_baseline_enforces_owner_ref_shape_constraints() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
 
+        // Owner-shadow tables: rows attribute a write/author action, so World
+        // must never appear — both checks required.
         for table in [
             "change_event",
             "citation_mappings",
@@ -201,8 +203,6 @@ async fn fresh_v004_baseline_enforces_owner_ref_shape_constraints() {
             "embedding_jobs",
             "fact_entities",
             "fact_receipts",
-            "goals",
-            "memories",
             "owner_fact_retention",
             "source_batches",
         ] {
@@ -214,6 +214,23 @@ async fn fresh_v004_baseline_enforces_owner_ref_shape_constraints() {
                 check_constraint_exists(&pg, table, &format!("{table}_world_not_write_owner_chk"))
                     .await,
                 "proxima_core.{table} must reject world as a write owner",
+            );
+        }
+
+        // Entity home-row tables: since v0.0.5 (0008_v005.sql), World OWNERSHIP
+        // is representable — it is the persisted result of the publish-to-World
+        // owner transfer. The shape check stays; the blanket world check must
+        // stay GONE (reintroducing it would break Engine::publish_to_world).
+        for table in ["goals", "memories"] {
+            assert!(
+                check_constraint_exists(&pg, table, &format!("{table}_owner_ref_shape_chk")).await,
+                "proxima_core.{table} must enforce nullable OwnerRef shape",
+            );
+            assert!(
+                !check_constraint_exists(&pg, table, &format!("{table}_world_not_write_owner_chk"))
+                    .await,
+                "proxima_core.{table} must permit World-owned rows (publish-to-World transfer); \
+                 world_not_write_owner_chk must not be reintroduced",
             );
         }
 
@@ -233,19 +250,37 @@ async fn fresh_v004_baseline_enforces_owner_ref_shape_constraints() {
         .expect_err("personal owner with NULL owner_id must be rejected");
         assert!(err.to_string().contains("owner_ref_shape"));
 
+        // World owner shape is still constrained on the home-row tables:
+        // world with a non-NULL owner_id violates the shape check.
         let err = sqlx::query(
             "INSERT INTO proxima_core.goals
                 (goal_id, owner_kind, owner_id, request_id, idempotency_key, state, supersedes,
                  authorship_kind, schema_id, schema_version, payload, title, text)
-             VALUES ($1, 'world', NULL, $2, $2, 'Active', NULL,
-                     'User', 'core/simple-text-v1', 1, $3, 'bad', 'bad')",
+             VALUES ($1, 'world', $2, $3, $3, 'Active', NULL,
+                     'User', 'core/simple-text-v1', 1, $4, 'bad', 'bad')",
         )
         .bind(Uuid::now_v7())
-        .bind(format!("bad-world:{}", Uuid::now_v7()))
+        .bind(Uuid::now_v7())
+        .bind(format!("bad-world-shape:{}", Uuid::now_v7()))
         .bind(b"{}".as_slice())
         .execute(pg.pool_for_tests())
         .await
-        .expect_err("world write owner must be rejected");
+        .expect_err("world owner with non-NULL owner_id must be rejected");
+        assert!(err.to_string().contains("owner_ref_shape"));
+
+        // World write ATTRIBUTION stays impossible where it always was: the
+        // owner-shadow tables. change_event is the canonical write record.
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.change_event
+                (seq, owner_kind, owner_id, kind, entity_kind, entity_memory_id,
+                 entity_schema_id, entity_schema_version)
+             VALUES ($1, 'world', NULL, 'EntityAppend', 'Fact', $2, 'test/owner-shape', 1)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(Uuid::now_v7())
+        .execute(pg.pool_for_tests())
+        .await
+        .expect_err("world write attribution must be rejected on owner-shadow tables");
         let msg = err.to_string();
         assert!(
             msg.contains("world_not_write_owner"),
