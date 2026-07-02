@@ -3,6 +3,7 @@ use super::change::ChangeEventPort;
 use super::compliance::{
     ComplianceAdminPort, ComplianceErasePort, FactRetentionPort, OwnerDropProofPort,
 };
+use super::cursors::SourceCursorPort;
 use super::embeddings::{
     EmbeddingJobPort, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort,
     EmbeddingWriteProof,
@@ -496,6 +497,30 @@ impl SourceBatchPort for RejectingStorage {
         _principal: &OwnerRef,
         _source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl SourceCursorPort for RejectingStorage {
+    async fn load_source_cursor(
+        &self,
+        _owner: &Owner,
+        _source: &str,
+    ) -> Result<Option<crate::Cursor>, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects source cursor reads".into(),
+        ))
+    }
+
+    async fn store_source_cursor(
+        &self,
+        _owner: &Owner,
+        _source: &str,
+        _cursor: &crate::Cursor,
+    ) -> Result<(), StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
         ))
