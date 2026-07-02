@@ -20,7 +20,7 @@ Unsupported:
 |---|---|
 | raw `sqlx::PgPool` | not stable Host API or Flavor SDK |
 | aggregate `Storage` / `StorageHandle` | removed; Engine owns storage ports |
-| flavor raw SQL against `proxima_core.*` | denied by `scripts/check-architecture-guardrails.py` |
+| flavor raw SQL against `proxima_core.*` | ratcheted and denied for new sites; current dated Code flavor exemptions are temporary until the authorized flavor-read surface lands (`scripts/check-architecture-guardrails.py`) |
 | runtime plugin/tool/schema registration | denied; flavor composition is build-time |
 
 Machine checks:
