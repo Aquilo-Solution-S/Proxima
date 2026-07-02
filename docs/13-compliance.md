@@ -43,6 +43,24 @@ bounded primitives and metadata vocabulary.
 
 Refusal is a valid compliance result, not a substrate failure.
 
+## Legal/security hold
+
+| Field | Contract |
+|---|---|
+| scope | one `OwnerRef` |
+| active state | present owner hold row; admin-only set/clear/get |
+| gated paths | physical destruction only: current `erase_*` compliance family (`delete_owner`, `delete_source_scope`) |
+| refusal | typed `ComplianceEraseRefusal::LegalHoldActive`; no destructive statement runs |
+| non-effects | no change to abandonment law, drop proof, reads, ordinary writes, suppression checks, export, or audit retention |
+| race boundary | checked inside the storage compliance-erase transaction under the owner legal-hold lock before deletion |
+
+Forward rule: any future physical-destruction path must inherit the
+same in-transaction owner hold gate before it can exist.
+
+Operator rule: the controller/operator owns the legal judgment
+(litigation hold, GDPR erasure duty, regulator instruction). Proxima
+guarantees only the mechanical suspension of physical destruction.
+
 ## Suppression list — re-ingest rejection
 
 Hard deletion must not reopen ingest.
@@ -123,6 +141,7 @@ code path explicitly implements it.
 | pause flag | `false` | paused owners skip future operator dispatch and wake execution |
 | residency allowlist | empty | empty means unrestricted; non-empty constrains future residency checks |
 | retention override | absent | absent inherits source retention policy |
+| legal/security hold | absent | active row suspends physical destruction for the owner-scoped `erase_*` family only |
 | consent state | empty opaque value | controller-managed; substrate stores, controller interprets |
 | legal-consequence override | `false` | future override for automated legal-consequence blocking |
 

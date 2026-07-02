@@ -10,6 +10,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use crate::access::owner_columns::{lock_group_membership_tx, owner_binds};
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
+use crate::verbs::fact_retention::{legal_hold_active_tx, lock_legal_hold_tx};
 
 type Tx<'a> = Transaction<'a, Postgres>;
 
@@ -45,6 +46,10 @@ pub async fn erase_group_owner_if_abandoned(
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
+    if let Some(outcome) = refuse_if_legal_hold_active(&mut tx, auth, owner).await? {
+        tx.commit().await.map_err(map_err)?;
+        return Ok(outcome);
+    }
     lock_group_membership_tx(&mut tx, group_id).await?;
     if group_member_count(&mut tx, group_id).await? > 0 {
         let outcome = refused(auth, ComplianceEraseRefusal::OwnerNotAbandoned);
@@ -96,6 +101,10 @@ pub async fn erase_personal_owner_if_drop_verified(
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
+    if let Some(outcome) = refuse_if_legal_hold_active(&mut tx, auth, owner).await? {
+        tx.commit().await.map_err(map_err)?;
+        return Ok(outcome);
+    }
     erase_selected(
         &mut tx,
         auth,
@@ -135,6 +144,10 @@ pub async fn erase_group_source_scope_if_owner_abandoned(
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
+    if let Some(outcome) = refuse_if_legal_hold_active(&mut tx, auth, owner).await? {
+        tx.commit().await.map_err(map_err)?;
+        return Ok(outcome);
+    }
     lock_group_membership_tx(&mut tx, group_id).await?;
     if group_member_count(&mut tx, group_id).await? > 0 {
         let outcome = refused(auth, ComplianceEraseRefusal::SourceScopeOwnerStillLive);
@@ -187,6 +200,10 @@ pub async fn erase_personal_source_scope_if_drop_verified(
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
+    if let Some(outcome) = refuse_if_legal_hold_active(&mut tx, auth, owner).await? {
+        tx.commit().await.map_err(map_err)?;
+        return Ok(outcome);
+    }
     erase_selected(
         &mut tx,
         auth,
@@ -217,6 +234,20 @@ async fn group_member_count(tx: &mut Tx<'_>, group_id: GroupId) -> Result<i64, S
     .fetch_one(&mut **tx)
     .await
     .map_err(map_err)
+}
+
+async fn refuse_if_legal_hold_active(
+    tx: &mut Tx<'_>,
+    auth: &EraseAuthorization,
+    owner: OwnerRef,
+) -> Result<Option<ComplianceEraseOutcome>, StorageError> {
+    lock_legal_hold_tx(tx, &owner).await?;
+    if !legal_hold_active_tx(tx, &owner).await? {
+        return Ok(None);
+    }
+    let outcome = refused(auth, ComplianceEraseRefusal::LegalHoldActive);
+    upsert_audit_outcome(tx, auth.audit(), &outcome, ComplianceEraseCounts::default()).await?;
+    Ok(Some(outcome))
 }
 
 async fn erase_selected(
@@ -994,6 +1025,7 @@ fn refusal_label(reason: &ComplianceEraseRefusal) -> &'static str {
         ComplianceEraseRefusal::SourceScopeOwnerStillLive => "SourceScopeOwnerStillLive",
         ComplianceEraseRefusal::PersonalDropNotVerified => "PersonalDropNotVerified",
         ComplianceEraseRefusal::DropProofPortUnavailable => "DropProofPortUnavailable",
+        ComplianceEraseRefusal::LegalHoldActive => "LegalHoldActive",
     }
 }
 
