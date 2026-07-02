@@ -377,6 +377,54 @@ async fn ftoa_requires_closed_matching_batch_and_conflicts_on_distinct_output()
     result
 }
 
+#[tokio::test]
+async fn author_derived_rejects_operator_input_created_at_not_strictly_before_output()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = owner_fixture();
+        // The DB default is `created_at DEFAULT now()`; `append_derived_in_tx`
+        // never overrides it, so the derived output's `created_at` will be the
+        // transaction's `now()`. Pin the input's `created_at` an hour into the
+        // future of that same `now()` so it is provably not-strictly-before —
+        // this is the case the pre-Task-8 write path did not check at all.
+        let future_created_at = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+        let future_input = insert_source_abstraction_with_created_at(
+            &pg,
+            &owner,
+            "future-operator-input",
+            future_created_at,
+        )
+        .await?;
+        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            .with_storage_ports(Arc::new(pg.clone()).storage_ports());
+        let operator_id = OperatorId::new(Uuid::now_v7());
+        let input_contract_id = InputContractId::new(Uuid::now_v7());
+
+        let err = author_test_abstraction(
+            &pg,
+            &engine,
+            owner,
+            MemoryId::new(Uuid::now_v7()),
+            future_input,
+            MemoryOperatorKind::AtoA,
+            operator_id,
+            input_contract_id,
+            None,
+        )
+        .await
+        .expect_err("input created after the derived output violates strict derivation time");
+        assert!(
+            matches!(&err, StorageError::ConstraintViolation(msg) if msg.contains("must be created strictly before")),
+            "unexpected {err:?}"
+        );
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+}
+
 #[cfg(feature = "test-fixtures")]
 #[tokio::test]
 async fn graph_fixture_flags_invalid_atogoal_fact_target() -> Result<(), Box<dyn std::error::Error>>
@@ -569,6 +617,38 @@ async fn insert_source_abstraction(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(label)
+    .execute(pg.pool_for_tests())
+    .await?;
+    Ok(MemoryId::new(memory_id))
+}
+
+/// Like `insert_source_abstraction`, but lets the caller pin `created_at`
+/// directly instead of taking the table's `DEFAULT now()`. Used to construct
+/// a Lean N1 (`derivationTimeStrict`, `docs/lean/Causa/Provenance.lean`)
+/// violation: an operator input whose `created_at` is not strictly earlier
+/// than the derived output it would provenance.
+async fn insert_source_abstraction_with_created_at(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    label: &str,
+    created_at: time::OffsetDateTime,
+) -> Result<MemoryId, sqlx::Error> {
+    let memory_id = Uuid::new_v5(&Uuid::NAMESPACE_OID, label.as_bytes());
+    let (owner_kind, owner_id) = owner.columns();
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, operator_id, input_contract_id, source_batch_id, model_id,
+             prompt_version, created_at)
+         VALUES ($1, $2, $3, 'test/source-abstraction', 1, 'Abstraction', $4,
+                 'AtoA', '00000000-0000-0000-0000-000000000581'::uuid,
+                 '00000000-0000-0000-0000-000000000582'::uuid, NULL, 'test', 'test', $5)",
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(label)
+    .bind(created_at)
     .execute(pg.pool_for_tests())
     .await?;
     Ok(MemoryId::new(memory_id))

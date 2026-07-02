@@ -22,7 +22,13 @@ type StoredEdgeProofRow = (
     EdgeAuthorshipKind,
     Option<uuid::Uuid>,
 );
-type InputProofRow = (uuid::Uuid, Option<EntityKind>, Option<uuid::Uuid>, bool);
+type InputProofRow = (
+    uuid::Uuid,
+    Option<EntityKind>,
+    Option<uuid::Uuid>,
+    bool,
+    bool,
+);
 
 #[derive(Debug, Clone)]
 pub struct DerivedDraft<'a> {
@@ -271,8 +277,16 @@ async fn load_live_input_proof_rows_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     input_ids: &[uuid::Uuid],
 ) -> Result<Vec<InputProofRow>, StorageError> {
+    // `now()` is stable for the lifetime of this transaction (Postgres
+    // resolves it once, at transaction start) — the same value this SELECT
+    // compares against is the value the derived output row's own
+    // `created_at DEFAULT now()` will take when `append_derived_in_tx`
+    // inserts it later in this same transaction. Comparing here therefore
+    // proves Lean N1's `derivationTimeStrict` (Causa/Provenance.lean):
+    // every input must be strictly older than the output it grounds.
     sqlx::query_as(
-        "SELECT m.memory_id, m.kind, fr.source_batch_id, sb.closed_at IS NOT NULL
+        "SELECT m.memory_id, m.kind, fr.source_batch_id, sb.closed_at IS NOT NULL,
+                m.created_at < now()
            FROM proxima_core.memories m
            LEFT JOIN proxima_core.fact_receipts fr ON fr.receipt_id = m.receipt_id
            LEFT JOIN proxima_core.source_batches sb ON sb.id = fr.source_batch_id
@@ -297,11 +311,17 @@ fn validate_input_proof_rows(
         ));
     }
     let mut ftoa_batch = None;
-    for (memory_id, actual_kind, source_batch_id, closed) in rows {
+    for (memory_id, actual_kind, source_batch_id, closed, derivation_time_strict) in rows {
         let actual = actual_kind.unwrap_or(EntityKind::Fact);
         if actual != expected_input_kind {
             return Err(StorageError::ConstraintViolation(format!(
                 "invalid input kind for {:?}: expected {expected_input_kind:?}, got {actual:?}",
+                MemoryId::new(memory_id)
+            )));
+        }
+        if !derivation_time_strict {
+            return Err(StorageError::ConstraintViolation(format!(
+                "operator invocation input {:?} must be created strictly before the derived output",
                 MemoryId::new(memory_id)
             )));
         }
