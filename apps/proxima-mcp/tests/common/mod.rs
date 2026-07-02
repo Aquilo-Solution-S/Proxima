@@ -1,0 +1,76 @@
+#![allow(dead_code)]
+
+// Each integration-test binary independently includes this module via
+// `mod common;`. Items unused by a particular binary would otherwise trip
+// `dead_code` even though another binary uses them.
+
+/// Read an env var gating a local-only or PG-backed e2e test.
+///
+/// Locally (or on any runner without `CI=true`), a missing/empty value
+/// skips the test cleanly, mirroring the pre-existing
+/// `let Ok(..) = std::env::var(..) else { return Ok(()) }` idiom. Under
+/// `CI=true`, a missing value is a hard test failure instead of a silent
+/// skip.
+///
+/// GitHub Actions already exports `DATABASE_URL` / `PROXIMA_TEST_DATABASE_URL`
+/// and runs the PG/OIDC e2e lane against live pgvector/pg18
+/// (`.github/workflows/ci.yml`), so this hardens non-GHA CI runners and
+/// local `CI=true` runs against that lane silently going dark — it does not
+/// close a currently-open GHA hole.
+pub fn require_env_or_skip(name: &str) -> Option<String> {
+    require_env_or_skip_with(name, |key| std::env::var(key).ok())
+}
+
+/// Env-lookup-parameterized core (mirrors the `impl Fn(&str) -> Option<String>`
+/// lookup pattern already used throughout `apps/proxima-mcp/src/lib.rs`) so
+/// unit tests can exercise every branch without mutating real process env —
+/// other `#[tokio::test]` functions in this same binary read `DATABASE_URL`
+/// / `CI` concurrently, and cargo's default parallel test threads would
+/// otherwise race a mutation against them.
+fn require_env_or_skip_with(name: &str, lookup: impl Fn(&str) -> Option<String>) -> Option<String> {
+    match lookup(name) {
+        Some(value) if !value.is_empty() => Some(value),
+        _ if lookup("CI").as_deref() == Some("true") => {
+            panic!("{name} required under CI=true")
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn returns_value_when_present_and_non_empty() {
+        let lookup = |key: &str| (key == "DATABASE_URL").then(|| "postgres://x/y".to_string());
+        assert_eq!(
+            require_env_or_skip_with("DATABASE_URL", lookup),
+            Some("postgres://x/y".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_when_absent_and_ci_unset() {
+        assert_eq!(require_env_or_skip_with("DATABASE_URL", |_| None), None);
+    }
+
+    #[test]
+    fn returns_none_when_empty_and_ci_unset() {
+        let lookup = |key: &str| (key == "DATABASE_URL").then(String::new);
+        assert_eq!(require_env_or_skip_with("DATABASE_URL", lookup), None);
+    }
+
+    #[test]
+    fn returns_none_when_absent_and_ci_false() {
+        let lookup = |key: &str| (key == "CI").then(|| "false".to_string());
+        assert_eq!(require_env_or_skip_with("DATABASE_URL", lookup), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "DATABASE_URL required under CI=true")]
+    fn panics_when_absent_and_ci_true() {
+        let lookup = |key: &str| (key == "CI").then(|| "true".to_string());
+        require_env_or_skip_with("DATABASE_URL", lookup);
+    }
+}

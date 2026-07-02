@@ -7,6 +7,8 @@
 //! with `--features code` (asserts the Code flavor's tools are present).
 #![cfg(feature = "code")]
 
+mod common;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,6 +26,8 @@ use proxima_mcp::ProximaMcpApp;
 use proxima_storage_pg::{PgOwnerAccessResolver, PgStorage};
 use serde_json::json;
 use uuid::Uuid;
+
+use common::require_env_or_skip;
 
 const KID: &str = "e2e-key";
 const ISSUER: &str = "https://idp.e2e.test";
@@ -66,7 +70,7 @@ fn mint(signing: &RsaKeyPair, sub: &str) -> String {
 #[allow(clippy::too_many_lines)] // linear e2e: boot + 4 assertion phases read best in one flow
 async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Ok(database_url) = std::env::var("PROXIMA_TEST_DATABASE_URL") else {
+    let Some(database_url) = require_env_or_skip("PROXIMA_TEST_DATABASE_URL") else {
         eprintln!("skipping oidc_e2e: PROXIMA_TEST_DATABASE_URL not set");
         return Ok(());
     };
@@ -195,7 +199,7 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
 #[tokio::test]
 async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Ok(database_url) = std::env::var("PROXIMA_TEST_DATABASE_URL") else {
+    let Some(database_url) = require_env_or_skip("PROXIMA_TEST_DATABASE_URL") else {
         eprintln!("skipping oidc_e2e_group_auth: PROXIMA_TEST_DATABASE_URL not set");
         return Ok(());
     };
