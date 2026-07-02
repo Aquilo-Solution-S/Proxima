@@ -206,7 +206,12 @@ impl<'a> CodeIngestContext<'a> {
         // by a later row at the same (repo_id, file_path, chunk_index) —
         // including a later *Tombstone* row, so a removed-then-untouched
         // index correctly disappears even though this candidate scan only
-        // looked at `Present` rows.
+        // looked at `Present` rows. The facade evaluates EVERY candidate
+        // (deduped, batched round-trips — never truncated), so a heavily
+        // churned file whose Present-row history exceeds any batch size
+        // still gets exact head bookkeeping; ordering this scan could not
+        // substitute for that, because chunk memory ids are deterministic
+        // UUIDv5 content hashes, not time-ordered.
         let candidates: Vec<ChunkIndexCandidateRow> = sqlx::query_as(
             "SELECT s.memory_id, s.chunk_index
                FROM proxima_code.code_chunk_v1 s

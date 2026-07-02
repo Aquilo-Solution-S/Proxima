@@ -506,6 +506,118 @@ async fn head_snapshot_repeated_after_change_and_delete_is_idempotent() {
     result.expect("head_snapshot_repeated_after_change_and_delete_is_idempotent failed");
 }
 
+/// I2 regression (v0.0.5 Task 5 fix round): a heavily-churned file can hold
+/// more historical `Present`-state chunk rows than one authorized-read batch
+/// (`MAX_AUTHZ_CANDIDATES` = 2,000). `present_chunk_indexes` must evaluate
+/// EVERY candidate — the pre-fix facade silently truncated the candidate
+/// list at 2,000 in arbitrary scan order, so `derive_deleted_path` skipped
+/// tombstoning any index whose row fell outside the window, leaving stale
+/// Present heads behind after the file was deleted. Chunk memory ids are
+/// deterministic UUIDv5 content hashes (not time-ordered), so no ORDER BY
+/// on the candidate scan could have guaranteed head survival; exhaustive
+/// batched evaluation is the behavior under test.
+#[tokio::test]
+async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
+    const EXTRA_PRESENT_ROWS: i32 = 2_050; // > MAX_AUTHZ_CANDIDATES = 2_000
+    const SEED_INDEX_BASE: i32 = 10_000; // clear of any real chunk index
+
+    let (db_name, pg) = migrated_db().await;
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = test_owner();
+        let engine = build_engine(pg.clone());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+        let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
+
+        let dir = TempDir::new()?;
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+        git(dir.path(), &["config", "user.email", "t@t"]);
+        git(dir.path(), &["config", "user.name", "T"]);
+        git(dir.path(), &["config", "commit.gpgsign", "false"]);
+        write_file(dir.path(), "hot.rs", "pub fn hot_v1() {}\n");
+        git(dir.path(), &["add", "."]);
+        git(dir.path(), &["commit", "-q", "-m", "init"]);
+
+        let repo_id = Uuid::now_v7();
+        let source = LocalGitSource::new(repo_id, dir.path().to_path_buf(), owner);
+        let initial = source.run_head_snapshot(&ingest_ctx).await?;
+        assert_eq!(initial.report.files_present_emitted, 1);
+        let real_chunks = initial.report.chunks_emitted;
+        assert!(real_chunks >= 1, "fixture file must produce chunks");
+
+        // Simulate a long churn history: seed Present-state chunk rows at
+        // distinct indexes (distinct natural keys, so every one is a live
+        // head the deletion pass must tombstone). Deterministic memory ids
+        // let the three FK-ordered inserts (source_batches -> memories ->
+        // code_chunk_v1) share the same id set without a temp table.
+        let (owner_kind, owner_id) = owner.columns();
+        let seed_batch = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.source_batches
+                (id, source_id, owner_kind, owner_id, closed_at)
+             VALUES ($1, 'test/churn-seed', $2, $3, now())",
+        )
+        .bind(seed_batch)
+        .bind(owner_kind)
+        .bind(owner_id)
+        .execute(pg.pool_for_tests())
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memories
+                (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+                 operator_kind, operator_id, input_contract_id, source_batch_id, model_id,
+                 prompt_version)
+             SELECT ('7a5b0000-0000-4000-8000-' || lpad(to_hex(g.i), 12, '0'))::uuid,
+                    $1, $2, $3, 1, 'Abstraction', 'churn seed ' || g.i,
+                    'FtoA', '00000000-0000-0000-0000-000000000601'::uuid,
+                    ('7a5b0000-0000-4000-8000-' || lpad(to_hex(g.i), 12, '0'))::uuid,
+                    $4, 'test/churn-seed', 'v1'
+               FROM generate_series($5::int, $6::int) AS g(i)",
+        )
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(<CodeChunkV1 as AbstractionPayload>::SCHEMA_ID)
+        .bind(seed_batch)
+        .bind(SEED_INDEX_BASE)
+        .bind(SEED_INDEX_BASE + EXTRA_PRESENT_ROWS - 1)
+        .execute(pg.pool_for_tests())
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_code.code_chunk_v1
+                (memory_id, repo_id, file_path, chunk_index, text, language, chunk_type,
+                 byte_range_start, byte_range_end, line_range_start, line_range_end, state)
+             SELECT ('7a5b0000-0000-4000-8000-' || lpad(to_hex(g.i), 12, '0'))::uuid,
+                    $1, 'hot.rs', g.i, 'churn seed', 'rust', 'block', 0, 4, 1, 1, 'Present'
+               FROM generate_series($2::int, $3::int) AS g(i)",
+        )
+        .bind(repo_id)
+        .bind(SEED_INDEX_BASE)
+        .bind(SEED_INDEX_BASE + EXTRA_PRESENT_ROWS - 1)
+        .execute(pg.pool_for_tests())
+        .await?;
+
+        std::fs::remove_file(dir.path().join("hot.rs"))?;
+        git(dir.path(), &["add", "-A"]);
+        git(dir.path(), &["commit", "-q", "-m", "delete hot.rs"]);
+
+        let deleted = source.run_head_snapshot(&ingest_ctx).await?;
+        assert_eq!(deleted.report.files_tombstoned, 1);
+        assert_eq!(
+            deleted.report.chunks_tombstoned,
+            real_chunks + usize::try_from(EXTRA_PRESENT_ROWS)?,
+            "every live chunk index must be tombstoned, including those beyond \
+             one 2,000-candidate authorized-read batch"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch failed");
+}
+
 #[tokio::test]
 async fn polyglot_markdown_emits_file_revision_and_fallback_chunks() {
     // Subset of the above: tighter assertion on FileState::Present

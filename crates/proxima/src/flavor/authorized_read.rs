@@ -260,11 +260,21 @@ fn bounded_candidates(candidates: &[uuid::Uuid], _limit: usize) -> Vec<uuid::Uui
         .collect()
 }
 
-/// Narrow a bounded sidecar-only candidate id list (already known to be
+/// Narrow a sidecar-only candidate id list (already known to be
 /// `proxima-code/code-chunk-v1` rows via a flavor's own
 /// `proxima_code.*`-only query) to the subset not superseded, by
 /// `(repo_id, file_path, chunk_index)`, within the same schema/owner-or-World
 /// scope.
+///
+/// Every candidate is evaluated: the input is deduplicated and processed in
+/// `MAX_AUTHZ_CANDIDATES`-sized batches (bounding each SQL round-trip), NOT
+/// truncated. Batching is exact because the underlying verb's head dedup is
+/// a `NOT EXISTS` against the full table — each candidate's head status is
+/// globally correct regardless of which batch it lands in. Silent truncation
+/// here would be a correctness bug, not a cap: `code-chunk-v1` memory ids
+/// are deterministic UUIDv5 content hashes (see
+/// `flavors/code/src/ingest/blobs.rs::code_slice_memory_id`), so no ordering
+/// of a truncated candidate window could guarantee the true head survives.
 ///
 /// This is a thin, PG-backend wrapper: see
 /// [`proxima_storage_pg::verbs::query::authorized_code_chunk_head_candidates`]
@@ -283,16 +293,25 @@ pub async fn authorized_code_chunk_head_candidates(
     schema_id: &SchemaId,
     candidates: &[uuid::Uuid],
 ) -> Result<Vec<uuid::Uuid>, ToolError> {
-    let candidates = bounded_candidates(candidates, MAX_AUTHZ_CANDIDATES);
-    if candidates.is_empty() {
-        return Ok(Vec::new());
+    let candidates = deduped_candidates(candidates);
+    let mut heads = Vec::new();
+    for batch in candidates.chunks(MAX_AUTHZ_CANDIDATES) {
+        heads.extend(
+            proxima_storage_pg::query::authorized_code_chunk_head_candidates(
+                pool, owner, schema_id, batch,
+            )
+            .await
+            .map_err(ToolError::Storage)?,
+        );
     }
-    proxima_storage_pg::query::authorized_code_chunk_head_candidates(
-        pool,
-        owner,
-        schema_id,
-        &candidates,
-    )
-    .await
-    .map_err(ToolError::Storage)
+    Ok(heads)
+}
+
+fn deduped_candidates(candidates: &[uuid::Uuid]) -> Vec<uuid::Uuid> {
+    let mut seen = HashSet::with_capacity(candidates.len());
+    candidates
+        .iter()
+        .copied()
+        .filter(|id| seen.insert(*id))
+        .collect()
 }
