@@ -121,6 +121,36 @@ pub(crate) async fn remove_group_member(
     Ok(())
 }
 
+/// True iff `member_user_id` currently holds exactly `relation` on `group_id`.
+/// A point-in-time single-role probe, distinct from
+/// [`resolve_membership`]'s full row enumeration.
+///
+/// # Errors
+///
+/// Returns `Internal` on sqlx failure.
+pub(crate) async fn has_group_relation(
+    pool: &PgPool,
+    group_id: GroupId,
+    member_user_id: UserId,
+    relation: Relation,
+) -> Result<bool, StorageError> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM proxima_core.group_memberships
+              WHERE group_id = $1
+                AND member_user_id = $2
+                AND relation = $3
+         )",
+    )
+    .bind(group_id.into_inner())
+    .bind(member_user_id.into_inner())
+    .bind(relation)
+    .fetch_one(pool)
+    .await
+    .map_err(map_err)
+}
+
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
