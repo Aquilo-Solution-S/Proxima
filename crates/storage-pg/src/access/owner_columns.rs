@@ -104,6 +104,47 @@ pub(crate) async fn lock_group_membership_tx(
 
 /// # Errors
 ///
+/// Returns `Conflict` when any Admin row already exists for the group, and
+/// `Internal` on sqlx failure.
+pub(crate) async fn bootstrap_group_admin(
+    pool: &PgPool,
+    group_id: GroupId,
+    first_admin_user_id: UserId,
+    _granted_by: uuid::Uuid,
+) -> Result<(), StorageError> {
+    let mut tx = pool.begin().await.map_err(map_err)?;
+    lock_group_membership_tx(&mut tx, group_id).await?;
+    let inserted = sqlx::query(
+        "INSERT INTO proxima_core.group_memberships
+            (group_id, member_user_id, relation)
+         SELECT $1, $2, $3
+          WHERE NOT EXISTS (
+              SELECT 1
+                FROM proxima_core.group_memberships
+               WHERE group_id = $1
+                 AND relation = $3
+          )",
+    )
+    .bind(group_id.into_inner())
+    .bind(first_admin_user_id.into_inner())
+    .bind(Relation::Admin)
+    .execute(&mut *tx)
+    .await
+    .map_err(map_err)?;
+
+    if inserted.rows_affected() == 0 {
+        tx.rollback().await.map_err(map_err)?;
+        return Err(StorageError::Conflict(
+            "group already has an Admin membership".into(),
+        ));
+    }
+
+    tx.commit().await.map_err(map_err)?;
+    Ok(())
+}
+
+/// # Errors
+///
 /// Returns `Internal` on sqlx failure.
 pub(crate) async fn add_group_member(
     pool: &PgPool,

@@ -35,6 +35,13 @@ pub trait OwnerTransferPort: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait OwnerMembershipAdminPort: Send + Sync {
+    async fn bootstrap_group_admin(
+        &self,
+        group_id: GroupId,
+        first_admin_user_id: UserId,
+        granted_by: uuid::Uuid,
+    ) -> Result<(), StorageError>;
+
     async fn add_group_member(
         &self,
         group_id: GroupId,
