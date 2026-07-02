@@ -422,20 +422,73 @@ fn oidc_from_env(
         issuer: issuer.clone(),
         jwks_uri,
         audience,
-        owner: config.owner,
         allowed_subjects,
         leeway_secs: 60,
     };
+    // Validate the JWKS/issuer boundary before touching the subject map or
+    // storage, matching the pre-split ordering so an insecure-URL rejection
+    // still short-circuits (see `oidc_env_rejects_http_issuer_and_jwks_uri`).
     let resolver =
         proxima_auth_oidc::HttpJwksResolver::new(issuer.clone(), oidc_config.jwks_uri.clone())
             .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))?;
-    let authn = proxima_auth_oidc::OidcAuthenticator::new(oidc_config, Arc::new(resolver))
-        .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))?;
+
+    let subject_map = subject_map_from_env(lookup, &issuer)?;
+    // The pool connects lazily: constructing it here never touches the
+    // network, so this stays safe to call from synchronous unit tests that
+    // never open a real Postgres connection.
+    let owner_access: Arc<dyn proxima_core::OwnerAccessPort> = Arc::new(
+        proxima_storage_pg::PgOwnerAccessResolver::connect_lazy(&config.database_url)
+            .map_err(|err| CliError::Runtime(ProximaError::Storage(err.to_string())))?,
+    );
+
+    let authn = proxima_auth_oidc::OidcAuthenticator::new(
+        oidc_config,
+        Arc::new(resolver),
+        subject_map,
+        owner_access,
+    )
+    .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))?;
     let metadata = proxima::ResourceServerMetadata {
         public_url,
         authorization_servers: vec![issuer],
     };
     Ok(Some((Arc::new(authn), metadata)))
+}
+
+const PROXIMA_OIDC_SUBJECT_MAP_JSON: &str = "PROXIMA_OIDC_SUBJECT_MAP_JSON";
+const PROXIMA_OIDC_SUBJECT_MAP: &str = "PROXIMA_OIDC_SUBJECT_MAP";
+
+/// Parse the issuer-aware subject map from env. Exactly one of
+/// `PROXIMA_OIDC_SUBJECT_MAP_JSON` (issuer-aware) or `PROXIMA_OIDC_SUBJECT_MAP`
+/// (legacy single-issuer shorthand, bound to `issuer`) must be set whenever
+/// `PROXIMA_OIDC_ISSUER` is configured.
+fn subject_map_from_env(
+    lookup: &impl Fn(&str) -> Option<String>,
+    issuer: &str,
+) -> Result<proxima_auth_oidc::OidcSubjectMap, CliError> {
+    let json_raw = lookup_non_empty(lookup, PROXIMA_OIDC_SUBJECT_MAP_JSON);
+    let legacy_raw = lookup_non_empty(lookup, PROXIMA_OIDC_SUBJECT_MAP);
+    match (json_raw, legacy_raw) {
+        (Some(_), Some(_)) => Err(CliError::Runtime(ProximaError::Config(format!(
+            "{PROXIMA_OIDC_SUBJECT_MAP_JSON} and {PROXIMA_OIDC_SUBJECT_MAP} are mutually exclusive"
+        )))),
+        (Some(json), None) => proxima_auth_oidc::OidcSubjectMap::from_json(&json).map_err(|err| {
+            CliError::Runtime(ProximaError::Config(format!(
+                "{PROXIMA_OIDC_SUBJECT_MAP_JSON}: {err}"
+            )))
+        }),
+        (None, Some(legacy)) => {
+            proxima_auth_oidc::OidcSubjectMap::from_legacy_shorthand(&legacy, &[issuer.to_string()])
+                .map_err(|err| {
+                    CliError::Runtime(ProximaError::Config(format!(
+                        "{PROXIMA_OIDC_SUBJECT_MAP}: {err}"
+                    )))
+                })
+        }
+        (None, None) => Err(CliError::Runtime(ProximaError::Config(format!(
+            "PROXIMA_OIDC_ISSUER set without {PROXIMA_OIDC_SUBJECT_MAP_JSON} or {PROXIMA_OIDC_SUBJECT_MAP}"
+        )))),
+    }
 }
 
 fn mistral_embedding_client(
@@ -519,15 +572,70 @@ mod tests {
         build_app(config(), |_| None).expect("app construction does not require embeddings");
     }
 
-    #[test]
-    fn oidc_env_wires_authenticator_and_metadata() {
+    // `#[tokio::test]`, not `#[test]`: `PgOwnerAccessResolver::connect_lazy`
+    // constructs a `sqlx::PgPool`, which needs an active Tokio context even
+    // though it defers the actual network connect (sqlx panics with "this
+    // functionality requires a Tokio context" otherwise). Every other
+    // `oidc_env_*` test below rejects before reaching that call, so they
+    // stay plain `#[test]`.
+    #[tokio::test]
+    async fn oidc_env_wires_authenticator_and_metadata() {
         build_app(config(), |key| match key {
+            "PROXIMA_OIDC_ISSUER" => Some("https://idp.test".into()),
+            "PROXIMA_OIDC_AUDIENCE" => Some("proxima-mcp".into()),
+            "PROXIMA_PUBLIC_URL" => Some("https://proxima.test".into()),
+            "PROXIMA_OIDC_SUBJECT_MAP" => Some(format!("subject-1:{}", uuid::Uuid::nil())),
+            _ => None,
+        })
+        .expect("app builds with oidc env");
+    }
+
+    #[tokio::test]
+    async fn oidc_env_wires_authenticator_with_issuer_aware_subject_map_json() {
+        let subject_map_json = format!(
+            r#"[{{"iss":"https://idp.test","sub":"subject-1","user_id":"{}"}}]"#,
+            uuid::Uuid::nil()
+        );
+        build_app(config(), move |key| match key {
+            "PROXIMA_OIDC_ISSUER" => Some("https://idp.test".into()),
+            "PROXIMA_OIDC_AUDIENCE" => Some("proxima-mcp".into()),
+            "PROXIMA_PUBLIC_URL" => Some("https://proxima.test".into()),
+            "PROXIMA_OIDC_SUBJECT_MAP_JSON" => Some(subject_map_json.clone()),
+            _ => None,
+        })
+        .expect("app builds with issuer-aware subject map json");
+    }
+
+    #[test]
+    fn oidc_env_requires_a_subject_map_when_issuer_is_configured() {
+        let err = build_app(config(), |key| match key {
             "PROXIMA_OIDC_ISSUER" => Some("https://idp.test".into()),
             "PROXIMA_OIDC_AUDIENCE" => Some("proxima-mcp".into()),
             "PROXIMA_PUBLIC_URL" => Some("https://proxima.test".into()),
             _ => None,
         })
-        .expect("app builds with oidc env");
+        .expect_err("missing subject map must be rejected");
+        assert!(
+            err.to_string().contains("PROXIMA_OIDC_SUBJECT_MAP"),
+            "message: {err}"
+        );
+    }
+
+    #[test]
+    fn oidc_env_rejects_both_subject_map_formats_at_once() {
+        let err = build_app(config(), |key| match key {
+            "PROXIMA_OIDC_ISSUER" => Some("https://idp.test".into()),
+            "PROXIMA_OIDC_AUDIENCE" => Some("proxima-mcp".into()),
+            "PROXIMA_PUBLIC_URL" => Some("https://proxima.test".into()),
+            "PROXIMA_OIDC_SUBJECT_MAP" => Some(format!("subject-1:{}", uuid::Uuid::nil())),
+            "PROXIMA_OIDC_SUBJECT_MAP_JSON" => Some("[]".into()),
+            _ => None,
+        })
+        .expect_err("both subject map formats at once must be rejected");
+        assert!(
+            err.to_string().contains("mutually exclusive"),
+            "message: {err}"
+        );
     }
 
     #[test]

@@ -44,6 +44,17 @@ Environment:
   PROXIMA_OIDC_AUDIENCE         Expected token audience
   PROXIMA_OIDC_JWKS_URI         Optional explicit JWKS endpoint
   PROXIMA_OIDC_ALLOWED_SUBJECTS Optional comma-separated sub allowlist
+                                (in addition to the subject map below, never
+                                an identity source by itself)
+  PROXIMA_OIDC_SUBJECT_MAP_JSON Issuer-aware (iss,sub)->user_id identity map:
+                                a JSON array of {iss, sub, user_id} objects.
+                                Required when PROXIMA_OIDC_ISSUER is set,
+                                unless PROXIMA_OIDC_SUBJECT_MAP is given
+                                instead.
+  PROXIMA_OIDC_SUBJECT_MAP      Legacy single-issuer shorthand:
+                                sub:<uuid>,sub2:<uuid2>; every entry binds
+                                to PROXIMA_OIDC_ISSUER. Mutually exclusive
+                                with PROXIMA_OIDC_SUBJECT_MAP_JSON.
   PROXIMA_TOOL_PROFILE          Tool profile: full (default) or memory
   PROXIMA_TOOL_ALLOW            Comma-separated canonical tool ids added to profile
   PROXIMA_TOOL_DENY             Comma-separated canonical tool ids removed from profile
