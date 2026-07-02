@@ -276,15 +276,42 @@ def run_fixture(path: Path) -> int:
     return 1
 
 
+# Exact current PR9 dynamic SQL inventory count (see `--inventory`). This is a
+# ratchet, not a ceiling that only grows: the ratchet mode below fails when the
+# count changes in *either* direction so a shrink still requires the PR that
+# earned it to update this constant, keeping the two in lockstep.
+EXPECTED_DYNAMIC_SQL_SITES = 47
+
+
+def run_self_test() -> int:
+    fixture = ROOT / "scripts/fixtures/sql-policy/unsafe_dynamic_sql.rs"
+    sites = collect([fixture])
+    for site in sites:
+        print(site.render())
+    if not sites:
+        print(f"self-test did not trigger dynamic SQL detector: {fixture}", file=sys.stderr)
+        return 1
+    print(f"self-test detected {len(sites)} unsafe dynamic SQL sites", file=sys.stderr)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--inventory", action="store_true", help="print dynamic SQL inventory and exit 0")
     parser.add_argument("--fixture", type=Path, help="run against an unsafe fixture; exits non-zero when detected")
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="assert the unsafe fixture is detected; exits zero when the detector fires",
+    )
     args = parser.parse_args()
 
     if args.fixture:
         fixture = args.fixture if args.fixture.is_absolute() else ROOT / args.fixture
         return run_fixture(fixture)
+
+    if args.self_test:
+        return run_self_test()
 
     sites = collect(rust_files())
     if args.inventory:
@@ -302,7 +329,26 @@ def main() -> int:
         for site in missing:
             print("  " + site.render(), file=sys.stderr)
         return 1
-    print("SQL policy ratchet passed")
+
+    if len(sites) > EXPECTED_DYNAMIC_SQL_SITES:
+        print(
+            f"Dynamic SQL site count {len(sites)} exceeds the "
+            f"EXPECTED_DYNAMIC_SQL_SITES={EXPECTED_DYNAMIC_SQL_SITES} ratchet; current sites:",
+            file=sys.stderr,
+        )
+        for site in sites:
+            print("  " + site.render(), file=sys.stderr)
+        return 1
+
+    if len(sites) < EXPECTED_DYNAMIC_SQL_SITES:
+        print(
+            f"Dynamic SQL site count dropped to {len(sites)}; update "
+            f"EXPECTED_DYNAMIC_SQL_SITES from {EXPECTED_DYNAMIC_SQL_SITES} to {len(sites)} in this PR.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"SQL policy ratchet passed ({len(sites)} dynamic SQL sites)")
     return 0
 
 
