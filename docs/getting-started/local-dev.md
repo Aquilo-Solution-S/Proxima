@@ -20,7 +20,7 @@ until the Postgres service is healthy before starting the server.
 ## Generate Dev IDs
 
 ```sh
-OWNER_USER=$(python3 - <<'PY'
+USER_ID=$(python3 - <<'PY'
 import uuid
 print(uuid.uuid4())
 PY
@@ -30,17 +30,18 @@ import uuid
 print(uuid.uuid4())
 PY
 )
-printf 'OWNER_USER=%s\nMASTER_TOKEN=%s\n' "$OWNER_USER" "$MASTER_TOKEN"
+printf 'USER_ID=%s\nMASTER_TOKEN=%s\n' "$USER_ID" "$MASTER_TOKEN"
 ```
 
 ## Run MCP Server
 
 ```sh
 export DATABASE_URL=postgres://proxima:proxima@localhost:5434/proxima
-cargo run -p proxima-mcp -- --owner-user "$OWNER_USER" --master-token "$MASTER_TOKEN"
+cargo run -p proxima-mcp -- --master-token "$MASTER_TOKEN" --master-token-subject "$USER_ID"
 ```
 
 Expected: server listens on `http://127.0.0.1:31415/mcp`.
+MCP clients must send `X-Proxima-Owner: personal:$USER_ID` on `initialize`.
 
 ## Local Checks
 

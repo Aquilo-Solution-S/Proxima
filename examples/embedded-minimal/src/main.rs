@@ -22,6 +22,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let authz = booted
         .single_owner_authz()
         .expect("insecure single-owner mode is enabled");
+    let owner = booted
+        .owner
+        .expect("insecure single-owner mode is enabled with a boot owner");
 
     let payload = flavor::DocumentFiledV1 {
         source_path: "/example/intake/r-2026-0001.pdf".into(),
@@ -43,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let response = booted
         .engine
-        .query(&authz, &query_for_schema(&booted.owner))
+        .query(&authz, &query_for_schema(&owner))
         .await?;
     println!("query returned {} rows", row_count(&response));
 

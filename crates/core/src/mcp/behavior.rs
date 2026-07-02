@@ -3,7 +3,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 
-use super::{McpToolCtx, McpToolError, core_action_meta, core_tool_has_actions};
+use crate::AccessKind;
+
+use super::{
+    McpToolCtx, McpToolError, core_action_meta, core_tool_annotations, core_tool_has_actions,
+};
 
 #[derive(Debug)]
 pub struct ToolCall {
@@ -99,7 +103,33 @@ impl ScopeGateBehavior {
         } else if !scope.allows(tool) {
             return Err(McpToolError::NotAuthorized(tool.to_string()));
         }
+        Self::enforce_owner_role(tool, args, ctx)?;
         Ok(())
+    }
+
+    fn enforce_owner_role(
+        tool: &str,
+        args: &serde_json::Value,
+        ctx: &McpToolCtx,
+    ) -> Result<(), McpToolError> {
+        let read_only = args
+            .get("action")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|action| core_action_meta(tool, action))
+            .map(|meta| meta.annotations)
+            .or_else(|| core_tool_annotations(tool))
+            .and_then(|annotations| annotations.read_only)
+            .unwrap_or(false);
+        let allowed = if read_only {
+            ctx.authz.may_read(&ctx.owner, AccessKind::Fact)
+        } else {
+            ctx.authz.may_write(&ctx.owner, AccessKind::Fact)
+        };
+        if allowed {
+            Ok(())
+        } else {
+            Err(McpToolError::NotAuthorized(tool.to_string()))
+        }
     }
 }
 
@@ -231,10 +261,46 @@ mod tests {
         .expect("bare palette entry allows flat tool");
     }
 
+    #[test]
+    fn owner_role_gate_allows_read_tools_and_rejects_write_tools_for_viewer() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let group = OwnerRef::Group(crate::GroupId::new(uuid::Uuid::now_v7()));
+        let authz = AuthzContext::for_subject_with_role(
+            subject,
+            [(group, crate::Role::viewer())],
+            AuthPath::HostBearer,
+        )
+        .narrowed_to_owner(group)
+        .expect("viewer can bind readable group")
+        .with_tool_scope(ToolScope::All);
+        let ctx = test_ctx_with_authz(group, authz);
+
+        ScopeGateBehavior::enforce_scope(
+            protocol_tool::CORE_SEARCH_MEMORIES,
+            &serde_json::json!({ "query": "x" }),
+            &ctx,
+        )
+        .expect("viewer can call read-only search");
+
+        let err = ScopeGateBehavior::enforce_scope(
+            protocol_tool::CORE_REMEMBER,
+            &serde_json::json!({ "title": "t", "body": "b" }),
+            &ctx,
+        )
+        .expect_err("viewer cannot call write tool");
+        assert!(
+            matches!(err, McpToolError::NotAuthorized(ref tool) if tool == protocol_tool::CORE_REMEMBER)
+        );
+    }
+
     fn test_ctx(tool_scope: ToolScope) -> McpToolCtx {
         let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let authz =
             AuthzContext::single_owner(&owner, AuthPath::HostBearer).with_tool_scope(tool_scope);
+        test_ctx_with_authz(owner, authz)
+    }
+
+    fn test_ctx_with_authz(owner: OwnerRef, authz: AuthzContext) -> McpToolCtx {
         McpToolCtx {
             owner,
             authz,

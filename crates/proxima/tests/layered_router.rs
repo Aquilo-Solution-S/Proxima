@@ -8,11 +8,12 @@ use axum::routing::get;
 use proxima::{Authz, layered_router};
 use proxima_core::mcp::McpToolExtensions;
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, Owner, OwnerRef,
-    UserId,
+    AccessError, AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry,
+    Owner, OwnerAccessPort, OwnerRef, OwnerRoles, UserId,
 };
 use proxima_mcp_server::{
-    MASTER_TOKEN_PREFIX, McpEdgeAuth, McpToolHost, default_allowlist, streamable_http_service,
+    MASTER_TOKEN_PREFIX, McpEdgeAuth, McpToolHost, default_allowlist, owner_key,
+    streamable_http_service,
 };
 use tokio_util::sync::CancellationToken;
 use tower::util::ServiceExt;
@@ -43,13 +44,33 @@ impl Authenticator for StubHostAuth {
     }
 }
 
+#[derive(Debug)]
+struct StaticOwnerAccess;
+
+#[async_trait]
+impl OwnerAccessPort for StaticOwnerAccess {
+    async fn resolve_roles_for_subject(&self, subject: UserId) -> Result<OwnerRoles, AccessError> {
+        OwnerRoles::for_subject(subject, [])
+    }
+}
+
+fn subject(owner: Owner) -> UserId {
+    let OwnerRef::Personal(subject) = owner else {
+        unreachable!("test owner is personal")
+    };
+    subject
+}
+
+fn edge_auth() -> McpEdgeAuth {
+    McpEdgeAuth::headless().with_owner_access(Arc::new(StaticOwnerAccess))
+}
+
 fn router(auth: Arc<McpEdgeAuth>, owner: Owner) -> Router {
     router_with_hosts(auth, owner, &[])
 }
 
-fn router_with_hosts(auth: Arc<McpEdgeAuth>, owner: Owner, allowed_hosts: &[String]) -> Router {
+fn router_with_hosts(auth: Arc<McpEdgeAuth>, _owner: Owner, allowed_hosts: &[String]) -> Router {
     let host = McpToolHost::from_parts(
-        owner,
         Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
         McpToolExtensions::default(),
     );
@@ -60,10 +81,18 @@ fn router_with_hosts(auth: Arc<McpEdgeAuth>, owner: Owner, allowed_hosts: &[Stri
     layered_router(service, app_router, auth, allowlist)
 }
 
-async fn status(app: Router, method: Method, uri: &str, bearer: Option<String>) -> StatusCode {
+async fn status(
+    app: Router,
+    method: Method,
+    uri: &str,
+    selected_owner: Owner,
+    bearer: Option<String>,
+) -> StatusCode {
     let mut builder = Request::builder().method(method).uri(uri);
     if let Some(bearer) = bearer {
-        builder = builder.header(header::AUTHORIZATION, bearer);
+        builder = builder
+            .header(header::AUTHORIZATION, bearer)
+            .header("X-Proxima-Owner", owner_key(selected_owner));
     }
     app.oneshot(builder.body(Body::empty()).unwrap())
         .await
@@ -71,12 +100,18 @@ async fn status(app: Router, method: Method, uri: &str, bearer: Option<String>) 
         .status()
 }
 
-async fn status_with_host(app: Router, bearer: &str, host: &str) -> StatusCode {
+async fn status_with_host(
+    app: Router,
+    bearer: &str,
+    host: &str,
+    selected_owner: Owner,
+) -> StatusCode {
     let request = Request::builder()
         .method(Method::POST)
         .uri("/mcp")
         .header(header::AUTHORIZATION, bearer)
         .header(header::HOST, host)
+        .header("X-Proxima-Owner", owner_key(selected_owner))
         .body(Body::empty())
         .unwrap();
     app.oneshot(request).await.unwrap().status()
@@ -86,17 +121,17 @@ async fn status_with_host(app: Router, bearer: &str, host: &str) -> StatusCode {
 async fn layered_router_protects_app_and_mcp_with_master_token() {
     let owner = owner();
     let token = Uuid::now_v7();
-    let auth = Arc::new(McpEdgeAuth::headless());
-    auth.replace_local_master_token(token, owner).await;
+    let auth = Arc::new(edge_auth());
+    auth.replace_local_master_token(token, subject(owner)).await;
     let app = router(auth, owner);
     let bearer = format!("Bearer {MASTER_TOKEN_PREFIX}{token}");
 
     assert_eq!(
-        status(app.clone(), Method::GET, "/app/ping", None).await,
+        status(app.clone(), Method::GET, "/app/ping", owner, None).await,
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
-        status(app.clone(), Method::POST, "/mcp", None).await,
+        status(app.clone(), Method::POST, "/mcp", owner, None).await,
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
@@ -104,6 +139,7 @@ async fn layered_router_protects_app_and_mcp_with_master_token() {
             app.clone(),
             Method::GET,
             "/app/ping",
+            owner,
             Some("Bearer garbage".to_string())
         )
         .await,
@@ -114,16 +150,24 @@ async fn layered_router_protects_app_and_mcp_with_master_token() {
             app.clone(),
             Method::POST,
             "/mcp",
+            owner,
             Some("Bearer garbage".to_string())
         )
         .await,
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
-        status(app.clone(), Method::GET, "/app/ping", Some(bearer.clone())).await,
+        status(
+            app.clone(),
+            Method::GET,
+            "/app/ping",
+            owner,
+            Some(bearer.clone())
+        )
+        .await,
         StatusCode::OK
     );
-    let mcp_status = status(app, Method::POST, "/mcp", Some(bearer)).await;
+    let mcp_status = status(app, Method::POST, "/mcp", owner, Some(bearer)).await;
     assert_ne!(mcp_status, StatusCode::UNAUTHORIZED);
     assert_ne!(mcp_status, StatusCode::FORBIDDEN);
 }
@@ -136,19 +180,19 @@ async fn layered_router_protects_app_and_mcp_with_master_token() {
 async fn host_guard_allows_configured_host_and_rejects_foreign() {
     let owner = owner();
     let token = Uuid::now_v7();
-    let auth = Arc::new(McpEdgeAuth::headless());
-    auth.replace_local_master_token(token, owner).await;
+    let auth = Arc::new(edge_auth());
+    auth.replace_local_master_token(token, subject(owner)).await;
     let app = router_with_hosts(auth, owner, &["proxima.test".to_string()]);
     let bearer = format!("Bearer {MASTER_TOKEN_PREFIX}{token}");
 
     // Configured public Host passes the guard (auth + handshake run).
-    let allowed = status_with_host(app.clone(), &bearer, "proxima.test").await;
+    let allowed = status_with_host(app.clone(), &bearer, "proxima.test", owner).await;
     assert_ne!(allowed, StatusCode::UNAUTHORIZED);
     assert_ne!(allowed, StatusCode::FORBIDDEN);
 
     // A foreign Host is rejected by the rebinding guard.
     assert_eq!(
-        status_with_host(app, &bearer, "evil.test").await,
+        status_with_host(app, &bearer, "evil.test", owner).await,
         StatusCode::FORBIDDEN
     );
 }
@@ -160,32 +204,32 @@ async fn host_guard_allows_configured_host_and_rejects_foreign() {
 async fn host_guard_empty_override_stays_loopback_only_not_allow_all() {
     let owner = owner();
     let token = Uuid::now_v7();
-    let auth = Arc::new(McpEdgeAuth::headless());
-    auth.replace_local_master_token(token, owner).await;
+    let auth = Arc::new(edge_auth());
+    auth.replace_local_master_token(token, subject(owner)).await;
     let app = router_with_hosts(auth, owner, &[]);
     let bearer = format!("Bearer {MASTER_TOKEN_PREFIX}{token}");
 
     assert_eq!(
-        status_with_host(app.clone(), &bearer, "evil.test").await,
+        status_with_host(app.clone(), &bearer, "evil.test", owner).await,
         StatusCode::FORBIDDEN
     );
-    let loopback = status_with_host(app, &bearer, "127.0.0.1").await;
+    let loopback = status_with_host(app, &bearer, "127.0.0.1", owner).await;
     assert_ne!(loopback, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
 async fn layered_router_protects_app_and_mcp_with_host_token() {
     let owner = owner();
-    let auth = Arc::new(McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { owner }), owner));
+    let auth = Arc::new(edge_auth().with_host(Arc::new(StubHostAuth { owner })));
     let app = router(auth, owner);
     let bearer = "Bearer host-token".to_string();
 
     assert_eq!(
-        status(app.clone(), Method::GET, "/app/ping", None).await,
+        status(app.clone(), Method::GET, "/app/ping", owner, None).await,
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
-        status(app.clone(), Method::POST, "/mcp", None).await,
+        status(app.clone(), Method::POST, "/mcp", owner, None).await,
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
@@ -193,6 +237,7 @@ async fn layered_router_protects_app_and_mcp_with_host_token() {
             app.clone(),
             Method::GET,
             "/app/ping",
+            owner,
             Some("Bearer garbage".to_string())
         )
         .await,
@@ -203,16 +248,24 @@ async fn layered_router_protects_app_and_mcp_with_host_token() {
             app.clone(),
             Method::POST,
             "/mcp",
+            owner,
             Some("Bearer garbage".to_string())
         )
         .await,
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
-        status(app.clone(), Method::GET, "/app/ping", Some(bearer.clone())).await,
+        status(
+            app.clone(),
+            Method::GET,
+            "/app/ping",
+            owner,
+            Some(bearer.clone())
+        )
+        .await,
         StatusCode::OK
     );
-    let mcp_status = status(app, Method::POST, "/mcp", Some(bearer)).await;
+    let mcp_status = status(app, Method::POST, "/mcp", owner, Some(bearer)).await;
     assert_ne!(mcp_status, StatusCode::UNAUTHORIZED);
     assert_ne!(mcp_status, StatusCode::FORBIDDEN);
 }

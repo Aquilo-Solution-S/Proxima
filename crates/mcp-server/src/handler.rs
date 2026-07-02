@@ -13,7 +13,7 @@ use proxima_core::mcp::{
     McpToolAnnotations, McpToolError, McpToolErrorKind, all_core_resources, core_tool_annotations,
     provider_safe_tool_name, tool_name_matches,
 };
-use proxima_core::{McpAuthorContext, MemoryId};
+use proxima_core::{AccessKind, McpAuthorContext, MemoryId};
 use rmcp::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, ErrorData, Implementation,
@@ -39,12 +39,12 @@ impl DynamicHandler {
     /// Canonical ids of the tools advertised to a caller with `scope`. Same
     /// filter `list_tools` applies, so self-documentation never references a
     /// tool the caller cannot see.
-    fn advertised_tool_ids(&self, scope: Option<&ToolScope>) -> BTreeSet<&'static str> {
+    fn advertised_tool_ids(&self, auth: Option<&McpAuthContext>) -> BTreeSet<&'static str> {
         self.server
             .registry()
             .list_mcp_tools()
             .iter()
-            .filter(|descriptor| scope_allows(scope, descriptor.name))
+            .filter(|descriptor| tool_allowed_for_auth(auth, descriptor.name))
             .map(|descriptor| descriptor.name)
             .collect()
     }
@@ -75,8 +75,8 @@ impl ServerHandler for DynamicHandler {
             context.peer.set_peer_info(request);
         }
         let auth = auth_context(&context);
+        let advertised_tools = self.advertised_tool_ids(auth.as_ref());
         let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
-        let advertised_tools = self.advertised_tool_ids(scope);
         let advertised_resources = advertised_resource_scope_keys(scope);
         let mut info = self.get_info();
         let instructions = selfdoc::build_instructions(&advertised_tools, &advertised_resources);
@@ -146,7 +146,7 @@ impl ServerHandler for DynamicHandler {
                     .registry()
                     .list_mcp_tools()
                     .iter()
-                    .filter(|descriptor| scope_allows(scope, descriptor.name))
+                    .filter(|descriptor| tool_allowed_for_auth(auth.as_ref(), descriptor.name))
                     .map(|descriptor| descriptor.name)
                     .collect();
                 let advertised_resources = advertised_resource_scope_keys(scope);
@@ -180,13 +180,12 @@ impl ServerHandler for DynamicHandler {
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + MaybeSendFuture + '_ {
         let auth = auth_context(&context);
-        let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
         let tools: Vec<Tool> = self
             .server
             .registry()
             .list_mcp_tools()
             .iter()
-            .filter(|descriptor| scope_allows(scope, descriptor.name))
+            .filter(|descriptor| tool_allowed_for_auth(auth.as_ref(), descriptor.name))
             .map(|descriptor| {
                 let tool = Tool::new(
                     Cow::Owned(provider_safe_tool_name(descriptor.name)),
@@ -396,6 +395,25 @@ fn scope_allows(scope: Option<&ToolScope>, name: &str) -> bool {
         // surface. Direct handler tests run without the layer, so the
         // test arm stays permissive; it is compiled out of release.
         None => UNAUTHENTICATED_SCOPE_ALLOWS,
+    }
+}
+
+fn tool_allowed_for_auth(auth: Option<&McpAuthContext>, name: &str) -> bool {
+    let scope = auth.map(|ctx| ctx.authz.tool_scope());
+    scope_allows(scope, name) && owner_role_allows_tool(auth, name)
+}
+
+fn owner_role_allows_tool(auth: Option<&McpAuthContext>, name: &str) -> bool {
+    let Some(ctx) = auth else {
+        return UNAUTHENTICATED_SCOPE_ALLOWS;
+    };
+    if core_tool_annotations(name)
+        .and_then(|annotations| annotations.read_only)
+        .unwrap_or(false)
+    {
+        ctx.authz.may_read(&ctx.owner, AccessKind::Fact)
+    } else {
+        ctx.authz.may_write(&ctx.owner, AccessKind::Fact)
     }
 }
 

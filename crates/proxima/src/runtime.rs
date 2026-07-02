@@ -12,7 +12,7 @@ use proxima_core::authz::SystemAuthority;
 use proxima_core::mcp::McpToolExtensions;
 use proxima_core::{
     AnthropicClient, AuthPath, Authenticator, AuthzContext, EmbeddingClient, FlavorRegistryFrozen,
-    RevalidationConfig, ToolScope,
+    OwnerAccessPort, RevalidationConfig, ToolScope,
 };
 use proxima_core::{Engine, EngineHandle, Owner, OwnerRef, Role, UserId};
 use proxima_mcp_server::{
@@ -82,14 +82,20 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     }
 
     #[must_use]
-    pub fn master_token(mut self, master_token: impl Into<String>) -> Self {
-        self.overlay = self.overlay.master_token(master_token);
+    pub fn master_token(mut self, master_token: uuid::Uuid, subject: UserId) -> Self {
+        self.overlay = self.overlay.master_token(master_token, subject);
         self
     }
 
     #[must_use]
     pub fn authenticator(mut self, authenticator: Arc<dyn Authenticator>) -> Self {
         self.overlay = self.overlay.authenticator(authenticator);
+        self
+    }
+
+    #[must_use]
+    pub fn owner_access(mut self, owner_access: Arc<dyn OwnerAccessPort>) -> Self {
+        self.overlay = self.overlay.owner_access(owner_access);
         self
     }
 
@@ -196,6 +202,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
                     app_ctx.clone(),
                     tool_extensions.clone(),
                     parts.authenticator,
+                    parts.owner_access,
                     allowlist,
                     &cancel,
                     &config,
@@ -253,6 +260,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
                 app_ctx,
                 tool_extensions.clone(),
                 parts.authenticator,
+                parts.owner_access,
                 allowlist,
                 &cancel,
                 &config,
@@ -323,7 +331,7 @@ pub struct BuiltProxima {
     pub registry: Arc<FlavorRegistryFrozen>,
     pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
     pub blobs: Option<CitedBlobStore>,
-    pub owner: Owner,
+    pub owner: Option<Owner>,
     pub cancel: CancellationToken,
     pub insecure_single_owner: bool,
     tool_extensions: McpToolExtensions,
@@ -343,7 +351,9 @@ impl BuiltProxima {
     #[must_use]
     pub fn single_owner_authz(&self) -> Option<AuthzContext> {
         self.insecure_single_owner
-            .then(|| insecure_single_owner_authz(&self.owner, AuthPath::HostBearer))
+            .then_some(self.owner.as_ref())
+            .flatten()
+            .map(|owner| insecure_single_owner_authz(owner, AuthPath::HostBearer))
     }
 
     #[must_use]
@@ -354,7 +364,6 @@ impl BuiltProxima {
     #[must_use]
     pub fn core_mcp_tools(&self) -> CoreMcpTools {
         CoreMcpTools::new(
-            self.owner,
             self.registry.clone(),
             self.engine.clone(),
             self.tool_extensions.clone(),
@@ -399,7 +408,7 @@ pub struct RunningProxima {
     pub registry: Arc<FlavorRegistryFrozen>,
     pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
     pub blobs: Option<CitedBlobStore>,
-    pub owner: Owner,
+    pub owner: Option<Owner>,
     pub mcp_addr: Option<SocketAddr>,
     pub server: Option<JoinHandle<()>>,
     pub cancel: CancellationToken,
@@ -426,7 +435,9 @@ impl RunningProxima {
     #[must_use]
     pub fn single_owner_authz(&self) -> Option<AuthzContext> {
         self.insecure_single_owner
-            .then(|| insecure_single_owner_authz(&self.owner, AuthPath::HostBearer))
+            .then_some(self.owner.as_ref())
+            .flatten()
+            .map(|owner| insecure_single_owner_authz(owner, AuthPath::HostBearer))
     }
 
     #[must_use]
@@ -437,7 +448,6 @@ impl RunningProxima {
     #[must_use]
     pub fn core_mcp_tools(&self) -> CoreMcpTools {
         CoreMcpTools::new(
-            self.owner,
             self.registry.clone(),
             self.engine.clone(),
             self.tool_extensions.clone(),
@@ -585,7 +595,7 @@ async fn boot_app<A: FlavorApp + 'static>(
     config: &crate::RuntimeConfig,
     parts: &crate::RuntimeParts,
 ) -> Result<crate::EmbeddedProxima, ProximaError> {
-    let mut builder = ProximaBuilder::new(
+    let mut builder = ProximaBuilder::new_optional(
         EmbedConfig {
             database_url: config.database_url.clone(),
             s3: config.s3.clone(),
@@ -606,23 +616,25 @@ async fn build_router<A: FlavorApp>(
     app_ctx: AppContext,
     tool_extensions: McpToolExtensions,
     authenticator: Option<Arc<dyn Authenticator>>,
+    owner_access: Option<Arc<dyn OwnerAccessPort>>,
     allowlist: OriginAllowlist,
     cancel: &CancellationToken,
     config: &crate::RuntimeConfig,
 ) -> Router {
-    let owner = config.owner;
     let engine = app_ctx.engine.clone();
-    let mut edge_auth = McpEdgeAuth::headless().with_tool_scope(config.tool_scope.clone());
+    let owner_access = owner_access.expect("RuntimeConfig::validate requires owner_access for MCP");
+    let mut edge_auth = McpEdgeAuth::headless()
+        .with_tool_scope(config.tool_scope.clone())
+        .with_owner_access(owner_access);
     if let Some(authenticator) = authenticator {
-        edge_auth = edge_auth.with_host(authenticator, owner);
+        edge_auth = edge_auth.with_host(authenticator);
     }
-    if let Some(token) = config.master_token {
-        edge_auth.replace_local_master_token(token, owner).await;
+    if let Some((token, subject)) = config.master_token {
+        edge_auth.replace_local_master_token(token, subject).await;
     }
     let edge_auth = Arc::new(edge_auth);
-    let mcp_host =
-        McpToolHost::from_parts(owner, Arc::new(engine.registry().clone()), tool_extensions)
-            .with_engine(engine);
+    let mcp_host = McpToolHost::from_parts(Arc::new(engine.registry().clone()), tool_extensions)
+        .with_engine(engine);
     let allowed_hosts = resolve_allowed_hosts(config);
     let mcp_service = streamable_http_service(mcp_host, &allowlist, &allowed_hosts, cancel);
     let app_router = A::mount_http(Router::new(), app_ctx);
@@ -685,8 +697,8 @@ mod tests {
 
     use async_trait::async_trait;
     use proxima_core::{
-        AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry,
-        FlavorRegistryError, Owner,
+        AccessError, AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry,
+        FlavorRegistryError, Owner, OwnerAccessPort, OwnerRoles, UserId,
     };
     use uuid::Uuid;
 
@@ -785,6 +797,23 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct StubOwnerAccess;
+
+    #[async_trait]
+    impl OwnerAccessPort for StubOwnerAccess {
+        async fn resolve_roles_for_subject(
+            &self,
+            subject: UserId,
+        ) -> Result<OwnerRoles, AccessError> {
+            OwnerRoles::for_subject(subject, [])
+        }
+    }
+
+    fn owner_access() -> Arc<dyn OwnerAccessPort> {
+        Arc::new(StubOwnerAccess)
+    }
+
     fn owner() -> Owner {
         company_owner(Uuid::now_v7())
     }
@@ -802,6 +831,7 @@ mod tests {
             .database_url("postgres://unused/db")
             .owner(owner)
             .with_mcp()
+            .owner_access(owner_access())
             .authenticator(Arc::new(StubAuth { owner }))
             .resolve()
             .unwrap();
@@ -821,6 +851,7 @@ mod tests {
             .database_url("postgres://unused/db")
             .owner(owner)
             .with_mcp()
+            .owner_access(owner_access())
             .mcp_bind("0.0.0.0:8080".parse().unwrap())
             .expose_network(true)
             .allowed_origins(vec!["https://app.example.com".to_string()])
@@ -850,6 +881,7 @@ mod tests {
             .database_url("postgres://unused/db")
             .owner(owner)
             .with_mcp()
+            .owner_access(owner_access())
             .mcp_bind("0.0.0.0:8080".parse().unwrap())
             .expose_network(true)
             .allowed_origins(vec!["https://app.example.com".to_string()])
@@ -874,17 +906,22 @@ mod tests {
         let env = RuntimeBuilder::default()
             .database_url("postgres://env/proxima")
             .allowed_origins(vec!["https://env.test".to_string()])
-            .with_mcp();
+            .with_mcp()
+            .owner_access(owner_access())
+            .master_token(Uuid::now_v7(), UserId::new(Uuid::now_v7()));
         let overlay = RuntimeBuilder::default()
             .database_url("postgres://overlay/proxima")
-            .allow_insecure_single_owner();
+            .stream_max_lifetime(std::time::Duration::from_secs(12));
 
         let (config, _) = overlay.merge_over(env.merge_over(base)).resolve().unwrap();
 
         assert_eq!(config.database_url, "postgres://overlay/proxima");
         assert_eq!(config.allowed_origins, ["https://env.test".to_string()]);
         assert!(config.mcp.is_some());
-        assert!(config.insecure_single_owner);
+        assert_eq!(
+            config.stream_revalidation.max_stream_lifetime,
+            std::time::Duration::from_secs(12)
+        );
     }
 
     #[test]
@@ -950,6 +987,7 @@ mod tests {
             .database_url("postgres://unused:5432/unused")
             .owner(owner)
             .with_mcp()
+            .owner_access(owner_access())
             .expose_network(true)
             .authenticator(Arc::new(StubAuth { owner }))
             .build()

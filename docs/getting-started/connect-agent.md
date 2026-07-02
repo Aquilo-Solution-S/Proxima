@@ -10,14 +10,15 @@ Follow [local-dev.md](local-dev.md), then configure your MCP client:
     "proxima": {
       "url": "http://127.0.0.1:31415/mcp",
       "headers": {
-        "Authorization": "Bearer pxm_<token>"
+        "Authorization": "Bearer pxm_<token>",
+        "X-Proxima-Owner": "personal:<user-id>"
       }
     }
   }
 }
 ```
 
-For the local quickstart, use the generated `MASTER_TOKEN` as `pxm_$MASTER_TOKEN`.
+For the local quickstart, use `pxm_$MASTER_TOKEN` and `personal:$USER_ID`.
 
 ## First Calls
 
@@ -30,7 +31,7 @@ For the local quickstart, use the generated `MASTER_TOKEN` as `pxm_$MASTER_TOKEN
 ## First Memory Flow
 
 1. Search with `core_search_memories`.
-2. In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_link`; hydrate a memory through `proxima://memory/{id}`. Omitted `space` preserves the current owner behavior for single-owner deployments.
+2. In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_link`; hydrate a memory through `proxima://memory/{id}`. Omitted `space` preserves the current bound owner.
 3. Record one observation with `core_remember`.
 4. Record a derived pattern with `core_derive` over one or more source handles.
 5. Read the created memory resource with neighbors expanded.

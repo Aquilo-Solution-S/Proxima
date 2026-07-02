@@ -10,6 +10,7 @@ pub mod oauth;
 pub mod security;
 pub mod selfdoc;
 mod server;
+mod session;
 mod transport;
 
 pub use auth::{MASTER_TOKEN_PREFIX, McpAuthContext, McpEdgeAuth};
@@ -23,6 +24,7 @@ pub use security::{
     mcp_auth_layer_with_metadata,
 };
 pub use server::{McpToolHost, ToolInvocationError};
+pub use session::{McpSessionBindings, owner_key, parse_owner_key};
 pub use transport::{
     serve_streamable_http, serve_streamable_http_with_revalidation, streamable_http_service,
 };

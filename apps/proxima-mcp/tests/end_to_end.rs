@@ -2,7 +2,7 @@ mod common;
 
 use std::net::{Ipv4Addr, SocketAddr};
 
-use proxima_core::{OwnerRef, UserId};
+use proxima_core::UserId;
 use serde_json::json;
 
 use common::require_env_or_skip;
@@ -13,11 +13,13 @@ async fn run_with_handle_serves_tools_list() -> Result<(), Box<dyn std::error::E
         eprintln!("skipping run_with_handle_serves_tools_list: DATABASE_URL not set");
         return Ok(());
     };
+    let subject = UserId::new(uuid::Uuid::nil());
+    let owner_key = format!("personal:{}", subject.into_inner());
     let cfg = proxima_mcp::McpConfig {
         database_url,
-        owner: OwnerRef::Personal(UserId::new(uuid::Uuid::nil())),
         bind: Some(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)),
         master_token: Some(uuid::Uuid::nil()),
+        master_token_subject: Some(subject),
     };
 
     let running = proxima_mcp::run_with_handle(cfg).await?;
@@ -25,7 +27,7 @@ async fn run_with_handle_serves_tools_list() -> Result<(), Box<dyn std::error::E
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
     let bearer = format!("Bearer pxm_{}", uuid::Uuid::nil());
-    let session_id = initialize(&client, &url, &bearer).await?;
+    let session_id = initialize(&client, &url, &bearer, &owner_key).await?;
     initialized(&client, &url, &session_id, &bearer).await?;
     let body = post_rpc(
         &client,
@@ -52,11 +54,13 @@ async fn initialize(
     client: &reqwest::Client,
     url: &str,
     bearer: &str,
+    owner_key: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let response = client
         .post(url)
         .header("Origin", "http://localhost")
         .header("Authorization", bearer)
+        .header("X-Proxima-Owner", owner_key)
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")

@@ -19,10 +19,8 @@ pub enum OidcConfigError {
 /// clock skew) plus an optional `sub` allowlist. It no longer carries an
 /// identity mapping: [`crate::OidcAuthenticator::new`] maps the validated
 /// `(iss, sub)` through a [`crate::OidcSubjectMap`] and an
-/// `OwnerAccessPort`, and [`crate::OidcAuthenticator::single_owner`] maps
-/// every accepted token to one fixed [`proxima_core::Owner`] passed
-/// separately. [`Self::allowed_subjects`] is always an additional allowlist
-/// gate on the token's actual `sub`, never an identity source.
+/// `OwnerAccessPort`. [`Self::allowed_subjects`] is always an additional
+/// allowlist gate on the token's actual `sub`, never an identity source.
 #[derive(Clone, Debug)]
 pub struct OidcAuthConfig {
     /// Exact `iss` claim required (e.g. `https://zitadel.example.com`).

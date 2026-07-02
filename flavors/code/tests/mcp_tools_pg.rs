@@ -694,7 +694,7 @@ async fn retry_execution_request_succeeds_with_target_perspective()
             fixture.pg.clone(),
             owner,
             registry,
-            master_token,
+            Some(master_token),
             MemoryId::new(shell_self),
         ),
         json!({
@@ -736,6 +736,50 @@ async fn retry_execution_request_succeeds_with_target_perspective()
 }
 
 #[tokio::test]
+async fn retry_execution_request_uses_owner_write_authority_not_master_token_class()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let engine = engine_for_test(fixture.pg.clone());
+    let registry = registry_for_mcp();
+
+    let shell_self = seed_perspective(&fixture.pg, &owner, "Shell author").await?;
+    let repo_id = Uuid::now_v7();
+    let prior = ingest_execution_request_fixture(
+        fixture.pg.pool_for_tests(),
+        &engine,
+        owner,
+        repo_id,
+        "prior-no-master",
+    )
+    .await?;
+    let target = seed_perspective(&fixture.pg, &owner, "Retry Worker").await?;
+
+    let result = run_tool::<CodeRetryExecutionRequestTool>(
+        shell_ctx(
+            fixture.pg.clone(),
+            owner,
+            registry,
+            None,
+            MemoryId::new(shell_self),
+        ),
+        json!({
+            "prior_execution_request": format!("F:{prior}"),
+            "target_perspective": format!("P:{target}"),
+            "idempotency_key": "retry-no-master",
+        }),
+    )
+    .await?;
+
+    assert_eq!(result["idempotent_replay"], false);
+    assert!(
+        result["handle"].as_str().expect("handle").starts_with("F:"),
+        "authorized non-master retry still writes a Fact"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn emit_execution_plan_uses_abstraction_proof_source()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
@@ -765,7 +809,7 @@ async fn emit_execution_plan_uses_abstraction_proof_source()
             fixture.pg.clone(),
             owner,
             registry,
-            Uuid::now_v7(),
+            Some(Uuid::now_v7()),
             MemoryId::new(shell_self),
         ),
         json!({
@@ -834,7 +878,7 @@ async fn retry_execution_request_rejects_unknown_target_perspective()
         fixture.pg.clone(),
         owner,
         registry,
-        master_token,
+        Some(master_token),
         MemoryId::new(shell_self),
     );
     let args: <CodeRetryExecutionRequestTool as McpTool>::Args = serde_json::from_value(json!({
@@ -905,7 +949,7 @@ fn shell_ctx(
     pg: PgStorage,
     owner: Owner,
     registry: Arc<FlavorRegistryFrozen>,
-    master_token_id: Uuid,
+    master_token_id: Option<Uuid>,
     caller_self_perspective: MemoryId,
 ) -> McpToolCtx {
     let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
@@ -924,7 +968,7 @@ fn shell_ctx(
             caller_self_perspective: Some(caller_self_perspective),
         },
         caller_self_perspective: Some(caller_self_perspective),
-        master_token_id: Some(master_token_id),
+        master_token_id,
         extensions: McpToolExtensions::with(store),
         engine: Some(engine),
     }

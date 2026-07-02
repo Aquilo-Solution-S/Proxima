@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use proxima_blob_s3::S3RuntimeConfig;
 use proxima_core::{
-    AnthropicClient, Authenticator, EmbeddingClient, Owner, RevalidationConfig, ToolScope,
+    AnthropicClient, Authenticator, EmbeddingClient, Owner, OwnerAccessPort, RevalidationConfig,
+    ToolScope, UserId,
 };
 use proxima_mcp_server::ResourceServerMetadata;
 
@@ -20,6 +21,7 @@ pub struct RuntimeBuilder {
     s3: Option<S3RuntimeConfig>,
     owner: Option<Owner>,
     master_token: Option<String>,
+    master_token_subject: Option<UserId>,
     mcp_enabled: bool,
     mcp_bind: Option<SocketAddr>,
     expose_network: Option<bool>,
@@ -30,6 +32,7 @@ pub struct RuntimeBuilder {
     epoch_check_interval: Option<Duration>,
     insecure_single_owner: bool,
     authenticator: Option<Arc<dyn Authenticator>>,
+    owner_access: Option<Arc<dyn OwnerAccessPort>>,
     resource_metadata: Option<ResourceServerMetadata>,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
     anthropic: Option<Arc<dyn AnthropicClient>>,
@@ -42,6 +45,7 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("s3", &self.s3)
             .field("owner", &self.owner)
             .field("has_master_token", &self.master_token.is_some())
+            .field("master_token_subject", &self.master_token_subject)
             .field("mcp_enabled", &self.mcp_enabled)
             .field("mcp_bind", &self.mcp_bind)
             .field("expose_network", &self.expose_network)
@@ -52,6 +56,7 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("epoch_check_interval", &self.epoch_check_interval)
             .field("insecure_single_owner", &self.insecure_single_owner)
             .field("has_authenticator", &self.authenticator.is_some())
+            .field("has_owner_access", &self.owner_access.is_some())
             .field("has_resource_metadata", &self.resource_metadata.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
             .field("has_anthropic", &self.anthropic.is_some())
@@ -67,6 +72,7 @@ impl RuntimeBuilder {
             s3: self.s3.or(base.s3),
             owner: self.owner.or(base.owner),
             master_token: self.master_token.or(base.master_token),
+            master_token_subject: self.master_token_subject.or(base.master_token_subject),
             mcp_enabled: self.mcp_enabled || base.mcp_enabled,
             mcp_bind: self.mcp_bind.or(base.mcp_bind),
             expose_network: self.expose_network.or(base.expose_network),
@@ -77,6 +83,7 @@ impl RuntimeBuilder {
             epoch_check_interval: self.epoch_check_interval.or(base.epoch_check_interval),
             insecure_single_owner: self.insecure_single_owner || base.insecure_single_owner,
             authenticator: self.authenticator.or(base.authenticator),
+            owner_access: self.owner_access.or(base.owner_access),
             resource_metadata: self.resource_metadata.or(base.resource_metadata),
             embed_client: self.embed_client.or(base.embed_client),
             anthropic: self.anthropic.or(base.anthropic),
@@ -104,10 +111,13 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Set the loopback-only MCP master token. Env equivalent: `PROXIMA_MCP_MASTER_TOKEN`.
+    /// Set the loopback-only MCP master token subject pair.
+    /// Env equivalent: `PROXIMA_MCP_MASTER_TOKEN` +
+    /// `PROXIMA_MCP_MASTER_TOKEN_SUBJECT`.
     #[must_use]
-    pub fn master_token(mut self, master_token: impl Into<String>) -> Self {
-        self.master_token = Some(master_token.into());
+    pub fn master_token(mut self, master_token: uuid::Uuid, subject: UserId) -> Self {
+        self.master_token = Some(master_token.to_string());
+        self.master_token_subject = Some(subject);
         self
     }
 
@@ -195,6 +205,13 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Install the owner-role resolver used by MCP serving.
+    #[must_use]
+    pub fn owner_access(mut self, owner_access: Arc<dyn OwnerAccessPort>) -> Self {
+        self.owner_access = Some(owner_access);
+        self
+    }
+
     /// Advertise OAuth protected-resource metadata (enables the public
     /// discovery route + `WWW-Authenticate` on 401).
     #[must_use]
@@ -244,6 +261,16 @@ impl RuntimeBuilder {
         if self.master_token.is_none() {
             self.master_token = lookup("PROXIMA_MCP_MASTER_TOKEN");
         }
+        if self.master_token_subject.is_none()
+            && let Some(raw) = lookup("PROXIMA_MCP_MASTER_TOKEN_SUBJECT")
+        {
+            let subject = uuid::Uuid::parse_str(raw.trim()).map_err(|err| {
+                ProximaError::Config(format!(
+                    "PROXIMA_MCP_MASTER_TOKEN_SUBJECT must be a UUID, got {raw:?}: {err}"
+                ))
+            })?;
+            self.master_token_subject = Some(UserId::new(subject));
+        }
         if self.mcp_bind.is_none()
             && let Some(raw) = lookup("PROXIMA_MCP_BIND")
         {
@@ -290,9 +317,6 @@ impl RuntimeBuilder {
         let database_url = self
             .database_url
             .ok_or_else(|| ProximaError::Config("DATABASE_URL is required".into()))?;
-        let owner = self
-            .owner
-            .ok_or_else(|| ProximaError::Config("owner is required".into()))?;
         let mcp = if self.mcp_enabled {
             Some(McpSettings {
                 bind: self.mcp_bind.unwrap_or_else(default_mcp_bind),
@@ -304,6 +328,20 @@ impl RuntimeBuilder {
             .master_token
             .map(|raw| parse_master_token(&raw))
             .transpose()?;
+        let master_token = match (master_token, self.master_token_subject) {
+            (Some(token), Some(subject)) => Some((token, subject)),
+            (Some(_), None) => {
+                return Err(ProximaError::Config(
+                    "PROXIMA_MCP_MASTER_TOKEN requires PROXIMA_MCP_MASTER_TOKEN_SUBJECT".into(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(ProximaError::Config(
+                    "PROXIMA_MCP_MASTER_TOKEN_SUBJECT requires PROXIMA_MCP_MASTER_TOKEN".into(),
+                ));
+            }
+            (None, None) => None,
+        };
         let default_revalidation = RevalidationConfig::default();
         let stream_revalidation = RevalidationConfig {
             max_stream_lifetime: self
@@ -314,8 +352,11 @@ impl RuntimeBuilder {
                 .unwrap_or(default_revalidation.epoch_check_interval),
         };
         validate_revalidation_config(stream_revalidation)?;
+        let owner = self.owner;
+        let owner_access = self.owner_access;
         let parts = RuntimeParts {
             authenticator: self.authenticator,
+            owner_access,
             embed_client: self.embed_client,
             anthropic: self.anthropic,
         };
@@ -331,7 +372,10 @@ impl RuntimeBuilder {
             tool_scope: self.tool_scope.unwrap_or(ToolScope::All),
             stream_revalidation,
             insecure_single_owner: self.insecure_single_owner,
-            has_host_authenticator: parts.authenticator.is_some(),
+            auth: RuntimeAuthState {
+                has_host_authenticator: parts.authenticator.is_some(),
+                has_owner_access: parts.owner_access.is_some(),
+            },
             resource_metadata: self.resource_metadata,
         };
         config.validate()?;
@@ -344,8 +388,8 @@ impl RuntimeBuilder {
 pub struct RuntimeConfig {
     pub database_url: String,
     pub s3: Option<S3RuntimeConfig>,
-    pub owner: Owner,
-    pub master_token: Option<uuid::Uuid>,
+    pub owner: Option<Owner>,
+    pub master_token: Option<(uuid::Uuid, UserId)>,
     pub mcp: Option<McpSettings>,
     pub expose_network: bool,
     pub allowed_origins: Vec<String>,
@@ -356,8 +400,14 @@ pub struct RuntimeConfig {
     pub tool_scope: ToolScope,
     pub stream_revalidation: RevalidationConfig,
     pub insecure_single_owner: bool,
-    pub has_host_authenticator: bool,
+    pub auth: RuntimeAuthState,
     pub resource_metadata: Option<ResourceServerMetadata>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RuntimeAuthState {
+    pub has_host_authenticator: bool,
+    pub has_owner_access: bool,
 }
 
 impl std::fmt::Debug for RuntimeConfig {
@@ -374,7 +424,7 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("tool_scope", &self.tool_scope)
             .field("stream_revalidation", &self.stream_revalidation)
             .field("insecure_single_owner", &self.insecure_single_owner)
-            .field("has_host_authenticator", &self.has_host_authenticator)
+            .field("auth", &self.auth)
             .field("resource_metadata", &self.resource_metadata)
             .finish()
     }
@@ -397,14 +447,9 @@ impl RuntimeConfig {
             return Ok(());
         };
 
-        if self.insecure_single_owner && self.expose_network {
+        if self.insecure_single_owner {
             return Err(ProximaError::Security(
-                "insecure single-owner mode cannot expose network transports".into(),
-            ));
-        }
-        if self.insecure_single_owner && !mcp.bind.ip().is_loopback() {
-            return Err(ProximaError::Security(
-                "insecure single-owner MCP bind must be loopback".into(),
+                "insecure single-owner mode cannot serve MCP; configure owner_access plus host auth or a master-token subject".into(),
             ));
         }
         if self.expose_network && self.allowed_origins.is_empty() {
@@ -434,7 +479,7 @@ impl RuntimeConfig {
                     .into(),
             ));
         }
-        if self.expose_network && !self.has_host_authenticator {
+        if self.expose_network && !self.auth.has_host_authenticator {
             return Err(ProximaError::Security(
                 "network exposure requires a host authenticator".into(),
             ));
@@ -444,12 +489,14 @@ impl RuntimeConfig {
                 "non-exposed MCP bind must be loopback".into(),
             ));
         }
-        if !self.has_host_authenticator
-            && !self.insecure_single_owner
-            && self.master_token.is_none()
-        {
+        if !self.auth.has_owner_access {
             return Err(ProximaError::Security(
-                "MCP requires a host authenticator, insecure single-owner mode, --master-token, or PROXIMA_MCP_MASTER_TOKEN".into(),
+                "MCP serving requires an OwnerAccessPort resolver".into(),
+            ));
+        }
+        if !self.auth.has_host_authenticator && self.master_token.is_none() {
+            return Err(ProximaError::Security(
+                "MCP requires a host authenticator or paired PROXIMA_MCP_MASTER_TOKEN/PROXIMA_MCP_MASTER_TOKEN_SUBJECT".into(),
             ));
         }
 
@@ -494,6 +541,7 @@ pub struct McpSettings {
 #[derive(Clone, Default)]
 pub struct RuntimeParts {
     pub authenticator: Option<Arc<dyn Authenticator>>,
+    pub owner_access: Option<Arc<dyn OwnerAccessPort>>,
     pub embed_client: Option<Arc<dyn EmbeddingClient>>,
     pub anthropic: Option<Arc<dyn AnthropicClient>>,
 }
@@ -502,6 +550,7 @@ impl std::fmt::Debug for RuntimeParts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeParts")
             .field("has_authenticator", &self.authenticator.is_some())
+            .field("has_owner_access", &self.owner_access.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
             .field("has_anthropic", &self.anthropic.is_some())
             .finish()
@@ -643,7 +692,8 @@ fn validate_revalidation_config(config: RevalidationConfig) -> Result<(), Proxim
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
-    use proxima_core::{GroupId, OwnerRef};
+    use async_trait::async_trait;
+    use proxima_core::{AccessError, GroupId, OwnerAccessPort, OwnerRef, OwnerRoles, UserId};
 
     use super::*;
     use crate::company_owner;
@@ -661,11 +711,28 @@ mod tests {
         OwnerRef::Group(GroupId::new(id))
     }
 
+    #[derive(Debug)]
+    struct TestOwnerAccess;
+
+    #[async_trait]
+    impl OwnerAccessPort for TestOwnerAccess {
+        async fn resolve_roles_for_subject(
+            &self,
+            subject: UserId,
+        ) -> Result<OwnerRoles, AccessError> {
+            OwnerRoles::for_subject(subject, [])
+        }
+    }
+
+    fn owner_access() -> Arc<dyn OwnerAccessPort> {
+        Arc::new(TestOwnerAccess)
+    }
+
     fn base_config(mcp: Option<SocketAddr>) -> RuntimeConfig {
         RuntimeConfig {
             database_url: "postgres://localhost/proxima".to_string(),
             s3: None,
-            owner: company_owner(uuid::Uuid::now_v7()),
+            owner: Some(company_owner(uuid::Uuid::now_v7())),
             master_token: None,
             mcp: mcp.map(|bind| McpSettings { bind }),
             expose_network: false,
@@ -674,7 +741,10 @@ mod tests {
             tool_scope: ToolScope::All,
             stream_revalidation: RevalidationConfig::default(),
             insecure_single_owner: false,
-            has_host_authenticator: true,
+            auth: RuntimeAuthState {
+                has_host_authenticator: true,
+                has_owner_access: true,
+            },
             resource_metadata: None,
         }
     }
@@ -723,9 +793,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_mcp_requires_authenticator_or_insecure_single_owner() {
+    fn validate_mcp_requires_authenticator_or_master_token_subject() {
         let mut config = base_config(Some(addr([127, 0, 0, 1])));
-        config.has_host_authenticator = false;
+        config.auth.has_host_authenticator = false;
 
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("MCP requires"));
@@ -734,8 +804,8 @@ mod tests {
     #[test]
     fn validate_master_token_satisfies_loopback_mcp_auth_requirement() {
         let mut config = base_config(Some(addr([127, 0, 0, 1])));
-        config.has_host_authenticator = false;
-        config.master_token = Some(uuid::Uuid::now_v7());
+        config.auth.has_host_authenticator = false;
+        config.master_token = Some((uuid::Uuid::now_v7(), UserId::new(uuid::Uuid::now_v7())));
 
         config.validate().unwrap();
     }
@@ -743,7 +813,7 @@ mod tests {
     #[test]
     fn validate_master_token_cannot_expose_network() {
         let mut config = base_config(Some(addr([127, 0, 0, 1])));
-        config.master_token = Some(uuid::Uuid::now_v7());
+        config.master_token = Some((uuid::Uuid::now_v7(), UserId::new(uuid::Uuid::now_v7())));
         config.expose_network = true;
         config.allowed_origins = vec!["https://app.test".to_string()];
 
@@ -752,24 +822,24 @@ mod tests {
     }
 
     #[test]
-    fn validate_insecure_single_owner_cannot_expose_network() {
+    fn validate_insecure_single_owner_cannot_serve_mcp() {
         let mut config = base_config(Some(addr([127, 0, 0, 1])));
         config.insecure_single_owner = true;
         config.expose_network = true;
         config.allowed_origins = vec!["https://app.test".to_string()];
 
         let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("cannot expose network"));
+        assert!(err.to_string().contains("cannot serve MCP"));
     }
 
     #[test]
-    fn validate_insecure_single_owner_requires_loopback_mcp_bind() {
+    fn validate_insecure_single_owner_rejected_even_on_loopback() {
         let mut config = base_config(Some(addr([0, 0, 0, 0])));
         config.insecure_single_owner = true;
-        config.has_host_authenticator = false;
+        config.auth.has_host_authenticator = false;
 
         let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("single-owner MCP bind"));
+        assert!(err.to_string().contains("cannot serve MCP"));
     }
 
     #[test]
@@ -796,7 +866,7 @@ mod tests {
         let mut config = base_config(Some(addr([127, 0, 0, 1])));
         config.expose_network = true;
         config.allowed_origins = vec!["https://app.test".to_string()];
-        config.has_host_authenticator = false;
+        config.auth.has_host_authenticator = false;
 
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("host authenticator"));
@@ -813,7 +883,7 @@ mod tests {
     #[test]
     fn validate_without_mcp_is_ok_without_authenticator() {
         let mut config = base_config(None);
-        config.has_host_authenticator = false;
+        config.auth.has_host_authenticator = false;
         config.expose_network = true;
 
         config.validate().unwrap();
@@ -943,34 +1013,51 @@ mod tests {
     fn master_token_env_fills_unset_and_accepts_wire_prefix() {
         let token = uuid::Uuid::now_v7();
         let token_raw = format!("pxm_{token}");
+        let subject = UserId::new(uuid::Uuid::now_v7());
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
             .owner(owner(uuid::Uuid::now_v7()))
             .with_mcp()
-            .apply_lookup(lookup(&[("PROXIMA_MCP_MASTER_TOKEN", &token_raw)]))
+            .owner_access(owner_access())
+            .apply_lookup(lookup(&[
+                ("PROXIMA_MCP_MASTER_TOKEN", &token_raw),
+                (
+                    "PROXIMA_MCP_MASTER_TOKEN_SUBJECT",
+                    &subject.into_inner().to_string(),
+                ),
+            ]))
             .unwrap()
             .resolve()
             .unwrap();
 
-        assert_eq!(config.master_token, Some(token));
+        assert_eq!(config.master_token, Some((token, subject)));
     }
 
     #[test]
     fn explicit_master_token_wins_over_env() {
         let explicit = uuid::Uuid::now_v7();
+        let explicit_subject = UserId::new(uuid::Uuid::now_v7());
         let env = uuid::Uuid::now_v7();
         let env_raw = env.to_string();
+        let env_subject = UserId::new(uuid::Uuid::now_v7());
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
             .owner(owner(uuid::Uuid::now_v7()))
             .with_mcp()
-            .master_token(explicit.to_string())
-            .apply_lookup(lookup(&[("PROXIMA_MCP_MASTER_TOKEN", &env_raw)]))
+            .owner_access(owner_access())
+            .master_token(explicit, explicit_subject)
+            .apply_lookup(lookup(&[
+                ("PROXIMA_MCP_MASTER_TOKEN", &env_raw),
+                (
+                    "PROXIMA_MCP_MASTER_TOKEN_SUBJECT",
+                    &env_subject.into_inner().to_string(),
+                ),
+            ]))
             .unwrap()
             .resolve()
             .unwrap();
 
-        assert_eq!(config.master_token, Some(explicit));
+        assert_eq!(config.master_token, Some((explicit, explicit_subject)));
     }
 
     #[test]
@@ -979,7 +1066,15 @@ mod tests {
             .database_url("postgres://localhost/proxima")
             .owner(owner(uuid::Uuid::now_v7()))
             .with_mcp()
-            .master_token("not-a-uuid")
+            .owner_access(owner_access())
+            .apply_lookup(lookup(&[
+                ("PROXIMA_MCP_MASTER_TOKEN", "not-a-uuid"),
+                (
+                    "PROXIMA_MCP_MASTER_TOKEN_SUBJECT",
+                    &uuid::Uuid::now_v7().to_string(),
+                ),
+            ]))
+            .unwrap()
             .resolve()
             .unwrap_err();
 
@@ -1062,7 +1157,8 @@ mod tests {
             .database_url("postgres://localhost/proxima")
             .owner(owner(uuid::Uuid::now_v7()))
             .with_mcp()
-            .allow_insecure_single_owner()
+            .owner_access(owner_access())
+            .master_token(uuid::Uuid::now_v7(), UserId::new(uuid::Uuid::now_v7()))
             .resolve()
             .unwrap();
 

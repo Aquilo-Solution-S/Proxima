@@ -28,7 +28,7 @@ product UX or model loop.
 ```sh
 docker compose -f docker-compose.dev.yml up -d --wait postgres
 export DATABASE_URL=postgres://proxima:proxima@localhost:5434/proxima
-cargo run -p proxima-mcp -- --owner-user <uuid> --master-token <uuid>
+cargo run -p proxima-mcp -- --master-token <token-uuid> --master-token-subject <user-uuid>
 ```
 
 The dev compose file exposes Postgres on `localhost:5434` with pgvector.
@@ -46,7 +46,7 @@ the full local walkthrough.
 Start the MCP server:
 
 ```sh
-cargo run -p proxima-mcp -- --owner-user <uuid> --master-token <uuid>
+cargo run -p proxima-mcp -- --master-token <token-uuid> --master-token-subject <user-uuid>
 ```
 
 Client config:
@@ -57,14 +57,17 @@ Client config:
     "proxima": {
       "url": "http://127.0.0.1:31415/mcp",
       "headers": {
-        "Authorization": "Bearer pxm_<token>"
+        "Authorization": "Bearer pxm_<token-uuid>",
+        "X-Proxima-Owner": "personal:<user-uuid>"
       }
     }
   }
 }
 ```
 
-`PROXIMA_MCP_BIND` overrides the listener address. Non-loopback binds
+`X-Proxima-Owner` is required on MCP `initialize`; the server binds that
+owner to the returned `Mcp-Session-Id` and rechecks authority on every
+request. `PROXIMA_MCP_BIND` overrides the listener address. Non-loopback binds
 require `PROXIMA_EXPOSE_NETWORK=true` plus the auth/origin/host gates in
 [`docs/10-configuration.md`](docs/10-configuration.md) and
 [`docs/15-deployment.md`](docs/15-deployment.md).

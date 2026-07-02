@@ -1,15 +1,41 @@
 //! Shared test helpers for mcp-server integration tests.
 
+use async_trait::async_trait;
+use proxima_mcp_server::owner_key;
 pub use proxima_pg_testkit::{db_url, drop_db};
 use serde_json::json;
 
-use proxima_core::Owner;
 use proxima_core::test_fixtures::owner_fixture;
+use proxima_core::{AccessError, Owner, OwnerAccessPort, OwnerRef, OwnerRoles, UserId};
 
 /// Returns a nil owner for token tests.
 #[allow(dead_code)]
 pub fn nil_owner() -> Owner {
     owner_fixture()
+}
+
+#[allow(dead_code)]
+pub fn nil_subject() -> UserId {
+    let OwnerRef::Personal(subject) = nil_owner() else {
+        unreachable!("owner_fixture is personal")
+    };
+    subject
+}
+
+#[allow(dead_code)]
+pub fn nil_owner_header() -> String {
+    owner_key(nil_owner())
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct NilOwnerAccess;
+
+#[async_trait]
+impl OwnerAccessPort for NilOwnerAccess {
+    async fn resolve_roles_for_subject(&self, subject: UserId) -> Result<OwnerRoles, AccessError> {
+        OwnerRoles::for_subject(subject, [])
+    }
 }
 
 /// MCP initialize request. Returns the `session_id`.
@@ -23,6 +49,7 @@ pub async fn initialize(
         .post(url)
         .header("Origin", "http://localhost")
         .header("Authorization", bearer)
+        .header("X-Proxima-Owner", nil_owner_header())
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
@@ -61,6 +88,7 @@ pub async fn initialized(
         .post(url)
         .header("Origin", "http://localhost")
         .header("Authorization", bearer)
+        .header("X-Proxima-Owner", nil_owner_header())
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Mcp-Session-Id", session)
         .header("Content-Type", "application/json")
@@ -85,6 +113,7 @@ pub async fn post_rpc(
         .post(url)
         .header("Origin", "http://localhost")
         .header("Authorization", bearer)
+        .header("X-Proxima-Owner", nil_owner_header())
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")

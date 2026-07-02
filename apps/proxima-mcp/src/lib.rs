@@ -15,8 +15,8 @@ use proxima::{
 use proxima_core::mcp::McpToolExtensions;
 use proxima_core::protocol::profile as protocol_profile;
 use proxima_core::{
-    FlavorRegistry, FlavorRegistryError, ToolScope, all_core_actions, all_core_resources,
-    llm::EmbeddingClient,
+    FlavorRegistry, FlavorRegistryError, OwnerAccessPort, ToolScope, all_core_actions,
+    all_core_resources, llm::EmbeddingClient,
 };
 use proxima_llm_openai_compat::{
     MISTRAL_EMBED_BASE_URL, MISTRAL_EMBED_MODEL, OpenAiCompatEmbeddingClient,
@@ -274,17 +274,21 @@ fn build_app(
 ) -> Result<Proxima<ProximaMcpApp>, CliError> {
     let registered_ids = registered_tool_ids()?;
     let tool_scope = tool_scope_from_env(&lookup, &registered_ids)?;
-    let oidc = oidc_from_env(&config, &lookup)?;
+    let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(
+        proxima_storage_pg::PgOwnerAccessResolver::connect_lazy(&config.database_url)
+            .map_err(|err| CliError::Runtime(ProximaError::Storage(err.to_string())))?,
+    );
+    let oidc = oidc_from_env(&lookup, owner_access.clone())?;
     let mut app = Proxima::<ProximaMcpApp>::app()
         .from_env()
         .database_url(config.database_url)
-        .owner(config.owner)
+        .owner_access(owner_access)
         .tool_scope(tool_scope);
     if let Some(bind) = config.bind {
         app = app.mcp_bind(bind);
     }
-    if let Some(token) = config.master_token {
-        app = app.master_token(token.to_string());
+    if let (Some(token), Some(subject)) = (config.master_token, config.master_token_subject) {
+        app = app.master_token(token, subject);
     }
     if let Some((authenticator, metadata)) = oidc {
         app = app.authenticator(authenticator).resource_metadata(metadata);
@@ -405,8 +409,8 @@ fn reject_unknown_tool_ids(
 }
 
 fn oidc_from_env(
-    config: &McpConfig,
     lookup: &impl Fn(&str) -> Option<String>,
+    owner_access: Arc<dyn OwnerAccessPort>,
 ) -> Result<Option<OidcBundle>, CliError> {
     let Some(issuer) = lookup_non_empty(lookup, "PROXIMA_OIDC_ISSUER") else {
         return Ok(None);
@@ -447,11 +451,6 @@ fn oidc_from_env(
     // The pool connects lazily: constructing it here never touches the
     // network, so this stays safe to call from synchronous unit tests that
     // never open a real Postgres connection.
-    let owner_access: Arc<dyn proxima_core::OwnerAccessPort> = Arc::new(
-        proxima_storage_pg::PgOwnerAccessResolver::connect_lazy(&config.database_url)
-            .map_err(|err| CliError::Runtime(ProximaError::Storage(err.to_string())))?,
-    );
-
     let authn = proxima_auth_oidc::OidcAuthenticator::new(
         oidc_config,
         Arc::new(resolver),
@@ -572,23 +571,21 @@ mod tests {
     fn config() -> McpConfig {
         McpConfig {
             database_url: DEFAULT_DATABASE_URL.to_string(),
-            owner: proxima_core::OwnerRef::Personal(proxima_core::UserId::new(uuid::Uuid::nil())),
             bind: Some(DEFAULT_BIND.parse().expect("valid bind")),
             master_token: Some(uuid::Uuid::nil()),
+            master_token_subject: Some(proxima_core::UserId::new(uuid::Uuid::nil())),
         }
-    }
-
-    #[test]
-    fn app_construction_without_mistral_key_keeps_degraded_mode() {
-        build_app(config(), |_| None).expect("app construction does not require embeddings");
     }
 
     // `#[tokio::test]`, not `#[test]`: `PgOwnerAccessResolver::connect_lazy`
     // constructs a `sqlx::PgPool`, which needs an active Tokio context even
     // though it defers the actual network connect (sqlx panics with "this
-    // functionality requires a Tokio context" otherwise). Every other
-    // `oidc_env_*` test below rejects before reaching that call, so they
-    // stay plain `#[test]`.
+    // functionality requires a Tokio context" otherwise).
+    #[tokio::test]
+    async fn app_construction_without_mistral_key_keeps_degraded_mode() {
+        build_app(config(), |_| None).expect("app construction does not require embeddings");
+    }
+
     #[tokio::test]
     async fn oidc_env_wires_authenticator_and_metadata() {
         build_app(config(), |key| match key {
@@ -617,8 +614,8 @@ mod tests {
         .expect("app builds with issuer-aware subject map json");
     }
 
-    #[test]
-    fn oidc_env_requires_a_subject_map_when_issuer_is_configured() {
+    #[tokio::test]
+    async fn oidc_env_requires_a_subject_map_when_issuer_is_configured() {
         let err = build_app(config(), |key| match key {
             "PROXIMA_OIDC_ISSUER" => Some("https://idp.test".into()),
             "PROXIMA_OIDC_AUDIENCE" => Some("proxima-mcp".into()),
@@ -632,8 +629,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn oidc_env_rejects_both_subject_map_formats_at_once() {
+    #[tokio::test]
+    async fn oidc_env_rejects_both_subject_map_formats_at_once() {
         let err = build_app(config(), |key| match key {
             "PROXIMA_OIDC_ISSUER" => Some("https://idp.test".into()),
             "PROXIMA_OIDC_AUDIENCE" => Some("proxima-mcp".into()),
@@ -649,8 +646,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn oidc_env_rejects_http_issuer_and_jwks_uri() {
+    #[tokio::test]
+    async fn oidc_env_rejects_http_issuer_and_jwks_uri() {
         for insecure_key in ["PROXIMA_OIDC_ISSUER", "PROXIMA_OIDC_JWKS_URI"] {
             let result = build_app(config(), |key| match key {
                 "PROXIMA_OIDC_ISSUER" => Some(if insecure_key == "PROXIMA_OIDC_ISSUER" {
