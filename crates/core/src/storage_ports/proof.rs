@@ -12,3 +12,34 @@ impl EdgeWriteProof {
         Self { _private: () }
     }
 }
+
+/// Unforgeable witness that engine admission already authorized the
+/// agent-authored derived-memory write (owner write permit, supersedes
+/// ownership/kind checks, and edge target-access gates) before a storage
+/// backend performs the atomic derive append.
+#[derive(Debug, Clone, Copy)]
+pub struct OperatorWriteProof {
+    _private: (),
+}
+
+impl OperatorWriteProof {
+    #[must_use]
+    pub(crate) const fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
+/// Unforgeable witness that engine admission already authorized the
+/// memory/fact write or embedding-job claim that made an entity eligible
+/// for an embedding write before a storage backend performs it.
+#[derive(Debug, Clone, Copy)]
+pub struct EmbeddingWriteProof {
+    _private: (),
+}
+
+impl EmbeddingWriteProof {
+    #[must_use]
+    pub(crate) const fn new() -> Self {
+        Self { _private: () }
+    }
+}

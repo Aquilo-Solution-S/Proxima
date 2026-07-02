@@ -1,3 +1,5 @@
+pub use super::proof::EmbeddingWriteProof;
+
 use crate::storage::{EmbeddingJobClaim, StorageError};
 use crate::{EmbeddableEntityRef, EntityKind, Owner};
 
@@ -20,6 +22,9 @@ pub trait EmbeddingTextPort: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait EmbeddingWritePort: Send + Sync {
+    /// Write one embedding row for an entity. Public callers cannot forge
+    /// `EmbeddingWriteProof`; route through engine embedding-write APIs
+    /// instead.
     async fn insert_embedding(
         &self,
         owner: &Owner,
@@ -27,6 +32,7 @@ pub trait EmbeddingWritePort: Send + Sync {
         model_id: &str,
         dim: usize,
         vec: &[f32],
+        proof: EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError>;
 
     async fn insert_fact_embedding(
@@ -36,6 +42,7 @@ pub trait EmbeddingWritePort: Send + Sync {
         model_id: &str,
         dim: usize,
         vec: &[f32],
+        proof: EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError> {
         self.insert_embedding(
             owner,
@@ -46,10 +53,12 @@ pub trait EmbeddingWritePort: Send + Sync {
             model_id,
             dim,
             vec,
+            proof,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)] // entity-kind-generic variant of insert_embedding
     async fn insert_memory_embedding(
         &self,
         owner: &Owner,
@@ -58,6 +67,7 @@ pub trait EmbeddingWritePort: Send + Sync {
         model_id: &str,
         dim: usize,
         vec: &[f32],
+        proof: EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError> {
         self.insert_embedding(
             owner,
@@ -68,6 +78,7 @@ pub trait EmbeddingWritePort: Send + Sync {
             model_id,
             dim,
             vec,
+            proof,
         )
         .await
     }
@@ -79,12 +90,14 @@ pub trait EmbeddingWritePort: Send + Sync {
         model_id: &str,
         dim: usize,
         vec: &[f32],
+        proof: EmbeddingWriteProof,
     ) -> Result<(), StorageError> {
-        self.insert_fact_embedding(owner, memory_id, model_id, dim, vec)
+        self.insert_fact_embedding(owner, memory_id, model_id, dim, vec, proof)
             .await?;
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)] // entity-kind-generic variant of upsert_fact_embedding
     async fn upsert_memory_embedding(
         &self,
         owner: &Owner,
@@ -93,8 +106,9 @@ pub trait EmbeddingWritePort: Send + Sync {
         model_id: &str,
         dim: usize,
         vec: &[f32],
+        proof: EmbeddingWriteProof,
     ) -> Result<(), StorageError> {
-        self.insert_memory_embedding(owner, entity_kind, memory_id, model_id, dim, vec)
+        self.insert_memory_embedding(owner, entity_kind, memory_id, model_id, dim, vec, proof)
             .await?;
         Ok(())
     }

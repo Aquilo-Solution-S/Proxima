@@ -247,6 +247,7 @@ pub(in crate::engine) mod tests {
         async fn author_derived(
             &self,
             _req: &AuthorDerivedRequest<'_>,
+            _proof: crate::storage_ports::OperatorWriteProof,
         ) -> Result<AuthorDerivedOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
@@ -369,6 +370,7 @@ pub(in crate::engine) mod tests {
             _model_id: &str,
             _dim: usize,
             _vec: &[f32],
+            _proof: crate::storage_ports::EmbeddingWriteProof,
         ) -> Result<crate::EmbeddingWriteOutcome, StorageError> {
             Ok(crate::EmbeddingWriteOutcome {
                 embedding_version: 0,

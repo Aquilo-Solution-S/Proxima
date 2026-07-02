@@ -404,6 +404,7 @@ impl Engine {
                 client.model_id(),
                 client.dim(),
                 &embedding,
+                crate::storage_ports::EmbeddingWriteProof::new(),
             )
             .await?;
         Ok(EmbedStep::Embedded)

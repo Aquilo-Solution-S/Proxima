@@ -737,6 +737,7 @@ impl MemoryAuthoringPort for PgStorage {
     async fn author_derived(
         &self,
         req: &AuthorDerivedRequest<'_>,
+        _proof: proxima_core::storage_ports::OperatorWriteProof,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
         let mut tx = self.pool.begin().await.map_err(internal)?;
         validate_author_derived_storage_request(&mut tx, req).await?;
@@ -1179,6 +1180,7 @@ impl EmbeddingWritePort for PgStorage {
         model_id: &str,
         dim: usize,
         vec: &[f32],
+        _proof: proxima_core::storage_ports::EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError> {
         let mut tx =
             self.pool.begin().await.map_err(|err| {
@@ -1198,8 +1200,9 @@ impl EmbeddingWritePort for PgStorage {
         model_id: &str,
         dim: usize,
         vec: &[f32],
+        proof: proxima_core::storage_ports::EmbeddingWriteProof,
     ) -> Result<(), StorageError> {
-        self.insert_fact_embedding(owner, memory_id, model_id, dim, vec)
+        self.insert_fact_embedding(owner, memory_id, model_id, dim, vec, proof)
             .await?;
         Ok(())
     }
@@ -1212,8 +1215,9 @@ impl EmbeddingWritePort for PgStorage {
         model_id: &str,
         dim: usize,
         vec: &[f32],
+        proof: proxima_core::storage_ports::EmbeddingWriteProof,
     ) -> Result<(), StorageError> {
-        self.insert_memory_embedding(owner, entity_kind, memory_id, model_id, dim, vec)
+        self.insert_memory_embedding(owner, entity_kind, memory_id, model_id, dim, vec, proof)
             .await?;
         Ok(())
     }

@@ -28,6 +28,7 @@ pub use compliance::{
 };
 pub use embeddings::{
     EmbeddingJobPort, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort,
+    EmbeddingWriteProof,
 };
 pub use fact::{FactIngestPort, SourceBatchPort};
 pub use goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
@@ -42,6 +43,6 @@ pub use handles::{
 pub use mcp::{McpCallReadPort, McpCallWritePort};
 pub use memory::{
     CitationPort, EdgeReadPort, EdgeWriteProof, MemoryAuthoringPort, MemoryInspectPort,
-    MemoryReadPort,
+    MemoryReadPort, OperatorWriteProof,
 };
 pub use registry::RegistryProjectionPort;
