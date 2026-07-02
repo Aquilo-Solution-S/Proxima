@@ -10,10 +10,31 @@ from __future__ import annotations
 import re
 import sys
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOW = "PR9-RATCHET-ALLOW"
+
+# Dated exemptions for flavor code that still reads `proxima_core.*` tables
+# directly instead of going through an authorized flavor-read facade. Every
+# entry needs an ISO `expires` date and a `reason`; once an entry expires it
+# stops suppressing findings and the failure renders the expiration date so
+# reviewers see why it started failing.
+ALLOWLISTED_FLAVOR_CORE_SQL: dict[str, dict[str, str]] = {
+    "flavors/code/src/mcp/search_chunks.rs": {
+        "expires": "2026-07-31",
+        "reason": "until Task 5 lands the authorized flavor-read facade",
+    },
+    "flavors/code/src/mcp/open_file_revision.rs": {
+        "expires": "2026-07-31",
+        "reason": "until Task 5 lands the authorized flavor-read facade",
+    },
+    "flavors/code/src/local_git_source.rs": {
+        "expires": "2026-07-31",
+        "reason": "until Task 5 lands the authorized flavor-read facade",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -151,21 +172,110 @@ def check_runtime_registration(findings: list[Finding]) -> None:
     )
 
 
+def iter_rust_string_literals(text: str):
+    """Yield ``(start_line, literal_text)`` for each Rust string / raw-string /
+    byte-string literal in ``text``, in source order.
+
+    A regex applied line-by-line cannot see a raw string whose opening
+    delimiter and offending text land on different lines (multi-line SQL
+    literals are the norm in this codebase). This walks the source once,
+    skipping line comments, block comments, and char literals so their quote
+    characters cannot desynchronize the scan, and yields the full span of
+    every string literal regardless of how many lines it covers.
+    """
+    i = 0
+    n = len(text)
+    line = 1
+    while i < n:
+        ch = text[i]
+        if ch == "\n":
+            line += 1
+            i += 1
+            continue
+        if text.startswith("//", i):
+            nl = text.find("\n", i)
+            i = n if nl == -1 else nl
+            continue
+        if text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            if end == -1:
+                break
+            line += text.count("\n", i, end)
+            i = end + 2
+            continue
+        raw_match = re.match(r'[bB]?r(#*)"', text[i:])
+        if raw_match:
+            hashes = raw_match.group(1)
+            start = i
+            start_line = line
+            body_start = i + raw_match.end()
+            closer = '"' + hashes
+            end = text.find(closer, body_start)
+            literal = text[start:] if end == -1 else text[start : end + len(closer)]
+            line += literal.count("\n")
+            i = n if end == -1 else end + len(closer)
+            yield start_line, literal
+            continue
+        str_match = re.match(r'[bB]?"', text[i:])
+        if str_match:
+            start = i
+            start_line = line
+            j = i + str_match.end()
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    j += 1
+                    break
+                j += 1
+            literal = text[start:j]
+            line += literal.count("\n")
+            i = j
+            yield start_line, literal
+            continue
+        if ch == "'":
+            char_match = re.match(r"'(?:\\.|[^'\\])'", text[i:])
+            if char_match:
+                i += char_match.end()
+                continue
+        i += 1
+
+
 def check_flavor_core_sql(findings: list[Finding]) -> None:
-    paths: list[Path] = []
     flavors = ROOT / "flavors"
-    if flavors.exists():
-        paths = [p for p in flavors.rglob("src/**/*.rs") if p.is_file()]
-    rx = re.compile(r'(?<!:)"[^"]*proxima_core\.|r#?"[\s\S]*?proxima_core\.')
-    for path in paths:
+    if not flavors.exists():
+        return
+    paths = [p for p in flavors.rglob("src/**/*.rs") if p.is_file()]
+    for path in sorted(paths):
+        rel = path.relative_to(ROOT).as_posix()
         text = path.read_text(encoding="utf-8")
-        for line_no, line in enumerate(text.splitlines(), 1):
-            if ALLOW in line:
+        lines = text.splitlines()
+        allow_lines = {line_no for line_no, line in enumerate(lines, 1) if ALLOW in line}
+        allowance = ALLOWLISTED_FLAVOR_CORE_SQL.get(rel)
+        for start_line, literal in iter_rust_string_literals(text):
+            # A literal dot after `proxima_core` is a schema-qualified SQL
+            # identifier (`proxima_core.memories`); a colon there is Rust path
+            # syntax (`proxima_core::verbs`) and must stay allowed everywhere.
+            if "proxima_core." not in literal:
                 continue
-            if "proxima_core::" in line:
+            end_line = start_line + literal.count("\n")
+            if allow_lines & set(range(start_line, end_line + 1)):
                 continue
-            if "proxima_core." in line and rx.search(line):
-                findings.append(Finding(path, line_no, "flavor raw proxima_core SQL", line))
+            snippet = lines[start_line - 1].strip() if start_line - 1 < len(lines) else literal.strip()
+            if allowance is not None:
+                if date.today() <= date.fromisoformat(allowance["expires"]):
+                    continue
+                findings.append(
+                    Finding(
+                        path,
+                        start_line,
+                        "flavor raw proxima_core SQL",
+                        f"allowlist expired {allowance['expires']} ({allowance['reason']}): {snippet}",
+                    )
+                )
+                continue
+            findings.append(Finding(path, start_line, "flavor raw proxima_core SQL", snippet))
 
 
 def check_event_source_vocabulary(findings: list[Finding]) -> None:
