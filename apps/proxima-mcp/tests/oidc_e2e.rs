@@ -17,9 +17,11 @@ use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_SHA256, RsaKeyPair};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::DecodingKey;
 use proxima::{Proxima, ResourceServerMetadata};
-use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, StaticJwksResolver};
-use proxima_core::{Owner, OwnerRef, UserId};
+use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, StaticJwksResolver};
+use proxima_core::storage_ports::OwnerMembershipAdminPort;
+use proxima_core::{GroupId, Owner, OwnerAccessPort, OwnerRef, Relation, UserId};
 use proxima_mcp::ProximaMcpApp;
+use proxima_storage_pg::{PgOwnerAccessResolver, PgStorage};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -71,16 +73,18 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
 
     let owner: Owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
     let (enc, resolver) = keypair();
-    let authn = OidcAuthenticator::new(
+    // Mechanical migration path: every accepted token maps to the fixed
+    // `owner`, mirroring the pre-Task-3 single-tenant behavior.
+    let authn = OidcAuthenticator::single_owner(
         OidcAuthConfig {
             issuer: ISSUER.to_string(),
             jwks_uri: None,
             audience: AUDIENCE.to_string(),
-            owner,
             allowed_subjects: None,
             leeway_secs: 60,
         },
         Arc::new(resolver),
+        owner,
     )?;
 
     let running = Proxima::<ProximaMcpApp>::app()
@@ -175,6 +179,94 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
     assert!(
         call.get("result").is_some(),
         "list_repos call should succeed, got {call:?}"
+    );
+
+    running.shutdown().await;
+    Ok(())
+}
+
+/// Default host-resolved group-auth path, end to end against real Postgres:
+/// the validated `(iss, sub)` maps through an `OidcSubjectMap` to a
+/// `UserId`, `PgOwnerAccessResolver` resolves its current
+/// `proxima_core.group_memberships` row into `OwnerRoles`, and
+/// `McpEdgeAuth::with_host` narrows that to the deployment-configured Group
+/// owner — proving a real Editor row (seeded after boot, matching a
+/// production membership grant) permits a scoped tool call.
+#[tokio::test]
+async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Ok(database_url) = std::env::var("PROXIMA_TEST_DATABASE_URL") else {
+        eprintln!("skipping oidc_e2e_group_auth: PROXIMA_TEST_DATABASE_URL not set");
+        return Ok(());
+    };
+
+    let group_owner: Owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    let subject = UserId::new(Uuid::now_v7());
+    let (enc, resolver) = keypair();
+
+    let mut subject_map = OidcSubjectMap::new();
+    subject_map.insert(ISSUER, "group-member-sub", subject)?;
+    let owner_access: Arc<dyn OwnerAccessPort> =
+        Arc::new(PgOwnerAccessResolver::connect_lazy(&database_url)?);
+
+    let authn = OidcAuthenticator::new(
+        OidcAuthConfig {
+            issuer: ISSUER.to_string(),
+            jwks_uri: None,
+            audience: AUDIENCE.to_string(),
+            allowed_subjects: None,
+            leeway_secs: 60,
+        },
+        Arc::new(resolver),
+        subject_map,
+        owner_access,
+    )?;
+
+    let running = Proxima::<ProximaMcpApp>::app()
+        .database_url(database_url.clone())
+        .owner(group_owner)
+        .authenticator(Arc::new(authn))
+        .resource_metadata(ResourceServerMetadata {
+            public_url: "https://proxima.e2e.test".to_string(),
+            authorization_servers: vec![ISSUER.to_string()],
+        })
+        .mcp_bind("127.0.0.1:0".parse().unwrap())
+        .run()
+        .await?;
+
+    // Seed the Editor membership row after boot (migrations have run by
+    // now), matching how a production grant lands: a row appears, no
+    // redeploy needed.
+    let OwnerRef::Group(group_id) = group_owner else {
+        unreachable!("group_owner is always Group")
+    };
+    let storage = PgStorage::connect(&database_url).await?;
+    storage
+        .add_group_member(group_id, subject, Relation::Editor, Uuid::now_v7())
+        .await?;
+
+    let addr = running.mcp_addr.ok_or("missing MCP listener address")?;
+    let base = format!("http://{addr}");
+    let url = format!("{base}/mcp");
+    let client = reqwest::Client::new();
+
+    let bearer = format!("Bearer {}", mint(&enc, "group-member-sub"));
+    let session = initialize(&client, &url, &bearer).await?;
+    initialized(&client, &url, &session, &bearer).await?;
+    let body = post_rpc(
+        &client,
+        &url,
+        Some(&session),
+        &bearer,
+        json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "core_search_memories", "arguments": {"query": "anything"}}
+        }),
+    )
+    .await?;
+    assert!(
+        body.get("result").is_some(),
+        "host-resolved Editor role on the configured group owner should permit a scoped tool call, got {body:?}"
     );
 
     running.shutdown().await;
