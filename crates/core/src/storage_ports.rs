@@ -17,7 +17,7 @@ mod proof;
 mod registry;
 mod rejecting;
 
-pub use access::{OwnerAccessReadPort, OwnerMembershipAdminPort};
+pub use access::{OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort};
 pub(crate) use bundle::{
     EngineStoragePorts, GoalCommandStoragePorts, QueryStoragePorts, ReadVerbStoragePorts,
 };
@@ -37,7 +37,7 @@ pub use handles::{
     EdgeReadHandle, EmbeddingJobHandle, EmbeddingTextHandle, EmbeddingWriteHandle,
     FactIngestHandle, FactRetentionHandle, GoalReadHandle, GoalWriteHandle, McpCallReadHandle,
     McpCallWriteHandle, MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle,
-    OwnerAccessReadHandle, OwnerDropProofHandle, OwnerMembershipAdminHandle,
+    OwnerAccessReadHandle, OwnerDropProofHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
     RegistryProjectionHandle, SourceBatchHandle,
 };
 pub use mcp::{McpCallReadPort, McpCallWritePort};

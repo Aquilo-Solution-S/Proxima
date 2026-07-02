@@ -219,6 +219,66 @@ pub(crate) async fn visible_to_any(
     Ok(ok)
 }
 
+/// Transfer one memory or goal row's owner columns to `OwnerRef::World` in a
+/// single statement, gated on the row currently being owned by
+/// `from_owner`. Memory transfers additionally require the row to be
+/// untombstoned. Returns `true` iff a row matched and was updated.
+///
+/// Scope is deliberately minimal: only the memory/goal row's own owner
+/// columns move. Owner-shadow rows on subordinate tables (`edges`,
+/// `embeddings`, `embedding_heads`, `fact_receipts`, ...) are left under
+/// the prior owner — they are write-tracking metadata, not independently
+/// readable/writable surfaces (`OwnerAccessReadPort::home_owner` and
+/// `visible_to_any` only ever consult `memories`/`goals`).
+///
+/// # Errors
+///
+/// Returns `Internal` on sqlx failure.
+pub(crate) async fn transfer_to_world(
+    pool: &PgPool,
+    entity: EntityId,
+    from_owner: OwnerRef,
+) -> Result<bool, StorageError> {
+    let (from_kind, from_id) = owner_binds(&from_owner);
+    let (to_kind, to_id) = owner_binds(&OwnerRef::World);
+    let rows_affected = match entity {
+        EntityId::Memory(memory_id) => sqlx::query(
+            "UPDATE proxima_core.memories
+                    SET owner_kind = $4, owner_id = $5
+                  WHERE memory_id = $1
+                    AND owner_kind = $2
+                    AND owner_id IS NOT DISTINCT FROM $3
+                    AND tombstoned_at IS NULL",
+        )
+        .bind(memory_id.into_inner())
+        .bind(from_kind)
+        .bind(from_id)
+        .bind(to_kind)
+        .bind(to_id)
+        .execute(pool)
+        .await
+        .map_err(map_err)?
+        .rows_affected(),
+        EntityId::Goal(goal_id) => sqlx::query(
+            "UPDATE proxima_core.goals
+                    SET owner_kind = $4, owner_id = $5
+                  WHERE goal_id = $1
+                    AND owner_kind = $2
+                    AND owner_id IS NOT DISTINCT FROM $3",
+        )
+        .bind(goal_id.into_inner())
+        .bind(from_kind)
+        .bind(from_id)
+        .bind(to_kind)
+        .bind(to_id)
+        .execute(pool)
+        .await
+        .map_err(map_err)?
+        .rows_affected(),
+    };
+    Ok(rows_affected == 1)
+}
+
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.

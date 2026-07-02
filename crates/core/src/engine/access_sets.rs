@@ -627,6 +627,19 @@ pub(in crate::engine) mod tests {
     }
 
     #[async_trait::async_trait]
+    impl OwnerTransferPort for MembershipStorage {
+        async fn transfer_to_world(
+            &self,
+            _entity: EntityId,
+            _from_owner: OwnerRef,
+        ) -> Result<bool, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
     impl SourceBatchPort for MembershipStorage {
         async fn close_batch(
             &self,
@@ -781,6 +794,7 @@ pub(in crate::engine) mod tests {
                 .citation(storage.clone())
                 .owner_access_read(storage.clone())
                 .owner_membership_admin(storage.clone())
+                .owner_transfer(storage.clone())
                 .source_batch(storage.clone())
                 .fact_retention(storage.clone())
                 .compliance_erase(storage.clone())

@@ -1,4 +1,4 @@
-use crate::access::Relation;
+use crate::access::{EntityId, Relation};
 use crate::authz::{AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome};
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
@@ -112,6 +112,73 @@ impl Engine {
             .list_group_members(group)
             .await
             .map_err(|err| storage_error("list_group_members", &err))
+    }
+
+    /// Transfer one memory or goal's owner to `OwnerRef::World` — the
+    /// kernel-law publish verb. This is an owner TRANSFER, not an ACL
+    /// flag or a share row: World is universally readable and, per
+    /// `authorize_write`'s `resolved == world()` short-circuit, never a
+    /// write owner again afterward.
+    ///
+    /// Requires write/manage authority (`Relation::Admin`) on the entity's
+    /// CURRENT owner — for a personal owner that is the subject's own
+    /// `Role::personal()`; for a group owner it is a member holding
+    /// `Role::admin()` (`manage = true`). Re-publishing an already-World
+    /// entity fails closed: the current-owner lookup resolves to World,
+    /// and `authorize_write` denies World as a write owner before any
+    /// storage call.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` when the entity has no home owner (absent or,
+    /// for a memory, tombstoned). Returns `Forbidden` when the caller
+    /// lacks admin/manage authority on the current owner, or when the
+    /// current owner is already World. Returns `Internal` for storage
+    /// failures, and `NotFound` if the storage transfer finds no matching
+    /// row (owner changed concurrently between the lookup and the write).
+    pub async fn publish_to_world(
+        &self,
+        authz: &AuthzContext,
+        entity: EntityId,
+    ) -> Result<(), ProtocolError> {
+        let current_owner = self
+            .storage()
+            .access_admin
+            .owner_access_read
+            .home_owner(entity)
+            .await
+            .map_err(|err| storage_error("home_owner", &err))?
+            .ok_or_else(|| ProtocolError::not_found("entity not found"))?;
+
+        let permit = self
+            .authorize_write(authz, &current_owner, Relation::Admin)
+            .await?;
+
+        self.veto_and_observe_access_admin(
+            authz,
+            &current_owner,
+            permit.owner(),
+            Relation::Admin,
+            AuthzOperation::EntityShare {
+                entity,
+                owner: OwnerRef::World,
+            },
+        )?;
+
+        let transferred = self
+            .storage()
+            .access_admin
+            .owner_transfer
+            .transfer_to_world(entity, *permit.owner())
+            .await
+            .map_err(|err| storage_error("transfer_to_world", &err))?;
+
+        if !transferred {
+            return Err(ProtocolError::not_found(
+                "entity already published or owner changed concurrently",
+            ));
+        }
+        Ok(())
     }
 
     fn veto_and_observe_access_admin(

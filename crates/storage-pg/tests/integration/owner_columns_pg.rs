@@ -451,6 +451,128 @@ async fn owner_columns_written_on_goal_create() {
 }
 
 #[tokio::test]
+async fn transfer_to_world_moves_memory_row_and_stale_owner_replay_no_ops() {
+    let (pg, db) = common::fresh_pg().await;
+    let group = GroupId::new(Uuid::now_v7());
+    let entity = seed_memory_owned(&pg, OwnerRef::Group(group)).await;
+
+    let moved = pg
+        .transfer_to_world(entity, OwnerRef::Group(group))
+        .await
+        .unwrap();
+    assert!(
+        moved,
+        "first transfer moves the row under its current owner"
+    );
+    assert_single_home(&pg, entity.uuid(), &OwnerRef::World).await;
+    assert_no_live_entity_lacks_home(&pg).await;
+
+    let stale_replay = pg
+        .transfer_to_world(entity, OwnerRef::Group(group))
+        .await
+        .unwrap();
+    assert!(
+        !stale_replay,
+        "a transfer keyed on the now-stale prior owner finds no matching row"
+    );
+    assert_single_home(&pg, entity.uuid(), &OwnerRef::World).await;
+
+    common::drop_db(&db).await.unwrap();
+}
+
+#[tokio::test]
+async fn transfer_to_world_moves_goal_row() {
+    let (pg, db) = common::fresh_pg().await;
+    let group = GroupId::new(Uuid::now_v7());
+    let owner = OwnerRef::Group(group);
+    let self_id = insert_self(&pg, &owner).await;
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let mut draft = fresh_goal_draft(owner);
+    draft.topology = GoalTopologyWrite::new(
+        GoalAssignmentTarget::perspective(self_id),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("empty test topology is valid");
+
+    let outcome = pg
+        .create_goal_atomic(&CreateGoalAtomicRequest {
+            draft,
+            context: GoalAtomicContext {
+                registry: &registry,
+                embedding_model_id: None,
+                author_self_perspective_id: Some(self_id),
+            },
+        })
+        .await
+        .unwrap();
+    let entity = EntityId::Goal(outcome.goal_id);
+
+    let moved = pg.transfer_to_world(entity, owner).await.unwrap();
+    assert!(moved, "goal row transfers under its current owner");
+    assert_single_home(&pg, entity.uuid(), &OwnerRef::World).await;
+    assert_no_live_entity_lacks_home(&pg).await;
+
+    common::drop_db(&db).await.unwrap();
+}
+
+#[tokio::test]
+async fn engine_publish_to_world_gates_admin_denies_rewrite_and_allows_ordinary_reads() {
+    let (pg, db) = common::fresh_pg().await;
+    let group = GroupId::new(Uuid::now_v7());
+    let admin = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let editor = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let outsider = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let entity = seed_memory_owned(&pg, OwnerRef::Group(group)).await;
+
+    let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        .with_storage_ports(Arc::new(pg.clone()).storage_ports());
+
+    let editor_err = engine
+        .publish_to_world(
+            &authz_with_role(&editor, OwnerRef::Group(group), Role::editor()),
+            entity,
+        )
+        .await
+        .expect_err("editor write ceiling never reaches Relation::Admin");
+    assert_eq!(editor_err.code, ErrorCode::Forbidden);
+
+    let outsider_err = engine
+        .publish_to_world(&granted_authz(&outsider), entity)
+        .await
+        .expect_err("a for_subject context with no group role is denied");
+    assert_eq!(outsider_err.code, ErrorCode::Forbidden);
+    assert_single_home(&pg, entity.uuid(), &OwnerRef::Group(group)).await;
+
+    engine
+        .publish_to_world(
+            &authz_with_role(&admin, OwnerRef::Group(group), Role::admin()),
+            entity,
+        )
+        .await
+        .expect("group admin may publish");
+    assert_single_home(&pg, entity.uuid(), &OwnerRef::World).await;
+    assert_no_live_entity_lacks_home(&pg).await;
+
+    let republish_err = engine
+        .publish_to_world(
+            &authz_with_role(&admin, OwnerRef::Group(group), Role::admin()),
+            entity,
+        )
+        .await
+        .expect_err("World is never a write owner again — re-publish fails closed");
+    assert_eq!(republish_err.code, ErrorCode::Forbidden);
+
+    let outsider_reads = read_owners(&pg, &outsider).await;
+    assert!(
+        pg.visible_to_any(entity, &outsider_reads).await.unwrap(),
+        "a World-owned entity is readable by an ordinary subject with zero group role"
+    );
+
+    common::drop_db(&db).await.unwrap();
+}
+
+#[tokio::test]
 async fn pg_owner_access_resolver_resolves_group_roles_via_owner_access_port() {
     let (pg, db) = common::fresh_pg().await;
     let subject = UserId::new(Uuid::now_v7());

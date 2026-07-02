@@ -1,4 +1,4 @@
-use super::access::{OwnerAccessReadPort, OwnerMembershipAdminPort};
+use super::access::{OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort};
 use super::change::ChangeEventPort;
 use super::compliance::{
     ComplianceAdminPort, ComplianceErasePort, FactRetentionPort, OwnerDropProofPort,
@@ -462,6 +462,19 @@ impl OwnerMembershipAdminPort for RejectingStorage {
         _group_id: GroupId,
     ) -> Result<Vec<(UserId, Relation)>, StorageError> {
         Ok(Vec::new())
+    }
+}
+
+#[async_trait::async_trait]
+impl OwnerTransferPort for RejectingStorage {
+    async fn transfer_to_world(
+        &self,
+        _entity: EntityId,
+        _from_owner: OwnerRef,
+    ) -> Result<bool, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
     }
 }
 

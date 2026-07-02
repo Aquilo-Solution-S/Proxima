@@ -405,6 +405,6 @@ pub use storage_ports::{
     EmbeddingJobPort, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort, FactIngestPort,
     FactRetentionPort, GoalReadPort, GoalWritePort, McpCallReadPort, McpCallWritePort,
     MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OwnerAccessReadPort,
-    OwnerDropProofPort, OwnerMembershipAdminPort, RegistryProjectionPort, SourceBatchPort,
-    StoragePorts,
+    OwnerDropProofPort, OwnerMembershipAdminPort, OwnerTransferPort, RegistryProjectionPort,
+    SourceBatchPort, StoragePorts,
 };
