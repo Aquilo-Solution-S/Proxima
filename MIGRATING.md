@@ -261,12 +261,12 @@ If a downstream package requires `docs/lean` as `causa` (e.g. a
 same commit as the Cargo tag bump — a Proxima tag bump is a dual
 Rust+Lean bump, never just one.
 
-Before bumping `rev`, diff `lake build`'s axiom output against the
-checked-in allowlist that `scripts/check-lean-axioms.py` compares against
-(Task 8 of this hardening pass; land after Task 6/9 close). A silent
-axiom-set change must never be absorbed into a downstream kernel
-unnoticed — if the allowlist diff is non-empty, that's a stop-and-review
-signal before the rev bump, not a rubber stamp.
+Before bumping `rev`, run `python3 scripts/check-lean-axioms.py` and diff
+its output against the checked-in allowlist at
+`scripts/lean-axioms.allowlist.txt` (Task 8 of this hardening pass). A
+silent axiom-set change must never be absorbed into a downstream kernel
+unnoticed — if the diff is non-empty, that's a stop-and-review signal
+before the rev bump, not a rubber stamp.
 
 ## Checks before calling an upgrade done
 
