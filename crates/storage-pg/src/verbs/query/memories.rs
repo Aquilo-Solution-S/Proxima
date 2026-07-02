@@ -116,10 +116,15 @@ pub(crate) async fn query_memories(
     }
 
     sql.push_str(
-        // Cognitive rows cannot be world-owned (`*_world_not_write_owner_chk`),
-        // so non-null owner equality preserves the keyset indexes.
+        // `memories.owner_id` is NULL for a World-owned row (0008_v005
+        // dropped `memories_world_not_write_owner_chk`: World is a valid
+        // persisted owner via `Engine::publish_to_world`, not just a
+        // fresh-write guard target). `s.id` is NULL for the World member
+        // of the caller's read-owner set, so plain `=` would silently
+        // drop every World-owned row here (NULL = NULL is NULL, not
+        // true) even though the caller is authorized to read World.
         " WHERE m.owner_kind = s.kind \
-            AND m.owner_id = s.id \
+            AND m.owner_id IS NOT DISTINCT FROM s.id \
             AND m.tombstoned_at IS NULL",
     );
 
