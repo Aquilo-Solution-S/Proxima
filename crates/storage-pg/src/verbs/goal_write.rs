@@ -1786,6 +1786,9 @@ where
         "INSERT INTO {table} (memory_id, goal_id, transitioned_at)
          VALUES ($1, $2, $3)"
     );
+    // SQL-POLICY: fixed-fragment — {table} is the GoalLifecyclePayload
+    // SIDECAR_TABLE associated const (compile-time literal, four in-crate
+    // impls); all runtime values are $-bound.
     sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(memory_id.into_inner())
         .bind(payload.goal_id())

@@ -1133,6 +1133,8 @@ async fn fact_natural_key_after_sidecar(
         natural_key_exprs.join(", "),
         sidecar_table.as_str(),
     );
+    // SQL-POLICY: PgIdent — sidecar_table and every natural-key column are
+    // PgIdent-validated above; the only bound input is the $1 uuid.
     sqlx::query_as::<_, (Vec<String>, time::OffsetDateTime)>(sqlx::AssertSqlSafe(natural_key_sql))
         .bind(memory_id)
         .fetch_optional(tx.as_mut())
