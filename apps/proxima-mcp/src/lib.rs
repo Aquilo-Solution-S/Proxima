@@ -344,8 +344,8 @@ fn resolve_tool_scope(
     let profile = parse_tool_profile(profile_name.unwrap_or(protocol_profile::FULL))?;
     let allow = parse_tool_id_csv(allow_raw);
     let deny = parse_tool_id_csv(deny_raw);
-    warn_unknown_tool_ids(&allow, registered_ids, PROXIMA_TOOL_ALLOW);
-    warn_unknown_tool_ids(&deny, registered_ids, PROXIMA_TOOL_DENY);
+    reject_unknown_tool_ids(&allow, registered_ids, PROXIMA_TOOL_ALLOW)?;
+    reject_unknown_tool_ids(&deny, registered_ids, PROXIMA_TOOL_DENY)?;
 
     if profile == ToolProfile::Full && allow.is_empty() && deny.is_empty() {
         return Ok(ToolScope::All);
@@ -384,13 +384,24 @@ fn parse_tool_id_csv(raw: Option<&str>) -> Vec<String> {
     })
 }
 
-fn warn_unknown_tool_ids(ids: &[String], registered_ids: &[&str], env_var: &str) {
+/// Fail closed on a `PROXIMA_TOOL_ALLOW`/`PROXIMA_TOOL_DENY` entry that does
+/// not name a registered tool/action/resource id in this build (e.g. a
+/// typo). A silently-ignored unknown `DENY` entry is a fail-open deployment
+/// bug: the operator believes a tool is disabled when it never was.
+fn reject_unknown_tool_ids(
+    ids: &[String],
+    registered_ids: &[&str],
+    env_var: &str,
+) -> Result<(), CliError> {
     let registered: HashSet<&str> = registered_ids.iter().copied().collect();
     for id in ids {
         if !registered.contains(id.as_str()) {
-            tracing::warn!(env_var, tool_id = %id, "tool id is not registered in this build");
+            return Err(CliError::Runtime(ProximaError::Config(format!(
+                "{env_var} contains unknown tool id {id:?}; not registered in this build"
+            ))));
         }
     }
+    Ok(())
 }
 
 fn oidc_from_env(
@@ -714,6 +725,47 @@ mod tests {
         let err =
             resolve_tool_scope(Some("unknown"), None, None, &[]).expect_err("unknown profile");
         assert!(err.to_string().contains("unknown PROXIMA_TOOL_PROFILE"));
+    }
+
+    #[test]
+    fn unknown_deny_entry_typo_fails_closed() {
+        let registered_ids = [protocol_tool::CORE_SEARCH_MEMORIES];
+        let err = resolve_tool_scope(None, None, Some("core_memroy"), &registered_ids)
+            .expect_err("typo'd deny entry must be rejected, not silently ignored");
+        assert!(
+            err.to_string().contains(PROXIMA_TOOL_DENY),
+            "message: {err}"
+        );
+        assert!(err.to_string().contains("core_memroy"), "message: {err}");
+    }
+
+    #[test]
+    fn unknown_allow_entry_typo_fails_closed() {
+        let registered_ids = [protocol_tool::CORE_SEARCH_MEMORIES];
+        let err = resolve_tool_scope(
+            Some(protocol_profile::MEMORY),
+            Some("core_memroy"),
+            None,
+            &registered_ids,
+        )
+        .expect_err("typo'd allow entry must be rejected, not silently ignored");
+        assert!(
+            err.to_string().contains(PROXIMA_TOOL_ALLOW),
+            "message: {err}"
+        );
+        assert!(err.to_string().contains("core_memroy"), "message: {err}");
+    }
+
+    #[test]
+    fn known_deny_entry_still_narrows_scope() {
+        let registered_ids = [
+            protocol_tool::CORE_SEARCH_MEMORIES,
+            protocol_tool::CORE_GOAL,
+        ];
+        let scope = resolve_tool_scope(None, None, Some(protocol_tool::CORE_GOAL), &registered_ids)
+            .expect("known deny entry is accepted");
+        assert!(scope.allows(protocol_tool::CORE_SEARCH_MEMORIES));
+        assert!(!scope.allows(protocol_tool::CORE_GOAL));
     }
 
     #[test]
