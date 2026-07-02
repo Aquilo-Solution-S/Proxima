@@ -751,6 +751,85 @@ async fn engine_publish_to_world_personal_owner_self_publish() {
     common::drop_db(&db).await.unwrap();
 }
 
+/// Read half of Goal publish (v0.0.5 Task 5 fix round, I1): `query_goals`'s
+/// owner join used plain `g.owner_id = s.id`, and both sides are NULL for the
+/// World slot (`goals.owner_id` after a publish transfer; `s.id` for the World
+/// member of every caller's read-owner set), so `NULL = NULL → NULL` silently
+/// hid every published Goal from every reader — the exact `memories.rs` trap,
+/// one file over. This proves a published Goal surfaces through `Engine::query`
+/// for a caller with no relationship to the original owner.
+#[tokio::test]
+async fn engine_query_surfaces_world_published_goal_to_non_owner() {
+    let (pg, db) = common::fresh_pg().await;
+    let author = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let stranger = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let self_id = insert_self(&pg, &author).await;
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let mut draft = fresh_goal_draft(author);
+    draft.topology = GoalTopologyWrite::new(
+        GoalAssignmentTarget::perspective(self_id),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("empty test topology is valid");
+    let outcome = pg
+        .create_goal_atomic(&CreateGoalAtomicRequest {
+            draft,
+            context: GoalAtomicContext {
+                registry: &registry,
+                embedding_model_id: None,
+                author_self_perspective_id: Some(self_id),
+            },
+        })
+        .await
+        .unwrap();
+    let goal_id = outcome.goal_id;
+
+    let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        .with_storage_ports(Arc::new(pg.clone()).storage_ports());
+
+    // Pre-publish control: the stranger cannot see the author's Goal.
+    let mut req = QueryRequest::for_owner(stranger);
+    req.entity_kind = Some(EntityKind::Goal);
+    req.goal_ids = vec![goal_id];
+    let before = engine.query(&granted_authz(&stranger), &req).await.unwrap();
+    assert!(
+        before.goals.is_empty(),
+        "an unpublished Goal must not be visible to an unrelated user"
+    );
+
+    engine
+        .publish_to_world(&granted_authz(&author), EntityId::Goal(goal_id))
+        .await
+        .expect("author publishes their own goal");
+    assert_single_home(&pg, goal_id.into_inner(), &OwnerRef::World).await;
+
+    // Post-publish: same stranger, same query — the World-owned Goal must
+    // surface (World is in every caller's authz-resolved read set).
+    let after = engine.query(&granted_authz(&stranger), &req).await.unwrap();
+    assert_eq!(
+        after.goals.iter().map(|row| row.id).collect::<Vec<_>>(),
+        vec![goal_id],
+        "a World-published Goal must surface through Engine::query for a non-owner reader"
+    );
+    assert_eq!(after.goals[0].owner, OwnerRef::World);
+
+    // The pure listing path (no goal_ids hydration) shares the same owner
+    // join; prove it too so the fix is covered for discovery-style reads.
+    let mut list_req = QueryRequest::for_owner(stranger);
+    list_req.entity_kind = Some(EntityKind::Goal);
+    let listed = engine
+        .query(&granted_authz(&stranger), &list_req)
+        .await
+        .unwrap();
+    assert!(
+        listed.goals.iter().any(|row| row.id == goal_id),
+        "a World-published Goal must also surface in an unhydrated Goal listing"
+    );
+
+    common::drop_db(&db).await.unwrap();
+}
+
 #[tokio::test]
 async fn pg_owner_access_resolver_resolves_group_roles_via_owner_access_port() {
     let (pg, db) = common::fresh_pg().await;
