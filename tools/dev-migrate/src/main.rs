@@ -12,32 +12,79 @@
 //!
 //! ```text
 //! SQLX_OFFLINE=true cargo build -p proxima-dev-migrate
-//! DATABASE_URL=postgres://proxima:proxima@localhost/<db> ./target/debug/dev-migrate
+//! ./target/debug/dev-migrate --database-url postgres://proxima:proxima@localhost/<db>
+//! # or: DATABASE_URL=postgres://proxima:proxima@localhost/<db> ./target/debug/dev-migrate
 //! ```
 //!
 //! Afterwards `cargo sqlx prepare --workspace` has every schema it needs.
+//!
+//! The target database URL always comes from `--database-url <URL>` when
+//! given, falling back to `DATABASE_URL`; the resolved host/database is
+//! printed before anything runs. `--reset` additionally performs a
+//! destructive drop-and-recreate of the `proxima_core`/`proxima_code`
+//! schemas (see [`reset_local_dev_database`]) — it still requires
+//! `PROXIMA_V004_RESET_CONFIRM` and refuses non-local hosts and protected
+//! database names as a second, independent guard against pointing this at
+//! anything but a scratch dev database.
 
 use proxima::flavor::FlavorBundle;
 use proxima::run_core_and_flavor_migrations;
 use proxima_storage_pg::{PgStorage, RETIRED_PRE_V004_MIGRATION_VERSIONS, core_migrator};
 
-const RESET_FLAG: &str = "--v004-reset-dev-db";
+const DATABASE_URL_FLAG: &str = "--database-url";
+const RESET_FLAG: &str = "--reset";
 const RESET_CONFIRM_ENV: &str = "PROXIMA_V004_RESET_CONFIRM";
 const RESET_CONFIRM_VALUE: &str = "reset-my-dev-db";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let url = std::env::var("DATABASE_URL").map_err(
-        |_| "DATABASE_URL must be set, e.g. postgres://proxima:proxima@localhost/proxima",
-    )?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let url = resolve_database_url(&args)?;
+    print_target(&url)?;
+
     let pg = PgStorage::connect(&url).await?;
-    if std::env::args().skip(1).any(|arg| arg == RESET_FLAG) {
+    if args.iter().any(|arg| arg == RESET_FLAG) {
         reset_local_dev_database(&pg, &url).await?;
     }
     let report = run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators()).await?;
     for source in report.sources {
         println!("{source} migrations applied");
     }
+    Ok(())
+}
+
+/// Resolve the target database URL: `--database-url <URL>` (or
+/// `--database-url=<URL>`) first, then the `DATABASE_URL` env var.
+fn resolve_database_url(args: &[String]) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(pos) = args.iter().position(|arg| arg == DATABASE_URL_FLAG) {
+        let value = args.get(pos + 1).ok_or(concat!(
+            "--database-url requires a value, e.g. ",
+            "--database-url postgres://proxima:proxima@localhost/proxima"
+        ))?;
+        return Ok(value.clone());
+    }
+    for arg in args {
+        if let Some(value) = arg.strip_prefix("--database-url=") {
+            return Ok(value.to_string());
+        }
+    }
+    std::env::var("DATABASE_URL").map_err(|_| {
+        "database URL required: pass --database-url <URL> or set DATABASE_URL, \
+         e.g. postgres://proxima:proxima@localhost/proxima"
+            .into()
+    })
+}
+
+/// Print the resolved target host/database before any migration or
+/// destructive operation runs, so a wrong `--database-url`/`DATABASE_URL`
+/// is visible before it takes effect.
+fn print_target(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let options: sqlx::postgres::PgConnectOptions = url.parse()?;
+    eprintln!(
+        "dev-migrate target: host={} database={}",
+        options.get_host(),
+        options.get_database().unwrap_or("<default>"),
+    );
     Ok(())
 }
 
