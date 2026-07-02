@@ -8,7 +8,7 @@ use crate::error::map_err;
 /// # Errors
 ///
 /// Returns `StorageError::Internal` for SQL failures.
-pub async fn load_source_cursor(
+pub(crate) async fn load_source_cursor(
     pool: &PgPool,
     owner: &Owner,
     source: &str,
@@ -35,7 +35,7 @@ pub async fn load_source_cursor(
 /// # Errors
 ///
 /// Returns `StorageError::Internal` or `ConstraintViolation` for SQL failures.
-pub async fn store_source_cursor(
+pub(crate) async fn store_source_cursor(
     pool: &PgPool,
     owner: &Owner,
     source: &str,

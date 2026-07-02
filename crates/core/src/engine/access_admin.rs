@@ -1,5 +1,6 @@
 use crate::access::{EntityId, Relation};
 use crate::authz::{AuthPath, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome};
+use crate::compliance::ComplianceEraseTarget;
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
 use crate::{GroupId, OwnerRef, UserId};
@@ -15,19 +16,28 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when an authorization veto denies the bootstrap,
+    /// Returns `Forbidden` when the caller lacks compliance-controller
+    /// authority or an authorization veto denies the bootstrap,
     /// `InvalidArgument` when the group already has an Admin, and `Internal`
     /// for storage failures.
     pub async fn bootstrap_group_admin(
         &self,
+        authz: &AuthzContext,
         group: GroupId,
         first_admin: UserId,
     ) -> Result<(), ProtocolError> {
-        let authz = AuthzContext::for_subject(first_admin, AuthPath::System);
+        let target = ComplianceEraseTarget::GroupOwner { group_id: group };
+        if !self.compliance_controller_authorized(authz, &target).await {
+            return Err(ProtocolError::forbidden(
+                "compliance controller authorization required",
+            ));
+        }
+
+        let bootstrap_member_authz = AuthzContext::for_subject(first_admin, AuthPath::System);
         let group_owner = OwnerRef::Group(group);
         let member_principal = OwnerRef::Personal(first_admin);
         self.veto_and_observe_access_admin(
-            &authz,
+            &bootstrap_member_authz,
             &group_owner,
             &group_owner,
             Relation::Admin,
@@ -275,7 +285,8 @@ fn bootstrap_storage_error(err: StorageError) -> ProtocolError {
 
 #[cfg(test)]
 mod tests {
-    use crate::FlavorRegistry;
+    use crate::{AuthPath, AuthzContext, ErrorCode, FlavorRegistry, GroupId, UserId};
+    use uuid::Uuid;
 
     #[test]
     fn access_admin_bootstrap_group_admin_is_not_mcp_exposed() {
@@ -300,5 +311,19 @@ mod tests {
                 "bootstrap_group_admin must not appear in MCP schemas"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn access_admin_bootstrap_group_admin_requires_operator_authority() {
+        let engine = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+        let group = GroupId::new(Uuid::now_v7());
+        let first_admin = UserId::new(Uuid::now_v7());
+        let authz = AuthzContext::for_subject(first_admin, AuthPath::HostBearer);
+
+        let err = engine
+            .bootstrap_group_admin(&authz, group, first_admin)
+            .await
+            .expect_err("non-operator caller must not bootstrap group admin");
+        assert_eq!(err.code, ErrorCode::Forbidden);
     }
 }

@@ -76,16 +76,17 @@ Legal/security holds are host-side owner config:
 
 | Engine verb | Effect |
 |---|---|
-| `set_legal_hold(authz, owner)` | idempotently activates a per-owner hold |
-| `get_legal_hold(authz, owner)` | returns the active hold flag |
-| `clear_legal_hold(authz, owner)` | clears the hold; returns whether a row existed |
+| `set_legal_hold(authz, owner)` | idempotently activates a per-owner hold; requires compliance-erase operator authority (`ComplianceAdminPort` approval or `AuthPath::System`) |
+| `get_legal_hold(authz, owner)` | returns the active hold flag; requires owner `Admin` |
+| `clear_legal_hold(authz, owner)` | clears the hold and returns whether a row existed; requires compliance-erase operator authority |
 
-While active, the hold suspends physical destruction for exactly the
-current compliance `erase_*` family. The four destructive owner/source
-erase paths return `ComplianceEraseOutcome::Refused { reason:
-ComplianceEraseRefusal::LegalHoldActive, .. }` and delete nothing.
-`erase_world_owner` remains refusal-only with `WorldOwner`; reads and
-ordinary writes are unchanged. Future physical-destruction paths must
+While active, the hold suspends substantive owner-memory physical destruction
+for exactly the current compliance `erase_*` family. The four destructive
+owner/source erase paths return `ComplianceEraseOutcome::Refused { reason:
+ComplianceEraseRefusal::LegalHoldActive, .. }` and delete no substantive owner
+memory content. `erase_world_owner` remains refusal-only with `WorldOwner`;
+reads, ordinary writes, and transient `proxima_core.embedding_jobs`
+work-queue consumption are unchanged. Future physical-destruction paths must
 inherit the same storage-transaction gate before they can exist.
 Operators own the legal judgment; Proxima guarantees only the mechanics.
 

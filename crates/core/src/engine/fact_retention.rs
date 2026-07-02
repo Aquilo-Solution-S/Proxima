@@ -1,8 +1,20 @@
 use super::{Engine, pipeline::WritePermit};
 use crate::access::Relation;
 use crate::authz::AuthzContext;
+use crate::compliance::ComplianceEraseTarget;
 use crate::error::ProtocolError;
 use crate::owner::Owner;
+
+fn compliance_target_for_owner(owner: &Owner) -> ComplianceEraseTarget {
+    match *owner {
+        crate::OwnerRef::World => ComplianceEraseTarget::WorldOwner,
+        crate::OwnerRef::Personal(user_id) => ComplianceEraseTarget::PersonalOwner {
+            user_id,
+            drop_event_id: String::new(),
+        },
+        crate::OwnerRef::Group(group_id) => ComplianceEraseTarget::GroupOwner { group_id },
+    }
+}
 
 fn retention_seconds_to_i64(seconds: u64) -> Result<i64, ProtocolError> {
     if seconds == 0 {
@@ -110,18 +122,23 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `owner` or
-    /// lacks `Admin`, and `Internal` for storage failures.
+    /// Returns `Forbidden` when the caller lacks compliance-controller
+    /// authority, and `Internal` for storage failures.
     pub async fn set_legal_hold(
         &self,
         authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<(), ProtocolError> {
-        let permit = self.authorize_write(authz, owner, Relation::Admin).await?;
+        let target = compliance_target_for_owner(owner);
+        if !self.compliance_controller_authorized(authz, &target).await {
+            return Err(ProtocolError::forbidden(
+                "compliance controller authorization required",
+            ));
+        }
         self.storage
             .fact_retention
             .fact_retention
-            .set_legal_hold(permit.owner())
+            .set_legal_hold(owner)
             .await
             .map_err(|e| ProtocolError::internal(format!("set_legal_hold: {e}")))
     }
@@ -150,18 +167,23 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `owner` or
-    /// lacks `Admin`, and `Internal` for storage failures.
+    /// Returns `Forbidden` when the caller lacks compliance-controller
+    /// authority, and `Internal` for storage failures.
     pub async fn clear_legal_hold(
         &self,
         authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<bool, ProtocolError> {
-        let permit = self.authorize_write(authz, owner, Relation::Admin).await?;
+        let target = compliance_target_for_owner(owner);
+        if !self.compliance_controller_authorized(authz, &target).await {
+            return Err(ProtocolError::forbidden(
+                "compliance controller authorization required",
+            ));
+        }
         self.storage
             .fact_retention
             .fact_retention
-            .clear_legal_hold(permit.owner())
+            .clear_legal_hold(owner)
             .await
             .map_err(|e| ProtocolError::internal(format!("clear_legal_hold: {e}")))
     }
@@ -190,12 +212,12 @@ mod tests {
         let (_principal, owner) = fresh_personal_owner();
         let (_stranger, stranger_owner) = fresh_personal_owner();
         let engine = boot_engine();
-        let stranger = AuthzContext::single_owner(&stranger_owner, AuthPath::System);
+        let stranger = AuthzContext::single_owner(&stranger_owner, AuthPath::HostBearer);
 
         let err = engine
             .set_legal_hold(&stranger, &owner)
             .await
-            .expect_err("foreign owner must be rejected");
+            .expect_err("non-operator hold set must be rejected");
         assert_eq!(err.code, ErrorCode::Forbidden);
 
         let err = engine
@@ -207,7 +229,7 @@ mod tests {
         let err = engine
             .clear_legal_hold(&stranger, &owner)
             .await
-            .expect_err("foreign owner must be rejected");
+            .expect_err("non-operator hold clear must be rejected");
         assert_eq!(err.code, ErrorCode::Forbidden);
     }
 
@@ -264,5 +286,35 @@ mod tests {
             .await
             .expect_err("RejectingStorage rejects writes");
         assert_eq!(err.code, ErrorCode::Internal);
+    }
+
+    #[tokio::test]
+    async fn legal_hold_owner_admin_can_get_but_cannot_set_or_clear() {
+        let subject = UserId::new(Uuid::now_v7());
+        let owner = OwnerRef::Group(crate::GroupId::new(Uuid::now_v7()));
+        let engine = boot_engine();
+        let owner_admin = AuthzContext::for_subject_with_role(
+            subject,
+            [(owner, Role::admin())],
+            AuthPath::HostBearer,
+        );
+
+        let err = engine
+            .set_legal_hold(&owner_admin, &owner)
+            .await
+            .expect_err("owner admin without operator authority cannot set hold");
+        assert_eq!(err.code, ErrorCode::Forbidden);
+
+        let err = engine
+            .get_legal_hold(&owner_admin, &owner)
+            .await
+            .expect_err("owner admin get reaches RejectingStorage");
+        assert_eq!(err.code, ErrorCode::Internal);
+
+        let err = engine
+            .clear_legal_hold(&owner_admin, &owner)
+            .await
+            .expect_err("owner admin without operator authority cannot clear hold");
+        assert_eq!(err.code, ErrorCode::Forbidden);
     }
 }
