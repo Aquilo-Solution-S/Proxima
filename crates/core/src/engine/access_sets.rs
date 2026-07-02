@@ -653,6 +653,30 @@ pub(in crate::engine) mod tests {
     }
 
     #[async_trait::async_trait]
+    impl SourceCursorPort for MembershipStorage {
+        async fn load_source_cursor(
+            &self,
+            _owner: &Owner,
+            _source: &str,
+        ) -> Result<Option<Cursor>, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+
+        async fn store_source_cursor(
+            &self,
+            _owner: &Owner,
+            _source: &str,
+            _cursor: &Cursor,
+        ) -> Result<(), StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
     impl FactRetentionPort for MembershipStorage {
         async fn upsert_fact_retention(
             &self,
@@ -796,6 +820,7 @@ pub(in crate::engine) mod tests {
                 .owner_membership_admin(storage.clone())
                 .owner_transfer(storage.clone())
                 .source_batch(storage.clone())
+                .source_cursor(storage.clone())
                 .fact_retention(storage.clone())
                 .compliance_erase(storage.clone())
                 .registry_projection(storage)

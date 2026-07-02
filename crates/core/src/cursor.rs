@@ -3,9 +3,10 @@
 //! Sources own the encoded format. The engine treats the bytes as
 //! opaque and round-trips them verbatim.
 //!
-//! v1 keeps the cursor in-memory at the call site (bin or test);
-//! persistence to a `source_cursors` table is a follow-up once
-//! restart-recovery or multi-process coordination is needed.
+//! Cursor persistence lives in the owner-scoped `source_cursors` table
+//! for restart recovery. The persistence layer stores and returns the
+//! same bytes verbatim; Proxima never interprets, validates, decodes,
+//! normalizes, or derives ordering from them.
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Cursor(Vec<u8>);

@@ -26,7 +26,7 @@ use proxima_core::storage_ports::{
     EmbeddingTextPort, EmbeddingWritePort, FactIngestPort, FactRetentionPort, GoalReadPort,
     GoalWakeCandidatePort, GoalWritePort, McpCallReadPort, McpCallWritePort, MemoryAuthoringPort,
     MemoryInspectPort, MemoryReadPort, OwnerAccessReadPort, OwnerMembershipAdminPort,
-    OwnerTransferPort, RegistryProjectionPort, SourceBatchPort, StoragePorts,
+    OwnerTransferPort, RegistryProjectionPort, SourceBatchPort, SourceCursorPort, StoragePorts,
 };
 use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
@@ -45,8 +45,8 @@ use proxima_core::verbs::query::{
     QueryRequest, QueryResponse,
 };
 use proxima_core::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EdgeEndpointKindRow, EdgeId,
-    EmbeddingJobClaim, EntityId, FactEntityId, FactSourceBatchRow, GroupId, MembershipRow,
+    AuthorDerivedOutcome, AuthorDerivedRequest, Cursor, DerivedEdgeSpec, EdgeEndpointKindRow,
+    EdgeId, EmbeddingJobClaim, EntityId, FactEntityId, FactSourceBatchRow, GroupId, MembershipRow,
     MemoryDependency, MemoryGraphPayloadRow, MemoryId, MemoryKindRow, NeighborEdgeRow, Owner,
     OwnerRef, Relation, SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError, UserId,
 };
@@ -351,6 +351,7 @@ impl PgStorage {
             .owner_membership_admin(self.clone())
             .owner_transfer(self.clone())
             .source_batch(self.clone())
+            .source_cursor(self.clone())
             .fact_retention(self.clone())
             .compliance_erase(self.clone())
             .registry_projection(self)
@@ -1290,6 +1291,26 @@ impl SourceBatchPort for PgStorage {
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError> {
         verbs::close_batch::close_batch(&self.pool, principal, source_batch_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl SourceCursorPort for PgStorage {
+    async fn load_source_cursor(
+        &self,
+        owner: &Owner,
+        source: &str,
+    ) -> Result<Option<Cursor>, StorageError> {
+        verbs::source_cursors::load_source_cursor(&self.pool, owner, source).await
+    }
+
+    async fn store_source_cursor(
+        &self,
+        owner: &Owner,
+        source: &str,
+        cursor: &Cursor,
+    ) -> Result<(), StorageError> {
+        verbs::source_cursors::store_source_cursor(&self.pool, owner, source, cursor).await
     }
 }
 

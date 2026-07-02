@@ -7,7 +7,7 @@ use super::handles::{
     FactIngestHandle, FactRetentionHandle, GoalReadHandle, GoalWriteHandle, McpCallReadHandle,
     McpCallWriteHandle, MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle,
     OwnerAccessReadHandle, OwnerDropProofHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
-    RegistryProjectionHandle, SourceBatchHandle,
+    RegistryProjectionHandle, SourceBatchHandle, SourceCursorHandle,
 };
 use super::rejecting::RejectingStorage;
 
@@ -32,6 +32,7 @@ pub struct StoragePorts {
     owner_membership_admin: OwnerMembershipAdminHandle,
     owner_transfer: OwnerTransferHandle,
     source_batch: SourceBatchHandle,
+    source_cursor: SourceCursorHandle,
     fact_retention: FactRetentionHandle,
     compliance_erase: ComplianceEraseHandle,
     compliance_admin: Option<ComplianceAdminHandle>,
@@ -55,6 +56,11 @@ pub(crate) struct AccessAdminStoragePorts {
 #[derive(Clone)]
 pub(crate) struct FactRetentionStoragePorts {
     pub fact_retention: FactRetentionHandle,
+}
+
+#[derive(Clone)]
+pub(crate) struct SourceCursorStoragePorts {
+    pub source_cursor: SourceCursorHandle,
 }
 
 #[derive(Clone)]
@@ -116,6 +122,7 @@ pub(crate) struct EngineStoragePorts {
     pub access_admin: AccessAdminStoragePorts,
     pub compliance: ComplianceStoragePorts,
     pub fact_retention: FactRetentionStoragePorts,
+    pub source_cursor: SourceCursorStoragePorts,
     pub goal_command: GoalCommandStoragePorts,
     pub ingest: IngestStoragePorts,
     pub memory_authoring: MemoryAuthoringStoragePorts,
@@ -144,6 +151,7 @@ pub struct StoragePortsBuilder {
     owner_membership_admin: Option<OwnerMembershipAdminHandle>,
     owner_transfer: Option<OwnerTransferHandle>,
     source_batch: Option<SourceBatchHandle>,
+    source_cursor: Option<SourceCursorHandle>,
     fact_retention: Option<FactRetentionHandle>,
     compliance_erase: Option<ComplianceEraseHandle>,
     compliance_admin: Option<ComplianceAdminHandle>,
@@ -192,6 +200,7 @@ impl StoragePorts {
             owner_membership_admin: rejecting.clone(),
             owner_transfer: rejecting.clone(),
             source_batch: rejecting.clone(),
+            source_cursor: rejecting.clone(),
             fact_retention: rejecting.clone(),
             compliance_erase: rejecting.clone(),
             compliance_admin: None,
@@ -219,6 +228,9 @@ impl From<StoragePorts> for EngineStoragePorts {
             },
             fact_retention: FactRetentionStoragePorts {
                 fact_retention: ports.fact_retention.clone(),
+            },
+            source_cursor: SourceCursorStoragePorts {
+                source_cursor: ports.source_cursor.clone(),
             },
             goal_command: GoalCommandStoragePorts {
                 goal_write: ports.goal_write.clone(),
@@ -367,6 +379,12 @@ impl StoragePortsBuilder {
     }
 
     #[must_use]
+    pub fn source_cursor(mut self, handle: SourceCursorHandle) -> Self {
+        self.source_cursor = Some(handle);
+        self
+    }
+
+    #[must_use]
     pub fn fact_retention(mut self, handle: FactRetentionHandle) -> Self {
         self.fact_retention = Some(handle);
         self
@@ -450,6 +468,9 @@ impl StoragePortsBuilder {
             source_batch: self
                 .source_batch
                 .expect("source_batch storage port configured"),
+            source_cursor: self
+                .source_cursor
+                .expect("source_cursor storage port configured"),
             fact_retention: self
                 .fact_retention
                 .expect("fact_retention storage port configured"),

@@ -37,4 +37,5 @@ mod query_pg;
 mod read_mcp_call_history_pg;
 mod search_pg;
 mod sidecar_macro_pg;
+mod source_cursor_pg;
 mod sql_enums_pg;

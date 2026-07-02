@@ -406,5 +406,5 @@ pub use storage_ports::{
     FactRetentionPort, GoalReadPort, GoalWritePort, McpCallReadPort, McpCallWritePort,
     MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OwnerAccessReadPort,
     OwnerDropProofPort, OwnerMembershipAdminPort, OwnerTransferPort, RegistryProjectionPort,
-    SourceBatchPort, StoragePorts,
+    SourceBatchPort, SourceCursorPort, StoragePorts,
 };
