@@ -1,15 +1,17 @@
-use std::collections::{HashMap, HashSet};
-
-use proxima_core::verbs::query::{EntityKind, QueryRequest, SupersessionStatus, TombstoneFilter};
+use proxima_core::verbs::query::EntityKind;
 use proxima_core::{
-    AbstractionPayload, AuthzContext, FactPayload, MemoryId, Owner, SchemaId, SidecarPayload,
-    ToolError,
+    AbstractionPayload, AuthzContext, FactPayload, MemoryId, Owner, SchemaId, ToolError,
 };
 use sqlx::PgPool;
 
-const MAX_AUTHZ_CANDIDATES: usize = 2_000;
-
 /// Private code-flavor storage service passed to tools by the host.
+///
+/// All authorized-read logic lives in `proxima::flavor` (v0.0.5 Task 5);
+/// the methods here are thin delegating wrappers so call sites across this
+/// crate keep a stable `pool.authorized_*(...)` shape while `pool()` itself
+/// stays private — no `PgPool` and no `proxima_core.*` SQL ever leaves this
+/// crate's backend-owned boundary (`from_backend_pool_for_host`/`for_tests`,
+/// `pool()`).
 #[derive(Clone)]
 pub struct CodeFlavorStore {
     pool: PgPool,
@@ -51,33 +53,16 @@ impl CodeFlavorStore {
         schema_id: Option<SchemaId>,
         limit: usize,
     ) -> Result<Vec<MemoryId>, ToolError> {
-        let candidates = bounded_candidates(candidates, limit);
-        if candidates.is_empty() || limit == 0 {
-            return Ok(Vec::new());
-        }
-
-        let mut req = QueryRequest::for_owner(owner);
-        req.entity_kind = Some(entity_kind);
-        req.schema_id = schema_id;
-        req.supersession = SupersessionStatus::HeadsOnly;
-        req.tombstones = TombstoneFilter::PresentOnly;
-        req.limit = u32::try_from(candidates.len()).unwrap_or(u32::MAX);
-        req.include_payloads = false;
-        req.memory_ids = candidates.iter().copied().map(MemoryId::new).collect();
-
-        let visible = engine.query(authz, &req).await?;
-        let visible_ids = visible
-            .memories
-            .into_iter()
-            .map(|row| row.id.into_inner())
-            .collect::<HashSet<_>>();
-
-        Ok(candidates
-            .into_iter()
-            .filter(|id| visible_ids.contains(id))
-            .take(limit)
-            .map(MemoryId::new)
-            .collect())
+        proxima::flavor::authorized_memory_ids(
+            engine,
+            authz,
+            owner,
+            candidates,
+            entity_kind,
+            schema_id,
+            limit,
+        )
+        .await
     }
 
     pub(crate) async fn authorized_fact_payloads<P>(
@@ -91,15 +76,8 @@ impl CodeFlavorStore {
     where
         P: FactPayload + Clone,
     {
-        self.authorized_fact_payloads_with_tombstone_filter::<P>(
-            engine,
-            authz,
-            owner,
-            candidates,
-            TombstoneFilter::PresentOnly,
-            limit,
-        )
-        .await
+        proxima::flavor::authorized_fact_payloads::<P>(engine, authz, owner, candidates, limit)
+            .await
     }
 
     pub(crate) async fn authorized_fact_payloads_include_tombstones<P>(
@@ -113,46 +91,10 @@ impl CodeFlavorStore {
     where
         P: FactPayload + Clone,
     {
-        self.authorized_fact_payloads_with_tombstone_filter::<P>(
-            engine,
-            authz,
-            owner,
-            candidates,
-            TombstoneFilter::IncludeTombstoned,
-            limit,
+        proxima::flavor::authorized_fact_payloads_include_tombstones::<P>(
+            engine, authz, owner, candidates, limit,
         )
         .await
-    }
-
-    async fn authorized_fact_payloads_with_tombstone_filter<P>(
-        &self,
-        engine: &proxima_core::Engine,
-        authz: &AuthzContext,
-        owner: Owner,
-        candidates: &[uuid::Uuid],
-        tombstones: TombstoneFilter,
-        limit: usize,
-    ) -> Result<Vec<(MemoryId, P)>, ToolError>
-    where
-        P: FactPayload + Clone,
-    {
-        let payloads = self
-            .authorized_payloads(
-                engine,
-                authz,
-                owner,
-                candidates,
-                EntityKind::Fact,
-                P::schema_id(),
-                SupersessionStatus::HeadsOnly,
-                tombstones,
-                limit,
-            )
-            .await?;
-        Ok(payloads
-            .into_iter()
-            .filter_map(|(id, payload)| payload.downcast_ref::<P>().cloned().map(|p| (id, p)))
-            .collect())
     }
 
     pub(crate) async fn authorized_abstraction_payloads<P>(
@@ -166,78 +108,29 @@ impl CodeFlavorStore {
     where
         P: AbstractionPayload + Clone,
     {
-        let payloads = self
-            .authorized_payloads(
-                engine,
-                authz,
-                owner,
-                candidates,
-                EntityKind::Abstraction,
-                P::schema_id(),
-                SupersessionStatus::HeadsOnly,
-                TombstoneFilter::PresentOnly,
-                limit,
-            )
-            .await?;
-        Ok(payloads
-            .into_iter()
-            .filter_map(|(id, payload)| payload.downcast_ref::<P>().cloned().map(|p| (id, p)))
-            .collect())
+        proxima::flavor::authorized_abstraction_payloads::<P>(
+            engine, authz, owner, candidates, limit,
+        )
+        .await
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn authorized_payloads(
+    /// Narrow a sidecar-only `code-chunk-v1` candidate id list (already
+    /// known to belong to that schema via a `proxima_code.*`-only query) to
+    /// the subset not superseded, by `(repo_id, file_path, chunk_index)`,
+    /// within the same schema/owner-or-World scope. `code-chunk-v1` never
+    /// sets `memories.supersedes`; see
+    /// `proxima::flavor::authorized_code_chunk_head_candidates`.
+    pub(crate) async fn authorized_code_chunk_head_candidates(
         &self,
-        engine: &proxima_core::Engine,
-        authz: &AuthzContext,
         owner: Owner,
         candidates: &[uuid::Uuid],
-        entity_kind: EntityKind,
-        schema_id: SchemaId,
-        supersession: SupersessionStatus,
-        tombstones: TombstoneFilter,
-        limit: usize,
-    ) -> Result<Vec<(MemoryId, SidecarPayload)>, ToolError> {
-        let candidates = bounded_candidates(candidates, limit);
-        if candidates.is_empty() || limit == 0 {
-            return Ok(Vec::new());
-        }
-
-        let mut req = QueryRequest::for_owner(owner);
-        req.entity_kind = Some(entity_kind);
-        req.schema_id = Some(schema_id);
-        req.supersession = supersession;
-        req.tombstones = tombstones;
-        req.limit = u32::try_from(candidates.len()).unwrap_or(u32::MAX);
-        req.include_payloads = true;
-        req.memory_ids = candidates.iter().copied().map(MemoryId::new).collect();
-
-        let response = engine.query(authz, &req).await?;
-        let mut by_id = response
-            .memories
-            .into_iter()
-            .filter_map(|row| row.payload.map(|payload| (row.id.into_inner(), payload)))
-            .collect::<HashMap<_, _>>();
-
-        Ok(candidates
-            .into_iter()
-            .filter_map(|id| {
-                by_id
-                    .remove(&id)
-                    .map(|payload| (MemoryId::new(id), payload))
-            })
-            .take(limit)
-            .collect())
+    ) -> Result<Vec<uuid::Uuid>, ToolError> {
+        proxima::flavor::authorized_code_chunk_head_candidates(
+            &self.pool,
+            owner,
+            &crate::payloads::CodeChunkV1::schema_id(),
+            candidates,
+        )
+        .await
     }
-}
-
-fn bounded_candidates(candidates: &[uuid::Uuid], _limit: usize) -> Vec<uuid::Uuid> {
-    let cap = candidates.len().min(MAX_AUTHZ_CANDIDATES);
-    let mut seen = HashSet::with_capacity(cap);
-    candidates
-        .iter()
-        .copied()
-        .filter(|id| seen.insert(*id))
-        .take(MAX_AUTHZ_CANDIDATES)
-        .collect()
 }

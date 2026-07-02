@@ -144,31 +144,26 @@ impl<'a> CodeIngestContext<'a> {
         owner: Owner,
         repo_id: Uuid,
     ) -> Result<Vec<FileRevisionHead>, IngestError> {
-        let (owner_kind, owner_id) = owner.columns();
+        // Sidecar-only candidate scan: `memory_id` is a UUIDv7 for Fact rows
+        // (assigned at ingest, see `proxima-storage-pg` fact_ingest), so a
+        // self-join on it is a valid recency proxy without touching
+        // `proxima_core.*`; the authorized fetch below resolves the true
+        // owner-or-World head via `FileRevisionV1::natural_key_columns`
+        // heads-only supersession.
         let candidate_ids: Vec<Uuid> = sqlx::query_scalar(
             "SELECT fr.memory_id
                FROM proxima_code.file_revision_v1 fr
-               JOIN proxima_core.memories m USING (memory_id)
-               JOIN proxima_core.fact_receipts r USING (receipt_id)
-              WHERE m.owner_kind = $1
-                AND m.owner_id IS NOT DISTINCT FROM $2
-                AND fr.repo_id = $3
+              WHERE fr.repo_id = $1
                 AND NOT EXISTS (
                     SELECT 1
                       FROM proxima_code.file_revision_v1 fr2
-                      JOIN proxima_core.memories m2 USING (memory_id)
-                      JOIN proxima_core.fact_receipts r2 USING (receipt_id)
-                     WHERE m2.owner_kind = m.owner_kind
-                       AND m2.owner_id IS NOT DISTINCT FROM m.owner_id
-                       AND fr2.repo_id = fr.repo_id
+                     WHERE fr2.repo_id = fr.repo_id
                        AND fr2.file_path = fr.file_path
-                       AND r2.source_batch_id > r.source_batch_id
+                       AND fr2.memory_id > fr.memory_id
                 )
               ORDER BY fr.file_path ASC
               LIMIT 100000",
         )
-        .bind(owner_kind)
-        .bind(owner_id)
         .bind(repo_id)
         .fetch_all(self.pool())
         .await?;
@@ -205,54 +200,58 @@ impl<'a> CodeIngestContext<'a> {
         repo_id: Uuid,
         file_path: &str,
     ) -> Result<Vec<u32>, IngestError> {
-        let (owner_kind, owner_id) = owner.columns();
-        let indexes = sqlx::query_scalar::<_, i32>(
-            "SELECT DISTINCT s.chunk_index
-               FROM proxima_core.memories m
-               JOIN proxima_code.code_chunk_v1 s USING (memory_id)
-               JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
-                 ON eo.entity_id = m.memory_id
-              WHERE eo.owner_kind = $1
-                AND eo.owner_id IS NOT DISTINCT FROM $2
-                AND s.repo_id = $3
-                AND s.file_path = $4
+        // Sidecar-only candidate scan of every `Present`-state chunk row
+        // ever ingested for this file (any owner, any commit). The
+        // authorized head-candidate narrowing below drops any row shadowed
+        // by a later row at the same (repo_id, file_path, chunk_index) —
+        // including a later *Tombstone* row, so a removed-then-untouched
+        // index correctly disappears even though this candidate scan only
+        // looked at `Present` rows.
+        let candidates: Vec<ChunkIndexCandidateRow> = sqlx::query_as(
+            "SELECT s.memory_id, s.chunk_index
+               FROM proxima_code.code_chunk_v1 s
+              WHERE s.repo_id = $1
+                AND s.file_path = $2
                 AND s.state = 'Present'
-                AND NOT EXISTS (
-                    SELECT 1
-                      FROM proxima_core.memories m2
-                      JOIN proxima_code.code_chunk_v1 s2 USING (memory_id)
-                      JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo2
-                        ON eo2.entity_id = m2.memory_id
-                     WHERE m2.schema_id = m.schema_id
-                       AND eo2.owner_kind = eo.owner_kind
-                       AND eo2.owner_id IS NOT DISTINCT FROM eo.owner_id
-                       AND s2.repo_id = s.repo_id
-                       AND s2.file_path = s.file_path
-                       AND s2.chunk_index = s.chunk_index
-                       AND m2.source_batch_id > m.source_batch_id
-                )
-              ORDER BY s.chunk_index ASC
               LIMIT 100000",
         )
-        .bind(owner_kind)
-        .bind(owner_id)
         .bind(repo_id)
         .bind(file_path)
         .fetch_all(self.pool())
         .await?;
-        indexes
+        let index_by_memory_id: HashMap<Uuid, i32> = candidates
+            .iter()
+            .map(|row| (row.memory_id, row.chunk_index))
+            .collect();
+        let candidate_ids: Vec<Uuid> = candidates.iter().map(|row| row.memory_id).collect();
+        let heads = self
+            .store
+            .authorized_code_chunk_head_candidates(owner, &candidate_ids)
+            .await
+            .map_err(|err| read_error(&err))?;
+        let mut indexes = heads
             .into_iter()
+            .filter_map(|id| index_by_memory_id.get(&id).copied())
             .map(|idx| {
                 u32::try_from(idx).map_err(|err| {
                     IngestError::Storage(format!("invalid code chunk index {idx}: {err}"))
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        indexes.sort_unstable();
+        indexes.dedup();
+        Ok(indexes)
     }
 }
 
 fn read_error(err: &ToolError) -> IngestError {
     IngestError::Storage(format!("authorized code-flavor read: {err}"))
+}
+
+#[derive(Debug, Clone, Copy, sqlx::FromRow)]
+struct ChunkIndexCandidateRow {
+    memory_id: Uuid,
+    chunk_index: i32,
 }
 
 /// Pull-mode source. One instance per repo; `repo_id` is stable
