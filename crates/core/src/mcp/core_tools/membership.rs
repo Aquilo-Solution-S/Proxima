@@ -2,14 +2,14 @@ use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::access::Relation;
+use crate::access::{EntityId, Relation};
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 use crate::protocol::{action as protocol_action, tool as protocol_tool};
 use crate::{GroupId, OwnerRef, UserId};
 
-use super::memory_spaces::{SpaceDefault, resolve_space_owner};
+use super::memory_spaces::MemorySpaceKey;
 use super::{DESTRUCTIVE_NON_IDEMPOTENT, READ_ONLY, WRITE_NON_IDEMPOTENT};
 
 pub const CORE_MEMBERSHIP_ACTIONS: &[CoreActionMeta] = &[
@@ -37,6 +37,14 @@ pub const CORE_MEMBERSHIP_ACTIONS: &[CoreActionMeta] = &[
         produces_schema_ids: &[],
         annotations: READ_ONLY,
     },
+    CoreActionMeta {
+        tool: CoreMembershipTool::NAME,
+        action: "publish_to_world",
+        scope_key: protocol_action::CORE_MEMBERSHIP_PUBLISH_TO_WORLD,
+        description: "Transfer a memory or goal's owner to World — a deliberate, irreversible publish. World is universally readable and never writable; this is an owner transfer, not a share or ACL flag.",
+        produces_schema_ids: &[],
+        annotations: DESTRUCTIVE_NON_IDEMPOTENT,
+    },
 ];
 
 #[derive(Debug, Default)]
@@ -48,6 +56,7 @@ pub enum CoreMembershipArgs {
     AddMember(AddMemberArgs),
     RemoveMember(RemoveMemberArgs),
     ListMembers(ListMembersArgs),
+    PublishToWorld(PublishToWorldArgs),
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -74,12 +83,22 @@ pub struct ListMembersArgs {
     pub group: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PublishToWorldArgs {
+    /// Memory or Goal reference: `F:<uuid>`, `A:<uuid>`, `P:<uuid>`, `G:<uuid>`,
+    /// raw uuid, or handle. The current owner (looked up from storage, not
+    /// trusted from the caller) must grant the caller write/manage
+    /// (`Relation::Admin`) authority.
+    pub entity: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum CoreMembershipOutput {
     AddMember(MutationOutput),
     RemoveMember(MutationOutput),
     ListMembers(Vec<MemberOutput>),
+    PublishToWorld(MutationOutput),
 }
 
 #[derive(Debug, Serialize)]
@@ -96,7 +115,7 @@ pub struct MemberOutput {
 impl McpTool for CoreMembershipTool {
     const NAME: &'static str = protocol_tool::CORE_MEMBERSHIP;
     const DESCRIPTION: &'static str =
-        "Membership dispatcher — add_member/remove_member/list_members.";
+        "Membership dispatcher — add_member/remove_member/list_members/publish_to_world.";
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
             action: "add_member",
@@ -112,6 +131,11 @@ impl McpTool for CoreMembershipTool {
             action: "list_members",
             allowed_fields: &["group"],
             required_fields: &["group"],
+        },
+        McpActionArgSpec {
+            action: "publish_to_world",
+            allowed_fields: &["entity"],
+            required_fields: &["entity"],
         },
     ];
     type Args = CoreMembershipArgs;
@@ -151,6 +175,12 @@ trait MembershipEngine: Sync {
         authz: &'a AuthzContext,
         group: GroupId,
     ) -> BoxFuture<'a, Result<Vec<(UserId, Relation)>, ProtocolError>>;
+
+    fn publish_to_world<'a>(
+        &'a self,
+        authz: &'a AuthzContext,
+        entity: EntityId,
+    ) -> BoxFuture<'a, Result<(), ProtocolError>>;
 }
 
 impl MembershipEngine for crate::Engine {
@@ -181,6 +211,14 @@ impl MembershipEngine for crate::Engine {
         group: GroupId,
     ) -> BoxFuture<'a, Result<Vec<(UserId, Relation)>, ProtocolError>> {
         Box::pin(crate::Engine::list_members(self, authz, group))
+    }
+
+    fn publish_to_world<'a>(
+        &'a self,
+        authz: &'a AuthzContext,
+        entity: EntityId,
+    ) -> BoxFuture<'a, Result<(), ProtocolError>> {
+        Box::pin(crate::Engine::publish_to_world(self, authz, entity))
     }
 }
 
@@ -220,11 +258,48 @@ async fn execute_membership(
                 .collect();
             Ok(CoreMembershipOutput::ListMembers(members))
         }
+        CoreMembershipArgs::PublishToWorld(args) => {
+            let entity = resolve_publishable_entity(ctx, &args.entity)?;
+            engine.publish_to_world(&ctx.authz, entity).await?;
+            Ok(CoreMembershipOutput::PublishToWorld(MutationOutput {
+                ok: true,
+            }))
+        }
     }
 }
 
+/// Resolve a wire reference to a memory or goal entity — the two row
+/// families a publish-to-World transfer may target.
+fn resolve_publishable_entity(ctx: &McpToolCtx, raw: &str) -> Result<EntityId, McpToolError> {
+    match ctx.resolve_memory(raw) {
+        Ok(memory_id) => Ok(EntityId::Memory(memory_id)),
+        Err(memory_err) => match ctx.resolve_goal(raw) {
+            Ok(goal_id) => Ok(EntityId::Goal(goal_id)),
+            Err(_) => Err(memory_err),
+        },
+    }
+}
+
+/// Parse a group-space key into a bare `GroupId`, structurally only.
+///
+/// Deliberately bypasses `resolve_space_owner`'s `can_access_owner`
+/// pre-filter: that filter answers "which spaces can I currently author
+/// into", which is the wrong question for membership administration. The
+/// caller need not already be visible into the group to be told they lack
+/// admin authority over it — `Engine::{add,remove,list}_member`'s
+/// `authorize_write` gate is the sole, authoritative decision, and it must
+/// surface as `Forbidden`, not an earlier `InvalidInput` that hides the
+/// real reason behind an existence-style non-answer.
 fn resolve_group(ctx: &McpToolCtx, raw: &str) -> Result<GroupId, McpToolError> {
-    let owner = resolve_space_owner(ctx, Some(raw), SpaceDefault::Current)?.owner;
+    let owner = match MemorySpaceKey::parse(raw) {
+        Some(MemorySpaceKey::Current) => ctx.owner,
+        Some(MemorySpaceKey::Owner(owner)) => owner,
+        None => {
+            return Err(McpToolError::InvalidInput(format!(
+                "unknown memory space: {raw}"
+            )));
+        }
+    };
     match owner {
         OwnerRef::Group(group) => Ok(group),
         OwnerRef::World | OwnerRef::Personal(_) => {
@@ -275,6 +350,7 @@ mod tests {
         added: Mutex<Vec<(GroupId, UserId, Relation)>>,
         removed: Mutex<Vec<(GroupId, UserId)>>,
         members: Mutex<Vec<(UserId, Relation)>>,
+        published: Mutex<Vec<EntityId>>,
     }
 
     impl MembershipEngine for MockMembershipEngine {
@@ -315,6 +391,17 @@ mod tests {
             _group: GroupId,
         ) -> BoxFuture<'a, Result<Vec<(UserId, Relation)>, ProtocolError>> {
             Box::pin(async move { Ok(self.members.lock().expect("members lock").clone()) })
+        }
+
+        fn publish_to_world<'a>(
+            &'a self,
+            _authz: &'a AuthzContext,
+            entity: EntityId,
+        ) -> BoxFuture<'a, Result<(), ProtocolError>> {
+            Box::pin(async move {
+                self.published.lock().expect("published lock").push(entity);
+                Ok(())
+            })
         }
     }
 

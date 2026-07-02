@@ -49,7 +49,12 @@ const CORE_FACT_ACTION_NAMES: &[&str] = &[
     "citation_of_entity_head",
     "facts_citing_object",
 ];
-const CORE_MEMBERSHIP_ACTION_NAMES: &[&str] = &["add_member", "remove_member", "list_members"];
+const CORE_MEMBERSHIP_ACTION_NAMES: &[&str] = &[
+    "add_member",
+    "remove_member",
+    "list_members",
+    "publish_to_world",
+];
 const DISPATCHER_TOOL_ACTIONS: &[(&str, &[&str])] = &[
     ("core_goal", CORE_GOAL_ACTION_NAMES),
     ("core_fact", CORE_FACT_ACTION_NAMES),
