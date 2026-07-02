@@ -1238,6 +1238,21 @@ impl OwnerAccessReadPort for PgStorage {
 
 #[async_trait::async_trait]
 impl OwnerMembershipAdminPort for PgStorage {
+    async fn bootstrap_group_admin(
+        &self,
+        group_id: GroupId,
+        first_admin_user_id: UserId,
+        granted_by: uuid::Uuid,
+    ) -> Result<(), StorageError> {
+        access::owner_columns::bootstrap_group_admin(
+            &self.pool,
+            group_id,
+            first_admin_user_id,
+            granted_by,
+        )
+        .await
+    }
+
     async fn add_group_member(
         &self,
         group_id: GroupId,

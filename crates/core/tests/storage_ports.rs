@@ -461,6 +461,16 @@ struct OwnerMembershipAdminFake;
 
 #[async_trait::async_trait]
 impl OwnerMembershipAdminPort for OwnerMembershipAdminFake {
+    async fn bootstrap_group_admin(
+        &self,
+        group_id: GroupId,
+        first_admin_user_id: UserId,
+        granted_by: uuid::Uuid,
+    ) -> Result<(), StorageError> {
+        let _ = (group_id, first_admin_user_id, granted_by);
+        fake_error()
+    }
+
     async fn add_group_member(
         &self,
         group_id: GroupId,
