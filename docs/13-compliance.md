@@ -32,6 +32,8 @@ bounded primitives and metadata vocabulary.
 | tool-recipient export from calls | deferred | external-effect calls | waits for per-call recipient storage (see [12 §Compliance Metadata](12-tool-manifest.md#compliance-metadata)) |
 | legal-consequence runtime blocking | deferred | tool invocation | `legal_consequence` remains design intent; human approval remains required pattern (see [05 §Human approval](05-actions.md#human-approval), [12 §Compliance Metadata](12-tool-manifest.md#compliance-metadata)) |
 
+The World-owner refusal above has a publish-side consequence — rows published to World permanently leave personal/group erase reach; see [Consumer Projector Guidance](reference/public-api.md#consumer-projector-guidance).
+
 ## Outcomes
 
 | Outcome | Meaning | Contract |
