@@ -400,12 +400,13 @@ async fn author_derived_rejects_operator_input_created_at_not_strictly_before_ou
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let operator_id = OperatorId::new(Uuid::now_v7());
         let input_contract_id = InputContractId::new(Uuid::now_v7());
+        let output_memory_id = MemoryId::new(Uuid::now_v7());
 
         let err = author_test_abstraction(
             &pg,
             &engine,
             owner,
-            MemoryId::new(Uuid::now_v7()),
+            output_memory_id,
             future_input,
             MemoryOperatorKind::AtoA,
             operator_id,
@@ -417,6 +418,15 @@ async fn author_derived_rejects_operator_input_created_at_not_strictly_before_ou
         assert!(
             matches!(&err, StorageError::ConstraintViolation(msg) if msg.contains("must be created strictly before")),
             "unexpected {err:?}"
+        );
+        let persisted_output_rows: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM proxima_core.memories WHERE memory_id = $1")
+                .bind(output_memory_id.into_inner())
+                .fetch_one(pg.pool_for_tests())
+                .await?;
+        assert_eq!(
+            persisted_output_rows, 0,
+            "rejected derivation must persist no output row"
         );
         Ok::<(), Box<dyn std::error::Error>>(())
     }
