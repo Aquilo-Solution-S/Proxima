@@ -756,6 +756,7 @@ where
         &'t FactIngestOutcome,
     ) -> FactIngestSidecarFuture<'t>,
 {
+    crate::access::owner_columns::reject_world_write_owner(owner)?;
     let receipt_id = draft.receipt_id_for_owner(*owner);
     let receipt_id_bytes = receipt_id.map(FactReceiptId::into_inner);
     let (owner_kind, owner_id) = owner_binds(owner);

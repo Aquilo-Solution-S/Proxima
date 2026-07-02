@@ -62,6 +62,7 @@ pub(crate) async fn append_derived_in_tx(
         &'t DerivedOutcome,
     ) -> PgSidecarFuture<'t>,
 ) -> Result<DerivedOutcome, StorageError> {
+    crate::access::owner_columns::reject_world_write_owner(&draft.owner)?;
     let (owner_kind, owner_id) = crate::access::owner_columns::owner_binds(&draft.owner);
     if let Some(prior) = draft.supersedes {
         validate_supersedes_in_owner(tx, &draft.owner, prior, draft.kind).await?;
@@ -157,6 +158,7 @@ pub async fn append_derived_with_edges_in_tx(
         &'t DerivedOutcome,
     ) -> PgSidecarFuture<'t>,
 ) -> Result<DerivedOutcome, StorageError> {
+    crate::access::owner_columns::reject_world_write_owner(&draft.owner)?;
     validate_derived_draft_edges_in_tx(tx, draft, edges).await?;
     let outcome = append_derived_in_tx(tx, draft, sidecar).await?;
     if outcome.idempotent_replay {

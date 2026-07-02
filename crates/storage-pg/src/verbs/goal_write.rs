@@ -713,6 +713,7 @@ async fn insert_or_replay_goal(
 ) -> Result<InsertedGoal, StorageError> {
     validate_goal_schema(context, draft)?;
     let owner = draft.owner();
+    crate::access::owner_columns::reject_world_write_owner(&owner)?;
     let (owner_kind, owner_id) = owner.columns();
     let existing: Option<ExistingGoalRow> = sqlx::query_as(
         "SELECT g.goal_id, ce.seq
