@@ -4,6 +4,68 @@ All notable changes to Proxima, generated from [Conventional Commits](https://ww
 
 Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpublished (`publish = false`).
 
+## [0.0.5] - 2026-07-02
+
+### Features
+- **compliance**: Add owner-scoped legal/security hold ([`d19e28d`](https://github.com/Aquilo-Solution-S/Proxima/commit/d19e28de47c66027ec0dbadcc33b11da206ab997)) by @HeinrichvH
+- **storage**: Persist owner-scoped opaque source cursors ([`f9b9152`](https://github.com/Aquilo-Solution-S/Proxima/commit/f9b9152738a49d6f659c0bd2fe1b960c4c565bfd)) by @HeinrichvH
+- **core**: Add host-only group bootstrap first-admin verb ([`95d81f2`](https://github.com/Aquilo-Solution-S/Proxima/commit/95d81f2dc7aa86be3848d926f1f130b917f5b896)) by @HeinrichvH
+- **storage-pg**: Enforce strict operator input created_at ([`9bc8d94`](https://github.com/Aquilo-Solution-S/Proxima/commit/9bc8d942e53af59440753c814f058c91f9757739)) by @HeinrichvH
+- **lean**: Pin the kernel's declared axiom surface in CI ([`7fb97b9`](https://github.com/Aquilo-Solution-S/Proxima/commit/7fb97b9f5d0c61a1733794e2cacf26f1ec15567b)) by @HeinrichvH
+- **dev-migrate**: Accept --database-url/--reset, print target first ([`d5960d4`](https://github.com/Aquilo-Solution-S/Proxima/commit/d5960d46210801395fcd88f3a09d75c065a3aaf4)) by @HeinrichvH
+- **proxima**: Preserve typed V004ResetRequired through boot()/run() ([`737138e`](https://github.com/Aquilo-Solution-S/Proxima/commit/737138eeeff88f67beb3879208cf6b552db3aa36)) by @HeinrichvH
+- **proxima**: Lift authorized flavor-read helpers into the facade ([`38f39a5`](https://github.com/Aquilo-Solution-S/Proxima/commit/38f39a586fd3b40510f6a7f65d859d2f152e8e72)) by @HeinrichvH
+- **core**: Expose core_membership:publish_to_world; fix fail-closed group resolution ([`e5de76c`](https://github.com/Aquilo-Solution-S/Proxima/commit/e5de76c9e12bc0a10dc06455b32509a13392814f)) by @HeinrichvH
+- **core+storage-pg**: Add publish-to-World owner-transfer command port ([`5fdc428`](https://github.com/Aquilo-Solution-S/Proxima/commit/5fdc42882ab15bccb7250195b536e59dbf489776)) by @HeinrichvH
+- **proxima-mcp**: Compose the host-resolved OIDC group-auth path ([`c4b9750`](https://github.com/Aquilo-Solution-S/Proxima/commit/c4b9750052f1bb0de430710368c38538474e066f)) by @HeinrichvH
+- **proxima**: Add tool_palette_excluding host helper ([`e093faa`](https://github.com/Aquilo-Solution-S/Proxima/commit/e093faa0af7dc05d36971dcaa51d97e8588eb10e)) by @HeinrichvH
+- **storage-pg**: Export the first OwnerAccessPort adapter ([`8069fad`](https://github.com/Aquilo-Solution-S/Proxima/commit/8069fadfd45fcae997a43c464b499e282bcbe3f5)) by @HeinrichvH
+- **auth-oidc**: Split OIDC validation from authz shaping ([`d8cb332`](https://github.com/Aquilo-Solution-S/Proxima/commit/d8cb3324e1be1020ae696f6c96ac356d646210ab)) by @HeinrichvH
+- **core**: Seal author_derived and insert_embedding behind unforgeable write proofs ([`31eef88`](https://github.com/Aquilo-Solution-S/Proxima/commit/31eef882581f6fe91a77377947cffe7aa19e210e)) by @HeinrichvH
+- **guardrails**: Self-test the flavor core SQL literal tokenizer ([`6440ea7`](https://github.com/Aquilo-Solution-S/Proxima/commit/6440ea75cb9db27f12cfb080c3c432880fa49238)) by @HeinrichvH
+- **guardrails**: Ratchet dynamic-SQL site count + self-test mode ([`ef28ae7`](https://github.com/Aquilo-Solution-S/Proxima/commit/ef28ae73f1c541e6925747fca9c31c04beb76cb5)) by @HeinrichvH
+
+### Bug Fixes
+- **security**: Operator-gate bootstrap and legal-hold authority, seal new storage verbs ([`d48a735`](https://github.com/Aquilo-Solution-S/Proxima/commit/d48a735900bcbc0ade3b14d329c228e1cb946ae5)) by @HeinrichvH
+- **storage-pg**: Close the engine-path created_at gap by unifying the derived-write validators ([`ee96826`](https://github.com/Aquilo-Solution-S/Proxima/commit/ee9682650a9ec9ad770f00970dc5c9ea9601741d)) by @HeinrichvH
+- **lean**: Make check-lean-axioms.py build the kernel before extraction ([`b322261`](https://github.com/Aquilo-Solution-S/Proxima/commit/b3222610aabdfcfe931444266d3406d478ed0576)) by @HeinrichvH
+- **core**: Surface operator-invocation constraint errors as InvalidArgument ([`70aa994`](https://github.com/Aquilo-Solution-S/Proxima/commit/70aa99497b1111db8332b7bee99f8dc261043b57)) by @HeinrichvH
+- **mcp-server**: Route read_resource through the RequestBehavior onion ([`10b620e`](https://github.com/Aquilo-Solution-S/Proxima/commit/10b620e78dec5bb81b68db6eb915054d9ace519b)) by @HeinrichvH
+- **proxima-mcp**: Escalate unknown PROXIMA_TOOL_ALLOW/DENY ids to a hard error ([`d6d9837`](https://github.com/Aquilo-Solution-S/Proxima/commit/d6d9837a8dca133ab747ca71c49e68526966613a)) by @HeinrichvH
+- **proxima**: Evaluate every chunk-head candidate; never truncate ([`1f14f20`](https://github.com/Aquilo-Solution-S/Proxima/commit/1f14f205407823cc84f19476bd8a7ee9336b37ff)) by @HeinrichvH
+- **storage-pg**: Treat World as a valid read-owner in query_goals ([`c1db1d5`](https://github.com/Aquilo-Solution-S/Proxima/commit/c1db1d51a908ec93bfb281ef3c1024fd98992c5a)) by @HeinrichvH
+- **guardrails**: Retire expired flavor-core-SQL allowlist entries ([`dccd0a6`](https://github.com/Aquilo-Solution-S/Proxima/commit/dccd0a6ccbc269ccbc3072ed1d8285117c264d21)) by @HeinrichvH
+- **flavors-code**: Migrate off raw proxima_core SQL onto the facade ([`25bee8c`](https://github.com/Aquilo-Solution-S/Proxima/commit/25bee8c094aa70234e68ac32b666deffad05a34e)) by @HeinrichvH
+- **storage-pg**: Treat World as a valid read-owner in query_memories ([`dd4539e`](https://github.com/Aquilo-Solution-S/Proxima/commit/dd4539e23fc0d4edbb0cfe88ba5d682653176f86)) by @HeinrichvH
+- **guardrails**: Replace drifted sql-policy line allowlist with proof comments ([`16d165c`](https://github.com/Aquilo-Solution-S/Proxima/commit/16d165c342d0ae8af68dca78eb592aad001e36bf)) by @HeinrichvH
+- **storage-pg**: Fail-closed World backstop at row-creating verb choke points ([`544952f`](https://github.com/Aquilo-Solution-S/Proxima/commit/544952fd6ddb8e319fff874076ebc88a1bd424b0)) by @HeinrichvH
+- **storage-pg**: Move publish-to-World DDL into append-only 0008_v005 migration ([`744a630`](https://github.com/Aquilo-Solution-S/Proxima/commit/744a6306f85572bba0b21e811929464ae5f5721c)) by @HeinrichvH
+- **storage-pg**: Crate-scope the raw in-tx fact ingest helpers ([`af47b5c`](https://github.com/Aquilo-Solution-S/Proxima/commit/af47b5c9b2d9baee3de6bbe5aaa8c8609fde3916)) by @HeinrichvH
+- **storage-pg**: Seal raw embedding write fns behind the crate boundary ([`22bcb6d`](https://github.com/Aquilo-Solution-S/Proxima/commit/22bcb6da8e502432a7b7908186157e99ec2626a9)) by @HeinrichvH
+- **guardrails**: Ignore ALLOW markers inside string literals ([`fb38ff5`](https://github.com/Aquilo-Solution-S/Proxima/commit/fb38ff5585d2c273472f05b04104f69c170ca959)) by @HeinrichvH
+- **guardrails**: Tokenize whole string literals for flavor core SQL scan ([`5c63e09`](https://github.com/Aquilo-Solution-S/Proxima/commit/5c63e096ac895eafec653ad54bb3f276853e1dba)) by @HeinrichvH
+
+### Performance
+- **storage-pg**: Batch-hydrate list_change_events_after ([`7f7b11b`](https://github.com/Aquilo-Solution-S/Proxima/commit/7f7b11b92d2507135c9786d47987d07b87482fb9)) by @HeinrichvH
+
+### Documentation
+- **lean**: CO-9/10 runtime cell — legal hold shipped, not planned ([`2894827`](https://github.com/Aquilo-Solution-S/Proxima/commit/28948276b3d4e4f6a7b25b4fbea7df83342f1f69)) in [#43](https://github.com/Aquilo-Solution-S/Proxima/pull/43) by @HeinrichvH
+- **v0.0.5**: Fix authorized-facade bound claim + compliance cross-ref ([`7be5a8f`](https://github.com/Aquilo-Solution-S/Proxima/commit/7be5a8fec46e747b47e30ad8ad060778948c5107)) by @HeinrichvH
+- **v0.0.5**: Host-resolved OIDC, authorized flavor reads, projector guidance ([`9c61656`](https://github.com/Aquilo-Solution-S/Proxima/commit/9c616562e7ced89235fe256bb259e26f4cb639ae)) by @HeinrichvH
+- **lean**: Correct three untruthful Runtime enforcement cells ([`996f065`](https://github.com/Aquilo-Solution-S/Proxima/commit/996f0650784e636f09654cbe56e356b31dc5d059)) by @HeinrichvH
+- **lean**: Add Runtime enforcement rollups to the Principle surface map ([`885ff56`](https://github.com/Aquilo-Solution-S/Proxima/commit/885ff56e4872db72c7b34f3fbd3e4d84f899fd6f)) by @HeinrichvH
+- **lean**: Add Runtime enforcement column to COVERAGE.md ([`d180212`](https://github.com/Aquilo-Solution-S/Proxima/commit/d180212684aa043fd9d2d5563094874763af21da)) by @HeinrichvH
+- Add MIGRATING.md consumer upgrade runbook ([`7bbf563`](https://github.com/Aquilo-Solution-S/Proxima/commit/7bbf563a233959323302adcdc17b42778e9e2651)) by @HeinrichvH
+- **reference**: Correct flavor raw SQL policy status ([`2778c52`](https://github.com/Aquilo-Solution-S/Proxima/commit/2778c52ef6540227dd0b4ab430ae2764e21c2f30)) by @HeinrichvH
+
+### Testing
+- **storage-pg**: Assert rejected derivation persists no output row ([`decd4c0`](https://github.com/Aquilo-Solution-S/Proxima/commit/decd4c0470583e118f5755fd43cb7e9840ac588c)) by @HeinrichvH
+- **proxima-mcp**: Fail-closed CI env skip for PG/OIDC e2e tests ([`aebfba6`](https://github.com/Aquilo-Solution-S/Proxima/commit/aebfba6e6ad098dd5025d3b74d3295374042035b)) by @HeinrichvH
+- **flavors-code**: Direct coverage for the chunk-head narrowing verb ([`c3dc301`](https://github.com/Aquilo-Solution-S/Proxima/commit/c3dc301c61ef99c33f281b0caa09986ce5382e99)) by @HeinrichvH
+- **storage-pg**: Cover Personal-owner publish-to-World ([`569fc22`](https://github.com/Aquilo-Solution-S/Proxima/commit/569fc22d60dad4f870390db3aad7f75778928446)) by @HeinrichvH
+- **mcp-server**: Cover host-resolved role narrowing under Task 3 ([`43c2c1a`](https://github.com/Aquilo-Solution-S/Proxima/commit/43c2c1a3545435a78d6789ac70c05be4fb82bd8f)) by @HeinrichvH
+- Migrate direct author_derived/insert_embedding callers off the sealed raw ports ([`2b492d1`](https://github.com/Aquilo-Solution-S/Proxima/commit/2b492d12b8d448ab3fb10021c040a0ce3a8f1fa7)) by @HeinrichvH
+
 ## [0.0.4] - 2026-07-01
 
 ### Features
@@ -51,8 +113,8 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **kernel**: Name principles 1/3/4/6 over existing axioms ([`04bac46`](https://github.com/Aquilo-Solution-S/Proxima/commit/04bac46378292f9358212e7cfda5a019b7535a4e)) by @HeinrichvH
 
 ### Bug Fixes
-- **flavors-code**: Hide stale chunks after tombstones ([`92c0f36`](https://github.com/Aquilo-Solution-S/Proxima/commit/92c0f367af0c4a74844b255347696a33a2eb213a))
-- **release**: Close v0.0.4 gate blockers ([`ba140df`](https://github.com/Aquilo-Solution-S/Proxima/commit/ba140df9dedd04a9c8e67986355852137253bf3b))
+- **flavors-code**: Hide stale chunks after tombstones ([`3517dea`](https://github.com/Aquilo-Solution-S/Proxima/commit/3517dea5819ef9d6169b232cc10d38bb89925b43)) by @HeinrichvH
+- **release**: Close v0.0.4 gate blockers ([`735beef`](https://github.com/Aquilo-Solution-S/Proxima/commit/735beef75ae82fe66999945e99eaa17013cb04aa)) by @HeinrichvH
 - **storage-pg**: Preserve shared fact entities during erasure ([`9ef1bb6`](https://github.com/Aquilo-Solution-S/Proxima/commit/9ef1bb63c6bef104f2bb7194defe51e6906dabca)) by @HeinrichvH
 - **breaking:** **core**: Close round-5 security hole — derive supersedes cross-owner forge ([`9ec7421`](https://github.com/Aquilo-Solution-S/Proxima/commit/9ec7421270c994fe5d73de485eed736c0685f64d)) by @HeinrichvH
 - **breaking:** **core**: Reject no-owner goal evidence + guard query high-water (security gate) ([`0317de6`](https://github.com/Aquilo-Solution-S/Proxima/commit/0317de695fedc1f2ee4831e622d7e5d6f3918c1f)) by @HeinrichvH
@@ -97,7 +159,8 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **kernel**: Rename Lean kernel Foundations -> Causa ([`cf18107`](https://github.com/Aquilo-Solution-S/Proxima/commit/cf18107b06344b219e038abdc771d19e0f57388b)) by @HeinrichvH
 
 ### Documentation
-- **changelog**: Stamp v0.0.4 ([`300a3f4`](https://github.com/Aquilo-Solution-S/Proxima/commit/300a3f405d2359f6c5a3a2dcafb63ce42843ae42))
+- **changelog**: Refresh v0.0.4 release notes ([`f389817`](https://github.com/Aquilo-Solution-S/Proxima/commit/f389817686b9f0ad0ab7ad0a6ceac7c1a4eca6ae)) in [#42](https://github.com/Aquilo-Solution-S/Proxima/pull/42) by @HeinrichvH
+- **changelog**: Stamp v0.0.4 ([`daa3fe2`](https://github.com/Aquilo-Solution-S/Proxima/commit/daa3fe213c16fde49ce6f772eeae31b122291b42)) by @HeinrichvH
 - **community**: Add GitHub health templates ([`c00249d`](https://github.com/Aquilo-Solution-S/Proxima/commit/c00249de72964be70b530b200ae28248ef393dd0)) by @HeinrichvH
 - **reference**: Move runtime matrix to local evidence ([`f171d5b`](https://github.com/Aquilo-Solution-S/Proxima/commit/f171d5ba4d0c91710e82aa754e17b8dd0a24c0a6)) by @HeinrichvH
 - **core**: Fix PR8 compose doc links ([`e2f4a1b`](https://github.com/Aquilo-Solution-S/Proxima/commit/e2f4a1b3072cfb5f6262617b643e37d013e1ce4a)) by @HeinrichvH
@@ -763,6 +826,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - @HeinrichvH made their first contribution
 - @boreas-aquilo made their first contribution
 - @ made their first contribution
+[0.0.5]: https://github.com/Aquilo-Solution-S/Proxima/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/Aquilo-Solution-S/Proxima/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/Aquilo-Solution-S/Proxima/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/Aquilo-Solution-S/Proxima/compare/v0.0.1...v0.0.2
