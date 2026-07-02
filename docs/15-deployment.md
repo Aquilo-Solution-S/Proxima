@@ -44,7 +44,9 @@ a narrower DML role.
 | `PROXIMA_OIDC_ISSUER` | yes | `https://zitadel.example.com` | Zitadel issuer URL. |
 | `PROXIMA_OIDC_AUDIENCE` | yes | `https://proxima.example.com/mcp` | Resource id expected in token `aud`. |
 | `PROXIMA_OIDC_JWKS_URI` | no | `https://zitadel.example.com/oauth/v2/keys` | Overrides OIDC discovery. |
-| `PROXIMA_OIDC_ALLOWED_SUBJECTS` | no | `user1,user2` | Comma-separated `sub` allowlist. |
+| `PROXIMA_OIDC_SUBJECT_MAP_JSON` | yes* | `[{"iss":"https://zitadel.example.com","sub":"...","user_id":"550e8400-e29b-41d4-a716-446655440000"}]` | Issuer-aware `(iss, sub) -> user_id` identity map. Required whenever `PROXIMA_OIDC_ISSUER` is set, unless `PROXIMA_OIDC_SUBJECT_MAP` is given instead (the two are mutually exclusive). |
+| `PROXIMA_OIDC_SUBJECT_MAP` | yes* | `sub-1:550e8400-e29b-41d4-a716-446655440000` | Legacy single-issuer shorthand `sub:<uuid>,sub2:<uuid2>`; every entry binds to `PROXIMA_OIDC_ISSUER`. Valid only because exactly one issuer is ever accepted here. |
+| `PROXIMA_OIDC_ALLOWED_SUBJECTS` | no | `user1,user2` | Comma-separated `sub` allowlist layered on top of the subject map above; never an identity source by itself. |
 | `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile: `full` default, or curated `memory`. |
 | `PROXIMA_TOOL_ALLOW` | no | `core_goal:set` | Comma-separated canonical scope keys added after profile resolution. |
 | `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow. Compliance erase is not exposed as an MCP action. |
@@ -72,15 +74,40 @@ endpoints require an `aud`-bound Zitadel JWT, validated in-process.
 (RFC 9728). Defense in depth: the same JWT MUST be validated at the
 cluster edge (see [§Edge defense-in-depth](#edge-defense-in-depth)).
 
-> **Single-tenant OIDC trust model.** Current pre-1.0 releases intentionally have no
-> per-user RBAC. Every token valid for the configured issuer and
-> `PROXIMA_OIDC_AUDIENCE` maps to the one configured owner with full
-> capabilities: all owner roles (`Viewer`, `Ingest`, `Editor`, `Admin`) and all currently
-> registered MCP tools. Destructive Fact actions are absent; compliance erase is Host API/admin-only. The issuer
-> and audience are the trust boundary. Before network exposure, constrain
-> the IdP audience to trusted principals and/or set
-> `PROXIMA_OIDC_ALLOWED_SUBJECTS` as a `sub` allowlist; absent means any
-> valid token for the issuer and audience is accepted.
+> **Host-resolved OIDC identity, single-owner process scope.** A validated
+> token no longer maps to the configured owner automatically. `proxima-mcp`
+> pins one `OwnerRef::Personal` owner per process (`--owner-user`); the
+> token's `(iss, sub)` — the only stable OIDC identity pair — must resolve
+> through the configured issuer-aware subject map
+> (`PROXIMA_OIDC_SUBJECT_MAP_JSON` or the legacy `PROXIMA_OIDC_SUBJECT_MAP`
+> shorthand) to a Proxima `UserId`. That mapping is required, not optional:
+> the server refuses to start if `PROXIMA_OIDC_ISSUER` is set without
+> either one. Because the pinned owner is always `Personal`, only the one
+> subject whose mapped `UserId` equals the pinned owner's UUID can ever
+> authenticate against this process — any other resolvable subject is
+> denied even though its JWT validates cleanly (signature, `iss`, `aud`,
+> `exp` all pass); an absent subject-map entry fails closed, it does not
+> fall back to "any valid token". That one subject's access is Personal
+> self-access, kernel-derived rather than read off a membership row, and
+> reaches all currently registered MCP tools; destructive Fact actions are
+> absent from the tool surface and compliance erase stays Host API/admin-only.
+> Before network exposure, constrain the IdP audience to trusted principals
+> and/or set `PROXIMA_OIDC_ALLOWED_SUBJECTS` as an additional `sub`
+> allowlist layered on top of the subject map — it is never an identity
+> source by itself.
+>
+> This is `proxima-mcp`'s own edge, which narrows every resolved identity
+> down to its one pinned owner. A host that wants many distinct subjects
+> mapped to many distinct owners — real multi-tenancy — does not get that
+> from this binary's edge; it embeds `proxima-auth-oidc`'s validation-only
+> `OidcTokenValidator`/`ValidatedOidcClaims`, its own `OidcSubjectMap`, and
+> an `OwnerAccessPort` implementation (the exported `PgOwnerAccessResolver`,
+> including its `has_role_for_owner` point-in-time role probe, is one such
+> implementation) directly, then shapes
+> `AuthzContext::server_resolved(...)` itself — see `MIGRATING.md` at the
+> repository root for the recomposition recipe and the preserved
+> `OidcAuthenticator::single_owner` mechanical-migration constructor for
+> hosts that were, and remain, genuinely single-tenant.
 
 The inbound `Host` header is gated by rmcp's DNS-rebinding guard
 *before* auth runs: only loopback plus the resolved public host(s) are
@@ -103,6 +130,7 @@ docker run -p 8080:8080 \
   -e PROXIMA_PUBLIC_URL=https://proxima.example.com \
   -e PROXIMA_OIDC_ISSUER=https://zitadel.example.com \
   -e PROXIMA_OIDC_AUDIENCE=https://proxima.example.com/mcp \
+  -e PROXIMA_OIDC_SUBJECT_MAP=zitadel-subject-id:550e8400-e29b-41d4-a716-446655440000 \
   proxima-mcp --owner-user 550e8400-e29b-41d4-a716-446655440000
 ```
 
@@ -117,6 +145,7 @@ docker run -p 8080:8080 \
   -e PROXIMA_PUBLIC_URL=https://proxima.example.com \
   -e PROXIMA_OIDC_ISSUER=https://zitadel.example.com \
   -e PROXIMA_OIDC_AUDIENCE=https://proxima.example.com/mcp \
+  -e PROXIMA_OIDC_SUBJECT_MAP=zitadel-subject-id:550e8400-e29b-41d4-a716-446655440000 \
   -e PROXIMA_TOOL_PROFILE=memory \
   proxima-mcp --owner-user 550e8400-e29b-41d4-a716-446655440000
 ```
