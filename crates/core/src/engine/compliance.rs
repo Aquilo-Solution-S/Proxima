@@ -4,7 +4,8 @@ use super::Engine;
 use crate::authz::{AuthPath, AuthzContext};
 use crate::compliance::{
     ComplianceAuditContext, ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseTarget,
-    EraseAuthorization,
+    ComplianceExportAuditContext, ComplianceExportBundle, ComplianceExportTarget,
+    EraseAuthorization, ExportAuthorization,
 };
 use crate::error::ProtocolError;
 use crate::sidecar_tables;
@@ -20,9 +21,24 @@ struct ComplianceSidecarTables {
 }
 
 impl Engine {
+    fn compliance_memory_sidecar_tables(&self) -> Vec<String> {
+        let mut tables = sidecar_tables(self.registry.schemas(), PayloadKind::Fact);
+        tables.extend(sidecar_tables(
+            self.registry.schemas(),
+            PayloadKind::Abstraction,
+        ));
+        tables.extend(sidecar_tables(
+            self.registry.schemas(),
+            PayloadKind::Perspective,
+        ));
+        tables.sort();
+        tables.dedup();
+        tables
+    }
+
     fn compliance_sidecar_tables(&self) -> ComplianceSidecarTables {
         ComplianceSidecarTables {
-            fact: sidecar_tables(self.registry.schemas(), PayloadKind::Fact),
+            fact: self.compliance_memory_sidecar_tables(),
             goal: sidecar_tables(self.registry.schemas(), PayloadKind::Goal),
             edge: sidecar_tables(self.registry.schemas(), PayloadKind::Edge),
             citation_mapping: sidecar_tables(self.registry.schemas(), PayloadKind::CitationMapping),
@@ -35,6 +51,19 @@ impl Engine {
         target: ComplianceEraseTarget,
     ) -> ComplianceAuditContext {
         ComplianceAuditContext::new(
+            uuid::Uuid::now_v7(),
+            target,
+            authz.subject(),
+            authz.auth_path(),
+            time::OffsetDateTime::now_utc(),
+        )
+    }
+
+    fn compliance_export_audit_context(
+        authz: &AuthzContext,
+        target: ComplianceExportTarget,
+    ) -> ComplianceExportAuditContext {
+        ComplianceExportAuditContext::new(
             uuid::Uuid::now_v7(),
             target,
             authz.subject(),
@@ -82,6 +111,22 @@ impl Engine {
             .unwrap_or(false)
     }
 
+    async fn compliance_export_controller_authorized(
+        &self,
+        authz: &AuthzContext,
+        target: &ComplianceExportTarget,
+    ) -> bool {
+        if authz.auth_path() == AuthPath::System {
+            return true;
+        }
+        let Some(port) = &self.storage.compliance.compliance_admin else {
+            return false;
+        };
+        port.may_perform_compliance_export(authz, target)
+            .await
+            .unwrap_or(false)
+    }
+
     async fn verify_personal_owner_drop(
         &self,
         user_id: UserId,
@@ -119,6 +164,46 @@ impl Engine {
             },
         )
         .await
+    }
+
+    /// Export one owner's compliance bundle.
+    ///
+    /// Requires compliance-controller authorization. Export is
+    /// non-destructive: legal hold and personal-owner drop proof do not gate it.
+    ///
+    /// # Errors
+    ///
+    /// Returns forbidden when the caller lacks compliance-controller authority,
+    /// or internal when storage export fails.
+    pub async fn export_owner_bundle(
+        &self,
+        authz: &AuthzContext,
+        target: ComplianceExportTarget,
+    ) -> Result<ComplianceExportBundle, ProtocolError> {
+        if !self
+            .compliance_export_controller_authorized(authz, &target)
+            .await
+        {
+            return Err(ProtocolError::forbidden(
+                "compliance export requires compliance-controller authorization",
+            ));
+        }
+
+        let auth = ExportAuthorization::new(Self::compliance_export_audit_context(authz, target));
+        let sidecars = self.compliance_sidecar_tables();
+        self.storage
+            .compliance
+            .compliance_erase
+            .export_owner_bundle(
+                &auth,
+                &sidecars.fact,
+                &sidecars.goal,
+                &sidecars.edge,
+                &sidecars.citation_mapping,
+                &sidecars.cited_object,
+            )
+            .await
+            .map_err(|e| ProtocolError::internal(format!("export_owner_bundle: {e}")))
     }
 
     /// Erase an abandoned group owner and all its owned rows.

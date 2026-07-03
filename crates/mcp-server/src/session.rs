@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use proxima_core::{GroupId, Owner, OwnerRef, UserId};
+use proxima_core::{Owner, parse_external_key};
 use tokio::sync::RwLock;
-use uuid::Uuid;
 
 #[derive(Clone, Default)]
 pub struct McpSessionBindings {
@@ -33,33 +32,19 @@ impl McpSessionBindings {
 
 #[must_use]
 pub fn parse_owner_key(raw: &str) -> Option<Owner> {
-    if raw == "world" {
-        return Some(OwnerRef::World);
-    }
-    if let Some(id) = raw.strip_prefix("personal:") {
-        return Uuid::parse_str(id)
-            .ok()
-            .map(|id| OwnerRef::Personal(UserId::new(id)));
-    }
-    raw.strip_prefix("group:").and_then(|id| {
-        Uuid::parse_str(id)
-            .ok()
-            .map(|id| OwnerRef::Group(GroupId::new(id)))
-    })
+    parse_external_key(raw).ok()
 }
 
 #[must_use]
 pub fn owner_key(owner: Owner) -> String {
-    match owner {
-        OwnerRef::World => "world".to_string(),
-        OwnerRef::Personal(user) => format!("personal:{}", user.into_inner()),
-        OwnerRef::Group(group) => format!("group:{}", group.into_inner()),
-    }
+    owner.external_key()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proxima_core::{GroupId, OwnerRef, UserId};
+    use uuid::Uuid;
 
     #[test]
     fn owner_keys_round_trip() {
@@ -73,6 +58,7 @@ mod tests {
         assert_eq!(parse_owner_key(&owner_key(personal)), Some(personal));
         assert_eq!(parse_owner_key(&owner_key(group)), Some(group));
         assert_eq!(parse_owner_key("current"), None);
+        assert_eq!(parse_owner_key("world"), None);
         assert_eq!(parse_owner_key("personal:not-a-uuid"), None);
     }
 }

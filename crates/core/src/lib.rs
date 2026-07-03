@@ -44,7 +44,8 @@ pub use change_event::*;
 pub use citations::*;
 pub use compliance::{
     ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseRequest,
-    ComplianceEraseTarget,
+    ComplianceEraseTarget, ComplianceExportBundle, ComplianceExportCounts, ComplianceExportRequest,
+    ComplianceExportSidecarRows, ComplianceExportTarget,
 };
 pub use cursor::*;
 pub use dependency::*;

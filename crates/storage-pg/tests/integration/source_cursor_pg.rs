@@ -4,8 +4,8 @@ use std::time::Duration;
 use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit};
 use proxima_core::storage_ports::SourceCursorPort;
 use proxima_core::{
-    AccessKind, AuthPath, AuthzContext, Cursor, Engine, ErrorCode, FlavorRegistry, Owner, OwnerRef,
-    UserId,
+    AccessKind, AuthPath, AuthzContext, Cursor, Engine, ErrorCode, FlavorRegistry, GroupId, Owner,
+    OwnerRef, Role, UserId,
 };
 
 fn engine_for(pg: proxima_storage_pg::PgStorage) -> Engine {
@@ -177,6 +177,56 @@ async fn source_cursor_storage_keys_by_owner_and_engine_denies_cross_owner()
                 .as_bytes(),
             cursor_b.as_bytes()
         );
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn source_cursor_age_is_read_authorized_without_cursor_body_access()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let viewer = UserId::new(uuid::Uuid::now_v7());
+        let permit = owner_write_permit(&owner, AccessKind::Fact).await?;
+        let source = "evidence/projector";
+
+        pg.store_source_cursor(&permit, source, &Cursor::from_bytes(vec![0x01, 0x02]))
+            .await?;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let engine = engine_for(pg.clone());
+        let viewer_authz = AuthzContext::for_subject_with_role(
+            viewer,
+            [(owner, Role::viewer())],
+            AuthPath::HostBearer,
+        );
+        let age = engine
+            .source_cursor_age(&viewer_authz, &owner, source)
+            .await?
+            .expect("stored cursor has age");
+        assert!(age <= Duration::from_mins(1), "cursor age should be recent");
+
+        let load_err = engine
+            .load_source_cursor(&viewer_authz, &owner, source)
+            .await
+            .expect_err("viewer must not load opaque cursor bytes");
+        assert_eq!(load_err.code, ErrorCode::Forbidden);
+
+        let write_err = engine
+            .store_source_cursor(
+                &viewer_authz,
+                &owner,
+                source,
+                &Cursor::from_bytes(vec![0x03]),
+            )
+            .await
+            .expect_err("viewer must not mutate cursor bytes");
+        assert_eq!(write_err.code, ErrorCode::Forbidden);
+
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;

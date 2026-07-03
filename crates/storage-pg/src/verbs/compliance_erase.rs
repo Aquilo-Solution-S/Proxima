@@ -999,7 +999,7 @@ fn audit_target(target: &ComplianceEraseTarget) -> (&'static str, OwnerRef, Opti
     }
 }
 
-fn owner_digest(owner: OwnerRef) -> Vec<u8> {
+pub(crate) fn owner_digest(owner: OwnerRef) -> Vec<u8> {
     let (kind, owner_id) = owner.columns();
     let stable_key = owner.stable_key_uuid();
     let mut parts: Vec<&[u8]> = vec![kind.as_str().as_bytes(), stable_key.as_bytes()];

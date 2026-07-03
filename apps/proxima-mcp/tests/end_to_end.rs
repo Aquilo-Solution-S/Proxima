@@ -64,7 +64,7 @@ async fn oidc_host_auth_serves_tools_list() -> Result<(), Box<dyn std::error::Er
         return Ok(());
     };
     let subject = UserId::new(Uuid::now_v7());
-    let owner_key = format!("personal:{}", subject.into_inner());
+    let owner_key = OwnerRef::Personal(subject).external_key();
     let (signing, resolver) = keypair();
     let mut subject_map = OidcSubjectMap::new();
     subject_map.insert(ISSUER, "operator-sub", subject)?;

@@ -43,8 +43,9 @@ pub use proxima_core::verbs::schema::{
 };
 pub use proxima_core::{
     AuthPath, AuthzContext, Engine, EngineHandle, FlavorRegistryFrozen, MemoryId, Owner,
-    OwnerAccessPort, OwnerRef, Relation, SourceBatchId, StorageError, ToolScope,
-    UPLOADED_BLOB_SCHEMA_ID, UserId, canonical_json_bytes, provider_safe_tool_name,
+    OwnerAccessPort, OwnerExternalKeyParseError, OwnerRef, Relation, SourceBatchId, StorageError,
+    ToolScope, UPLOADED_BLOB_SCHEMA_ID, UserId, canonical_json_bytes, parse_external_key,
+    provider_safe_tool_name,
 };
 #[cfg(feature = "openai-compat-embed")]
 pub use proxima_llm_openai_compat::{
@@ -57,6 +58,9 @@ pub use proxima_pg_testkit as testkit;
 /// Stable exported Postgres `OwnerAccessPort` adapter for embedding hosts
 /// (see [`proxima_storage_pg::PgOwnerAccessResolver`]).
 pub use proxima_storage_pg::PgOwnerAccessResolver;
+/// Cancellation token type used by [`BuiltProxima::cancel`] and
+/// [`RunningProxima::cancel`].
+pub use tokio_util::sync::CancellationToken;
 
 /// Derive an agent-safe MCP tool palette from the frozen registry, excluding
 /// every id in `exclude`. Action-scoped tools expand to `tool:action`

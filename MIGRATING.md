@@ -144,12 +144,12 @@ host-owned direct calls. MCP serving ignores that boot owner and requires
 `OwnerAccessPort`.
 
 Multi-audience composition (branching on `aud` to run more than one
-identity class) is just running several `OidcTokenValidator`s that share
-one `KeyResolver` and shaping your own `AuthzContext` from
-`ValidatedOidcClaims` — see `crates/auth-oidc/tests/custom_host_validation.rs`
-and the module doc on `crates/auth-oidc/src/authenticator.rs` for the
-worked pattern; that surface didn't change shape in v0.0.5, only the
-default `OidcAuthenticator::new` path did.
+identity class) can now use `OidcBindingSet`: register one `OidcBinding`
+per `(issuer, audience, subject-map, role-shape)` route. Construction
+rejects duplicate `(issuer, audience)` routes; authentication rejects
+tokens unless exactly one binding validates. The lower-level
+`OidcTokenValidator` / `ValidatedOidcClaims` surface remains available for
+fully custom hosts — see `crates/auth-oidc/tests/custom_host_validation.rs`.
 
 Hand-rolled agent tool-palette filtering is replaced by one call. `built`
 below is `Proxima::<App>::build()`'s result (`BuiltProxima`), whose
@@ -177,7 +177,7 @@ MCP owner selection:
 
 | Step | Contract |
 |---|---|
-| initialize | client sends `X-Proxima-Owner: personal:<uuid>` / `group:<uuid>` / `world` |
+| initialize | client sends `X-Proxima-Owner: personal:<uuid>` / `group:<uuid>` / `world:00000000-0000-0000-0000-000000000001` |
 | session | server binds selected owner to `Mcp-Session-Id` |
 | later calls | no owner argument; bound owner is rechecked against fresh roles |
 | revocation | membership removal denies the next request |
@@ -190,7 +190,27 @@ fail closed and are not forwarded to host auth.
 must pass the owner explicitly per call through the existing direct-call
 API.
 
-## 6. `proxima-storage-pg` raw write API requires `OwnerWritePermit`
+## 6. AuthorizationHook membership direction
+
+`AuthzOperation::Membership` is now directional:
+
+```rust
+AuthzOperation::Membership {
+    change: MembershipChange::Add | MembershipChange::Remove,
+    group,
+    member,
+    relation,
+}
+```
+
+Any `AuthorizationHook` that pattern-matches membership mutations must add
+the `change` field. This is a breaking hook-input change so veto consumers
+can distinguish group membership grants from removals; Centauri-style
+router vetoes that previously consumed the membership shape around
+`router/mod.rs:84-88` should branch on `MembershipChange` instead of
+inferring direction from the called tool.
+
+## 7. `proxima-storage-pg` raw write API requires `OwnerWritePermit`
 
 These were never part of the supported Host API or Flavor SDK tiers (see
 [public-api.md](docs/reference/public-api.md#supported-tiers)), but if
@@ -231,7 +251,7 @@ Hosts that intentionally need System writes hold
 and call `Engine::authorize_owner_write_with_system_authority(...)`.
 Flavor tools and MCP-wire code do not receive this witness.
 
-## 7. Flavor authors: raw SQL against `proxima_core.*` is guardrail-denied
+## 8. Flavor authors: raw SQL against `proxima_core.*` is guardrail-denied
 
 New flavor code may not run raw SQL against `proxima_core.*` tables
 (`scripts/check-architecture-guardrails.py` fails the build on new sites).
@@ -247,7 +267,7 @@ the full helper set (`authorized_memory_ids`, `authorized_fact_payloads`,
 `Engine::query`, the same owner/group/`World` visibility path every other
 authorized read uses.
 
-## 8. Owner-transfer: `core_membership:publish_to_world`
+## 9. Owner-transfer: `core_membership:publish_to_world`
 
 Publishing an entity is now an owner **transfer** to `OwnerRef::World`
 (`Engine::publish_to_world`), not an ACL flag or a share row. Published
@@ -257,7 +277,18 @@ lookup resolves to World, which `authorize_write` never accepts). If a
 consumer previously modeled "publish" as a copy or a grant, switch it to
 the `core_membership:publish_to_world` MCP action / `Engine::publish_to_world`.
 
-## 9. Lock-step version bump
+## 10. Code flavor repo erase is physical and rebuildable
+
+`proxima_code::erase_repo(pool, owner, repo_id, schemas)` no longer
+returns the old "deferred to PR9" storage error. It deletes the selected
+repo record, repo ingestion runs via FK cascade, code-flavor sidecars,
+selected owner-scoped substrate memories, source receipts/batches,
+citations, edges, and embeddings, then returns `RepoEraseReceipt`.
+
+Unlike compliance owner/source erasure, repo erase does not write
+suppression keys. Re-registering and re-ingesting the same repo is allowed.
+
+## 11. Lock-step version bump
 
 Every Proxima crate this host depends on (`proxima`, `proxima-core`,
 `proxima-storage-pg`, `proxima-auth-oidc`, and any flavor crates) moves
@@ -265,7 +296,19 @@ together — there is no supported skew between them across a tag. Bump all
 of them in the same commit, then run the checks in this file before
 merging.
 
-## 10. Lean consumers
+Migration version lanes:
+
+| Source | Reserved versions |
+|---|---|
+| Proxima core | `1..=9999`; `2..=7` retired pre-v0.0.4 rows |
+| example/host migrators | timestamp versions ending `00..=19` |
+| first-party flavors | timestamp versions ending `20..=39` |
+| downstream host composition | timestamp versions ending `60..=99`; if a host composes migrators outside `run_core_and_flavor_migrations`, it owns collision avoidance before touching the database |
+
+Run `python3 scripts/check-migration-ranges.py` after adding or bumping any
+in-repo migration.
+
+## 12. Lean consumers
 
 If a downstream package requires `docs/lean` as `causa` (e.g. a
 `kernel/lakefile.toml` with `require causa rev=...`), bump `rev` in the
@@ -289,4 +332,5 @@ cargo check -p proxima-dev-migrate
 cargo clippy -p proxima -p proxima-dev-migrate --all-targets -- -D warnings
 python3 scripts/check-architecture-guardrails.py
 python3 scripts/check-sql-policy.py
+python3 scripts/check-migration-ranges.py
 ```

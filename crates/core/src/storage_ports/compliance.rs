@@ -1,5 +1,5 @@
 use crate::access::AccessError;
-use crate::compliance::ComplianceEraseTarget;
+use crate::compliance::{ComplianceEraseTarget, ComplianceExportTarget};
 use crate::storage::StorageError;
 use crate::storage_ports::OwnerWritePermit;
 use crate::{GroupId, Owner, SourceId, UserId};
@@ -77,6 +77,16 @@ pub trait ComplianceErasePort: Send + Sync {
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError>;
+
+    async fn export_owner_bundle(
+        &self,
+        auth: &crate::compliance::ExportAuthorization,
+        fact_sidecar_tables: &[String],
+        goal_sidecar_tables: &[String],
+        edge_sidecar_tables: &[String],
+        citation_mapping_sidecar_tables: &[String],
+        cited_object_sidecar_tables: &[String],
+    ) -> Result<crate::compliance::ComplianceExportBundle, StorageError>;
 }
 
 /// Trusted host port for compliance erase authorization.
@@ -89,6 +99,15 @@ pub trait ComplianceAdminPort: Send + Sync {
         authz: &crate::AuthzContext,
         target: &ComplianceEraseTarget,
     ) -> Result<bool, AccessError>;
+
+    async fn may_perform_compliance_export(
+        &self,
+        authz: &crate::AuthzContext,
+        target: &ComplianceExportTarget,
+    ) -> Result<bool, AccessError> {
+        self.may_perform_compliance_erase(authz, &target.erase_authority_target())
+            .await
+    }
 }
 
 /// Trusted host port for personal owner drop verification.

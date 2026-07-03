@@ -15,7 +15,8 @@ use std::time::Duration;
 
 use proxima_core::change_event::{EdgeTargetProjection, EntityRef};
 use proxima_core::compliance::{
-    ComplianceAuditContext, ComplianceEraseOutcome, EraseAuthorization,
+    ComplianceAuditContext, ComplianceEraseOutcome, ComplianceExportBundle, EraseAuthorization,
+    ExportAuthorization,
 };
 use proxima_core::read_models::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, FactRow, GoalWakeCandidate,
@@ -88,6 +89,17 @@ pub use sidecars::{
 /// Default DB URL when `DATABASE_URL` is unset. Matches the
 /// dev DB created locally via `createdb proxima_dev`.
 pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_dev";
+
+type NeighborMemoryEdgeTuple = (
+    uuid::Uuid,
+    String,
+    proxima_core::EntityKind,
+    Option<uuid::Uuid>,
+    proxima_core::EntityKind,
+    Option<uuid::Uuid>,
+    bool,
+    bool,
+);
 
 const NEIGHBOR_MEMORY_EDGES_SQL: &str = "
 WITH read_set(owner_kind, owner_id) AS (
@@ -826,25 +838,18 @@ impl MemoryReadPort for PgStorage {
         let (read_owner_kinds, read_owner_ids) = verbs::query::read_owner_columns(read_owners);
         let (world_kind, world_id) =
             crate::access::owner_columns::owner_binds(&proxima_core::access::world());
-        let rows: Vec<(
-            uuid::Uuid,
-            String,
-            proxima_core::EntityKind,
-            Option<uuid::Uuid>,
-            proxima_core::EntityKind,
-            Option<uuid::Uuid>,
-            bool,
-            bool,
-        )> = sqlx::query_as(NEIGHBOR_MEMORY_EDGES_SQL)
-            .bind(&read_owner_kinds)
-            .bind(&read_owner_ids)
-            .bind(world_kind)
-            .bind(world_id)
-            .bind(&ids)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(internal)?;
+        let rows: Vec<NeighborMemoryEdgeTuple> = {
+            sqlx::query_as(NEIGHBOR_MEMORY_EDGES_SQL)
+                .bind(&read_owner_kinds)
+                .bind(&read_owner_ids)
+                .bind(world_kind)
+                .bind(world_id)
+                .bind(&ids)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal)?
+        };
         Ok(rows
             .into_iter()
             .map(
@@ -1364,6 +1369,14 @@ impl SourceCursorPort for PgStorage {
     ) -> Result<(), StorageError> {
         verbs::source_cursors::store_source_cursor(&self.pool, permit, source, cursor).await
     }
+
+    async fn source_cursor_age(
+        &self,
+        owner: &Owner,
+        source: &str,
+    ) -> Result<Option<std::time::Duration>, StorageError> {
+        verbs::source_cursors::source_cursor_age(&self.pool, owner, source).await
+    }
 }
 
 #[async_trait::async_trait]
@@ -1502,6 +1515,27 @@ impl ComplianceErasePort for PgStorage {
         )
         .await
     }
+
+    async fn export_owner_bundle(
+        &self,
+        auth: &ExportAuthorization,
+        fact_sidecar_tables: &[String],
+        goal_sidecar_tables: &[String],
+        edge_sidecar_tables: &[String],
+        citation_mapping_sidecar_tables: &[String],
+        cited_object_sidecar_tables: &[String],
+    ) -> Result<ComplianceExportBundle, StorageError> {
+        verbs::compliance_export::export_owner_bundle(
+            &self.pool,
+            auth,
+            fact_sidecar_tables,
+            goal_sidecar_tables,
+            edge_sidecar_tables,
+            citation_mapping_sidecar_tables,
+            cited_object_sidecar_tables,
+        )
+        .await
+    }
 }
 
 #[async_trait::async_trait]
@@ -1536,5 +1570,18 @@ impl RegistryProjectionPort for PgStorage {
             limit,
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn core_migrator_contains_v006_migration() {
+        assert!(
+            super::core_migrator()
+                .iter()
+                .any(|migration| migration.version == 9),
+            "core migrator must embed 0009_v006.sql"
+        );
     }
 }

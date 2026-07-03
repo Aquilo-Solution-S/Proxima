@@ -1,5 +1,7 @@
 use crate::access::{EntityId, Relation};
-use crate::authz::{AuthPath, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome};
+use crate::authz::{
+    AuthPath, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome, MembershipChange,
+};
 use crate::compliance::ComplianceEraseTarget;
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
@@ -42,6 +44,7 @@ impl Engine {
             &group_owner,
             Relation::Admin,
             AuthzOperation::Membership {
+                change: MembershipChange::Add,
                 group,
                 member: member_principal,
                 relation: Relation::Admin,
@@ -79,6 +82,7 @@ impl Engine {
             permit.owner(),
             Relation::Admin,
             AuthzOperation::Membership {
+                change: MembershipChange::Add,
                 group,
                 member: member_principal,
                 relation,
@@ -132,6 +136,7 @@ impl Engine {
                 permit.owner(),
                 Relation::Admin,
                 AuthzOperation::Membership {
+                    change: MembershipChange::Remove,
                     group,
                     member: member_principal,
                     relation,
@@ -291,7 +296,14 @@ fn bootstrap_storage_error(err: StorageError) -> ProtocolError {
 
 #[cfg(test)]
 mod tests {
-    use crate::{AuthPath, AuthzContext, ErrorCode, FlavorRegistry, GroupId, UserId};
+    use std::sync::{Arc, Mutex};
+
+    use super::super::access_sets::tests::MembershipStorage;
+    use crate::access::{Relation, Role};
+    use crate::authz::{
+        AuthPath, AuthorizationHook, AuthzContext, AuthzInput, AuthzOperation, MembershipChange,
+    };
+    use crate::{ErrorCode, FlavorRegistry, GroupId, OwnerRef, UserId};
     use uuid::Uuid;
 
     #[test]
@@ -331,5 +343,63 @@ mod tests {
             .await
             .expect_err("non-operator caller must not bootstrap group admin");
         assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[derive(Debug)]
+    struct RecordingMembershipHook {
+        changes: Arc<Mutex<Vec<MembershipChange>>>,
+    }
+
+    impl AuthorizationHook for RecordingMembershipHook {
+        fn observe(&self, input: &AuthzInput<'_>, _outcome: crate::authz::AuthzOutcome) {
+            if let AuthzOperation::Membership { change, .. } = &input.operation {
+                self.changes.lock().expect("changes lock").push(*change);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn access_admin_membership_hook_records_add_and_remove_direction() {
+        let group = GroupId::new(Uuid::now_v7());
+        let admin = UserId::new(Uuid::now_v7());
+        let member = UserId::new(Uuid::now_v7());
+        let changes = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = FlavorRegistry::new();
+        registry.add_authorization_hook(Arc::new(RecordingMembershipHook {
+            changes: changes.clone(),
+        }));
+        let engine = crate::Engine::new(registry.freeze_or_panic_for_tests()).with_storage_ports(
+            MembershipStorage {
+                member: OwnerRef::Personal(member),
+                group,
+                membership_relation: Relation::Viewer,
+                home_owner: None,
+                entity_readable: false,
+                memory_kind: None,
+            }
+            .storage_ports(),
+        );
+        let authz = AuthzContext::for_subject_with_role(
+            admin,
+            [(OwnerRef::Group(group), Role::admin())],
+            AuthPath::HostBearer,
+        );
+
+        let add_err = engine
+            .add_member(&authz, group, member, Relation::Viewer)
+            .await
+            .expect_err("test storage rejects membership writes after hook observation");
+        assert_eq!(add_err.code, ErrorCode::Internal);
+
+        let remove_err = engine
+            .remove_member(&authz, group, member)
+            .await
+            .expect_err("test storage rejects membership writes after hook observation");
+        assert_eq!(remove_err.code, ErrorCode::Internal);
+
+        assert_eq!(
+            *changes.lock().expect("changes lock"),
+            vec![MembershipChange::Add, MembershipChange::Remove]
+        );
     }
 }

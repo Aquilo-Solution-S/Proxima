@@ -8,6 +8,7 @@ use sqlx::PgPool;
 
 use crate::error::internal;
 
+use super::read_owner_predicate;
 use super::rows::{GoalRowDb, goal_row_from_db};
 
 #[allow(clippy::too_many_lines)]
@@ -66,8 +67,8 @@ pub(super) async fn query_goals(
                  ON e.source_goal_id = g.goal_id \
                 AND e.relation = 'core/depends-on' \
                 AND e.target_goal_id IS NOT NULL \
-              WHERE g.owner_kind = s.kind \
-                AND g.owner_id IS NOT DISTINCT FROM s.id"
+              WHERE {read_owner_predicate}",
+        read_owner_predicate = read_owner_predicate("g", "s"),
     );
     // Bindings: $1=owner_kind, $2=owner_id; the remaining params are pushed
     // in order, so optional filters and keyset cursors remain bound values.

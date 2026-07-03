@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use super::{Engine, pipeline::WritePermit};
 use crate::access::Relation;
 use crate::authz::AuthzContext;
@@ -67,5 +69,31 @@ impl Engine {
             .store_source_cursor(permit.owner_write_permit(), source, cursor)
             .await
             .map_err(|e| ProtocolError::internal(format!("store_source_cursor: {e}")))
+    }
+
+    /// Return how long ago the owner-scoped cursor for `source` was updated.
+    ///
+    /// Source cursor age is lag observability, so it uses a read gate instead
+    /// of the cursor load/store write gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context cannot read the owner with
+    /// `Viewer`, and `Internal` for storage failures.
+    pub async fn source_cursor_age(
+        &self,
+        authz: &AuthzContext,
+        owner: &Owner,
+        source: &str,
+    ) -> Result<Option<Duration>, ProtocolError> {
+        let permit = self
+            .authorize_request(authz, owner, Relation::Viewer)
+            .await?;
+        self.storage
+            .source_cursor
+            .source_cursor
+            .source_cursor_age(permit.owner(), source)
+            .await
+            .map_err(|e| ProtocolError::internal(format!("source_cursor_age: {e}")))
     }
 }

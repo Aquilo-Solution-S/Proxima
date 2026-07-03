@@ -27,12 +27,24 @@ bounded primitives and metadata vocabulary.
 | `delete_source_scope` | current Host API for erase; transport RPC deferred | one source object inside one abandoned/dropped `Owner` | erase rows attributable to the scope only under the same abandonment/drop proof as owner erase; live owners refuse; flavor resolves scope, substrate executes compliance deletion |
 | `pause_owner` | v1 intent | one `Owner` | stop future operator dispatch and wake execution; reads and export remain available |
 | `resume_owner` | v1 intent | one `Owner` | clear pause state for future dispatch |
-| `export_owner` | v1 intent | one `Owner` | serialize owner-scoped substrate rows plus owner-involving compliance audit entries |
+| `export_owner` | current Host API for export; transport RPC deferred | one personal/group `Owner` | deterministic owner-scoped bundle: memories, goals, edges, fact entities, receipts, source batches, citations, cited objects/blob refs, source cursors, registered sidecars, and matching compliance audit rows |
 | per-memory cascade delete | deferred | one Memory and derived closure | requires partial-graph repair and invocation-cache invalidation |
 | tool-recipient export from calls | deferred | external-effect calls | waits for per-call recipient storage (see [12 §Compliance Metadata](12-tool-manifest.md#compliance-metadata)) |
 | legal-consequence runtime blocking | deferred | tool invocation | `legal_consequence` remains design intent; human approval remains required pattern (see [05 §Human approval](05-actions.md#human-approval), [12 §Compliance Metadata](12-tool-manifest.md#compliance-metadata)) |
 
 The World-owner refusal above has a publish-side consequence — rows published to World permanently leave personal/group erase reach; see [Consumer Projector Guidance](reference/public-api.md#consumer-projector-guidance).
+
+Current export bundle:
+
+| Section | Rows |
+|---|---|
+| substrate | `memories`, `goals`, `edges`, `fact_entities`, `fact_receipts`, `source_batches`, `citation_mappings`, `cited_objects`, `source_cursors` |
+| sidecars | registered memory/goal/edge/citation/cited-object sidecar rows for the target owner |
+| blob refs | `cited_uploaded_blob_v1` / other registered cited-object sidecars; object bytes remain external |
+| audit | matching `compliance_audit_log` rows by owner digest |
+| excluded | persona/self rows, caller-supplied auth path, caller-supplied audit context |
+| gate | system auth path or `ComplianceAdminPort::may_perform_compliance_export` |
+| legal hold | no effect on export; hold blocks physical destruction only |
 
 ## Outcomes
 

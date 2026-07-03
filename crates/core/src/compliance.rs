@@ -9,7 +9,7 @@
 //! creates [`EraseAuthorization`], and `PG` still rechecks abandonment in the
 //! delete transaction.
 
-use crate::{AuthPath, GroupId, SourceId, UserId};
+use crate::{AuthPath, GroupId, OwnerRef, SourceId, UserId};
 
 /// The entity to erase under compliance.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -43,6 +43,108 @@ pub enum ComplianceEraseTarget {
 pub struct ComplianceEraseRequest {
     /// The target to erase.
     pub target: ComplianceEraseTarget,
+}
+
+/// The owner to export under compliance access/portability.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ComplianceExportTarget {
+    /// Export a group owner bundle.
+    GroupOwner { group_id: GroupId },
+    /// Export a personal owner bundle.
+    PersonalOwner { user_id: UserId },
+}
+
+impl ComplianceExportTarget {
+    /// Return the concrete owner for this export target.
+    #[must_use]
+    pub const fn owner(&self) -> OwnerRef {
+        match self {
+            Self::GroupOwner { group_id } => OwnerRef::Group(*group_id),
+            Self::PersonalOwner { user_id } => OwnerRef::Personal(*user_id),
+        }
+    }
+
+    /// Return the erase-family target used for controller authorization.
+    ///
+    /// Export is non-destructive: personal-owner export does not require drop
+    /// proof, but it does require the same controller authority family as erase.
+    #[must_use]
+    pub fn erase_authority_target(&self) -> ComplianceEraseTarget {
+        match self {
+            Self::GroupOwner { group_id } => ComplianceEraseTarget::GroupOwner {
+                group_id: *group_id,
+            },
+            Self::PersonalOwner { user_id } => ComplianceEraseTarget::PersonalOwner {
+                user_id: *user_id,
+                drop_event_id: String::new(),
+            },
+        }
+    }
+}
+
+/// A request to export one owner's compliance bundle.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ComplianceExportRequest {
+    /// The target owner to export.
+    pub target: ComplianceExportTarget,
+}
+
+/// Counts of rows included in a compliance export bundle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ComplianceExportCounts {
+    pub memories: usize,
+    pub goals: usize,
+    pub edges: usize,
+    pub fact_entities: usize,
+    pub receipts: usize,
+    pub source_batches: usize,
+    pub citations: usize,
+    pub cited_objects: usize,
+    pub source_cursors: usize,
+    pub sidecar_rows: usize,
+    pub compliance_audit_rows: usize,
+}
+
+/// JSON rows exported from one sidecar table.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ComplianceExportSidecarRows {
+    pub table: String,
+    pub rows: Vec<serde_json::Value>,
+}
+
+/// Owner-scoped compliance export bundle.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ComplianceExportBundle {
+    pub operation_id: uuid::Uuid,
+    pub target: ComplianceExportTarget,
+    pub owner: OwnerRef,
+    pub derived_requester: Option<UserId>,
+    pub derived_auth_path: String,
+    pub exported_at: time::OffsetDateTime,
+    pub counts: ComplianceExportCounts,
+    pub memories: Vec<serde_json::Value>,
+    pub goals: Vec<serde_json::Value>,
+    pub edges: Vec<serde_json::Value>,
+    pub fact_entities: Vec<serde_json::Value>,
+    pub receipts: Vec<serde_json::Value>,
+    pub source_batches: Vec<serde_json::Value>,
+    pub citations: Vec<serde_json::Value>,
+    pub cited_objects: Vec<serde_json::Value>,
+    pub source_cursors: Vec<serde_json::Value>,
+    pub sidecars: Vec<ComplianceExportSidecarRows>,
+    pub compliance_audit_rows: Vec<serde_json::Value>,
+}
+
+impl ComplianceExportBundle {
+    /// Serialize the bundle to recursively sorted-key JSON bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a serde error if the bundle cannot be represented as JSON.
+    pub fn canonical_json_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+        let value = serde_json::to_value(self)?;
+        Ok(crate::canonical_json_bytes(&value))
+    }
 }
 
 /// Counts of rows erased by a compliance operation.
@@ -162,11 +264,87 @@ impl ComplianceAuditContext {
     }
 }
 
+/// Internal audit context for a compliance export operation.
+/// Derived by `Engine` from `AuthzContext`; never caller-supplied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComplianceExportAuditContext {
+    operation_id: uuid::Uuid,
+    target: ComplianceExportTarget,
+    /// Derived by `Engine` from `AuthzContext`; never caller-supplied.
+    derived_requester: Option<UserId>,
+    /// Derived by `Engine` from `AuthzContext`; never caller-supplied.
+    derived_auth_path: AuthPath,
+    requested_at: time::OffsetDateTime,
+}
+
+impl ComplianceExportAuditContext {
+    /// Create a new export audit context.
+    pub(crate) fn new(
+        operation_id: uuid::Uuid,
+        target: ComplianceExportTarget,
+        derived_requester: Option<UserId>,
+        derived_auth_path: AuthPath,
+        requested_at: time::OffsetDateTime,
+    ) -> Self {
+        Self {
+            operation_id,
+            target,
+            derived_requester,
+            derived_auth_path,
+            requested_at,
+        }
+    }
+
+    /// Return the operation ID.
+    #[must_use]
+    pub fn operation_id(&self) -> uuid::Uuid {
+        self.operation_id
+    }
+
+    /// Return the export target.
+    #[must_use]
+    pub fn target(&self) -> &ComplianceExportTarget {
+        &self.target
+    }
+
+    /// Return the concrete exported owner.
+    #[must_use]
+    pub fn owner(&self) -> OwnerRef {
+        self.target.owner()
+    }
+
+    /// Return the derived requester.
+    #[must_use]
+    pub fn derived_requester(&self) -> Option<UserId> {
+        self.derived_requester
+    }
+
+    /// Return the derived auth path.
+    #[must_use]
+    pub fn derived_auth_path(&self) -> AuthPath {
+        self.derived_auth_path
+    }
+
+    /// Return the request timestamp.
+    #[must_use]
+    pub fn requested_at(&self) -> time::OffsetDateTime {
+        self.requested_at
+    }
+}
+
 /// Non-forgeable authorization for compliance erasure.
 /// Callers cannot construct this; Engine creates it internally.
 #[derive(Debug)]
 pub struct EraseAuthorization {
     audit: ComplianceAuditContext,
+    _private: private::Seal,
+}
+
+/// Non-forgeable authorization for compliance export.
+/// Callers cannot construct this; Engine creates it internally.
+#[derive(Debug)]
+pub struct ExportAuthorization {
+    audit: ComplianceExportAuditContext,
     _private: private::Seal,
 }
 
@@ -184,6 +362,22 @@ impl EraseAuthorization {
 
     /// Create a new erase authorization (internal only).
     pub(crate) fn new(audit: ComplianceAuditContext) -> Self {
+        Self {
+            audit,
+            _private: private::Seal,
+        }
+    }
+}
+
+impl ExportAuthorization {
+    /// Return the audit context.
+    #[must_use]
+    pub const fn audit(&self) -> &ComplianceExportAuditContext {
+        &self.audit
+    }
+
+    /// Create a new export authorization (internal only).
+    pub(crate) fn new(audit: ComplianceExportAuditContext) -> Self {
         Self {
             audit,
             _private: private::Seal,

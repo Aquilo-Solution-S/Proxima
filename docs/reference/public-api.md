@@ -25,6 +25,19 @@ Unsupported:
 | flavor raw SQL against `proxima_core.*` | denied for every site. The [authorized flavor-read facade](#authorized-flavor-read-facade) replaced the last raw `flavors/code` reads against `proxima_core.*`; `scripts/check-architecture-guardrails.py`'s dated-exemption allowlist is empty, and any new raw `proxima_core.*` site in flavor code fails the guardrail (no temporary exemption path is open) |
 | runtime plugin/tool/schema registration | denied; flavor composition is build-time |
 
+## Owner External Keys
+
+| OwnerRef | External key |
+|---|---|
+| `OwnerRef::World` | `world:00000000-0000-0000-0000-000000000001` |
+| `OwnerRef::Personal(UserId)` | `personal:<uuid>` |
+| `OwnerRef::Group(GroupId)` | `group:<uuid>` |
+
+| Helper | Import | Contract |
+|---|---|---|
+| `OwnerRef::external_key()` | `proxima::OwnerRef` / `proxima_core::OwnerRef` | format the canonical runtime/API key |
+| `parse_external_key(&str)` | `proxima::parse_external_key` / `proxima_core::parse_external_key` | parse only canonical keys; bare `world` is invalid |
+
 ## Owner Write Permit Boundary
 
 | Item | Contract |
@@ -43,6 +56,20 @@ Machine checks:
 | import tiers | `cargo test -p proxima --test public_api_tiers --locked` |
 | architecture ratchets | `python3 scripts/check-architecture-guardrails.py` |
 | SQL policy ratchet | `python3 scripts/check-sql-policy.py` |
+| schema-id allocation ledger | `python3 scripts/check-schema-ids.py` |
+| registry conformance dump | `cargo test -p proxima --test registry_conformance` |
+
+## Registry Conformance Dump
+
+Consumer lockstep check:
+
+1. Build a `FlavorRegistry::new()`.
+2. Call `<YourAppOrBundle as FlavorBundle>::register(&mut registry)`.
+3. Freeze with `registry.try_freeze()`.
+4. Compare sorted schema `(id, version, kind, sidecar_table)`, sidecar tables, tool ids, and flavor ids.
+
+`cargo test -p proxima --test registry_conformance` proves the hosted-app and
+embedded-consumer registration paths produce the same deterministic dump.
 
 ## Authorized Flavor-Read Facade
 
@@ -112,6 +139,30 @@ Personal- and group-scoped erasure never reaches a `World`-owned row. See
 [Consumer Projector Guidance](#consumer-projector-guidance) below for why
 that matters when deciding what to publish.
 
+## Compliance Export Host API
+
+Public facade status:
+
+| Type / verb | Import | Status |
+|---|---|---|
+| `ComplianceExportRequest` | `proxima::ComplianceExportRequest` | Host API DTO |
+| `ComplianceExportTarget` | `proxima::ComplianceExportTarget` | Host API DTO |
+| `ComplianceExportBundle` | `proxima::ComplianceExportBundle` | Host API DTO |
+| `ComplianceExportCounts` | `proxima::ComplianceExportCounts` | Host API DTO |
+| `ComplianceExportSidecarRows` | `proxima::ComplianceExportSidecarRows` | Host API DTO |
+| `Engine::export_owner_bundle(authz, target)` | `proxima::Engine` | Host API verb |
+
+Contract:
+
+| Field | Rule |
+|---|---|
+| target | personal/group owner only; no World export target |
+| authorization | `AuthPath::System` or `ComplianceAdminPort::may_perform_compliance_export`; default export authorization delegates to erase-family controller approval |
+| legal hold | does not block export |
+| drop proof | not required; export is non-destructive |
+| rows | owner-scoped substrate rows, source cursors, registered sidecars, cited-object blob refs, and matching compliance audit rows |
+| serialization | `ComplianceExportBundle::canonical_json_bytes()` emits recursively sorted-key JSON bytes |
+
 ## Consumer Projector Guidance
 
 Rules for a downstream projector (a host process that writes derived
@@ -122,6 +173,7 @@ execution or activity log projector):
 |---|---|
 | owner | write under the tenant's `OwnerRef::Group(GroupId)`, not `OwnerRef::Personal(UserId)`. Tenant-shared evidence belongs to the group the tenant's members can read/manage together, not to one operator's personal owner. |
 | idempotency keys | Proxima honors a caller-supplied idempotency key verbatim — it never invents a different projector-side key. `core_remember`'s `idempotency_key` deterministically becomes the note id via UUIDv5 over the caller's own bytes (`crates/core/src/mcp/core_tools/memory/remember.rs`); other Fact payload schemas declare their own `natural_key_columns()` from caller-supplied payload fields. Re-ingesting the same key with the same content is a no-op; re-ingesting the same key with changed content writes a new version and advances the head pointer — the identity a projector chooses is the identity Proxima keeps. |
+| projection lag | `Engine::source_cursor_age(authz, owner, source)` returns the age of the owner/source cursor for EVD-012-style lag SLO evidence. It is owner-scoped and read-authorized (`Viewer`); `load_source_cursor` / `store_source_cursor` still require cursor mutation authority (`Ingest`) and do not expose cursor bytes to viewers. |
 | World publish | reserve `publish_to_world` for deliberate public catalog/trust facts only — never for private execution/activity evidence. Publishing is an irreversible owner **transfer**, not an ACL flag: once transferred, `authorize_write`'s World short-circuit means the row is never a write owner again, and `ComplianceEraseTarget::WorldOwner` is always refused (see above). A published memory permanently exits the personal/group compliance-erase reach — there is no path back through compliance erase if content published this way later turns out to need it. Treat `publish_to_world` as a one-way decision reserved for content the tenant intends to be permanently, publicly, and inerasably visible. |
 
 See [14 Protocol Surface — `core_membership`](../14-protocol-surface.md)

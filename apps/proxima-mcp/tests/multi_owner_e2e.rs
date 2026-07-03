@@ -411,9 +411,5 @@ fn tool_names(body: &serde_json::Value) -> Vec<String> {
 }
 
 fn owner_header(owner: Owner) -> String {
-    match owner {
-        OwnerRef::World => "world".to_string(),
-        OwnerRef::Personal(user) => format!("personal:{}", user.into_inner()),
-        OwnerRef::Group(group) => format!("group:{}", group.into_inner()),
-    }
+    owner.external_key()
 }

@@ -19,12 +19,20 @@ pub enum AuthzOutcome {
     DeniedInternal,
 }
 
+/// Direction of a group membership mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MembershipChange {
+    Add,
+    Remove,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthzOperation {
     /// Ordinary relation-gated owner/space/entry access.
     Relation { relation: Relation },
-    /// Membership mutation audited by group, member, and relation.
+    /// Membership mutation audited by group, member, relation, and direction.
     Membership {
+        change: MembershipChange,
         group: GroupId,
         member: OwnerRef,
         relation: Relation,

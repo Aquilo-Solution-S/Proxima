@@ -456,8 +456,22 @@ Rules:
 1. SQLx migration versions share one database-global namespace.
 2. Core migrator runs before flavor migrators.
 3. Every flavor migrator sets `ignore_missing(true)`.
-4. Pre-v1 flavor schema changes may be squashed only before persisted
+4. `run_core_and_flavor_migrations` rejects duplicate versions before any
+   database write; external migrator composition owns the same collision
+   check if it bypasses this facade.
+5. Pre-v1 flavor schema changes may be squashed only before persisted
    compatibility matters.
+
+Version lanes:
+
+| Source | Reserved versions |
+|---|---|
+| Proxima core | `1..=9999`; `2..=7` retired pre-v0.0.4 rows |
+| example/host migrators | timestamp versions ending `00..=19` |
+| first-party flavors | timestamp versions ending `20..=39` |
+| downstream host composition | timestamp versions ending `60..=99`; external hosts own collision avoidance when they compose migrators outside Proxima's facade |
+
+Run `python3 scripts/check-migration-ranges.py` before adding a migration.
 
 ## MCP Tools
 

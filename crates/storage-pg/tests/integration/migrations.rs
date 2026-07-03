@@ -70,6 +70,21 @@ async fn check_constraint_exists(pg: &PgStorage, table: &str, constraint: &str) 
     .expect("constraint inventory query should succeed")
 }
 
+async fn index_exists(pg: &PgStorage, index_name: &str) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM pg_indexes
+              WHERE schemaname = 'proxima_core'
+                AND indexname = $1
+         )",
+    )
+    .bind(index_name)
+    .fetch_one(pg.pool_for_tests())
+    .await
+    .expect("index inventory query should succeed")
+}
+
 #[tokio::test]
 async fn migrations_apply_to_fresh_db() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -110,6 +125,13 @@ async fn migrations_apply_to_fresh_db() {
             "legacy owner org column must be absent from proxima_core after S0; found {} column(s)",
             org_cols.0
         );
+
+        for index_name in ["idx_agent_derivation_v1_search", "idx_agent_note_v1_search"] {
+            assert!(
+                !index_exists(&pg, index_name).await,
+                "{index_name} must be dropped by v0.0.6; lexical search ranks candidates from a CTE"
+            );
+        }
         Ok(())
     }
     .await;

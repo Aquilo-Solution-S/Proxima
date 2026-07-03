@@ -11,6 +11,8 @@ use crate::error::internal;
 use crate::pg_ident::PgIdent;
 use crate::verbs::consolidate::edge_event_visibility_predicate;
 
+use super::read_owner_predicate;
+
 pub(super) fn memory_row_from_db(
     r: MemoryRowDb,
     payload: Option<SidecarPayload>,
@@ -168,12 +170,13 @@ pub(super) async fn read_seq_high_water(
          WHERE EXISTS (
              SELECT 1
                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-              WHERE ce.owner_kind = s.kind
-                AND ce.owner_id IS NOT DISTINCT FROM s.id
+              WHERE {read_owner_predicate}
          )
            AND {edge_visibility}
-         ORDER BY ce.seq DESC LIMIT 1"
+         ORDER BY ce.seq DESC LIMIT 1",
+        read_owner_predicate = read_owner_predicate("ce", "s"),
     );
+    // SQL-POLICY: fixed-fragment
     let row: Option<(uuid::Uuid,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(read_owner_kinds)
         .bind(read_owner_ids)
