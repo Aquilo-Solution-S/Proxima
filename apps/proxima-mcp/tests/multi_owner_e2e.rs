@@ -97,16 +97,15 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
 
     let session_a_owner_a = initialize(&client, &url, &bearer_a, &owner_header(owner_a)).await?;
     initialized(&client, &url, &session_a_owner_a, &bearer_a).await?;
-    let tools_a = tool_names(
-        post_rpc(
-            &client,
-            &url,
-            Some(&session_a_owner_a),
-            &bearer_a,
-            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
-        )
-        .await?,
-    );
+    let tools_a_body = post_rpc(
+        &client,
+        &url,
+        Some(&session_a_owner_a),
+        &bearer_a,
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+    )
+    .await?;
+    let tools_a = tool_names(&tools_a_body);
     assert!(
         tools_a.contains(&"core_remember".to_string()),
         "{tools_a:?}"
@@ -132,12 +131,12 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
         "remember output: {remembered:?}"
     );
 
-    let session_b_owner_b = initialize(&client, &url, &bearer_b, &owner_header(owner_b)).await?;
-    initialized(&client, &url, &session_b_owner_b, &bearer_b).await?;
+    let group_b_session = initialize(&client, &url, &bearer_b, &owner_header(owner_b)).await?;
+    initialized(&client, &url, &group_b_session, &bearer_b).await?;
     let search_b = call_tool(
         &client,
         &url,
-        &session_b_owner_b,
+        &group_b_session,
         &bearer_b,
         "core_search_memories",
         json!({"query": unique_query, "mode": "lexical", "include_body": true}),
@@ -149,18 +148,17 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
         "group B must not read group A note: {search_b:?}"
     );
 
-    let session_a_owner_b = initialize(&client, &url, &bearer_a, &owner_header(owner_b)).await?;
-    initialized(&client, &url, &session_a_owner_b, &bearer_a).await?;
-    let viewer_tools = tool_names(
-        post_rpc(
-            &client,
-            &url,
-            Some(&session_a_owner_b),
-            &bearer_a,
-            json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}}),
-        )
-        .await?,
-    );
+    let viewer_on_group_b = initialize(&client, &url, &bearer_a, &owner_header(owner_b)).await?;
+    initialized(&client, &url, &viewer_on_group_b, &bearer_a).await?;
+    let viewer_body = post_rpc(
+        &client,
+        &url,
+        Some(&viewer_on_group_b),
+        &bearer_a,
+        json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}}),
+    )
+    .await?;
+    let viewer_tools = tool_names(&viewer_body);
     assert!(
         viewer_tools.contains(&"core_search_memories".to_string()),
         "{viewer_tools:?}"
@@ -180,16 +178,15 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
     let session_master_owner_a =
         initialize(&client, &url, &bearer_master, &owner_header(owner_a)).await?;
     initialized(&client, &url, &session_master_owner_a, &bearer_master).await?;
-    let master_tools = tool_names(
-        post_rpc(
-            &client,
-            &url,
-            Some(&session_master_owner_a),
-            &bearer_master,
-            json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {}}),
-        )
-        .await?,
-    );
+    let master_tools_body = post_rpc(
+        &client,
+        &url,
+        Some(&session_master_owner_a),
+        &bearer_master,
+        json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {}}),
+    )
+    .await?;
+    let master_tools = tool_names(&master_tools_body);
     assert!(
         master_tools.contains(&"core_remember".to_string()),
         "master-token subject should use the same owner role path: {master_tools:?}"
@@ -437,7 +434,7 @@ async fn sse_json(
     Err(format!("missing JSON SSE data in {text:?}").into())
 }
 
-fn tool_names(body: serde_json::Value) -> Vec<String> {
+fn tool_names(body: &serde_json::Value) -> Vec<String> {
     body["result"]["tools"]
         .as_array()
         .expect("tools")
