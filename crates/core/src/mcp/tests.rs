@@ -110,11 +110,13 @@ mod manifest_tests {
             protocol_tool::CORE_GOAL,
             protocol_tool::CORE_FACT,
             protocol_tool::CORE_MEMBERSHIP,
+            protocol_tool::CORE_PUBLISH,
         ]);
         let expected_counts = BTreeMap::from([
             (protocol_tool::CORE_GOAL, 5_usize),
             (protocol_tool::CORE_FACT, 3),
-            (protocol_tool::CORE_MEMBERSHIP, 4),
+            (protocol_tool::CORE_MEMBERSHIP, 3),
+            (protocol_tool::CORE_PUBLISH, 1),
         ]);
         let mut seen_scope_keys = BTreeSet::new();
         let mut counts = BTreeMap::<&'static str, usize>::new();
@@ -155,7 +157,7 @@ mod manifest_tests {
             protocol_action::CORE_MEMBERSHIP_ADD_MEMBER,
             protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER,
             protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS,
-            protocol_action::CORE_MEMBERSHIP_PUBLISH_TO_WORLD,
+            protocol_action::CORE_PUBLISH_TO_WORLD,
         ]);
         let actual = all_core_actions()
             .map(|action| action.scope_key)

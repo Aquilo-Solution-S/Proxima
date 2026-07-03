@@ -1231,7 +1231,7 @@ async fn publish_to_world_transfers_owner_denies_rewrite_and_allows_ordinary_rea
         &frozen,
         author.clone(),
         Some(engine.clone()),
-        "core_membership",
+        "core_publish",
         json!({"action": "publish_to_world", "entity": handle}),
     )
     .await?;
@@ -1256,7 +1256,7 @@ async fn publish_to_world_transfers_owner_denies_rewrite_and_allows_ordinary_rea
         &frozen,
         author.clone(),
         Some(engine.clone()),
-        "core_membership",
+        "core_publish",
         json!({"action": "publish_to_world", "entity": handle}),
     )
     .await;

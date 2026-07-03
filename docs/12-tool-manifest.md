@@ -116,8 +116,8 @@ normalization of action-dispatch tools described below.
 ### Action-Dispatch Tools
 
 Tools whose argument type is an internally-tagged (`action`) enum —
-currently `core_goal`, `core_fact`, and `core_membership` — are normalized into a client-safe
-shape after `schemars` generation, because MCP clients
+currently `core_goal`, `core_fact`, `core_membership`, and `core_publish` —
+are normalized into a client-safe shape after `schemars` generation, because MCP clients
 reject an `inputSchema` whose root is not `type: object` or that carries a
 root `oneOf`/`anyOf`/`allOf`:
 

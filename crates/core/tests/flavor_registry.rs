@@ -49,16 +49,13 @@ const CORE_FACT_ACTION_NAMES: &[&str] = &[
     "citation_of_entity_head",
     "facts_citing_object",
 ];
-const CORE_MEMBERSHIP_ACTION_NAMES: &[&str] = &[
-    "add_member",
-    "remove_member",
-    "list_members",
-    "publish_to_world",
-];
+const CORE_MEMBERSHIP_ACTION_NAMES: &[&str] = &["add_member", "remove_member", "list_members"];
+const CORE_PUBLISH_ACTION_NAMES: &[&str] = &["publish_to_world"];
 const DISPATCHER_TOOL_ACTIONS: &[(&str, &[&str])] = &[
     ("core_goal", CORE_GOAL_ACTION_NAMES),
     ("core_fact", CORE_FACT_ACTION_NAMES),
     ("core_membership", CORE_MEMBERSHIP_ACTION_NAMES),
+    ("core_publish", CORE_PUBLISH_ACTION_NAMES),
 ];
 
 #[test]
@@ -274,7 +271,7 @@ fn action_arg_specs_match_schema_derived_action_fields() {
         }
     }
 
-    for expected in ["core_goal", "core_fact", "core_membership"] {
+    for expected in ["core_goal", "core_fact", "core_membership", "core_publish"] {
         assert!(
             dispatchers_seen.contains(expected),
             "expected dispatcher {expected} to carry ACTION_ARG_SPECS; saw {dispatchers_seen:?}",

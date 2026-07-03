@@ -107,14 +107,21 @@ Profiles:
 
 | Profile | Scope |
 |---|---|
-| `full` | Default. No filtering (`ToolScope::All`) when allow/deny are unset; otherwise all registered ids resolved to a palette. |
-| `memory` | Curated memory-brain palette: memory authoring/retrieval, citations, graph/schema introspection, citation-only Fact actions, the full goal lifecycle, and code-as-memory repository/chunk/commit reads. Compliance erase is Host API/admin-only, not an MCP memory-profile action. |
+| `full` | Default. No filtering (`ToolScope::All`) when allow/deny are unset; otherwise all registered ids resolved to a palette. Includes controller/destructive tools such as `core_membership` and `core_publish`. |
+| `memory` | Curated memory-brain palette: memory authoring/retrieval, citations, graph/schema introspection, citation-only Fact actions, the full goal lifecycle, and code-as-memory repository/chunk/commit reads. Excludes `core_membership`, `core_publish`, and compliance erase. |
 
-Allow/deny ids use canonical scope keys: tool ids (`core_search_memories`),
-group-action leaf keys (`core_goal:set`, `core_fact:citation_of_fact`), resource
-keys (`resource:memory`, `resource:change-events`), or flavor ids
-(`proxima-code_search_chunks`). Unknown profile names fail boot. Unknown
-ids in allow/deny log `warn` and do not fail boot.
+Allow/deny ids use canonical scope keys: flat tool ids (`core_search_memories`),
+dispatcher action leaf keys (`core_goal:set`, `core_fact:citation_of_fact`),
+resource keys (`resource:memory`, `resource:change-events`), or flavor ids
+(`proxima-code_search_chunks`). Unknown profile names and unknown allow/deny
+ids fail boot.
+
+Production hosts that expose `full` but do not intend roster or World-publish
+operations should deny both controller surfaces:
+
+```text
+PROXIMA_TOOL_DENY=core_membership:add_member,core_membership:remove_member,core_membership:list_members,core_publish:publish_to_world
+```
 
 <a id="embedding-client"></a>
 ## Embedding Client

@@ -15,8 +15,8 @@ fn host_api_imports_from_root() {
     let _narrowed = proxima::AuthzContext::denied_for_owner(&owner).narrowed_to_owner(owner);
     let _cursor: proxima::Cursor = proxima::Cursor::empty();
     let _cancel = proxima::CancellationToken::new();
-    let _load_cursor = proxima::load_source_cursor;
-    let _store_cursor = proxima::store_source_cursor;
+    std::hint::black_box(proxima::load_source_cursor);
+    std::hint::black_box(proxima::store_source_cursor);
     let _outcome = proxima::ComplianceEraseOutcome::Refused {
         operation_id: uuid::Uuid::nil(),
         reason: proxima::ComplianceEraseRefusal::WorldOwner,

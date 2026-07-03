@@ -137,6 +137,7 @@ pub fn all_core_actions() -> impl Iterator<Item = &'static CoreActionMeta> {
         .iter()
         .chain(core_tools::fact::CORE_FACT_ACTIONS.iter())
         .chain(core_tools::membership::CORE_MEMBERSHIP_ACTIONS.iter())
+        .chain(core_tools::publish::CORE_PUBLISH_ACTIONS.iter())
 }
 
 #[must_use]
@@ -165,7 +166,9 @@ pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations>
         | protocol_tool::CORE_GOAL
         | protocol_tool::CORE_LINK => base.read_only(false).destructive(false).idempotent(false),
 
-        protocol_tool::CORE_MEMBERSHIP => base.read_only(false).destructive(true).idempotent(false),
+        protocol_tool::CORE_MEMBERSHIP | protocol_tool::CORE_PUBLISH => {
+            base.read_only(false).destructive(true).idempotent(false)
+        }
 
         protocol_tool::CORE_FACT => base.read_only(true).destructive(false).idempotent(true),
 
