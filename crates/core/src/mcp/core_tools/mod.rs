@@ -15,6 +15,7 @@ pub mod list_substrate_tools;
 pub mod membership;
 pub mod memory;
 pub mod memory_spaces;
+pub mod publish;
 pub mod walk_memory_lineage;
 
 pub use fact::CoreFactTool;
@@ -22,6 +23,7 @@ pub use goal::CoreGoalTool;
 pub use membership::CoreMembershipTool;
 pub use memory::{DeriveTool, LinkTool, RecordUtteranceTool, RememberTool};
 pub use memory_spaces::MemorySpacesTool;
+pub use publish::CorePublishTool;
 pub use search_memories::SearchMemoriesTool;
 
 use crate::mcp::McpToolAnnotations;
@@ -63,5 +65,6 @@ pub(crate) fn register_all(
     registry.try_add_mcp_tool::<CoreGoalTool>("core")?;
     registry.try_add_mcp_tool::<CoreFactTool>("core")?;
     registry.try_add_mcp_tool::<CoreMembershipTool>("core")?;
+    registry.try_add_mcp_tool::<CorePublishTool>("core")?;
     Ok(())
 }

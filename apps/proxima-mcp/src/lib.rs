@@ -671,6 +671,12 @@ mod tests {
             protocol_resource::SCHEMAS,
             protocol_tool::CORE_SEARCH_MEMORIES,
             protocol_tool::CORE_MEMORY_SPACES,
+            protocol_tool::CORE_MEMBERSHIP,
+            protocol_tool::CORE_PUBLISH,
+            protocol_action::CORE_MEMBERSHIP_ADD_MEMBER,
+            protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER,
+            protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS,
+            protocol_action::CORE_PUBLISH_TO_WORLD,
             protocol_action::CORE_FACT_CITATION_OF_FACT,
             protocol_action::CORE_FACT_CITATION_OF_ENTITY_HEAD,
             protocol_action::CORE_FACT_FACTS_CITING_OBJECT,
@@ -692,6 +698,14 @@ mod tests {
         assert!(memory.allows(protocol_action::CORE_FACT_CITATION_OF_FACT));
         assert!(memory.allows(protocol_action::CORE_FACT_CITATION_OF_ENTITY_HEAD));
         assert!(memory.allows(protocol_action::CORE_FACT_FACTS_CITING_OBJECT));
+        assert!(!memory.allows(protocol_tool::CORE_MEMBERSHIP));
+        assert!(!memory.allows(protocol_tool::CORE_PUBLISH));
+        assert!(!memory.allows(protocol_action::CORE_MEMBERSHIP_ADD_MEMBER));
+        assert!(!memory.allows(protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER));
+        assert!(!memory.allows(protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS));
+        assert!(!memory.allows(protocol_action::CORE_PUBLISH_TO_WORLD));
+        assert!(!memory.allows_group_advertisement(protocol_tool::CORE_MEMBERSHIP));
+        assert!(!memory.allows_group_advertisement(protocol_tool::CORE_PUBLISH));
 
         // Code-flavor tools join the memory keep set only when the `code`
         // flavor is compiled in (the keep set references their `NAME`
@@ -752,12 +766,41 @@ mod tests {
     fn known_deny_entry_still_narrows_scope() {
         let registered_ids = [
             protocol_tool::CORE_SEARCH_MEMORIES,
-            protocol_tool::CORE_GOAL,
+            protocol_tool::CORE_MEMORY_SPACES,
         ];
-        let scope = resolve_tool_scope(None, None, Some(protocol_tool::CORE_GOAL), &registered_ids)
-            .expect("known deny entry is accepted");
+        let scope = resolve_tool_scope(
+            None,
+            None,
+            Some(protocol_tool::CORE_MEMORY_SPACES),
+            &registered_ids,
+        )
+        .expect("known deny entry is accepted");
         assert!(scope.allows(protocol_tool::CORE_SEARCH_MEMORIES));
-        assert!(!scope.allows(protocol_tool::CORE_GOAL));
+        assert!(!scope.allows(protocol_tool::CORE_MEMORY_SPACES));
+    }
+
+    #[test]
+    fn grouped_action_deny_narrows_scope_and_advertisement() {
+        let registered_ids = [
+            protocol_action::CORE_MEMBERSHIP_ADD_MEMBER,
+            protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER,
+            protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS,
+            protocol_action::CORE_PUBLISH_TO_WORLD,
+        ];
+        let scope = resolve_tool_scope(
+            None,
+            None,
+            Some("core_membership:add_member,core_membership:remove_member,core_membership:list_members,core_publish:publish_to_world"),
+            &registered_ids,
+        )
+        .expect("known grouped deny entries are accepted");
+
+        assert!(!scope.allows(protocol_action::CORE_MEMBERSHIP_ADD_MEMBER));
+        assert!(!scope.allows(protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER));
+        assert!(!scope.allows(protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS));
+        assert!(!scope.allows(protocol_action::CORE_PUBLISH_TO_WORLD));
+        assert!(!scope.allows_group_advertisement(protocol_tool::CORE_MEMBERSHIP));
+        assert!(!scope.allows_group_advertisement(protocol_tool::CORE_PUBLISH));
     }
 
     #[test]

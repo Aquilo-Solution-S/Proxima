@@ -267,7 +267,7 @@ the full helper set (`authorized_memory_ids`, `authorized_fact_payloads`,
 `Engine::query`, the same owner/group/`World` visibility path every other
 authorized read uses.
 
-## 9. Owner-transfer: `core_membership:publish_to_world`
+## 9. Owner-transfer: `core_publish:publish_to_world`
 
 Publishing an entity is now an owner **transfer** to `OwnerRef::World`
 (`Engine::publish_to_world`), not an ACL flag or a share row. Published
@@ -275,7 +275,10 @@ entities become readable by everyone and writable by no one; re-publishing
 an already-World entity fails closed with `Forbidden` (the current-owner
 lookup resolves to World, which `authorize_write` never accepts). If a
 consumer previously modeled "publish" as a copy or a grant, switch it to
-the `core_membership:publish_to_world` MCP action / `Engine::publish_to_world`.
+the `core_publish:publish_to_world` MCP action / `Engine::publish_to_world`.
+The previous `core_membership:publish_to_world` action key is removed; update
+tool-scope allow/deny entries and MCP clients to the new `core_publish`
+dispatcher.
 
 ## 10. Code flavor repo erase is physical and rebuildable
 

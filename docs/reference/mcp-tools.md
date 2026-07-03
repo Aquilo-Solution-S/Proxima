@@ -11,8 +11,11 @@ binary/profile.
 | Area | Examples | Notes |
 |---|---|---|
 | memory | `core_search_memories`, `core_remember`, `core_derive`, `core_link` | agent-authored `core_link` Fact→Fact links are rejected; derive instead |
+| spaces | `core_memory_spaces` | server-issued owner selectors; selectors are not authority |
 | goals | `core_goal` | advertised only when profile includes goals |
 | citations | citation/fact resources and tools | Facts only carry citation mappings |
+| membership | `core_membership` | group roster only: `add_member`, `remove_member`, `list_members` |
+| publish | `core_publish` | irreversible owner transfer via `publish_to_world`; not ACL/share |
 | introspection | `proxima://tools`, `proxima://how-to` | generated from runtime profile |
 | change-events | `proxima://change-events{?since,limit}` | poll-only change notification |
 

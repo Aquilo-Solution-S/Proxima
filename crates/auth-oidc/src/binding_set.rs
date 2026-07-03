@@ -400,6 +400,10 @@ mod tests {
         assert!(ctx.may_write(&OwnerRef::Group(agent_group), AccessKind::Perspective));
         assert!(ctx.tool_scope().allows_action("core_goal", "set"));
         assert!(!ctx.tool_scope().allows("core_membership"));
+        assert!(
+            !ctx.tool_scope()
+                .allows_action("core_publish", "publish_to_world")
+        );
     }
 
     #[tokio::test]

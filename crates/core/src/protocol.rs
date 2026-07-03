@@ -11,6 +11,7 @@ pub mod tool {
     pub const CORE_GOAL: &str = "core_goal";
     pub const CORE_FACT: &str = "core_fact";
     pub const CORE_MEMBERSHIP: &str = "core_membership";
+    pub const CORE_PUBLISH: &str = "core_publish";
 }
 
 pub mod action {
@@ -27,7 +28,8 @@ pub mod action {
     pub const CORE_MEMBERSHIP_ADD_MEMBER: &str = "core_membership:add_member";
     pub const CORE_MEMBERSHIP_REMOVE_MEMBER: &str = "core_membership:remove_member";
     pub const CORE_MEMBERSHIP_LIST_MEMBERS: &str = "core_membership:list_members";
-    pub const CORE_MEMBERSHIP_PUBLISH_TO_WORLD: &str = "core_membership:publish_to_world";
+
+    pub const CORE_PUBLISH_TO_WORLD: &str = "core_publish:publish_to_world";
 }
 
 pub mod resource {

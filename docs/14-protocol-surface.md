@@ -35,7 +35,7 @@ the Flavor SDK and typed services only.
 
 Agent long-term memory is core substrate. MCP tools are thin callers of
 Engine verbs; MCP resources expose read-only graph and registry views.
-Storage stays behind the Engine. The substrate surface is 9 tools + 7
+Storage stays behind the Engine. The substrate surface is 10 tools + 7
 resources; `proxima://tools` returns the live tool catalog only, and
 resources are discovered through MCP `resources/list` and
 `resources/templates/list`.
@@ -52,9 +52,14 @@ Canonical substrate tools:
 | `core_link` | write registered relation edge |
 | `core_search_memories` | search memories; may include neighbor edges, per-result tags, lexical-degradation status, and selected memory-space labels |
 | `core_memory_spaces` | list server-issued memory-space keys with labels and coarse unrestricted-access flags |
-| `core_membership` | group roster + owner-transfer dispatcher: `add_member`, `remove_member`, `list_members`, `publish_to_world`; host/controller scoped |
+| `core_membership` | group roster dispatcher: `add_member`, `remove_member`, `list_members`; host/controller scoped |
+| `core_publish` | owner-transfer dispatcher: `publish_to_world`; irreversible transfer to `OwnerRef::World`, not membership or ACL |
 | `core_goal` | goal action dispatcher: `set`, `transition`, `modify`, `mark_achieved`, `decompose` |
 | `core_fact` | Fact action dispatcher: `citation_of_fact`, `citation_of_entity_head`, `facts_citing_object` |
+
+Compatibility: `core_membership:publish_to_world` is removed. Clients and
+tool-scope palettes must use `core_publish:publish_to_world`; no compatibility
+alias is retained.
 
 Graph search is unified into `core_search_memories`; there is no
 separate graph-search tool.
@@ -340,13 +345,14 @@ access.
 | admin/controller | operational/config RPCs and future compliance admin operations |
 
 Per-call dispatch enforces `call.owner` inside the resolved Owner set.
-Signup, MFA, billing, and tenancy services live in front of the engine;
-`core_membership` mutates the explicit group roster when the host exposes
-that controller-scoped tool. Its `publish_to_world` action transfers a
-memory or goal's owner to `OwnerRef::World` — an irreversible owner
-transfer, not an ACL flag or share row; World is universally readable and
-never a write owner again afterward. It requires write/manage authority
-(`Relation::Admin`) on the entity's current owner.
+Signup, MFA, billing, tenancy lifecycle, group naming, invites, archive/delete,
+and product audit timelines live in front of the engine. `core_membership`
+mutates only the explicit group roster when the host exposes that
+controller-scoped tool. `core_publish` transfers a memory or goal's owner to
+`OwnerRef::World` — an irreversible owner transfer, not an ACL flag or share
+row; World is universally readable and never a write owner again afterward.
+It requires write/manage authority (`Relation::Admin`) on the entity's
+current owner.
 
 ## Error Envelope
 

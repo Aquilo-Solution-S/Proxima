@@ -19,8 +19,9 @@ during `initialize` with `X-Proxima-Owner: personal:$USER_ID`.
 ## Tool Surface Profiles
 
 The default substrate exposes memory, goals, citations, citation-only Fact
-actions, membership/profile-scoped administration, and introspection tools.
-`PROXIMA_TOOL_PROFILE=memory` shrinks the advertised surface for agent memory use.
+actions, roster membership administration, irreversible World publish, and
+introspection tools. `PROXIMA_TOOL_PROFILE=memory` shrinks the advertised
+surface for agent memory use and hides `core_membership` / `core_publish`.
 
 ```sh
 PROXIMA_TOOL_PROFILE=memory cargo run -p proxima-mcp

@@ -60,12 +60,15 @@ Endpoint:
 
 Tools:
   core_search_memories
+  core_memory_spaces
   core_remember
   core_record_utterance
   core_derive
   core_link
   core_goal
   core_fact
+  core_membership
+  core_publish
 ";
 
 pub const RECONCILE_USAGE: &str = "\
