@@ -226,33 +226,23 @@ impl McpToolPresentation {
 #[derive(Debug, Clone)]
 pub struct McpToolCaller {
     model_id: String,
-    is_master_token: bool,
 }
 
 impl McpToolCaller {
     #[must_use]
-    pub fn new(model_id: String, is_master_token: bool) -> Self {
-        Self {
-            model_id,
-            is_master_token,
-        }
+    pub fn new(model_id: String) -> Self {
+        Self { model_id }
     }
 
     #[must_use]
     pub fn from_ctx(ctx: &McpToolCtx) -> Self {
         Self {
             model_id: ctx.author.model_id.clone(),
-            is_master_token: ctx.master_token_id.is_some(),
         }
     }
 
     #[must_use]
     pub fn model_id(&self) -> &str {
         &self.model_id
-    }
-
-    #[must_use]
-    pub const fn is_master_token(&self) -> bool {
-        self.is_master_token
     }
 }

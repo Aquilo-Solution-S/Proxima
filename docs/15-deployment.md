@@ -56,15 +56,13 @@ a narrower DML role.
 | `PROXIMA_S3_REGION` | no | `us-east-1` | S3 region. |
 | `PROXIMA_S3_ENDPOINT_URL` | no | `https://s3.example.com` | S3-compatible endpoint. |
 
-## No standing bypass (master token)
+## No standing bypass
 
-Do NOT set `PROXIMA_MCP_MASTER_TOKEN` in a deployment. With
-`PROXIMA_EXPOSE_NETWORK=true` the binary refuses to start if a master token
-is set (enforced by `RuntimeConfig::validate()`). The master token is
-the loopback-only dev path and must be paired with
-`PROXIMA_MCP_MASTER_TOKEN_SUBJECT`. Break-glass during a Zitadel outage:
-spin a throwaway loopback master-token pod against the same Postgres,
-never expose a standing token on `/mcp`.
+MCP serving has no Proxima-local static bearer fallback. Configure a host
+`Authenticator` and `OwnerAccessPort`; stale local-token bearer prefixes fail
+closed and are not forwarded to host auth. Break-glass during a Zitadel
+outage belongs in the external identity layer as a short-lived, audited host
+credential, never as a standing token on `/mcp`.
 
 ## Security guarantee
 

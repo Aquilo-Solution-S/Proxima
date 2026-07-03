@@ -1224,7 +1224,6 @@ async fn change_history_and_list_change_events_preserve_fact_entity_endpoints()
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            master_token_id: None,
             extensions: McpToolExtensions::with(pg.pool_for_tests().clone()),
             engine: Some(engine),
         };

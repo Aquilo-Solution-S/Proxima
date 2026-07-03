@@ -37,7 +37,7 @@ fn test_ctx(handles: Arc<HandleTable>) -> ToolCtx {
     let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
     let mut services = ToolServices::new();
     services.insert(McpToolPresentation::new(Some(handles), OutputMode::Handles));
-    services.insert(McpToolCaller::new("test/model".into(), false));
+    services.insert(McpToolCaller::new("test/model".into()));
     ToolCtx::new(
         owner,
         AuthzContext::single_owner(&owner, AuthPath::HostBearer),

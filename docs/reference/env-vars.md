@@ -8,8 +8,6 @@ This table is a human reference. Source code and deployment manifests remain aut
 |---|---|---|---|---|
 | `DATABASE_URL` | storage | binary default: `postgres://postgres@localhost/proxima_dev` | any non-default DB | dev compose uses `postgres://proxima:proxima@localhost:5434/proxima` |
 | `PROXIMA_MCP_BIND` | MCP server | `127.0.0.1:31415` for `proxima-mcp` | custom listener / deployment | non-loopback requires `PROXIMA_EXPOSE_NETWORK=true` |
-| `PROXIMA_MCP_MASTER_TOKEN` | MCP auth | unset | loopback dev master-token auth | requires `PROXIMA_MCP_MASTER_TOKEN_SUBJECT`; forbidden for standing network-exposed deployments |
-| `PROXIMA_MCP_MASTER_TOKEN_SUBJECT` | MCP auth | unset | `PROXIMA_MCP_MASTER_TOKEN` set | UUID `UserId` resolved through `OwnerAccessPort`; Personal owner key is `personal:<uuid>` |
 | `PROXIMA_EXPOSE_NETWORK` | MCP server | unset/false | non-loopback bind | fail-closed exposure gate |
 | `PROXIMA_ALLOWED_ORIGINS` | MCP HTTP | unset/deployment-specific | browser/front-door exposure | comma-separated; never wildcard in production |
 | `PROXIMA_ALLOWED_HOSTS` | MCP HTTP | public URL host + allowed origins | non-loopback exposure override | DNS-rebinding guard; loopback always permitted |
@@ -18,6 +16,8 @@ This table is a human reference. Source code and deployment manifests remain aut
 | `PROXIMA_OIDC_AUDIENCE` | OIDC auth | unset | OIDC deployment | expected token audience |
 | `PROXIMA_OIDC_JWKS_URI` | OIDC auth | discovery default | non-default JWKS | overrides discovery |
 | `PROXIMA_OIDC_ALLOWED_SUBJECTS` | OIDC auth | unset | subject allowlist desired | comma-separated `sub` values |
+| `PROXIMA_OIDC_SUBJECT_MAP_JSON` | OIDC auth | unset | OIDC deployment unless shorthand is used | issuer-aware `(iss, sub) -> user_id` JSON map; mutually exclusive with `PROXIMA_OIDC_SUBJECT_MAP` |
+| `PROXIMA_OIDC_SUBJECT_MAP` | OIDC auth | unset | OIDC deployment unless JSON map is used | single-issuer `sub:<uuid>` shorthand bound to `PROXIMA_OIDC_ISSUER`; mutually exclusive with JSON map |
 | `PROXIMA_STREAM_MAX_LIFETIME` | MCP stream auth | source default | long-lived Streamable HTTP responses | max seconds before re-validation |
 | `PROXIMA_STREAM_EPOCH_INTERVAL` | MCP stream auth | source default | open response stream auth checks | auth-epoch re-check seconds |
 | `PROXIMA_TOOL_PROFILE` | MCP tool surface | `full` | narrowed tool surface | `memory` is curated memory-brain palette |
@@ -37,8 +37,8 @@ This table is a human reference. Source code and deployment manifests remain aut
 
 | Flag | Required when | Notes |
 |---|---|---|
-| `--master-token <UUID>` | loopback dev master-token auth | do not use as standing network-exposed auth |
-| `--master-token-subject <UUID>` | `--master-token` set | `UserId` for resolver-backed master-token auth |
+| `--database-url <URL>` | non-default DB without `DATABASE_URL` | overrides the Postgres URL |
+| `--bind <ADDR>` | custom loopback listener | non-loopback binds use env-gated deployment config |
 
 ## Build/Test/Internal Variables
 

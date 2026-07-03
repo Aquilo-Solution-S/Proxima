@@ -13,7 +13,7 @@ mod server;
 mod session;
 mod transport;
 
-pub use auth::{MASTER_TOKEN_PREFIX, McpAuthContext, McpEdgeAuth};
+pub use auth::{McpAuthContext, McpEdgeAuth};
 pub use error::McpServerError;
 pub use handler::DynamicHandler;
 pub use oauth::{

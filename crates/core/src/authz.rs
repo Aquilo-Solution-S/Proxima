@@ -127,7 +127,6 @@ impl CapabilitySet {
 pub enum AuthPath {
     HostBearer,
     Wake,
-    MasterDev,
     System,
     /// Fail-closed sentinel for a context that carries no real
     /// credentials (see [`AuthzContext::denied`]).

@@ -8,10 +8,44 @@ use std::sync::Arc;
 
 mod common;
 
+use async_trait::async_trait;
 use common::{create_db, db_url, drop_db, initialized, post_rpc};
-use proxima_core::{FlavorRegistry, ToolScope};
+use proxima_core::{
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, Owner, OwnerRef,
+    ToolScope,
+};
 use proxima_mcp_server::{McpEdgeAuth, McpToolHost, default_allowlist, serve_streamable_http};
 use serde_json::json;
+
+#[derive(Debug)]
+struct HostAuth {
+    owner: Owner,
+}
+
+#[async_trait]
+impl Authenticator for HostAuth {
+    async fn authenticate(&self, creds: &Credentials) -> Result<AuthzContext, AuthError> {
+        match creds {
+            Credentials::Bearer(token) if token == "host-token" => {
+                let OwnerRef::Personal(subject) = self.owner else {
+                    return Err(AuthError::InvalidCredentials);
+                };
+                Ok(AuthzContext::for_subject(subject, AuthPath::HostBearer))
+            }
+            Credentials::Bearer(_) => Err(AuthError::InvalidCredentials),
+        }
+    }
+}
+
+fn auth_store(tool_scope: ToolScope) -> Arc<McpEdgeAuth> {
+    Arc::new(
+        McpEdgeAuth::headless()
+            .with_host(Arc::new(HostAuth {
+                owner: common::nil_owner(),
+            }))
+            .with_tool_scope(tool_scope),
+    )
+}
 
 /// `initialize` and capture the full JSON-RPC response (the shared helper
 /// discards the body, but we need `result.instructions`).
@@ -78,20 +112,15 @@ async fn start(
 #[tokio::test]
 async fn initialize_returns_instructions_and_how_to_resource()
 -> Result<(), Box<dyn std::error::Error>> {
-    let auth_store =
-        Arc::new(McpEdgeAuth::headless().with_owner_access(Arc::new(common::NilOwnerAccess)));
-    let token = uuid::Uuid::new_v4();
-    auth_store
-        .replace_local_master_token(token, common::nil_subject())
-        .await;
+    let auth_store = auth_store(ToolScope::All);
     let (handle, addr, db_name) = start(auth_store).await?;
 
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
-    let bearer = format!("Bearer pxm_{token}");
+    let bearer = "Bearer host-token";
 
     // initialize → non-empty, contract-bearing instructions.
-    let (session_id, init) = initialize_capture(&client, &url, &bearer).await?;
+    let (session_id, init) = initialize_capture(&client, &url, bearer).await?;
     let instructions = init["result"]["instructions"]
         .as_str()
         .expect("instructions present at initialize");
@@ -107,14 +136,14 @@ async fn initialize_returns_instructions_and_how_to_resource()
     // Server advertises the resources capability.
     assert!(init["result"]["capabilities"]["resources"].is_object());
 
-    initialized(&client, &url, &session_id, &bearer).await?;
+    initialized(&client, &url, &session_id, bearer).await?;
 
     // resources/list surfaces the how-to resource.
     let list = post_rpc(
         &client,
         &url,
         Some(&session_id),
-        &bearer,
+        bearer,
         json!({"jsonrpc": "2.0", "id": 2, "method": "resources/list", "params": {}}),
     )
     .await?;
@@ -131,7 +160,7 @@ async fn initialize_returns_instructions_and_how_to_resource()
         &client,
         &url,
         Some(&session_id),
-        &bearer,
+        bearer,
         json!({
             "jsonrpc": "2.0", "id": 3, "method": "resources/read",
             "params": {"uri": "proxima://how-to"}
@@ -157,7 +186,7 @@ async fn memory_profile_instructions_omit_excluded_tools() -> Result<(), Box<dyn
     // A deployment scope that keeps authoring + retrieval but drops goal tools
     // (standing in for any code execution tool a `full` deployment would
     // carry). The deployment scope is intersected into every caller's
-    // scope, so even the master token sees only this palette.
+    // scope, so every host-authenticated caller sees only this palette.
     let palette = ToolScope::Palette(
         [
             "core_remember",
@@ -170,22 +199,14 @@ async fn memory_profile_instructions_omit_excluded_tools() -> Result<(), Box<dyn
         .map(String::from)
         .collect(),
     );
-    let auth_store = Arc::new(
-        McpEdgeAuth::headless()
-            .with_owner_access(Arc::new(common::NilOwnerAccess))
-            .with_tool_scope(palette),
-    );
-    let token = uuid::Uuid::new_v4();
-    auth_store
-        .replace_local_master_token(token, common::nil_subject())
-        .await;
+    let auth_store = auth_store(palette);
     let (handle, addr, db_name) = start(auth_store).await?;
 
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
-    let bearer = format!("Bearer pxm_{token}");
+    let bearer = "Bearer host-token";
 
-    let (_session_id, init) = initialize_capture(&client, &url, &bearer).await?;
+    let (_session_id, init) = initialize_capture(&client, &url, bearer).await?;
     let instructions = init["result"]["instructions"]
         .as_str()
         .expect("instructions present");

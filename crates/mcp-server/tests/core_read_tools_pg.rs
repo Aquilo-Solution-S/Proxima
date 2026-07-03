@@ -33,11 +33,10 @@ async fn core_read_resources_return_prefixed_ids_and_author()
     // a None context is unauthenticated and correctly denied).
     let auth = McpAuthContext {
         owner,
-        authz: AuthzContext::single_owner(&owner, AuthPath::MasterDev)
+        authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
             .narrowed_to_owner(owner)
             .expect("personal owner narrows"),
         model_id: None,
-        master_token_id: Some(uuid::Uuid::now_v7()),
     };
 
     let fetched = server

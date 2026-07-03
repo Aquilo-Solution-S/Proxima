@@ -82,12 +82,6 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     }
 
     #[must_use]
-    pub fn master_token(mut self, master_token: uuid::Uuid, subject: UserId) -> Self {
-        self.overlay = self.overlay.master_token(master_token, subject);
-        self
-    }
-
-    #[must_use]
     pub fn authenticator(mut self, authenticator: Arc<dyn Authenticator>) -> Self {
         self.overlay = self.overlay.authenticator(authenticator);
         self
@@ -197,18 +191,14 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         let tool_extensions = A::mcp_tool_extensions(&app_ctx);
 
         let service = if let Some(allowlist) = allowlist {
-            Some(
-                build_router::<A>(
-                    app_ctx.clone(),
-                    tool_extensions.clone(),
-                    parts.authenticator,
-                    parts.owner_access,
-                    allowlist,
-                    &cancel,
-                    &config,
-                )
-                .await,
-            )
+            Some(build_router::<A>(
+                app_ctx.clone(),
+                tool_extensions.clone(),
+                parts.authenticator,
+                allowlist,
+                &cancel,
+                &config,
+            ))
         } else {
             None
         };
@@ -260,12 +250,10 @@ impl<A: FlavorApp + 'static> Proxima<A> {
                 app_ctx,
                 tool_extensions.clone(),
                 parts.authenticator,
-                parts.owner_access,
                 allowlist,
                 &cancel,
                 &config,
-            )
-            .await;
+            );
             let listener = tokio::net::TcpListener::bind(mcp.bind)
                 .await
                 .map_err(|err| ProximaError::Mcp(err.to_string()))?;
@@ -612,25 +600,18 @@ async fn boot_app<A: FlavorApp + 'static>(
     builder.boot().await.map_err(Into::into)
 }
 
-async fn build_router<A: FlavorApp>(
+fn build_router<A: FlavorApp>(
     app_ctx: AppContext,
     tool_extensions: McpToolExtensions,
     authenticator: Option<Arc<dyn Authenticator>>,
-    owner_access: Option<Arc<dyn OwnerAccessPort>>,
     allowlist: OriginAllowlist,
     cancel: &CancellationToken,
     config: &crate::RuntimeConfig,
 ) -> Router {
     let engine = app_ctx.engine.clone();
-    let owner_access = owner_access.expect("RuntimeConfig::validate requires owner_access for MCP");
-    let mut edge_auth = McpEdgeAuth::headless()
-        .with_tool_scope(config.tool_scope.clone())
-        .with_owner_access(owner_access);
+    let mut edge_auth = McpEdgeAuth::headless().with_tool_scope(config.tool_scope.clone());
     if let Some(authenticator) = authenticator {
         edge_auth = edge_auth.with_host(authenticator);
-    }
-    if let Some((token, subject)) = config.master_token {
-        edge_auth.replace_local_master_token(token, subject).await;
     }
     let edge_auth = Arc::new(edge_auth);
     let mcp_host = McpToolHost::from_parts(Arc::new(engine.registry().clone()), tool_extensions)
@@ -908,7 +889,7 @@ mod tests {
             .allowed_origins(vec!["https://env.test".to_string()])
             .with_mcp()
             .owner_access(owner_access())
-            .master_token(Uuid::now_v7(), UserId::new(Uuid::now_v7()));
+            .authenticator(Arc::new(StubAuth { owner: owner() }));
         let overlay = RuntimeBuilder::default()
             .database_url("postgres://overlay/proxima")
             .stream_max_lifetime(std::time::Duration::from_secs(12));

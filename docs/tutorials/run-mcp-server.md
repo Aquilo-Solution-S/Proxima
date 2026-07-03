@@ -3,18 +3,18 @@
 ## Prerequisites
 
 Follow [Local Development Quickstart](../getting-started/local-dev.md) through
-`Start Postgres` and `Generate Dev IDs`.
+`Start Postgres` and `Configure Auth`.
 
 ## Start Loopback Server
 
 ```sh
 export DATABASE_URL=postgres://proxima:proxima@localhost:5434/proxima
-cargo run -p proxima-mcp -- --master-token "$MASTER_TOKEN" --master-token-subject "$USER_ID"
+cargo run -p proxima-mcp
 ```
 
 Expected: server listens on `http://127.0.0.1:31415/mcp`.
-MCP clients select the session owner during `initialize` with
-`X-Proxima-Owner: personal:$USER_ID`.
+MCP clients authenticate with an OIDC bearer and select the session owner
+during `initialize` with `X-Proxima-Owner: personal:$USER_ID`.
 
 ## Tool Surface Profiles
 
@@ -23,7 +23,7 @@ actions, membership/profile-scoped administration, and introspection tools.
 `PROXIMA_TOOL_PROFILE=memory` shrinks the advertised surface for agent memory use.
 
 ```sh
-PROXIMA_TOOL_PROFILE=memory cargo run -p proxima-mcp -- --master-token "$MASTER_TOKEN" --master-token-subject "$USER_ID"
+PROXIMA_TOOL_PROFILE=memory cargo run -p proxima-mcp
 ```
 
 ## Network Exposure

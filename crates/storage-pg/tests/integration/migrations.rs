@@ -136,7 +136,7 @@ async fn fresh_v004_baseline_has_no_legacy_access_or_goal_tables() {
             format!("read_{}_matrix", "scope"),
             format!("goal_{}", "parents"),
             format!("{}_wake_entries", "personality"),
-            format!("master_token_{}", "personality"),
+            ["master", "token", "personality"].join("_"),
             format!("subject_{}", "personality"),
             "events".to_string(),
         ] {

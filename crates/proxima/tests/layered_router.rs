@@ -8,12 +8,11 @@ use axum::routing::get;
 use proxima::{Authz, layered_router};
 use proxima_core::mcp::McpToolExtensions;
 use proxima_core::{
-    AccessError, AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry,
-    Owner, OwnerAccessPort, OwnerRef, OwnerRoles, UserId,
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, Owner, OwnerRef,
+    UserId,
 };
 use proxima_mcp_server::{
-    MASTER_TOKEN_PREFIX, McpEdgeAuth, McpToolHost, default_allowlist, owner_key,
-    streamable_http_service,
+    McpEdgeAuth, McpToolHost, default_allowlist, owner_key, streamable_http_service,
 };
 use tokio_util::sync::CancellationToken;
 use tower::util::ServiceExt;
@@ -44,25 +43,8 @@ impl Authenticator for StubHostAuth {
     }
 }
 
-#[derive(Debug)]
-struct StaticOwnerAccess;
-
-#[async_trait]
-impl OwnerAccessPort for StaticOwnerAccess {
-    async fn resolve_roles_for_subject(&self, subject: UserId) -> Result<OwnerRoles, AccessError> {
-        OwnerRoles::for_subject(subject, [])
-    }
-}
-
-fn subject(owner: Owner) -> UserId {
-    let OwnerRef::Personal(subject) = owner else {
-        unreachable!("test owner is personal")
-    };
-    subject
-}
-
 fn edge_auth() -> McpEdgeAuth {
-    McpEdgeAuth::headless().with_owner_access(Arc::new(StaticOwnerAccess))
+    McpEdgeAuth::headless()
 }
 
 fn router(auth: Arc<McpEdgeAuth>, owner: Owner) -> Router {
@@ -117,61 +99,6 @@ async fn status_with_host(
     app.oneshot(request).await.unwrap().status()
 }
 
-#[tokio::test]
-async fn layered_router_protects_app_and_mcp_with_master_token() {
-    let owner = owner();
-    let token = Uuid::now_v7();
-    let auth = Arc::new(edge_auth());
-    auth.replace_local_master_token(token, subject(owner)).await;
-    let app = router(auth, owner);
-    let bearer = format!("Bearer {MASTER_TOKEN_PREFIX}{token}");
-
-    assert_eq!(
-        status(app.clone(), Method::GET, "/app/ping", owner, None).await,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        status(app.clone(), Method::POST, "/mcp", owner, None).await,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        status(
-            app.clone(),
-            Method::GET,
-            "/app/ping",
-            owner,
-            Some("Bearer garbage".to_string())
-        )
-        .await,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        status(
-            app.clone(),
-            Method::POST,
-            "/mcp",
-            owner,
-            Some("Bearer garbage".to_string())
-        )
-        .await,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        status(
-            app.clone(),
-            Method::GET,
-            "/app/ping",
-            owner,
-            Some(bearer.clone())
-        )
-        .await,
-        StatusCode::OK
-    );
-    let mcp_status = status(app, Method::POST, "/mcp", owner, Some(bearer)).await;
-    assert_ne!(mcp_status, StatusCode::UNAUTHORIZED);
-    assert_ne!(mcp_status, StatusCode::FORBIDDEN);
-}
-
 // Regression: rmcp's DNS-rebinding Host guard must honor a configured
 // public host. Before the fix, `streamable_http_service` only set
 // `allowed_origins`, so rmcp's loopback-only `allowed_hosts` default
@@ -179,20 +106,18 @@ async fn layered_router_protects_app_and_mcp_with_master_token() {
 #[tokio::test]
 async fn host_guard_allows_configured_host_and_rejects_foreign() {
     let owner = owner();
-    let token = Uuid::now_v7();
-    let auth = Arc::new(edge_auth());
-    auth.replace_local_master_token(token, subject(owner)).await;
+    let auth = Arc::new(edge_auth().with_host(Arc::new(StubHostAuth { owner })));
     let app = router_with_hosts(auth, owner, &["proxima.test".to_string()]);
-    let bearer = format!("Bearer {MASTER_TOKEN_PREFIX}{token}");
+    let bearer = "Bearer host-token";
 
     // Configured public Host passes the guard (auth + handshake run).
-    let allowed = status_with_host(app.clone(), &bearer, "proxima.test", owner).await;
+    let allowed = status_with_host(app.clone(), bearer, "proxima.test", owner).await;
     assert_ne!(allowed, StatusCode::UNAUTHORIZED);
     assert_ne!(allowed, StatusCode::FORBIDDEN);
 
     // A foreign Host is rejected by the rebinding guard.
     assert_eq!(
-        status_with_host(app, &bearer, "evil.test", owner).await,
+        status_with_host(app, bearer, "evil.test", owner).await,
         StatusCode::FORBIDDEN
     );
 }
@@ -203,17 +128,15 @@ async fn host_guard_allows_configured_host_and_rejects_foreign() {
 #[tokio::test]
 async fn host_guard_empty_override_stays_loopback_only_not_allow_all() {
     let owner = owner();
-    let token = Uuid::now_v7();
-    let auth = Arc::new(edge_auth());
-    auth.replace_local_master_token(token, subject(owner)).await;
+    let auth = Arc::new(edge_auth().with_host(Arc::new(StubHostAuth { owner })));
     let app = router_with_hosts(auth, owner, &[]);
-    let bearer = format!("Bearer {MASTER_TOKEN_PREFIX}{token}");
+    let bearer = "Bearer host-token";
 
     assert_eq!(
-        status_with_host(app.clone(), &bearer, "evil.test", owner).await,
+        status_with_host(app.clone(), bearer, "evil.test", owner).await,
         StatusCode::FORBIDDEN
     );
-    let loopback = status_with_host(app, &bearer, "127.0.0.1", owner).await;
+    let loopback = status_with_host(app, bearer, "127.0.0.1", owner).await;
     assert_ne!(loopback, StatusCode::FORBIDDEN);
 }
 

@@ -5,7 +5,7 @@ use std::time::Duration;
 use proxima_blob_s3::S3RuntimeConfig;
 use proxima_core::{
     AnthropicClient, Authenticator, EmbeddingClient, Owner, OwnerAccessPort, RevalidationConfig,
-    ToolScope, UserId,
+    ToolScope,
 };
 use proxima_mcp_server::ResourceServerMetadata;
 
@@ -20,8 +20,6 @@ pub struct RuntimeBuilder {
     database_url: Option<String>,
     s3: Option<S3RuntimeConfig>,
     owner: Option<Owner>,
-    master_token: Option<String>,
-    master_token_subject: Option<UserId>,
     mcp_enabled: bool,
     mcp_bind: Option<SocketAddr>,
     expose_network: Option<bool>,
@@ -44,8 +42,6 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("has_database_url", &self.database_url.is_some())
             .field("s3", &self.s3)
             .field("owner", &self.owner)
-            .field("has_master_token", &self.master_token.is_some())
-            .field("master_token_subject", &self.master_token_subject)
             .field("mcp_enabled", &self.mcp_enabled)
             .field("mcp_bind", &self.mcp_bind)
             .field("expose_network", &self.expose_network)
@@ -71,8 +67,6 @@ impl RuntimeBuilder {
             database_url: self.database_url.or(base.database_url),
             s3: self.s3.or(base.s3),
             owner: self.owner.or(base.owner),
-            master_token: self.master_token.or(base.master_token),
-            master_token_subject: self.master_token_subject.or(base.master_token_subject),
             mcp_enabled: self.mcp_enabled || base.mcp_enabled,
             mcp_bind: self.mcp_bind.or(base.mcp_bind),
             expose_network: self.expose_network.or(base.expose_network),
@@ -108,16 +102,6 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn owner(mut self, owner: Owner) -> Self {
         self.owner = Some(owner);
-        self
-    }
-
-    /// Set the loopback-only MCP master token subject pair.
-    /// Env equivalent: `PROXIMA_MCP_MASTER_TOKEN` +
-    /// `PROXIMA_MCP_MASTER_TOKEN_SUBJECT`.
-    #[must_use]
-    pub fn master_token(mut self, master_token: uuid::Uuid, subject: UserId) -> Self {
-        self.master_token = Some(master_token.to_string());
-        self.master_token_subject = Some(subject);
         self
     }
 
@@ -258,19 +242,6 @@ impl RuntimeBuilder {
         if self.s3.is_none() {
             self.s3 = s3_from_lookup(&lookup)?;
         }
-        if self.master_token.is_none() {
-            self.master_token = lookup("PROXIMA_MCP_MASTER_TOKEN");
-        }
-        if self.master_token_subject.is_none()
-            && let Some(raw) = lookup("PROXIMA_MCP_MASTER_TOKEN_SUBJECT")
-        {
-            let subject = uuid::Uuid::parse_str(raw.trim()).map_err(|err| {
-                ProximaError::Config(format!(
-                    "PROXIMA_MCP_MASTER_TOKEN_SUBJECT must be a UUID, got {raw:?}: {err}"
-                ))
-            })?;
-            self.master_token_subject = Some(UserId::new(subject));
-        }
         if self.mcp_bind.is_none()
             && let Some(raw) = lookup("PROXIMA_MCP_BIND")
         {
@@ -324,24 +295,6 @@ impl RuntimeBuilder {
         } else {
             None
         };
-        let master_token = self
-            .master_token
-            .map(|raw| parse_master_token(&raw))
-            .transpose()?;
-        let master_token = match (master_token, self.master_token_subject) {
-            (Some(token), Some(subject)) => Some((token, subject)),
-            (Some(_), None) => {
-                return Err(ProximaError::Config(
-                    "PROXIMA_MCP_MASTER_TOKEN requires PROXIMA_MCP_MASTER_TOKEN_SUBJECT".into(),
-                ));
-            }
-            (None, Some(_)) => {
-                return Err(ProximaError::Config(
-                    "PROXIMA_MCP_MASTER_TOKEN_SUBJECT requires PROXIMA_MCP_MASTER_TOKEN".into(),
-                ));
-            }
-            (None, None) => None,
-        };
         let default_revalidation = RevalidationConfig::default();
         let stream_revalidation = RevalidationConfig {
             max_stream_lifetime: self
@@ -364,7 +317,6 @@ impl RuntimeBuilder {
             database_url,
             s3: self.s3,
             owner,
-            master_token,
             mcp,
             expose_network: self.expose_network.unwrap_or(false),
             allowed_origins: self.allowed_origins.unwrap_or_default(),
@@ -389,7 +341,6 @@ pub struct RuntimeConfig {
     pub database_url: String,
     pub s3: Option<S3RuntimeConfig>,
     pub owner: Option<Owner>,
-    pub master_token: Option<(uuid::Uuid, UserId)>,
     pub mcp: Option<McpSettings>,
     pub expose_network: bool,
     pub allowed_origins: Vec<String>,
@@ -416,7 +367,6 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("database_url", &"<redacted>")
             .field("s3", &self.s3)
             .field("owner", &self.owner)
-            .field("has_master_token", &self.master_token.is_some())
             .field("mcp", &self.mcp)
             .field("expose_network", &self.expose_network)
             .field("allowed_origins", &self.allowed_origins)
@@ -437,19 +387,13 @@ impl RuntimeConfig {
     ///
     /// Returns `ProximaError::Security` when transport exposure is unsafe.
     pub fn validate(&self) -> Result<(), ProximaError> {
-        if self.master_token.is_some() && self.expose_network {
-            return Err(ProximaError::Security(
-                "master tokens are loopback-only and cannot expose network transports".into(),
-            ));
-        }
-
         let Some(mcp) = &self.mcp else {
             return Ok(());
         };
 
         if self.insecure_single_owner {
             return Err(ProximaError::Security(
-                "insecure single-owner mode cannot serve MCP; configure owner_access plus host auth or a master-token subject".into(),
+                "insecure single-owner mode cannot serve MCP; configure owner_access plus host auth".into(),
             ));
         }
         if self.expose_network && self.allowed_origins.is_empty() {
@@ -494,9 +438,9 @@ impl RuntimeConfig {
                 "MCP serving requires an OwnerAccessPort resolver".into(),
             ));
         }
-        if !self.auth.has_host_authenticator && self.master_token.is_none() {
+        if !self.auth.has_host_authenticator {
             return Err(ProximaError::Security(
-                "MCP requires a host authenticator or paired PROXIMA_MCP_MASTER_TOKEN/PROXIMA_MCP_MASTER_TOKEN_SUBJECT".into(),
+                "MCP requires a host authenticator".into(),
             ));
         }
 
@@ -655,17 +599,6 @@ fn dedup_hosts(hosts: impl IntoIterator<Item = String>) -> Vec<String> {
         .collect()
 }
 
-fn parse_master_token(raw: &str) -> Result<uuid::Uuid, ProximaError> {
-    let trimmed = raw.trim();
-    let bare = trimmed.strip_prefix("pxm_").unwrap_or(trimmed);
-    bare.parse().map_err(|_| {
-        ProximaError::Config(
-            "PROXIMA_MCP_MASTER_TOKEN / --master-token must be a UUID with optional pxm_ prefix"
-                .into(),
-        )
-    })
-}
-
 fn parse_duration_seconds(key: &str, raw: &str) -> Result<Duration, ProximaError> {
     let trimmed = raw.trim();
     let seconds = trimmed
@@ -693,7 +626,10 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use async_trait::async_trait;
-    use proxima_core::{AccessError, GroupId, OwnerAccessPort, OwnerRef, OwnerRoles, UserId};
+    use proxima_core::{
+        AccessError, AuthError, AuthzContext, Credentials, GroupId, OwnerAccessPort, OwnerRef,
+        OwnerRoles, UserId,
+    };
 
     use super::*;
     use crate::company_owner;
@@ -728,12 +664,24 @@ mod tests {
         Arc::new(TestOwnerAccess)
     }
 
+    #[derive(Debug)]
+    struct TestAuthenticator;
+
+    #[async_trait]
+    impl Authenticator for TestAuthenticator {
+        async fn authenticate(
+            &self,
+            _credentials: &Credentials,
+        ) -> Result<AuthzContext, AuthError> {
+            Err(AuthError::InvalidCredentials)
+        }
+    }
+
     fn base_config(mcp: Option<SocketAddr>) -> RuntimeConfig {
         RuntimeConfig {
             database_url: "postgres://localhost/proxima".to_string(),
             s3: None,
             owner: Some(company_owner(uuid::Uuid::now_v7())),
-            master_token: None,
             mcp: mcp.map(|bind| McpSettings { bind }),
             expose_network: false,
             allowed_origins: Vec::new(),
@@ -793,32 +741,12 @@ mod tests {
     }
 
     #[test]
-    fn validate_mcp_requires_authenticator_or_master_token_subject() {
+    fn validate_mcp_requires_authenticator() {
         let mut config = base_config(Some(addr([127, 0, 0, 1])));
         config.auth.has_host_authenticator = false;
 
         let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("MCP requires"));
-    }
-
-    #[test]
-    fn validate_master_token_satisfies_loopback_mcp_auth_requirement() {
-        let mut config = base_config(Some(addr([127, 0, 0, 1])));
-        config.auth.has_host_authenticator = false;
-        config.master_token = Some((uuid::Uuid::now_v7(), UserId::new(uuid::Uuid::now_v7())));
-
-        config.validate().unwrap();
-    }
-
-    #[test]
-    fn validate_master_token_cannot_expose_network() {
-        let mut config = base_config(Some(addr([127, 0, 0, 1])));
-        config.master_token = Some((uuid::Uuid::now_v7(), UserId::new(uuid::Uuid::now_v7())));
-        config.expose_network = true;
-        config.allowed_origins = vec!["https://app.test".to_string()];
-
-        let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("loopback-only"));
+        assert!(err.to_string().contains("host authenticator"));
     }
 
     #[test]
@@ -1010,78 +938,6 @@ mod tests {
     }
 
     #[test]
-    fn master_token_env_fills_unset_and_accepts_wire_prefix() {
-        let token = uuid::Uuid::now_v7();
-        let token_raw = format!("pxm_{token}");
-        let subject = UserId::new(uuid::Uuid::now_v7());
-        let (config, _) = RuntimeBuilder::default()
-            .database_url("postgres://localhost/proxima")
-            .owner(owner(uuid::Uuid::now_v7()))
-            .with_mcp()
-            .owner_access(owner_access())
-            .apply_lookup(lookup(&[
-                ("PROXIMA_MCP_MASTER_TOKEN", &token_raw),
-                (
-                    "PROXIMA_MCP_MASTER_TOKEN_SUBJECT",
-                    &subject.into_inner().to_string(),
-                ),
-            ]))
-            .unwrap()
-            .resolve()
-            .unwrap();
-
-        assert_eq!(config.master_token, Some((token, subject)));
-    }
-
-    #[test]
-    fn explicit_master_token_wins_over_env() {
-        let explicit = uuid::Uuid::now_v7();
-        let explicit_subject = UserId::new(uuid::Uuid::now_v7());
-        let env = uuid::Uuid::now_v7();
-        let env_raw = env.to_string();
-        let env_subject = UserId::new(uuid::Uuid::now_v7());
-        let (config, _) = RuntimeBuilder::default()
-            .database_url("postgres://localhost/proxima")
-            .owner(owner(uuid::Uuid::now_v7()))
-            .with_mcp()
-            .owner_access(owner_access())
-            .master_token(explicit, explicit_subject)
-            .apply_lookup(lookup(&[
-                ("PROXIMA_MCP_MASTER_TOKEN", &env_raw),
-                (
-                    "PROXIMA_MCP_MASTER_TOKEN_SUBJECT",
-                    &env_subject.into_inner().to_string(),
-                ),
-            ]))
-            .unwrap()
-            .resolve()
-            .unwrap();
-
-        assert_eq!(config.master_token, Some((explicit, explicit_subject)));
-    }
-
-    #[test]
-    fn malformed_master_token_errors() {
-        let err = RuntimeBuilder::default()
-            .database_url("postgres://localhost/proxima")
-            .owner(owner(uuid::Uuid::now_v7()))
-            .with_mcp()
-            .owner_access(owner_access())
-            .apply_lookup(lookup(&[
-                ("PROXIMA_MCP_MASTER_TOKEN", "not-a-uuid"),
-                (
-                    "PROXIMA_MCP_MASTER_TOKEN_SUBJECT",
-                    &uuid::Uuid::now_v7().to_string(),
-                ),
-            ]))
-            .unwrap()
-            .resolve()
-            .unwrap_err();
-
-        assert!(err.to_string().contains("PROXIMA_MCP_MASTER_TOKEN"));
-    }
-
-    #[test]
     fn allowed_origins_are_split_trimmed_and_empty_values_dropped() {
         let builder = RuntimeBuilder::default()
             .apply_lookup(lookup(&[(
@@ -1158,7 +1014,7 @@ mod tests {
             .owner(owner(uuid::Uuid::now_v7()))
             .with_mcp()
             .owner_access(owner_access())
-            .master_token(uuid::Uuid::now_v7(), UserId::new(uuid::Uuid::now_v7()))
+            .authenticator(Arc::new(TestAuthenticator))
             .resolve()
             .unwrap();
 

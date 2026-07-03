@@ -1,8 +1,5 @@
 use std::net::SocketAddr;
 
-use proxima_core::UserId;
-use uuid::Uuid;
-
 pub const DEFAULT_BIND: &str = "127.0.0.1:31415";
 pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_dev";
 
@@ -13,16 +10,9 @@ Usage:
 
 Proxima Streamable HTTP MCP server.
 
-Auth (choose one mode):
-  --master-token <UUID>    Local bearer token (or PROXIMA_MCP_MASTER_TOKEN);
-                           clients send Authorization: Bearer pxm_<token>.
-                           Loopback-only (mutually exclusive with network
-                           exposure). Omit when using OIDC.
-  --master-token-subject <UUID>
-                           UserId subject for the local master token
-                           (or PROXIMA_MCP_MASTER_TOKEN_SUBJECT).
+Auth:
   (OIDC)                   Set PROXIMA_OIDC_ISSUER + PROXIMA_OIDC_AUDIENCE
-                           (see Environment) for bearer-JWT auth instead.
+                           (see Environment) for bearer-JWT auth.
 
 Optional:
   --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxima_dev)
@@ -97,8 +87,6 @@ Optional:
 pub struct McpConfig {
     pub database_url: String,
     pub bind: Option<SocketAddr>,
-    pub master_token: Option<Uuid>,
-    pub master_token_subject: Option<UserId>,
 }
 
 impl std::fmt::Debug for McpConfig {
@@ -106,8 +94,6 @@ impl std::fmt::Debug for McpConfig {
         f.debug_struct("McpConfig")
             .field("database_url", &"<redacted>")
             .field("bind", &self.bind)
-            .field("master_token", &self.master_token.map(|_| "<redacted>"))
-            .field("master_token_subject", &self.master_token_subject)
             .finish()
     }
 }
@@ -146,8 +132,6 @@ pub enum ArgsError {
     Help,
     #[error("{0}")]
     Invalid(String),
-    #[error("{0}")]
-    UuidParse(#[from] uuid::Error),
 }
 
 impl ArgsError {
@@ -159,13 +143,11 @@ impl ArgsError {
 
 /// # Errors
 ///
-/// Returns `ArgsError` for help, unknown flags, missing values, missing
-/// required token-pair fields, UUID parse errors, or unreadable current dir.
+/// Returns `ArgsError` for help, unknown flags, missing values, or unreadable
+/// current dir.
 pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, ArgsError> {
     let mut database_url: Option<String> = None;
     let mut bind: Option<SocketAddr> = None;
-    let mut master_token: Option<Uuid> = None;
-    let mut master_token_subject: Option<UserId> = None;
 
     let mut iter = args.into_iter();
     while let Some(flag) = iter.next() {
@@ -177,10 +159,6 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
                     .ok_or_else(|| ArgsError::Invalid(format!("flag {f} expects a value")))?;
                 match f {
                     "--database-url" => database_url = Some(value),
-                    "--master-token" => master_token = Some(parse_master_token(&value)?),
-                    "--master-token-subject" => {
-                        master_token_subject = Some(UserId::new(Uuid::parse_str(&value)?));
-                    }
                     "--bind" => {
                         let parsed: SocketAddr = value.parse().map_err(|err| {
                             ArgsError::Invalid(format!("invalid --bind {value:?}: {err}"))
@@ -202,40 +180,8 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
     let database_url = database_url.unwrap_or_else(|| {
         std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
     });
-    let master_token = match master_token {
-        Some(token) => Some(token),
-        None => std::env::var("PROXIMA_MCP_MASTER_TOKEN")
-            .ok()
-            .map(|raw| parse_master_token(&raw))
-            .transpose()?,
-    };
-    let master_token_subject = match master_token_subject {
-        Some(subject) => Some(subject),
-        None => std::env::var("PROXIMA_MCP_MASTER_TOKEN_SUBJECT")
-            .ok()
-            .map(|raw| Uuid::parse_str(raw.trim()).map(UserId::new))
-            .transpose()?,
-    };
-    match (master_token, master_token_subject) {
-        (Some(_), None) => {
-            return Err(ArgsError::Invalid(
-                "--master-token requires --master-token-subject".into(),
-            ));
-        }
-        (None, Some(_)) => {
-            return Err(ArgsError::Invalid(
-                "--master-token-subject requires --master-token".into(),
-            ));
-        }
-        _ => {}
-    }
 
-    Ok(McpConfig {
-        database_url,
-        bind,
-        master_token,
-        master_token_subject,
-    })
+    Ok(McpConfig { database_url, bind })
 }
 
 /// # Errors
@@ -303,12 +249,6 @@ pub fn parse_reconcile_args<I: IntoIterator<Item = String>>(
     })
 }
 
-fn parse_master_token(raw: &str) -> Result<Uuid, uuid::Error> {
-    let trimmed = raw.trim();
-    let bare = trimmed.strip_prefix("pxm_").unwrap_or(trimmed);
-    Uuid::parse_str(bare)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,20 +261,10 @@ mod tests {
 
     #[test]
     fn full_args_parse() {
-        let subject = uuid::Uuid::now_v7();
-        let cfg = parse_args([
-            "--database-url".into(),
-            "postgres://x/y".into(),
-            "--master-token".into(),
-            uuid::Uuid::nil().to_string(),
-            "--master-token-subject".into(),
-            subject.to_string(),
-        ])
-        .expect("valid args");
+        let cfg =
+            parse_args(["--database-url".into(), "postgres://x/y".into()]).expect("valid args");
         assert_eq!(cfg.database_url, "postgres://x/y");
         assert!(cfg.bind.is_none());
-        assert_eq!(cfg.master_token, Some(uuid::Uuid::nil()));
-        assert_eq!(cfg.master_token_subject, Some(UserId::new(subject)));
     }
 
     #[test]
@@ -344,20 +274,6 @@ mod tests {
             cfg.bind,
             Some("127.0.0.1:9999".parse().expect("valid bind"))
         );
-    }
-
-    #[test]
-    fn master_token_accepts_wire_prefix() {
-        let subject = uuid::Uuid::now_v7();
-        let cfg = parse_args([
-            "--master-token".into(),
-            "pxm_00000000-0000-0000-0000-000000000000".into(),
-            "--master-token-subject".into(),
-            subject.to_string(),
-        ])
-        .expect("valid args");
-        assert_eq!(cfg.master_token, Some(uuid::Uuid::nil()));
-        assert_eq!(cfg.master_token_subject, Some(UserId::new(subject)));
     }
 
     #[test]

@@ -153,7 +153,6 @@ impl CoreMcpTools {
             owner,
             authz,
             model_id,
-            master_token_id: None,
         };
 
         self.host
@@ -186,7 +185,6 @@ impl CoreMcpTools {
             owner,
             authz,
             model_id,
-            master_token_id: None,
         };
 
         self.host

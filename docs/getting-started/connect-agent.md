@@ -10,7 +10,7 @@ Follow [local-dev.md](local-dev.md), then configure your MCP client:
     "proxima": {
       "url": "http://127.0.0.1:31415/mcp",
       "headers": {
-        "Authorization": "Bearer pxm_<token>",
+        "Authorization": "Bearer <oidc-access-token>",
         "X-Proxima-Owner": "personal:<user-id>"
       }
     }
@@ -18,7 +18,8 @@ Follow [local-dev.md](local-dev.md), then configure your MCP client:
 }
 ```
 
-For the local quickstart, use `pxm_$MASTER_TOKEN` and `personal:$USER_ID`.
+For the local quickstart, use an access token from the configured OIDC issuer
+and `personal:$USER_ID`.
 
 ## First Calls
 
