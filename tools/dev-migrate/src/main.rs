@@ -29,10 +29,15 @@
 
 use proxima::flavor::FlavorBundle;
 use proxima::run_core_and_flavor_migrations;
-use proxima_storage_pg::{PgStorage, RETIRED_PRE_V004_MIGRATION_VERSIONS, core_migrator};
+use proxima_storage_pg::{
+    PgStorage, RETIRED_PRE_V004_MIGRATION_VERSIONS as RETIRED_BASELINE_MIGRATION_VERSIONS,
+    core_migrator,
+};
 
 const DATABASE_URL_FLAG: &str = "--database-url";
 const RESET_FLAG: &str = "--reset";
+// Keep the destructive-reset confirmation versioned so stale operator scripts
+// do not silently opt in to a future baseline reset.
 const RESET_CONFIRM_ENV: &str = "PROXIMA_V004_RESET_CONFIRM";
 const RESET_CONFIRM_VALUE: &str = "reset-my-dev-db";
 
@@ -101,6 +106,14 @@ async fn reset_local_dev_database(
     reset_local_dev_database_confirmed(pg, url).await
 }
 
+/// `sqlx` may expose an empty host when the connection options rely on a
+/// default local Postgres host; this dev-only reset treats that as local.
+const LOCAL_POSTGRES_EMPTY_HOST: &str = "";
+
+fn is_local_postgres_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | LOCAL_POSTGRES_EMPTY_HOST) || host.starts_with('/')
+}
+
 async fn reset_local_dev_database_confirmed(
     pg: &PgStorage,
     url: &str,
@@ -108,11 +121,11 @@ async fn reset_local_dev_database_confirmed(
     let options: sqlx::postgres::PgConnectOptions = url.parse()?;
     let host = options.get_host();
     let database = options.get_database().unwrap_or_default();
-    if !matches!(host, "localhost" | "127.0.0.1" | "") && !host.starts_with('/') {
-        return Err("v0.0.4 dev reset refuses non-local DATABASE_URL host".into());
+    if !is_local_postgres_host(host) {
+        return Err("dev reset refuses non-local DATABASE_URL host".into());
     }
     if matches!(database, "postgres" | "template0" | "template1") {
-        return Err("v0.0.4 dev reset refuses protected database names".into());
+        return Err("dev reset refuses protected database names".into());
     }
     let pool = pg.clone_pool_for_backend();
     let unexpected_schemas: Vec<String> = sqlx::query_scalar(
@@ -144,7 +157,7 @@ async fn reset_local_dev_database_confirmed(
                 .map(|migration| migration.version),
         );
     }
-    versions.extend_from_slice(RETIRED_PRE_V004_MIGRATION_VERSIONS);
+    versions.extend_from_slice(RETIRED_BASELINE_MIGRATION_VERSIONS);
     versions.sort_unstable();
     versions.dedup();
 
@@ -177,8 +190,12 @@ mod tests {
     use super::*;
     use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 
+    // Representative retired timestamp-style SQLx migration version folded
+    // into the destructive baseline.
+    const LEGACY_TIMESTAMP_STYLE_MIGRATION_VERSION: i64 = 20_260_622_000_000;
+
     #[tokio::test]
-    async fn reset_deletes_retired_pre_v004_migration_rows() {
+    async fn reset_deletes_retired_baseline_migration_rows() {
         let db_name = unique_db_name("proxima_dev_migrate_reset");
         create_db(&db_name).await.expect("PG required for tests");
         let url = db_url(&db_name);
@@ -203,7 +220,16 @@ mod tests {
             )
             .execute(pg.pool_for_tests())
             .await?;
-            for version in [1_i64, 2, 3, 4, 5, 6, 7, 20_260_622_000_000] {
+            for version in [
+                1_i64,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                LEGACY_TIMESTAMP_STYLE_MIGRATION_VERSION,
+            ] {
                 sqlx::query(
                     "INSERT INTO public._sqlx_migrations
                         (version, description, success, checksum, execution_time)

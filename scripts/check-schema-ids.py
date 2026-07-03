@@ -77,7 +77,7 @@ def production_src_files(root: Path) -> list[Path]:
 
 
 def package_name_for(path: Path) -> str:
-    for parent in [path.parent, *path.parents]:
+    for parent in path.parents:
         manifest = parent / "Cargo.toml"
         if manifest.exists():
             data = tomllib.loads(manifest.read_text(encoding="utf-8"))
@@ -157,11 +157,15 @@ def scan_file(path: Path, root: Path) -> tuple[list[Registration], list[str]]:
         start_index = index
         start_line = line_number(text, sum(len(l) + 1 for l in lines[:start_index]))
         depth = brace_delta(line)
+        saw_open_brace = "{" in line
         body = [line]
         index += 1
-        while index < len(lines) and depth > 0:
-            body.append(lines[index])
-            depth += brace_delta(lines[index])
+        while index < len(lines) and (not saw_open_brace or depth > 0):
+            current = lines[index]
+            body.append(current)
+            depth += brace_delta(current)
+            if "{" in current:
+                saw_open_brace = True
             index += 1
 
         body_text = "\n".join(body)
@@ -293,6 +297,14 @@ impl PerspectivePayload for Shared {
     const SCHEMA_VERSION: u32 = 1;
 }
 """
+    multiline_impl_fixture = """
+struct Multiline;
+impl FactPayload for Multiline
+{
+    const SCHEMA_ID: &'static str = proxima_schema_id!("multiline-v1");
+    const SCHEMA_VERSION: u32 = 1;
+}
+"""
     collision_fixture = """
 struct A;
 impl FactPayload for A {
@@ -314,6 +326,7 @@ impl FactPayload for A {
 """
     cases = [
         ("same payload type may register multiple kinds", ok_fixture, False),
+        ("impl body may open on the next line", multiline_impl_fixture, False),
         ("different payload types may not collide by normalized id", collision_fixture, True),
         ("unresolved schema expression fails", unresolved_fixture, True),
     ]
