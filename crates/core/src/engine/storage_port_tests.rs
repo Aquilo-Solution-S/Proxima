@@ -297,6 +297,34 @@ mod storage_port_tests_support {
         }
     }
 
+    #[async_trait::async_trait]
+    impl crate::EmbeddingMaintenancePort for EmbeddingJobFake {
+        async fn embedding_ann_observability(
+            &self,
+            _proof: crate::OperatorMaintenanceProof,
+        ) -> Result<crate::EmbeddingAnnObservability, StorageError> {
+            Ok(crate::EmbeddingAnnObservability {
+                embedding_rows: 0,
+                embedding_head_rows: 0,
+                embedding_job_rows: 0,
+                embedding_table_bytes: 0,
+                embedding_total_relation_bytes: 0,
+                hnsw_index_bytes: 0,
+                backlog: crate::EmbeddingJobBacklog::default(),
+                stale_processing_jobs: 0,
+                orphan_rows: crate::EmbeddingOrphanCounts::default(),
+                recall_canary: None,
+            })
+        }
+
+        async fn sweep_orphan_embedding_rows(
+            &self,
+            _proof: crate::OperatorMaintenanceProof,
+        ) -> Result<crate::EmbeddingOrphanSweepOutcome, StorageError> {
+            Ok(crate::EmbeddingOrphanSweepOutcome::default())
+        }
+    }
+
     #[derive(Debug)]
     pub struct CitationFake;
 

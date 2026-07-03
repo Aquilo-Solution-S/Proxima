@@ -163,6 +163,31 @@ Contract:
 | rows | owner-scoped substrate rows, source cursors, registered sidecars, cited-object blob refs, and matching compliance audit rows |
 | serialization | `ComplianceExportBundle::canonical_json_bytes()` emits recursively sorted-key JSON bytes |
 
+## Embedding Ops Host API
+
+Public facade status:
+
+| Type / verb | Import | Status |
+|---|---|---|
+| `EmbeddingAnnObservability` | `proxima::EmbeddingAnnObservability` | Host API DTO |
+| `EmbeddingJobBacklog` | `proxima::EmbeddingJobBacklog` | Host API DTO |
+| `EmbeddingOrphanCounts` | `proxima::EmbeddingOrphanCounts` | Host API DTO |
+| `EmbeddingOrphanSweepOutcome` | `proxima::EmbeddingOrphanSweepOutcome` | Host API DTO |
+| `EmbeddingRecallCanary` | `proxima::EmbeddingRecallCanary` | Host API DTO |
+| `Engine::embedding_ann_observability(authz)` | `proxima::Engine` | Host API verb |
+| `Engine::sweep_orphan_embedding_rows(authz)` | `proxima::Engine` | Host API verb |
+
+Contract:
+
+| Field | Rule |
+|---|---|
+| authorization | `AuthPath::System` or `ComplianceAdminPort::may_perform_operator_maintenance`; ordinary owner read/admin roles are insufficient |
+| scope | owner-agnostic operational reads over embedding infrastructure |
+| observability | rows, relation bytes, HNSW bytes, job backlog, stale processing jobs, orphan rows, recall canary |
+| orphan sweep | deletes embeddings, heads, and jobs whose source `memories` / `goals` row no longer exists |
+| compliance erase | not dependent on sweep; erase deletes embedding infra synchronously at transaction commit |
+| graph authority | embeddings remain engine infrastructure; similarity never authors graph edges |
+
 ## Consumer Projector Guidance
 
 Rules for a downstream projector (a host process that writes derived

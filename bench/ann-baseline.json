@@ -1,0 +1,152 @@
+{
+  "baseline_path": {
+    "description": "current planner over shared HNSW and owner btree indexes",
+    "disable_seqscan_for_ann": false,
+    "ef_search": null,
+    "iterative_scan": null,
+    "query_shape": "production-style candidates -> eligible_entities -> vector_candidates CTE with production overfetch",
+    "vector_candidate_overfetch": 640
+  },
+  "benchmark": "proxima-ann-hnsw-baseline",
+  "cases": [
+    {
+      "buffers": {
+        "shared_hits_avg": 28322.33,
+        "shared_reads_avg": 0.0
+      },
+      "filter": "all owners",
+      "latency_ms": {
+        "p50": 47.906,
+        "p95": 48.7484
+      },
+      "name": "unfiltered",
+      "planner": {
+        "hnsw_index_used": false,
+        "index_names": [],
+        "node_types": [
+          "CTE Scan",
+          "Hash",
+          "Hash Join",
+          "Limit",
+          "Seq Scan",
+          "Sort",
+          "Unique"
+        ]
+      },
+      "queries": 3,
+      "recall_at_k": {
+        "avg": 1.0,
+        "k": 10,
+        "min": 1.0
+      }
+    },
+    {
+      "buffers": {
+        "shared_hits_avg": 6600.69,
+        "shared_reads_avg": 0.0
+      },
+      "filter": "owner_id = 00000000-0000-4000-8000-000000000001",
+      "latency_ms": {
+        "p50": 15.565,
+        "p95": 15.7117
+      },
+      "name": "owner_filtered_hot",
+      "planner": {
+        "hnsw_index_used": false,
+        "index_names": [
+          "ann_bench_owner_idx"
+        ],
+        "node_types": [
+          "Bitmap Heap Scan",
+          "Bitmap Index Scan",
+          "CTE Scan",
+          "Hash",
+          "Hash Join",
+          "Limit",
+          "Seq Scan",
+          "Sort",
+          "Unique"
+        ]
+      },
+      "queries": 3,
+      "recall_at_k": {
+        "avg": 1.0,
+        "k": 10,
+        "min": 1.0
+      }
+    },
+    {
+      "buffers": {
+        "shared_hits_avg": 399.18,
+        "shared_reads_avg": 0.0
+      },
+      "filter": "owner_id = 00000000-0000-4000-8000-000000000002",
+      "latency_ms": {
+        "p50": 0.566,
+        "p95": 0.5867
+      },
+      "name": "owner_filtered_cold",
+      "planner": {
+        "hnsw_index_used": false,
+        "index_names": [
+          "ann_bench_owner_idx",
+          "embeddings_pkey"
+        ],
+        "node_types": [
+          "CTE Scan",
+          "Index Scan",
+          "Limit",
+          "Nested Loop",
+          "Sort",
+          "Unique"
+        ]
+      },
+      "queries": 3,
+      "recall_at_k": {
+        "avg": 1.0,
+        "k": 10,
+        "min": 1.0
+      }
+    }
+  ],
+  "cp0": {
+    "notes": [
+      "No schema change is implied by this artifact.",
+      "Iterative-scan, ef_search, halfvec, and partition decisions require benchmark review."
+    ],
+    "status": "baseline"
+  },
+  "database": {
+    "pgvector_version": "0.8.2",
+    "postgres_version": "18.4 (Debian 18.4-1.pgdg12+1)",
+    "url": "postgres://***:***@localhost:5434/proxima"
+  },
+  "dataset": {
+    "buckets": 8,
+    "dimension": 1024,
+    "owner_shape": {
+      "cold_owner": "00000000-0000-4000-8000-000000000002",
+      "hot_owner": "00000000-0000-4000-8000-000000000001",
+      "noise_owners": 6
+    },
+    "row_counts": {
+      "cold": 120,
+      "hot": 5000,
+      "noise": 15000,
+      "total": 20120
+    },
+    "seed": 60604
+  },
+  "elapsed_seconds": 41.533,
+  "generated_at": "2026-07-03T16:04:19.390795+00:00",
+  "memory_residency_proxy": {
+    "hnsw_index_bytes": 164831232,
+    "source": "relation size plus EXPLAIN buffer hits/reads"
+  },
+  "schema_version": 1,
+  "storage": {
+    "hnsw_index_bytes": 164831232,
+    "table_bytes": 2097152,
+    "total_relation_bytes": 278888448
+  }
+}

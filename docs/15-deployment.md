@@ -9,8 +9,9 @@ Zitadel bearer JWT, with a single unauthenticated route:
 
 ## Runtime requirements
 
-Postgres must have the `vector` extension with `hnsw` index type
-(pgvector-enabled image). Migrations run automatically on first boot.
+Postgres must have pgvector `>= 0.8.0` with `hnsw` index type and
+`hnsw.iterative_scan` support. Migrations run automatically on first boot and
+fail closed if the extension version/GUC preflight is not satisfied.
 Optional dependencies: S3 for cited-blob storage (see [10](10-configuration.md#large-artefact-s3)),
 and a Mistral-compatible embedding client; when configured, the server
 drains embeddings in-process automatically. Without embeddings the server
@@ -139,6 +140,28 @@ MCP clients send `X-Proxima-Owner` on `initialize`; the bound owner is
 server-side session state, not a per-call tool argument.
 
 In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_link`; hydrate a memory through `proxima://memory/{id}`. Omitted `space` preserves the current bound owner.
+
+## Embedding Ops
+
+Runtime search:
+
+| Item | Runtime value |
+|---|---|
+| vector type | `vector(1024)`; no halfvec migration in v0.0.6 Plan-4 |
+| ANN index | shared `idx_embeddings_vec_hnsw` |
+| semantic-search GUCs | `SET LOCAL hnsw.ef_search = 100`; `SET LOCAL hnsw.iterative_scan = relaxed_order` |
+| cold owner subsets | planner may prefer owner btree + exact sort |
+
+Host-only operator methods:
+
+| Verb | Authorization | Contract |
+|---|---|---|
+| `Engine::embedding_ann_observability(authz)` | `AuthPath::System` or `ComplianceAdminPort::may_perform_operator_maintenance` | owner-agnostic rows/bytes/backlog/stale/orphan/recall-canary signals |
+| `Engine::sweep_orphan_embedding_rows(authz)` | same | deletes embedding infra rows whose source memory/goal row no longer exists |
+
+Compliance erase is separate: owner/source erasure deletes embeddings,
+`embedding_heads`, and `embedding_jobs` synchronously at commit. The orphan
+sweep is crash-residue maintenance only.
 
 ## Zitadel setup
 

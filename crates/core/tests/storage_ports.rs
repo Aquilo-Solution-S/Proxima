@@ -283,6 +283,25 @@ impl EmbeddingJobPort for EmbeddingJobFake {
     }
 }
 
+#[async_trait::async_trait]
+impl EmbeddingMaintenancePort for EmbeddingJobFake {
+    async fn embedding_ann_observability(
+        &self,
+        proof: OperatorMaintenanceProof,
+    ) -> Result<EmbeddingAnnObservability, StorageError> {
+        let _ = proof;
+        fake_error()
+    }
+
+    async fn sweep_orphan_embedding_rows(
+        &self,
+        proof: OperatorMaintenanceProof,
+    ) -> Result<EmbeddingOrphanSweepOutcome, StorageError> {
+        let _ = proof;
+        fake_error()
+    }
+}
+
 #[derive(Debug)]
 struct GoalWriteFake;
 

@@ -429,6 +429,27 @@ pub(in crate::engine) mod tests {
     }
 
     #[async_trait::async_trait]
+    impl crate::EmbeddingMaintenancePort for MembershipStorage {
+        async fn embedding_ann_observability(
+            &self,
+            _proof: crate::OperatorMaintenanceProof,
+        ) -> Result<crate::EmbeddingAnnObservability, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects operational embedding reads".into(),
+            ))
+        }
+
+        async fn sweep_orphan_embedding_rows(
+            &self,
+            _proof: crate::OperatorMaintenanceProof,
+        ) -> Result<crate::EmbeddingOrphanSweepOutcome, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects embedding maintenance".into(),
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
     impl GoalWritePort for MembershipStorage {
         async fn create_goal_atomic(
             &self,
@@ -889,6 +910,7 @@ pub(in crate::engine) mod tests {
                 .embedding_text(storage.clone())
                 .embedding_write(storage.clone())
                 .embedding_job(storage.clone())
+                .embedding_maintenance(storage.clone())
                 .goal_write(storage.clone())
                 .goal_read(storage.clone())
                 .change_event(storage.clone())

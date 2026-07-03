@@ -1,7 +1,7 @@
 pub use super::proof::EmbeddingWriteProof;
 
 use crate::storage::{EmbeddingJobClaim, StorageError};
-use crate::storage_ports::OwnerWritePermit;
+use crate::storage_ports::{OperatorMaintenanceProof, OwnerWritePermit};
 use crate::{EmbeddableEntityRef, EntityKind, Owner};
 
 #[async_trait::async_trait]
@@ -120,6 +120,51 @@ pub struct EmbeddingWriteOutcome {
     pub embedding_version: i32,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddingJobBacklog {
+    pub pending: u64,
+    pub processing: u64,
+    pub failed: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddingOrphanCounts {
+    pub embeddings: u64,
+    pub heads: u64,
+    pub jobs: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddingOrphanSweepOutcome {
+    pub embeddings_deleted: u64,
+    pub heads_deleted: u64,
+    pub jobs_deleted: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddingRecallCanary {
+    pub model_id: String,
+    pub k: u64,
+    pub exact_count: u64,
+    pub ann_count: u64,
+    pub overlap_count: u64,
+    pub recall_at_k: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddingAnnObservability {
+    pub embedding_rows: u64,
+    pub embedding_head_rows: u64,
+    pub embedding_job_rows: u64,
+    pub embedding_table_bytes: u64,
+    pub embedding_total_relation_bytes: u64,
+    pub hnsw_index_bytes: u64,
+    pub backlog: EmbeddingJobBacklog,
+    pub stale_processing_jobs: u64,
+    pub orphan_rows: EmbeddingOrphanCounts,
+    pub recall_canary: Option<EmbeddingRecallCanary>,
+}
+
 #[async_trait::async_trait]
 pub trait EmbeddingJobPort: Send + Sync {
     async fn claim_pending_embedding_jobs(
@@ -144,4 +189,17 @@ pub trait EmbeddingJobPort: Send + Sync {
     ) -> Result<u64, StorageError>;
 
     async fn count_pending_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError>;
+}
+
+#[async_trait::async_trait]
+pub trait EmbeddingMaintenancePort: Send + Sync {
+    async fn embedding_ann_observability(
+        &self,
+        proof: OperatorMaintenanceProof,
+    ) -> Result<EmbeddingAnnObservability, StorageError>;
+
+    async fn sweep_orphan_embedding_rows(
+        &self,
+        proof: OperatorMaintenanceProof,
+    ) -> Result<EmbeddingOrphanSweepOutcome, StorageError>;
 }

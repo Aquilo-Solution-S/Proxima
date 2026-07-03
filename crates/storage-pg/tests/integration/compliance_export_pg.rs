@@ -66,6 +66,7 @@ fn storage_ports_with_compliance(pg: &PgStorage) -> StoragePorts {
         .embedding_text(pg.clone())
         .embedding_write(pg.clone())
         .embedding_job(pg.clone())
+        .embedding_maintenance(pg.clone())
         .goal_write(pg.clone())
         .goal_read(pg.clone())
         .change_event(pg.clone())

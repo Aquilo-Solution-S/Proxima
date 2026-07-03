@@ -9,7 +9,9 @@ use crate::compliance::{
 };
 use crate::error::ProtocolError;
 use crate::sidecar_tables;
+use crate::storage_ports::OperatorMaintenanceProof;
 use crate::verbs::schema::PayloadKind;
+use crate::{EmbeddingAnnObservability, EmbeddingOrphanSweepOutcome};
 use crate::{GroupId, SourceId, UserId};
 
 struct ComplianceSidecarTables {
@@ -125,6 +127,69 @@ impl Engine {
         port.may_perform_compliance_export(authz, target)
             .await
             .unwrap_or(false)
+    }
+
+    async fn operator_maintenance_authorized(&self, authz: &AuthzContext) -> bool {
+        if authz.auth_path() == AuthPath::System {
+            return true;
+        }
+        let Some(port) = &self.storage.compliance.compliance_admin else {
+            return false;
+        };
+        port.may_perform_operator_maintenance(authz)
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Owner-agnostic embedding ANN health signals.
+    ///
+    /// Requires system or compliance/operator-maintenance authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns forbidden when the caller lacks operator authority, or internal
+    /// when the storage read fails.
+    pub async fn embedding_ann_observability(
+        &self,
+        authz: &AuthzContext,
+    ) -> Result<EmbeddingAnnObservability, ProtocolError> {
+        if !self.operator_maintenance_authorized(authz).await {
+            return Err(ProtocolError::forbidden(
+                "embedding ANN observability requires operator maintenance authorization",
+            ));
+        }
+        self.storage
+            .compliance
+            .embedding_maintenance
+            .embedding_ann_observability(OperatorMaintenanceProof::new())
+            .await
+            .map_err(|e| ProtocolError::internal(format!("embedding_ann_observability: {e}")))
+    }
+
+    /// Sweep orphaned embedding infrastructure rows.
+    ///
+    /// This is crash-residue maintenance only. Compliance erase remains
+    /// synchronous and cannot rely on this sweep for lawful wipe semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns forbidden when the caller lacks operator authority, or internal
+    /// when the storage sweep fails.
+    pub async fn sweep_orphan_embedding_rows(
+        &self,
+        authz: &AuthzContext,
+    ) -> Result<EmbeddingOrphanSweepOutcome, ProtocolError> {
+        if !self.operator_maintenance_authorized(authz).await {
+            return Err(ProtocolError::forbidden(
+                "embedding orphan sweep requires operator maintenance authorization",
+            ));
+        }
+        self.storage
+            .compliance
+            .embedding_maintenance
+            .sweep_orphan_embedding_rows(OperatorMaintenanceProof::new())
+            .await
+            .map_err(|e| ProtocolError::internal(format!("sweep_orphan_embedding_rows: {e}")))
     }
 
     async fn verify_personal_owner_drop(

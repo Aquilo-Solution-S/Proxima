@@ -6,7 +6,9 @@ use super::compliance::{
     ComplianceAdminPort, ComplianceErasePort, FactRetentionPort, OwnerDropProofPort,
 };
 use super::cursors::SourceCursorPort;
-use super::embeddings::{EmbeddingJobPort, EmbeddingTextPort, EmbeddingWritePort};
+use super::embeddings::{
+    EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort, EmbeddingWritePort,
+};
 use super::fact::{FactIngestPort, SourceBatchPort};
 use super::goals::{GoalReadPort, GoalWritePort};
 use super::mcp::{McpCallReadPort, McpCallWritePort};
@@ -24,6 +26,7 @@ pub type MemoryInspectHandle = Arc<dyn MemoryInspectPort>;
 pub type EmbeddingTextHandle = Arc<dyn EmbeddingTextPort>;
 pub type EmbeddingWriteHandle = Arc<dyn EmbeddingWritePort>;
 pub type EmbeddingJobHandle = Arc<dyn EmbeddingJobPort>;
+pub type EmbeddingMaintenanceHandle = Arc<dyn EmbeddingMaintenancePort>;
 pub type GoalWriteHandle = Arc<dyn GoalWritePort>;
 pub type GoalReadHandle = Arc<dyn GoalReadPort>;
 pub type ChangeEventHandle = Arc<dyn ChangeEventPort>;

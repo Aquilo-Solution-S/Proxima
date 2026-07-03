@@ -108,6 +108,13 @@ pub trait ComplianceAdminPort: Send + Sync {
         self.may_perform_compliance_erase(authz, &target.erase_authority_target())
             .await
     }
+
+    async fn may_perform_operator_maintenance(
+        &self,
+        _authz: &crate::AuthzContext,
+    ) -> Result<bool, AccessError> {
+        Ok(false)
+    }
 }
 
 /// Trusted host port for personal owner drop verification.

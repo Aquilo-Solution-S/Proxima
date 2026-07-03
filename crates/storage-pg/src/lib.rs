@@ -24,11 +24,11 @@ use proxima_core::read_models::{
 };
 use proxima_core::storage_ports::{
     ChangeEventPort, CitationPort, ComplianceErasePort, EdgeReadPort, EmbeddingJobPort,
-    EmbeddingTextPort, EmbeddingWritePort, FactIngestPort, FactRetentionPort, GoalReadPort,
-    GoalWakeCandidatePort, GoalWritePort, McpCallReadPort, McpCallWritePort, MemoryAuthoringPort,
-    MemoryInspectPort, MemoryReadPort, OwnerAccessReadPort, OwnerMembershipAdminPort,
-    OwnerTransferPort, OwnerWritePermit, RegistryProjectionPort, SourceBatchPort, SourceCursorPort,
-    StoragePorts,
+    EmbeddingMaintenancePort, EmbeddingTextPort, EmbeddingWritePort, FactIngestPort,
+    FactRetentionPort, GoalReadPort, GoalWakeCandidatePort, GoalWritePort, McpCallReadPort,
+    McpCallWritePort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
+    OperatorMaintenanceProof, OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort,
+    OwnerWritePermit, RegistryProjectionPort, SourceBatchPort, SourceCursorPort, StoragePorts,
 };
 use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
@@ -48,9 +48,10 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, Cursor, DerivedEdgeSpec, EdgeEndpointKindRow,
-    EdgeId, EmbeddingJobClaim, EntityId, FactEntityId, FactSourceBatchRow, GroupId, MembershipRow,
-    MemoryDependency, MemoryGraphPayloadRow, MemoryId, MemoryKindRow, NeighborEdgeRow, Owner,
-    OwnerRef, Relation, SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError, UserId,
+    EdgeId, EmbeddingAnnObservability, EmbeddingJobClaim, EmbeddingOrphanSweepOutcome, EntityId,
+    FactEntityId, FactSourceBatchRow, GroupId, MembershipRow, MemoryDependency,
+    MemoryGraphPayloadRow, MemoryId, MemoryKindRow, NeighborEdgeRow, Owner, OwnerRef, Relation,
+    SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError, UserId,
 };
 use proxima_core::{EmbeddableEntityRef, EmbeddingWriteOutcome, SidecarPayload};
 use sqlx::PgPool;
@@ -61,6 +62,7 @@ pub use verbs::fact_embeddings::{
 };
 
 use crate::error::internal;
+use crate::pgvector::SET_HNSW_ITERATIVE_SCAN_SQL;
 
 #[doc(hidden)]
 pub mod access;
@@ -264,6 +266,65 @@ pub async fn ensure_v004_baseline_compatible(pool: &PgPool) -> Result<(), Storag
     })
 }
 
+fn parse_pgvector_version(version: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = version
+        .split(|ch: char| !ch.is_ascii_digit())
+        .filter(|part| !part.is_empty());
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().unwrap_or("0").parse().ok()?;
+    let patch = parts.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor, patch))
+}
+
+fn pgvector_version_is_supported(version: &str) -> bool {
+    let Some(found) = parse_pgvector_version(version) else {
+        return false;
+    };
+    found
+        >= (
+            pgvector::REQUIRED_PGVECTOR_MAJOR,
+            pgvector::REQUIRED_PGVECTOR_MINOR,
+            pgvector::REQUIRED_PGVECTOR_PATCH,
+        )
+}
+
+async fn ensure_pgvector_runtime_compatible(pool: &PgPool) -> Result<(), StorageError> {
+    let Some(version) = sqlx::query_scalar::<_, String>(
+        "SELECT extversion FROM pg_extension WHERE extname = 'vector'",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(internal)?
+    else {
+        return Err(StorageError::Unavailable(
+            "pgvector extension is required".into(),
+        ));
+    };
+    if !pgvector_version_is_supported(&version) {
+        return Err(StorageError::Unavailable(format!(
+            "pgvector >= {}.{}.{} is required for hnsw.iterative_scan; found {version}",
+            pgvector::REQUIRED_PGVECTOR_MAJOR,
+            pgvector::REQUIRED_PGVECTOR_MINOR,
+            pgvector::REQUIRED_PGVECTOR_PATCH
+        )));
+    }
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| StorageError::Unavailable(format!("begin pgvector preflight: {err}")))?;
+    sqlx::query(SET_HNSW_ITERATIVE_SCAN_SQL)
+        .execute(tx.as_mut())
+        .await
+        .map_err(|err| {
+            StorageError::Unavailable(format!("pgvector hnsw.iterative_scan unavailable: {err}"))
+        })?;
+    tx.commit()
+        .await
+        .map_err(|err| StorageError::Unavailable(format!("commit pgvector preflight: {err}")))?;
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct PgStorage {
     pool: PgPool,
@@ -355,6 +416,7 @@ impl PgStorage {
             .embedding_text(self.clone())
             .embedding_write(self.clone())
             .embedding_job(self.clone())
+            .embedding_maintenance(self.clone())
             .goal_write(self.clone())
             .goal_read(self.clone())
             .change_event(self.clone())
@@ -417,7 +479,29 @@ impl PgStorage {
     pub async fn run_migrations(&self) -> Result<(), StorageError> {
         ensure_v004_baseline_compatible(&self.pool).await?;
         core_migrator().run(&self.pool).await.map_err(internal)?;
+        ensure_pgvector_runtime_compatible(&self.pool).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod pgvector_tests {
+    use super::{parse_pgvector_version, pgvector_version_is_supported};
+
+    #[test]
+    fn pgvector_version_parser_handles_patch_and_suffixes() {
+        assert_eq!(parse_pgvector_version("0.8.2"), Some((0, 8, 2)));
+        assert_eq!(parse_pgvector_version("0.8"), Some((0, 8, 0)));
+        assert_eq!(parse_pgvector_version("0.8.0beta1"), Some((0, 8, 0)));
+        assert_eq!(parse_pgvector_version("not-a-version"), None);
+    }
+
+    #[test]
+    fn pgvector_version_floor_is_0_8_0() {
+        assert!(!pgvector_version_is_supported("0.7.4"));
+        assert!(pgvector_version_is_supported("0.8.0"));
+        assert!(pgvector_version_is_supported("0.8.2"));
+        assert!(pgvector_version_is_supported("1.0.0"));
     }
 }
 
@@ -1073,6 +1157,23 @@ impl EmbeddingJobPort for PgStorage {
 
     async fn count_pending_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError> {
         verbs::fact_embeddings::count_pending_embedding_jobs(&self.pool, owner).await
+    }
+}
+
+#[async_trait::async_trait]
+impl EmbeddingMaintenancePort for PgStorage {
+    async fn embedding_ann_observability(
+        &self,
+        _proof: OperatorMaintenanceProof,
+    ) -> Result<EmbeddingAnnObservability, StorageError> {
+        verbs::fact_embeddings::embedding_ann_observability(&self.pool).await
+    }
+
+    async fn sweep_orphan_embedding_rows(
+        &self,
+        _proof: OperatorMaintenanceProof,
+    ) -> Result<EmbeddingOrphanSweepOutcome, StorageError> {
+        verbs::fact_embeddings::sweep_orphan_embedding_rows(&self.pool).await
     }
 }
 

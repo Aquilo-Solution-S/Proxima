@@ -79,3 +79,17 @@ impl EmbeddingWriteProof {
         Self { _private: () }
     }
 }
+
+/// Unforgeable witness that the engine already authorized an owner-agnostic
+/// operator maintenance action.
+#[derive(Debug, Clone, Copy)]
+pub struct OperatorMaintenanceProof {
+    _private: (),
+}
+
+impl OperatorMaintenanceProof {
+    #[must_use]
+    pub(crate) const fn new() -> Self {
+        Self { _private: () }
+    }
+}
