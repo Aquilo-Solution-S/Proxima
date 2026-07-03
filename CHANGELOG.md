@@ -825,7 +825,6 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 ### New Contributors
 - @HeinrichvH made their first contribution
 - @boreas-aquilo made their first contribution
-- @ made their first contribution
 [0.0.5]: https://github.com/Aquilo-Solution-S/Proxima/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/Aquilo-Solution-S/Proxima/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/Aquilo-Solution-S/Proxima/compare/v0.0.2...v0.0.3

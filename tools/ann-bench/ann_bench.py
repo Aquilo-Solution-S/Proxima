@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
+from uuid import UUID
 
 
 HOT_OWNER = "00000000-0000-4000-8000-000000000001"
@@ -266,8 +267,19 @@ def candidate_overfetch(k: int) -> int:
     )
 
 
-def select_sql(where_sql: str, query_vec: list[float], k: int) -> str:
+def owner_filter_sql(owner_id: str | None) -> list[str]:
+    if owner_id is None:
+        return []
+    safe_owner_id = str(UUID(owner_id))
+    return [
+        "owner_kind = 'tenant'",
+        f"owner_id = '{safe_owner_id}'::uuid",
+    ]
+
+
+def select_sql(owner_id: str | None, query_vec: list[float], k: int) -> str:
     overfetch = candidate_overfetch(k)
+    where_sql = " AND ".join(["model_id = 'ann-bench-v1'", *owner_filter_sql(owner_id)])
     return f"""
         WITH candidates AS MATERIALIZED (
             SELECT id, owner_kind, owner_id, model_id
@@ -326,14 +338,14 @@ def path_description(kind: str) -> str:
 
 def ids_for(
     database_url: str,
-    where_sql: str,
+    owner_id: str | None,
     query_vec: list[float],
     k: int,
     settings: list[str],
 ) -> list[int]:
     out = psql(
         database_url,
-        transactional(select_sql(where_sql, query_vec, k), settings),
+        transactional(select_sql(owner_id, query_vec, k), settings),
         single_transaction=True,
     )
     out = strip_command_tags(out)
@@ -344,13 +356,13 @@ def ids_for(
 
 def explain_for(
     database_url: str,
-    where_sql: str,
+    owner_id: str | None,
     query_vec: list[float],
     k: int,
     settings: list[str],
 ) -> dict[str, Any]:
     explain_sql = "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + select_sql(
-        where_sql, query_vec, k
+        owner_id, query_vec, k
     )
     out = psql(database_url, transactional(explain_sql, settings), single_transaction=True)
     out = strip_command_tags(out)
@@ -387,10 +399,6 @@ def summarize_case(
     case: Case,
     bucket_centers: list[list[float]],
 ) -> dict[str, Any]:
-    where_sql = "model_id = 'ann-bench-v1'"
-    if case.owner_id is not None:
-        where_sql += f" AND owner_kind = 'tenant' AND owner_id = '{case.owner_id}'::uuid"
-
     recalls: list[float] = []
     latencies: list[float] = []
     shared_hits: list[int] = []
@@ -407,14 +415,14 @@ def summarize_case(
         )
         exact_ids = ids_for(
             args.database_url,
-            where_sql,
+            case.owner_id,
             query_vec,
             args.k,
             exact_settings(),
         )
         ann_ids = ids_for(
             args.database_url,
-            where_sql,
+            case.owner_id,
             query_vec,
             args.k,
             ann_settings(args),
@@ -425,7 +433,7 @@ def summarize_case(
 
         explain = explain_for(
             args.database_url,
-            where_sql,
+            case.owner_id,
             query_vec,
             args.k,
             ann_settings(args),
@@ -468,7 +476,7 @@ def summarize_case(
 
 
 def scalar(database_url: str, sql: str) -> str:
-    return psql(database_url, sql).splitlines()[0]
+    return next(iter(psql(database_url, sql).splitlines()), "")
 
 
 def sizes(database_url: str) -> dict[str, int]:
