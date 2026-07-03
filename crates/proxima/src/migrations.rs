@@ -217,6 +217,8 @@ mod tests {
 
     use super::{MigrationError, NamedMigrator, prepare_sources};
 
+    const TEST_FLAVOR_VERSION: i64 = 20_260_612_000_010;
+
     fn migrator(versions: &[i64]) -> Migrator {
         let migrations = versions
             .iter()
@@ -239,15 +241,15 @@ mod tests {
     #[test]
     fn duplicate_versions_fail_before_run() {
         let err = prepare_sources([
-            NamedMigrator::new("alpha", migrator(&[9])),
-            NamedMigrator::new("beta", migrator(&[9])),
+            NamedMigrator::new("alpha", migrator(&[TEST_FLAVOR_VERSION])),
+            NamedMigrator::new("beta", migrator(&[TEST_FLAVOR_VERSION])),
         ])
         .expect_err("duplicate migration version should fail");
 
         assert!(matches!(
             err,
             MigrationError::DuplicateVersion {
-                version: 9,
+                version: TEST_FLAVOR_VERSION,
                 first_source: "alpha",
                 second_source: "beta",
                 ..
@@ -257,8 +259,11 @@ mod tests {
 
     #[test]
     fn flavor_sources_are_forced_to_ignore_missing() {
-        let sources =
-            prepare_sources([NamedMigrator::new("alpha", migrator(&[9]))]).expect("valid sources");
+        let sources = prepare_sources([NamedMigrator::new(
+            "alpha",
+            migrator(&[TEST_FLAVOR_VERSION]),
+        )])
+        .expect("valid sources");
         let alpha = sources
             .iter()
             .find(|source| source.source() == "alpha")
