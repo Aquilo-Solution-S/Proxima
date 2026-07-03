@@ -179,6 +179,15 @@ async fn assert_repo_erased(
     );
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*)::bigint FROM proxima_code.commit_v1 WHERE memory_id = $1",
+        )
+        .bind(memory_id)
+        .fetch_one(pool)
+        .await?,
+        0_i64
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*)::bigint FROM proxima_core.memories WHERE memory_id = $1",
         )
         .bind(memory_id)
