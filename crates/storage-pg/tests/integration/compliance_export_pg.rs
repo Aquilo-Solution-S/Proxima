@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use crate::common::{drop_db, fresh_pg, owner_write_permit};
-use proxima_core::access::{AccessError, Role};
-use proxima_core::storage_ports::{
-    ComplianceAdminPort, FactIngestPort, SourceCursorPort, StoragePorts,
+use crate::common::{
+    drop_db, engine_with_registry, fresh_pg, owner_write_permit, storage_ports_with_compliance,
 };
+use proxima_core::access::{AccessError, Role};
+use proxima_core::storage_ports::{ComplianceAdminPort, FactIngestPort, SourceCursorPort};
 use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
 use proxima_core::{
     AccessKind, AuthPath, AuthzContext, ComplianceEraseOutcome, ComplianceEraseRefusal,
@@ -54,52 +54,23 @@ impl FactPayload for ExportFactPayload {
     }
 }
 
-fn storage_ports_with_compliance(pg: &PgStorage) -> StoragePorts {
-    let pg = Arc::new(pg.clone());
-    StoragePorts::builder()
-        .fact_ingest(pg.clone())
-        .mcp_call_write(pg.clone())
-        .mcp_call_read(pg.clone())
-        .memory_authoring(pg.clone())
-        .memory_read(pg.clone())
-        .memory_inspect(pg.clone())
-        .embedding_text(pg.clone())
-        .embedding_write(pg.clone())
-        .embedding_job(pg.clone())
-        .embedding_maintenance(pg.clone())
-        .goal_write(pg.clone())
-        .goal_read(pg.clone())
-        .change_event(pg.clone())
-        .edge_read(pg.clone())
-        .citation(pg.clone())
-        .owner_access_read(pg.clone())
-        .owner_membership_admin(pg.clone())
-        .owner_transfer(pg.clone())
-        .source_batch(pg.clone())
-        .source_cursor(pg.clone())
-        .fact_retention(pg.clone())
-        .compliance_erase(pg.clone())
-        .compliance_admin(Arc::new(AllowComplianceAdmin))
-        .registry_projection(pg)
-        .build()
+fn export_registry() -> proxima_core::verbs::schema::FlavorRegistryFrozen {
+    let mut registry = FlavorRegistry::new();
+    registry
+        .try_add_fact_schema::<ExportFactPayload>()
+        .expect("test schema registers");
+    registry.freeze_or_panic_for_tests()
 }
 
 fn compliance_engine(pg: &PgStorage) -> proxima_core::Engine {
-    let mut registry = FlavorRegistry::new();
-    registry
-        .try_add_fact_schema::<ExportFactPayload>()
-        .expect("test schema registers");
-    proxima_core::Engine::new(registry.freeze_or_panic_for_tests())
-        .with_storage_ports(storage_ports_with_compliance(pg))
+    proxima_core::Engine::new(export_registry()).with_storage_ports(storage_ports_with_compliance(
+        pg,
+        Arc::new(AllowComplianceAdmin),
+    ))
 }
 
 fn engine_without_compliance_admin(pg: &PgStorage) -> proxima_core::Engine {
-    let mut registry = FlavorRegistry::new();
-    registry
-        .try_add_fact_schema::<ExportFactPayload>()
-        .expect("test schema registers");
-    proxima_core::Engine::new(registry.freeze_or_panic_for_tests())
-        .with_storage_ports(Arc::new(pg.clone()).storage_ports())
+    engine_with_registry(pg, export_registry())
 }
 
 fn admin_authz_for(owner: OwnerRef) -> AuthzContext {

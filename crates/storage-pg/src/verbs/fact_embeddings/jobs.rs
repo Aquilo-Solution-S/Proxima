@@ -1,0 +1,323 @@
+use proxima_core::llm::EMBEDDING_JOB_MAX_ATTEMPTS;
+use proxima_core::storage_ports::OwnerWritePermit;
+use proxima_core::{EmbeddingJobClaim, EntityKind, MemoryId, Owner, OwnerRefKind, StorageError};
+use sqlx::PgPool;
+
+use crate::error::map_err;
+
+use super::{ensure_nonnegative_limit, owner_parts};
+
+#[derive(sqlx::FromRow)]
+struct EmbeddingJobClaimRow {
+    owner_kind: OwnerRefKind,
+    owner_id: Option<uuid::Uuid>,
+    entity_kind: EntityKind,
+    entity_id: uuid::Uuid,
+    model_id: String,
+    embedding_version: i32,
+    attempts: i32,
+}
+
+impl From<EmbeddingJobClaimRow> for EmbeddingJobClaim {
+    fn from(row: EmbeddingJobClaimRow) -> Self {
+        Self {
+            owner: row
+                .owner_kind
+                .with_uuid(row.owner_id)
+                .expect("embedding job row has valid owner_ref shape"),
+            entity_kind: row.entity_kind,
+            entity_id: MemoryId::new(row.entity_id),
+            model_id: row.model_id,
+            embedding_version: row.embedding_version,
+            attempts: row.attempts,
+        }
+    }
+}
+
+/// Owner-scoped list of Facts with rendered text and no embedding row
+/// for `model_id`.
+///
+/// # Errors
+///
+/// Returns `ConstraintViolation` when `limit` is too large for
+/// Postgres `bigint`, otherwise maps SQL failures through the shared
+/// mapper.
+pub async fn list_facts_missing_embedding(
+    pool: &PgPool,
+    owner: &Owner,
+    model_id: &str,
+    limit: usize,
+) -> Result<Vec<MemoryId>, StorageError> {
+    let (owner_kind, owner_id) = owner_parts(owner);
+    let limit = i64::try_from(limit)
+        .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
+    let rows = sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT m.memory_id
+           FROM proxima_core.memories m
+          WHERE EXISTS (
+                    SELECT 1
+                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                     WHERE eo.entity_id = m.memory_id
+                       AND eo.owner_kind = $1
+                       AND eo.owner_id = $2
+)
+            AND m.kind IS NULL
+            AND m.text IS NOT NULL
+            AND m.tombstoned_at IS NULL
+            AND NOT EXISTS (
+                SELECT 1
+                  FROM proxima_core.embedding_heads h
+                 WHERE h.entity_kind = 'Fact'
+                   AND h.entity_id = m.memory_id
+                   AND h.model_id = $3
+            )
+          ORDER BY m.created_at ASC, m.memory_id ASC
+          LIMIT $4",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(model_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
+    Ok(rows.into_iter().map(MemoryId::new).collect())
+}
+
+/// Atomically claim pending Fact embedding jobs for one model.
+///
+/// Stale `processing` jobs orphaned by a crashed or restarted drainer are
+/// reclaimed after fifteen minutes. The window MUST exceed the embedding
+/// client's request timeout (currently ten minutes,
+/// `crates/llm-openai-compat/src/openai_compat.rs:29`). Inline drainers call
+/// this with `limit = 1` in a loop, so a claimed row is actively processed
+/// immediately and cannot age past the reclaim window behind earlier jobs in
+/// the same batch. The claim `UPDATE` resets `updated_at = now()`, so a
+/// reclaimed orphan restarts its clock. Reclaim does not increment attempts;
+/// crash-loop poison-pill bounding is out of scope, while embed-error retries
+/// still go through `fail_embedding_job`.
+///
+/// # Errors
+///
+/// Returns `ConstraintViolation` for negative limits, otherwise maps SQL
+/// failures through the shared mapper.
+pub async fn claim_pending_embedding_jobs(
+    pool: &PgPool,
+    model_id: &str,
+    limit: i64,
+) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
+    claim_pending_embedding_jobs_excluding(pool, model_id, limit, &[]).await
+}
+
+pub(super) async fn claim_pending_embedding_jobs_excluding(
+    pool: &PgPool,
+    model_id: &str,
+    limit: i64,
+    exclude_entity_ids: &[uuid::Uuid],
+) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
+    let limit = ensure_nonnegative_limit(limit)?;
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query_as::<_, EmbeddingJobClaimRow>(
+        "WITH claimed AS (
+             SELECT owner_kind, owner_id,
+                    entity_kind, entity_id, model_id, embedding_version
+               FROM proxima_core.embedding_jobs
+              WHERE model_id = $1
+                AND (status = 'pending'
+                     OR (status = 'processing'
+                         AND updated_at < now() - interval '15 minutes'))
+                AND NOT (entity_id = ANY($2::uuid[]))
+              ORDER BY enqueued_at ASC,
+                       owner_kind ASC,
+                       owner_id ASC,
+                       entity_kind ASC,
+                       entity_id ASC,
+                       embedding_version ASC
+              FOR UPDATE SKIP LOCKED
+              LIMIT $3
+         )
+         UPDATE proxima_core.embedding_jobs j
+            SET status = 'processing',
+                updated_at = now()
+           FROM claimed
+          WHERE j.owner_kind = claimed.owner_kind
+            AND j.owner_id = claimed.owner_id
+            AND j.entity_kind = claimed.entity_kind
+            AND j.entity_id = claimed.entity_id
+            AND j.model_id = claimed.model_id
+            AND j.embedding_version = claimed.embedding_version
+        RETURNING j.owner_kind, j.owner_id,
+                  j.entity_kind, j.entity_id, j.model_id, j.embedding_version,
+                  j.attempts",
+    )
+    .bind(model_id)
+    .bind(exclude_entity_ids)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
+    Ok(rows.into_iter().map(EmbeddingJobClaim::from).collect())
+}
+
+/// Delete a completed embedding job.
+///
+/// # Errors
+///
+/// Maps SQL failures through the shared mapper.
+pub async fn complete_embedding_job(
+    pool: &PgPool,
+    claim: &EmbeddingJobClaim,
+) -> Result<(), StorageError> {
+    let (owner_kind, owner_id) = owner_parts(&claim.owner);
+    sqlx::query(
+        "DELETE FROM proxima_core.embedding_jobs
+          WHERE owner_kind = $1
+            AND owner_id = $2
+            AND entity_kind = $3
+            AND entity_id = $4
+            AND model_id = $5
+            AND embedding_version = $6",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(claim.entity_kind)
+    .bind(claim.entity_id.into_inner())
+    .bind(&claim.model_id)
+    .bind(claim.embedding_version)
+    .execute(pool)
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}
+
+/// Record a failed embedding attempt and retry until the cap.
+///
+/// # Errors
+///
+/// Maps SQL failures through the shared mapper.
+pub async fn fail_embedding_job(
+    pool: &PgPool,
+    claim: &EmbeddingJobClaim,
+    error: &str,
+) -> Result<(), StorageError> {
+    let (owner_kind, owner_id) = owner_parts(&claim.owner);
+    sqlx::query(
+        "UPDATE proxima_core.embedding_jobs
+            SET attempts = attempts + 1,
+                last_error = $7,
+                updated_at = now(),
+                status = CASE
+                    WHEN attempts + 1 >= $8
+                    THEN 'failed'::proxima_core.embedding_job_status
+                    ELSE 'pending'::proxima_core.embedding_job_status
+                END
+          WHERE owner_kind = $1
+            AND owner_id = $2
+            AND entity_kind = $3
+            AND entity_id = $4
+            AND model_id = $5
+            AND embedding_version = $6
+            AND status = 'processing'",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(claim.entity_kind)
+    .bind(claim.entity_id.into_inner())
+    .bind(&claim.model_id)
+    .bind(claim.embedding_version)
+    .bind(error)
+    .bind(EMBEDDING_JOB_MAX_ATTEMPTS)
+    .execute(pool)
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}
+
+/// Enqueue pending jobs for owner-scoped Facts missing a current
+/// embedding.
+///
+/// # Errors
+///
+/// Returns `ConstraintViolation` for negative limits, otherwise maps SQL
+/// failures through the shared mapper.
+pub async fn enqueue_missing_embedding_jobs(
+    pool: &PgPool,
+    permit: &OwnerWritePermit,
+    model_id: &str,
+    limit: i64,
+) -> Result<u64, StorageError> {
+    let limit = ensure_nonnegative_limit(limit)?;
+    if limit == 0 {
+        return Ok(0);
+    }
+    let (owner_kind, owner_id) = owner_parts(permit.owner());
+    let result = sqlx::query(
+        "WITH missing AS (
+             SELECT m.memory_id
+               FROM proxima_core.memories m
+              WHERE EXISTS (
+                        SELECT 1
+                          FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                         WHERE eo.entity_id = m.memory_id
+                           AND eo.owner_kind = $1
+                           AND eo.owner_id = $2
+)
+                AND m.kind IS NULL
+                AND m.text IS NOT NULL
+                AND m.tombstoned_at IS NULL
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM proxima_core.embedding_heads h
+                     WHERE h.entity_kind = 'Fact'
+                       AND h.entity_id = m.memory_id
+                       AND h.model_id = $3
+                )
+              ORDER BY m.created_at ASC, m.memory_id ASC
+              LIMIT $4
+         )
+         INSERT INTO proxima_core.embedding_jobs
+             (owner_kind, owner_id,
+              entity_kind, entity_id, model_id)
+         SELECT $1, $2, 'Fact'::proxima_core.entity_kind, memory_id, $3
+           FROM missing
+         ON CONFLICT (owner_kind, owner_id,
+                      entity_kind, entity_id, model_id, embedding_version)
+         DO NOTHING",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(model_id)
+    .bind(limit)
+    .execute(pool)
+    .await
+    .map_err(map_err)?;
+    Ok(result.rows_affected())
+}
+
+/// Owner-scoped count of embedding jobs not yet embedded.
+///
+/// # Errors
+///
+/// Maps SQL failures through the shared mapper.
+pub async fn count_pending_embedding_jobs(
+    pool: &PgPool,
+    owner: &Owner,
+) -> Result<u64, StorageError> {
+    let (owner_kind, owner_id) = owner_parts(owner);
+    let row: (i64,) = sqlx::query_as(
+        "SELECT count(*)
+           FROM proxima_core.embedding_jobs
+          WHERE owner_kind = $1
+            AND owner_id = $2
+            AND status IN ('pending', 'processing')",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .fetch_one(pool)
+    .await
+    .map_err(map_err)?;
+    u64::try_from(row.0)
+        .map_err(|_| StorageError::Internal("pending embedding job count is negative".into()))
+}

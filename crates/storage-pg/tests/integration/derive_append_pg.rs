@@ -1,7 +1,7 @@
-use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit};
+use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit, test_registry};
 use proxima_core::storage::StorageError;
 use proxima_core::{
-    AgentDerivationV1, CORE_DERIVED_FROM_RELATION, DerivedEdgeSpec, EntityKind, FlavorRegistry,
+    AgentDerivationV1, CORE_DERIVED_FROM_RELATION, DerivedEdgeSpec, EntityKind,
     FlavorRegistryFrozen, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner,
     OwnerRef, RegisteredRelation, SchemaId, SchemaVersion, SidecarPayload, UserId,
 };
@@ -66,10 +66,6 @@ async fn insert_source_abstraction(
     .execute(pg.pool_for_tests())
     .await?;
     Ok(MemoryId::new(memory_id))
-}
-
-fn test_registry() -> FlavorRegistryFrozen {
-    FlavorRegistry::new().freeze_or_panic_for_tests()
 }
 
 fn agent_sidecar(kind: EntityKind, title: &'static str, body: &'static str) -> SidecarPayload {

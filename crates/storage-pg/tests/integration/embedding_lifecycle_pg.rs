@@ -2,10 +2,12 @@
 
 use std::sync::Arc;
 
-use crate::common::{drop_db, fresh_pg, owner_write_permit};
+use crate::common::{
+    drop_db, engine_with_registry, fresh_pg, owner_write_permit, storage_ports_with_compliance,
+};
 use proxima_core::access::{AccessError, Role};
 use proxima_core::llm::EMBEDDING_DIM;
-use proxima_core::storage_ports::{ComplianceAdminPort, FactIngestPort, StoragePorts};
+use proxima_core::storage_ports::{ComplianceAdminPort, FactIngestPort};
 use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
@@ -68,7 +70,7 @@ struct EmbeddingInfraCounts {
     jobs: i64,
 }
 
-fn test_registry() -> FlavorRegistryFrozen {
+fn embedding_registry() -> FlavorRegistryFrozen {
     FlavorRegistryFrozen::with_schemas(vec![SchemaInfo {
         schema_id: SchemaId::new(SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(1),
@@ -82,55 +84,19 @@ fn test_registry() -> FlavorRegistryFrozen {
     }])
 }
 
-fn storage_ports_with_compliance_admin(
-    pg: &PgStorage,
-    compliance_admin: Arc<dyn ComplianceAdminPort>,
-) -> StoragePorts {
-    let pg = Arc::new(pg.clone());
-    StoragePorts::builder()
-        .fact_ingest(pg.clone())
-        .mcp_call_write(pg.clone())
-        .mcp_call_read(pg.clone())
-        .memory_authoring(pg.clone())
-        .memory_read(pg.clone())
-        .memory_inspect(pg.clone())
-        .embedding_text(pg.clone())
-        .embedding_write(pg.clone())
-        .embedding_job(pg.clone())
-        .embedding_maintenance(pg.clone())
-        .goal_write(pg.clone())
-        .goal_read(pg.clone())
-        .change_event(pg.clone())
-        .edge_read(pg.clone())
-        .citation(pg.clone())
-        .owner_access_read(pg.clone())
-        .owner_membership_admin(pg.clone())
-        .owner_transfer(pg.clone())
-        .source_batch(pg.clone())
-        .source_cursor(pg.clone())
-        .fact_retention(pg.clone())
-        .compliance_erase(pg.clone())
-        .compliance_admin(compliance_admin)
-        .registry_projection(pg)
-        .build()
-}
-
-fn storage_ports_with_compliance(pg: &PgStorage) -> StoragePorts {
-    storage_ports_with_compliance_admin(pg, Arc::new(AllowComplianceAdmin))
-}
-
 fn compliance_engine(pg: &PgStorage) -> proxima_core::Engine {
-    proxima_core::Engine::new(test_registry()).with_storage_ports(storage_ports_with_compliance(pg))
+    proxima_core::Engine::new(embedding_registry()).with_storage_ports(
+        storage_ports_with_compliance(pg, Arc::new(AllowComplianceAdmin)),
+    )
 }
 
 fn engine_without_operator_maintenance(pg: &PgStorage) -> proxima_core::Engine {
-    proxima_core::Engine::new(test_registry())
-        .with_storage_ports(Arc::new(pg.clone()).storage_ports())
+    engine_with_registry(pg, embedding_registry())
 }
 
 fn compliance_without_operator_engine(pg: &PgStorage) -> proxima_core::Engine {
-    proxima_core::Engine::new(test_registry()).with_storage_ports(
-        storage_ports_with_compliance_admin(pg, Arc::new(DenyOperatorMaintenanceAdmin)),
+    proxima_core::Engine::new(embedding_registry()).with_storage_ports(
+        storage_ports_with_compliance(pg, Arc::new(DenyOperatorMaintenanceAdmin)),
     )
 }
 

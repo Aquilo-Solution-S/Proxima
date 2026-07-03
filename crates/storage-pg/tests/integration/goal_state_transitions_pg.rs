@@ -1,14 +1,10 @@
-use crate::common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fresh_pg, owner_fixture, owner_parts};
+use proxima_core::Owner;
 use proxima_core::verbs::goal_write::GoalAuthorshipKind::{External, System, User};
 use proxima_core::verbs::goal_write::GoalState::{Abandoned, Achieved, Active, Paused};
 use proxima_core::verbs::goal_write::{GoalAuthorshipKind, GoalAuthorshipOrigin, GoalState};
-use proxima_core::{Owner, OwnerRefKind};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
-
-fn owner_parts(owner: &Owner) -> (OwnerRefKind, Option<Uuid>) {
-    owner.columns()
-}
 
 async fn insert_goal(
     pg: &PgStorage,

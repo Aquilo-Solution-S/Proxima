@@ -1,19 +1,15 @@
-use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit};
+use crate::common::{drop_db, fresh_pg, owner_fixture, owner_parts, owner_write_permit};
 
 use proxima_core::relation::CORE_INSPIRES_RELATION;
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
-    EdgeAuthorshipKind, FlavorRegistry, GoalId, GroupId, MemoryId, Owner, OwnerRef, OwnerRefKind,
-    Relation, UserId,
+    EdgeAuthorshipKind, FlavorRegistry, GoalId, GroupId, MemoryId, Owner, OwnerRef, Relation,
+    UserId,
 };
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::edge_write::{CheckedEdgeEndpoint, append_owner_checked_edge};
 use uuid::Uuid;
-
-fn owner_parts(owner: &Owner) -> (OwnerRefKind, Option<Uuid>) {
-    owner.columns()
-}
 
 fn other_owner() -> Owner {
     OwnerRef::Personal(UserId::new(Uuid::now_v7()))

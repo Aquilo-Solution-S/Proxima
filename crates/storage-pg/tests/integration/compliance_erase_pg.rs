@@ -3,14 +3,15 @@
 use std::sync::Arc;
 
 use crate::common::{
-    create_db, db_url, drop_db, owner_write_permit, seed_memory, seed_memory_edge,
+    create_db, db_url, drop_db, engine_with_registry, owner_write_permit, seed_memory,
+    seed_memory_edge, storage_ports_with_compliance_and_drop_proof,
 };
 use proxima_core::access::{AccessError, Role};
 use proxima_core::change_event::EdgeTargetProjection;
 use proxima_core::engine::Engine;
 use proxima_core::storage_ports::{
     ComplianceAdminPort, EdgeReadPort, FactIngestPort, OwnerDropProofPort,
-    OwnerMembershipAdminPort, OwnerWritePermit, StoragePorts,
+    OwnerMembershipAdminPort, OwnerWritePermit,
 };
 use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
 use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, QueryRequest};
@@ -66,45 +67,18 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
     }]
 }
 
-fn storage_ports_with_compliance(pg: &PgStorage) -> StoragePorts {
-    let pg = Arc::new(pg.clone());
-    StoragePorts::builder()
-        .fact_ingest(pg.clone())
-        .mcp_call_write(pg.clone())
-        .mcp_call_read(pg.clone())
-        .memory_authoring(pg.clone())
-        .memory_read(pg.clone())
-        .memory_inspect(pg.clone())
-        .embedding_text(pg.clone())
-        .embedding_write(pg.clone())
-        .embedding_job(pg.clone())
-        .embedding_maintenance(pg.clone())
-        .goal_write(pg.clone())
-        .goal_read(pg.clone())
-        .change_event(pg.clone())
-        .edge_read(pg.clone())
-        .citation(pg.clone())
-        .owner_access_read(pg.clone())
-        .owner_membership_admin(pg.clone())
-        .owner_transfer(pg.clone())
-        .source_batch(pg.clone())
-        .source_cursor(pg.clone())
-        .fact_retention(pg.clone())
-        .compliance_erase(pg.clone())
-        .compliance_admin(Arc::new(AllowComplianceAdmin))
-        .owner_drop_proof(Arc::new(AllowDropProof))
-        .registry_projection(pg)
-        .build()
-}
-
 fn compliance_engine(pg: &PgStorage) -> Engine {
-    Engine::new(FlavorRegistryFrozen::with_schemas(schemas_for_test()))
-        .with_storage_ports(storage_ports_with_compliance(pg))
+    Engine::new(FlavorRegistryFrozen::with_schemas(schemas_for_test())).with_storage_ports(
+        storage_ports_with_compliance_and_drop_proof(
+            pg,
+            Arc::new(AllowComplianceAdmin),
+            Some(Arc::new(AllowDropProof)),
+        ),
+    )
 }
 
 fn engine_without_compliance_admin(pg: &PgStorage) -> Engine {
-    Engine::new(FlavorRegistryFrozen::with_schemas(schemas_for_test()))
-        .with_storage_ports(Arc::new(pg.clone()).storage_ports())
+    engine_with_registry(pg, FlavorRegistryFrozen::with_schemas(schemas_for_test()))
 }
 
 fn receipt_draft(source_id: &str, batch: Uuid, payload: &[u8]) -> FactWriteCommand {

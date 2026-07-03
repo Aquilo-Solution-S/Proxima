@@ -1,19 +1,15 @@
-use crate::common::{drop_db, fresh_pg, seed_memory};
+use crate::common::{drop_db, fresh_pg, owner_parts, seed_memory};
 
 use proxima_core::storage_ports::GoalWakeCandidatePort;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
-    EntityKind, GoalId, GoalWakeCandidateRequest, MemoryId, Owner, OwnerRef, OwnerRefKind,
-    SchemaId, SchemaVersion, ToolScope, UserId,
+    EntityKind, GoalId, GoalWakeCandidateRequest, MemoryId, Owner, OwnerRef, SchemaId,
+    SchemaVersion, ToolScope, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
 const TEST_FACT_SCHEMA: &str = "test/edge-access-fact-v1";
-
-fn owner_parts(owner: &Owner) -> (OwnerRefKind, Option<Uuid>) {
-    owner.columns()
-}
 
 async fn insert_goal(
     pg: &PgStorage,
