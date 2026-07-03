@@ -10,13 +10,17 @@ use sqlx::PgPool;
 use crate::error::internal;
 
 use super::rows::{EdgeRowDb, edge_row_from_db};
-use super::{read_owner_columns, resolve_heads_by_fact_entity_id};
+use super::{
+    entity_owner_union, read_owner_columns, read_owner_predicate, resolve_heads_by_fact_entity_id,
+};
 
 /// Hard upper bound on edges returned by snapshot-edge mode.
 /// Decoupled from `QueryRequest::limit`, which sizes the node window.
 pub const MAX_SNAPSHOT_EDGES: usize = 50_000;
 
-const READ_EDGES_SQL: &str = "
+fn read_edges_sql() -> String {
+    format!(
+        "
 WITH edge_heads AS (
     SELECT e.edge_id, e.relation, e.relation_class,
            COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
@@ -54,23 +58,21 @@ visible AS (
     SELECT edge_heads.*,
            EXISTS (
                SELECT 1
-                 FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) seo
+                 FROM {entity_owner_union} seo
                  JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS rs(kind, id)
-                   ON seo.owner_kind = rs.kind
-                  AND seo.owner_id IS NOT DISTINCT FROM rs.id
+                   ON {source_read_owner_predicate}
                 WHERE seo.entity_id = edge_heads.source_entity_id
            ) AS source_readable,
            (NOT edge_heads.target_unavailable AND EXISTS (
                SELECT 1
-                 FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) teo
+                 FROM {entity_owner_union} teo
                  JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS rs(kind, id)
-                   ON teo.owner_kind = rs.kind
-                  AND teo.owner_id IS NOT DISTINCT FROM rs.id
+                   ON {target_read_owner_predicate}
                 WHERE teo.entity_id = edge_heads.target_entity_id
            )) AS target_visible,
            EXISTS (
                SELECT 1
-                 FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) weo
+                 FROM {entity_owner_union} weo
                 WHERE weo.entity_id = edge_heads.source_entity_id
                   AND weo.owner_kind = $3
                   AND weo.owner_id IS NOT DISTINCT FROM $4
@@ -87,7 +89,12 @@ SELECT edge_id, relation, relation_class,
    AND (($11::uuid IS NULL AND $12::uuid IS NULL AND $13::uuid IS NULL) OR target_visible)
  ORDER BY created_at DESC
  LIMIT $14
-";
+",
+        entity_owner_union = entity_owner_union(),
+        source_read_owner_predicate = read_owner_predicate("seo", "rs"),
+        target_read_owner_predicate = read_owner_predicate("teo", "rs"),
+    )
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 struct EndpointSql {
@@ -143,7 +150,8 @@ pub(crate) async fn read_edges(
         req.limit
             .min(u32::try_from(MAX_SNAPSHOT_EDGES).expect("MAX_SNAPSHOT_EDGES fits in u32")),
     );
-    let mut rows = sqlx::query_as::<_, EdgeRowDb>(READ_EDGES_SQL)
+    // SQL-POLICY: fixed-fragment
+    let mut rows = sqlx::query_as::<_, EdgeRowDb>(sqlx::AssertSqlSafe(read_edges_sql()))
         .bind(&read_owner_kinds)
         .bind(&read_owner_ids)
         .bind(world_kind)

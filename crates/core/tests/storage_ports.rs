@@ -542,6 +542,14 @@ impl SourceCursorPort for SourceCursorFake {
     ) -> Result<(), StorageError> {
         fake_error()
     }
+
+    async fn source_cursor_age(
+        &self,
+        owner: &Owner,
+        source: &str,
+    ) -> Result<Option<std::time::Duration>, StorageError> {
+        fake_error()
+    }
 }
 
 #[derive(Debug)]
@@ -642,6 +650,18 @@ impl ComplianceErasePort for ComplianceEraseFake {
         _citation_mapping_sidecar_tables: &[String],
         _cited_object_sidecar_tables: &[String],
     ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+        fake_error()
+    }
+
+    async fn export_owner_bundle(
+        &self,
+        _auth: &proxima_core::compliance::ExportAuthorization,
+        _fact_sidecar_tables: &[String],
+        _goal_sidecar_tables: &[String],
+        _edge_sidecar_tables: &[String],
+        _citation_mapping_sidecar_tables: &[String],
+        _cited_object_sidecar_tables: &[String],
+    ) -> Result<proxima_core::compliance::ComplianceExportBundle, StorageError> {
         fake_error()
     }
 }

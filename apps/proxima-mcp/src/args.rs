@@ -55,7 +55,8 @@ Maintenance:
 Endpoint:
   http://127.0.0.1:31415/mcp
   MCP initialize must include X-Proxima-Owner: personal:<uuid>,
-  group:<uuid>, or world. The server binds that owner to Mcp-Session-Id.
+  group:<uuid>, or world:00000000-0000-0000-0000-000000000001. The server
+  binds that owner to Mcp-Session-Id.
 
 Tools:
   core_search_memories

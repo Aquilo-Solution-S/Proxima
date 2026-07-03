@@ -10,7 +10,7 @@ use sqlx::PgPool;
 
 use crate::error::internal;
 
-use super::read_owner_columns;
+use super::{entity_owner_union, read_owner_columns, read_owner_predicate};
 
 #[derive(Debug, sqlx::FromRow)]
 struct EdgeWalkRow {
@@ -136,20 +136,22 @@ async fn start_memory_visible(
     read_owner_ids: &[Option<uuid::Uuid>],
     memory_id: MemoryId,
 ) -> Result<bool, StorageError> {
-    let sql = String::from(
+    let sql = format!(
         "SELECT m.memory_id
              FROM proxima_core.memories m
              WHERE EXISTS (
                        SELECT 1
-                         FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                         FROM {entity_owner_union} eo
                          JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS rs(kind, id)
-                           ON eo.owner_kind = rs.kind
-                          AND eo.owner_id IS NOT DISTINCT FROM rs.id
+                           ON {read_owner_predicate}
                         WHERE eo.entity_id = m.memory_id
                    )
                AND m.memory_id = $3
                AND m.tombstoned_at IS NULL",
+        entity_owner_union = entity_owner_union(),
+        read_owner_predicate = read_owner_predicate("eo", "rs"),
     );
+    // SQL-POLICY: fixed-fragment
     let query = sqlx::query_as::<_, (uuid::Uuid,)>(sqlx::AssertSqlSafe(sql))
         .bind(read_owner_kinds)
         .bind(read_owner_ids)
@@ -167,12 +169,13 @@ async fn walk_edges(
     limit: u32,
 ) -> Result<Vec<EdgeWalkRow>, StorageError> {
     let sql = match req.direction {
-        MemoryLineageDirection::Ancestors => ANCESTORS_SQL,
-        MemoryLineageDirection::Descendants => DESCENDANTS_SQL,
+        MemoryLineageDirection::Ancestors => ancestors_sql(),
+        MemoryLineageDirection::Descendants => descendants_sql(),
     };
     let (world_kind, world_id) =
         crate::access::owner_columns::owner_binds(&proxima_core::access::world());
-    let query = sqlx::query_as::<_, EdgeWalkRow>(sql)
+    // SQL-POLICY: fixed-fragment
+    let query = sqlx::query_as::<_, EdgeWalkRow>(sqlx::AssertSqlSafe(sql))
         .bind(read_owner_kinds)
         .bind(read_owner_ids)
         .bind(world_kind)
@@ -189,7 +192,7 @@ async fn load_nodes(
     read_owner_ids: &[Option<uuid::Uuid>],
     memory_ids: &[uuid::Uuid],
 ) -> Result<Vec<NodeRow>, StorageError> {
-    let sql = String::from(
+    let sql = format!(
         "SELECT m.memory_id,
                   m.kind,
                   m.schema_id,
@@ -197,15 +200,17 @@ async fn load_nodes(
              FROM proxima_core.memories m
              WHERE EXISTS (
                        SELECT 1
-                         FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                         FROM {entity_owner_union} eo
                          JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS rs(kind, id)
-                           ON eo.owner_kind = rs.kind
-                          AND eo.owner_id IS NOT DISTINCT FROM rs.id
+                           ON {read_owner_predicate}
                         WHERE eo.entity_id = m.memory_id
                    )
                AND m.memory_id = ANY($3::uuid[])
                AND m.tombstoned_at IS NULL",
+        entity_owner_union = entity_owner_union(),
+        read_owner_predicate = read_owner_predicate("eo", "rs"),
     );
+    // SQL-POLICY: fixed-fragment
     let query = sqlx::query_as::<_, NodeRow>(sqlx::AssertSqlSafe(sql))
         .bind(read_owner_kinds)
         .bind(read_owner_ids)
@@ -215,7 +220,9 @@ async fn load_nodes(
     Ok(rows)
 }
 
-const ANCESTORS_SQL: &str = "
+fn ancestors_sql() -> String {
+    format!(
+        "
 WITH RECURSIVE read_set(kind, id) AS (
     SELECT * FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[])
 ),
@@ -224,10 +231,9 @@ readable_memories AS (
       FROM proxima_core.memories m
      WHERE EXISTS (
                SELECT 1
-                 FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                 FROM {entity_owner_union} eo
                  JOIN read_set rs
-                   ON eo.owner_kind = rs.kind
-                  AND eo.owner_id IS NOT DISTINCT FROM rs.id
+                   ON {read_owner_predicate}
                 WHERE eo.entity_id = m.memory_id
            )
        AND m.tombstoned_at IS NULL
@@ -257,7 +263,7 @@ edge_heads AS (
            ) AS target_visible,
            EXISTS (
                SELECT 1
-                 FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) weo
+                 FROM {entity_owner_union} weo
                 WHERE weo.entity_id = edge_endpoints.source_entity_id
                   AND weo.owner_kind = $3
                   AND weo.owner_id IS NOT DISTINCT FROM $4
@@ -303,9 +309,15 @@ SELECT distance, edge_id, relation, relation_class,
 FROM walk
 ORDER BY distance ASC, edge_id DESC
 LIMIT $7
-";
+",
+        entity_owner_union = entity_owner_union(),
+        read_owner_predicate = read_owner_predicate("eo", "rs"),
+    )
+}
 
-const DESCENDANTS_SQL: &str = "
+fn descendants_sql() -> String {
+    format!(
+        "
 WITH RECURSIVE read_set(kind, id) AS (
     SELECT * FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[])
 ),
@@ -314,10 +326,9 @@ readable_memories AS (
       FROM proxima_core.memories m
      WHERE EXISTS (
                SELECT 1
-                 FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                 FROM {entity_owner_union} eo
                  JOIN read_set rs
-                   ON eo.owner_kind = rs.kind
-                  AND eo.owner_id IS NOT DISTINCT FROM rs.id
+                   ON {read_owner_predicate}
                 WHERE eo.entity_id = m.memory_id
            )
        AND m.tombstoned_at IS NULL
@@ -347,7 +358,7 @@ edge_heads AS (
            ) AS target_visible,
            EXISTS (
                SELECT 1
-                 FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) weo
+                 FROM {entity_owner_union} weo
                 WHERE weo.entity_id = edge_endpoints.source_entity_id
                   AND weo.owner_kind = $3
                   AND weo.owner_id IS NOT DISTINCT FROM $4
@@ -393,4 +404,8 @@ SELECT distance, edge_id, relation, relation_class,
 FROM walk
 ORDER BY distance ASC, edge_id DESC
 LIMIT $7
-";
+",
+        entity_owner_union = entity_owner_union(),
+        read_owner_predicate = read_owner_predicate("eo", "rs"),
+    )
+}

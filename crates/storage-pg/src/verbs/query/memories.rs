@@ -14,8 +14,8 @@ use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 
 use super::edges::query_edges;
 use super::goals::query_goals;
-use super::read_owner_columns;
 use super::rows::{MemoryRowDb, memory_row_from_db, read_seq_high_water, validate_stateful_filter};
+use super::{read_owner_columns, read_owner_predicate};
 
 #[derive(Debug, Clone)]
 struct StatefulSqlParams {
@@ -115,7 +115,8 @@ pub(crate) async fn query_memories(
         .expect("write to String is infallible");
     }
 
-    sql.push_str(
+    write!(
+        sql,
         // `memories.owner_id` is NULL for a World-owned row (0008_v005
         // dropped `memories_world_not_write_owner_chk`: World is a valid
         // persisted owner via `Engine::publish_to_world`, not just a
@@ -123,10 +124,11 @@ pub(crate) async fn query_memories(
         // of the caller's read-owner set, so plain `=` would silently
         // drop every World-owned row here (NULL = NULL is NULL, not
         // true) even though the caller is authorized to read World.
-        " WHERE m.owner_kind = s.kind \
-            AND m.owner_id IS NOT DISTINCT FROM s.id \
+        " WHERE {read_owner_predicate} \
             AND m.tombstoned_at IS NULL",
-    );
+        read_owner_predicate = read_owner_predicate("m", "s"),
+    )
+    .expect("write to String is infallible");
 
     if let Some(param) = memory_ids_param {
         write!(sql, " AND m.memory_id = ANY(${param})").expect("write to String is infallible");
@@ -308,13 +310,13 @@ async fn query_visible_memory_ids(
     let stateful = validated_stateful_filters(req)?;
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
 
-    let mut sql = String::from(
+    let mut sql = format!(
         "SELECT m.memory_id \
            FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id) \
            JOIN proxima_core.memories m \
-             ON m.owner_kind = s.kind \
-            AND m.owner_id IS NOT DISTINCT FROM s.id \
+             ON {read_owner_predicate} \
         ",
+        read_owner_predicate = read_owner_predicate("m", "s"),
     );
     for (idx, sf) in stateful.iter().enumerate() {
         let alias = stateful_alias(idx);
@@ -367,13 +369,13 @@ async fn query_visible_goal_ids(
     {
         return Ok(HashSet::new());
     }
-    let mut sql = String::from(
+    let mut sql = format!(
         "SELECT g.goal_id \
            FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id) \
            JOIN proxima_core.goals g \
-             ON g.owner_kind = s.kind \
-            AND g.owner_id IS NOT DISTINCT FROM s.id \
+             ON {read_owner_predicate} \
           WHERE g.goal_id = ANY($3::uuid[])",
+        read_owner_predicate = read_owner_predicate("g", "s"),
     );
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
     if schema_id_filter.is_some() {

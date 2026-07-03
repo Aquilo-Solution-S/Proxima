@@ -23,7 +23,8 @@ use crate::auth::{AuthError, Credentials};
 use crate::{Owner, OwnerRef, UserId};
 
 pub use hooks::{
-    AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, OwnerResolver,
+    AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, MembershipChange,
+    OwnerResolver,
 };
 
 /// WHO: the authorization currency for owner scoping.

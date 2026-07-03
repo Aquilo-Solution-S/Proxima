@@ -49,6 +49,56 @@ impl OwnerRef {
             Self::Group(group) => group.into_inner(),
         }
     }
+
+    /// Canonical runtime/API owner key.
+    ///
+    /// This is an external protocol convention, not a storage adapter:
+    /// `world:<uuid>`, `personal:<uuid>`, or `group:<uuid>`.
+    #[must_use]
+    pub fn external_key(self) -> String {
+        let (kind, _) = self.columns();
+        format!("{}:{}", kind.as_str(), self.stable_key_uuid())
+    }
+}
+
+/// Parse a canonical runtime/API owner key.
+///
+/// # Errors
+///
+/// Returns [`OwnerExternalKeyParseError`] when the key is not exactly
+/// `world:<uuid>`, `personal:<uuid>`, or `group:<uuid>`, or when the
+/// `world` UUID is not Proxima's singleton world owner UUID.
+pub fn parse_external_key(raw: &str) -> Result<OwnerRef, OwnerExternalKeyParseError> {
+    let (kind, raw_id) = raw
+        .split_once(':')
+        .ok_or(OwnerExternalKeyParseError::InvalidFormat)?;
+    let id = Uuid::parse_str(raw_id).map_err(|source| OwnerExternalKeyParseError::InvalidUuid {
+        kind: kind.to_string(),
+        source,
+    })?;
+    match kind {
+        "world" if id == WORLD_OWNER_UUID => Ok(OwnerRef::World),
+        "world" => Err(OwnerExternalKeyParseError::InvalidWorldUuid { id }),
+        "personal" => Ok(OwnerRef::Personal(UserId::new(id))),
+        "group" => Ok(OwnerRef::Group(GroupId::new(id))),
+        _ => Err(OwnerExternalKeyParseError::InvalidKind {
+            kind: kind.to_string(),
+        }),
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum OwnerExternalKeyParseError {
+    #[error("owner external key must be `world:<uuid>`, `personal:<uuid>`, or `group:<uuid>`")]
+    InvalidFormat,
+    #[error("owner external key kind {kind:?} is not supported")]
+    InvalidKind { kind: String },
+    #[error("owner external key {kind:?} id is not a UUID: {source}")]
+    InvalidUuid { kind: String, source: uuid::Error },
+    #[error(
+        "world owner external key must use the singleton UUID 00000000-0000-0000-0000-000000000001, got {id}"
+    )]
+    InvalidWorldUuid { id: Uuid },
 }
 
 #[derive(
@@ -109,5 +159,44 @@ mod tests {
             OwnerRefKind::of(&OwnerRef::Group(group)),
             OwnerRefKind::Group
         );
+    }
+
+    #[test]
+    fn owner_external_keys_round_trip() {
+        let personal = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+
+        assert_eq!(
+            parse_external_key(&OwnerRef::World.external_key()).expect("world key"),
+            OwnerRef::World
+        );
+        assert_eq!(
+            parse_external_key(&personal.external_key()).expect("personal key"),
+            personal
+        );
+        assert_eq!(
+            parse_external_key(&group.external_key()).expect("group key"),
+            group
+        );
+    }
+
+    #[test]
+    fn owner_external_key_rejects_non_canonical_forms() {
+        assert!(matches!(
+            parse_external_key("world"),
+            Err(OwnerExternalKeyParseError::InvalidFormat)
+        ));
+        assert!(matches!(
+            parse_external_key("personal:not-a-uuid"),
+            Err(OwnerExternalKeyParseError::InvalidUuid { .. })
+        ));
+        assert!(matches!(
+            parse_external_key("org:00000000-0000-0000-0000-000000000000"),
+            Err(OwnerExternalKeyParseError::InvalidKind { .. })
+        ));
+        assert!(matches!(
+            parse_external_key("world:00000000-0000-0000-0000-000000000000"),
+            Err(OwnerExternalKeyParseError::InvalidWorldUuid { .. })
+        ));
     }
 }

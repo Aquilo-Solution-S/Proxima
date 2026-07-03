@@ -9,13 +9,13 @@ use proxima_core::verbs::query::{
 use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
 };
-use proxima_core::{
-    MemoryId, OwnerRef, OwnerRefKind, SchemaId, SearchProjectionColumnKind, StorageError,
-};
+use proxima_core::{MemoryId, SchemaId, SearchProjectionColumnKind, StorageError};
 use sqlx::PgPool;
 
 use crate::error::internal;
 use crate::pg_ident::PgIdent;
+
+use super::{entity_owner_union, read_owner_columns, read_owner_predicate};
 
 #[derive(Debug)]
 struct SearchRow {
@@ -345,13 +345,16 @@ fn common_candidates_sql(
 
     let mut sql = String::from("WITH candidates AS (");
     push_candidate_branch_prefix(&mut sql);
-    sql.push_str(
+    write!(
+        sql,
         "NULL::text[] AS tags, COALESCE(m.text, '') AS search_text \
          FROM proxima_core.memories m \
-         LEFT JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) home_owner \
+         LEFT JOIN {entity_owner_union} home_owner \
            ON home_owner.entity_id = m.memory_id \
 ",
-    );
+        entity_owner_union = entity_owner_union(),
+    )
+    .expect("write to String is infallible");
     push_base_memory_filters(&mut sql, req, filters);
     sql.push_str(" AND NULLIF(m.text, '') IS NOT NULL");
 
@@ -368,11 +371,12 @@ fn common_candidates_sql(
             "{tag_expr} AS tags,
              NULLIF(concat_ws(' ', {projection_expr}), '') AS search_text
              FROM proxima_core.memories m
-             LEFT JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) home_owner
+             LEFT JOIN {entity_owner_union} home_owner
                ON home_owner.entity_id = m.memory_id
 JOIN {table} s ON s.memory_id = m.memory_id",
             tag_expr = tag_expr.as_str(),
             projection_expr = projection_expr,
+            entity_owner_union = entity_owner_union(),
             table = table.as_str()
         )
         .expect("write to String is infallible");
@@ -417,6 +421,7 @@ fn projection_tag_expr(projection: &MemorySearchProjection) -> Result<String, St
 }
 
 fn push_candidate_branch_prefix(sql: &mut String) {
+    // SQL-POLICY: fixed-fragment
     sql.push_str(
         "SELECT m.memory_id, home_owner.owner_kind, home_owner.owner_id, \
          COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, \
@@ -429,17 +434,20 @@ fn push_base_memory_filters(
     req: &MemorySearchRequest,
     filters: CandidateFilterParams,
 ) {
-    sql.push_str(
+    write!(
+        sql,
         " WHERE EXISTS (
               SELECT 1
-                FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                FROM {entity_owner_union} eo
                 JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-                  ON eo.owner_kind = s.kind
-                 AND eo.owner_id IS NOT DISTINCT FROM s.id
+                  ON {read_owner_predicate}
                WHERE eo.entity_id = m.memory_id
            )
            AND m.tombstoned_at IS NULL",
-    );
+        entity_owner_union = entity_owner_union(),
+        read_owner_predicate = read_owner_predicate("eo", "s"),
+    )
+    .expect("write to String is infallible");
     match req.kind {
         None => {}
         Some(EntityKind::Fact) => sql.push_str(" AND m.kind IS NULL"),
@@ -468,15 +476,16 @@ fn push_sidecar_memory_filters(
         sql,
         " WHERE EXISTS (
               SELECT 1
-                FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                FROM {entity_owner_union} eo
                 JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-                  ON eo.owner_kind = s.kind
-                 AND eo.owner_id IS NOT DISTINCT FROM s.id
+                  ON {read_owner_predicate}
                WHERE eo.entity_id = m.memory_id
            )
            AND m.tombstoned_at IS NULL
            AND m.schema_id = ${schema_param}
-           AND m.schema_version = ${version_param}"
+           AND m.schema_version = ${version_param}",
+        entity_owner_union = entity_owner_union(),
+        read_owner_predicate = read_owner_predicate("eo", "s"),
     )
     .expect("write to String is infallible");
     push_payload_kind_filter(sql, kind);
@@ -510,6 +519,7 @@ fn push_search_head_filter(sql: &mut String, req: &MemorySearchRequest) {
     if matches!(req.supersession, SupersessionStatus::IncludeSuperseded) {
         return;
     }
+    // SQL-POLICY: fixed-fragment
     sql.push_str(
         " AND ( \
             (m.kind IS NULL AND ( \
@@ -526,6 +536,7 @@ fn push_search_head_filter(sql: &mut String, req: &MemorySearchRequest) {
                    AND m2.tombstoned_at IS NULL",
     );
     super::push_same_home_owner_successor_predicate(sql, "m2", "m");
+    // SQL-POLICY: fixed-fragment
     sql.push_str(
         " )) \
         )",
@@ -563,10 +574,6 @@ fn bind_common<'q>(
     q = q.bind(read_owner_kinds);
     q = q.bind(read_owner_ids);
     q
-}
-
-fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<Option<uuid::Uuid>>) {
-    crate::access::owner_columns::owner_arrays(read_owners)
 }
 
 fn bind_filter_params<'q>(

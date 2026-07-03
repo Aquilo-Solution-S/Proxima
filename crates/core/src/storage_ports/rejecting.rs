@@ -536,6 +536,16 @@ impl SourceCursorPort for RejectingStorage {
             "RejectingStorage rejects writes".into(),
         ))
     }
+
+    async fn source_cursor_age(
+        &self,
+        _owner: &Owner,
+        _source: &str,
+    ) -> Result<Option<std::time::Duration>, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects source cursor reads".into(),
+        ))
+    }
 }
 
 #[async_trait::async_trait]
@@ -652,6 +662,20 @@ impl ComplianceErasePort for RejectingStorage {
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn export_owner_bundle(
+        &self,
+        _auth: &crate::compliance::ExportAuthorization,
+        _fact_sidecar_tables: &[String],
+        _goal_sidecar_tables: &[String],
+        _edge_sidecar_tables: &[String],
+        _citation_mapping_sidecar_tables: &[String],
+        _cited_object_sidecar_tables: &[String],
+    ) -> Result<crate::compliance::ComplianceExportBundle, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects reads".into(),
         ))
     }
 }

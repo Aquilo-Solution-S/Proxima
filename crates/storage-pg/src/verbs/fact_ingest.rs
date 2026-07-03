@@ -298,6 +298,24 @@ where
     ingest_core(tx, permit.owner(), &draft, options, sidecar).await
 }
 
+/// Transaction-scoped uncited Fact ingest helper with no caller-owned sidecar.
+///
+/// # Errors
+///
+/// Returns storage errors from Fact authorization, materialization, or
+/// embedding enqueue. The caller owns transaction rollback/commit.
+pub async fn ingest_fact_for_owner_plain_in_tx<P>(
+    tx: &mut Transaction<'_, Postgres>,
+    permit: &OwnerWritePermit,
+    payload: &P,
+    embedding_model_id: Option<&str>,
+) -> Result<FactIngestOutcome, StorageError>
+where
+    P: FactPayload,
+{
+    ingest_fact_for_owner_in_tx(tx, permit, payload, embedding_model_id, noop_fact_sidecar).await
+}
+
 /// Pool-scoped uncited Fact ingest helper. Opens its own transaction;
 /// commits only after the Fact and sidecar both succeed.
 ///
@@ -320,6 +338,28 @@ where
     ) -> FactIngestSidecarFuture<'t>,
 {
     ingest_fact_for_owner(pool, permit, payload, embedding_model_id, sidecar).await
+}
+
+/// Pool-scoped uncited Fact ingest helper with no caller-owned sidecar.
+///
+/// # Errors
+///
+/// Returns storage errors from transaction setup, Fact authorization,
+/// materialization, embedding enqueue, or transaction commit.
+pub async fn ingest_fact_for_owner_plain<P>(
+    pool: &PgPool,
+    permit: &OwnerWritePermit,
+    payload: &P,
+    embedding_model_id: Option<&str>,
+) -> Result<FactIngestOutcome, StorageError>
+where
+    P: FactPayload,
+{
+    let mut tx = pool.begin().await.map_err(internal)?;
+    let outcome =
+        ingest_fact_for_owner_plain_in_tx(&mut tx, permit, payload, embedding_model_id).await?;
+    tx.commit().await.map_err(map_err)?;
+    Ok(outcome)
 }
 
 /// Pool-scoped uncited Fact ingest helper for an explicit target owner.
@@ -347,6 +387,13 @@ where
         ingest_fact_for_owner_in_tx(&mut tx, permit, payload, embedding_model_id, sidecar).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
+}
+
+fn noop_fact_sidecar<'t>(
+    _tx: &'t mut Transaction<'_, Postgres>,
+    _outcome: &'t FactIngestOutcome,
+) -> FactIngestSidecarFuture<'t> {
+    Box::pin(async { Ok(()) })
 }
 
 /// Build a typed Fact draft with an opaque citation and insert the

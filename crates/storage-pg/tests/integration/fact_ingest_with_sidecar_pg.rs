@@ -13,7 +13,9 @@ use proxima_core::{
     OwnerRef, PayloadKeyBuilder, Relation, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
     StorageError, UserId,
 };
-use proxima_storage_pg::verbs::fact_ingest::{fact_ingest_with_sidecar_atomic, ingest_fact};
+use proxima_storage_pg::verbs::fact_ingest::{
+    fact_ingest_with_sidecar_atomic, ingest_fact, ingest_fact_for_owner_plain,
+};
 use uuid::Uuid;
 
 type ResolvedAuthz = AuthzContext;
@@ -351,6 +353,36 @@ async fn ingest_fact_writes_uncited_fact_and_sidecar() -> Result<(), Box<dyn std
     assert_eq!(cited_objects, 0);
     assert_eq!(citation_mappings, 0);
     assert_eq!(sidecars, 1);
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn ingest_fact_for_owner_plain_replays_closure_backed_fact()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let owner = owner_fixture();
+    let permit = owner_write_permit(&owner, proxima_core::AccessKind::Fact).await?;
+    let payload = UncitedFactPayload {
+        note: format!("plain fact {}", Uuid::now_v7()),
+    };
+
+    let first = ingest_fact(
+        pg.pool_for_tests(),
+        &permit,
+        &payload,
+        None,
+        |_tx, _outcome| Box::pin(async { Ok(()) }),
+    )
+    .await?;
+    let replay = ingest_fact_for_owner_plain(pg.pool_for_tests(), &permit, &payload, None).await?;
+
+    assert!(!first.idempotent_replay);
+    assert!(replay.idempotent_replay);
+    assert_eq!(replay.memory_id, first.memory_id);
+    assert_eq!(replay.change_event_seq, first.change_event_seq);
 
     drop(pg);
     drop_db(&db_name).await?;

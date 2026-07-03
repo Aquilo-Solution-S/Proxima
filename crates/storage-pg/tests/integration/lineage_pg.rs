@@ -19,6 +19,9 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
     let perspective = insert_memory(&pg, &owner, "perspective").await?;
     let other_old = insert_memory(&pg, &other_owner, "other owner old").await?;
     let other = insert_memory(&pg, &other_owner, "other owner").await?;
+    let world = OwnerRef::World;
+    let world_old = insert_memory(&pg, &world, "world old").await?;
+    let world_ref = insert_memory(&pg, &owner, "world ref").await?;
 
     insert_edge(
         &pg,
@@ -47,7 +50,31 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
         RelationClass::Provenance,
     )
     .await?;
+    insert_edge(
+        &pg,
+        &owner,
+        world_ref,
+        world_old,
+        "world/derived-from",
+        RelationClass::Provenance,
+    )
+    .await?;
 
+    assert_owner_lineage(&pg, owner, old, perspective, other).await?;
+    assert_world_lineage(&pg, owner, world, world_old, world_ref).await?;
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+async fn assert_owner_lineage(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: Owner,
+    old: Uuid,
+    perspective: Uuid,
+    other: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
     let owner_read = vec![owner];
     let ancestors = pg
         .walk_memory_lineage(
@@ -95,9 +122,37 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
             .iter()
             .any(|node| node.memory_id.into_inner() == perspective && node.distance == 2)
     );
+    Ok(())
+}
 
-    drop(pg);
-    drop_db(&db_name).await?;
+async fn assert_world_lineage(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: Owner,
+    world: Owner,
+    world_old: Uuid,
+    world_ref: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let world_read = vec![owner, world];
+    let world_ancestors = pg
+        .walk_memory_lineage(
+            &world_read,
+            &MemoryLineageRequest {
+                owner: world,
+                start_memory_id: MemoryId::new(world_old),
+                direction: MemoryLineageDirection::Descendants,
+                depth: 2,
+                limit: 10,
+            },
+        )
+        .await?;
+    assert_eq!(world_ancestors.nodes.len(), 2);
+    assert!(
+        world_ancestors
+            .nodes
+            .iter()
+            .any(|node| node.memory_id.into_inner() == world_ref && node.distance == 1),
+        "World-owned lineage must match read_set rows with NULL owner_id"
+    );
     Ok(())
 }
 

@@ -172,39 +172,34 @@ pub async fn delete_repo(
     Ok(result.rows_affected() > 0)
 }
 
-/// Repo erase is deferred to the PR9 compliance erase port.
+/// Erase one registered repo's code-flavor rows and owned substrate rows.
 ///
 /// # Errors
 /// Returns `RepoRegistryError::NotFound` if the repo is not registered
-/// for `owner`; otherwise returns `RepoRegistryError::Storage` until
-/// the compliance-owned erase port lands.
+/// for `owner`; otherwise returns `RepoRegistryError::Database` on
+/// database failures.
 pub async fn erase_repo(
     pool: &PgPool,
     owner: &Owner,
     repo_id: Uuid,
     _schemas: &[SchemaInfo],
 ) -> Result<RepoEraseReceipt, RepoRegistryError> {
-    let (kind, principal_id) = owner.columns();
-    let exists: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT repo_id \
-         FROM proxima_code.repos \
-         WHERE owner_kind = $1 \
-           AND owner_id = $2 \
-           AND repo_id = $3",
-    )
-    .bind(kind)
-    .bind(principal_id)
-    .bind(repo_id)
-    .fetch_optional(pool)
-    .await?;
-    if exists.is_none() {
-        return Err(RepoRegistryError::NotFound { repo_id });
-    }
-
-    Err(proxima_core::StorageError::ConstraintViolation(
-        "repo erase is deferred to PR9 compliance erase ports".into(),
-    )
-    .into())
+    let outcome = proxima_storage_pg::verbs::code_repo_erase::erase_code_repo(pool, owner, repo_id)
+        .await?
+        .ok_or(RepoRegistryError::NotFound { repo_id })?;
+    Ok(RepoEraseReceipt {
+        repo_id: outcome.repo_id,
+        completed_at: outcome.completed_at,
+        facts_deleted: outcome.facts_deleted,
+        abstractions_deleted: outcome.abstractions_deleted,
+        edges_deleted: outcome.edges_deleted,
+        embeddings_deleted: outcome.embeddings_deleted,
+        receipts_deleted: outcome.receipts_deleted,
+        citation_mappings_deleted: outcome.citation_mappings_deleted,
+        cited_objects_deleted: outcome.cited_objects_deleted,
+        source_batches_deleted: outcome.source_batches_deleted,
+        repo_record_deleted: outcome.repo_record_deleted,
+    })
 }
 
 /// Look up a single repo record by `(owner, repo_id)`.

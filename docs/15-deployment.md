@@ -77,9 +77,10 @@ cluster edge (see [§Edge defense-in-depth](#edge-defense-in-depth)).
 > `PROXIMA_OIDC_SUBJECT_MAP` to a Proxima `UserId`; `PgOwnerAccessResolver`
 > reads current group memberships into `OwnerRoles`. The client selects one
 > authorized owner during MCP `initialize` using `X-Proxima-Owner`:
-> `personal:<uuid>`, `group:<uuid>`, or `world`. The server binds that owner
-> to the returned `Mcp-Session-Id`. Every later request revalidates the bearer
-> and narrows the freshly resolved roles to the bound owner; membership
+> `personal:<uuid>`, `group:<uuid>`, or
+> `world:00000000-0000-0000-0000-000000000001`. The server binds that owner to
+> the returned `Mcp-Session-Id`. Every later request revalidates the bearer and
+> narrows the freshly resolved roles to the bound owner; membership
 > removal denies the next request, including an already-bound session. An
 > absent subject-map entry, invalid owner key, or non-member owner selection
 > fails closed.

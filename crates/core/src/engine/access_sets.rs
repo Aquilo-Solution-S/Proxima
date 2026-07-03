@@ -641,9 +641,15 @@ pub(in crate::engine) mod tests {
 
         async fn list_group_members(
             &self,
-            _group_id: GroupId,
+            group_id: GroupId,
         ) -> Result<Vec<(UserId, Relation)>, StorageError> {
-            Ok(Vec::new())
+            if group_id == self.group
+                && let OwnerRef::Personal(member) = self.member
+            {
+                Ok(vec![(member, self.membership_relation)])
+            } else {
+                Ok(Vec::new())
+            }
         }
     }
 
@@ -691,6 +697,16 @@ pub(in crate::engine) mod tests {
             _source: &str,
             _cursor: &Cursor,
         ) -> Result<(), StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+
+        async fn source_cursor_age(
+            &self,
+            _owner: &Owner,
+            _source: &str,
+        ) -> Result<Option<std::time::Duration>, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
@@ -820,6 +836,20 @@ pub(in crate::engine) mod tests {
         ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
+            ))
+        }
+
+        async fn export_owner_bundle(
+            &self,
+            _auth: &proxima_core::compliance::ExportAuthorization,
+            _fact_sidecar_tables: &[String],
+            _goal_sidecar_tables: &[String],
+            _edge_sidecar_tables: &[String],
+            _citation_mapping_sidecar_tables: &[String],
+            _cited_object_sidecar_tables: &[String],
+        ) -> Result<proxima_core::compliance::ComplianceExportBundle, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects reads".into(),
             ))
         }
     }

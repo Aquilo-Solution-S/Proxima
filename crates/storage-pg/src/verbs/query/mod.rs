@@ -60,6 +60,19 @@ pub(crate) fn read_owner_columns(
     crate::access::owner_columns::owner_arrays(read_owners)
 }
 
+pub(crate) fn read_owner_predicate(owner_alias: &str, read_set_alias: &str) -> String {
+    format!(
+        "{owner_alias}.owner_kind = {read_set_alias}.kind \
+         AND {owner_alias}.owner_id IS NOT DISTINCT FROM {read_set_alias}.id"
+    )
+}
+
+pub(crate) fn entity_owner_union() -> &'static str {
+    "(SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories \
+      UNION ALL \
+      SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals)"
+}
+
 /// Resolve the aggregate `fact_entity_id` for an owner-scoped Fact
 /// natural key inside an existing transaction.
 ///
