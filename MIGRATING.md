@@ -182,18 +182,9 @@ MCP owner selection:
 | later calls | no owner argument; bound owner is rechecked against fresh roles |
 | revocation | membership removal denies the next request |
 
-Loopback master-token auth now needs a subject:
-
-```sh
-proxima-mcp --master-token "$MASTER_TOKEN" --master-token-subject "$USER_ID"
-```
-
-Environment equivalent:
-
-```sh
-PROXIMA_MCP_MASTER_TOKEN="$MASTER_TOKEN"
-PROXIMA_MCP_MASTER_TOKEN_SUBJECT="$USER_ID"
-```
+Loopback master-token auth is removed. MCP serving requires a host
+`Authenticator` plus `OwnerAccessPort`; stale `Bearer pxm_*` credentials
+fail closed and are not forwarded to host auth.
 
 `McpToolHost` no longer has a default owner. Embedded direct MCP calls
 must pass the owner explicitly per call through the existing direct-call

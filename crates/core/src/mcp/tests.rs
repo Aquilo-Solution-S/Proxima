@@ -295,7 +295,6 @@ mod manifest_tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            master_token_id: None,
             extensions: McpToolExtensions::default(),
             engine: None,
         }
@@ -331,7 +330,6 @@ mod ctx_engine_tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            master_token_id: None,
             extensions: McpToolExtensions::default(),
             engine: None,
         };
@@ -357,7 +355,6 @@ mod ctx_engine_tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            master_token_id: None,
             extensions: McpToolExtensions::default(),
             engine: Some(engine.clone()),
         };

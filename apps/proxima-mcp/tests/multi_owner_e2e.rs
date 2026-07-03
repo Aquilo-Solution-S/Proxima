@@ -50,7 +50,6 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
     let owner_b = OwnerRef::Group(group_b);
     let owner_access: Arc<dyn OwnerAccessPort> =
         Arc::new(PgOwnerAccessResolver::connect_lazy(&database_url)?);
-    let master_token = Uuid::now_v7();
 
     let (signing, resolver) = keypair();
     let mut subject_map = OidcSubjectMap::new();
@@ -73,7 +72,6 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
         .database_url(database_url.clone())
         .owner_access(owner_access)
         .authenticator(Arc::new(authn))
-        .master_token(master_token, subject_a)
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.multi-owner.test".to_string(),
             authorization_servers: vec![ISSUER.to_string()],
@@ -92,7 +90,6 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
     let client = reqwest::Client::new();
     let bearer_a = format!("Bearer {}", mint(&signing, "subject-a"));
     let bearer_b = format!("Bearer {}", mint(&signing, "subject-b"));
-    let bearer_master = format!("Bearer pxm_{master_token}");
     let unique_query = format!("multi-owner isolated note {}", Uuid::now_v7());
 
     let session_a_owner_a = initialize(&client, &url, &bearer_a, &owner_header(owner_a)).await?;
@@ -175,23 +172,6 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
         "subject B must not bind group A"
     );
 
-    let session_master_owner_a =
-        initialize(&client, &url, &bearer_master, &owner_header(owner_a)).await?;
-    initialized(&client, &url, &session_master_owner_a, &bearer_master).await?;
-    let master_tools_body = post_rpc(
-        &client,
-        &url,
-        Some(&session_master_owner_a),
-        &bearer_master,
-        json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {}}),
-    )
-    .await?;
-    let master_tools = tool_names(&master_tools_body);
-    assert!(
-        master_tools.contains(&"core_remember".to_string()),
-        "master-token subject should use the same owner role path: {master_tools:?}"
-    );
-
     revoke_member(&storage, owner_a, group_a, subject_a).await?;
     let oidc_after_revoke = post_rpc_raw(
         &client,
@@ -205,19 +185,6 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
         oidc_after_revoke.status(),
         reqwest::StatusCode::UNAUTHORIZED,
         "bound OIDC session must re-check membership on next request"
-    );
-    let master_after_revoke = post_rpc_raw(
-        &client,
-        &url,
-        Some(&session_master_owner_a),
-        &bearer_master,
-        json!({"jsonrpc": "2.0", "id": 6, "method": "tools/list", "params": {}}),
-    )
-    .await?;
-    assert_eq!(
-        master_after_revoke.status(),
-        reqwest::StatusCode::UNAUTHORIZED,
-        "bound master-token session must not bypass membership revocation"
     );
 
     running.shutdown().await;

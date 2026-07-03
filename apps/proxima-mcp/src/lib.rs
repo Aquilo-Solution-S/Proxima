@@ -157,7 +157,7 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
         args.remove(0);
         let config = parse_reconcile_args(args).map_err(|err| match err {
             ArgsError::Help => CliError::Help(RECONCILE_USAGE),
-            other => CliError::Args(other),
+            other @ ArgsError::Invalid(_) => CliError::Args(other),
         })?;
         return run_reconcile(config).await;
     }
@@ -166,7 +166,7 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
     }
     let config = parse_args(args).map_err(|err| match err {
         ArgsError::Help => CliError::Help(USAGE),
-        other => CliError::Args(other),
+        other @ ArgsError::Invalid(_) => CliError::Args(other),
     })?;
     // rmcp 1.6 logs idle-session keep-alive expiry and the resulting
     // session-cleanup race at ERROR; both are clean lifecycle events
@@ -286,9 +286,6 @@ fn build_app(
         .tool_scope(tool_scope);
     if let Some(bind) = config.bind {
         app = app.mcp_bind(bind);
-    }
-    if let (Some(token), Some(subject)) = (config.master_token, config.master_token_subject) {
-        app = app.master_token(token, subject);
     }
     if let Some((authenticator, metadata)) = oidc {
         app = app.authenticator(authenticator).resource_metadata(metadata);
@@ -572,8 +569,6 @@ mod tests {
         McpConfig {
             database_url: DEFAULT_DATABASE_URL.to_string(),
             bind: Some(DEFAULT_BIND.parse().expect("valid bind")),
-            master_token: Some(uuid::Uuid::nil()),
-            master_token_subject: Some(proxima_core::UserId::new(uuid::Uuid::nil())),
         }
     }
 

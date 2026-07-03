@@ -28,7 +28,11 @@ product UX or model loop.
 ```sh
 docker compose -f docker-compose.dev.yml up -d --wait postgres
 export DATABASE_URL=postgres://proxima:proxima@localhost:5434/proxima
-cargo run -p proxima-mcp -- --master-token <token-uuid> --master-token-subject <user-uuid>
+export PROXIMA_PUBLIC_URL=http://127.0.0.1:31415
+export PROXIMA_OIDC_ISSUER=https://idp.example.test
+export PROXIMA_OIDC_AUDIENCE=proxima-mcp
+export PROXIMA_OIDC_SUBJECT_MAP=sub-from-idp:<user-uuid>
+cargo run -p proxima-mcp
 ```
 
 The dev compose file exposes Postgres on `localhost:5434` with pgvector.
@@ -46,8 +50,12 @@ the full local walkthrough.
 Start the MCP server:
 
 ```sh
-cargo run -p proxima-mcp -- --master-token <token-uuid> --master-token-subject <user-uuid>
+cargo run -p proxima-mcp
 ```
+
+Configure `PROXIMA_PUBLIC_URL`, `PROXIMA_OIDC_ISSUER`,
+`PROXIMA_OIDC_AUDIENCE`, and an issuer-bound subject map before starting the
+server.
 
 Client config:
 
@@ -57,7 +65,7 @@ Client config:
     "proxima": {
       "url": "http://127.0.0.1:31415/mcp",
       "headers": {
-        "Authorization": "Bearer pxm_<token-uuid>",
+        "Authorization": "Bearer <oidc-access-token>",
         "X-Proxima-Owner": "personal:<user-uuid>"
       }
     }

@@ -178,7 +178,7 @@ MCP dispatch contract:
 
 | Step | Contract |
 |---|---|
-| Auth | host `Authenticator` or loopback master token resolves `UserId` |
+| Auth | host `Authenticator` resolves `UserId` through current `OwnerRoles` |
 | Owner | selected at session initialize, bound server-side, rechecked through `OwnerAccessPort` |
 | Tool scope | token capabilities intersected with deployment profile and bound-owner role |
 | Args | action-dispatch tools validate fields strictly (see Tool Schema Contract), then JSON decoded into typed args |

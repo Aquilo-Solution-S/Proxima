@@ -372,8 +372,7 @@ fn canonical_tool_name(server: &McpToolHost, request_name: &str) -> Option<Strin
 
 /// Resolve the token scope from the request auth context. Returns `None`
 /// when no token-bearing layer ran ahead of rmcp (direct handler tests).
-/// Local master tokens carry all-tools scope; host-bearer tokens carry
-/// the host-provided scope.
+/// Host-bearer tokens carry the host-provided scope.
 ///
 /// rmcp's `StreamableHttpService` injects [`http::request::Parts`] into
 /// the rmcp request extensions, and our `mcp_auth_layer` inserts

@@ -7,14 +7,13 @@ Status: accepted for v0.0.6 slice P-R1.
 | Surface | Rule |
 |---|---|
 | Serving path | one resolver-backed path only |
-| Bearer identity | host `Authenticator` or loopback master token resolves a `UserId` |
+| Bearer identity | host `Authenticator` resolves a `UserId` |
 | Owner authority | `OwnerAccessPort::resolve_roles_for_subject(UserId)` |
 | Session owner | selected once at MCP `initialize`; HTTP transport uses `X-Proxima-Owner` |
 | Session state | `Mcp-Session-Id -> OwnerRef` server binding |
 | Tool calls | no owner argument; bound owner rechecked on every authenticated request |
-| Master token | `Uuid -> UserId`; audit metadata only, no authority class |
 | Palette | frozen registry, deployment `ToolScope`, then bound-owner role filter |
-| Revocation | membership removal denies the next request for OIDC and master-token sessions |
+| Revocation | membership removal denies the next request |
 
 Owner key wire forms:
 
@@ -38,6 +37,7 @@ group:<uuid>
 | Alternative | Reason |
 |---|---|
 | `--owner-user` serving | fixed-owner serving path; second owner axis |
+| `--master-token` serving | static local bearer asserts `UserId` outside host identity proof |
 | dual `--serving-mode` | compatibility mode for retired surface |
 | per-call owner parameter | caller-supplied owner authority |
 | dynamic tool registry | violates frozen build-time registry |
@@ -49,8 +49,8 @@ group:<uuid>
 |---|---|
 | no fixed-owner serving | no `--owner-user`, no `OidcAuthenticator::single_owner`, no `FixedOwner` |
 | owner selection fail-closed | invalid owner header/session owner mismatch denied |
-| per-request recheck | `multi_owner_e2e` revocation lanes |
-| token-class demotion | code retry gates on owner write authority, not `master_token_id` |
+| per-request recheck | `multi_owner_e2e` revocation lane |
+| no local static bearer | no `--master-token`, no `PROXIMA_MCP_MASTER_TOKEN`, stale `pxm_` credentials fail closed |
 | docs surface | `MIGRATING.md`, `docs/10-configuration.md`, `docs/15-deployment.md`, env reference |
 
 Cross-project: Aquilo #4095 / Proxima P-R1.

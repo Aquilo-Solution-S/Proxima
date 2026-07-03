@@ -43,7 +43,6 @@ async fn record_utterance_persists_sidecar_and_embedding_job()
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            master_token_id: None,
             extensions: McpToolExtensions::with(pg.pool_for_tests().clone()),
             engine: Some(engine),
         },

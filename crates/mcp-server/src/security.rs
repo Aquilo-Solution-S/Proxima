@@ -147,8 +147,8 @@ pub struct McpAuthLayerState {
 
 /// Bearer-token middleware that resolves `Authorization: Bearer
 /// <wire-token>` via MCP edge auth and injects the resolved context into
-/// request extensions. Wire tokens are `pxm_<uuid>` local master tokens
-/// or host bearer material; reserved `pxw_` wake tokens fail closed.
+/// request extensions. Accepted bearer material is host-authenticated;
+/// reserved legacy local-token prefixes fail closed.
 /// Missing or unknown tokens short-circuit with HTTP 401. A present but
 /// disallowed `Origin` short-circuits with 403; missing `Origin` is
 /// allowed after bearer auth for native CLI clients.

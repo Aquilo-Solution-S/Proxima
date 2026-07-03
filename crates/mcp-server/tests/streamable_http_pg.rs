@@ -24,12 +24,9 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, registry).await?;
+    let owner = common::nil_owner();
     let auth_store =
-        Arc::new(McpEdgeAuth::headless().with_owner_access(Arc::new(common::NilOwnerAccess)));
-    let token = uuid::Uuid::new_v4();
-    auth_store
-        .replace_local_master_token(token, common::nil_subject())
-        .await;
+        Arc::new(McpEdgeAuth::headless().with_host(Arc::new(TestHostAuth::new(owner, None))));
     let (handle, addr) = serve_streamable_http(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
         server,
@@ -40,15 +37,15 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
 
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
-    let bearer = format!("Bearer pxm_{token}");
-    let session_id = initialize(&client, &url, &bearer).await?;
-    initialized(&client, &url, &session_id, &bearer).await?;
+    let bearer = "Bearer host-token";
+    let session_id = initialize(&client, &url, bearer).await?;
+    initialized(&client, &url, &session_id, bearer).await?;
 
     let list = post_rpc(
         &client,
         &url,
         Some(&session_id),
-        &bearer,
+        bearer,
         json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
     )
     .await?;
@@ -64,7 +61,7 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
         &client,
         &url,
         Some(&session_id),
-        &bearer,
+        bearer,
         json!({
             "jsonrpc": "2.0",
             "id": 3,
@@ -104,8 +101,7 @@ async fn missing_auth_returns_401() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, registry).await?;
-    let auth_store =
-        Arc::new(McpEdgeAuth::headless().with_owner_access(Arc::new(common::NilOwnerAccess)));
+    let auth_store = Arc::new(McpEdgeAuth::headless());
     let (handle, addr) = serve_streamable_http(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
         server,
@@ -136,12 +132,9 @@ async fn disallowed_origin_returns_403_with_valid_token() -> Result<(), Box<dyn 
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, registry).await?;
+    let owner = common::nil_owner();
     let auth_store =
-        Arc::new(McpEdgeAuth::headless().with_owner_access(Arc::new(common::NilOwnerAccess)));
-    let token = uuid::Uuid::new_v4();
-    auth_store
-        .replace_local_master_token(token, common::nil_subject())
-        .await;
+        Arc::new(McpEdgeAuth::headless().with_host(Arc::new(TestHostAuth::new(owner, None))));
     let (handle, addr) = serve_streamable_http(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
         server,
@@ -153,7 +146,7 @@ async fn disallowed_origin_returns_403_with_valid_token() -> Result<(), Box<dyn 
     let response = reqwest::Client::new()
         .post(format!("http://{addr}/mcp"))
         .header("Origin", "https://example.invalid")
-        .header("Authorization", format!("Bearer pxm_{token}"))
+        .header("Authorization", "Bearer host-token")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .json(&json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}))
@@ -168,18 +161,14 @@ async fn disallowed_origin_returns_403_with_valid_token() -> Result<(), Box<dyn 
 }
 
 #[tokio::test]
-async fn local_master_token_lists_all_tools_without_origin()
--> Result<(), Box<dyn std::error::Error>> {
+async fn host_bearer_lists_all_tools_without_origin() -> Result<(), Box<dyn std::error::Error>> {
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, registry).await?;
+    let owner = common::nil_owner();
     let auth_store =
-        Arc::new(McpEdgeAuth::headless().with_owner_access(Arc::new(common::NilOwnerAccess)));
-    let token = uuid::Uuid::new_v4();
-    auth_store
-        .replace_local_master_token(token, common::nil_subject())
-        .await;
+        Arc::new(McpEdgeAuth::headless().with_host(Arc::new(TestHostAuth::new(owner, None))));
     let (handle, addr) = serve_streamable_http(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
         server,
@@ -190,14 +179,14 @@ async fn local_master_token_lists_all_tools_without_origin()
 
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
-    let bearer = format!("Bearer pxm_{token}");
-    let session_id = initialize_without_origin(&client, &url, &bearer).await?;
-    initialized_without_origin(&client, &url, &session_id, &bearer).await?;
+    let bearer = "Bearer host-token";
+    let session_id = initialize_without_origin(&client, &url, bearer).await?;
+    initialized_without_origin(&client, &url, &session_id, bearer).await?;
     let list = post_rpc_without_origin(
         &client,
         &url,
         Some(&session_id),
-        &bearer,
+        bearer,
         json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
     )
     .await?;
@@ -217,7 +206,7 @@ async fn local_master_token_lists_all_tools_without_origin()
         &client,
         &url,
         Some(&session_id),
-        &bearer,
+        bearer,
         json!({"jsonrpc": "2.0", "id": 3, "method": "resources/list", "params": {}}),
     )
     .await?;
@@ -233,7 +222,7 @@ async fn local_master_token_lists_all_tools_without_origin()
         &client,
         &url,
         Some(&session_id),
-        &bearer,
+        bearer,
         json!({"jsonrpc": "2.0", "id": 4, "method": "resources/templates/list", "params": {}}),
     )
     .await?;
@@ -267,8 +256,7 @@ async fn non_loopback_bind_refused_immediately() -> Result<(), Box<dyn std::erro
     let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, registry).await?;
     let bind: SocketAddr = "0.0.0.0:0".parse()?;
-    let auth_store =
-        Arc::new(McpEdgeAuth::headless().with_owner_access(Arc::new(common::NilOwnerAccess)));
+    let auth_store = Arc::new(McpEdgeAuth::headless());
     let err = serve_streamable_http(bind, server, default_allowlist(), auth_store)
         .await
         .expect_err("must refuse non-loopback");
@@ -388,11 +376,7 @@ async fn start_host_auth_server(
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, registry).await?;
-    let auth_store = Arc::new(
-        McpEdgeAuth::headless()
-            .with_owner_access(Arc::new(common::NilOwnerAccess))
-            .with_host(authenticator),
-    );
+    let auth_store = Arc::new(McpEdgeAuth::headless().with_host(authenticator));
     let (handle, addr) = serve_streamable_http_with_revalidation(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
         server,

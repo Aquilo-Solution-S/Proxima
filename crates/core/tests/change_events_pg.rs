@@ -255,7 +255,6 @@ impl ToolHarness {
             registry: self.registry.clone(),
             author: self.author.clone(),
             caller_self_perspective: None,
-            master_token_id: None,
             extensions: McpToolExtensions::with(self.pg.pool_for_tests().clone()),
             engine: Some(self.engine.clone()),
         }

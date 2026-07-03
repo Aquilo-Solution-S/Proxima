@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use proxima::flavor::FlavorBundle;
 use proxima::{
     AppInfo, EmbedConfig, EmbedError, FlavorApp, NamedMigrator, PayloadKind, Proxima,
@@ -9,8 +10,9 @@ use proxima::{
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
-    FactPayload, FlavorRegistry, FlavorRegistryError, GoalActivatedV1, MemoryId, SchemaId,
-    SchemaVersion, SourceBatchId, UserId,
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FactPayload, FlavorRegistry,
+    FlavorRegistryError, GoalActivatedV1, MemoryId, Owner, Role, SchemaId, SchemaVersion,
+    SourceBatchId, UserId,
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::{PgOwnerAccessResolver, PgSidecarKey, PgStorage};
@@ -20,6 +22,23 @@ use tokio::time::{Duration, Instant};
 use uuid::Uuid;
 
 struct GoalTestApp;
+
+#[derive(Debug)]
+struct TestAuthenticator {
+    subject: UserId,
+    owner: Owner,
+}
+
+#[async_trait]
+impl Authenticator for TestAuthenticator {
+    async fn authenticate(&self, _credentials: &Credentials) -> Result<AuthzContext, AuthError> {
+        Ok(AuthzContext::for_subject_with_role(
+            self.subject,
+            [(self.owner, Role::admin())],
+            AuthPath::HostBearer,
+        ))
+    }
+}
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct TestFact {
@@ -370,11 +389,13 @@ async fn facade_run_binds_loopback_mcp_and_sets_engine_url() {
     let db_url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let subject = UserId::new(Uuid::now_v7());
         let running = Proxima::<GoalTestApp>::app()
             .database_url(db_url.clone())
-            .owner(company_owner(Uuid::now_v7()))
+            .owner(owner)
             .owner_access(Arc::new(PgOwnerAccessResolver::connect_lazy(&db_url)?))
-            .master_token(Uuid::now_v7(), UserId::new(Uuid::now_v7()))
+            .authenticator(Arc::new(TestAuthenticator { subject, owner }))
             .with_mcp()
             .mcp_bind("127.0.0.1:0".parse()?)
             .run()

@@ -20,8 +20,8 @@ pub struct McpAuthorContext {
 ///
 /// - `Handles`: handle-projected, model-facing. Emits/parses handle
 ///   strings (`F1`, `A1`, `P1`, `G7`, …) against a `HandleTable`.
-/// - `RawIds`: master-token / human-facing. Emits/parses raw UUID
-///   strings. No `HandleTable` is consulted.
+/// - `RawIds`: human-facing. Emits/parses raw UUID strings. No
+///   `HandleTable` is consulted.
 /// - `PrefixedIds`: wire-facing. Emits/parses typed `F:<uuid>`,
 ///   `A:<uuid>`, `P:<uuid>`, `G:<uuid>`, and `E:<uuid>` strings.
 ///   No `HandleTable` is consulted.
@@ -96,8 +96,6 @@ pub struct McpToolCtx {
     pub registry: Arc<FlavorRegistryFrozen>,
     pub author: McpAuthorContext,
     pub caller_self_perspective: Option<MemoryId>,
-    /// Set by `McpToolHost::call_tool` for master-token requests.
-    pub master_token_id: Option<uuid::Uuid>,
     /// Backend/flavor services supplied by the host. Core does not name
     /// concrete service types; PG-aware flavors may downcast their own
     /// dependencies here.

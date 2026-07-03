@@ -89,13 +89,12 @@ impl McpToolHost {
 
     /// Build a per-call `McpToolCtx` derived from the auth regime.
     ///
-    /// Master-token, host-bearer, and unauthenticated test calls receive
-    /// no handle table and `OutputMode::PrefixedIds`.
+    /// Host-bearer and unauthenticated test calls receive no handle table
+    /// and `OutputMode::PrefixedIds`.
     #[must_use]
     pub fn ctx_for(&self, author: McpAuthorContext, auth: &McpAuthContext) -> McpToolCtx {
         let owner = auth.owner;
         let authz = auth.authz.clone();
-        let master_token_id = auth.master_token_id;
         McpToolCtx {
             owner,
             authz,
@@ -103,7 +102,6 @@ impl McpToolHost {
             mode: OutputMode::PrefixedIds,
             registry: self.registry.clone(),
             caller_self_perspective: author.caller_self_perspective,
-            master_token_id,
             extensions: self.extensions.clone(),
             author,
             engine: self.engine.clone(),
@@ -389,17 +387,6 @@ mod tests {
         }
     }
 
-    fn master_token_auth(owner: Owner, token: uuid::Uuid) -> McpAuthContext {
-        McpAuthContext {
-            owner,
-            authz: AuthzContext::single_owner(&owner, AuthPath::MasterDev)
-                .narrowed_to_owner(owner)
-                .expect("personal owner narrows"),
-            model_id: None,
-            master_token_id: Some(token),
-        }
-    }
-
     #[test]
     fn parse_resource_uri_projects_known_resources() {
         let memory = parse_resource_uri(
@@ -477,7 +464,6 @@ mod tests {
             owner,
             authz,
             model_id: None,
-            master_token_id: None,
         };
 
         let err = server
@@ -495,7 +481,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ctx_for_threads_master_token_id_in_prefixed_ids_mode() {
+    async fn ctx_for_uses_prefixed_ids_without_handles() {
         let server = make_server();
         let author = McpAuthorContext {
             model_id: "test-model".into(),
@@ -503,11 +489,16 @@ mod tests {
             client_version: "0.1.0".into(),
             caller_self_perspective: None,
         };
-        let token = uuid::Uuid::now_v7();
-        let auth = master_token_auth(fake_owner(), token);
+        let owner = fake_owner();
+        let auth = McpAuthContext {
+            owner,
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+                .narrowed_to_owner(owner)
+                .expect("personal owner narrows"),
+            model_id: None,
+        };
 
         let ctx = server.ctx_for(author, &auth);
-        assert_eq!(ctx.master_token_id, Some(token));
         assert_eq!(ctx.mode, OutputMode::PrefixedIds);
         assert!(ctx.handles.is_none());
     }

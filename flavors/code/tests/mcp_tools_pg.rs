@@ -673,7 +673,6 @@ async fn retry_execution_request_succeeds_with_target_perspective()
     let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
 
-    let master_token = Uuid::now_v7();
     let shell_self = seed_perspective(&fixture.pg, &owner, "Shell author").await?;
 
     // A prior execution-request Fact + sidecar to retry.
@@ -694,7 +693,6 @@ async fn retry_execution_request_succeeds_with_target_perspective()
             fixture.pg.clone(),
             owner,
             registry,
-            Some(master_token),
             MemoryId::new(shell_self),
         ),
         json!({
@@ -736,7 +734,7 @@ async fn retry_execution_request_succeeds_with_target_perspective()
 }
 
 #[tokio::test]
-async fn retry_execution_request_uses_owner_write_authority_not_master_token_class()
+async fn retry_execution_request_uses_owner_write_authority()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
@@ -760,7 +758,6 @@ async fn retry_execution_request_uses_owner_write_authority_not_master_token_cla
             fixture.pg.clone(),
             owner,
             registry,
-            None,
             MemoryId::new(shell_self),
         ),
         json!({
@@ -809,7 +806,6 @@ async fn emit_execution_plan_uses_abstraction_proof_source()
             fixture.pg.clone(),
             owner,
             registry,
-            Some(Uuid::now_v7()),
             MemoryId::new(shell_self),
         ),
         json!({
@@ -861,7 +857,6 @@ async fn retry_execution_request_rejects_unknown_target_perspective()
     let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
 
-    let master_token = Uuid::now_v7();
     let shell_self = seed_perspective(&fixture.pg, &owner, "Shell author").await?;
 
     let repo_id = Uuid::now_v7();
@@ -878,7 +873,6 @@ async fn retry_execution_request_rejects_unknown_target_perspective()
         fixture.pg.clone(),
         owner,
         registry,
-        Some(master_token),
         MemoryId::new(shell_self),
     );
     let args: <CodeRetryExecutionRequestTool as McpTool>::Args = serde_json::from_value(json!({
@@ -936,20 +930,18 @@ fn ctx(pg: PgStorage, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpT
             caller_self_perspective: None,
         },
         caller_self_perspective: None,
-        master_token_id: None,
         extensions: McpToolExtensions::with(store),
         engine: Some(engine),
     }
 }
 
-/// Master-token shell-author context: `PrefixedIds` wire ids, no handle
-/// table, a master-token id, and a `caller_self_perspective` — the shape
-/// `McpToolHost` builds for `code_retry_execution_request` callers.
+/// Shell-author context: `PrefixedIds` wire ids, no handle table, and a
+/// `caller_self_perspective` — the shape `McpToolHost` builds for
+/// `code_retry_execution_request` callers.
 fn shell_ctx(
     pg: PgStorage,
     owner: Owner,
     registry: Arc<FlavorRegistryFrozen>,
-    master_token_id: Option<Uuid>,
     caller_self_perspective: MemoryId,
 ) -> McpToolCtx {
     let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
@@ -968,7 +960,6 @@ fn shell_ctx(
             caller_self_perspective: Some(caller_self_perspective),
         },
         caller_self_perspective: Some(caller_self_perspective),
-        master_token_id,
         extensions: McpToolExtensions::with(store),
         engine: Some(engine),
     }
