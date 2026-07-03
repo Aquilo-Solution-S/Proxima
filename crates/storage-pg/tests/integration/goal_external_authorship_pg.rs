@@ -1,15 +1,11 @@
 //! External authorship cannot seed concrete Goal states.
 
-use crate::common::{create_db, db_url, drop_db};
+use crate::common::{create_db, db_url, drop_db, owner_parts};
 
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{Owner, OwnerRef, OwnerRefKind, UserId};
+use proxima_core::{Owner, OwnerRef, UserId};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
-
-fn owner_parts(owner: &Owner) -> (OwnerRefKind, Option<Uuid>) {
-    owner.columns()
-}
 
 async fn insert_external_seed(
     pg: &PgStorage,

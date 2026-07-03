@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use std::sync::Arc;
+
 use proxima_core::FactIngestPort;
 
 // Each integration-test binary independently includes this module via
@@ -9,12 +11,16 @@ use proxima_core::FactIngestPort;
 #[path = "../../../src/test_fixtures.rs"]
 mod storage_pg_test_fixtures;
 
-use proxima_core::storage_ports::OwnerWritePermit;
+use proxima_core::storage_ports::{
+    ComplianceAdminPort, OwnerDropProofPort, OwnerWritePermit, StoragePorts,
+};
 pub use proxima_core::test_fixtures::owner_fixture;
 use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
+use proxima_core::verbs::schema::FlavorRegistryFrozen;
 use proxima_core::{
     AccessKind, AuthPath, AuthzContext, EdgeId, Engine, EntityKind, FlavorRegistry, MemoryId,
-    Owner, OwnerRef, RelationClass, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+    Owner, OwnerRef, OwnerRefKind, RelationClass, Role, SchemaId, SchemaVersion, SourceBatchId,
+    SourceId, UserId,
 };
 #[allow(unused_imports)]
 pub use proxima_pg_testkit::{
@@ -28,6 +34,64 @@ pub use storage_pg_test_fixtures::core_template_name;
 
 pub async fn fresh_pg() -> (PgStorage, String) {
     storage_pg_test_fixtures::fresh_pg("proxima_test").await
+}
+
+pub fn owner_parts(owner: &Owner) -> (OwnerRefKind, Option<Uuid>) {
+    proxima_storage_pg::access::owner_columns::owner_binds(owner)
+}
+
+pub fn test_registry() -> FlavorRegistryFrozen {
+    FlavorRegistry::new().freeze_or_panic_for_tests()
+}
+
+pub fn engine_with_registry(pg: &PgStorage, registry: FlavorRegistryFrozen) -> Engine {
+    Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports())
+}
+
+pub fn storage_ports_with_compliance(
+    pg: &PgStorage,
+    compliance_admin: Arc<dyn ComplianceAdminPort>,
+) -> StoragePorts {
+    storage_ports_with_compliance_and_drop_proof(pg, compliance_admin, None)
+}
+
+pub fn storage_ports_with_compliance_and_drop_proof(
+    pg: &PgStorage,
+    compliance_admin: Arc<dyn ComplianceAdminPort>,
+    owner_drop_proof: Option<Arc<dyn OwnerDropProofPort>>,
+) -> StoragePorts {
+    let pg = Arc::new(pg.clone());
+    let mut builder = StoragePorts::builder()
+        .fact_ingest(pg.clone())
+        .mcp_call_write(pg.clone())
+        .mcp_call_read(pg.clone())
+        .memory_authoring(pg.clone())
+        .memory_read(pg.clone())
+        .memory_inspect(pg.clone())
+        .embedding_text(pg.clone())
+        .embedding_write(pg.clone())
+        .embedding_job(pg.clone())
+        .embedding_maintenance(pg.clone())
+        .goal_write(pg.clone())
+        .goal_read(pg.clone())
+        .change_event(pg.clone())
+        .edge_read(pg.clone())
+        .citation(pg.clone())
+        .owner_access_read(pg.clone())
+        .owner_membership_admin(pg.clone())
+        .owner_transfer(pg.clone())
+        .source_batch(pg.clone())
+        .source_cursor(pg.clone())
+        .fact_retention(pg.clone())
+        .compliance_erase(pg.clone())
+        .compliance_admin(compliance_admin)
+        .registry_projection(pg);
+
+    if let Some(owner_drop_proof) = owner_drop_proof {
+        builder = builder.owner_drop_proof(owner_drop_proof);
+    }
+
+    builder.build()
 }
 
 pub async fn owner_write_permit(

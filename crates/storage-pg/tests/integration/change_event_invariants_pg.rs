@@ -5,12 +5,9 @@
 //! the pull-read decode in `change_event.rs` relies on, so a raw INSERT
 //! cannot persist an undecodable row. Mirrors the edges endpoint CHECKs.
 
-use proxima_core::{Owner, OwnerRefKind};
-use uuid::Uuid;
+use crate::common::owner_parts;
 
-fn owner_parts(owner: &Owner) -> (OwnerRefKind, Option<Uuid>) {
-    owner.columns()
-}
+use uuid::Uuid;
 
 #[tokio::test]
 async fn check_rejects_undecodable_change_event_rows() {
