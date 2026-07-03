@@ -68,9 +68,10 @@ to cross-check against and cannot catch a mis-resolved owner.
 Cross-tenant isolation therefore reduces **entirely** to host owner
 resolution. A host MUST:
 
-- derive `Owner` server-side from the authenticated identity (a verified
-  token claim or server config) and **reject any owner named in client
-  input** — a request must never choose whose Reality slice it reads;
+- derive owner authority server-side from the authenticated identity (a
+  verified token claim or server config). Client owner keys may appear only as
+  selectors for already-authorized owners; the host must resolve the selector
+  through server-owned roles and reject it if unauthorized;
 - resolve a `Group(g)` owner only for a requester in `members(g)`;
 - never share one engine process across tenants without per-identity
   owner resolution that enforces both rules above.

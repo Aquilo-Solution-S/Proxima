@@ -6,12 +6,17 @@ fn host_api_imports_from_root() {
     assert_send_sync::<proxima::ComplianceEraseRefusal>();
     assert_send_sync::<proxima::ComplianceEraseRequest>();
     assert_send_sync::<proxima::ComplianceEraseTarget>();
+    assert_send_sync::<proxima::CancellationToken>();
     assert_send_sync::<proxima::RuntimeBuilder>();
     assert_send_sync::<proxima::RuntimeConfig>();
     assert_send_sync::<proxima::Engine>();
     let owner: proxima::Owner = proxima::company_owner(uuid::Uuid::nil());
     let _authz: proxima::AuthzContext = proxima::AuthzContext::denied_for_owner(&owner);
+    let _narrowed = proxima::AuthzContext::denied_for_owner(&owner).narrowed_to_owner(owner);
     let _cursor: proxima::Cursor = proxima::Cursor::empty();
+    let _cancel = proxima::CancellationToken::new();
+    let _load_cursor = proxima::load_source_cursor;
+    let _store_cursor = proxima::store_source_cursor;
     let _outcome = proxima::ComplianceEraseOutcome::Refused {
         operation_id: uuid::Uuid::nil(),
         reason: proxima::ComplianceEraseRefusal::WorldOwner,
