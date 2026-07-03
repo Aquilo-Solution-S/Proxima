@@ -29,23 +29,24 @@ pub use compliance::{
 };
 pub use cursors::SourceCursorPort;
 pub use embeddings::{
-    EmbeddingJobPort, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort,
-    EmbeddingWriteProof,
+    EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingJobPort, EmbeddingMaintenancePort,
+    EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, EmbeddingTextPort,
+    EmbeddingWriteOutcome, EmbeddingWritePort, EmbeddingWriteProof,
 };
 pub use fact::{FactIngestPort, SourceBatchPort};
 pub use goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
 pub use handles::{
     ChangeEventHandle, CitationHandle, ComplianceAdminHandle, ComplianceEraseHandle,
-    EdgeReadHandle, EmbeddingJobHandle, EmbeddingTextHandle, EmbeddingWriteHandle,
-    FactIngestHandle, FactRetentionHandle, GoalReadHandle, GoalWriteHandle, McpCallReadHandle,
-    McpCallWriteHandle, MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle,
-    OwnerAccessReadHandle, OwnerDropProofHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
-    RegistryProjectionHandle, SourceBatchHandle, SourceCursorHandle,
+    EdgeReadHandle, EmbeddingJobHandle, EmbeddingMaintenanceHandle, EmbeddingTextHandle,
+    EmbeddingWriteHandle, FactIngestHandle, FactRetentionHandle, GoalReadHandle, GoalWriteHandle,
+    McpCallReadHandle, McpCallWriteHandle, MemoryAuthoringHandle, MemoryInspectHandle,
+    MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle, OwnerMembershipAdminHandle,
+    OwnerTransferHandle, RegistryProjectionHandle, SourceBatchHandle, SourceCursorHandle,
 };
 pub use mcp::{McpCallReadPort, McpCallWritePort};
 pub use memory::{
     CitationPort, EdgeReadPort, EdgeWriteProof, MemoryAuthoringPort, MemoryInspectPort,
     MemoryReadPort, OperatorWriteProof,
 };
-pub use proof::OwnerWritePermit;
+pub use proof::{OperatorMaintenanceProof, OwnerWritePermit};
 pub use registry::RegistryProjectionPort;

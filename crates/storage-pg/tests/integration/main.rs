@@ -11,6 +11,7 @@ mod derive_append_pg;
 mod edge_append_pg;
 mod edge_invariants_pg;
 mod edge_read_pg;
+mod embedding_lifecycle_pg;
 mod erase_matrix_pg;
 mod external_agent_constraint_pg;
 mod fact_embeddings_pg;

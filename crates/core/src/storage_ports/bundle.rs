@@ -3,11 +3,11 @@ use std::sync::Arc;
 
 use super::handles::{
     ChangeEventHandle, CitationHandle, ComplianceAdminHandle, ComplianceEraseHandle,
-    EdgeReadHandle, EmbeddingJobHandle, EmbeddingTextHandle, EmbeddingWriteHandle,
-    FactIngestHandle, FactRetentionHandle, GoalReadHandle, GoalWriteHandle, McpCallReadHandle,
-    McpCallWriteHandle, MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle,
-    OwnerAccessReadHandle, OwnerDropProofHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
-    RegistryProjectionHandle, SourceBatchHandle, SourceCursorHandle,
+    EdgeReadHandle, EmbeddingJobHandle, EmbeddingMaintenanceHandle, EmbeddingTextHandle,
+    EmbeddingWriteHandle, FactIngestHandle, FactRetentionHandle, GoalReadHandle, GoalWriteHandle,
+    McpCallReadHandle, McpCallWriteHandle, MemoryAuthoringHandle, MemoryInspectHandle,
+    MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle, OwnerMembershipAdminHandle,
+    OwnerTransferHandle, RegistryProjectionHandle, SourceBatchHandle, SourceCursorHandle,
 };
 use super::rejecting::RejectingStorage;
 
@@ -23,6 +23,7 @@ pub struct StoragePorts {
     embedding_text: EmbeddingTextHandle,
     embedding_write: EmbeddingWriteHandle,
     embedding_job: EmbeddingJobHandle,
+    embedding_maintenance: EmbeddingMaintenanceHandle,
     goal_write: GoalWriteHandle,
     goal_read: GoalReadHandle,
     change_event: ChangeEventHandle,
@@ -114,6 +115,7 @@ pub(crate) struct ComplianceStoragePorts {
     pub compliance_erase: ComplianceEraseHandle,
     pub compliance_admin: Option<ComplianceAdminHandle>,
     pub owner_drop_proof: Option<OwnerDropProofHandle>,
+    pub embedding_maintenance: EmbeddingMaintenanceHandle,
 }
 
 #[derive(Clone)]
@@ -142,6 +144,7 @@ pub struct StoragePortsBuilder {
     embedding_text: Option<EmbeddingTextHandle>,
     embedding_write: Option<EmbeddingWriteHandle>,
     embedding_job: Option<EmbeddingJobHandle>,
+    embedding_maintenance: Option<EmbeddingMaintenanceHandle>,
     goal_write: Option<GoalWriteHandle>,
     goal_read: Option<GoalReadHandle>,
     change_event: Option<ChangeEventHandle>,
@@ -191,6 +194,7 @@ impl StoragePorts {
             embedding_text: rejecting.clone(),
             embedding_write: rejecting.clone(),
             embedding_job: rejecting.clone(),
+            embedding_maintenance: rejecting.clone(),
             goal_write: rejecting.clone(),
             goal_read: rejecting.clone(),
             change_event: rejecting.clone(),
@@ -225,6 +229,7 @@ impl From<StoragePorts> for EngineStoragePorts {
                 compliance_erase: ports.compliance_erase.clone(),
                 compliance_admin: ports.compliance_admin.clone(),
                 owner_drop_proof: ports.owner_drop_proof.clone(),
+                embedding_maintenance: ports.embedding_maintenance.clone(),
             },
             fact_retention: FactRetentionStoragePorts {
                 fact_retention: ports.fact_retention.clone(),
@@ -321,6 +326,12 @@ impl StoragePortsBuilder {
     #[must_use]
     pub fn embedding_job(mut self, handle: EmbeddingJobHandle) -> Self {
         self.embedding_job = Some(handle);
+        self
+    }
+
+    #[must_use]
+    pub fn embedding_maintenance(mut self, handle: EmbeddingMaintenanceHandle) -> Self {
+        self.embedding_maintenance = Some(handle);
         self
     }
 
@@ -449,6 +460,9 @@ impl StoragePortsBuilder {
             embedding_job: self
                 .embedding_job
                 .expect("embedding_job storage port configured"),
+            embedding_maintenance: self
+                .embedding_maintenance
+                .expect("embedding_maintenance storage port configured"),
             goal_write: self.goal_write.expect("goal_write storage port configured"),
             goal_read: self.goal_read.expect("goal_read storage port configured"),
             change_event: self

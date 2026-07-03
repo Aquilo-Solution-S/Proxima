@@ -14,6 +14,7 @@ use sqlx::PgPool;
 
 use crate::error::internal;
 use crate::pg_ident::PgIdent;
+use crate::pgvector::{SET_HNSW_EF_SEARCH_SQL, SET_HNSW_ITERATIVE_SCAN_SQL};
 
 use super::{entity_owner_union, read_owner_columns, read_owner_predicate};
 
@@ -65,7 +66,6 @@ struct CandidateFilterParams {
 
 const MIN_VECTOR_CANDIDATE_OVERFETCH: u64 = 512;
 const VECTOR_CANDIDATE_OVERFETCH_PER_RESULT: u64 = 64;
-
 pub(crate) async fn search_memories(
     pool: &PgPool,
     req: &MemorySearchRequest,
@@ -204,6 +204,7 @@ async fn run_lexical(
     )
     .expect("write to String is infallible");
 
+    // SQL-POLICY: PgIdent
     let mut q = bind_common(
         sqlx::query_as::<_, SearchRow>(sqlx::AssertSqlSafe(sql)),
         req,
@@ -295,6 +296,7 @@ async fn run_semantic(
     )
     .expect("write to String is infallible");
 
+    // SQL-POLICY: PgIdent
     let mut q = bind_common(
         sqlx::query_as::<_, SearchRow>(sqlx::AssertSqlSafe(sql)),
         req,
@@ -306,7 +308,19 @@ async fn run_semantic(
     q = bind_filter_params(q, req);
     q = q.bind(crate::pgvector::literal(query_embedding));
     q = q.bind(model_id.clone());
-    q.fetch_all(pool).await.map_err(internal)
+
+    let mut tx = pool.begin().await.map_err(internal)?;
+    sqlx::query(SET_HNSW_EF_SEARCH_SQL)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal)?;
+    sqlx::query(SET_HNSW_ITERATIVE_SCAN_SQL)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal)?;
+    let rows = q.fetch_all(&mut *tx).await.map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
+    Ok(rows)
 }
 
 fn common_candidates_sql(

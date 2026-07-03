@@ -5,8 +5,8 @@ use super::compliance::{
 };
 use super::cursors::SourceCursorPort;
 use super::embeddings::{
-    EmbeddingJobPort, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort,
-    EmbeddingWriteProof,
+    EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort, EmbeddingWriteOutcome,
+    EmbeddingWritePort, EmbeddingWriteProof,
 };
 use super::fact::{FactIngestPort, SourceBatchPort};
 use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
@@ -15,7 +15,7 @@ use super::memory::{
     CitationPort, EdgeReadPort, EdgeWriteProof, MemoryAuthoringPort, MemoryInspectPort,
     MemoryReadPort, OperatorWriteProof,
 };
-use super::proof::OwnerWritePermit;
+use super::proof::{OperatorMaintenanceProof, OwnerWritePermit};
 use super::registry::RegistryProjectionPort;
 use crate::SourceBatchId;
 use crate::access::AccessError;
@@ -264,6 +264,27 @@ impl EmbeddingJobPort for RejectingStorage {
 
     async fn count_pending_embedding_jobs(&self, _owner: &Owner) -> Result<u64, StorageError> {
         Ok(0)
+    }
+}
+
+#[async_trait::async_trait]
+impl EmbeddingMaintenancePort for RejectingStorage {
+    async fn embedding_ann_observability(
+        &self,
+        _proof: OperatorMaintenanceProof,
+    ) -> Result<super::embeddings::EmbeddingAnnObservability, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects operational embedding reads".into(),
+        ))
+    }
+
+    async fn sweep_orphan_embedding_rows(
+        &self,
+        _proof: OperatorMaintenanceProof,
+    ) -> Result<super::embeddings::EmbeddingOrphanSweepOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects embedding maintenance".into(),
+        ))
     }
 }
 

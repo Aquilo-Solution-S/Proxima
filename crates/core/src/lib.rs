@@ -403,9 +403,11 @@ macro_rules! proxima_flavor {
 
 pub use storage_ports::{
     ChangeEventPort, CitationPort, ComplianceAdminPort, ComplianceErasePort, EdgeReadPort,
-    EmbeddingJobPort, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort, FactIngestPort,
-    FactRetentionPort, GoalReadPort, GoalWritePort, McpCallReadPort, McpCallWritePort,
-    MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OwnerAccessReadPort,
-    OwnerDropProofPort, OwnerMembershipAdminPort, OwnerTransferPort, RegistryProjectionPort,
-    SourceBatchPort, SourceCursorPort, StoragePorts,
+    EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingJobPort, EmbeddingMaintenancePort,
+    EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, EmbeddingTextPort,
+    EmbeddingWriteOutcome, EmbeddingWritePort, FactIngestPort, FactRetentionPort, GoalReadPort,
+    GoalWritePort, McpCallReadPort, McpCallWritePort, MemoryAuthoringPort, MemoryInspectPort,
+    MemoryReadPort, OperatorMaintenanceProof, OwnerAccessReadPort, OwnerDropProofPort,
+    OwnerMembershipAdminPort, OwnerTransferPort, RegistryProjectionPort, SourceBatchPort,
+    SourceCursorPort, StoragePorts,
 };
