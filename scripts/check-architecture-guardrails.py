@@ -507,9 +507,9 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
             "set_legal_hold",
             "clear_legal_hold",
         ],
-        "crates/storage-pg/src/verbs/fact_embeddings.rs": ["enqueue_missing_embedding_jobs"],
+        "crates/storage-pg/src/verbs/fact_embeddings/jobs.rs": ["enqueue_missing_embedding_jobs"],
         "crates/storage-pg/src/verbs/source_cursors.rs": ["store_source_cursor"],
-        "crates/storage-pg/src/verbs/goal_write.rs": [
+        "crates/storage-pg/src/verbs/goal_write/commands.rs": [
             "create_goal_atomic",
             "transition_goal_atomic",
             "achieve_goal_atomic",
