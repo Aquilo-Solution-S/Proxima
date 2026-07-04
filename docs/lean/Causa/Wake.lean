@@ -42,8 +42,8 @@ the same discipline as `Role.write_le_read` and `Causa.Flavor`:
                         tool execution policy remains engine/flavor-side; the
                         kernel pins the allow-list witness.
 
-`#print axioms` (below) is the guarantee: each theorem rests ONLY on axioms the
-kernel already trusts — never one named `wake`, because none exists.
+`#print axioms` (below) is the guarantee: each theorem rests on no Causa axioms
+— never one named `wake`, because none exists.
 -/
 
 import Causa.Goals
@@ -320,7 +320,7 @@ def oneShotFiring
   goal := goal
   config := config
   trigger := trig
-  emitted := [⟨gid, .Fact, o, schema, none, t⟩]
+  emitted := [⟨gid, .Fact, o, schema, none, none, none, none, t⟩]
   injected := []
   invoked := []
   wake_config := hcfg
@@ -350,7 +350,7 @@ theorem oneShot_fires
     (hw : may_write actor o .fact)
     (hlate : memory_created_at trig.memory < t)
     (relId : RelationId) (uuid : EdgeUuid) :
-    fires trig.memory ⟨gid, .Fact, o, schema, none, t⟩ :=
+    fires trig.memory ⟨gid, .Fact, o, schema, none, none, none, none, t⟩ :=
   ⟨oneShotFiring actor goal config trig hcfg harm hactive hmem hread o gid schema t hw hlate relId uuid,
     by rfl, by simp [oneShotFiring]⟩
 
@@ -479,7 +479,7 @@ theorem act_iff_fact_write_authority
 def autonomousRun (seed : Fact) (o : Owner) (schema : SchemaRef) (ids : Nat → MemoryId) :
     Nat → Memory
   | 0 => seed.memory
-  | (n+1) => ⟨ids n, .Fact, o, schema, none, memory_created_at seed.memory + (n+1)⟩
+  | (n+1) => ⟨ids n, .Fact, o, schema, none, none, none, none, memory_created_at seed.memory + (n+1)⟩
 
 theorem autonomousRun_fact (seed : Fact) (o : Owner) (schema : SchemaRef) (ids : Nat → MemoryId) :
     ∀ n, memory_kind (autonomousRun seed o schema ids n) = .Fact
@@ -524,7 +524,7 @@ theorem organism_autonomous
     hw hlate relId (uuids n)
 
 -- ============================================================
--- THE openness guarantee — only pre-existing kernel axioms
+-- THE openness guarantee — no Causa axioms
 -- ============================================================
 
 #print axioms organism_grounded

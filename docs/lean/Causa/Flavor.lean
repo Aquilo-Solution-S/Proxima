@@ -13,13 +13,14 @@ PARAMETERS here, never axioms. Optional sidecars are flavor-owned wrappers aroun
 ordinary `Memory`, `Goal`, and `Edge` rows; the kernel only sees the projected
 core row. We build concrete flavor rows and discharge the kernel's universal
 invariants on them using only pre-existing theorems: a flavor Fact is a Fact, a
-flavor Abstraction grounds in Facts (N1), flavor rows are access-controlled and
+flavor Abstraction grounds in Facts (N1), a flavor Perspective has Abstraction
+provenance when admitted, flavor rows are access-controlled and
 compliance-governed — none of it flavor-specific.
 
-The guarantee is `#print axioms` (below): every flavor theorem rests ONLY on
-axioms the kernel already trusts — never one named `flavor`, because none exists.
-That ABSENCE, machine-checked, IS the openness. A flavor adds vocabulary; it never
-adds a rule, and never adds a trusted assumption. Compliance is derived, not
+The guarantee is `#print axioms` (below): every flavor theorem rests on no Causa
+axioms — never one named `flavor`, because none exists. That ABSENCE,
+machine-checked, IS the openness. A flavor adds vocabulary; it never adds a
+rule, and never adds a trusted assumption. Compliance is derived, not
 axiomatized.
 
 Goals and edges extend the same way: a flavor Goal is a `Goal` carrying the
@@ -41,15 +42,20 @@ namespace Causa.Flavor
 
 /-- A concrete flavor Fact — an ordinary `Memory` carrying the flavor's schema. -/
 def fact (schema : SchemaRef) (owner : Owner) (id : MemoryId) (t : Instant) : Memory :=
-  ⟨id, .Fact, owner, schema, none, t⟩
+  ⟨id, .Fact, owner, schema, none, none, none, none, t⟩
 
 /-- A concrete flavor Abstraction. -/
 def abstraction (schema : SchemaRef) (owner : Owner) (id : MemoryId) (t : Instant) : Memory :=
-  ⟨id, .Abstraction, owner, schema, none, t⟩
+  ⟨id, .Abstraction, owner, schema, none, none, none, none, t⟩
+
+/-- A concrete flavor Perspective — useful for app-owned policy/current-state
+    views. -/
+def perspective (schema : SchemaRef) (owner : Owner) (id : MemoryId) (t : Instant) : Memory :=
+  ⟨id, .Perspective, owner, schema, none, none, none, none, t⟩
 
 /-- A flavor Fact published to World (the universal read-only group). -/
 def published (schema : SchemaRef) (id : MemoryId) (t : Instant) : Memory :=
-  ⟨id, .Fact, world, schema, none, t⟩
+  ⟨id, .Fact, world, schema, none, none, none, none, t⟩
 
 /-- Optional flavor-owned Memory sidecar. There is intentionally no theorem
     requiring such a wrapper for every memory row; sidecars are flavor/engine
@@ -139,6 +145,12 @@ theorem fact_receipt_is_fact
 theorem fact_is_fact (schema : SchemaRef) (owner : Owner) (id : MemoryId) (t : Instant) :
     memory_kind (fact schema owner id t) = .Fact := rfl
 
+/-- The flavor's row IS a Perspective — applications do not need to directly
+    construct raw `Memory` rows for policy/current-state views. -/
+theorem perspective_is_perspective
+    (schema : SchemaRef) (owner : Owner) (id : MemoryId) (t : Instant) :
+    memory_kind (perspective schema owner id t) = .Perspective := rfl
+
 /-- The flavor's Abstraction is grounded in Facts when admitted into a valid
     memory graph. The flavor inherits provenance grounding from the table bundle;
     no flavor-specific axiom is added. -/
@@ -150,6 +162,22 @@ theorem abstraction_grounded
     (hm : abstraction schema owner id t ∈ memories) :
     GroundsInFact registry edges (abstraction schema owner id t) :=
   memory_grounds_in_facts registry memories goals factEntities edges hgraph _ hm
+
+/-- The flavor's Perspective inherits the universal Perspective provenance rule:
+    once admitted to a valid graph, it must carry Provenance to an admitted
+    Abstraction. -/
+theorem perspective_has_abstraction_provenance
+    (registry : RelationRegistry) (memories : Set Memory) (goals : Set Goal)
+    (factEntities : Set FactEntity) (edges : Set Edge)
+    (hgraph : MemoryGraphValid registry memories goals factEntities edges)
+    (schema : SchemaRef) (owner : Owner) (id : MemoryId) (t : Instant)
+    (hm : perspective schema owner id t ∈ memories) :
+    ∃ e : Edge, e ∈ edges ∧ EdgeHasClass registry e .Provenance ∧
+      edge_source e = .memory (perspective schema owner id t) ∧
+      (∃ mt : Memory, mt ∈ memories ∧ edge_target e = .memory mt ∧
+        memory_kind mt = .Abstraction) :=
+  Causa.perspective_has_provenance registry memories goals factEntities edges
+    hgraph _ hm rfl
 
 /-- A flavor Fact published to World is readable by every requester — its access
     is its owner's, governed by the universal rule (`world_universally_readable`). -/
@@ -172,9 +200,9 @@ theorem wipeable_when_abandoned (schema : SchemaRef) (owner : Owner) (id : Memor
     (fact schema owner id t).owner r = none :=
   h r
 
--- THE openness guarantee, machine-checked: each list below names ONLY axioms the
--- kernel already trusts (`User`, `SchemaRef`, …). None is named `flavor`, because
--- the kernel has none. Extensibility is proven, not assumed.
+-- THE openness guarantee, machine-checked: each list below names no Causa
+-- axioms. None is named `flavor`, because the kernel has none. Extensibility is
+-- proven, not assumed.
 #print axioms memory_sidecar_payload_irrelevant
 #print axioms goal_sidecar_payload_irrelevant
 #print axioms edge_sidecar_payload_irrelevant
@@ -183,8 +211,12 @@ theorem wipeable_when_abandoned (schema : SchemaRef) (owner : Owner) (id : Memor
 #print axioms goal_sidecar_state_projection
 #print axioms edge_sidecar_core_valid
 #print axioms fact_receipt_is_fact
+#print axioms fact_is_fact
+#print axioms perspective_is_perspective
 #print axioms abstraction_grounded
+#print axioms perspective_has_abstraction_provenance
 #print axioms published_readable
+#print axioms published_read_only
 #print axioms wipeable_when_abandoned
 
 end Causa.Flavor
