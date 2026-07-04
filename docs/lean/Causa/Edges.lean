@@ -625,6 +625,73 @@ def memorySupersedes (registry : RelationRegistry) (new old : Memory) : Prop :=
     edge_source e = .memory new ∧
     edge_target e = .memory old
 
+/-- Table-scoped memory supersession: the superseding edge must be present in the
+    admitted Edge table. This is the query shape consumers need for current-head
+    projections; raw `memorySupersedes` remains only the relation predicate. -/
+def memorySupersedesInTable
+    (registry : RelationRegistry) (edges : Set Edge) (new old : Memory) : Prop :=
+  ∃ e : Edge,
+    e ∈ edges ∧
+    EdgeHasClass registry e .Supersession ∧
+    edge_source e = .memory new ∧
+    edge_target e = .memory old
+
+/-- Projection: table-scoped supersession is ordinary memory supersession. -/
+theorem memory_supersedes_in_table :
+    ∀ registry edges new old,
+      memorySupersedesInTable registry edges new old →
+      memorySupersedes registry new old := by
+  intro registry edges new old h
+  rcases h with ⟨e, _he, hclass, hsource, htarget⟩
+  exact ⟨e, hclass, hsource, htarget⟩
+
+/-- A Memory lifecycle head in the actual admitted tables: the row is present and
+    no later admitted Memory row supersedes it through an admitted Supersession
+    edge. -/
+def memoryIsHead
+    (registry : RelationRegistry) (memories : Set Memory) (edges : Set Edge)
+    (m : Memory) : Prop :=
+  m ∈ memories ∧
+  ¬ ∃ m' : Memory, m' ∈ memories ∧ memorySupersedesInTable registry edges m' m
+
+/-- Generic current Memory-head query. -/
+def memoryHeads
+    (registry : RelationRegistry) (memories : Set Memory) (edges : Set Edge) :
+    Set Memory :=
+  fun m => memoryIsHead registry memories edges m
+
+/-- Generic current Perspective-head query. Downstream apps can add their own
+    schema/payload filters; the kernel only supplies the F/A/P head shape. -/
+def perspectiveHeads
+    (registry : RelationRegistry) (memories : Set Memory) (edges : Set Edge) :
+    Set Memory :=
+  fun m => memory_kind m = .Perspective ∧ memoryIsHead registry memories edges m
+
+/-- Superseded rows are not Memory lifecycle heads. -/
+theorem memory_superseded_not_head :
+    ∀ registry memories edges old new,
+      new ∈ memories →
+      memorySupersedesInTable registry edges new old →
+      ¬ memoryIsHead registry memories edges old := by
+  intro registry memories edges old new hnew hsup hhead
+  exact hhead.2 ⟨new, hnew, hsup⟩
+
+/-- Projection: a Perspective head is a Perspective. -/
+theorem perspective_head_is_perspective :
+    ∀ registry memories edges m,
+      m ∈ perspectiveHeads registry memories edges →
+      memory_kind m = .Perspective := by
+  intro registry memories edges m h
+  exact h.1
+
+/-- Projection: a Perspective head is also a Memory head. -/
+theorem perspective_head_is_memory_head :
+    ∀ registry memories edges m,
+      m ∈ perspectiveHeads registry memories edges →
+      memoryIsHead registry memories edges m := by
+  intro registry memories edges m h
+  exact h.2
+
 /-- ME-5a — supersession endpoint kind must match (doc 02). THEOREM:
     only the A→A and P→P matrix cells admit Supersession. -/
 theorem supersession_same_kind :

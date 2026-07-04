@@ -203,21 +203,11 @@ theorem atop_edge_shape :
 -- §Phase 2 F→A exclusivity)
 -- ============================================================
 
-/-- Which operator produced a derived memory, and from which source
-    batch. Opaque operator identity; reproducibility metadata
-    (model id, prompt version, wake depth) stays engine-level row
-    metadata (doc 04 §Idempotence — recorded, not axiomatized). -/
-axiom OperatorId : Type
-axiom memory_operator : Memory → Option OperatorId
-axiom memory_source_batch : Memory → Option SourceBatchId
-
-/-- The F→A input contract: the Fact-schema set the gate row keys on
-    (doc 04 §Source-batch lifecycle: "Fact schema set | input
-    contract"). Opaque — its content is a set of SchemaRefs
-    engine-side; the kernel needs only its identity as a gate
-    dimension. -/
-axiom InputContract : Type
-axiom memory_input_contract : Memory → Option InputContract
+/- Derived-memory operator metadata is structural on `Memory`:
+   `memory_operator`, `memory_source_batch`, and `memory_input_contract` are
+   ordinary field projections. Their values stay opaque equality tokens; the
+   trusted CN-8 rule is a table-validity witness below, not a global axiom over
+   all raw `Memory` values. -/
 
 -- ============================================================
 -- CN-8b — operator invocation ledger / input completeness
@@ -355,12 +345,12 @@ theorem invocation_output_memory_kind_valid :
     contract, operator id, output Abstraction schema)" within one
     source batch. OWNER-CONDITIONED (minimization pass): batch ids
     are unique only within `(source_id, owner)` (doc 01 Q6), so the
-    gate's scope carries the owner dimension explicitly — without it
-    the axiom would identify Abstractions across Owners whose sources
-    coincidentally declared the same batch UUID. Decision:
-    `docs/domain/decisions/2026-06-11-batch-id-scope.md`. -/
-axiom ftoa_batch_exclusive :
-  ∀ m1 m2 : Memory,
+    gate's scope carries the owner dimension explicitly. This is admitted-table
+    validity, not a global property of raw values: invalid duplicate rows can be
+    constructed but not admitted into a valid table. -/
+structure FtoaBatchExclusive (memories : Set Memory) : Prop where
+  exclusive : ∀ m1 m2 : Memory,
+    m1 ∈ memories → m2 ∈ memories →
     memory_kind m1 = .Abstraction → memory_kind m2 = .Abstraction →
     memory_owner m1 = memory_owner m2 →
     memory_source_batch m1 ≠ none →
@@ -369,5 +359,24 @@ axiom ftoa_batch_exclusive :
     memory_operator m1 = memory_operator m2 →
     memory_schema m1 = memory_schema m2 →
     m1 = m2
+
+/-- CN-8 projection theorem: a valid admitted table has at most one F→A
+    Abstraction for each `(owner, source batch, input contract, operator,
+    output schema)` gate. -/
+theorem ftoa_batch_exclusive :
+  ∀ memories : Set Memory,
+    FtoaBatchExclusive memories →
+    ∀ m1 m2 : Memory,
+      m1 ∈ memories → m2 ∈ memories →
+      memory_kind m1 = .Abstraction → memory_kind m2 = .Abstraction →
+      memory_owner m1 = memory_owner m2 →
+      memory_source_batch m1 ≠ none →
+      memory_source_batch m1 = memory_source_batch m2 →
+      memory_input_contract m1 = memory_input_contract m2 →
+      memory_operator m1 = memory_operator m2 →
+      memory_schema m1 = memory_schema m2 →
+      m1 = m2 := by
+  intro memories h m1 m2 hm1 hm2
+  exact h.exclusive m1 m2 hm1 hm2
 
 end Causa

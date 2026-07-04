@@ -50,14 +50,18 @@ def MemoryKind.layer : MemoryKind → Nat
 
 /-- One identity shape for all memories: `memory_id` (UUIDv7),
     per-row `owner`, `schema_id`/`schema_version`, optional free text,
-    and `created_at` insert time. Text is optional for every kind;
-    flavor sidecars may carry additional opaque typed payload. -/
+    optional derivation metadata, and `created_at` insert time. Text is
+    optional for every kind; flavor sidecars may carry additional opaque typed
+    payload. -/
 structure Memory where
   id         : MemoryId
   kind       : MemoryKind
   owner      : Owner
   schema     : SchemaRef
   text       : Option Text
+  operator   : Option OperatorId
+  source_batch : Option SourceBatchId
+  input_contract : Option InputContract
   created_at : Instant
 
 /-- Compatibility accessor for prose/Rust vocabulary. -/
@@ -76,14 +80,48 @@ def memory_schema : Memory → SchemaRef := Memory.schema
 def memory_text : Memory → Option Text := Memory.text
 
 /-- Compatibility accessor for prose/Rust vocabulary. -/
+def memory_operator : Memory → Option OperatorId := Memory.operator
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def memory_source_batch : Memory → Option SourceBatchId := Memory.source_batch
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def memory_input_contract : Memory → Option InputContract := Memory.input_contract
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
 def memory_created_at : Memory → Instant := Memory.created_at
 
-/-- Regression target: Memory is a structural row shape, not only an
-    opaque type plus opaque accessor axioms. -/
+/-- Regression target: Memory is a structural row shape; core fields are
+    reducible projections, not trusted accessors. -/
 theorem memory_field_projection
     (id : MemoryId) (kind : MemoryKind) (owner : Owner)
-    (schema : SchemaRef) (text : Option Text) (created_at : Instant) :
-    memory_id (Memory.mk id kind owner schema text created_at) = id := rfl
+    (schema : SchemaRef) (text : Option Text)
+    (operator : Option OperatorId) (source_batch : Option SourceBatchId)
+    (input_contract : Option InputContract) (created_at : Instant) :
+    memory_id
+      (Memory.mk id kind owner schema text operator source_batch input_contract created_at) = id := rfl
+
+/-- Derivation metadata is also structural: CN-8 gate dimensions reduce by
+    projection on the admitted `Memory` row. -/
+theorem memory_derivation_field_projection
+    (id : MemoryId) (kind : MemoryKind) (owner : Owner)
+    (schema : SchemaRef) (text : Option Text)
+    (operator : Option OperatorId) (source_batch : Option SourceBatchId)
+    (input_contract : Option InputContract) (created_at : Instant) :
+    memory_operator
+        (Memory.mk id kind owner schema text operator source_batch input_contract created_at) =
+          operator ∧
+      memory_source_batch
+        (Memory.mk id kind owner schema text operator source_batch input_contract created_at) =
+          source_batch ∧
+      memory_input_contract
+        (Memory.mk id kind owner schema text operator source_batch input_contract created_at) =
+          input_contract := by
+  constructor
+  · rfl
+  constructor
+  · rfl
+  · rfl
 
 /-- ME-id — memory_id uniqueness is a table/store invariant, not a
     global property of raw `Memory` values. A set with duplicate ids is

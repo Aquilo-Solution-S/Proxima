@@ -32,12 +32,13 @@ namespace Causa
     engine commitments, deliberately NOT modeled: the kernel's time axis is
     `Memory.created_at : Instant`, never the id (two clocks would be a hazard),
     and a concrete UUIDv7 would expose ordering/arithmetic the kernel never uses.
-    Opaque, not concrete, is the faithful boundary.
+    Opaque declaration, not axiom, is the faithful boundary: Causa proofs use
+    only equality and never inspect the hidden representation.
 
     The kernel needs NO cross-type id distinctness (no theorem reads it), so the
     per-entity id names are documentation abbrevs over this single type rather
     than separate opaque types. -/
-axiom Id : Type
+opaque Id : Type := String
 
 abbrev MemoryId          : Type := Id
 abbrev GoalId            : Type := Id
@@ -73,6 +74,17 @@ abbrev EdgeUuid          : Type := Id
 /-- A source/flavor ingest batch grouping token. -/
 abbrev SourceBatchId     : Type := Id
 
+/-- Which operator produced a derived memory. Reproducibility metadata
+    (model id, prompt version, wake depth) stays engine-level row metadata
+    (doc 04 §Idempotence — recorded, not axiomatized). -/
+opaque OperatorId : Type := String
+
+/-- The F→A input contract: the Fact-schema set the gate row keys on
+    (doc 04 §Source-batch lifecycle: "Fact schema set | input contract").
+    Opaque: its content is a set of SchemaRefs engine-side; the kernel needs
+    only its equality as a gate dimension. -/
+opaque InputContract : Type := String
+
 /-- The content-addressable arm's id. The kernel cannot observe "hash-ness" — it
     sees no payload — so a content hash is, to the kernel, the same opaque
     equality-token as any other `Id`. That source-ingest edges are
@@ -96,8 +108,9 @@ inductive EdgeId where
     this schema; the kernel never inspects it. Namespacing, versioning, the flavor
     registry, and admission of registered schemas are engine/build-time concerns,
     not kernel ontology — the universal rules bind every row regardless of which
-    flavor produced it. -/
-axiom SchemaRef : Type
+    flavor produced it. The hidden implementation is a serializable token type;
+    no Causa theorem may inspect it. -/
+opaque SchemaRef : Type := String
 
 -- ============================================================
 -- Lifecycle capability classes (doc 07 §Append-Only)
@@ -115,16 +128,12 @@ class Immutable (α : Type) : Prop
 -- Source/batch identifiers
 -- ============================================================
 
-/- ES-5 — batch-id uniqueness is scoped: "unique within (source_id,
-   owner)" (doc 01 §The contract Q6, doc 07 §ID Types, doc 04). An
-   earlier global-injectivity axiom here asserted MORE than the docs
-   (a shared batch id across different owners is doc-admitted: each
-   scope is collision-free, the per-scope engine validation accepts
-   both). Removed by the minimization pass — the scoped validation is
-   an engine check with no kernel-observable face; the F→A gate now
-   carries its own owner dimension (`ftoa_batch_exclusive`,
-   Causa.Operators). Decision:
-   `docs/domain/decisions/2026-06-11-batch-id-scope.md`. -/
+/- ES-5 — batch-id uniqueness is storage admission, not kernel ontology. The
+   current runtime makes `source_batches.id` globally unique and also carries
+   the `(source_id, owner, id)` uniqueness witness documented in COVERAGE. Lean
+   keeps no source-batch table, so no kernel-observable axiom is required; the
+   F→A gate carries its own owner dimension (`FtoaBatchExclusive`,
+   Causa.Operators). -/
 
 /- ST-15..17 — vector-store independence is carried by ABSENCE: the kernel
    declares no `Embedding` entity and no `Memory → Embedding` accessor. Entity

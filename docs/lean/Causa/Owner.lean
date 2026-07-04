@@ -46,7 +46,7 @@ namespace Causa
     Identity is the whole content of `User`: two users differ because they are
     different inhabitants. Human/Agent attributes, context, and tool catalogs
     are flavor/engine sidecar data over this atom, never kernel fields. -/
-axiom User : Type
+opaque User : Type := String
 
 /-- Spec-mode kernel: decidable person-equality comes from classical logic
     (noncomputable). Lets the personal group be written as a literal singleton

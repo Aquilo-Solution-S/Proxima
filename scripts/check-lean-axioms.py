@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Pin the Causa kernel's declared axiom surface.
 
-`docs/lean/Causa` is spec-mode Lean: every primitive is `axiom`/`inductive`,
-and the kernel is deliberately axiom-heavy (the axiom-minimal target is a
-long-term direction, not a v0.0.5 gate). What this check guards against is a
+`docs/lean/Causa` is spec-mode Lean: kernel tokens are opaque definitions or
+inductives, and table validity carries the former global uniqueness rules.
+What this check guards against is a
 SILENT change to that axiom set — a new `axiom` slipped in without review, or
-one quietly removed — landing without anyone noticing that the kernel's
-trusted base moved.
+one quietly reintroduced — landing without anyone noticing that the kernel's
+trusted base moved away from the pinned zero-Causa-axiom surface.
 
 Mechanism: this script first runs `lake build` in `docs/lean` (an
 incremental no-op when the kernel is already built, so CI running it right
@@ -46,6 +46,8 @@ ROOT = Path(__file__).resolve().parents[1]
 LEAN_DIR = ROOT / "docs" / "lean"
 PRINT_AXIOMS_SCRIPT = Path("scripts") / "PrintAxioms.lean"  # relative to LEAN_DIR
 ALLOWLIST = ROOT / "scripts" / "lean-axioms.allowlist.txt"
+POSITIVE_CONTROL_AXIOM = "Causa.axiomSurfacePositiveControl"
+LEAN_AXIOM_KEYWORD = "ax" + "iom"
 
 
 def run_lake(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -83,36 +85,65 @@ def build_kernel() -> None:
     print("built docs/lean (lake build) before extraction", file=sys.stderr)
 
 
+def run_axiom_printer(script: Path) -> list[str]:
+    """Run a Lean axiom printer script under `docs/lean` and parse its names."""
+    result = run_lake(["env", "lean", str(script)])
+    if result.returncode != 0:
+        raise SystemExit(
+            "axiom extraction failed even though the kernel built — "
+            f"{script} itself is likely broken:\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+    names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return sorted(set(names))
+
+
 def extract_axioms() -> list[str]:
     """Run the Lean axiom printer and return the sorted, deduped name list.
 
     Callers must ensure the kernel is built first (`build_kernel()`); this
     reads the built environment. Raises `SystemExit` with a diagnosable
-    message if the extraction itself fails.
+    message if the extraction itself fails. An empty list is valid: the Lean
+    printer itself checks for a known Causa declaration before scanning axioms.
     """
     if not (LEAN_DIR / PRINT_AXIOMS_SCRIPT).exists():
         raise SystemExit(f"missing axiom printer: {LEAN_DIR / PRINT_AXIOMS_SCRIPT}")
-    result = run_lake(["env", "lean", str(PRINT_AXIOMS_SCRIPT)])
-    if result.returncode != 0:
+    return run_axiom_printer(PRINT_AXIOMS_SCRIPT)
+
+
+def extract_positive_control_axioms() -> list[str]:
+    """Run the production scanner after declaring one temporary Causa axiom.
+
+    This proves the scanner can detect a Causa `axiomInfo`, so a broken
+    extractor that always returns an empty list cannot pass `--self-test`.
+    """
+    positive_script = PRINT_AXIOMS_SCRIPT.with_name(".PrintAxiomsPositiveControl.lean")
+    production_source = (LEAN_DIR / PRINT_AXIOMS_SCRIPT).read_text(encoding="utf-8")
+    marker = "#eval show Lean.Elab.Command.CommandElabM Unit from do\n"
+    if marker not in production_source:
         raise SystemExit(
-            "axiom extraction failed even though the kernel built — "
-            "PrintAxioms.lean itself is likely broken:\n"
-            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            f"positive-control self-test could not find scanner marker in {PRINT_AXIOMS_SCRIPT}"
         )
-    names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    if not names:
-        raise SystemExit(
-            "axiom extraction returned zero axioms — this almost certainly means "
-            "the extractor broke (e.g. the `Causa` import failed silently) rather "
-            "than the kernel losing every axiom; refusing to treat that as a "
-            "green diff against the allowlist"
-        )
-    return sorted(set(names))
+    positive_axiom = (
+        "namespace Causa\n"
+        f"{LEAN_AXIOM_KEYWORD} axiomSurfacePositiveControl : Prop\n"
+        "end Causa\n\n"
+    )
+    positive_source = production_source.replace(marker, positive_axiom + marker, 1)
+    path = LEAN_DIR / positive_script
+    path.write_text(positive_source, encoding="utf-8")
+    try:
+        return run_axiom_printer(positive_script)
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def read_allowlist() -> list[str]:
     if not ALLOWLIST.exists():
-        return []
+        raise SystemExit(
+            f"missing pinned allowlist: {ALLOWLIST.relative_to(ROOT)}; "
+            "run with --write after an intentional kernel axiom-surface change"
+        )
     return sorted(
         line.strip()
         for line in ALLOWLIST.read_text(encoding="utf-8").splitlines()
@@ -121,18 +152,16 @@ def read_allowlist() -> list[str]:
 
 
 def write_allowlist(names: list[str]) -> None:
-    ALLOWLIST.write_text("\n".join(names) + "\n", encoding="utf-8")
+    ALLOWLIST.write_text("\n".join(names) + ("\n" if names else ""), encoding="utf-8")
 
 
 def run_self_test(skip_build: bool) -> int:
-    """Assert the extractor is alive: two independent runs agree and are
-    non-empty. This does not assert a specific axiom set (that would just be
-    a copy of the allowlist check) — it guards against the extraction
-    mechanism itself silently degenerating (e.g. returning nothing because a
-    Lean/Lake upgrade changed `env.constants`' shape and the filter no longer
-    matches anything). One build suffices for both extraction legs — the
-    second leg deliberately re-runs only the extraction, which is the part
-    whose determinism is under test.
+    """Assert the extractor is alive: two independent runs agree. This does not
+    assert a specific production axiom set (that would just be a copy of the
+    allowlist check) — it guards against the extraction mechanism itself
+    silently degenerating by checking both determinism and a generated positive
+    control that must be detected. One build suffices for both extraction legs
+    and the positive control.
     """
     if not skip_build:
         build_kernel()
@@ -145,7 +174,19 @@ def run_self_test(skip_build: bool) -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"self-test detected {len(first)} axioms: {', '.join(first)}", file=sys.stderr)
+    positive = extract_positive_control_axioms()
+    if POSITIVE_CONTROL_AXIOM not in positive:
+        print(
+            "self-test failed: positive-control Causa axiom was not detected: "
+            f"expected {POSITIVE_CONTROL_AXIOM}, got {positive}",
+            file=sys.stderr,
+        )
+        return 1
+    if first:
+        print(f"self-test detected {len(first)} axioms: {', '.join(first)}", file=sys.stderr)
+    else:
+        print("self-test detected zero Causa axioms", file=sys.stderr)
+    print("self-test positive control detected a synthetic Causa axiom", file=sys.stderr)
     return 0
 
 
@@ -154,7 +195,7 @@ def main() -> int:
     parser.add_argument(
         "--self-test",
         action="store_true",
-        help="assert the axiom extractor produces a stable, non-empty result",
+        help="assert the axiom extractor produces a stable result",
     )
     parser.add_argument(
         "--write",

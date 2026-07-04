@@ -1,5 +1,5 @@
 /-
-Causa — axiom-surface printer (Task 8, v0.0.5 hardening).
+Causa — axiom-surface printer.
 
 Prints every SAFE `axiom` declared under the `Causa` namespace, one fully
 qualified name per line, sorted. This is the kernel's primitive surface: the
@@ -24,7 +24,9 @@ Regenerate the checked-in allowlist after an intentional kernel change with:
       > ../../scripts/lean-axioms.allowlist.txt
 
 (`scripts/check-lean-axioms.py` runs the equivalent invocation and diffs
-against that file; see its --help / header for details.)
+against that file; see its --help / header for details.) An empty output is a
+valid result: the script first asserts that a known Causa declaration loaded, so
+zero lines means zero Causa axioms, not a silent import miss.
 -/
 import Lean
 import Causa
@@ -33,6 +35,8 @@ open Lean
 
 #eval show Lean.Elab.Command.CommandElabM Unit from do
   let env ← getEnv
+  unless env.contains `Causa.Flavor.wipeable_when_abandoned do
+    throwError "Causa import did not expose Causa.Flavor.wipeable_when_abandoned; refusing to print an axiom surface"
   let mut names : Array String := #[]
   for (n, ci) in env.constants.toList do
     match ci with

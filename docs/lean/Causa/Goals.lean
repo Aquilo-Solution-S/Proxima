@@ -13,9 +13,10 @@ live with Edge rows and relation descriptors; the kernel keeps no
 
 GO-7 — there is no Self primitive in this kernel, BY DESIGN:
 "There is no Self row" (doc 06 §Self). Self(instance) is a query —
-current root Perspective + active perspective heads + active goals.
-Self must never be cached as a Memory row, a Goal row, Personality
-instance, or materialized causal chain ("cache would become
+readable Perspective selector rows + active Goal heads. Head-aware Perspective
+queries require Edge-table supersession state and live in `Causa.Edges`
+(`perspectiveHeads`). Self must never be cached as a Memory row, a Goal row,
+Personality instance, or materialized causal chain ("cache would become
 authority"). The absence of a `Self` axiom here is the invariant;
 COVERAGE.md records it explicitly.
 

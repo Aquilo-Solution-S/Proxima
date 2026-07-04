@@ -41,6 +41,7 @@ structure MemoryGraphValid
     (registry : RelationRegistry) (memories : Set Memory) (goals : Set Goal)
     (factEntities : Set FactEntity) (edges : Set Edge) : Prop where
   memoryIdUnique : MemoryIdUnique memories
+  ftoaBatchExclusive : FtoaBatchExclusive memories
   goalIdUnique : GoalIdUnique goals
   factEntityIdUnique : FactEntityIdUnique factEntities
   factEntityNaturalKeyUnique : FactEntityNaturalKeyUnique factEntities
@@ -67,6 +68,14 @@ theorem memory_graph_edge_valid :
       EdgeTableValid registry edges := by
   intro _ _ _ _ _ hgraph
   exact hgraph.edgeTableValid
+
+/-- F→A batch exclusivity is part of admitted memory-graph validity. -/
+theorem memory_graph_ftoa_batch_exclusive :
+    ∀ registry memories goals factEntities edges,
+      MemoryGraphValid registry memories goals factEntities edges →
+      FtoaBatchExclusive memories := by
+  intro _ _ _ _ _ hgraph
+  exact hgraph.ftoaBatchExclusive
 
 /-- N1 structural grounding: the admitted-table descent relation is well-founded
     because it strictly decreases `created_at`. -/
