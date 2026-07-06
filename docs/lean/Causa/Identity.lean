@@ -35,6 +35,11 @@ namespace Causa
     Opaque declaration, not axiom, is the faithful boundary: Causa proofs use
     only equality and never inspect the hidden representation.
 
+    This opacity rule remains law for row ids, operator ids, input contracts,
+    and schema refs. `User` is defined separately in `Owner.lean` under the
+    owner-algebra token exception (private representation, public mint +
+    equality).
+
     The kernel needs NO cross-type id distinctness (no theorem reads it), so the
     per-entity id names are documentation abbrevs over this single type rather
     than separate opaque types. -/

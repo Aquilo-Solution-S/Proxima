@@ -2,7 +2,9 @@
 """Pin the Causa kernel's declared axiom surface.
 
 `docs/lean/Causa` is spec-mode Lean: kernel tokens are opaque definitions or
-inductives, and table validity carries the former global uniqueness rules.
+inductives, except the reviewed constructive `User` owner-algebra atom, whose
+representation is sealed by a private constructor/field. Table validity carries
+the former global uniqueness rules.
 What this check guards against is a
 SILENT change to that axiom set — a new `axiom` slipped in without review, or
 one quietly reintroduced — landing without anyone noticing that the kernel's

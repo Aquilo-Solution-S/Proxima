@@ -40,18 +40,30 @@ namespace Causa
 -- The one irreducible atom
 -- ============================================================
 
-/-- The single role-bearing identity primitive of the kernel: human user,
-    configured Agent, service actor. The kernel cannot define this set
-    structurally; existence and concrete records are inputs from the world.
-    Identity is the whole content of `User`: two users differ because they are
-    different inhabitants. Human/Agent attributes, context, and tool catalogs
-    are flavor/engine sidecar data over this atom, never kernel fields. -/
-opaque User : Type := String
+/-- The identity atom: an engine-minted token (UUIDv7 in the engine).
+    EQUALITY is all the kernel asks of it. This replaces the former opaque
+    identity atom: the representation stays sealed (private constructor and
+    field — no projection or construction outside this module), but equality
+    is now computable and the mint `User.ofToken` is visible to proofs.
+    Concrete user records (who exists, attributes, catalogs) remain inputs
+    from the world — flavor/engine sidecar data, never kernel fields. -/
+structure User where
+  private mk ::
+  private token : String
+  deriving DecidableEq, Repr
 
-/-- Spec-mode kernel: decidable person-equality comes from classical logic
-    (noncomputable). Lets the personal group be written as a literal singleton
-    without adding a primitive. -/
-noncomputable instance : DecidableEq User := fun a b => Classical.propDecidable (a = b)
+/-- The only public way to obtain a `User`: mint from an engine token. -/
+def User.ofToken (t : String) : User := ⟨t⟩
+
+/-- Distinct tokens mint distinct users — identity IS the token. -/
+theorem User.ofToken_inj {s t : String}
+    (h : User.ofToken s = User.ofToken t) : s = t := by
+  cases h
+  rfl
+
+/-- Kernel witness inhabitant — a proof artifact for closed non-vacuity
+    witnesses, not a real identity. Real users are engine-minted. -/
+instance : Inhabited User := ⟨User.ofToken "causa-kernel-witness"⟩
 
 -- ============================================================
 -- The access ladder and roles
@@ -133,8 +145,18 @@ abbrev Owner : Type := Group
 
 /-- A user/agent as an Owner: the personal group, in which only that identity
     is a member and holds the maximal `personal` role. -/
-noncomputable def Owner.ofUser (u : User) : Owner :=
+def Owner.ofUser (u : User) : Owner :=
   fun x => if x = u then some Role.personal else none
+
+/-- A personal owner contains its own user at the personal role. -/
+theorem Owner.ofUser_self (u : User) :
+    Owner.ofUser u u = some Role.personal := by
+  simp [Owner.ofUser]
+
+/-- A personal owner contains no other user. -/
+theorem Owner.ofUser_other {u x : User} (h : x ≠ u) :
+    Owner.ofUser u x = none := by
+  simp [Owner.ofUser, h]
 
 /-- An Owner is personal iff it is some user's personal group. -/
 def Owner.isPersonal (o : Owner) : Prop := ∃ u : User, o = Owner.ofUser u
@@ -155,6 +177,14 @@ def world : Owner := fun _ => some Role.viewer
     not an axiom. ES-3: org does not exist at this layer. -/
 def visible (o : Owner) (requester : User) : Prop := o requester ≠ none
 
+/-- Computable membership test — the Bool face of `visible`. -/
+def Group.member? (g : Group) (u : User) : Bool := (g u).isSome
+
+instance (o : Owner) (u : User) : Decidable (visible o u) :=
+  match h : o u with
+  | some _ => .isTrue (by simp [visible, h])
+  | none   => .isFalse (by simp [visible, h])
+
 /-- The personal-owner reduction: membership in a user's own group is exactly
     being that user. -/
 theorem visible_personal (u requester : User) :
@@ -172,6 +202,18 @@ theorem visible_personal (u requester : User) :
    sees the nesting tree (materializing it — e.g. a Leopard view — is the host's
    expensive job). Group-as-member is not a kernel notion, and a recursive
    `Group → Option Role` field would be non-strictly-positive anyway. -/
+
+/-- The empty group: no user has a role. -/
+def Group.empty : Group := fun _ => none
+
+/-- The universal group at a fixed role: every user has that role. -/
+def Group.everyone (r : Role) : Group := fun _ => some r
+
+/-- The universal group at any role is distinct from the empty group. -/
+theorem Group.everyone_ne_empty (r : Role) : Group.everyone r ≠ Group.empty := by
+  intro h
+  have hval := congrFun h default
+  simp [Group.everyone, Group.empty] at hval
 
 /-- Mount sub-group `g` into a parent at role `cap`: every member of `g` joins at
     their g-role capped by `cap` (lattice meet). Produces an ordinary `Owner`;
@@ -194,7 +236,17 @@ def Group.union (a b : Group) : Group :=
     This is the ONLY mutable face of ownership; the entity row that names this
     group never changes (cognitive content stays append-only). When the last
     member is dropped the group is abandoned (`Causa.Compliance.abandoned`). -/
-noncomputable def Group.drop (g : Group) (u : User) : Group :=
+def Group.drop (g : Group) (u : User) : Group :=
   fun x => if x = u then none else g x
+
+/-- Dropping a user removes that user's own role. -/
+theorem Group.drop_self (g : Group) (u : User) :
+    Group.drop g u u = none := by
+  simp [Group.drop]
+
+/-- Dropping one user leaves all other users unchanged. -/
+theorem Group.drop_other {g : Group} {u x : User} (h : x ≠ u) :
+    Group.drop g u x = g x := by
+  simp [Group.drop, h]
 
 end Causa

@@ -13,7 +13,9 @@ cd docs/lean && lake build
 ```
 
 Toolchain: `leanprover/lean4:v4.13.0` (elan-managed). No Mathlib. Spec-mode:
-tokens are `opaque` definitions or `inductive` vocabularies; redundant
+tokens are `opaque` definitions or `inductive` vocabularies, except the
+reviewed constructive `User` owner-algebra atom, whose representation is sealed
+by a private constructor/field; redundant
 invariants are `theorem`s proved from the core or table-validity witnesses (the
 minimization discipline) — a failing build is drift.
 
