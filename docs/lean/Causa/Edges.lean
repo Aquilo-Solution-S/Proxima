@@ -109,12 +109,12 @@ inductive NodeRef where
   | goal       (g : Goal)
   | factEntity (e : FactEntity)
 
-noncomputable def NodeRef.owner : NodeRef → Owner
+def NodeRef.owner : NodeRef → Owner
   | .memory m     => memory_owner m
   | .goal g       => goal_owner g
   | .factEntity e => fact_entity_owner e
 
-noncomputable def NodeRef.schema : NodeRef → SchemaRef
+def NodeRef.schema : NodeRef → SchemaRef
   | .memory m     => memory_schema m
   | .goal g       => goal_schema g
   | .factEntity e => fact_entity_schema e
