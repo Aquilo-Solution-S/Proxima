@@ -5,26 +5,29 @@ mod flavor;
 
 use proxima::flavor::{FactPayload, SchemaId};
 use proxima::{
-    CitationSpec, EntityKind, FactWriteCommand, Proxima, QueryRequest, QueryResponse,
-    SourceBatchId, UPLOADED_BLOB_SCHEMA_ID,
+    CitationSpec, EntityKind, FactWriteCommand, OwnerRef, Proxima, QueryRequest, QueryResponse,
+    SourceBatchId, UPLOADED_BLOB_SCHEMA_ID, UserId,
 };
 
 const CORE_CITATION_SCHEMA_ID: &str = "proxima-core/wake-trace-citation-v1";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Single-owner demo host. A real host resolves its owner from config/OIDC;
+    // here we mint a fresh Personal owner so the documented `cargo run` (only
+    // DATABASE_URL set) boots instead of panicking on a missing boot owner.
+    let boot_owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let booted = Proxima::<flavor::EmbeddedMinimalFlavor>::app()
         .from_env()
         .allow_insecure_single_owner()
+        .owner(boot_owner)
         .run()
         .await?;
     let embedding_worker = booted.spawn_embedding_worker(booted.cancel.clone());
     let authz = booted
         .single_owner_authz()
         .expect("insecure single-owner mode is enabled");
-    let owner = booted
-        .owner
-        .expect("insecure single-owner mode is enabled with a boot owner");
+    let owner = booted.owner.expect("boot owner configured above");
 
     let payload = flavor::DocumentFiledV1 {
         source_path: "/example/intake/r-2026-0001.pdf".into(),
