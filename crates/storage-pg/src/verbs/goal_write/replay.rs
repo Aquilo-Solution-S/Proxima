@@ -148,7 +148,12 @@ async fn lifecycle_author_edge_matches(
 }
 
 pub(super) fn idempotency_conflict(request_id: &str) -> StorageError {
-    StorageError::ConstraintViolation(format!("idempotency_conflict:{request_id}"))
+    // P3: typed variant (was a stringly `ConstraintViolation`). Its `Display`
+    // stays `idempotency_conflict:{request_id}` so storage-level callers that
+    // match on the message keep working; the engine matches the variant.
+    StorageError::IdempotencyConflict {
+        request_id: request_id.to_string(),
+    }
 }
 
 pub(super) async fn existing_goal_body_matches(

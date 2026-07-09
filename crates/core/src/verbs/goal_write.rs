@@ -19,6 +19,27 @@ pub enum GoalState {
     Abandoned,
 }
 
+impl GoalState {
+    /// Legality of a plain lifecycle transition (the `GoalWrite` transition
+    /// verb) from `self` to `next`.
+    ///
+    /// Matrix: `Active → {Active, Paused, Abandoned}`, `Paused → {Active}`.
+    /// `Achieved` is **never** a legal target here — achievement carries
+    /// mandatory evidence and flows through the dedicated achieve path, not a
+    /// plain transition. `Achieved`/`Abandoned` are terminal (no outgoing
+    /// transition). This mirrors the storage-side `validate_goal_transition`
+    /// guard minus the `Active → Achieved` edge, which only the achieve verb
+    /// may take.
+    #[must_use]
+    pub const fn may_transition_to(self, next: Self) -> bool {
+        matches!(
+            (self, next),
+            (Self::Active, Self::Active | Self::Paused | Self::Abandoned)
+                | (Self::Paused, Self::Active)
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, sqlx::Type)]
 #[sqlx(type_name = "proxima_core.goal_operator_kind")]
 pub enum OperatorKind {
@@ -708,4 +729,50 @@ pub struct DecomposedGoalOutcome {
 pub struct DecomposeGoalOutcome {
     pub children: Vec<DecomposedGoalOutcome>,
     pub idempotent_replay: bool,
+}
+
+#[cfg(test)]
+mod goal_state_matrix_tests {
+    use super::GoalState;
+
+    const ALL: [GoalState; 4] = [
+        GoalState::Active,
+        GoalState::Paused,
+        GoalState::Achieved,
+        GoalState::Abandoned,
+    ];
+
+    #[test]
+    fn active_may_move_to_active_paused_abandoned_only() {
+        assert!(GoalState::Active.may_transition_to(GoalState::Active));
+        assert!(GoalState::Active.may_transition_to(GoalState::Paused));
+        assert!(GoalState::Active.may_transition_to(GoalState::Abandoned));
+        assert!(!GoalState::Active.may_transition_to(GoalState::Achieved));
+    }
+
+    #[test]
+    fn paused_may_only_resume_to_active() {
+        assert!(GoalState::Paused.may_transition_to(GoalState::Active));
+        assert!(!GoalState::Paused.may_transition_to(GoalState::Paused));
+        assert!(!GoalState::Paused.may_transition_to(GoalState::Abandoned));
+        assert!(!GoalState::Paused.may_transition_to(GoalState::Achieved));
+    }
+
+    #[test]
+    fn achieved_is_never_a_legal_transition_target() {
+        for prior in ALL {
+            assert!(
+                !prior.may_transition_to(GoalState::Achieved),
+                "{prior:?} -> Achieved must be rejected as a plain transition"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_states_have_no_outgoing_transition() {
+        for next in ALL {
+            assert!(!GoalState::Achieved.may_transition_to(next));
+            assert!(!GoalState::Abandoned.may_transition_to(next));
+        }
+    }
 }

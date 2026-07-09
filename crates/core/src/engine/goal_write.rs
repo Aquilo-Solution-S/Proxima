@@ -160,6 +160,18 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
+        // K1: `Achieved` is never a legal plain-transition target (achievement
+        // carries mandatory evidence via `mark_goal_achieved`). Reject it here,
+        // before opening a storage transaction. Prior-state-dependent legality
+        // (e.g. `Paused → Abandoned`) stays enforced storage-side by
+        // `validate_goal_transition` as defense-in-depth; the reusable matrix
+        // lives in `GoalState::may_transition_to`.
+        if req.next_state == GoalState::Achieved {
+            return Err(ProtocolError::invalid_argument(
+                "next_state",
+                "Achieved is not a valid transition target; use mark_goal_achieved with evidence",
+            ));
+        }
         let author_self_perspective_id = self
             .author_self_perspective_authorized(authz, req.author_self_perspective_id)
             .await?;
@@ -656,21 +668,18 @@ pub(in crate::engine) async fn transition_goal_authorized(
 fn map_goal_storage_error(err: StorageError) -> ProtocolError {
     match err {
         StorageError::NotFound => ProtocolError::not_found("goal write referenced row not found"),
-        StorageError::ConstraintViolation(message)
-            if message.starts_with("idempotency_conflict:") =>
-        {
-            let request_id = message
-                .strip_prefix("idempotency_conflict:")
-                .unwrap_or(message.as_str());
+        StorageError::IdempotencyConflict { request_id } => {
             ProtocolError::idempotency_conflict(request_id)
         }
         StorageError::ConstraintViolation(message) | StorageError::Conflict(message) => {
             ProtocolError::invalid_argument("goal", message)
         }
         StorageError::Suppressed(message) => ProtocolError::suppressed(message),
-        StorageError::Unavailable(message) | StorageError::Internal(message) => {
-            ProtocolError::internal(message)
-        }
+        // A transient deadlock/serialization failure that outlived the bounded
+        // storage retry surfaces as an internal (retry-later) fault.
+        StorageError::Retryable(message)
+        | StorageError::Unavailable(message)
+        | StorageError::Internal(message) => ProtocolError::internal(message),
         StorageError::V004ResetRequired { details } => ProtocolError::internal(details),
     }
 }
@@ -927,6 +936,37 @@ mod tests {
             .await
             .expect_err("denied context must fail before schema or storage");
         assert_forbidden(&err);
+    }
+
+    #[tokio::test]
+    async fn transition_goal_rejects_achieved_target_pre_storage() {
+        // K1: transitioning to Achieved is rejected at the engine boundary,
+        // after authz but before any storage transaction. The membership
+        // storage authorizes the self-owner write; the guard fires first, so
+        // the goal write port is never reached.
+        let owner = owner();
+        let engine = engine_with_ports(storage_with_memory(
+            owner,
+            owner,
+            true,
+            EntityKind::Perspective,
+        ));
+        let req = GoalTransitionRequest {
+            owner,
+            prior_goal_id: goal_id(),
+            next_state: GoalState::Achieved,
+            authorship: GoalAuthorship::User,
+            request_id: request_id("transition-achieved"),
+            author_self_perspective_id: None,
+        };
+        let err = engine
+            .transition_goal(
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+                &req,
+            )
+            .await
+            .expect_err("Achieved is not a valid plain-transition target");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
     }
 
     #[tokio::test]

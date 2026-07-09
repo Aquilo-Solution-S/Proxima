@@ -24,6 +24,20 @@ pub enum StorageError {
     ConstraintViolation(String),
     #[error("conflict: {0}")]
     Conflict(String),
+    /// Transient failure (deadlock / serialization) that is safe to retry
+    /// after re-running the whole transaction. Classified from SQLSTATE
+    /// `40P01`/`40001`; the `*_atomic` pool wrappers retry a bounded number
+    /// of times before surfacing this.
+    #[error("retryable storage error: {0}")]
+    Retryable(String),
+    /// A same `(owner, request_id)` idempotency key already exists with a
+    /// different body. Carries the offending request id so the engine can
+    /// surface a typed `IdempotencyConflict` without message parsing.
+    ///
+    /// NOTE: the `Display` form is deliberately `idempotency_conflict:{id}`
+    /// so storage-level callers that match on the message keep working.
+    #[error("idempotency_conflict:{request_id}")]
+    IdempotencyConflict { request_id: String },
     #[error(
         "database contains pre-v0.0.4 Proxima schema artifacts; export/reset is required before running the v0.0.4 baseline: {details}"
     )]

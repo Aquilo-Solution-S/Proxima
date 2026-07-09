@@ -25,7 +25,7 @@ use proxima_core::{
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::access::owner_columns::owner_binds;
-use crate::error::{internal, map_err};
+use crate::error::{internal, map_err, with_bounded_retry};
 use crate::pg_ident::PgIdent;
 use crate::sidecars::{PgMemorySidecar, PgSidecarRegistryFrozen};
 
@@ -162,10 +162,15 @@ pub async fn ingest_fact_atomic(
     draft: &FactWriteCommand,
     embedding_model_id: Option<&str>,
 ) -> Result<FactIngestOutcome, StorageError> {
-    let mut tx = pool.begin().await.map_err(internal)?;
-    let outcome = ingest_fact_command_in_tx(&mut tx, permit, draft, embedding_model_id).await?;
-    tx.commit().await.map_err(map_err)?;
-    Ok(outcome)
+    // K7: retry the whole transaction on transient deadlock/serialization.
+    with_bounded_retry(move || async move {
+        let mut tx = pool.begin().await.map_err(internal)?;
+        let outcome =
+            ingest_fact_command_in_tx(&mut tx, permit, draft, embedding_model_id).await?;
+        tx.commit().await.map_err(map_err)?;
+        Ok(outcome)
+    })
+    .await
 }
 
 /// Pool-scoped gated `FactIngest` with a caller-owned typed sidecar
@@ -355,11 +360,15 @@ pub async fn ingest_fact_for_owner_plain<P>(
 where
     P: FactPayload,
 {
-    let mut tx = pool.begin().await.map_err(internal)?;
-    let outcome =
-        ingest_fact_for_owner_plain_in_tx(&mut tx, permit, payload, embedding_model_id).await?;
-    tx.commit().await.map_err(map_err)?;
-    Ok(outcome)
+    // K7: retry the whole transaction on transient deadlock/serialization.
+    with_bounded_retry(move || async move {
+        let mut tx = pool.begin().await.map_err(internal)?;
+        let outcome =
+            ingest_fact_for_owner_plain_in_tx(&mut tx, permit, payload, embedding_model_id).await?;
+        tx.commit().await.map_err(map_err)?;
+        Ok(outcome)
+    })
+    .await
 }
 
 /// Pool-scoped uncited Fact ingest helper for an explicit target owner.
@@ -818,36 +827,10 @@ where
         .await?;
     }
 
-    let existing = if let Some(receipt_id_bytes) = receipt_id_bytes {
-        sqlx::query_scalar::<_, uuid::Uuid>(
-            "SELECT memory_id FROM proxima_core.memories
-               WHERE receipt_id = $1
-                 AND tombstoned_at IS NULL",
-        )
-        .bind(&receipt_id_bytes[..])
-        .fetch_optional(tx.as_mut())
-        .await
-        .map_err(map_err)?
-    } else {
-        None
-    };
-
-    if let Some(memory_id) = existing {
-        let seq = sqlx::query_scalar::<_, uuid::Uuid>(
-            "SELECT seq FROM proxima_core.change_event
-                 WHERE entity_memory_id = $1 ORDER BY seq ASC LIMIT 1",
-        )
-        .bind(memory_id)
-        .fetch_one(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-
-        return Ok(FactIngestOutcome {
-            receipt_id,
-            memory_id: proxima_core::MemoryId::new(memory_id),
-            change_event_seq: seq,
-            idempotent_replay: true,
-        });
+    if let Some(receipt_id_bytes) = receipt_id_bytes
+        && let Some(memory_id) = existing_fact_memory_by_receipt(tx, &receipt_id_bytes[..]).await?
+    {
+        return fact_replay_outcome(tx, receipt_id, memory_id).await;
     }
 
     let memory_id = uuid::Uuid::now_v7();
@@ -937,7 +920,18 @@ where
             ));
         }
 
-        sqlx::query(
+        // K3: two concurrent same-receipt ingests both pass the existing
+        // check above; the loser collides on `fact_receipts_pkey` here (the
+        // receipt row is written before the memories row, so this is the
+        // race's first collision). Guard the insert with a SAVEPOINT so the
+        // mid-tx unique violation does not poison the whole transaction —
+        // then roll back and replay the winner's committed Fact instead of
+        // surfacing a spurious ConstraintViolation.
+        sqlx::query("SAVEPOINT proxima_fact_receipt")
+            .execute(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+        let receipt_insert = sqlx::query(
             "INSERT INTO proxima_core.fact_receipts
                 (receipt_id, source, source_batch_id,
                  owner_kind, owner_id,
@@ -954,8 +948,30 @@ where
         .bind(receipt.observed_at)
         .bind(receipt.occurred_at)
         .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
+        .await;
+        match receipt_insert {
+            Ok(_) => {
+                sqlx::query("RELEASE SAVEPOINT proxima_fact_receipt")
+                    .execute(tx.as_mut())
+                    .await
+                    .map_err(map_err)?;
+            }
+            Err(err) if is_receipt_race(&err) => {
+                sqlx::query("ROLLBACK TO SAVEPOINT proxima_fact_receipt")
+                    .execute(tx.as_mut())
+                    .await
+                    .map_err(map_err)?;
+                if let Some(memory_id) =
+                    existing_fact_memory_by_receipt(tx, &receipt_id_bytes[..]).await?
+                {
+                    return fact_replay_outcome(tx, receipt_id, memory_id).await;
+                }
+                // Receipt occupied but no live memory row (e.g. tombstoned):
+                // a genuine conflict, not a concurrent-ingest replay.
+                return Err(map_err(err));
+            }
+            Err(err) => return Err(map_err(err)),
+        }
     }
 
     sqlx::query(
@@ -1068,6 +1084,61 @@ where
     .map_err(map_err)?;
 
     Ok(outcome)
+}
+
+/// True when a `fact_receipts`/`memories` insert failed because another
+/// transaction already claimed the same receipt id (the K3 idempotent race).
+/// Matched on the constraint name so it never mistakes an unrelated unique
+/// violation for a replay signal.
+fn is_receipt_race(err: &sqlx::Error) -> bool {
+    matches!(
+        err,
+        sqlx::Error::Database(db)
+            if db.is_unique_violation()
+                && matches!(
+                    db.constraint(),
+                    Some("fact_receipts_pkey" | "memories_one_fact_per_receipt")
+                )
+    )
+}
+
+/// The live (non-tombstoned) Fact memory id for a receipt, if any.
+async fn existing_fact_memory_by_receipt(
+    tx: &mut Transaction<'_, Postgres>,
+    receipt_id_bytes: &[u8],
+) -> Result<Option<uuid::Uuid>, StorageError> {
+    sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT memory_id FROM proxima_core.memories
+           WHERE receipt_id = $1
+             AND tombstoned_at IS NULL",
+    )
+    .bind(receipt_id_bytes)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)
+}
+
+/// Build the `idempotent_replay = true` outcome for an already-materialized
+/// Fact, resolving its original `change_event` seq.
+async fn fact_replay_outcome(
+    tx: &mut Transaction<'_, Postgres>,
+    receipt_id: Option<FactReceiptId>,
+    memory_id: uuid::Uuid,
+) -> Result<FactIngestOutcome, StorageError> {
+    let seq = sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT seq FROM proxima_core.change_event
+             WHERE entity_memory_id = $1 ORDER BY seq ASC LIMIT 1",
+    )
+    .bind(memory_id)
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    Ok(FactIngestOutcome {
+        receipt_id,
+        memory_id: proxima_core::MemoryId::new(memory_id),
+        change_event_seq: seq,
+        idempotent_replay: true,
+    })
 }
 
 async fn derive_fact_entity_after_sidecar(

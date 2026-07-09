@@ -606,9 +606,12 @@ fn map_derived_storage_error(err: StorageError) -> ProtocolError {
             ProtocolError::invalid_argument("operator_invocation", message)
         }
         StorageError::Suppressed(message) => ProtocolError::suppressed(message),
-        StorageError::Unavailable(message) | StorageError::Internal(message) => {
-            ProtocolError::internal(message)
+        StorageError::IdempotencyConflict { request_id } => {
+            ProtocolError::idempotency_conflict(request_id)
         }
+        StorageError::Retryable(message)
+        | StorageError::Unavailable(message)
+        | StorageError::Internal(message) => ProtocolError::internal(message),
         StorageError::V004ResetRequired { details } => ProtocolError::internal(details),
     }
 }
