@@ -120,7 +120,7 @@ impl PgGoalSidecar for proxima_core::TaskGoalV1 {
             .bind(self.priority.map(proxima_core::TaskPriority::as_str))
             .execute(tx.as_mut())
             .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            .map_err(crate::error::map_err)?;
             Ok(())
         })
     }
@@ -141,7 +141,7 @@ impl PgGoalSidecar for proxima_core::TaskGoalV1 {
             .bind(source_goal_id.into_inner())
             .execute(tx.as_mut())
             .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            .map_err(crate::error::map_err)?;
             if result.rows_affected() == 0 {
                 return Err(StorageError::ConstraintViolation(format!(
                     "missing source Goal sidecar for {}",
@@ -170,7 +170,7 @@ impl PgEdgeSidecar for proxima_core::AgentLinkV1 {
             .bind(i16::from(self.confidence))
             .execute(tx)
             .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            .map_err(crate::error::map_err)?;
             Ok(())
         })
     }
@@ -204,7 +204,7 @@ impl PgCitedObjectSidecar for proxima_core::UploadedBlobPayload {
             .bind(self.uploaded_at)
             .execute(tx)
             .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            .map_err(crate::error::map_err)?;
             Ok(())
         })
     }
@@ -232,7 +232,7 @@ impl PgCitedObjectSidecar for proxima_core::verbs::persist_mcp_call::McpCallIoV1
             .bind(&self.body)
             .execute(tx)
             .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            .map_err(crate::error::map_err)?;
             Ok(())
         })
     }

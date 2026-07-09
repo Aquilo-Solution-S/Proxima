@@ -43,7 +43,7 @@ async fn insert_criteria_rows(
             .bind(criterion.verifier_spec.note.as_deref())
             .execute(tx.as_mut())
             .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            .map_err(proxima_storage_pg::map_err)?;
     }
     Ok(())
 }
@@ -368,7 +368,7 @@ impl PgEdgeSidecar for EdgeCallsV1 {
             .bind(self.is_dynamic)
             .execute(tx)
             .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            .map_err(proxima_storage_pg::map_err)?;
             Ok(())
         })
     }
@@ -394,7 +394,7 @@ impl PgFactSidecar for AcceptanceCriteriaV1 {
             .bind(i32::try_from(self.criteria.len()).unwrap_or(i32::MAX))
             .execute(tx.as_mut())
             .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            .map_err(proxima_storage_pg::map_err)?;
             insert_criteria_rows(
                 tx,
                 "proxima_code.acceptance_criterion_v1",
@@ -464,7 +464,7 @@ impl PgFactSidecar for TestRequestV1 {
             .bind(i32::try_from(self.criteria.len()).unwrap_or(i32::MAX))
             .execute(tx.as_mut())
             .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            .map_err(proxima_storage_pg::map_err)?;
             insert_criteria_rows(
                 tx,
                 "proxima_code.test_requested_criterion_v1",
@@ -536,7 +536,7 @@ impl PgMemorySidecar for CodeExecutionPlanV1 {
             .bind(&self.evidence_memory_ids)
             .execute(tx.as_mut())
             .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            .map_err(proxima_storage_pg::map_err)?;
             for (index, item) in self.items.iter().enumerate() {
                 sqlx::query(
                     "INSERT INTO proxima_code.execution_plan_item_v1
@@ -553,7 +553,7 @@ impl PgMemorySidecar for CodeExecutionPlanV1 {
                 .bind(&item.request_key)
                 .execute(tx.as_mut())
                 .await
-                .map_err(|err| StorageError::Internal(err.to_string()))?;
+                .map_err(proxima_storage_pg::map_err)?;
             }
             Ok(())
         })

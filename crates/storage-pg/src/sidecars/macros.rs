@@ -405,7 +405,7 @@ macro_rules! pg_sidecar {
                         )+
                         .execute(tx.as_mut())
                         .await
-                        .map_err(|err| $crate::core::StorageError::Internal(err.to_string()))?;
+                        .map_err($crate::map_err)?;
                     ::std::result::Result::Ok(())
                 })
             }
