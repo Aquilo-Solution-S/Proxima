@@ -15,6 +15,12 @@ use crate::config::{OidcConfigError, validate_https_url};
 /// upstream JWKS request per inbound request.
 const JWKS_REFRESH_COOLDOWN: Duration = Duration::from_mins(1);
 
+/// Maximum age of a cached JWKS before a hit opportunistically refreshes. Picks
+/// up key rotation even when every presented `kid` is already cached (so the
+/// unknown-kid miss path never fires). Rate-bounded by the same `last_refresh`
+/// clock, so a stale hit refetches at most once per age window.
+const JWKS_MAX_AGE: Duration = Duration::from_hours(1);
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum KeyError {
     #[error("unknown key id")]
@@ -72,8 +78,14 @@ struct OpenIdConfig {
 #[derive(serde::Deserialize)]
 struct Jwk {
     kid: String,
-    n: String,
-    e: String,
+    /// Key type. Missing or non-`RSA` entries are skipped, not errored, so one
+    /// EC/OKP key in the set can't fail the whole JWKS parse.
+    #[serde(default)]
+    kty: String,
+    /// RSA modulus / exponent. `Option` so a non-RSA entry (which omits them)
+    /// deserializes instead of failing the set.
+    n: Option<String>,
+    e: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -158,26 +170,68 @@ impl HttpJwksResolver {
             .map_err(|e| KeyError::Parse(e.to_string()))?;
         let mut next = HashMap::new();
         for jwk in set.keys {
-            let key = DecodingKey::from_rsa_components(&jwk.n, &jwk.e)
+            // Tolerant parse: only RSA keys are materialized (the verifier pins
+            // the RSA family). Skip EC/OKP or component-less entries so a mixed
+            // set still yields its RSA keys instead of erroring wholesale.
+            if jwk.kty != "RSA" {
+                continue;
+            }
+            let (Some(n), Some(e)) = (&jwk.n, &jwk.e) else {
+                continue;
+            };
+            let key = DecodingKey::from_rsa_components(n, e)
                 .map_err(|e| KeyError::Parse(e.to_string()))?;
             next.insert(jwk.kid, Arc::new(key));
         }
         *self.cache.write().await = next;
         Ok(())
     }
+
+    /// Whether a refresh is permitted: never fetched, or the last attempt is at
+    /// least `min_age` old. Bounds the outbound JWKS fetch rate.
+    async fn refresh_due(&self, min_age: Duration) -> bool {
+        match *self.last_refresh.read().await {
+            Some(last) => last.elapsed() >= min_age,
+            None => true,
+        }
+    }
 }
 
 #[async_trait]
 impl KeyResolver for HttpJwksResolver {
     async fn key_for(&self, kid: &str) -> Result<Arc<DecodingKey>, KeyError> {
-        if let Some(k) = self.cache.read().await.get(kid).cloned() {
+        // Bind (not `if let` on the guard directly) so the read guard drops
+        // here — refresh() below takes the write lock and would self-deadlock
+        // if the read guard were still held across it.
+        let cached = self.cache.read().await.get(kid).cloned();
+        if let Some(k) = cached {
+            // Cache hit. If the cached set is older than JWKS_MAX_AGE, refresh
+            // opportunistically (rate-bounded by the same last_refresh clock).
+            // On success, resolve strictly against the fresh set so a rotated-
+            // out kid stops validating; on a refresh error, degrade to the
+            // still-cached key rather than failing an otherwise-valid request.
+            if self.refresh_due(JWKS_MAX_AGE).await {
+                *self.last_refresh.write().await = Some(Instant::now());
+                match self.refresh().await {
+                    Ok(()) => {
+                        return self
+                            .cache
+                            .read()
+                            .await
+                            .get(kid)
+                            .cloned()
+                            .ok_or(KeyError::UnknownKid);
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, "jwks ttl refresh failed; serving cached key");
+                    }
+                }
+            }
             return Ok(k);
         }
         // Cache miss: refetch at most once per cooldown so a stream of
         // unknown-kid tokens can't drive one upstream JWKS fetch per request.
-        if let Some(last) = *self.last_refresh.read().await
-            && last.elapsed() < JWKS_REFRESH_COOLDOWN
-        {
+        if !self.refresh_due(JWKS_REFRESH_COOLDOWN).await {
             return Err(KeyError::UnknownKid);
         }
         *self.last_refresh.write().await = Some(Instant::now());
@@ -193,11 +247,15 @@ impl KeyResolver for HttpJwksResolver {
 
 #[cfg(test)]
 mod http_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
     use axum::{Router, routing::get};
 
     use crate::config::{OidcConfigError, validate_https_url};
 
-    use super::{HttpJwksResolver, KeyError, KeyResolver};
+    use super::{HttpJwksResolver, JWKS_MAX_AGE, KeyError, KeyResolver};
 
     // Static 2048-bit RSA public key as JWK n/e (base64url). Baked so this
     // test needs neither `rsa` nor `rand` (RUSTSEC-2023-0071: the `rsa` crate
@@ -216,7 +274,7 @@ mod http_tests {
         let jwks_uri = format!("{issuer}/keys");
         let openid = serde_json::json!({ "jwks_uri": jwks_uri }).to_string();
         let jwks = serde_json::json!({
-            "keys": [{ "kid": "k1", "n": TEST_JWK_N, "e": TEST_JWK_E }]
+            "keys": [{ "kid": "k1", "kty": "RSA", "n": TEST_JWK_N, "e": TEST_JWK_E }]
         })
         .to_string();
 
@@ -247,6 +305,97 @@ mod http_tests {
             resolver.key_for("missing").await,
             Err(KeyError::UnknownKid)
         ));
+
+        server.abort();
+    }
+
+    /// Serves `jwks` from a loopback mock `IdP`, counting `/keys` fetches.
+    /// Returns `(issuer, fetch_counter, server_handle)`.
+    async fn spawn_mock_idp(
+        jwks: String,
+    ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("read listener addr");
+        let issuer = format!("http://{addr}");
+        let openid = serde_json::json!({ "jwks_uri": format!("{issuer}/keys") }).to_string();
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route(
+                "/.well-known/openid-configuration",
+                get(move || async move { openid.clone() }),
+            )
+            .route(
+                "/keys",
+                get({
+                    let fetches = Arc::clone(&fetches);
+                    move || {
+                        let jwks = jwks.clone();
+                        let fetches = Arc::clone(&fetches);
+                        async move {
+                            fetches.fetch_add(1, Ordering::SeqCst);
+                            jwks
+                        }
+                    }
+                }),
+            );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("mock idp server failed");
+        });
+        (issuer, fetches, server)
+    }
+
+    #[tokio::test]
+    async fn non_rsa_entry_does_not_break_rsa_resolution() {
+        // A mixed set: an EC key and an OKP key (each lacking n/e) alongside
+        // the RSA key. The tolerant parse must skip the non-RSA entries and
+        // still resolve the RSA kid rather than erroring the whole set.
+        let jwks = serde_json::json!({
+            "keys": [
+                { "kid": "ec1", "kty": "EC", "crv": "P-256", "x": "AQ", "y": "AQ" },
+                { "kid": "okp1", "kty": "OKP", "crv": "Ed25519", "x": "AQ" },
+                { "kid": "k1", "kty": "RSA", "n": TEST_JWK_N, "e": TEST_JWK_E }
+            ]
+        })
+        .to_string();
+        let (issuer, _fetches, server) = spawn_mock_idp(jwks).await;
+
+        let resolver = HttpJwksResolver::new(issuer, None).expect("loopback http allowed in tests");
+        assert!(resolver.key_for("k1").await.is_ok());
+        assert!(matches!(
+            resolver.key_for("ec1").await,
+            Err(KeyError::UnknownKid)
+        ));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn stale_cache_past_max_age_refetches_on_hit() {
+        let jwks = serde_json::json!({
+            "keys": [{ "kid": "k1", "kty": "RSA", "n": TEST_JWK_N, "e": TEST_JWK_E }]
+        })
+        .to_string();
+        let (issuer, fetches, server) = spawn_mock_idp(jwks).await;
+
+        let resolver = HttpJwksResolver::new(issuer, None).expect("loopback http allowed in tests");
+        // Prime the cache: one fetch, then a plain hit does NOT refetch.
+        assert!(resolver.key_for("k1").await.is_ok());
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        assert!(resolver.key_for("k1").await.is_ok());
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+
+        // Age the cache past JWKS_MAX_AGE. `checked_sub` yields None on a very
+        // young monotonic clock, which refresh_due also reads as stale.
+        *resolver.last_refresh.write().await =
+            Instant::now().checked_sub(JWKS_MAX_AGE + Duration::from_secs(1));
+
+        // A hit on the stale set triggers exactly one refetch and still resolves.
+        assert!(resolver.key_for("k1").await.is_ok());
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
 
         server.abort();
     }
