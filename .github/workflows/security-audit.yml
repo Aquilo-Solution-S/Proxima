@@ -1,0 +1,33 @@
+# Scheduled RUSTSEC advisory scan (analysis 2026-07-05 F9).
+#
+# The `deny` job in ci.yml runs cargo-deny only on push/PR, so an advisory
+# published between pushes stays invisible until the next commit. This cron
+# re-checks advisories daily (and on demand) against the committed Cargo.lock,
+# independent of repository activity. Licenses/bans/sources stay on the CI job
+# where a lockfile change is the trigger that can affect them.
+name: security-audit
+
+on:
+  schedule:
+    # 06:17 UTC daily — offset from the top of the hour to avoid the scheduler rush.
+    - cron: '17 6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-audit
+  cancel-in-progress: false
+
+jobs:
+  advisories:
+    name: cargo-deny (advisories)
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      # cargo-deny-action v2.0.20 pinned by commit SHA (kept current by Dependabot).
+      - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe
+        with:
+          command: check advisories
