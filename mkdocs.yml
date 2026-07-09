@@ -34,6 +34,7 @@ nav:
       - Add First Fact Schema: tutorials/add-first-fact-schema.md
       - Add First MCP Tool: tutorials/add-first-mcp-tool.md
   - How-to:
+      - Operate (Day-2): how-to/operate.md
       - Troubleshooting: how-to/troubleshoot.md
   - Reference:
       - Architecture: reference/architecture.md

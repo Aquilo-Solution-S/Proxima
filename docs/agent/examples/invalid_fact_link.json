@@ -5,8 +5,8 @@
   "params": {
     "name": "core_link",
     "arguments": {
-      "source": "F:example-observation-1",
-      "target": "F:example-observation-2",
+      "source": "F:019f46e0-9fd5-7ec9-9df2-e7cc60189f71",
+      "target": "F:019f46e0-64f5-793f-abfd-435e4c7af08b",
       "reason": "Illustrates that Fact sources are invalid for core_link; derive an Abstraction instead.",
       "confidence": 80
     }

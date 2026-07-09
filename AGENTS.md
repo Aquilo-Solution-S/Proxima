@@ -73,21 +73,23 @@ kernel, **the kernel wins** until renegotiated in writing. Check it with
 `cd docs/lean && lake build`; coverage of doc invariants is tracked in
 `docs/lean/COVERAGE.md`.
 
-## v0.0.4 breaking refactor
+## Pre-stable breaking refactor (v0.0.4 / v0.0.5 — released)
 
-Pre-stable v0.0.4 may make breaking Rust, storage, and MCP/API changes to
-remove obsolete ontology rather than preserve adapters. Keep the detailed
-roadmap/matrix in ignored `.local/` planning artifacts; tracked repo changes
-should carry only durable, condensed rules and executable checks.
+`v0.0.4` and `v0.0.5` are tagged. Both shipped breaking Rust, storage, and
+MCP/API changes that removed obsolete ontology rather than preserve adapters.
+Keep the detailed roadmap/matrix in ignored `.local/` planning artifacts;
+tracked repo changes carry only durable, condensed rules and executable checks.
 
 Branch policy:
 
-1. PR0 / authority cleanup landed directly on `main`.
-2. PR1 / access hard cut landed directly on `main` after review and green CI.
-3. Remaining v0.0.4 slices use short reviewed branches targeting `main` unless a slice is explicitly staged by Heinrich.
-4. Tag `v0.0.4` from `main` only after all required slices merge and post-merge CI passes.
+1. `main` is PR-only (required CI checks + `enforce_admins`); no direct local pushes.
+2. Post-v0.0.5 work continues on short reviewed branches targeting `main`, one
+   slice per branch unless Heinrich explicitly stages several together.
+3. Tag a new `v*` from `main` only after all required slices merge and
+   post-merge CI passes (release notes are git-cliff-generated on the tag).
 
-Breaking deletion target: remove production compatibility for legacy principal/read-scope APIs,
+The v0.0.4 breaking-deletion target (now shipped) removed production
+compatibility for legacy principal/read-scope APIs,
 materialized Personality/Self authz, owner-reachability compatibility,
 core Event/EventSource identity, legacy Goal parent tables,
 public aggregate `Storage`, raw flavor `PgPool` / core-table SQL capability,

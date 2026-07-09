@@ -309,8 +309,8 @@ impl CitationMappingPayload for BlobByteRangeV1 {
 Invocation:
 
 ```rust
+// `from_payload` carries no owner; the engine stamps it from authorization.
 let draft = FactWriteCommand::from_payload(
-    owner,
     "acme/importer",
     source_batch_id,
     &fact_payload,
@@ -327,26 +327,14 @@ let mapping = InlineCitationMappingDraft {
     payload_bytes: canonical_json_bytes(&serde_json::to_value(&mapping_payload)?),
 };
 
-let authorized = engine.authorize_fact_with_citation(
-    authz,
-    Relation::Ingest,
-    draft,
-    cited_object,
-    mapping,
-)?;
-let fact_sidecar = fact_payload.clone();
+let authorized = engine
+    .authorize_fact_with_citation(&authz, Relation::Ingest, draft, cited_object, mapping)
+    .await?;
 engine
-    .ingest_authorized_fact_with_sidecar(
-        authz,
-        authorized,
+    .ingest_fact_with_citation_and_typed_sidecar(
+        &authorized,
+        &SidecarPayload::fact(fact_payload.clone()),
         embedding_model_id,
-        move |tx, outcome| {
-            Box::pin(async move {
-                fact_sidecar
-                    .insert_memory_sidecar(tx, outcome.memory_id)
-                    .await
-            })
-        },
     )
     .await?;
 ```

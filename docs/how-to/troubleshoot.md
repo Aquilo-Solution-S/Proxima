@@ -1,5 +1,8 @@
 # Troubleshooting
 
+Day-2 backup/restore, failed-migration behavior, and embedding
+signal→action runbook: [operate.md](operate.md).
+
 | Symptom | Check | Fix |
 |---|---|---|
 | `DATABASE_URL` connects to wrong DB | README default differs from compose port | export `DATABASE_URL=postgres://proxima:proxima@localhost:5434/proxima` |
