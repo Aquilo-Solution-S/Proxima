@@ -36,3 +36,35 @@ updates:
           - patch
     commit-message:
       prefix: "chore(ci)"
+
+  # Python docs toolchain (requirements-docs.txt at the repo root).
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      pip-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "chore(docs)"
+
+  # Container base image (Dockerfile at the repo root).
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      docker:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "chore(deps)"

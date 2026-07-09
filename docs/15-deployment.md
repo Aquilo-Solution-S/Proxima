@@ -163,6 +163,9 @@ Compliance erase is separate: owner/source erasure deletes embeddings,
 `embedding_heads`, and `embedding_jobs` synchronously at commit. The orphan
 sweep is crash-residue maintenance only.
 
+Day-2 operations — backup/restore, failed-migration behavior, readiness probe,
+and the embedding signal→action runbook: [how-to/operate.md](how-to/operate.md).
+
 ## Zitadel setup
 
 - Create a Zitadel project.

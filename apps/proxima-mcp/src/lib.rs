@@ -168,7 +168,7 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
         ArgsError::Help => CliError::Help(USAGE),
         other @ ArgsError::Invalid(_) => CliError::Args(other),
     })?;
-    // rmcp 1.6 logs idle-session keep-alive expiry and the resulting
+    // rmcp 2.x logs idle-session keep-alive expiry and the resulting
     // session-cleanup race at ERROR; both are clean lifecycle events
     // (`quit_reason=Closed`). Pin those targets to `warn` until rmcp
     // upstream lowers them.
