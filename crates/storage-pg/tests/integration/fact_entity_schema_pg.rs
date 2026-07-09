@@ -211,11 +211,12 @@ async fn memories_immutability_trigger_blocks_content_rewrite() {
         .await?;
 
         // Immutable content column: the trigger rejects the rewrite.
-        let err = sqlx::query("UPDATE proxima_core.memories SET text = 'rewritten' WHERE memory_id = $1")
-            .bind(memory_id)
-            .execute(pg.pool_for_tests())
-            .await
-            .expect_err("rewriting Fact text must be rejected by the append-only trigger");
+        let err =
+            sqlx::query("UPDATE proxima_core.memories SET text = 'rewritten' WHERE memory_id = $1")
+                .bind(memory_id)
+                .execute(pg.pool_for_tests())
+                .await
+                .expect_err("rewriting Fact text must be rejected by the append-only trigger");
         assert!(
             err.to_string().contains("append-only"),
             "expected append-only rejection, got: {err}"

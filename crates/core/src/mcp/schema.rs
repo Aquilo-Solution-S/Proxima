@@ -210,7 +210,10 @@ fn action_signature_block(
         let Some(action) = action_value.as_str() else {
             continue;
         };
-        let Some(meta) = action_metadata.get(action).and_then(serde_json::Value::as_object) else {
+        let Some(meta) = action_metadata
+            .get(action)
+            .and_then(serde_json::Value::as_object)
+        else {
             continue;
         };
         let field_list = |key: &str| -> Vec<String> {
@@ -233,8 +236,9 @@ fn action_signature_block(
         let mut line = format!("- {action}: ");
         match (required.is_empty(), optional.is_empty()) {
             (true, true) => line.push_str("(no args)"),
-            (true, false) => write!(line, "(+ {})", optional.join(", "))
-                .expect("write to String is infallible"),
+            (true, false) => {
+                write!(line, "(+ {})", optional.join(", ")).expect("write to String is infallible")
+            }
             (false, true) => line.push_str(&required.join(", ")),
             (false, false) => {
                 line.push_str(&required.join(", "));
@@ -569,7 +573,10 @@ mod tests {
     #[test]
     fn undescribed_property_names_flags_only_bare_fields() {
         let schema = mcp_tool_schema::<PartiallyDescribed>();
-        assert_eq!(undescribed_property_names(&schema), vec!["bare".to_string()]);
+        assert_eq!(
+            undescribed_property_names(&schema),
+            vec!["bare".to_string()]
+        );
     }
 
     #[test]

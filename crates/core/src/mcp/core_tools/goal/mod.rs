@@ -703,9 +703,12 @@ mod tests {
         // With evidence present the empty-evidence guard must pass; the call
         // then fails downstream on the unregistered schema, proving the guard
         // only fires on empty evidence (a Fact/Abstraction handle is accepted).
-        let err = goal_set(test_ctx(), goal_set_args(vec![format!("A:{}", uuid::Uuid::now_v7())]))
-            .await
-            .expect_err("bogus schema still fails downstream");
+        let err = goal_set(
+            test_ctx(),
+            goal_set_args(vec![format!("A:{}", uuid::Uuid::now_v7())]),
+        )
+        .await
+        .expect_err("bogus schema still fails downstream");
         assert!(
             !matches!(err, McpToolError::InvalidInput(ref m) if m.contains("requires >=1")),
             "guard must not fire for non-empty evidence: {err:?}",

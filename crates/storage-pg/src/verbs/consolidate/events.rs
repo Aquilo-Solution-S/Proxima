@@ -101,6 +101,8 @@ pub async fn list_change_events_after(
              ORDER BY ce.seq ASC
              LIMIT $4"
     );
+    // SQL-POLICY: fixed-fragment (horizon_clause / edge_visibility are fixed
+    // literal fragments; every value — owners, cursor, limit, horizon — is bound)
     let mut query = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(&read_owner_kinds)
         .bind(&read_owner_ids)
@@ -267,7 +269,10 @@ mod commit_horizon_tests {
         // Stamped 5s ago (older than now-grace): below the horizon → delivered,
         // even with maximal low bytes.
         let aged = uuidv7_at_ms(now_ms - 5_000);
-        assert!(aged < horizon, "aged seq must be below the low-water horizon");
+        assert!(
+            aged < horizon,
+            "aged seq must be below the low-water horizon"
+        );
 
         // Stamped 100ms ago (newer than now-grace): at/above the horizon →
         // withheld until it ages past the grace window (K4 skip-prevention).

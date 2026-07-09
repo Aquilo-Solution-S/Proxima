@@ -506,7 +506,9 @@ mod tests {
     use tokio::time;
     use tower::ServiceExt;
 
-    use super::{OriginAllowlist, RevalidatedBody, default_allowlist, mcp_auth_layer_with_sessions};
+    use super::{
+        OriginAllowlist, RevalidatedBody, default_allowlist, mcp_auth_layer_with_sessions,
+    };
     use crate::McpServerError;
     use crate::auth::McpEdgeAuth;
     use crate::session::{McpSessionBindings, owner_key};
@@ -520,9 +522,9 @@ mod tests {
     impl Authenticator for TokenAuth {
         async fn authenticate(&self, creds: &Credentials) -> Result<AuthzContext, AuthError> {
             match creds {
-                Credentials::Bearer(token) if token == "good-token" => {
-                    Ok(AuthzContext::single_owner(&self.owner, AuthPath::HostBearer))
-                }
+                Credentials::Bearer(token) if token == "good-token" => Ok(
+                    AuthzContext::single_owner(&self.owner, AuthPath::HostBearer),
+                ),
                 Credentials::Bearer(_) => Err(AuthError::InvalidCredentials),
             }
         }

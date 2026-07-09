@@ -46,7 +46,12 @@ fn flavor_sdk_exposes_mcp_tool_authoring_surface() {
     let _ = OutputMode::Handles;
     // Name the remaining re-exports as types so an accidental removal fails.
     let _: &[McpActionArgSpec] = &[];
-    let _: Option<(&McpToolCtx, &McpToolError, &McpAuthorContext, &McpToolAnnotations)> = None;
+    let _: Option<(
+        &McpToolCtx,
+        &McpToolError,
+        &McpAuthorContext,
+        &McpToolAnnotations,
+    )> = None;
 }
 
 #[test]

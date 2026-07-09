@@ -278,7 +278,10 @@ def run_fixture(path: Path) -> int:
 # ratchet, not a ceiling that only grows: the ratchet mode below fails when the
 # count changes in *either* direction so a shrink still requires the PR that
 # earned it to update this constant, keeping the two in lockstep.
-EXPECTED_DYNAMIC_SQL_SITES = 47
+# 2026-07-05 analysis: +1 net — K4 change-event commit-grace horizon
+# (verbs/consolidate/events.rs) and K5 mcp-call-history include_body/keyset
+# (verbs/mcp_call_history.rs) add proven fixed-fragment dynamic sites.
+EXPECTED_DYNAMIC_SQL_SITES = 48
 
 
 def run_self_test() -> int:

@@ -283,10 +283,7 @@ mod tests {
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
 
         let err = engine
-            .get_graph(
-                &ctx.authz,
-                &GetGraphReadRequest { owner },
-            )
+            .get_graph(&ctx.authz, &GetGraphReadRequest { owner })
             .await
             .expect_err("configured owner role must not widen to another owner");
 

@@ -73,6 +73,8 @@ pub(crate) async fn read_mcp_call_history(
             LIMIT $4"
     );
 
+    // SQL-POLICY: fixed-fragment (cursor_predicate and the include_body join are
+    // fixed literal fragments; owner, actor, cursor, and limit are all bound)
     let mut query = sqlx::query_as::<_, HistoryRowDb>(sqlx::AssertSqlSafe(sql))
         .bind(owner_kind)
         .bind(owner_id)

@@ -610,8 +610,14 @@ async fn boot_rejects_embedding_client_with_wrong_dim() {
             .expect_err("wrong embedding dim must be rejected at boot");
         match err {
             EmbedError::Config(msg) => {
-                assert!(msg.contains("3072"), "message names the offending dim: {msg}");
-                assert!(msg.contains("dim"), "message explains a dim mismatch: {msg}");
+                assert!(
+                    msg.contains("3072"),
+                    "message names the offending dim: {msg}"
+                );
+                assert!(
+                    msg.contains("dim"),
+                    "message explains a dim mismatch: {msg}"
+                );
             }
             other => panic!("expected EmbedError::Config, got {other:?}"),
         }
