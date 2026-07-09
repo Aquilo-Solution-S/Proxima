@@ -307,9 +307,12 @@ fn bootstrap_storage_error(err: StorageError) -> ProtocolError {
         }
         StorageError::Suppressed(message) => ProtocolError::suppressed(message),
         StorageError::NotFound => ProtocolError::not_found("group not found"),
-        StorageError::Unavailable(message) | StorageError::Internal(message) => {
-            ProtocolError::internal(message)
+        StorageError::IdempotencyConflict { request_id } => {
+            ProtocolError::idempotency_conflict(request_id)
         }
+        StorageError::Retryable(message)
+        | StorageError::Unavailable(message)
+        | StorageError::Internal(message) => ProtocolError::internal(message),
         StorageError::V004ResetRequired { details } => ProtocolError::internal(details),
     }
 }

@@ -17,6 +17,52 @@ pub(super) async fn insert_or_replay_goal(
     validate_goal_schema(context, draft)?;
     let owner = draft.owner();
     crate::access::owner_columns::reject_world_write_owner(&owner)?;
+
+    if let Some(inserted) = replay_existing_goal(tx, draft, expected_prior, wake_write).await? {
+        return Ok(inserted);
+    }
+
+    // K3: two concurrent same-key goal creates both miss the replay lookup
+    // above; the loser collides on `goals_idempotency_key`. Guard the insert
+    // with a SAVEPOINT so the mid-tx unique violation does not poison the
+    // whole transaction — then roll back and replay the winner's committed
+    // goal instead of surfacing a spurious ConstraintViolation.
+    sqlx::query("SAVEPOINT proxima_goal_insert")
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    match insert_new_goal(tx, sidecars, draft, expected_prior, context, wake_write).await {
+        Ok(inserted) => {
+            sqlx::query("RELEASE SAVEPOINT proxima_goal_insert")
+                .execute(&mut **tx)
+                .await
+                .map_err(map_err)?;
+            Ok(inserted)
+        }
+        Err(err) if is_goal_idempotency_race(&err) => {
+            sqlx::query("ROLLBACK TO SAVEPOINT proxima_goal_insert")
+                .execute(&mut **tx)
+                .await
+                .map_err(map_err)?;
+            match replay_existing_goal(tx, draft, expected_prior, wake_write).await? {
+                Some(inserted) => Ok(inserted),
+                None => Err(err),
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Look up an already-committed goal for this idempotency key and, if the
+/// stored body/authorship match the draft, return it as an idempotent replay.
+/// A key match with a different body is an [`idempotency_conflict`].
+async fn replay_existing_goal(
+    tx: &mut Transaction<'_, Postgres>,
+    draft: &GoalDraft,
+    expected_prior: Option<GoalId>,
+    wake_write: WakeWrite<'_>,
+) -> Result<Option<InsertedGoal>, StorageError> {
+    let owner = draft.owner();
     let (owner_kind, owner_id) = owner.columns();
     let existing: Option<ExistingGoalRow> = sqlx::query_as(
         "SELECT g.goal_id, ce.seq
@@ -33,20 +79,29 @@ pub(super) async fn insert_or_replay_goal(
     .await
     .map_err(map_err)?;
 
-    if let Some(existing) = existing {
-        let body_matches =
-            existing_goal_body_matches(tx, existing.goal_id, draft, expected_prior, wake_write)
-                .await?;
-        if body_matches && authorship_matches(tx, existing.goal_id, &draft.authorship).await? {
-            return Ok(InsertedGoal {
-                goal_id: GoalId::new(existing.goal_id),
-                change_event_seq: existing.seq,
-                idempotent_replay: true,
-            });
-        }
-        return Err(idempotency_conflict(&draft.request_id));
+    let Some(existing) = existing else {
+        return Ok(None);
+    };
+    let body_matches =
+        existing_goal_body_matches(tx, existing.goal_id, draft, expected_prior, wake_write).await?;
+    if body_matches && authorship_matches(tx, existing.goal_id, &draft.authorship).await? {
+        return Ok(Some(InsertedGoal {
+            goal_id: GoalId::new(existing.goal_id),
+            change_event_seq: existing.seq,
+            idempotent_replay: true,
+        }));
     }
+    Err(idempotency_conflict(&draft.request_id))
+}
 
+async fn insert_new_goal(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    draft: &GoalDraft,
+    expected_prior: Option<GoalId>,
+    context: GoalAtomicContext<'_>,
+    wake_write: WakeWrite<'_>,
+) -> Result<InsertedGoal, StorageError> {
     let goal_id = uuid::Uuid::now_v7();
     let change_seq = uuid::Uuid::now_v7();
     insert_goal_row(tx, draft, goal_id, expected_prior).await?;
@@ -67,6 +122,13 @@ pub(super) async fn insert_or_replay_goal(
         change_event_seq: change_seq,
         idempotent_replay: false,
     })
+}
+
+/// True when a goal insert failed because another transaction already claimed
+/// the same `goals_idempotency_key` (the K3 race sentinel from
+/// [`map_goal_insert_err`]).
+fn is_goal_idempotency_race(err: &StorageError) -> bool {
+    matches!(err, StorageError::Conflict(message) if message == "goals_idempotency_key")
 }
 
 fn validate_goal_schema(
@@ -188,9 +250,18 @@ async fn insert_goal_row(
 fn map_goal_insert_err(err: sqlx::Error) -> StorageError {
     if let sqlx::Error::Database(db) = &err
         && db.is_unique_violation()
-        && db.constraint() == Some("goals_supersedes_unique")
     {
-        return StorageError::Conflict("stale goal head".into());
+        match db.constraint() {
+            Some("goals_supersedes_unique") => {
+                return StorageError::Conflict("stale goal head".into());
+            }
+            // K3 idempotent-race sentinel: the caller rolls back to its
+            // SAVEPOINT and replays the winner's committed goal.
+            Some("goals_idempotency_key") => {
+                return StorageError::Conflict("goals_idempotency_key".into());
+            }
+            _ => {}
+        }
     }
     map_err(err)
 }

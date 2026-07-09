@@ -59,10 +59,13 @@ impl McpToolError {
                 crate::StorageError::ConstraintViolation(_) | crate::StorageError::NotFound => {
                     McpToolErrorKind::InvalidInput
                 }
-                crate::StorageError::Conflict(_) | crate::StorageError::Suppressed(_) => {
+                crate::StorageError::Conflict(_)
+                | crate::StorageError::Suppressed(_)
+                | crate::StorageError::IdempotencyConflict { .. } => {
                     McpToolErrorKind::InvalidRequest
                 }
-                crate::StorageError::Unavailable(_)
+                crate::StorageError::Retryable(_)
+                | crate::StorageError::Unavailable(_)
                 | crate::StorageError::Internal(_)
                 | crate::StorageError::V004ResetRequired { .. } => McpToolErrorKind::Internal,
             },
