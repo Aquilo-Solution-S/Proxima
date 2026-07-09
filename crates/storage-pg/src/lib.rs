@@ -30,6 +30,8 @@ pub mod access;
 mod authorship;
 mod change_event;
 mod error;
+#[doc(hidden)]
+pub use error::map_err;
 mod pg_ident;
 mod pgvector;
 mod ports;

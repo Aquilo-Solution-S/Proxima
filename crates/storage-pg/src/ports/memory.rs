@@ -14,7 +14,7 @@ use proxima_core::{
 };
 
 use super::edge_draft_from_spec;
-use crate::error::internal;
+use crate::error::{internal, with_bounded_retry};
 use crate::{PgStorage, verbs};
 
 type NeighborMemoryEdgeTuple = (
@@ -90,79 +90,86 @@ impl MemoryAuthoringPort for PgStorage {
         permit: &OwnerWritePermit,
         _proof: proxima_core::storage_ports::OperatorWriteProof,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(internal)?;
-        let draft = verbs::derive_append::DerivedDraft {
-            memory_id: req.memory_id.into_inner(),
-            owner: req.owner,
-            kind: req.kind,
-            schema_id: req.schema_id.clone(),
-            schema_version: req.schema_version,
-            text: req.text.clone(),
-            operator_kind: req.operator_kind,
-            operator_id: req.operator_id,
-            input_contract_id: req.input_contract_id,
-            source_batch_id: req.source_batch_id,
-            model_id: req.model_id,
-            prompt_version: req.prompt_version,
-            supersedes: req.supersedes,
-            embedding: req.embedding.clone(),
-            embedding_model_id: req.embedding_model_id,
-        };
-        // ONE validator for both derived-write paths (this engine port and
-        // the flavor-SDK `append_derived_with_edges_in_tx`): the port used
-        // to carry its own near-duplicate proof validation here, which
-        // silently missed the Task 8 created_at strict-time gate.
-        verbs::derive_append::validate_derived_draft_edges_in_tx(&mut tx, &draft, req.edges)
-            .await?;
-        let sidecars = self.sidecars.clone();
-        let sidecar_payload = req.sidecar_payload.clone();
-        let outcome = verbs::derive_append::append_derived_in_tx(
-            &mut tx,
-            permit,
-            &draft,
-            move |tx, outcome| {
-                Box::pin(async move {
-                    sidecars
-                        .insert_memory_sidecar(tx, outcome.memory_id, &sidecar_payload)
-                        .await
-                })
-            },
-        )
-        .await?;
-        let mut edge_count = 0;
-        if outcome.idempotent_replay {
-            verbs::derive_append::validate_derived_edge_replay_equivalent(
-                &mut tx, &draft, req.edges,
+        // K7: retry the whole begin→body→commit on transient deadlock/
+        // serialization. A retryable error fully rolls the transaction back, so
+        // re-running is clean — the derived row replays on its idempotency key
+        // and any edges mint fresh ids on the fresh attempt.
+        with_bounded_retry(move || async move {
+            let mut tx = self.pool.begin().await.map_err(internal)?;
+            let draft = verbs::derive_append::DerivedDraft {
+                memory_id: req.memory_id.into_inner(),
+                owner: req.owner,
+                kind: req.kind,
+                schema_id: req.schema_id.clone(),
+                schema_version: req.schema_version,
+                text: req.text.clone(),
+                operator_kind: req.operator_kind,
+                operator_id: req.operator_id,
+                input_contract_id: req.input_contract_id,
+                source_batch_id: req.source_batch_id,
+                model_id: req.model_id,
+                prompt_version: req.prompt_version,
+                supersedes: req.supersedes,
+                embedding: req.embedding.clone(),
+                embedding_model_id: req.embedding_model_id,
+            };
+            // ONE validator for both derived-write paths (this engine port and
+            // the flavor-SDK `append_derived_with_edges_in_tx`): the port used
+            // to carry its own near-duplicate proof validation here, which
+            // silently missed the Task 8 created_at strict-time gate.
+            verbs::derive_append::validate_derived_draft_edges_in_tx(&mut tx, &draft, req.edges)
+                .await?;
+            let sidecars = self.sidecars.clone();
+            let sidecar_payload = req.sidecar_payload.clone();
+            let outcome = verbs::derive_append::append_derived_in_tx(
+                &mut tx,
+                permit,
+                &draft,
+                move |tx, outcome| {
+                    Box::pin(async move {
+                        sidecars
+                            .insert_memory_sidecar(tx, outcome.memory_id, &sidecar_payload)
+                            .await
+                    })
+                },
             )
             .await?;
-        } else {
-            for edge in req.edges {
-                let draft = edge_draft_from_spec(edge);
-                if let Some(sidecar_payload) = edge.sidecar_payload {
-                    let sidecars = self.sidecars.clone();
-                    let payload = sidecar_payload.clone();
-                    verbs::edge_append::append_edge_with_sidecar_in_tx(
-                        tx.as_mut(),
-                        &draft,
-                        move |tx, edge_id| {
-                            Box::pin(async move {
-                                sidecars.insert_edge_sidecar(tx, edge_id, &payload).await
-                            })
-                        },
-                    )
-                    .await?;
-                } else {
-                    verbs::edge_append::append_edge_in_tx(tx.as_mut(), &draft).await?;
+            let mut edge_count = 0;
+            if outcome.idempotent_replay {
+                verbs::derive_append::validate_derived_edge_replay_equivalent(
+                    &mut tx, &draft, req.edges,
+                )
+                .await?;
+            } else {
+                for edge in req.edges {
+                    let draft = edge_draft_from_spec(edge);
+                    if let Some(sidecar_payload) = edge.sidecar_payload {
+                        let sidecars = self.sidecars.clone();
+                        let payload = sidecar_payload.clone();
+                        verbs::edge_append::append_edge_with_sidecar_in_tx(
+                            tx.as_mut(),
+                            &draft,
+                            move |tx, edge_id| {
+                                Box::pin(async move {
+                                    sidecars.insert_edge_sidecar(tx, edge_id, &payload).await
+                                })
+                            },
+                        )
+                        .await?;
+                    } else {
+                        verbs::edge_append::append_edge_in_tx(tx.as_mut(), &draft).await?;
+                    }
+                    edge_count += 1;
                 }
-                edge_count += 1;
             }
-        }
-        tx.commit().await.map_err(crate::error::map_err)?;
-        Ok(AuthorDerivedOutcome {
-            memory_id: outcome.memory_id,
-            idempotent_replay: outcome.idempotent_replay,
-            edge_count,
+            tx.commit().await.map_err(crate::error::map_err)?;
+            Ok(AuthorDerivedOutcome {
+                memory_id: outcome.memory_id,
+                idempotent_replay: outcome.idempotent_replay,
+                edge_count,
+            })
         })
+        .await
     }
 
     async fn append_memory_edge(
@@ -181,27 +188,33 @@ impl MemoryAuthoringPort for PgStorage {
                 "operator-authored edges require an operator proof-carrier write path".into(),
             ));
         }
-        let mut tx = self.pool.begin().await.map_err(internal)?;
-        let draft = edge_draft_from_spec(edge);
-        let edge_id = EdgeId::new(draft.edge_id);
-        if let Some(sidecar_payload) = edge.sidecar_payload {
-            let sidecars = self.sidecars.clone();
-            let payload = sidecar_payload.clone();
-            verbs::edge_append::append_edge_with_sidecar_in_tx(
-                tx.as_mut(),
-                &draft,
-                move |tx, edge_id| {
-                    Box::pin(
-                        async move { sidecars.insert_edge_sidecar(tx, edge_id, &payload).await },
-                    )
-                },
-            )
-            .await?;
-        } else {
-            verbs::edge_append::append_edge_in_tx(tx.as_mut(), &draft).await?;
-        }
-        tx.commit().await.map_err(crate::error::map_err)?;
-        Ok(edge_id)
+        // K7: retry the whole begin→body→commit on transient deadlock/
+        // serialization. A retryable error fully rolls the transaction back;
+        // the edge id is minted per attempt, so a re-run inserts exactly one edge.
+        with_bounded_retry(move || async move {
+            let mut tx = self.pool.begin().await.map_err(internal)?;
+            let draft = edge_draft_from_spec(edge);
+            let edge_id = EdgeId::new(draft.edge_id);
+            if let Some(sidecar_payload) = edge.sidecar_payload {
+                let sidecars = self.sidecars.clone();
+                let payload = sidecar_payload.clone();
+                verbs::edge_append::append_edge_with_sidecar_in_tx(
+                    tx.as_mut(),
+                    &draft,
+                    move |tx, edge_id| {
+                        Box::pin(async move {
+                            sidecars.insert_edge_sidecar(tx, edge_id, &payload).await
+                        })
+                    },
+                )
+                .await?;
+            } else {
+                verbs::edge_append::append_edge_in_tx(tx.as_mut(), &draft).await?;
+            }
+            tx.commit().await.map_err(crate::error::map_err)?;
+            Ok(edge_id)
+        })
+        .await
     }
 
     async fn load_memory_kinds(

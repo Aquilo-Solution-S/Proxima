@@ -103,14 +103,21 @@ CREATE TRIGGER memories_enforce_immutable
     BEFORE UPDATE ON proxima_core.memories
     FOR EACH ROW EXECUTE FUNCTION proxima_core.memories_enforce_immutable();
 
--- Generic append-only guard for immutable typed payload sidecars. Any UPDATE
--- raises; INSERT (incl. ON CONFLICT DO NOTHING) and DELETE (compliance erase)
--- are untouched.
+-- Generic immutability guard for append-only tables. An UPDATE that actually
+-- changes the row is rejected; a no-op UPDATE is permitted so a content-
+-- addressed upsert (`INSERT … ON CONFLICT DO UPDATE SET col = EXCLUDED.col
+-- RETURNING …`, used by `cited_objects` to fetch the existing id) still works —
+-- it re-sets a column to its identical value, so `NEW IS NOT DISTINCT FROM OLD`.
+-- INSERT (incl. ON CONFLICT DO NOTHING) and DELETE (compliance erase) never
+-- fire a BEFORE UPDATE trigger.
 CREATE FUNCTION proxima_core.enforce_row_append_only() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-    RAISE EXCEPTION 'append-only: % is immutable (UPDATE rejected)', TG_TABLE_NAME;
+    IF NEW IS DISTINCT FROM OLD THEN
+        RAISE EXCEPTION 'append-only: % row is immutable (UPDATE changes content)', TG_TABLE_NAME;
+    END IF;
+    RETURN NEW;
 END;
 $$;
 
@@ -135,4 +142,19 @@ CREATE TRIGGER agent_link_v1_append_only BEFORE UPDATE ON proxima_core.agent_lin
 CREATE TRIGGER cited_uploaded_blob_v1_append_only BEFORE UPDATE ON proxima_core.cited_uploaded_blob_v1
     FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
 CREATE TRIGGER cited_mcp_call_io_v1_append_only BEFORE UPDATE ON proxima_core.cited_mcp_call_io_v1
+    FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+
+-- Fact/citation PROVENANCE parent tables. These are written once and never
+-- rewritten (idempotency receipts, content-addressed cited objects, and the
+-- citation mapping that binds a Fact to its outside proof); freezing them makes
+-- the append-only guarantee cover the provenance chain, not just the payload.
+-- Compliance erase DELETEs (BEFORE UPDATE does not intercept). MUTABLE tables
+-- are excluded: fact_entities (upsert head tracker), source_batches (close),
+-- goals (state transitions), edges (kept append-by-construction, no trigger
+-- needed but no UPDATE path exists either).
+CREATE TRIGGER fact_receipts_append_only BEFORE UPDATE ON proxima_core.fact_receipts
+    FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+CREATE TRIGGER citation_mappings_append_only BEFORE UPDATE ON proxima_core.citation_mappings
+    FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+CREATE TRIGGER cited_objects_append_only BEFORE UPDATE ON proxima_core.cited_objects
     FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();

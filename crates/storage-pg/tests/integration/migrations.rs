@@ -318,6 +318,93 @@ async fn fresh_v004_baseline_enforces_owner_ref_shape_constraints() {
 }
 
 #[tokio::test]
+async fn append_only_triggers_reject_content_mutation_but_allow_noop() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner_id = Uuid::now_v7();
+
+        // A valid Abstraction memory row.
+        let memory_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.memories
+                (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+                 operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
+             VALUES ($1, 'personal', $2, 'test/append-only', 1, 'Abstraction', 'original',
+                     'AtoA', $3, $4, NULL, 'test-model', 'v1')",
+        )
+        .bind(memory_id)
+        .bind(owner_id)
+        .bind(Uuid::now_v7())
+        .bind(Uuid::now_v7())
+        .execute(pool)
+        .await?;
+
+        // K6: mutating a frozen content column is rejected by the trigger…
+        let err = sqlx::query("UPDATE proxima_core.memories SET text = 'tampered' WHERE memory_id = $1")
+            .bind(memory_id)
+            .execute(pool)
+            .await
+            .expect_err("memories.text must be append-only");
+        assert!(err.to_string().contains("append-only"), "got: {err}");
+
+        // …but a whitelisted column (publish-to-World owner transfer) still updates.
+        sqlx::query(
+            "UPDATE proxima_core.memories SET owner_kind = 'world', owner_id = NULL WHERE memory_id = $1",
+        )
+        .bind(memory_id)
+        .execute(pool)
+        .await
+        .expect("owner transfer is an allowed memories update");
+
+        // Generic provenance/sidecar trigger: a content-addressed no-op upsert
+        // (re-set a column to its identical value, the RETURNING path used by
+        // cited_objects) is allowed; a real change is rejected.
+        let cited_object_id = Uuid::now_v7();
+        let content_hash = vec![7u8; 32];
+        sqlx::query(
+            "INSERT INTO proxima_core.cited_objects
+                (cited_object_id, schema_id, owner_kind, owner_id, content_hash)
+             VALUES ($1, 'test/cited', 'personal', $2, $3)",
+        )
+        .bind(cited_object_id)
+        .bind(owner_id)
+        .bind(&content_hash)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "UPDATE proxima_core.cited_objects SET schema_id = 'test/cited' WHERE cited_object_id = $1",
+        )
+        .bind(cited_object_id)
+        .execute(pool)
+        .await
+        .expect("no-op update is permitted (content-addressed upsert RETURNING path)");
+        let err = sqlx::query(
+            "UPDATE proxima_core.cited_objects SET schema_id = 'test/changed' WHERE cited_object_id = $1",
+        )
+        .bind(cited_object_id)
+        .execute(pool)
+        .await
+        .expect_err("cited_objects content change must be append-only");
+        assert!(err.to_string().contains("append-only"), "got: {err}");
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("append-only trigger test failed");
+}
+
+#[tokio::test]
 async fn pre_v004_database_fails_closed_before_checksum_migration() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
 

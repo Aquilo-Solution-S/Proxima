@@ -894,15 +894,18 @@ fn validate_prepare(
     Ok(())
 }
 
-/// Gate a request on the host-resolved authorization context rather than
-/// trusting the client-supplied `owner` field alone. The `owner` still routes
-/// storage, but the caller must actually be able to access that principal.
+/// Gate a blob READ on host-resolved Fact-read authority for `owner`, rather
+/// than trusting the client-supplied `owner` field alone. Symmetric with
+/// [`ensure_owner_write_access`]: a cited blob is a Fact-attached payload, so
+/// read access is `may_read(owner, Fact)` — the same per-kind role ceiling the
+/// write gate uses, not a coarser "any accessible principal" check that a
+/// Goal-only-read role could slip through (analysis 2026-07-05 S5).
 fn ensure_owner_access(ctx: &AuthzContext, owner: &Owner) -> Result<(), BlobError> {
-    if ctx.can_access_owner(owner) {
+    if ctx.may_read(owner, AccessKind::Fact) {
         Ok(())
     } else {
         Err(BlobError::Denied(
-            "owner is not accessible for this authorization context".into(),
+            "owner is not readable for this authorization context".into(),
         ))
     }
 }
