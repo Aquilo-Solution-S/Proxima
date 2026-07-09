@@ -125,6 +125,36 @@ pub async fn run_core_and_flavor_migrations(
     }
 }
 
+/// Run the pre-boot compatibility preflight **without applying any
+/// migration DDL**.
+///
+/// For `GitOps` / split-role deploys (see docs/15): an init container or
+/// `tools/dev-migrate` applies migrations under a DDL-capable role, and the
+/// long-running app then boots under a DML-only role that cannot issue DDL.
+/// This still rejects a stale pre-v0.0.4 database and still rejects duplicate
+/// migration versions across composed sources, but never runs
+/// `run_direct` / touches schema — so it succeeds against an already-migrated
+/// database held by a narrow role.
+///
+/// # Errors
+///
+/// Returns `MigrationError::DuplicateVersion` if two sources claim the same
+/// version, `MigrationError::CorePreflight` if the database still carries
+/// pre-v0.0.4 artifacts, or `MigrationError::Connection` if the preflight
+/// pool cannot be reached.
+pub async fn preflight_without_migrations(
+    pg: &PgStorage,
+    flavors: impl IntoIterator<Item = NamedMigrator>,
+) -> Result<MigrationRunReport, MigrationError> {
+    let sources = prepare_sources(flavors)?;
+    let report = MigrationRunReport::from_sources(&sources);
+    let pool = pg.clone_pool_for_backend();
+    ensure_v004_baseline_compatible(&pool)
+        .await
+        .map_err(MigrationError::CorePreflight)?;
+    Ok(report)
+}
+
 impl MigrationRunReport {
     fn from_sources(sources: &[NamedMigrator]) -> Self {
         let sources = sources.iter().map(|source| source.source).collect();

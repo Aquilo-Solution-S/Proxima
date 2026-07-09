@@ -68,6 +68,131 @@ async fn read_mcp_call_history_returns_owner_scoped_newest_first() {
     result.expect("read_mcp_call_history_returns_owner_scoped_newest_first failed");
 }
 
+#[tokio::test]
+async fn include_body_false_omits_body_and_true_hydrates() {
+    let (pg, db_name) = crate::common::fresh_pg().await;
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        pg.run_migrations().await?;
+        let owner = crate::common::owner_fixture();
+        seed_call(
+            pg.pool_for_tests(),
+            &owner,
+            "oidA",
+            "core/only",
+            br#"{"input":{"token":"body-token"},"output":{"ok":true}}"#.to_vec(),
+            time::OffsetDateTime::now_utc(),
+        )
+        .await?;
+
+        let omitted = pg
+            .read_mcp_call_history(&McpCallHistoryRequest {
+                owner,
+                actor_oid: None,
+                limit: 10,
+                include_body: false,
+                before: None,
+            })
+            .await?;
+        assert_eq!(omitted.calls.len(), 1);
+        assert_eq!(omitted.calls[0].tool_name, "core/only");
+        assert!(
+            omitted.calls[0].io_body.is_none(),
+            "include_body=false must omit the inline I/O body (default)"
+        );
+
+        let hydrated = pg
+            .read_mcp_call_history(&McpCallHistoryRequest {
+                owner,
+                actor_oid: None,
+                limit: 10,
+                include_body: true,
+                before: None,
+            })
+            .await?;
+        assert_eq!(hydrated.calls.len(), 1);
+        let body = hydrated.calls[0]
+            .io_body
+            .as_ref()
+            .expect("include_body=true hydrates the inline I/O body");
+        assert!(
+            body.windows(b"body-token".len())
+                .any(|window| window == b"body-token"),
+            "hydrated body carries the seeded I/O bytes"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = crate::common::drop_db(&db_name).await;
+    result.expect("include_body gating test failed");
+}
+
+#[tokio::test]
+async fn cursor_pages_strictly_older_rows() {
+    let (pg, db_name) = crate::common::fresh_pg().await;
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        pg.run_migrations().await?;
+        let owner = crate::common::owner_fixture();
+        let base = time::OffsetDateTime::now_utc();
+        // Increasing timestamps: c0 (oldest) .. c2 (newest).
+        for (name, offset_ms) in [("core/c0", 0i64), ("core/c1", 1i64), ("core/c2", 2i64)] {
+            seed_call(
+                pg.pool_for_tests(),
+                &owner,
+                "oidA",
+                name,
+                br#"{"input":{},"output":{}}"#.to_vec(),
+                base + time::Duration::milliseconds(offset_ms),
+            )
+            .await?;
+        }
+
+        // Page 1: newest two.
+        let page1 = pg
+            .read_mcp_call_history(&McpCallHistoryRequest {
+                owner,
+                actor_oid: None,
+                limit: 2,
+                include_body: false,
+                before: None,
+            })
+            .await?;
+        assert_eq!(page1.calls.len(), 2);
+        assert_eq!(page1.calls[0].tool_name, "core/c2");
+        assert_eq!(page1.calls[1].tool_name, "core/c1");
+
+        // Page 2: strictly older than page 1's last row => only c0, no repeats.
+        let cursor = &page1.calls[1];
+        let page2 = pg
+            .read_mcp_call_history(&McpCallHistoryRequest {
+                owner,
+                actor_oid: None,
+                limit: 2,
+                include_body: false,
+                before: Some((cursor.at, cursor.memory_id.into_inner())),
+            })
+            .await?;
+        assert_eq!(page2.calls.len(), 1, "cursor pages the remaining older row");
+        assert_eq!(page2.calls[0].tool_name, "core/c0");
+        assert!(
+            page2
+                .calls
+                .iter()
+                .all(|call| call.tool_name != "core/c1" && call.tool_name != "core/c2"),
+            "cursor must not repeat page-1 rows"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = crate::common::drop_db(&db_name).await;
+    result.expect("cursor paging test failed");
+}
+
 async fn seed_history_fixture(
     pg: &PgStorage,
     owner1: &Owner,
@@ -119,11 +244,17 @@ async fn seed_history_fixture(
     Ok(())
 }
 
+// `include_body: true` here mirrors the pre-K5 default (body always
+// hydrated); the new default is `false`, so this helper opts back in to keep
+// the body-present assertions above meaningful. Body-omission and cursor
+// paging get dedicated tests below.
 fn history_req(owner: &Owner, actor_oid: Option<&str>, limit: u32) -> McpCallHistoryRequest {
     McpCallHistoryRequest {
         owner: *owner,
         actor_oid: actor_oid.map(str::to_string),
         limit,
+        include_body: true,
+        before: None,
     }
 }
 

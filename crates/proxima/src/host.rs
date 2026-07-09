@@ -4,7 +4,8 @@ pub use crate::app::{AppContext, AppInfo, Authz, FlavorApp};
 pub use crate::config::EmbedConfig;
 pub use crate::core_mcp::{CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo};
 pub use crate::migrations::{
-    MigrationError, MigrationRunReport, NamedMigrator, run_core_and_flavor_migrations,
+    MigrationError, MigrationRunReport, NamedMigrator, preflight_without_migrations,
+    run_core_and_flavor_migrations,
 };
 pub use crate::runtime::{
     BuiltProxima, Proxima, RunningProxima, layered_router, layered_router_with_revalidation, run,

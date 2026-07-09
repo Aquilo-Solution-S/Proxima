@@ -139,6 +139,7 @@ pub struct ProximaBuilder {
     registers: Vec<RegisterFn>,
     pg_sidecar_registers: Vec<PgSidecarRegisterFn>,
     migrators: Vec<NamedMigrator>,
+    skip_migrations: bool,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
     anthropic: Option<Arc<dyn AnthropicClient>>,
 }
@@ -151,6 +152,7 @@ impl std::fmt::Debug for ProximaBuilder {
             .field("flavors", &self.registers.len())
             .field("pg_sidecars", &self.pg_sidecar_registers.len())
             .field("migrators", &self.migrators.len())
+            .field("skip_migrations", &self.skip_migrations)
             .field("has_embed_client", &self.embed_client.is_some())
             .field("has_anthropic", &self.anthropic.is_some())
             .finish()
@@ -207,6 +209,7 @@ impl ProximaBuilder {
             registers: Vec::new(),
             pg_sidecar_registers: Vec::new(),
             migrators: Vec::new(),
+            skip_migrations: false,
             embed_client: None,
             anthropic: None,
         }
@@ -261,6 +264,19 @@ impl ProximaBuilder {
         self
     }
 
+    /// Boot without applying migrations, keeping only the pre-boot
+    /// compatibility preflight.
+    ///
+    /// For split-role `GitOps` deploys (docs/15): migrate out-of-band under a
+    /// DDL role (init container / `tools/dev-migrate`), then run the app under
+    /// a DML-only role that cannot issue DDL. A stale pre-v0.0.4 database is
+    /// still rejected; the schema is assumed already current.
+    #[must_use]
+    pub fn skip_migrations(mut self) -> Self {
+        self.skip_migrations = true;
+        self
+    }
+
     /// Embedding client passthrough (`Engine::with_embed`).
     ///
     /// Proxima registers no inference targets or tiers; hosts inject the
@@ -293,6 +309,7 @@ impl ProximaBuilder {
             registers,
             pg_sidecar_registers,
             migrators,
+            skip_migrations,
             embed_client,
             anthropic,
         } = self;
@@ -300,9 +317,17 @@ impl ProximaBuilder {
         let pg = PgStorage::connect(&config.database_url)
             .await
             .map_err(embed_storage_error)?;
-        run_core_and_flavor_migrations(&pg, migrators)
-            .await
-            .map_err(embed_migration_error)?;
+        if skip_migrations {
+            // GitOps split-role deploy: schema is migrated out-of-band under a
+            // DDL role; here we only run the preflight and issue no DDL.
+            preflight_without_migrations(&pg, migrators)
+                .await
+                .map_err(embed_migration_error)?;
+        } else {
+            run_core_and_flavor_migrations(&pg, migrators)
+                .await
+                .map_err(embed_migration_error)?;
+        }
 
         let mut registry = FlavorRegistry::new();
         for register in registers {
@@ -324,6 +349,20 @@ impl ProximaBuilder {
         let mut engine =
             Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
         if let Some(client) = embed_client {
+            // Fail fast on a dimension mismatch. The `embeddings.embedding`
+            // column is a fixed-width `vector(EMBEDDING_DIM)`; a client of a
+            // different dim (e.g. a 3072-d model) would let every job be
+            // claimed and then rejected at insert, silently burning the queue.
+            let dim = client.dim();
+            if dim != proxima_core::llm::EMBEDDING_DIM {
+                return Err(EmbedError::Config(format!(
+                    "embedding client reports dim {dim}, but the vector column is fixed at {} \
+                     (proxima_core::llm::EMBEDDING_DIM); a mismatched model fails every \
+                     embedding job — configure a {}-dimensional embedding model",
+                    proxima_core::llm::EMBEDDING_DIM,
+                    proxima_core::llm::EMBEDDING_DIM,
+                )));
+            }
             engine = engine.with_embed(client);
         }
         if let Some(client) = anthropic {

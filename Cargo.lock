@@ -2181,6 +2181,7 @@ dependencies = [
  "proxima-mcp-server",
  "proxima-pg-testkit",
  "proxima-storage-pg",
+ "schemars",
  "serde",
  "serde_json",
  "sqlx",

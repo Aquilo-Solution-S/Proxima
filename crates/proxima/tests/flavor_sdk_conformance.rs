@@ -81,3 +81,48 @@ fn host_and_flavor_sdk_imports_are_separate_and_compile() {
 
     let _registry = FlavorRegistry::new();
 }
+
+// F6: a flavor MCP-tool author implements the tool via `proxima::flavor`
+// alone — no direct `proxima_core::mcp` reach-through. This mirrors
+// `docs/tutorials/add-first-mcp-tool.md`.
+mod mcp_tool_authoring {
+    use futures::future::BoxFuture;
+    use proxima::flavor::{McpTool, McpToolCtx, McpToolError};
+
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    struct ExampleLookupArgs {
+        external_id: String,
+    }
+
+    #[derive(Debug, serde::Serialize)]
+    struct ExampleLookupOutput {
+        found: bool,
+    }
+
+    struct ExampleLookupTool;
+
+    impl McpTool for ExampleLookupTool {
+        const NAME: &'static str = "conformance_lookup";
+        const DESCRIPTION: &'static str = "Look up a conformance example row.";
+
+        type Args = ExampleLookupArgs;
+        type Output = ExampleLookupOutput;
+
+        fn call(
+            ctx: McpToolCtx,
+            args: Self::Args,
+        ) -> BoxFuture<'static, Result<Self::Output, McpToolError>> {
+            Box::pin(async move {
+                let _ = (ctx.owner, args.external_id);
+                Ok(ExampleLookupOutput { found: false })
+            })
+        }
+    }
+
+    #[test]
+    fn flavor_module_exposes_mcp_tool_authoring_surface() {
+        fn assert_mcp_tool<T: McpTool>() {}
+        assert_mcp_tool::<ExampleLookupTool>();
+        assert_eq!(ExampleLookupTool::NAME, "conformance_lookup");
+    }
+}

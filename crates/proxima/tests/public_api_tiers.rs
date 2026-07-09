@@ -34,6 +34,22 @@ fn flavor_sdk_imports_from_flavor_module() {
 }
 
 #[test]
+fn flavor_sdk_exposes_mcp_tool_authoring_surface() {
+    // F6: the MCP tool family is reachable from `proxima::flavor` so flavor
+    // authors never import `proxima_core::mcp` directly.
+    use proxima::flavor::{
+        McpActionArgSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
+        McpToolErrorKind, OutputMode,
+    };
+    fn _needs_mcp_tool<T: McpTool>() {}
+    let _ = McpToolErrorKind::Internal;
+    let _ = OutputMode::Handles;
+    // Name the remaining re-exports as types so an accidental removal fails.
+    let _: &[McpActionArgSpec] = &[];
+    let _: Option<(&McpToolCtx, &McpToolError, &McpAuthorContext, &McpToolAnnotations)> = None;
+}
+
+#[test]
 fn raw_storage_surfaces_are_not_supported_tier_exports() {
     let host_exports = include_str!("../src/host.rs");
     let flavor_exports = include_str!("../src/flavor.rs");

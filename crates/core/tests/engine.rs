@@ -225,6 +225,8 @@ async fn read_mcp_call_history_rejects_context_without_read_grant() {
                 owner,
                 actor_oid: None,
                 limit: 10,
+                include_body: false,
+                before: None,
             },
         )
         .await
@@ -289,6 +291,8 @@ async fn read_mcp_call_history_rejects_context_without_graph_read_role() {
                 owner,
                 actor_oid: None,
                 limit: 1,
+                include_body: false,
+                before: None,
             },
         )
         .await
@@ -309,6 +313,8 @@ async fn read_mcp_call_history_rejects_zero_limit_as_invalid_argument() {
                 owner,
                 actor_oid: None,
                 limit: 0,
+                include_body: false,
+                before: None,
             },
         )
         .await

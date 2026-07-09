@@ -38,6 +38,7 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 proxima-core = { path = "../core", features = ["test-fixtures"] }
 proxima-pg-testkit = { path = "../pg-testkit" }
+schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 time = { workspace = true }
 tower = { workspace = true, features = ["util"] }
