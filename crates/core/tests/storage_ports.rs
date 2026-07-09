@@ -289,6 +289,10 @@ impl EmbeddingJobPort for EmbeddingJobFake {
     async fn count_pending_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError> {
         fake_error()
     }
+
+    async fn count_failed_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError> {
+        fake_error()
+    }
 }
 
 #[async_trait::async_trait]

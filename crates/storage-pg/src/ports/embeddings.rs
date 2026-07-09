@@ -118,6 +118,10 @@ impl EmbeddingJobPort for PgStorage {
     async fn count_pending_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError> {
         verbs::fact_embeddings::count_pending_embedding_jobs(&self.pool, owner).await
     }
+
+    async fn count_failed_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError> {
+        verbs::fact_embeddings::count_failed_embedding_jobs(&self.pool, owner).await
+    }
 }
 
 #[async_trait::async_trait]

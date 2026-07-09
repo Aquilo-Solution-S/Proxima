@@ -14,8 +14,74 @@ use super::{
     validate_active_head, validate_evidence_in_owner, validate_goal_transition,
     validate_operator_goal_evidence,
 };
+use crate::error::with_bounded_retry;
+
+// K7: the goal `*_atomic` verbs are pool-scoped write transactions. Each wraps
+// its `_in_pool` body in `with_bounded_retry` so a transient deadlock /
+// serialization failure (SQLSTATE 40P01/40001) re-runs the whole idempotent
+// transaction instead of surfacing to the host as a bare `Internal`.
 
 pub(crate) async fn create_goal_atomic(
+    pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
+    req: &CreateGoalAtomicRequest<'_>,
+    permit: &OwnerWritePermit,
+) -> Result<GoalWriteOutcome, StorageError> {
+    with_bounded_retry(move || async move {
+        create_goal_atomic_in_pool(pool, sidecars, req, permit).await
+    })
+    .await
+}
+
+pub(crate) async fn transition_goal_atomic(
+    pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
+    req: &TransitionGoalAtomicRequest<'_>,
+    permit: &OwnerWritePermit,
+) -> Result<GoalWriteOutcome, StorageError> {
+    with_bounded_retry(move || async move {
+        transition_goal_atomic_in_pool(pool, sidecars, req, permit).await
+    })
+    .await
+}
+
+pub(crate) async fn achieve_goal_atomic(
+    pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
+    req: &AchieveGoalAtomicRequest<'_>,
+    permit: &OwnerWritePermit,
+) -> Result<GoalWriteOutcome, StorageError> {
+    with_bounded_retry(move || async move {
+        achieve_goal_atomic_in_pool(pool, sidecars, req, permit).await
+    })
+    .await
+}
+
+pub(crate) async fn modify_goal_atomic(
+    pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
+    req: &ModifyGoalAtomicRequest<'_>,
+    permit: &OwnerWritePermit,
+) -> Result<GoalWriteOutcome, StorageError> {
+    with_bounded_retry(move || async move {
+        modify_goal_atomic_in_pool(pool, sidecars, req, permit).await
+    })
+    .await
+}
+
+pub(crate) async fn decompose_goal_atomic(
+    pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
+    req: &DecomposeGoalAtomicRequest<'_>,
+    permit: &OwnerWritePermit,
+) -> Result<DecomposeGoalOutcome, StorageError> {
+    with_bounded_retry(move || async move {
+        decompose_goal_atomic_in_pool(pool, sidecars, req, permit).await
+    })
+    .await
+}
+
+pub(crate) async fn create_goal_atomic_in_pool(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &CreateGoalAtomicRequest<'_>,
@@ -122,7 +188,7 @@ pub(crate) async fn create_goal_atomic(
     Ok(outcome)
 }
 
-pub(crate) async fn transition_goal_atomic(
+pub(crate) async fn transition_goal_atomic_in_pool(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &TransitionGoalAtomicRequest<'_>,
@@ -176,7 +242,7 @@ pub(crate) async fn transition_goal_atomic(
     Ok(outcome)
 }
 
-pub(crate) async fn achieve_goal_atomic(
+pub(crate) async fn achieve_goal_atomic_in_pool(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &AchieveGoalAtomicRequest<'_>,
@@ -321,7 +387,7 @@ async fn achieve_goal_non_replay(
 }
 
 #[allow(clippy::too_many_lines)] // atomic Goal replace path keeps replay/proof side effects together
-pub(crate) async fn modify_goal_atomic(
+pub(crate) async fn modify_goal_atomic_in_pool(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &ModifyGoalAtomicRequest<'_>,
@@ -437,7 +503,7 @@ pub(crate) async fn modify_goal_atomic(
 }
 
 #[allow(clippy::too_many_lines)] // atomic child Goal creation path keeps replay/proof side effects together
-pub(crate) async fn decompose_goal_atomic(
+pub(crate) async fn decompose_goal_atomic_in_pool(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &DecomposeGoalAtomicRequest<'_>,

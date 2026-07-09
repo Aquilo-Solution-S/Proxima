@@ -784,6 +784,10 @@ async fn reconcile_requeues_failed_embedding_jobs() -> Result<(), Box<dyn std::e
         assert_eq!(status, "failed");
         assert_eq!(attempts, EMBEDDING_JOB_MAX_ATTEMPTS);
 
+        // K9: the terminal failure is visible on the readiness count.
+        assert_eq!(pg.count_failed_embedding_jobs(&owner).await?, 1);
+        assert_eq!(pg.count_pending_embedding_jobs(&owner).await?, 0);
+
         // Reconcile lifts the Fact out of the dead-end: status back to pending,
         // attempts reset, last_error cleared — so a fresh provider/model or a
         // process restart can retry it (analysis 2026-07-05 P1.1).

@@ -47,6 +47,7 @@ pub struct GetGraphReadRequest {
 #[derive(Debug, Clone)]
 pub struct GetGraphReadResponse {
     pub pending_embedding_jobs: u64,
+    pub failed_embedding_jobs: u64,
     pub fact_retention_seconds: Option<i64>,
 }
 
@@ -311,6 +312,11 @@ pub(in crate::engine) async fn get_graph_authorized(
         .count_pending_embedding_jobs(owner)
         .await
         .map_err(|err| storage_error("count_pending_embedding_jobs", &err))?;
+    let failed_embedding_jobs = ports
+        .embedding_job
+        .count_failed_embedding_jobs(owner)
+        .await
+        .map_err(|err| storage_error("count_failed_embedding_jobs", &err))?;
     let fact_retention_seconds = ports
         .fact_retention
         .get_fact_retention(owner)
@@ -318,6 +324,7 @@ pub(in crate::engine) async fn get_graph_authorized(
         .map_err(|err| storage_error("get_fact_retention", &err))?;
     Ok(GetGraphReadResponse {
         pending_embedding_jobs,
+        failed_embedding_jobs,
         fact_retention_seconds,
     })
 }
