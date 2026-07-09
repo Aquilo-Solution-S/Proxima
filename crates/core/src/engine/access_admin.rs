@@ -75,6 +75,7 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &group_owner, Relation::Admin)
             .await?;
+        require_group_manage(authz, &group_owner)?;
         let member_principal = OwnerRef::Personal(member);
         self.veto_and_observe_access_admin(
             authz,
@@ -118,6 +119,7 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &group_owner, Relation::Admin)
             .await?;
+        require_group_manage(authz, &group_owner)?;
         let member_principal = OwnerRef::Personal(member);
         let current_relations = self
             .storage()
@@ -212,6 +214,9 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &current_owner, Relation::Admin)
             .await?;
+        if matches!(current_owner, OwnerRef::Group(_)) {
+            require_group_manage(authz, &current_owner)?;
+        }
 
         self.veto_and_observe_access_admin(
             authz,
@@ -267,6 +272,21 @@ impl Engine {
                 Err(err)
             }
         }
+    }
+}
+
+/// Membership-admin and group publish require the `manage` bit, not merely
+/// `Relation::Admin` write authority. `authorize_write(.., Admin)` is satisfied
+/// by any role that can write Goals (`write >= Goal`), so a custom
+/// `OwnerAccessPort` could hand out `Role::new(Goal, Goal, false)` — write-Goal
+/// but `manage = false` — and pass the write gate. Consult `may_manage`
+/// explicitly so only roles with `manage = true` (e.g. `Role::admin`) mutate
+/// membership or publish a group-owned entity.
+fn require_group_manage(authz: &AuthzContext, group_owner: &OwnerRef) -> Result<(), ProtocolError> {
+    if authz.may_manage(group_owner) {
+        Ok(())
+    } else {
+        Err(ProtocolError::forbidden("requires manage on this owner"))
     }
 }
 
@@ -401,5 +421,84 @@ mod tests {
             *changes.lock().expect("changes lock"),
             vec![MembershipChange::Add, MembershipChange::Remove]
         );
+    }
+
+    fn membership_storage_with_home(
+        member: UserId,
+        group: GroupId,
+        home_owner: Option<OwnerRef>,
+    ) -> MembershipStorage {
+        MembershipStorage {
+            member: OwnerRef::Personal(member),
+            group,
+            membership_relation: Relation::Viewer,
+            home_owner,
+            entity_readable: true,
+            memory_kind: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn access_admin_membership_and_publish_require_manage_not_just_write() {
+        use crate::access::AccessCeiling;
+
+        let group = GroupId::new(Uuid::now_v7());
+        let group_owner = OwnerRef::Group(group);
+        let caller = UserId::new(Uuid::now_v7());
+        let member = UserId::new(Uuid::now_v7());
+        let entity = crate::EntityId::Memory(crate::MemoryId::new(Uuid::now_v7()));
+
+        // write == Goal (satisfies `authorize_write(.., Admin)`) but manage == false.
+        let write_only = Role::new(AccessCeiling::Goal, AccessCeiling::Goal, false)
+            .expect("write==read is a valid role");
+        let write_only_authz = AuthzContext::for_subject_with_role(
+            caller,
+            [(group_owner, write_only)],
+            AuthPath::HostBearer,
+        );
+        let admin_authz = AuthzContext::for_subject_with_role(
+            caller,
+            [(group_owner, Role::admin())],
+            AuthPath::HostBearer,
+        );
+
+        // add_member: write-without-manage is denied before touching storage.
+        let engine = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            .with_storage_ports(
+                membership_storage_with_home(member, group, Some(group_owner)).storage_ports(),
+            );
+        let denied = engine
+            .add_member(&write_only_authz, group, member, Relation::Viewer)
+            .await
+            .expect_err("write-without-manage must not add members");
+        assert_eq!(denied.code, ErrorCode::Forbidden);
+
+        // remove_member: same gate, fails closed before enumerating members.
+        let denied = engine
+            .remove_member(&write_only_authz, group, member)
+            .await
+            .expect_err("write-without-manage must not remove members");
+        assert_eq!(denied.code, ErrorCode::Forbidden);
+
+        // publish of a group-owned entity: same manage gate.
+        let denied = engine
+            .publish_to_world(&write_only_authz, entity)
+            .await
+            .expect_err("write-without-manage must not publish a group entity");
+        assert_eq!(denied.code, ErrorCode::Forbidden);
+
+        // manage == true (Role::admin) passes the manage gate and reaches storage,
+        // which this stub rejects with an Internal error — proving the gate opened.
+        let past_gate = engine
+            .add_member(&admin_authz, group, member, Relation::Viewer)
+            .await
+            .expect_err("stub storage rejects the write after the gate opens");
+        assert_eq!(past_gate.code, ErrorCode::Internal);
+
+        let past_gate = engine
+            .publish_to_world(&admin_authz, entity)
+            .await
+            .expect_err("stub storage rejects the transfer after the gate opens");
+        assert_eq!(past_gate.code, ErrorCode::Internal);
     }
 }

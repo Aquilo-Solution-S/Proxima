@@ -278,7 +278,6 @@ async fn change_history_surfaces_readable_non_world_source_edge_events()
             .list_change_events(
                 &authz,
                 &ListChangeEventsReadRequest {
-                    owner: gp,
                     after: Uuid::nil(),
                     limit: 100,
                 },

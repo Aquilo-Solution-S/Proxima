@@ -52,10 +52,7 @@ pub(super) async fn citation_of_fact(
     let citation = engine
         .read_fact_citation(
             &ctx.authz,
-            &FactCitationReadRequest {
-                owner: ctx.owner,
-                fact_memory_id,
-            },
+            &FactCitationReadRequest { fact_memory_id },
         )
         .await?
         .map(|row| fact_citation_output(&row));
@@ -80,10 +77,7 @@ pub(super) async fn citation_of_entity_head(
     let citation = engine
         .read_entity_head_citation(
             &ctx.authz,
-            &EntityHeadCitationReadRequest {
-                owner: ctx.owner,
-                fact_entity_id,
-            },
+            &EntityHeadCitationReadRequest { fact_entity_id },
         )
         .await?
         .map(|row| fact_citation_output(&row));

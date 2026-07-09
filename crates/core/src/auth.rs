@@ -2,7 +2,7 @@
 //!
 //! See docs/14-protocol-surface.md §"Auth model".
 
-#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Credentials {
     /// Host token material, opaque to core; interpreted only by the
     /// host-provided `Authenticator`.

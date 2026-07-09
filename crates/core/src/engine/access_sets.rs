@@ -285,6 +285,24 @@ pub(in crate::engine) mod tests {
                 })
                 .unwrap_or_default())
         }
+
+        async fn load_fact_source_batches(
+            &self,
+            _owner: &Owner,
+            _memory_ids: &[MemoryId],
+        ) -> Result<Vec<FactSourceBatchRow>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn load_memory_edge_ids(
+            &self,
+            _owner: &Owner,
+            _relation: &str,
+            _source_memory_id: MemoryId,
+            _target_memory_ids: &[MemoryId],
+        ) -> Result<Vec<EdgeId>, StorageError> {
+            Ok(Vec::new())
+        }
     }
 
     #[async_trait::async_trait]
@@ -330,6 +348,31 @@ pub(in crate::engine) mod tests {
                 truncated: false,
             })
         }
+
+        async fn load_memory_graph_payloads(
+            &self,
+            _owner: &Owner,
+            _memory_ids: &[MemoryId],
+            _include_body: bool,
+        ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn load_neighbor_memory_edges(
+            &self,
+            _read_owners: &[OwnerRef],
+            _memory_ids: &[MemoryId],
+            _limit: usize,
+        ) -> Result<Vec<NeighborEdgeRow>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn load_edge_endpoint_kinds(
+            &self,
+            _edge_ids: &[EdgeId],
+        ) -> Result<Vec<EdgeEndpointKindRow>, StorageError> {
+            Ok(Vec::new())
+        }
     }
 
     #[async_trait::async_trait]
@@ -340,6 +383,14 @@ pub(in crate::engine) mod tests {
             _sidecars: &[SidecarSpec],
         ) -> Result<Option<MemorySnapshot>, StorageError> {
             Ok(None)
+        }
+
+        async fn list_memory_dependencies(
+            &self,
+            _owner: &Owner,
+            _source_memory_id: MemoryId,
+        ) -> Result<Vec<MemoryDependency>, StorageError> {
+            Ok(Vec::new())
         }
     }
 

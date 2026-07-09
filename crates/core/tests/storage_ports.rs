@@ -105,6 +105,14 @@ impl MemoryAuthoringPort for MemoryAuthoringFake {
         fake_error()
     }
 
+    async fn load_fact_source_batches(
+        &self,
+        _owner: &Owner,
+        _memory_ids: &[MemoryId],
+    ) -> Result<Vec<FactSourceBatchRow>, StorageError> {
+        fake_error()
+    }
+
     async fn load_memory_edge_ids(
         &self,
         _owner: &Owner,
