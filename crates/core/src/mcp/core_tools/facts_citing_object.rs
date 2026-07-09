@@ -33,10 +33,7 @@ pub(super) async fn facts_citing_object(
     let snapshots = engine
         .facts_citing_object(
             &ctx.authz,
-            &FactsCitingObjectReadRequest {
-                owner: ctx.owner,
-                cited_object_id,
-            },
+            &FactsCitingObjectReadRequest { cited_object_id },
         )
         .await?;
     let facts = snapshots

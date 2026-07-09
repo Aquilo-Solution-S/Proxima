@@ -127,6 +127,32 @@ impl MemoryAuthoringPort for RejectingStorage {
             "RejectingStorage rejects writes".into(),
         ))
     }
+
+    async fn load_memory_kinds(
+        &self,
+        _owner: &Owner,
+        _memory_ids: &[crate::MemoryId],
+    ) -> Result<Vec<crate::MemoryKindRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn load_fact_source_batches(
+        &self,
+        _owner: &Owner,
+        _memory_ids: &[crate::MemoryId],
+    ) -> Result<Vec<crate::FactSourceBatchRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn load_memory_edge_ids(
+        &self,
+        _owner: &Owner,
+        _relation: &str,
+        _source_memory_id: crate::MemoryId,
+        _target_memory_ids: &[crate::MemoryId],
+    ) -> Result<Vec<EdgeId>, StorageError> {
+        Ok(Vec::new())
+    }
 }
 
 #[async_trait::async_trait]
@@ -172,6 +198,31 @@ impl MemoryReadPort for RejectingStorage {
             truncated: false,
         })
     }
+
+    async fn load_memory_graph_payloads(
+        &self,
+        _owner: &Owner,
+        _memory_ids: &[crate::MemoryId],
+        _include_body: bool,
+    ) -> Result<Vec<crate::MemoryGraphPayloadRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn load_neighbor_memory_edges(
+        &self,
+        _read_owners: &[OwnerRef],
+        _memory_ids: &[crate::MemoryId],
+        _limit: usize,
+    ) -> Result<Vec<crate::NeighborEdgeRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn load_edge_endpoint_kinds(
+        &self,
+        _edge_ids: &[EdgeId],
+    ) -> Result<Vec<crate::EdgeEndpointKindRow>, StorageError> {
+        Ok(Vec::new())
+    }
 }
 
 #[async_trait::async_trait]
@@ -182,6 +233,14 @@ impl MemoryInspectPort for RejectingStorage {
         _sidecars: &[SidecarSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
         Ok(None)
+    }
+
+    async fn list_memory_dependencies(
+        &self,
+        _owner: &Owner,
+        _source_memory_id: crate::MemoryId,
+    ) -> Result<Vec<crate::MemoryDependency>, StorageError> {
+        Ok(Vec::new())
     }
 }
 

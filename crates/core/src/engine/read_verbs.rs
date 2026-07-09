@@ -42,7 +42,6 @@ pub struct GetMemoryReadResponse {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetGraphReadRequest {
     pub owner: OwnerRef,
-    pub include_tombstoned: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -53,7 +52,6 @@ pub struct GetGraphReadResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListChangeEventsReadRequest {
-    pub owner: OwnerRef,
     pub after: uuid::Uuid,
     pub limit: usize,
 }
@@ -66,19 +64,16 @@ pub struct ListChangeEventsReadResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactCitationReadRequest {
-    pub owner: OwnerRef,
     pub fact_memory_id: MemoryId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntityHeadCitationReadRequest {
-    pub owner: OwnerRef,
     pub fact_entity_id: FactEntityId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactsCitingObjectReadRequest {
-    pub owner: OwnerRef,
     pub cited_object_id: uuid::Uuid,
 }
 
@@ -140,12 +135,7 @@ impl Engine {
         let permit = self
             .authorize_request(authz, &req.owner, Relation::Admin)
             .await?;
-        get_graph_authorized(
-            &self.storage.read_verb,
-            permit.owner(),
-            req.include_tombstoned,
-        )
-        .await
+        get_graph_authorized(&self.storage.read_verb, permit.owner()).await
     }
 
     /// Read-set-scoped forward change-event read plus edge endpoint-kind domain rows.
@@ -315,7 +305,6 @@ pub(in crate::engine) async fn get_memory_authorized(
 pub(in crate::engine) async fn get_graph_authorized(
     ports: &ReadVerbStoragePorts,
     owner: &OwnerRef,
-    _include_tombstoned: bool,
 ) -> Result<GetGraphReadResponse, ProtocolError> {
     let pending_embedding_jobs = ports
         .embedding_job
@@ -540,10 +529,7 @@ mod tests {
     #[tokio::test]
     async fn get_graph_denies_denied_context() {
         let owner = owner();
-        let req = GetGraphReadRequest {
-            owner,
-            include_tombstoned: false,
-        };
+        let req = GetGraphReadRequest { owner };
         let err = engine()
             .get_graph(&AuthzContext::denied_for_owner(&owner), &req)
             .await
@@ -555,7 +541,6 @@ mod tests {
     async fn list_change_events_denies_denied_context() {
         let owner = owner();
         let req = ListChangeEventsReadRequest {
-            owner,
             after: uuid::Uuid::nil(),
             limit: 1,
         };
@@ -570,7 +555,6 @@ mod tests {
     async fn read_fact_citation_denies_denied_context() {
         let owner = owner();
         let req = FactCitationReadRequest {
-            owner,
             fact_memory_id: MemoryId::new(uuid::Uuid::now_v7()),
         };
         let err = engine()
@@ -584,7 +568,6 @@ mod tests {
     async fn read_entity_head_citation_denies_denied_context() {
         let owner = owner();
         let req = EntityHeadCitationReadRequest {
-            owner,
             fact_entity_id: FactEntityId::new(uuid::Uuid::now_v7()),
         };
         let err = engine()
@@ -598,7 +581,6 @@ mod tests {
     async fn facts_citing_object_denies_denied_context() {
         let owner = owner();
         let req = FactsCitingObjectReadRequest {
-            owner,
             cited_object_id: uuid::Uuid::now_v7(),
         };
         let err = engine()

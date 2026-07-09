@@ -52,6 +52,31 @@ impl crate::MemoryReadPort for ReadOnlyFake {
             truncated: false,
         })
     }
+
+    async fn load_memory_graph_payloads(
+        &self,
+        _owner: &crate::Owner,
+        _memory_ids: &[crate::MemoryId],
+        _include_body: bool,
+    ) -> Result<Vec<crate::MemoryGraphPayloadRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn load_neighbor_memory_edges(
+        &self,
+        _read_owners: &[OwnerRef],
+        _memory_ids: &[crate::MemoryId],
+        _limit: usize,
+    ) -> Result<Vec<crate::NeighborEdgeRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn load_edge_endpoint_kinds(
+        &self,
+        _edge_ids: &[crate::EdgeId],
+    ) -> Result<Vec<crate::EdgeEndpointKindRow>, StorageError> {
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Debug)]
@@ -154,7 +179,6 @@ async fn read_verb_helper_accepts_only_read_verb_handles() {
     };
     let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
     let req = super::read_verbs::ListChangeEventsReadRequest {
-        owner,
         after: uuid::Uuid::nil(),
         limit: 1,
     };
@@ -249,6 +273,14 @@ mod storage_port_tests_support {
             _sidecars: &[crate::read_models::SidecarSpec],
         ) -> Result<Option<crate::read_models::MemorySnapshot>, StorageError> {
             Ok(None)
+        }
+
+        async fn list_memory_dependencies(
+            &self,
+            _owner: &crate::Owner,
+            _source_memory_id: crate::MemoryId,
+        ) -> Result<Vec<crate::MemoryDependency>, StorageError> {
+            Ok(Vec::new())
         }
     }
 

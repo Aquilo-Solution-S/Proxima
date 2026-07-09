@@ -58,20 +58,14 @@ fn kind_str(k: PayloadKind) -> &'static str {
 /// Returns storage, engine, or projection failures.
 pub async fn get_graph(
     ctx: McpToolCtx,
-    args: GetGraphArgs,
+    _args: GetGraphArgs,
 ) -> Result<GetGraphOutput, McpToolError> {
     let engine = ctx
         .engine()
         .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
     let embeddings_client_configured = engine.embed_client().is_some();
     let graph = engine
-        .get_graph(
-            &ctx.authz,
-            &GetGraphReadRequest {
-                owner: ctx.owner,
-                include_tombstoned: args.include_tombstoned,
-            },
-        )
+        .get_graph(&ctx.authz, &GetGraphReadRequest { owner: ctx.owner })
         .await?;
 
     let schemas = ctx

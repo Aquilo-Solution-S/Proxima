@@ -33,29 +33,23 @@ pub trait MemoryAuthoringPort: Send + Sync {
 
     async fn load_memory_kinds(
         &self,
-        _owner: &Owner,
-        _memory_ids: &[MemoryId],
-    ) -> Result<Vec<MemoryKindRow>, StorageError> {
-        Ok(Vec::new())
-    }
+        owner: &Owner,
+        memory_ids: &[MemoryId],
+    ) -> Result<Vec<MemoryKindRow>, StorageError>;
 
     async fn load_fact_source_batches(
         &self,
-        _owner: &Owner,
-        _memory_ids: &[MemoryId],
-    ) -> Result<Vec<FactSourceBatchRow>, StorageError> {
-        Ok(Vec::new())
-    }
+        owner: &Owner,
+        memory_ids: &[MemoryId],
+    ) -> Result<Vec<FactSourceBatchRow>, StorageError>;
 
     async fn load_memory_edge_ids(
         &self,
-        _owner: &Owner,
-        _relation: &str,
-        _source_memory_id: MemoryId,
-        _target_memory_ids: &[MemoryId],
-    ) -> Result<Vec<EdgeId>, StorageError> {
-        Ok(Vec::new())
-    }
+        owner: &Owner,
+        relation: &str,
+        source_memory_id: MemoryId,
+        target_memory_ids: &[MemoryId],
+    ) -> Result<Vec<EdgeId>, StorageError>;
 }
 
 #[async_trait::async_trait]
@@ -68,28 +62,22 @@ pub trait MemoryReadPort: Send + Sync {
 
     async fn load_memory_graph_payloads(
         &self,
-        _owner: &Owner,
-        _memory_ids: &[MemoryId],
-        _include_body: bool,
-    ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
-        Ok(Vec::new())
-    }
+        owner: &Owner,
+        memory_ids: &[MemoryId],
+        include_body: bool,
+    ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError>;
 
     async fn load_neighbor_memory_edges(
         &self,
-        _read_owners: &[OwnerRef],
-        _memory_ids: &[MemoryId],
-        _limit: usize,
-    ) -> Result<Vec<NeighborEdgeRow>, StorageError> {
-        Ok(Vec::new())
-    }
+        read_owners: &[OwnerRef],
+        memory_ids: &[MemoryId],
+        limit: usize,
+    ) -> Result<Vec<NeighborEdgeRow>, StorageError>;
 
     async fn load_edge_endpoint_kinds(
         &self,
-        _edge_ids: &[EdgeId],
-    ) -> Result<Vec<EdgeEndpointKindRow>, StorageError> {
-        Ok(Vec::new())
-    }
+        edge_ids: &[EdgeId],
+    ) -> Result<Vec<EdgeEndpointKindRow>, StorageError>;
 
     async fn query_memories(
         &self,
@@ -120,11 +108,9 @@ pub trait MemoryInspectPort: Send + Sync {
 
     async fn list_memory_dependencies(
         &self,
-        _owner: &Owner,
-        _source_memory_id: crate::MemoryId,
-    ) -> Result<Vec<MemoryDependency>, StorageError> {
-        Ok(Vec::new())
-    }
+        owner: &Owner,
+        source_memory_id: crate::MemoryId,
+    ) -> Result<Vec<MemoryDependency>, StorageError>;
 }
 
 #[async_trait::async_trait]

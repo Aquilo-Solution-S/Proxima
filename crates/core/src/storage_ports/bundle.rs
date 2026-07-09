@@ -425,77 +425,194 @@ impl StoragePortsBuilder {
         self
     }
 
+    /// Builds a complete storage port bundle, collecting every unconfigured
+    /// required port into a typed error instead of panicking on the first one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoragePortsBuildError`] naming every required port handle that
+    /// was not configured. `compliance_admin` and `owner_drop_proof` are
+    /// optional and never reported.
+    #[allow(clippy::too_many_lines)] // mechanical one-line-per-port enumeration
+    pub fn try_build(self) -> Result<StoragePorts, StoragePortsBuildError> {
+        fn require<T>(
+            field: Option<T>,
+            name: &'static str,
+            missing: &mut Vec<&'static str>,
+        ) -> Option<T> {
+            if field.is_none() {
+                missing.push(name);
+            }
+            field
+        }
+
+        let mut missing = Vec::new();
+        let fact_ingest = require(self.fact_ingest, "fact_ingest", &mut missing);
+        let mcp_call_write = require(self.mcp_call_write, "mcp_call_write", &mut missing);
+        let mcp_call_read = require(self.mcp_call_read, "mcp_call_read", &mut missing);
+        let memory_authoring = require(self.memory_authoring, "memory_authoring", &mut missing);
+        let memory_read = require(self.memory_read, "memory_read", &mut missing);
+        let memory_inspect = require(self.memory_inspect, "memory_inspect", &mut missing);
+        let embedding_text = require(self.embedding_text, "embedding_text", &mut missing);
+        let embedding_write = require(self.embedding_write, "embedding_write", &mut missing);
+        let embedding_job = require(self.embedding_job, "embedding_job", &mut missing);
+        let embedding_maintenance = require(
+            self.embedding_maintenance,
+            "embedding_maintenance",
+            &mut missing,
+        );
+        let goal_write = require(self.goal_write, "goal_write", &mut missing);
+        let goal_read = require(self.goal_read, "goal_read", &mut missing);
+        let change_event = require(self.change_event, "change_event", &mut missing);
+        let edge_read = require(self.edge_read, "edge_read", &mut missing);
+        let citation = require(self.citation, "citation", &mut missing);
+        let owner_access_read = require(self.owner_access_read, "owner_access_read", &mut missing);
+        let owner_membership_admin = require(
+            self.owner_membership_admin,
+            "owner_membership_admin",
+            &mut missing,
+        );
+        let owner_transfer = require(self.owner_transfer, "owner_transfer", &mut missing);
+        let source_batch = require(self.source_batch, "source_batch", &mut missing);
+        let source_cursor = require(self.source_cursor, "source_cursor", &mut missing);
+        let fact_retention = require(self.fact_retention, "fact_retention", &mut missing);
+        let compliance_erase = require(self.compliance_erase, "compliance_erase", &mut missing);
+        let registry_projection = require(
+            self.registry_projection,
+            "registry_projection",
+            &mut missing,
+        );
+
+        // Bind every required port at once. `missing` already names each `None`,
+        // so the refutable pattern only fails when `missing` is non-empty — this
+        // path never panics (unlike `build`).
+        let (
+            Some(fact_ingest),
+            Some(mcp_call_write),
+            Some(mcp_call_read),
+            Some(memory_authoring),
+            Some(memory_read),
+            Some(memory_inspect),
+            Some(embedding_text),
+            Some(embedding_write),
+            Some(embedding_job),
+            Some(embedding_maintenance),
+            Some(goal_write),
+            Some(goal_read),
+            Some(change_event),
+            Some(edge_read),
+            Some(citation),
+            Some(owner_access_read),
+            Some(owner_membership_admin),
+            Some(owner_transfer),
+            Some(source_batch),
+            Some(source_cursor),
+            Some(fact_retention),
+            Some(compliance_erase),
+            Some(registry_projection),
+        ) = (
+            fact_ingest,
+            mcp_call_write,
+            mcp_call_read,
+            memory_authoring,
+            memory_read,
+            memory_inspect,
+            embedding_text,
+            embedding_write,
+            embedding_job,
+            embedding_maintenance,
+            goal_write,
+            goal_read,
+            change_event,
+            edge_read,
+            citation,
+            owner_access_read,
+            owner_membership_admin,
+            owner_transfer,
+            source_batch,
+            source_cursor,
+            fact_retention,
+            compliance_erase,
+            registry_projection,
+        )
+        else {
+            return Err(StoragePortsBuildError { missing });
+        };
+
+        Ok(StoragePorts {
+            fact_ingest,
+            mcp_call_write,
+            mcp_call_read,
+            memory_authoring,
+            memory_read,
+            memory_inspect,
+            embedding_text,
+            embedding_write,
+            embedding_job,
+            embedding_maintenance,
+            goal_write,
+            goal_read,
+            change_event,
+            edge_read,
+            citation,
+            owner_access_read,
+            owner_membership_admin,
+            owner_transfer,
+            source_batch,
+            source_cursor,
+            fact_retention,
+            compliance_erase,
+            compliance_admin: self.compliance_admin,
+            owner_drop_proof: self.owner_drop_proof,
+            registry_projection,
+        })
+    }
+
     /// Builds a complete storage port bundle.
     ///
     /// # Panics
     ///
-    /// Panics when any required port handle was not configured.
+    /// Panics when any required port handle was not configured; the panic names
+    /// every missing port. Use [`Self::try_build`] to handle the error instead.
     #[must_use]
     pub fn build(self) -> StoragePorts {
-        StoragePorts {
-            fact_ingest: self
-                .fact_ingest
-                .expect("fact_ingest storage port configured"),
-            mcp_call_write: self
-                .mcp_call_write
-                .expect("mcp_call_write storage port configured"),
-            mcp_call_read: self
-                .mcp_call_read
-                .expect("mcp_call_read storage port configured"),
-            memory_authoring: self
-                .memory_authoring
-                .expect("memory_authoring storage port configured"),
-            memory_read: self
-                .memory_read
-                .expect("memory_read storage port configured"),
-            memory_inspect: self
-                .memory_inspect
-                .expect("memory_inspect storage port configured"),
-            embedding_text: self
-                .embedding_text
-                .expect("embedding_text storage port configured"),
-            embedding_write: self
-                .embedding_write
-                .expect("embedding_write storage port configured"),
-            embedding_job: self
-                .embedding_job
-                .expect("embedding_job storage port configured"),
-            embedding_maintenance: self
-                .embedding_maintenance
-                .expect("embedding_maintenance storage port configured"),
-            goal_write: self.goal_write.expect("goal_write storage port configured"),
-            goal_read: self.goal_read.expect("goal_read storage port configured"),
-            change_event: self
-                .change_event
-                .expect("change_event storage port configured"),
-            edge_read: self.edge_read.expect("edge_read storage port configured"),
-            citation: self.citation.expect("citation storage port configured"),
-            owner_access_read: self
-                .owner_access_read
-                .expect("owner_access_read storage port configured"),
-            owner_membership_admin: self
-                .owner_membership_admin
-                .expect("owner_membership_admin storage port configured"),
-            owner_transfer: self
-                .owner_transfer
-                .expect("owner_transfer storage port configured"),
-            source_batch: self
-                .source_batch
-                .expect("source_batch storage port configured"),
-            source_cursor: self
-                .source_cursor
-                .expect("source_cursor storage port configured"),
-            fact_retention: self
-                .fact_retention
-                .expect("fact_retention storage port configured"),
-            compliance_erase: self
-                .compliance_erase
-                .expect("compliance_erase storage port configured"),
-            compliance_admin: self.compliance_admin,
-            owner_drop_proof: self.owner_drop_proof,
-            registry_projection: self
-                .registry_projection
-                .expect("registry_projection storage port configured"),
-        }
+        self.try_build()
+            .expect("all required storage ports must be configured")
+    }
+}
+
+/// Every required storage port that a [`StoragePortsBuilder`] left unconfigured.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("storage ports not fully configured; missing: {}", .missing.join(", "))]
+pub struct StoragePortsBuildError {
+    missing: Vec<&'static str>,
+}
+
+impl StoragePortsBuildError {
+    /// Names of the required ports that were not configured.
+    #[must_use]
+    pub fn missing(&self) -> &[&'static str] {
+        &self.missing
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_build_reports_every_missing_required_port_by_name() {
+        let err = StoragePorts::builder()
+            .try_build()
+            .expect_err("an empty builder must not build");
+
+        // Names are surfaced both structurally and in the Display message.
+        assert!(err.missing().contains(&"fact_ingest"));
+        assert!(err.missing().contains(&"registry_projection"));
+        assert!(err.to_string().contains("fact_ingest"));
+
+        // Optional ports are never reported as missing.
+        assert!(!err.missing().contains(&"compliance_admin"));
+        assert!(!err.missing().contains(&"owner_drop_proof"));
     }
 }

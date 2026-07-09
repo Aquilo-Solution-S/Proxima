@@ -285,10 +285,7 @@ mod tests {
         let err = engine
             .get_graph(
                 &ctx.authz,
-                &GetGraphReadRequest {
-                    owner,
-                    include_tombstoned: false,
-                },
+                &GetGraphReadRequest { owner },
             )
             .await
             .expect_err("configured owner role must not widen to another owner");

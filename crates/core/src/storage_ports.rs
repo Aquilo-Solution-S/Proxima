@@ -22,7 +22,7 @@ pub use access::{OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPor
 pub(crate) use bundle::{
     EngineStoragePorts, GoalCommandStoragePorts, QueryStoragePorts, ReadVerbStoragePorts,
 };
-pub use bundle::{StoragePorts, StoragePortsBuilder};
+pub use bundle::{StoragePorts, StoragePortsBuildError, StoragePortsBuilder};
 pub use change::ChangeEventPort;
 pub use compliance::{
     ComplianceAdminPort, ComplianceErasePort, FactRetentionPort, OwnerDropProofPort,
