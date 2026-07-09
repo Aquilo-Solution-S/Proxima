@@ -7,7 +7,7 @@ use super::{EmbeddingClientReloader, Engine, EngineMcpListener};
 use crate::FlavorRegistryError;
 use crate::authz::SystemAuthority;
 use crate::llm::{AnthropicClient, EmbeddingClient};
-use crate::storage_ports::{EngineStoragePorts, StoragePorts};
+use crate::storage_ports::{CitedObjectErasePort, EngineStoragePorts, StoragePorts};
 use crate::verbs::schema::FlavorRegistryFrozen;
 
 const DEFAULT_MCP_LISTEN_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
@@ -21,6 +21,7 @@ impl Engine {
             anthropic: None,
             embed: Arc::new(RwLock::new(None)),
             embedding_reloader: None,
+            cited_object_erase: None,
             mcp_listen_addr: DEFAULT_MCP_LISTEN_ADDR,
             mcp_listener: None,
             mcp_url: Arc::new(RwLock::new(None)),
@@ -99,6 +100,16 @@ impl Engine {
     #[must_use]
     pub fn with_embedding_reloader(mut self, reloader: Arc<dyn EmbeddingClientReloader>) -> Self {
         self.embedding_reloader = Some(reloader);
+        self
+    }
+
+    /// Attach the host's external object-store erase port. Without it,
+    /// owner-scope compliance erase reclaims Postgres rows only; with it, the
+    /// engine also purges the owner's object-store payloads in-band (best
+    /// effort). Hosts wire the concrete blob backend here.
+    #[must_use]
+    pub fn with_cited_object_erase(mut self, port: Arc<dyn CitedObjectErasePort>) -> Self {
+        self.cited_object_erase = Some(port);
         self
     }
 

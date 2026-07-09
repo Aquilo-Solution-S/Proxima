@@ -346,8 +346,18 @@ impl ProximaBuilder {
         let pg_sidecars = Arc::new(pg_sidecars);
         let pg = pg.with_sidecars(pg_sidecars.as_ref().clone());
 
+        let pool = pg.clone_pool_for_backend();
+        let blobs = config.s3.map(|s3| CitedBlobStore::new(pool.clone(), s3));
+
         let mut engine =
             Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
+        if let Some(store) = &blobs {
+            // In-band Art. 17 owner erasure: register the blob backend so
+            // owner-scope compliance erase purges the owner's S3 objects
+            // (uploaded OCR docs, etc.), not just the Postgres rows. Optional —
+            // no S3 configured ⇒ no port ⇒ erase behaves as rows-only.
+            engine = engine.with_cited_object_erase(Arc::new(store.clone()));
+        }
         if let Some(client) = embed_client {
             // Fail fast on a dimension mismatch. The `embeddings.embedding`
             // column is a fixed-width `vector(EMBEDDING_DIM)`; a client of a
@@ -376,9 +386,7 @@ impl ProximaBuilder {
             .start()
             .await
             .map_err(|e| EmbedError::Engine(e.to_string()))?;
-        let pool = pg.clone_pool_for_backend();
         let registry = Arc::new(engine.registry().clone());
-        let blobs = config.s3.map(|s3| CitedBlobStore::new(pool.clone(), s3));
         Ok(EmbeddedProxima {
             engine,
             system_authority,

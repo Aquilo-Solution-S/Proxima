@@ -28,7 +28,7 @@ use tokio::task::JoinHandle;
 use crate::Owner;
 use crate::error::ProtocolError;
 use crate::llm::{AnthropicClient, EmbeddingClient};
-use crate::storage_ports::EngineStoragePorts;
+use crate::storage_ports::{CitedObjectErasePort, EngineStoragePorts};
 use crate::verbs::schema::FlavorRegistryFrozen;
 
 #[allow(unused_imports)]
@@ -57,6 +57,7 @@ pub struct Engine {
     anthropic: Option<Arc<dyn AnthropicClient>>,
     embed: Arc<RwLock<Option<Arc<dyn EmbeddingClient>>>>,
     embedding_reloader: Option<Arc<dyn EmbeddingClientReloader>>,
+    cited_object_erase: Option<Arc<dyn CitedObjectErasePort>>,
     pub(crate) mcp_listen_addr: SocketAddr,
     pub(crate) mcp_listener: Option<Arc<dyn EngineMcpListener>>,
     pub(crate) mcp_url: Arc<RwLock<Option<String>>>,
@@ -102,6 +103,14 @@ impl Engine {
 
     pub async fn set_embed_client(&self, embed: Option<Arc<dyn EmbeddingClient>>) {
         *self.embed.write().await = embed;
+    }
+
+    /// Host-wired external object-store erase port. `None` when no blob backend
+    /// is configured — owner-scope compliance erase then touches Postgres rows
+    /// only (see [`crate::storage_ports::CitedObjectErasePort`]).
+    #[must_use]
+    pub fn cited_object_erase(&self) -> Option<Arc<dyn CitedObjectErasePort>> {
+        self.cited_object_erase.clone()
     }
 
     /// Rebuilds the embedding client via the configured reload hook and
