@@ -6,6 +6,7 @@ use proxima_blob_s3::{
     CitedBlobReadUrlTs, CitedBlobStore, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareTs,
     S3RuntimeConfig,
 };
+use proxima_core::storage_ports::CitedObjectErasePort;
 use proxima_core::test_fixtures::owner_fixture;
 use proxima_core::{AuthPath, AuthzContext};
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
@@ -41,7 +42,7 @@ fn s3_config_for_dev() -> S3RuntimeConfig {
     }
 }
 
-async fn put_object_via_sdk(config: &S3RuntimeConfig, key: &str, body: &'static [u8]) {
+async fn s3_client(config: &S3RuntimeConfig) -> Client {
     let mut loader =
         aws_config::defaults(BehaviorVersion::latest()).region(Region::new(config.region.clone()));
     if let Some(endpoint_url) = &config.endpoint_url {
@@ -52,7 +53,11 @@ async fn put_object_via_sdk(config: &S3RuntimeConfig, key: &str, body: &'static 
     if config.force_path_style {
         builder = builder.force_path_style(true);
     }
-    let client = Client::from_conf(builder.build());
+    Client::from_conf(builder.build())
+}
+
+async fn put_object_via_sdk(config: &S3RuntimeConfig, key: &str, body: &'static [u8]) {
+    let client = s3_client(config).await;
     client
         .put_object()
         .bucket(&config.bucket)
@@ -150,6 +155,97 @@ async fn prepare_then_complete_then_read_roundtrip() {
         url.read_url
             .contains("response-content-disposition=attachment"),
         "presigned GET forces an attachment disposition (no inline stored-XSS)"
+    );
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+#[tokio::test]
+async fn purge_owner_objects_removes_completed_blob() {
+    // P1.7 (analysis 2026-07-05): owner erasure must physically remove the
+    // owner's S3 objects in-band. Opt-in, needs MinIO like the roundtrip above.
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset (run MinIO to enable)");
+        return;
+    }
+
+    let (pool, db_name) = fresh_pool().await;
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone());
+    let body = b"ocr-scan-with-pii";
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::System);
+
+    // Upload + complete: leaves a canonical object at objects/<owner_hash>/<blake3>.
+    let prepared = store
+        .prepare_upload(
+            &ctx,
+            CitedBlobUploadPrepareTs {
+                owner,
+                filename: "scan.pdf".into(),
+                mime: "application/pdf".into(),
+                byte_len: body.len() as u64,
+            },
+        )
+        .await
+        .expect("prepare");
+    let upload_id = Uuid::parse_str(&prepared.upload_id).expect("upload id");
+    let pending: (String, String) = sqlx::query_as(
+        "SELECT bucket, object_key FROM proxima_core.cited_object_uploads WHERE upload_id = $1",
+    )
+    .bind(upload_id)
+    .fetch_one(&pool)
+    .await
+    .expect("upload row");
+    put_object_via_sdk(&config, &pending.1, body).await;
+    let completed = store
+        .complete_upload(
+            &ctx,
+            CitedBlobUploadCompleteTs {
+                owner,
+                upload_id: prepared.upload_id,
+            },
+        )
+        .await
+        .expect("complete");
+    let cited_object_id = Uuid::parse_str(&completed.cited_object_id).expect("cited object id");
+    let final_key: (String,) = sqlx::query_as(
+        "SELECT object_key FROM proxima_core.cited_uploaded_blob_v1 WHERE cited_object_id = $1",
+    )
+    .bind(cited_object_id)
+    .fetch_one(&pool)
+    .await
+    .expect("completed blob row");
+
+    let client = s3_client(&config).await;
+    assert!(
+        client
+            .head_object()
+            .bucket(&config.bucket)
+            .key(&final_key.0)
+            .send()
+            .await
+            .is_ok(),
+        "object present in S3 before purge"
+    );
+
+    // In-band purge (the port the compliance-erase engine calls on owner erase).
+    let deleted = store.purge_owner_objects(owner).await.expect("purge");
+    assert!(
+        deleted >= 1,
+        "purge deleted at least the owner's blob object"
+    );
+
+    assert!(
+        client
+            .head_object()
+            .bucket(&config.bucket)
+            .key(&final_key.0)
+            .send()
+            .await
+            .is_err(),
+        "object physically removed from S3 by the owner purge"
     );
 
     drop(pool);

@@ -212,6 +212,21 @@ impl StoragePorts {
             registry_projection: rejecting.clone(),
         }
     }
+
+    /// All-rejecting ports except a caller-supplied `compliance_erase` (and an
+    /// optional `owner_drop_proof`), so engine compliance verbs can be
+    /// exercised against a fake erase backend without wiring 20+ ports.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn rejecting_with_compliance_erase(
+        compliance_erase: ComplianceEraseHandle,
+        owner_drop_proof: Option<OwnerDropProofHandle>,
+    ) -> Self {
+        let mut ports = Self::rejecting();
+        ports.compliance_erase = compliance_erase;
+        ports.owner_drop_proof = owner_drop_proof;
+        ports
+    }
 }
 
 impl From<StoragePorts> for EngineStoragePorts {

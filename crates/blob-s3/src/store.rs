@@ -1,7 +1,11 @@
 use std::time::Duration;
 
 use aws_sdk_s3::presigning::PresigningConfig;
-use proxima_core::{AuthzContext, Owner, OwnerRef, OwnerRefKind, UPLOADED_BLOB_SCHEMA_ID};
+use aws_sdk_s3::types::{Delete, ObjectIdentifier};
+use proxima_core::storage_ports::CitedObjectErasePort;
+use proxima_core::{
+    AuthzContext, Owner, OwnerRef, OwnerRefKind, StorageError, UPLOADED_BLOB_SCHEMA_ID,
+};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use time::OffsetDateTime;
@@ -437,6 +441,103 @@ impl CitedBlobStore {
     }
 }
 
+#[async_trait::async_trait]
+impl CitedObjectErasePort for CitedBlobStore {
+    /// Purge every S3 object owned by `owner` under both the canonical
+    /// `objects/<owner_hash>/` and in-flight `pending/<owner_hash>/` prefixes.
+    ///
+    /// Wired in-band by owner-scope compliance erase so an Art. 17 owner
+    /// erasure removes the owner's uploaded (PII-bearing) documents, not just
+    /// the Postgres rows. Best-effort: the caller has already committed the row
+    /// deletes and treats any error here as non-fatal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Unavailable`] when S3 listing/deletion fails.
+    async fn purge_owner_objects(&self, owner: Owner) -> Result<u64, StorageError> {
+        let owner_hash = owner_hash_hex(&owner);
+        let client = self
+            .client()
+            .await
+            .map_err(|e| StorageError::Unavailable(format!("s3 client: {e}")))?;
+        let mut deleted = 0_u64;
+        for prefix in [
+            objects_owner_prefix(&owner_hash),
+            pending_owner_prefix(&owner_hash),
+        ] {
+            deleted =
+                deleted.saturating_add(purge_prefix(client, &self.config.bucket, &prefix).await?);
+        }
+        Ok(deleted)
+    }
+}
+
+/// List and batch-delete every object under one S3 `prefix`, paging over the
+/// `list_objects_v2` continuation token. Returns the number of objects deleted.
+async fn purge_prefix(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    prefix: &str,
+) -> Result<u64, StorageError> {
+    let mut deleted = 0_u64;
+    let mut continuation: Option<String> = None;
+    loop {
+        let mut list = client.list_objects_v2().bucket(bucket).prefix(prefix);
+        if let Some(token) = &continuation {
+            list = list.continuation_token(token);
+        }
+        let page = list
+            .send()
+            .await
+            .map_err(|e| StorageError::Unavailable(format!("list objects under {prefix}: {e}")))?;
+
+        let mut identifiers = Vec::new();
+        for object in page.contents() {
+            if let Some(key) = object.key() {
+                let id = ObjectIdentifier::builder()
+                    .key(key)
+                    .build()
+                    .map_err(|e| StorageError::Internal(format!("object identifier: {e}")))?;
+                identifiers.push(id);
+            }
+        }
+        if !identifiers.is_empty() {
+            let batch = Delete::builder()
+                .set_objects(Some(identifiers))
+                .build()
+                .map_err(|e| StorageError::Internal(format!("delete batch: {e}")))?;
+            let response = client
+                .delete_objects()
+                .bucket(bucket)
+                .delete(batch)
+                .send()
+                .await
+                .map_err(|e| {
+                    StorageError::Unavailable(format!("delete objects under {prefix}: {e}"))
+                })?;
+            let errors = response.errors();
+            if !errors.is_empty() {
+                let first = errors
+                    .first()
+                    .and_then(aws_sdk_s3::types::Error::message)
+                    .unwrap_or("unknown");
+                return Err(StorageError::Unavailable(format!(
+                    "delete objects under {prefix} reported {} error(s): {first}",
+                    errors.len()
+                )));
+            }
+            deleted =
+                deleted.saturating_add(u64::try_from(response.deleted().len()).unwrap_or(u64::MAX));
+        }
+
+        match (page.is_truncated(), page.next_continuation_token()) {
+            (Some(true), Some(token)) => continuation = Some(token.to_string()),
+            _ => break,
+        }
+    }
+    Ok(deleted)
+}
+
 #[derive(Debug, Clone)]
 struct UploadRow {
     bucket: String,
@@ -805,12 +906,27 @@ fn owner_hash_hex(owner: &Owner) -> String {
     hex::encode(hasher.finalize().as_bytes())
 }
 
+/// Prefix under which an owner's canonical (completed) blobs live. Single
+/// source of truth for the `objects/<owner_hash>/` key space so the erase
+/// purge and the write path can never drift.
+fn objects_owner_prefix(owner_hash: &str) -> String {
+    format!("objects/{owner_hash}/")
+}
+
+/// Prefix under which an owner's in-flight (pending) uploads live.
+fn pending_owner_prefix(owner_hash: &str) -> String {
+    format!("pending/{owner_hash}/")
+}
+
 fn pending_object_key(owner_hash: &str, upload_id: Uuid) -> String {
-    format!("pending/{owner_hash}/{upload_id}")
+    format!("{}{upload_id}", pending_owner_prefix(owner_hash))
 }
 
 fn canonical_object_key(owner_hash: &str, blake3_hex: &str) -> String {
-    format!("objects/{owner_hash}/{UPLOADED_BLOB_SCHEMA_ID}/{blake3_hex}")
+    format!(
+        "{}{UPLOADED_BLOB_SCHEMA_ID}/{blake3_hex}",
+        objects_owner_prefix(owner_hash)
+    )
 }
 
 fn format_time(value: OffsetDateTime) -> Result<String, BlobError> {
@@ -867,6 +983,32 @@ mod tests {
         assert!(pending.starts_with("pending/"));
         assert!(canonical.contains(UPLOADED_BLOB_SCHEMA_ID));
         assert!(canonical.starts_with("objects/"));
+    }
+
+    /// The erase purge must target exactly the two owner-scoped prefixes that
+    /// prepare/complete write under, derived from the same helpers (no
+    /// hardcoded key format). The S3 round-trip itself is only exercised under
+    /// `PROXIMA_S3_*` (see `blob_roundtrip_pg`); this pins the deterministic,
+    /// network-free key/prefix derivation the purge relies on.
+    #[test]
+    fn purge_prefixes_are_owner_scoped_ancestors_of_written_keys() {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner_hash = owner_hash_hex(&owner);
+        let objects = objects_owner_prefix(&owner_hash);
+        let pending = pending_owner_prefix(&owner_hash);
+
+        assert_eq!(objects, format!("objects/{owner_hash}/"));
+        assert_eq!(pending, format!("pending/{owner_hash}/"));
+
+        // Every key the write path emits sits under the prefix the purge scans.
+        assert!(canonical_object_key(&owner_hash, &"a".repeat(64)).starts_with(&objects));
+        assert!(pending_object_key(&owner_hash, Uuid::now_v7()).starts_with(&pending));
+
+        // A different owner yields disjoint prefixes, so a purge never reaches
+        // another owner's objects.
+        let other_hash = owner_hash_hex(&OwnerRef::Personal(UserId::new(Uuid::now_v7())));
+        assert_ne!(objects, objects_owner_prefix(&other_hash));
+        assert_ne!(pending, pending_owner_prefix(&other_hash));
     }
 
     #[test]
