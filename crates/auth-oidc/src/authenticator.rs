@@ -104,6 +104,10 @@ impl OidcTokenValidator {
         validation.set_issuer(&[&self.issuer]);
         validation.set_audience(&[&self.audience]);
         validation.set_required_spec_claims(&["exp", "aud", "iss", "sub"]);
+        // Reject a token presented before its `nbf` (honoring `leeway`). `nbf`
+        // stays out of required_spec_claims, so tokens that omit it are still
+        // accepted; only a present-and-future `nbf` fails.
+        validation.validate_nbf = true;
         validation.leeway = self.leeway_secs;
 
         let data = decode::<Claims>(token, &key, &validation)
@@ -269,6 +273,36 @@ mod tests {
 
     fn future_exp() -> u64 {
         jsonwebtoken::get_current_timestamp() + 3_600
+    }
+
+    /// Signs a token whose `nbf` is in the future (with a valid `exp`) so it is
+    /// not yet valid. Built directly (not via `token`) because [`TestClaims`]
+    /// carries no `nbf` field.
+    fn future_nbf_token(keys: &TestKeys) -> String {
+        let now = jsonwebtoken::get_current_timestamp();
+        let header = serde_json::json!({"alg": "RS256", "kid": KID, "typ": "JWT"});
+        let claims = serde_json::json!({
+            "sub": "subject-1",
+            "iss": ISSUER,
+            "aud": AUDIENCE,
+            "exp": now + 3_600,
+            "nbf": now + 1_800,
+        });
+        let signing_input = format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).expect("serialize header")),
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).expect("serialize claims"))
+        );
+        let mut signature = vec![0; keys.signing.public_modulus_len()];
+        keys.signing
+            .sign(
+                &RSA_PKCS1_SHA256,
+                &SystemRandom::new(),
+                signing_input.as_bytes(),
+                &mut signature,
+            )
+            .expect("sign jwt");
+        format!("{}.{}", signing_input, URL_SAFE_NO_PAD.encode(signature))
     }
 
     fn config() -> OidcAuthConfig {
@@ -499,6 +533,27 @@ mod tests {
             "subject-1",
             jsonwebtoken::get_current_timestamp() - 3_600,
         );
+
+        assert_eq!(
+            auth.authenticate(&Credentials::Bearer(token)).await,
+            Err(AuthError::InvalidCredentials)
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_token_before_nbf() {
+        let keys = test_keys();
+        let auth = mapped_authenticator(
+            config(),
+            KID,
+            keys.decoding.clone(),
+            "subject-1",
+            UserId::new(Uuid::now_v7()),
+            Vec::new(),
+        );
+        // Valid signature/iss/aud/exp, but `nbf` is 30 minutes in the future
+        // and leeway is 0 — must be rejected as not-yet-valid.
+        let token = future_nbf_token(&keys);
 
         assert_eq!(
             auth.authenticate(&Credentials::Bearer(token)).await,
