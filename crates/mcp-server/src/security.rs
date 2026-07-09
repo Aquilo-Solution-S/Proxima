@@ -217,11 +217,28 @@ async fn mcp_auth(
     if request.headers().contains_key(ORIGIN) && !state.allowlist.allows(request.headers()) {
         return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
     }
-    let Some((selected_owner, bind_new_session)) =
-        selected_owner(&state.sessions, request.headers()).await
-    else {
-        return (StatusCode::FORBIDDEN, "owner selection required or invalid").into_response();
-    };
+    // Validate the bearer BEFORE resolving owner/session so an invalid
+    // token always yields 401 regardless of session/owner-header state.
+    // This closes the 401/403 oracle: an unauthenticated caller learns
+    // nothing about owner or session requirements. Owner narrowing still
+    // happens in `resolve` below.
+    if !state.auth.accepts_token(&token).await {
+        return unauthorized(&state);
+    }
+    let (selected_owner, bind_new_session) =
+        match selected_owner(&state.sessions, request.headers()).await {
+            OwnerSelection::Selected { owner, bind_new } => (owner, bind_new),
+            // An `Mcp-Session-Id` header that is present but not bound
+            // (unknown or idle-evicted) answers 404, which standard
+            // Streamable-HTTP clients transparently re-initialize on. Only
+            // the token-valid path reaches here, so 404 never leaks to an
+            // unauthenticated caller.
+            OwnerSelection::UnknownSession => return session_not_found(),
+            OwnerSelection::Missing => {
+                return (StatusCode::FORBIDDEN, "owner selection required or invalid")
+                    .into_response();
+            }
+        };
     let Some(ctx) = state.auth.resolve(&token, selected_owner).await else {
         return unauthorized(&state);
     };
@@ -241,25 +258,54 @@ async fn mcp_auth(
     revalidate_response(response, identity, epoch_source, state.revalidation)
 }
 
-async fn selected_owner(
-    sessions: &McpSessionBindings,
-    headers: &HeaderMap,
-) -> Option<(Owner, bool)> {
+/// Outcome of resolving the caller's owner selection from the
+/// `Mcp-Session-Id` / `X-Proxima-Owner` headers.
+enum OwnerSelection {
+    /// A concrete owner was selected. `bind_new` requests binding the
+    /// response's freshly minted session id to this owner.
+    Selected { owner: Owner, bind_new: bool },
+    /// An `Mcp-Session-Id` header is present but has no live binding
+    /// (never bound, or idle-evicted). Distinct from `Missing` so the
+    /// transport can answer 404 and let the client re-initialize.
+    UnknownSession,
+    /// No usable owner selection: no session id and no/invalid owner
+    /// header, or an owner header that conflicts with the bound session.
+    Missing,
+}
+
+async fn selected_owner(sessions: &McpSessionBindings, headers: &HeaderMap) -> OwnerSelection {
     let owner_header = request_header_str(headers, PROXIMA_OWNER_HEADER);
     let session_id = request_header_str(headers, MCP_SESSION_ID_HEADER);
     if let Some(session_id) = session_id {
-        let owner = sessions.owner_for(session_id).await?;
+        let Some(owner) = sessions.owner_for(session_id).await else {
+            return OwnerSelection::UnknownSession;
+        };
         if let Some(raw_owner) = owner_header {
-            let requested = parse_owner_key(raw_owner)?;
-            if requested != owner {
-                return None;
+            match parse_owner_key(raw_owner) {
+                Some(requested) if requested == owner => {}
+                _ => return OwnerSelection::Missing,
             }
         }
-        return Some((owner, false));
+        return OwnerSelection::Selected {
+            owner,
+            bind_new: false,
+        };
     }
 
-    let owner = owner_header.and_then(parse_owner_key)?;
-    Some((owner, true))
+    match owner_header.and_then(parse_owner_key) {
+        Some(owner) => OwnerSelection::Selected {
+            owner,
+            bind_new: true,
+        },
+        None => OwnerSelection::Missing,
+    }
+}
+
+/// 404 for a present-but-unbound `Mcp-Session-Id`. Matches rmcp's
+/// unknown-session behavior: standard Streamable-HTTP clients auto-issue
+/// a fresh `initialize` on 404.
+fn session_not_found() -> Response {
+    (StatusCode::NOT_FOUND, "unknown or expired MCP session").into_response()
 }
 
 fn unauthorized(state: &McpAuthLayerState) -> Response {
@@ -447,17 +493,147 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use async_trait::async_trait;
+    use axum::Router;
     use axum::body::{Body, Bytes, to_bytes};
+    use axum::http::{Request, StatusCode};
+    use axum::routing::any;
     use futures_util::stream;
     use proxima_core::{
-        AuthError, Authenticator, AuthzContext, Credentials, Identity, OwnerRef,
+        AuthError, AuthPath, Authenticator, AuthzContext, Credentials, Identity, Owner, OwnerRef,
         RevalidationConfig, UserId,
     };
     use tokio::sync::mpsc;
     use tokio::time;
+    use tower::ServiceExt;
 
-    use super::{OriginAllowlist, RevalidatedBody};
+    use super::{OriginAllowlist, RevalidatedBody, default_allowlist, mcp_auth_layer_with_sessions};
     use crate::McpServerError;
+    use crate::auth::McpEdgeAuth;
+    use crate::session::{McpSessionBindings, owner_key};
+
+    /// Host authenticator that accepts exactly `good-token` for `owner`.
+    struct TokenAuth {
+        owner: Owner,
+    }
+
+    #[async_trait]
+    impl Authenticator for TokenAuth {
+        async fn authenticate(&self, creds: &Credentials) -> Result<AuthzContext, AuthError> {
+            match creds {
+                Credentials::Bearer(token) if token == "good-token" => {
+                    Ok(AuthzContext::single_owner(&self.owner, AuthPath::HostBearer))
+                }
+                Credentials::Bearer(_) => Err(AuthError::InvalidCredentials),
+            }
+        }
+    }
+
+    fn user_owner() -> Owner {
+        OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
+    }
+
+    /// Router mirroring the production stack: the auth layer over an OK
+    /// `/mcp` stub, seeded with `sessions` and a `TokenAuth` for `owner`.
+    fn auth_app(owner: Owner, sessions: McpSessionBindings) -> Router {
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(TokenAuth { owner }));
+        Router::new()
+            .route("/mcp", any(|| async { StatusCode::OK }))
+            .layer(mcp_auth_layer_with_sessions(
+                Arc::new(auth),
+                sessions,
+                default_allowlist(),
+                RevalidationConfig::default(),
+                None,
+            ))
+    }
+
+    fn mcp_request(bearer: &str) -> axum::http::request::Builder {
+        Request::builder()
+            .uri("/mcp")
+            .header("Origin", "http://localhost")
+            .header("Authorization", bearer)
+    }
+
+    async fn status_of(app: Router, request: Request<Body>) -> StatusCode {
+        app.oneshot(request).await.unwrap().status()
+    }
+
+    // P3: a bad token yields 401 even when a valid owner is selected.
+    #[tokio::test]
+    async fn bad_token_with_valid_owner_is_unauthorized() {
+        let owner = user_owner();
+        let app = auth_app(owner, McpSessionBindings::new());
+        let request = mcp_request("Bearer bad-token")
+            .header("X-Proxima-Owner", owner_key(owner))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(app, request).await, StatusCode::UNAUTHORIZED);
+    }
+
+    // P3 + P1.6: a bad token with a present-but-unbound session id yields
+    // 401 (not 404 and not 403) — token validity is checked first.
+    #[tokio::test]
+    async fn bad_token_with_unbound_session_is_unauthorized() {
+        let owner = user_owner();
+        let app = auth_app(owner, McpSessionBindings::new());
+        let request = mcp_request("Bearer bad-token")
+            .header("Mcp-Session-Id", "never-bound")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(app, request).await, StatusCode::UNAUTHORIZED);
+    }
+
+    // P1.6: a valid token with a present-but-unbound session id yields 404
+    // so a standard Streamable-HTTP client re-initializes.
+    #[tokio::test]
+    async fn valid_token_with_unbound_session_is_not_found() {
+        let owner = user_owner();
+        let app = auth_app(owner, McpSessionBindings::new());
+        let request = mcp_request("Bearer good-token")
+            .header("Mcp-Session-Id", "never-bound")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(app, request).await, StatusCode::NOT_FOUND);
+    }
+
+    // A valid token with no session id and no owner header yields 403:
+    // owner selection is required once the token is known-valid.
+    #[tokio::test]
+    async fn valid_token_without_owner_selection_is_forbidden() {
+        let owner = user_owner();
+        let app = auth_app(owner, McpSessionBindings::new());
+        let request = mcp_request("Bearer good-token")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(app, request).await, StatusCode::FORBIDDEN);
+    }
+
+    // A valid token + valid owner header authorizes (no session yet).
+    #[tokio::test]
+    async fn valid_token_with_owner_header_authorizes() {
+        let owner = user_owner();
+        let app = auth_app(owner, McpSessionBindings::new());
+        let request = mcp_request("Bearer good-token")
+            .header("X-Proxima-Owner", owner_key(owner))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(app, request).await, StatusCode::OK);
+    }
+
+    // A valid token against an already-bound session authorizes without an
+    // owner header.
+    #[tokio::test]
+    async fn valid_token_with_bound_session_authorizes() {
+        let owner = user_owner();
+        let sessions = McpSessionBindings::new();
+        sessions.bind("sess-1", owner).await;
+        let app = auth_app(owner, sessions);
+        let request = mcp_request("Bearer good-token")
+            .header("Mcp-Session-Id", "sess-1")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(app, request).await, StatusCode::OK);
+    }
 
     #[test]
     fn parse_valid_patterns_round_trips_into_origins() {
