@@ -228,6 +228,25 @@ pub struct PgStorage {
     sidecars: PgSidecarRegistryFrozen,
 }
 
+/// Parse a `u64` pool-tuning env var, falling back to `default` when unset or
+/// unparseable. `0` is a legal value (disables the corresponding bound).
+fn env_u64_or(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| raw.trim().parse().ok())
+        .unwrap_or(default)
+}
+
+/// Parse a `u32` pool-tuning env var with a floor of 1 (a pool of zero
+/// connections is never valid), falling back to `default`.
+fn env_u32_min1(key: &str, default: u32) -> u32 {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| raw.trim().parse().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(default)
+}
+
 impl PgStorage {
     /// Connect using `url`, build a tuned pool, and verify
     /// connectivity by acquiring one connection.
@@ -237,12 +256,32 @@ impl PgStorage {
     /// Returns `StorageError::Unavailable` on connection or
     /// query failure.
     pub async fn connect(url: &str) -> Result<Self, StorageError> {
-        let opts: PgConnectOptions = url.parse().map_err(|e: sqlx::Error| {
+        let mut opts: PgConnectOptions = url.parse().map_err(|e: sqlx::Error| {
             StorageError::Unavailable(format!("invalid DATABASE_URL: {e}"))
         })?;
+        // P1.4 (analysis 2026-07-05): a conservative per-statement timeout bounds
+        // a runaway query (e.g. a pathological search) so it cannot pin a pool
+        // connection indefinitely and starve the gateway. Generous by default
+        // (5 min — only a truly stuck statement hits it, so bulk compliance
+        // erase/migrations are unaffected); tune or disable (0) per deployment.
+        let statement_timeout_ms = env_u64_or("PROXIMA_PG_STATEMENT_TIMEOUT_MS", 300_000);
+        if statement_timeout_ms > 0 {
+            opts = opts.options([("statement_timeout", statement_timeout_ms.to_string())]);
+        }
         let pool = PgPoolOptions::new()
-            .max_connections(10)
-            .acquire_timeout(Duration::from_secs(5))
+            .max_connections(env_u32_min1("PROXIMA_PG_MAX_CONNECTIONS", 10))
+            .acquire_timeout(Duration::from_secs(env_u64_or(
+                "PROXIMA_PG_ACQUIRE_TIMEOUT_SECS",
+                5,
+            )))
+            .idle_timeout(Duration::from_secs(env_u64_or(
+                "PROXIMA_PG_IDLE_TIMEOUT_SECS",
+                600,
+            )))
+            .max_lifetime(Duration::from_secs(env_u64_or(
+                "PROXIMA_PG_MAX_LIFETIME_SECS",
+                1_800,
+            )))
             .connect_with(opts)
             .await
             .map_err(|e| StorageError::Unavailable(e.to_string()))?;
@@ -405,12 +444,32 @@ mod pgvector_tests {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn core_migrator_contains_v006_migration() {
+    fn core_migrator_contains_v006_migrations() {
+        let versions: Vec<i64> = super::core_migrator()
+            .iter()
+            .map(|migration| migration.version)
+            .collect();
         assert!(
-            super::core_migrator()
-                .iter()
-                .any(|migration| migration.version == 9),
+            versions.contains(&9),
             "core migrator must embed 0009_v006.sql"
+        );
+        assert!(
+            versions.contains(&10),
+            "core migrator must embed 0010_v006.sql"
+        );
+    }
+
+    #[test]
+    fn pool_env_helpers_default_when_unset() {
+        // Fixed-key helpers fall back to the default for an unset/garbage key
+        // (P1.4 pool tuning). Use keys nothing else in the process sets.
+        assert_eq!(
+            super::env_u32_min1("PROXIMA_PG_MAX_CONNECTIONS_TEST_UNSET", 10),
+            10
+        );
+        assert_eq!(
+            super::env_u64_or("PROXIMA_PG_STATEMENT_TIMEOUT_MS_TEST_UNSET", 300_000),
+            300_000
         );
     }
 }

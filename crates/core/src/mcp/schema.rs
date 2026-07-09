@@ -237,7 +237,7 @@ fn action_signature_block(
         match (required.is_empty(), optional.is_empty()) {
             (true, true) => line.push_str("(no args)"),
             (true, false) => {
-                write!(line, "(+ {})", optional.join(", ")).expect("write to String is infallible")
+                write!(line, "(+ {})", optional.join(", ")).expect("write to String is infallible");
             }
             (false, true) => line.push_str(&required.join(", ")),
             (false, false) => {
