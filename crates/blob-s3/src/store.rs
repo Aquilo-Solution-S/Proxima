@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use aws_sdk_s3::presigning::PresigningConfig;
-use proxima_core::{Owner, OwnerRef, OwnerRefKind, UPLOADED_BLOB_SCHEMA_ID};
+use proxima_core::{AuthzContext, Owner, OwnerRef, OwnerRefKind, UPLOADED_BLOB_SCHEMA_ID};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use time::OffsetDateTime;
@@ -123,12 +123,27 @@ impl CitedBlobReadUrlTs {
 pub struct CitedBlobStore {
     pool: sqlx::PgPool,
     config: S3RuntimeConfig,
+    /// Lazily-built S3 client, memoized so the full credential chain is
+    /// resolved once per store rather than on every request.
+    client: tokio::sync::OnceCell<aws_sdk_s3::Client>,
 }
 
 impl CitedBlobStore {
     #[must_use]
     pub fn new(pool: sqlx::PgPool, config: S3RuntimeConfig) -> Self {
-        Self { pool, config }
+        Self {
+            pool,
+            config,
+            client: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// The memoized S3 client, built on first use from the runtime config.
+    ///
+    /// # Errors
+    /// Returns `BlobError` when the AWS client cannot be constructed.
+    async fn client(&self) -> Result<&aws_sdk_s3::Client, BlobError> {
+        self.client.get_or_try_init(|| self.config.client()).await
     }
 
     /// Prepare a presigned upload and record its pending row.
@@ -138,11 +153,13 @@ impl CitedBlobStore {
     /// fails, or the pending upload row cannot be inserted.
     pub async fn prepare_upload(
         &self,
+        ctx: &AuthzContext,
         req: CitedBlobUploadPrepareTs,
     ) -> Result<CitedBlobUploadPrepareOutcomeTs, BlobError> {
-        validate_prepare(&req)?;
+        validate_prepare(&req, self.config.max_blob_bytes)?;
         let owner = req.owner();
         ensure_write_owner(&owner)?;
+        ensure_owner_access(ctx, &owner)?;
         let upload_id = Uuid::now_v7();
         let owner_hash = owner_hash_hex(&owner);
         let object_key = pending_object_key(&owner_hash, upload_id);
@@ -150,7 +167,7 @@ impl CitedBlobStore {
             + time::Duration::seconds(
                 i64::try_from(self.config.upload_ttl_seconds).unwrap_or(i64::MAX),
             );
-        let client = self.config.client().await?;
+        let client = self.client().await?;
         let presigned = client
             .put_object()
             .bucket(&self.config.bucket)
@@ -209,9 +226,11 @@ impl CitedBlobStore {
     /// malformed, or any S3/database operation fails.
     pub async fn complete_upload(
         &self,
+        ctx: &AuthzContext,
         req: CitedBlobUploadCompleteTs,
     ) -> Result<CitedBlobUploadCompleteOutcomeTs, BlobError> {
         let owner = req.owner();
+        ensure_owner_access(ctx, &owner)?;
         let upload_id = parse_uuid(&req.upload_id)?;
         let row = load_upload(&self.pool, &owner, upload_id).await?;
         match row.status.as_str() {
@@ -239,7 +258,7 @@ impl CitedBlobStore {
             return Err(BlobError::State("upload is expired".into()));
         }
 
-        let client = self.config.client().await?;
+        let client = self.client().await?;
         let object = client
             .get_object()
             .bucket(&row.bucket)
@@ -256,7 +275,12 @@ impl CitedBlobStore {
             )));
         }
 
-        let streamed = Box::pin(hash_uploaded_object(object.body, row.expected_byte_len)).await?;
+        let streamed = Box::pin(hash_uploaded_object(
+            object.body,
+            row.expected_byte_len,
+            self.config.max_blob_bytes,
+        ))
+        .await?;
         let owner_hash = owner_hash_hex(&owner);
         let canonical_key = canonical_object_key(&owner_hash, &streamed.blake3_hex);
         let copy_source = format!("{}/{}", row.bucket, row.object_key);
@@ -290,8 +314,11 @@ impl CitedBlobStore {
         .await?;
 
         // Canonical blob is recorded; the pending object is now redundant. A
-        // delete failure here is idempotently retryable and, failing that, the
-        // pending-expiry sweep reclaims the leftover.
+        // delete failure here is idempotently retryable. There is no in-process
+        // pending-expiry sweep: leftover `pending/` objects (from a crashed
+        // complete, an abandoned prepare, or an expired upload) MUST be reclaimed
+        // by a mandatory S3 lifecycle-expiration rule on the `pending/` prefix
+        // (see docs/15 deployment). Do not rely on application code to GC them.
         client
             .delete_object()
             .bucket(&row.bucket)
@@ -315,9 +342,11 @@ impl CitedBlobStore {
     /// operation fails.
     pub async fn abort_upload(
         &self,
+        ctx: &AuthzContext,
         req: CitedBlobUploadAbortTs,
     ) -> Result<CitedBlobUploadAbortOutcomeTs, BlobError> {
         let owner = req.owner();
+        ensure_owner_access(ctx, &owner)?;
         let upload_id = parse_uuid(&req.upload_id)?;
         let row = load_upload(&self.pool, &owner, upload_id).await?;
         if row.status == "completed" {
@@ -351,7 +380,7 @@ impl CitedBlobStore {
         };
         match abort_transition_decision(&decision_status, rows_affected)? {
             AbortTransitionDecision::WonPending => {
-                let client = self.config.client().await?;
+                let client = self.client().await?;
                 client
                     .delete_object()
                     .bucket(&row.bucket)
@@ -377,20 +406,27 @@ impl CitedBlobStore {
     /// presigning fails.
     pub async fn read_url(
         &self,
+        ctx: &AuthzContext,
         req: CitedBlobReadUrlTs,
     ) -> Result<CitedBlobReadUrlOutcomeTs, BlobError> {
         let owner = req.owner();
+        ensure_owner_access(ctx, &owner)?;
         let cited_object_id = parse_uuid(&req.cited_object_id)?;
         let row = load_blob_location(&self.pool, &owner, cited_object_id).await?;
-        let client = self.config.client().await?;
+        let client = self.client().await?;
         let expires_at = OffsetDateTime::now_utc()
             + time::Duration::seconds(
                 i64::try_from(self.config.read_ttl_seconds).unwrap_or(i64::MAX),
             );
+        // Force a download disposition and a non-renderable content type on the
+        // presigned GET so a blob whose stored mime is `text/html` (or similar)
+        // cannot execute in the browser as stored XSS when the link is opened.
         let presigned = client
             .get_object()
             .bucket(&row.bucket)
             .key(&row.object_key)
+            .response_content_disposition("attachment")
+            .response_content_type("application/octet-stream")
             .presigned(presign_config(self.config.read_ttl_seconds)?)
             .await
             .map_err(|e| BlobError::S3(format!("prepare read URL failed: {e}")))?;
@@ -493,6 +529,7 @@ async fn mark_upload_expired(
 async fn hash_uploaded_object(
     body: aws_sdk_s3::primitives::ByteStream,
     expected_byte_len: i64,
+    max_blob_bytes: Option<u64>,
 ) -> Result<StreamedObject, BlobError> {
     let mut reader = body.into_async_read();
     let mut blake3_hasher = blake3::Hasher::new();
@@ -513,6 +550,16 @@ async fn hash_uploaded_object(
         byte_len = byte_len
             .checked_add(u64::try_from(n).unwrap_or(u64::MAX))
             .ok_or_else(|| BlobError::State("uploaded object is too large".into()))?;
+        // Abort as soon as the streamed length crosses the cap so a client that
+        // under-declared `byte_len` cannot force us to buffer/hash an oversized
+        // object.
+        if let Some(max) = max_blob_bytes
+            && byte_len > max
+        {
+            return Err(BlobError::State(format!(
+                "uploaded object exceeds max blob size {max}"
+            )));
+        }
     }
     if i64::try_from(byte_len).unwrap_or(i64::MAX) != expected_byte_len {
         return Err(BlobError::State(format!(
@@ -693,7 +740,10 @@ fn presign_config(ttl_seconds: u64) -> Result<PresigningConfig, BlobError> {
         .map_err(|e| BlobError::Config(format!("invalid presign TTL: {e}")))
 }
 
-fn validate_prepare(req: &CitedBlobUploadPrepareTs) -> Result<(), BlobError> {
+fn validate_prepare(
+    req: &CitedBlobUploadPrepareTs,
+    max_blob_bytes: Option<u64>,
+) -> Result<(), BlobError> {
     if req.filename.trim().is_empty() {
         return Err(BlobError::State("filename is required".into()));
     }
@@ -703,7 +753,28 @@ fn validate_prepare(req: &CitedBlobUploadPrepareTs) -> Result<(), BlobError> {
     if req.byte_len > i64::MAX as u64 {
         return Err(BlobError::State("byte_len exceeds Postgres bigint".into()));
     }
+    if let Some(max) = max_blob_bytes
+        && req.byte_len > max
+    {
+        return Err(BlobError::State(format!(
+            "byte_len {} exceeds max blob size {max}",
+            req.byte_len
+        )));
+    }
     Ok(())
+}
+
+/// Gate a request on the host-resolved authorization context rather than
+/// trusting the client-supplied `owner` field alone. The `owner` still routes
+/// storage, but the caller must actually be able to access that principal.
+fn ensure_owner_access(ctx: &AuthzContext, owner: &Owner) -> Result<(), BlobError> {
+    if ctx.can_access_owner(owner) {
+        Ok(())
+    } else {
+        Err(BlobError::Denied(
+            "owner is not accessible for this authorization context".into(),
+        ))
+    }
 }
 
 fn parse_uuid(value: &str) -> Result<Uuid, BlobError> {
@@ -810,6 +881,72 @@ mod tests {
     fn world_cannot_prepare_cited_blob_write() {
         let err = ensure_write_owner(&OwnerRef::World).expect_err("world write rejected");
         assert!(err.to_string().contains("World is read-only"));
+    }
+
+    fn prepare_req(byte_len: u64) -> CitedBlobUploadPrepareTs {
+        CitedBlobUploadPrepareTs {
+            owner: OwnerRef::Personal(UserId::new(Uuid::now_v7())),
+            filename: "test.pdf".into(),
+            mime: "application/pdf".into(),
+            byte_len,
+        }
+    }
+
+    #[test]
+    fn validate_prepare_rejects_byte_len_over_cap() {
+        let err = validate_prepare(&prepare_req(1_025), Some(1_024))
+            .expect_err("over-cap byte_len rejected");
+        assert!(err.to_string().contains("exceeds max blob size"));
+    }
+
+    #[test]
+    fn validate_prepare_allows_within_cap_and_when_uncapped() {
+        validate_prepare(&prepare_req(1_024), Some(1_024)).expect("at-cap accepted");
+        validate_prepare(&prepare_req(u64::from(u32::MAX)), None).expect("uncapped accepted");
+    }
+
+    #[test]
+    fn owner_access_gate_allows_accessible_owner() {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let ctx = AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
+        ensure_owner_access(&ctx, &owner).expect("accessible owner passes");
+    }
+
+    #[test]
+    fn owner_access_gate_denies_foreign_owner() {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let ctx = AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
+        let foreign = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let err = ensure_owner_access(&ctx, &foreign).expect_err("foreign owner denied");
+        assert!(matches!(err, BlobError::Denied(_)));
+    }
+
+    #[tokio::test]
+    async fn read_presign_forces_attachment_disposition() {
+        use aws_config::BehaviorVersion;
+        use aws_sdk_s3::config::{Credentials, Region};
+
+        let creds = Credentials::new("AKIDTEST", "secret", None, None, "test");
+        let conf = aws_sdk_s3::config::Builder::new()
+            .behavior_version(BehaviorVersion::latest())
+            .region(Region::new("us-east-1"))
+            .credentials_provider(creds)
+            .build();
+        let client = aws_sdk_s3::Client::from_conf(conf);
+        let presigned = client
+            .get_object()
+            .bucket("bucket")
+            .key("objects/abc")
+            .response_content_disposition("attachment")
+            .response_content_type("application/octet-stream")
+            .presigned(presign_config(300).expect("presign config"))
+            .await
+            .expect("presign get");
+        let uri = presigned.uri().to_string();
+        assert!(
+            uri.contains("response-content-disposition=attachment"),
+            "presigned GET must force attachment disposition: {uri}"
+        );
     }
 
     #[test]

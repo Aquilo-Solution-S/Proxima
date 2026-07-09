@@ -22,7 +22,8 @@ serde = { workspace = true }
 blake3 = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
-tokio = { workspace = true, features = ["io-util"] }
+http = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "sync"] }
 
 [dev-dependencies]
 proxima-core = { path = "../core", features = ["test-fixtures"] }

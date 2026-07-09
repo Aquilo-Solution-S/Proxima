@@ -7,6 +7,7 @@ use proxima_blob_s3::{
     S3RuntimeConfig,
 };
 use proxima_core::test_fixtures::owner_fixture;
+use proxima_core::{AuthPath, AuthzContext};
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -36,6 +37,7 @@ fn s3_config_for_dev() -> S3RuntimeConfig {
         force_path_style: true,
         upload_ttl_seconds: 900,
         read_ttl_seconds: 900,
+        max_blob_bytes: None,
     }
 }
 
@@ -78,14 +80,18 @@ async fn prepare_then_complete_then_read_roundtrip() {
     let store = CitedBlobStore::new(pool.clone(), config.clone());
     let body = b"test-bytes";
     let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::System);
 
     let prepared = store
-        .prepare_upload(CitedBlobUploadPrepareTs {
-            owner,
-            filename: "test.pdf".into(),
-            mime: "application/pdf".into(),
-            byte_len: body.len() as u64,
-        })
+        .prepare_upload(
+            &ctx,
+            CitedBlobUploadPrepareTs {
+                owner,
+                filename: "test.pdf".into(),
+                mime: "application/pdf".into(),
+                byte_len: body.len() as u64,
+            },
+        )
         .await
         .expect("prepare");
     let upload_id = Uuid::parse_str(&prepared.upload_id).expect("upload id");
@@ -101,17 +107,23 @@ async fn prepare_then_complete_then_read_roundtrip() {
     put_object_via_sdk(&config, &row.1, body).await;
 
     let completed = store
-        .complete_upload(CitedBlobUploadCompleteTs {
-            owner,
-            upload_id: prepared.upload_id,
-        })
+        .complete_upload(
+            &ctx,
+            CitedBlobUploadCompleteTs {
+                owner,
+                upload_id: prepared.upload_id,
+            },
+        )
         .await
         .expect("complete");
     let url = store
-        .read_url(CitedBlobReadUrlTs {
-            owner,
-            cited_object_id: completed.cited_object_id.clone(),
-        })
+        .read_url(
+            &ctx,
+            CitedBlobReadUrlTs {
+                owner,
+                cited_object_id: completed.cited_object_id.clone(),
+            },
+        )
         .await
         .expect("read url");
     // `complete` moves the object from its pending key to the final
@@ -133,6 +145,11 @@ async fn prepare_then_complete_then_read_roundtrip() {
     assert!(
         final_key.0.starts_with("objects/"),
         "completed blob moved out of pending/"
+    );
+    assert!(
+        url.read_url
+            .contains("response-content-disposition=attachment"),
+        "presigned GET forces an attachment disposition (no inline stored-XSS)"
     );
 
     drop(pool);
