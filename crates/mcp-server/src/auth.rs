@@ -106,6 +106,15 @@ impl McpEdgeAuth {
         Some(McpAuthContext::bound(authz, owner, resolved.model_id))
     }
 
+    /// Authenticate `raw_bearer` on an accepted path WITHOUT narrowing to
+    /// any owner. The edge middleware calls this to reject an invalid token
+    /// with a uniform 401 *before* owner/session resolution, closing the
+    /// 401/403 oracle (an unauthenticated caller must not learn owner or
+    /// session state). Owner binding still happens in [`Self::resolve`].
+    pub async fn accepts_token(&self, raw_bearer: &str) -> bool {
+        self.resolve_unbound(raw_bearer).await.is_some()
+    }
+
     async fn resolve_unbound(&self, raw_bearer: &str) -> Option<ResolvedAuth> {
         match parse_wire_token(raw_bearer) {
             WireToken::Host(material) => self.resolve_host(material).await,
