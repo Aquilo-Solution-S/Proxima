@@ -100,18 +100,27 @@ WHERE NULLIF(btrim(m.text), '') IS NOT NULL
        FROM limited
      ON CONFLICT (owner_kind, owner_id,
                   entity_kind, entity_id, model_id, embedding_version)
-     DO NOTHING
+     DO UPDATE SET status = 'pending'::proxima_core.embedding_job_status,
+                   attempts = 0,
+                   last_error = NULL,
+                   next_attempt_at = now(),
+                   updated_at = now()
+         WHERE embedding_jobs.status = 'failed'::proxima_core.embedding_job_status
      RETURNING 1
  )
  SELECT
      (SELECT count(*)::bigint FROM limited) AS scanned,
      (SELECT count(*)::bigint FROM inserted) AS enqueued";
 
-/// Global enqueue-only reconciliation for embeddable memories.
+/// Global reconciliation for embeddable memories.
 ///
 /// Scans Facts plus derived memories with stored text, skips rows by
-/// scope-specific embedding coverage and target-model durable jobs,
-/// and enqueues via `proxima_core.embedding_jobs`.
+/// scope-specific embedding coverage and target-model durable jobs, and
+/// enqueues via `proxima_core.embedding_jobs`. A row that already holds a
+/// `failed` job (retries exhausted per `fail_embedding_job`) is requeued —
+/// status back to `pending`, attempts reset, backoff cleared — so reconcile is
+/// the operator/startup reset that lifts a Fact out of the retry dead-end
+/// (analysis 2026-07-05 P1.1). `pending`/`processing` jobs are left untouched.
 ///
 /// # Errors
 ///

@@ -86,10 +86,15 @@ pub async fn list_facts_missing_embedding(
 
 /// Atomically claim pending Fact embedding jobs for one model.
 ///
+/// A `pending` job is claimable only once `next_attempt_at` has elapsed
+/// (`fail_embedding_job` stamps exponential backoff there), so a transient
+/// provider outage no longer burns all attempts in a tight re-claim loop.
+///
 /// Stale `processing` jobs orphaned by a crashed or restarted drainer are
-/// reclaimed after fifteen minutes. The window MUST exceed the embedding
-/// client's request timeout (currently ten minutes,
-/// `crates/llm-openai-compat/src/openai_compat.rs:29`). Inline drainers call
+/// reclaimed after fifteen minutes regardless of backoff. The window MUST
+/// exceed the embedding client's request timeout (the OpenAI-compat default,
+/// `crates/llm-openai-compat/src/openai_compat.rs` `DEFAULT_EMBED_TIMEOUT`).
+/// Inline drainers call
 /// this with `limit = 1` in a loop, so a claimed row is actively processed
 /// immediately and cannot age past the reclaim window behind earlier jobs in
 /// the same batch. The claim `UPDATE` resets `updated_at = now()`, so a
@@ -125,7 +130,9 @@ pub(super) async fn claim_pending_embedding_jobs_excluding(
                     entity_kind, entity_id, model_id, embedding_version
                FROM proxima_core.embedding_jobs
               WHERE model_id = $1
-                AND (status = 'pending'
+                AND (
+                     (status = 'pending'
+                         AND (next_attempt_at IS NULL OR next_attempt_at <= now()))
                      OR (status = 'processing'
                          AND updated_at < now() - interval '15 minutes'))
                 AND NOT (entity_id = ANY($2::uuid[]))
@@ -194,6 +201,11 @@ pub async fn complete_embedding_job(
 
 /// Record a failed embedding attempt and retry until the cap.
 ///
+/// Below the cap the job returns to `pending` with `next_attempt_at` set to an
+/// exponential backoff (`30s * 2^attempts`), so the drainer stops re-claiming
+/// it immediately; at the cap it settles to `failed` (see `reconcile_embeddings`
+/// for the requeue path out of that terminal state).
+///
 /// # Errors
 ///
 /// Maps SQL failures through the shared mapper.
@@ -212,6 +224,11 @@ pub async fn fail_embedding_job(
                     WHEN attempts + 1 >= $8
                     THEN 'failed'::proxima_core.embedding_job_status
                     ELSE 'pending'::proxima_core.embedding_job_status
+                END,
+                next_attempt_at = CASE
+                    WHEN attempts + 1 >= $8
+                    THEN next_attempt_at
+                    ELSE now() + (interval '30 seconds' * power(2, attempts))
                 END
           WHERE owner_kind = $1
             AND owner_id = $2
