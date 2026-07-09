@@ -236,6 +236,25 @@ async fn load_embedding_job(
     .await
 }
 
+/// Simulate the retry backoff window elapsing so a `pending` job becomes
+/// claimable again without waiting real time.
+async fn clear_embedding_backoff(
+    pool: &sqlx::PgPool,
+    memory_id: proxima_core::MemoryId,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE proxima_core.embedding_jobs
+            SET next_attempt_at = NULL
+          WHERE entity_kind = 'Fact'
+            AND entity_id = $1
+            AND model_id = 'stub-fact-embed'",
+    )
+    .bind(memory_id.into_inner())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 async fn load_memory_text(
     pool: &sqlx::PgPool,
     memory_id: proxima_core::MemoryId,
@@ -709,8 +728,22 @@ async fn failed_embedding_jobs_retry_until_attempt_cap() -> Result<(), Box<dyn s
                     .is_some_and(|err| err.contains("forced embedding failure")),
                 "last_error must preserve the embedding failure"
             );
+
+            // P1.1 backoff: a pending retry is NOT immediately re-claimable, so
+            // a second drain right away burns no attempt (the hot-loop that
+            // previously spent all attempts in seconds). Only after the backoff
+            // window elapses does the next attempt run.
+            if attempt < EMBEDDING_JOB_MAX_ATTEMPTS {
+                let immediate = engine.drain_embedding_jobs(10).await?;
+                assert_eq!(
+                    immediate.processed, 0,
+                    "backoff must gate immediate re-claim of a pending retry"
+                );
+                clear_embedding_backoff(pg.pool_for_tests(), outcome.memory_id).await?;
+            }
         }
 
+        // `failed` is terminal: no drain reclaims it (requeue is reconcile-only).
         let drain = engine.drain_embedding_jobs(10).await?;
         assert_eq!(drain.processed, 0);
         assert_eq!(drain.failed, 0);
@@ -718,6 +751,57 @@ async fn failed_embedding_jobs_retry_until_attempt_cap() -> Result<(), Box<dyn s
             count_fact_embeddings(pg.pool_for_tests(), outcome.memory_id).await?,
             0
         );
+        Ok(())
+    }
+    .await;
+    drop(pg);
+    drop_db(&db_name).await?;
+    result
+}
+
+#[tokio::test]
+async fn reconcile_requeues_failed_embedding_jobs() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner_fixture();
+        let engine = engine_for(pg.clone(), Some(Arc::new(FailingEmbedding)));
+        let outcome = engine
+            .fact_ingest(
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+                fact_draft(&owner, "reconcile fact"),
+            )
+            .await?;
+
+        // Drive the job to the terminal `failed` state (backoff cleared between
+        // attempts so we do not wait real time).
+        for _ in 1..=EMBEDDING_JOB_MAX_ATTEMPTS {
+            engine.drain_embedding_jobs(10).await?;
+            clear_embedding_backoff(pg.pool_for_tests(), outcome.memory_id).await?;
+        }
+        let (status, attempts, _) = load_embedding_job(pg.pool_for_tests(), outcome.memory_id)
+            .await?
+            .expect("failed job must remain in embedding_jobs");
+        assert_eq!(status, "failed");
+        assert_eq!(attempts, EMBEDDING_JOB_MAX_ATTEMPTS);
+
+        // Reconcile lifts the Fact out of the dead-end: status back to pending,
+        // attempts reset, last_error cleared — so a fresh provider/model or a
+        // process restart can retry it (analysis 2026-07-05 P1.1).
+        let reconciled = pg
+            .reconcile_embeddings(EmbeddingReconcileOptions {
+                model_id: "stub-fact-embed",
+                scope: EmbeddingReconcileScope::MissingOnly,
+                limit: None,
+            })
+            .await?;
+        assert_eq!(reconciled.enqueued, 1, "reconcile requeues the failed job");
+        let (status, attempts, last_error) =
+            load_embedding_job(pg.pool_for_tests(), outcome.memory_id)
+                .await?
+                .expect("job still present after requeue");
+        assert_eq!(status, "pending");
+        assert_eq!(attempts, 0);
+        assert!(last_error.is_none(), "requeue clears last_error");
         Ok(())
     }
     .await;

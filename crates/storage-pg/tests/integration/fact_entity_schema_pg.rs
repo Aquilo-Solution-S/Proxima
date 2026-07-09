@@ -143,9 +143,13 @@ async fn fact_entity_schema_matches_task_1_contract() {
         let source_fk = constraint_def(&pg, "edges", "edges_source_fact_entity_id_fkey").await?;
         assert!(source_fk.contains("REFERENCES proxima_core.fact_entities(fact_entity_id)"));
         assert!(source_fk.contains("ON DELETE RESTRICT"));
+        // The bare `idx_edges_{source,target}_fact_entity` partial indexes were
+        // dropped in 0010_v006 as prefix-redundant; the `_created` supersets
+        // (fact_entity_id, created_at) WHERE (… IS NOT NULL) serve the same
+        // endpoint lookups, so the contract pins those instead.
         for (index_name, index_column) in [
-            ("idx_edges_source_fact_entity", "source_fact_entity_id"),
-            ("idx_edges_target_fact_entity", "target_fact_entity_id"),
+            ("idx_edges_source_fact_entity_created", "source_fact_entity_id"),
+            ("idx_edges_target_fact_entity_created", "target_fact_entity_id"),
         ] {
             let index = index_def(&pg, index_name).await?;
             assert!(index.contains(index_column));
@@ -184,4 +188,56 @@ async fn fact_entity_schema_matches_task_1_contract() {
 
     let _ = crate::common::drop_db(&db_name).await;
     result.expect("fact-entity schema contract");
+}
+
+/// K6 (analysis 2026-07-05): the `memories` append-only trigger makes content,
+/// identity, and provenance columns DB-hard immutable — an admin script cannot
+/// silently rewrite a Fact — while leaving the legitimately-mutable columns
+/// (here: `tombstoned_at`) writable.
+#[tokio::test]
+async fn memories_immutability_trigger_blocks_content_rewrite() {
+    let (pg, db_name) = migrate().await.expect("migrate");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let memory_id = uuid::Uuid::now_v7();
+        let owner_id = uuid::Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.memories
+                 (memory_id, owner_kind, owner_id, schema_id, schema_version, text)
+             VALUES ($1, 'personal', $2, 'test/fact', 1, 'original content')",
+        )
+        .bind(memory_id)
+        .bind(owner_id)
+        .execute(pg.pool_for_tests())
+        .await?;
+
+        // Immutable content column: the trigger rejects the rewrite.
+        let err = sqlx::query("UPDATE proxima_core.memories SET text = 'rewritten' WHERE memory_id = $1")
+            .bind(memory_id)
+            .execute(pg.pool_for_tests())
+            .await
+            .expect_err("rewriting Fact text must be rejected by the append-only trigger");
+        assert!(
+            err.to_string().contains("append-only"),
+            "expected append-only rejection, got: {err}"
+        );
+
+        // Mutable column: tombstoning succeeds.
+        sqlx::query("UPDATE proxima_core.memories SET tombstoned_at = now() WHERE memory_id = $1")
+            .bind(memory_id)
+            .execute(pg.pool_for_tests())
+            .await?;
+
+        // The blocked rewrite left the content untouched.
+        let text: String =
+            sqlx::query_scalar("SELECT text FROM proxima_core.memories WHERE memory_id = $1")
+                .bind(memory_id)
+                .fetch_one(pg.pool_for_tests())
+                .await?;
+        assert_eq!(text, "original content");
+        Ok(())
+    }
+    .await;
+
+    let _ = crate::common::drop_db(&db_name).await;
+    result.expect("memories immutability trigger");
 }
