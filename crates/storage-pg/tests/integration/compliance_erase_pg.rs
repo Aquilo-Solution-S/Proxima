@@ -219,6 +219,7 @@ fn compliance_outcome_counts_are_content_free() {
         source_batches: 6,
         citations: 7,
         cited_objects: 8,
+        source_cursors: 15,
         embeddings: 9,
         embedding_jobs: 10,
         mcp_call_rows: 11,
@@ -1033,6 +1034,55 @@ async fn personal_source_scope_with_verified_drop_erases_only_scope()
         .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(counts, (0, 1));
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+/// Persistence-scaling P0 (analysis 2026-07-05): an owner erase physically
+/// removes the owner's persisted projector cursors and counts them, so a
+/// re-provisioned owner never resumes from a stale offset.
+#[tokio::test]
+async fn abandoned_group_owner_erase_removes_source_cursors()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await?;
+    let url = db_url(&db_name);
+    let result = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let engine = compliance_engine(&pg);
+        let group_uuid = Uuid::now_v7();
+        let group = GroupId::new(group_uuid);
+        let owner = OwnerRef::Group(group);
+        let authz = AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::HostBearer);
+        let draft = receipt_draft("test/source", Uuid::now_v7(), b"erase-me");
+        seed_fact(&pg, &owner, &draft).await?;
+
+        sqlx::query(
+            "INSERT INTO proxima_core.source_cursors (owner_kind, owner_id, source, cursor)
+             VALUES ('group', $1, 'test/source', $2)",
+        )
+        .bind(group_uuid)
+        .bind(&b"opaque-offset"[..])
+        .execute(pg.pool_for_tests())
+        .await?;
+
+        let outcome = engine.erase_abandoned_group_owner(&authz, group).await?;
+        let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
+            panic!("expected completed erase, got {outcome:?}");
+        };
+        assert_eq!(counts.source_cursors, 1, "owner erase counts the deleted cursor");
+
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.source_cursors WHERE owner_id = $1",
+        )
+        .bind(group_uuid)
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(remaining, 0, "the cursor is physically erased with the owner");
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;
