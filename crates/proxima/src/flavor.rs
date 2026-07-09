@@ -2,6 +2,14 @@
 
 pub use crate::bundle::FlavorBundle;
 pub use crate::migrations::NamedMigrator;
+/// MCP tool-authoring surface: implement [`McpTool`] with typed
+/// [`McpToolCtx`] / [`McpToolError`] instead of reaching into
+/// `proxima_core::mcp`. Mirrors what `docs/tutorials/add-first-mcp-tool.md`
+/// imports.
+pub use proxima_core::mcp::{
+    McpActionArgSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
+    McpToolErrorKind, OutputMode,
+};
 pub use proxima_core::{
     AbstractionPayload, AuthorshipKindMask, CapabilitySet, CitationMappingPayload,
     CitedObjectPayload, EdgeId, EdgePayload, EndpointBinding, EntityKindMask, FactPayload,

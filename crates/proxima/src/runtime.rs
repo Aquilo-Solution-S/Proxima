@@ -157,6 +157,12 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     }
 
     #[must_use]
+    pub fn skip_migrations(mut self) -> Self {
+        self.overlay = self.overlay.skip_migrations();
+        self
+    }
+
+    #[must_use]
     pub fn embed_client(mut self, client: Arc<dyn EmbeddingClient>) -> Self {
         self.overlay = self.overlay.embed_client(client);
         self
@@ -591,6 +597,9 @@ async fn boot_app<A: FlavorApp + 'static>(
         config.owner,
     )
     .bundle::<A>();
+    if config.skip_migrations {
+        builder = builder.skip_migrations();
+    }
     if let Some(client) = parts.embed_client.clone() {
         builder = builder.embed_client(client);
     }

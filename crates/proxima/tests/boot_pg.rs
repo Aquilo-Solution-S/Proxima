@@ -7,6 +7,7 @@ use proxima::{
     AppInfo, EmbedConfig, EmbedError, FlavorApp, NamedMigrator, PayloadKind, Proxima,
     ProximaBuilder, company_owner, run_core_and_flavor_migrations,
 };
+use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
@@ -136,6 +137,49 @@ impl FlavorApp for GoalTestApp {
 
 fn quoted_ident(input: &str) -> String {
     format!("\"{}\"", input.replace('"', "\"\""))
+}
+
+fn probe_migrator() -> Migrator {
+    Migrator {
+        migrations: Cow::Owned(vec![Migration::new(
+            20_991_231_000_000,
+            Cow::Borrowed("skip-migrations DDL probe"),
+            MigrationType::Simple,
+            "CREATE TABLE IF NOT EXISTS public.skip_probe (id integer)".into_sql_str(),
+            false,
+        )]),
+        ..Migrator::DEFAULT
+    }
+}
+
+#[derive(Debug)]
+struct FixedDimEmbedding {
+    model_id: String,
+    dim: usize,
+}
+
+impl FixedDimEmbedding {
+    fn new(model_id: impl Into<String>, dim: usize) -> Self {
+        Self {
+            model_id: model_id.into(),
+            dim,
+        }
+    }
+}
+
+#[async_trait]
+impl EmbeddingClient for FixedDimEmbedding {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+        Ok(vec![0.0; self.dim])
+    }
+
+    fn model_id(&self) -> &str {
+        &self.model_id
+    }
+
+    fn dim(&self) -> usize {
+        self.dim
+    }
 }
 
 fn current_user_schema_migrator() -> Migrator {
@@ -479,4 +523,113 @@ async fn facade_boot_exposes_pg_sidecars_and_worker_drains_embedding_jobs() {
 
     let _ = drop_db(&db_name).await;
     result.expect("facade boot sidecar/worker integration test failed");
+}
+
+#[tokio::test]
+async fn skip_migrations_boots_without_applying_ddl() {
+    let db_name = unique_db_name("proxima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        // Migrate the core schema out-of-band, standing in for the DDL-role
+        // init step of a split-role GitOps deploy.
+        let pg = PgStorage::connect(&db_url).await?;
+        run_core_and_flavor_migrations(&pg, Vec::<NamedMigrator>::new()).await?;
+        pg.pool_for_tests().close().await;
+        drop(pg);
+
+        let owner = company_owner(Uuid::now_v7());
+        let config = || EmbedConfig {
+            database_url: db_url.clone(),
+            s3: None,
+        };
+
+        // Boot with skip_migrations plus a flavor migrator that WOULD create a
+        // table. skip bypasses run_sources, so the probe table stays absent
+        // while boot still succeeds against the already-migrated schema.
+        let skipped = ProximaBuilder::new(config(), owner)
+            .flavor_named("skip-probe", |_registry| Ok(()), Some(probe_migrator()))
+            .skip_migrations()
+            .boot()
+            .await?;
+        let probe_after_skip: Option<String> =
+            sqlx::query_scalar("SELECT to_regclass('public.skip_probe')::text")
+                .fetch_one(skipped.pool_for_tests())
+                .await?;
+        assert_eq!(
+            probe_after_skip, None,
+            "skip_migrations() must not issue flavor DDL"
+        );
+        skipped.engine.stop(skipped.handle);
+
+        // Control: the SAME migrator on the SAME database WITHOUT skip creates
+        // the table — proving the absence above is skip's doing, not a broken
+        // migrator.
+        let migrated = ProximaBuilder::new(config(), owner)
+            .flavor_named("skip-probe", |_registry| Ok(()), Some(probe_migrator()))
+            .boot()
+            .await?;
+        let probe_after_migrate: Option<String> =
+            sqlx::query_scalar("SELECT to_regclass('public.skip_probe')::text")
+                .fetch_one(migrated.pool_for_tests())
+                .await?;
+        assert_eq!(
+            probe_after_migrate.as_deref(),
+            Some("skip_probe"),
+            "a non-skipped boot must run flavor DDL"
+        );
+        migrated.engine.stop(migrated.handle);
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("skip_migrations DDL-bypass test failed");
+}
+
+#[tokio::test]
+async fn boot_rejects_embedding_client_with_wrong_dim() {
+    let db_name = unique_db_name("proxima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let config = || EmbedConfig {
+            database_url: db_url.clone(),
+            s3: None,
+        };
+
+        // Wrong dim (3072 vs the fixed vector(1024)) must fail fast at boot
+        // with Config, before any job is claimed against the column.
+        let err = ProximaBuilder::new(config(), owner)
+            .embed_client(Arc::new(FixedDimEmbedding::new("wrong-dim", 3072)))
+            .boot()
+            .await
+            .expect_err("wrong embedding dim must be rejected at boot");
+        match err {
+            EmbedError::Config(msg) => {
+                assert!(msg.contains("3072"), "message names the offending dim: {msg}");
+                assert!(msg.contains("dim"), "message explains a dim mismatch: {msg}");
+            }
+            other => panic!("expected EmbedError::Config, got {other:?}"),
+        }
+
+        // Right dim (ConstantEmbedding is always EMBEDDING_DIM-wide) boots.
+        let booted = ProximaBuilder::new(config(), owner)
+            .embed_client(Arc::new(ConstantEmbedding::zero("right-dim")))
+            .boot()
+            .await?;
+        assert!(
+            booted.engine.embed_client().is_some(),
+            "matching-dim client is wired into the engine"
+        );
+        booted.engine.stop(booted.handle);
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("embedding dim guard test failed");
 }

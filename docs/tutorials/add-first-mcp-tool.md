@@ -41,12 +41,16 @@ Field descriptions become the MCP schema. Keep schemas concrete and typed.
 
 ## Register at Build Time
 
-Implement `McpTool` and register it in the flavor macro:
+Implement `McpTool` and register it in the flavor macro. The MCP
+tool-authoring types are re-exported from `proxima::flavor` — flavor crates
+import them there rather than reaching into `proxima_core::mcp`:
 
 ```rust
+use proxima::flavor::{McpTool, McpToolCtx, McpToolError};
+
 pub struct ExampleLookupTool;
 
-impl proxima_core::mcp::McpTool for ExampleLookupTool {
+impl McpTool for ExampleLookupTool {
     const NAME: &'static str = "embedded-minimal_lookup";
     const DESCRIPTION: &'static str = "Look up an embedded-minimal example row.";
 
@@ -54,9 +58,9 @@ impl proxima_core::mcp::McpTool for ExampleLookupTool {
     type Output = ExampleLookupOutput;
 
     fn call(
-        ctx: proxima_core::mcp::McpToolCtx,
+        ctx: McpToolCtx,
         args: Self::Args,
-    ) -> futures::future::BoxFuture<'static, Result<Self::Output, proxima_core::mcp::McpToolError>> {
+    ) -> futures::future::BoxFuture<'static, Result<Self::Output, McpToolError>> {
         Box::pin(async move {
             let _owner = ctx.owner;
             let _external_id = args.external_id;

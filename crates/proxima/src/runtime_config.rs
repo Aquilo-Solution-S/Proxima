@@ -29,6 +29,7 @@ pub struct RuntimeBuilder {
     stream_max_lifetime: Option<Duration>,
     epoch_check_interval: Option<Duration>,
     insecure_single_owner: bool,
+    skip_migrations: Option<bool>,
     authenticator: Option<Arc<dyn Authenticator>>,
     owner_access: Option<Arc<dyn OwnerAccessPort>>,
     resource_metadata: Option<ResourceServerMetadata>,
@@ -51,6 +52,7 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("stream_max_lifetime", &self.stream_max_lifetime)
             .field("epoch_check_interval", &self.epoch_check_interval)
             .field("insecure_single_owner", &self.insecure_single_owner)
+            .field("skip_migrations", &self.skip_migrations)
             .field("has_authenticator", &self.authenticator.is_some())
             .field("has_owner_access", &self.owner_access.is_some())
             .field("has_resource_metadata", &self.resource_metadata.is_some())
@@ -76,6 +78,7 @@ impl RuntimeBuilder {
             stream_max_lifetime: self.stream_max_lifetime.or(base.stream_max_lifetime),
             epoch_check_interval: self.epoch_check_interval.or(base.epoch_check_interval),
             insecure_single_owner: self.insecure_single_owner || base.insecure_single_owner,
+            skip_migrations: self.skip_migrations.or(base.skip_migrations),
             authenticator: self.authenticator.or(base.authenticator),
             owner_access: self.owner_access.or(base.owner_access),
             resource_metadata: self.resource_metadata.or(base.resource_metadata),
@@ -182,6 +185,17 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Boot without applying migrations (preflight only).
+    ///
+    /// For split-role `GitOps` deploys: migrate out-of-band under a DDL role,
+    /// then boot the app under a DML-only role. Env equivalent:
+    /// `PROXIMA_SKIP_MIGRATIONS`.
+    #[must_use]
+    pub fn skip_migrations(mut self) -> Self {
+        self.skip_migrations = Some(true);
+        self
+    }
+
     /// Install the host authenticator used to resolve MCP credentials.
     #[must_use]
     pub fn authenticator(mut self, authenticator: Arc<dyn Authenticator>) -> Self {
@@ -257,6 +271,11 @@ impl RuntimeBuilder {
                 .map(|raw| parse_bool_value("PROXIMA_EXPOSE_NETWORK", &raw))
                 .transpose()?;
         }
+        if self.skip_migrations.is_none() {
+            self.skip_migrations = lookup("PROXIMA_SKIP_MIGRATIONS")
+                .map(|raw| parse_bool_value("PROXIMA_SKIP_MIGRATIONS", &raw))
+                .transpose()?;
+        }
         if self.allowed_origins.is_none() {
             self.allowed_origins =
                 lookup("PROXIMA_ALLOWED_ORIGINS").map(|raw| parse_allowed_origins(&raw));
@@ -324,6 +343,7 @@ impl RuntimeBuilder {
             tool_scope: self.tool_scope.unwrap_or(ToolScope::All),
             stream_revalidation,
             insecure_single_owner: self.insecure_single_owner,
+            skip_migrations: self.skip_migrations.unwrap_or(false),
             auth: RuntimeAuthState {
                 has_host_authenticator: parts.authenticator.is_some(),
                 has_owner_access: parts.owner_access.is_some(),
@@ -351,6 +371,9 @@ pub struct RuntimeConfig {
     pub tool_scope: ToolScope,
     pub stream_revalidation: RevalidationConfig,
     pub insecure_single_owner: bool,
+    /// Boot without applying migrations (preflight only) — schema is migrated
+    /// out-of-band under a DDL role in split-role `GitOps` deploys.
+    pub skip_migrations: bool,
     pub auth: RuntimeAuthState,
     pub resource_metadata: Option<ResourceServerMetadata>,
 }
@@ -374,6 +397,7 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("tool_scope", &self.tool_scope)
             .field("stream_revalidation", &self.stream_revalidation)
             .field("insecure_single_owner", &self.insecure_single_owner)
+            .field("skip_migrations", &self.skip_migrations)
             .field("auth", &self.auth)
             .field("resource_metadata", &self.resource_metadata)
             .finish()
@@ -689,6 +713,7 @@ mod tests {
             tool_scope: ToolScope::All,
             stream_revalidation: RevalidationConfig::default(),
             insecure_single_owner: false,
+            skip_migrations: false,
             auth: RuntimeAuthState {
                 has_host_authenticator: true,
                 has_owner_access: true,
