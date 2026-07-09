@@ -16,7 +16,7 @@ use crate::{McpTool, SchemaId};
 use super::memory::search::{NeighborEdge, neighbor_edges_from_rows};
 
 const SEMANTIC_SEARCH_UNAVAILABLE: &str =
-    "semantic search unavailable: no embedding client is configured (set MISTRAL_API_KEY)";
+    "semantic search unavailable: no embedding client is configured for this host";
 const DEFAULT_BODY_MAX_CHARS: usize = 8_000;
 
 #[derive(Debug, Default)]
@@ -25,8 +25,11 @@ pub struct SearchMemoriesTool;
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchMemoriesMode {
+    #[serde(alias = "Lexical", alias = "LEXICAL")]
     Lexical,
+    #[serde(alias = "Semantic", alias = "SEMANTIC")]
     Semantic,
+    #[serde(alias = "Hybrid", alias = "HYBRID")]
     Hybrid,
 }
 
@@ -79,7 +82,9 @@ impl From<SearchMemoriesKind> for EntityKind {
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchMemoriesSupersession {
+    #[serde(alias = "HeadsOnly", alias = "headsOnly", alias = "HEADS_ONLY")]
     HeadsOnly,
+    #[serde(alias = "All", alias = "ALL")]
     All,
 }
 
@@ -198,8 +203,9 @@ impl McpTool for SearchMemoriesTool {
             let embeddings_available = ctx
                 .engine()
                 .is_some_and(|engine| engine.embed_client().is_some());
-            let (effective_mode, resolver_degraded) =
+            let (mut effective_mode, resolver_degraded) =
                 resolve_effective_search_mode(mode, embeddings_available)?;
+            let mut degraded_to_lexical = resolver_degraded;
             let since = parse_rfc3339(args.since.as_deref(), "since")?;
             let until = parse_rfc3339(args.until.as_deref(), "until")?;
             let (query_embedding, embedding_model_id) =
@@ -207,14 +213,27 @@ impl McpTool for SearchMemoriesTool {
                     let engine = ctx.engine().ok_or_else(|| {
                         McpToolError::Other("engine required for semantic search".into())
                     })?;
-                    let embed = engine
-                        .embed_client()
-                        .ok_or_else(|| McpToolError::Other(SEMANTIC_SEARCH_UNAVAILABLE.into()))?;
-                    let embedding = embed
-                        .embed(query)
-                        .await
-                        .map_err(|err| McpToolError::Other(format!("embed query: {err}")))?;
-                    (Some(embedding), Some(embed.model_id().to_string()))
+                    // The embed client can vanish (or its call can fail) between
+                    // the availability probe above and this point. A pure
+                    // Semantic request has no lexical fallback, so it hard-fails
+                    // with an actionable precondition. A Hybrid request degrades
+                    // to lexical-only ranking and flags `degraded_to_lexical`.
+                    match embed_query_for_search(engine, query).await {
+                        Ok((embedding, model_id)) => (Some(embedding), Some(model_id)),
+                        Err(err) => {
+                            if matches!(effective_mode, SearchMode::Hybrid) {
+                                tracing::warn!(
+                                    error = %err,
+                                    "hybrid search query embedding unavailable; degrading to lexical",
+                                );
+                                effective_mode = SearchMode::Lexical;
+                                degraded_to_lexical = true;
+                                (None, None)
+                            } else {
+                                return Err(McpToolError::Unavailable(err));
+                            }
+                        }
+                    }
                 } else {
                     (None, None)
                 };
@@ -231,7 +250,6 @@ impl McpTool for SearchMemoriesTool {
             let spaces = resolve_search_spaces(&ctx, &args.spaces)?;
             let mut all_memories = Vec::new();
             let mut all_neighbor_edges = Vec::new();
-            let mut degraded_to_lexical = resolver_degraded;
             for space in spaces {
                 let result = search_one_space(&ctx, &args, &prepared, space).await?;
                 degraded_to_lexical |= result.degraded_to_lexical;
@@ -240,6 +258,7 @@ impl McpTool for SearchMemoriesTool {
             }
             sort_search_outputs(&mut all_memories, args.order);
             all_memories.truncate(prepared.limit as usize);
+            retain_surviving_neighbor_edges(&all_memories, &mut all_neighbor_edges);
 
             Ok(SearchMemoriesOutput {
                 mode: format!("{mode:?}").to_lowercase(),
@@ -431,13 +450,56 @@ fn resolve_effective_search_mode(
     embeddings_available: bool,
 ) -> Result<(SearchMode, bool), McpToolError> {
     match (requested, embeddings_available) {
-        (SearchMode::Semantic, false) => {
-            Err(McpToolError::Other(SEMANTIC_SEARCH_UNAVAILABLE.to_string()))
-        }
+        (SearchMode::Semantic, false) => Err(McpToolError::Unavailable(
+            SEMANTIC_SEARCH_UNAVAILABLE.to_string(),
+        )),
         (SearchMode::Hybrid, false) => Ok((SearchMode::Lexical, true)),
         (SearchMode::Semantic | SearchMode::Hybrid, true) => Ok((requested, false)),
         (SearchMode::Lexical, _) => Ok((SearchMode::Lexical, false)),
     }
+}
+
+/// Compute the query embedding + active embedding-model id, mapping absence or
+/// provider failure to a caller-actionable message. The caller decides whether
+/// that message hard-fails (pure Semantic) or degrades to lexical (Hybrid).
+async fn embed_query_for_search(
+    engine: &crate::Engine,
+    query: &str,
+) -> Result<(Vec<f32>, String), String> {
+    let embed = engine
+        .embed_client()
+        .ok_or_else(|| SEMANTIC_SEARCH_UNAVAILABLE.to_string())?;
+    let embedding = embed
+        .embed(query)
+        .await
+        .map_err(|err| format!("semantic search unavailable: embedding provider error: {err}"))?;
+    Ok((embedding, embed.model_id().to_string()))
+}
+
+/// Drop neighbor edges that no longer touch a surviving (post-truncation)
+/// memory, and dedupe by edge handle. Per-space searches over-fetch edges
+/// against their own candidate sets; after the merged set is sorted and
+/// truncated, edges to hits that were truncated out are dangling references.
+fn retain_surviving_neighbor_edges(
+    memories: &[SearchMemoryOutput],
+    edges: &mut Vec<NeighborEdge>,
+) {
+    let surviving: std::collections::HashSet<&str> =
+        memories.iter().map(|memory| memory.memory.as_str()).collect();
+    let mut seen_edges = std::collections::HashSet::new();
+    edges.retain(|edge| {
+        let touches = edge
+            .source
+            .as_deref()
+            .is_some_and(|source| surviving.contains(source))
+            || edge
+                .target
+                .as_deref()
+                .is_some_and(|target| surviving.contains(target));
+        // `&&` short-circuits: a non-touching edge is never marked seen, so a
+        // later touching duplicate is still evaluated on its own merits.
+        touches && seen_edges.insert(edge.handle.clone())
+    });
 }
 
 /// A `Hybrid` search has silently fallen back to lexical-only ranking when it
@@ -471,11 +533,90 @@ fn format_rfc3339(value: time::OffsetDateTime) -> Result<String, McpToolError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_BODY_MAX_CHARS, SEMANTIC_SEARCH_UNAVAILABLE, degraded_to_lexical,
-        effective_body_max_chars, resolve_effective_search_mode, truncate_body,
+        DEFAULT_BODY_MAX_CHARS, NeighborEdge, SEMANTIC_SEARCH_UNAVAILABLE, SearchMemoriesMode,
+        SearchMemoriesSupersession, SearchMemoryOutput, degraded_to_lexical,
+        effective_body_max_chars, resolve_effective_search_mode,
+        retain_surviving_neighbor_edges, truncate_body,
     };
     use crate::mcp::McpToolError;
     use crate::verbs::query::SearchMode;
+
+    fn memory_output(handle: &str) -> SearchMemoryOutput {
+        SearchMemoryOutput {
+            memory: handle.to_string(),
+            space: "current".into(),
+            kind: "Fact".into(),
+            schema_id: "core/agent-note".into(),
+            created_at: "2026-07-05T00:00:00Z".into(),
+            snippet: String::new(),
+            score: 1.0,
+            lexical_score: 1.0,
+            similarity_score: 0.0,
+            tags: Vec::new(),
+            body: None,
+        }
+    }
+
+    fn neighbor_edge(handle: &str, source: Option<&str>, target: Option<&str>) -> NeighborEdge {
+        NeighborEdge {
+            handle: handle.to_string(),
+            relation: "core/derived-from".into(),
+            source: source.map(str::to_string),
+            target: target.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn semantic_unavailable_message_is_provider_neutral() {
+        assert!(
+            !SEMANTIC_SEARCH_UNAVAILABLE.contains("MISTRAL"),
+            "the actionable message must not hardcode a provider env var: {SEMANTIC_SEARCH_UNAVAILABLE}",
+        );
+        assert!(SEMANTIC_SEARCH_UNAVAILABLE.contains("no embedding client is configured"));
+    }
+
+    #[test]
+    fn search_mode_and_supersession_accept_mixed_case() {
+        assert!(matches!(
+            serde_json::from_value::<SearchMemoriesMode>(serde_json::json!("Hybrid")).unwrap(),
+            SearchMemoriesMode::Hybrid
+        ));
+        assert!(matches!(
+            serde_json::from_value::<SearchMemoriesMode>(serde_json::json!("SEMANTIC")).unwrap(),
+            SearchMemoriesMode::Semantic
+        ));
+        assert!(matches!(
+            serde_json::from_value::<SearchMemoriesMode>(serde_json::json!("lexical")).unwrap(),
+            SearchMemoriesMode::Lexical
+        ));
+        assert!(matches!(
+            serde_json::from_value::<SearchMemoriesSupersession>(serde_json::json!("HeadsOnly"))
+                .unwrap(),
+            SearchMemoriesSupersession::HeadsOnly
+        ));
+        assert!(matches!(
+            serde_json::from_value::<SearchMemoriesSupersession>(serde_json::json!("all")).unwrap(),
+            SearchMemoriesSupersession::All
+        ));
+    }
+
+    #[test]
+    fn neighbor_edges_to_truncated_hits_are_dropped_and_deduped() {
+        let memories = [memory_output("F:1"), memory_output("A:2")];
+        let mut edges = vec![
+            // Touches a surviving hit via source.
+            neighbor_edge("E:keep", Some("A:2"), Some("F:99")),
+            // Both endpoints truncated out — dropped.
+            neighbor_edge("E:drop", Some("F:98"), Some("F:97")),
+            // Duplicate of E:keep — deduped.
+            neighbor_edge("E:keep", Some("A:2"), Some("F:99")),
+            // Touches a surviving hit via target.
+            neighbor_edge("E:target", Some("F:96"), Some("F:1")),
+        ];
+        retain_surviving_neighbor_edges(&memories, &mut edges);
+        let handles: Vec<_> = edges.iter().map(|edge| edge.handle.as_str()).collect();
+        assert_eq!(handles, ["E:keep", "E:target"]);
+    }
 
     #[test]
     fn degraded_flag_only_fires_for_hybrid_with_results_and_no_semantic() {
@@ -514,8 +655,10 @@ mod tests {
             (SearchMode::Semantic, false)
         );
 
+        // A pure Semantic request with no embedding client is a caller-actionable
+        // precondition (`Unavailable`), not an opaque internal fault (`Other`).
         match resolve_effective_search_mode(SearchMode::Semantic, false) {
-            Err(McpToolError::Other(message)) => {
+            Err(McpToolError::Unavailable(message)) => {
                 assert_eq!(message, SEMANTIC_SEARCH_UNAVAILABLE);
             }
             other => panic!("expected semantic unavailable error, got {other:?}"),

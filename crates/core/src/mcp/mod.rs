@@ -21,6 +21,7 @@ mod types;
 mod tests;
 
 pub use behavior::{Next, RequestBehavior, ScopeGateBehavior, TerminalDispatch, ToolCall};
+pub use core_tools::list_substrate_tools::scope_permits_action;
 pub use error::{McpToolError, McpToolErrorKind};
 pub use handles::{
     EntityKind, EntityRef, Handle, HandleTable, MemoryHandleClass, PrefixedUuidClass,
@@ -32,6 +33,6 @@ pub use manifest::{
 };
 pub use names::{provider_safe_tool_name, tool_name_matches};
 pub use presentation::{McpToolCaller, McpToolPresentation};
-pub(crate) use tool::validate_action_args;
+pub(crate) use tool::{prepare_flat_tool_args, validate_action_args};
 pub use tool::{McpActionArgSpec, McpCallFn, McpTool, McpToolDescriptor, McpToolOrigin};
 pub use types::{McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};

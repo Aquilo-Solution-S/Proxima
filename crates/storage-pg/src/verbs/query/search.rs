@@ -77,16 +77,33 @@ pub(crate) async fn search_memories(
 
     let limit = req.limit.min(50);
     let mut candidates = BTreeMap::<uuid::Uuid, Candidate>::new();
+    let overfetch = limit.saturating_mul(4);
 
-    if matches!(req.mode, SearchMode::Lexical | SearchMode::Hybrid) {
-        for row in run_lexical(pool, req, projections, limit.saturating_mul(4)).await? {
-            merge_row(&mut candidates, row);
+    match req.mode {
+        SearchMode::Lexical => {
+            for row in run_lexical(pool, req, projections, overfetch).await? {
+                merge_row(&mut candidates, row);
+            }
         }
-    }
-
-    if matches!(req.mode, SearchMode::Semantic | SearchMode::Hybrid) {
-        for row in run_semantic(pool, req, projections, limit.saturating_mul(4)).await? {
-            merge_row(&mut candidates, row);
+        SearchMode::Semantic => {
+            for row in run_semantic(pool, req, projections, overfetch).await? {
+                merge_row(&mut candidates, row);
+            }
+        }
+        SearchMode::Hybrid => {
+            // The lexical and vector candidate queries are independent (disjoint
+            // indexes) and merge order-independently, so run them concurrently
+            // to halve wall-clock latency. Weights/ef_search are unchanged.
+            let (lexical, semantic) = tokio::try_join!(
+                run_lexical(pool, req, projections, overfetch),
+                run_semantic(pool, req, projections, overfetch),
+            )?;
+            for row in lexical {
+                merge_row(&mut candidates, row);
+            }
+            for row in semantic {
+                merge_row(&mut candidates, row);
+            }
         }
     }
 

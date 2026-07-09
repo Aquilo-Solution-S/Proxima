@@ -111,10 +111,11 @@ pub struct DeriveArgs {
         description = "Required source memory handles for the operator proof. Use only one input layer per call: Facts for F→A, Abstractions for A→A/A→P."
     )]
     pub source_handles: Vec<String>,
+    #[serde(default)]
     #[schemars(
-        description = "Your model/agent label, recorded as operator provenance (e.g. `claude-opus-4-8`), 1 to 120 chars."
+        description = "Optional model/agent label recorded as operator provenance (e.g. `claude-opus-4-8`), 1 to 120 chars. Defaults to the reserved `model_id` request-context field when omitted."
     )]
-    pub model_id: String,
+    pub model_id: Option<String>,
     #[schemars(
         description = "Optional stable idempotency key. Omit or null to derive one from model_id and body."
     )]
@@ -128,7 +129,9 @@ pub struct DeriveArgs {
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 pub enum DerivedKind {
+    #[serde(alias = "abstraction", alias = "ABSTRACTION")]
     Abstraction,
+    #[serde(alias = "perspective", alias = "PERSPECTIVE")]
     Perspective,
 }
 
@@ -183,7 +186,14 @@ impl McpTool for DeriveTool {
                     "body must be 1..=20000 chars".into(),
                 ));
             }
-            if args.model_id.trim().is_empty() || args.model_id.chars().count() > 120 {
+            // `model_id` is the reserved operator label. It may arrive as an
+            // explicit arg or via the request-context `model_id` (which the MCP
+            // server strips into `ctx.author.model_id`); fall back to the latter.
+            let model_id = args
+                .model_id
+                .clone()
+                .unwrap_or_else(|| ctx.author.model_id.clone());
+            if model_id.trim().is_empty() || model_id.chars().count() > 120 {
                 return Err(McpToolError::InvalidInput(
                     "model_id required, 1..=120 chars".into(),
                 ));
@@ -228,11 +238,7 @@ impl McpTool for DeriveTool {
             );
 
             let key = args.idempotency_key.clone().unwrap_or_else(|| {
-                format!(
-                    "{}:{}",
-                    args.model_id,
-                    blake3::hash(body.as_bytes()).to_hex()
-                )
+                format!("{}:{}", model_id, blake3::hash(body.as_bytes()).to_hex())
             });
             let memory_id = derived_memory_id(&space.owner, args.kind.as_str(), &key);
             let sidecar = AgentDerivationV1 {
@@ -244,7 +250,7 @@ impl McpTool for DeriveTool {
                     .iter()
                     .map(|(memory_id, _class)| memory_id.into_inner())
                     .collect(),
-                model_id: args.model_id.clone(),
+                model_id: model_id.clone(),
                 client_name: ctx.author.client_name.clone(),
                 client_version: ctx.author.client_version.clone(),
             };
@@ -283,7 +289,7 @@ impl McpTool for DeriveTool {
                         operator_id: core_derive_operator_id(args.kind),
                         input_contract_id: core_derive_input_contract_id(args.kind),
                         source_batch_id: None,
-                        model_id: &args.model_id,
+                        model_id: &model_id,
                         prompt_version: "mcp-agent-v1",
                         sidecar_payload: match args.kind {
                             DerivedKind::Abstraction => SidecarPayload::abstraction(sidecar),
@@ -344,9 +350,25 @@ fn derived_memory_id(owner: &crate::Owner, kind: &str, key: &str) -> uuid::Uuid 
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_SOURCE_HANDLES, derived_memory_id};
+    use super::{DerivedKind, MAX_SOURCE_HANDLES, derived_memory_id};
     use crate::{OwnerRef, UserId};
     use uuid::Uuid;
+
+    #[test]
+    fn derived_kind_accepts_mixed_case() {
+        assert!(matches!(
+            serde_json::from_value::<DerivedKind>(serde_json::json!("abstraction")).unwrap(),
+            DerivedKind::Abstraction
+        ));
+        assert!(matches!(
+            serde_json::from_value::<DerivedKind>(serde_json::json!("PERSPECTIVE")).unwrap(),
+            DerivedKind::Perspective
+        ));
+        assert!(matches!(
+            serde_json::from_value::<DerivedKind>(serde_json::json!("Abstraction")).unwrap(),
+            DerivedKind::Abstraction
+        ));
+    }
 
     /// Pins the org-free deterministic `derive` `MemoryId` against drift.
     /// Track B / S0: the v5 key folds principal kind/id ‖ kind ‖ key — no

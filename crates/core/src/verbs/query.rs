@@ -49,7 +49,9 @@ fn default_supersession_status() -> SupersessionStatus {
 #[serde(rename_all = "lowercase")]
 pub enum TagMatch {
     #[default]
+    #[serde(alias = "Any", alias = "ANY")]
     Any,
+    #[serde(alias = "All", alias = "ALL")]
     All,
 }
 
@@ -67,7 +69,9 @@ pub enum TagMatch {
 #[serde(rename_all = "lowercase")]
 pub enum SearchOrder {
     #[default]
+    #[serde(alias = "Relevance", alias = "RELEVANCE")]
     Relevance,
+    #[serde(alias = "Recency", alias = "RECENCY")]
     Recency,
 }
 
@@ -358,4 +362,29 @@ pub struct QueryResponse {
     pub next_cursor: Option<QueryCursor>,
     /// docs/14 §"Cursor & resume".
     pub seq_high_water: Option<Uuid>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SearchOrder, TagMatch};
+
+    #[test]
+    fn tag_match_and_order_accept_mixed_case() {
+        assert_eq!(
+            serde_json::from_value::<TagMatch>(serde_json::json!("All")).unwrap(),
+            TagMatch::All
+        );
+        assert_eq!(
+            serde_json::from_value::<TagMatch>(serde_json::json!("any")).unwrap(),
+            TagMatch::Any
+        );
+        assert_eq!(
+            serde_json::from_value::<SearchOrder>(serde_json::json!("Recency")).unwrap(),
+            SearchOrder::Recency
+        );
+        assert_eq!(
+            serde_json::from_value::<SearchOrder>(serde_json::json!("RELEVANCE")).unwrap(),
+            SearchOrder::Relevance
+        );
+    }
 }
