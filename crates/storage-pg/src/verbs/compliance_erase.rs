@@ -312,6 +312,9 @@ async fn erase_selected(
     let change_events = delete_change_events(tx, owner).await?;
     record_count(tx, "change_events", change_events).await?;
 
+    let source_cursors = delete_source_cursors(tx, owner, scope).await?;
+    record_count(tx, "source_cursors", source_cursors).await?;
+
     delete_goal_refs(tx).await?;
     delete_memory_refs(tx).await?;
 
@@ -1069,6 +1072,7 @@ async fn final_counts(tx: &mut Tx<'_>) -> Result<ComplianceEraseCounts, StorageE
         source_batches: count_named(tx, "source_batches").await?,
         citations: count_named(tx, "citations").await?,
         cited_objects: count_named(tx, "cited_objects").await?,
+        source_cursors: count_named(tx, "source_cursors").await?,
         embeddings: count_named(tx, "embeddings").await?,
         embedding_jobs: count_named(tx, "embedding_jobs").await?,
         mcp_call_rows: count_named(tx, "mcp_call_rows").await?,
@@ -1299,5 +1303,43 @@ async fn delete_change_events(tx: &mut Tx<'_>, owner: OwnerRef) -> Result<u64, S
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
+    Ok(result.rows_affected())
+}
+
+/// Delete persisted projector source cursors for the erased scope inside the
+/// erase transaction (persistence-scaling P0, analysis 2026-07-05). Owner erase
+/// removes every cursor for the owner; source-scope erase removes only the
+/// matching `source`. Cursor bytes stay opaque — this is pure lawful cleanup so
+/// a re-provisioned owner/source does not resume from a stale offset.
+async fn delete_source_cursors(
+    tx: &mut Tx<'_>,
+    owner: OwnerRef,
+    scope: SelectionScope<'_>,
+) -> Result<u64, StorageError> {
+    let (owner_kind, owner_id) = owner_binds(&owner);
+    let result = match scope {
+        SelectionScope::Owner => sqlx::query(
+            "DELETE FROM proxima_core.source_cursors
+              WHERE owner_kind = $1
+                AND owner_id IS NOT DISTINCT FROM $2",
+        )
+        .bind(owner_kind)
+        .bind(owner_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?,
+        SelectionScope::Source(source_id) => sqlx::query(
+            "DELETE FROM proxima_core.source_cursors
+              WHERE owner_kind = $1
+                AND owner_id IS NOT DISTINCT FROM $2
+                AND source = $3",
+        )
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(source_id.as_str())
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?,
+    };
     Ok(result.rows_affected())
 }

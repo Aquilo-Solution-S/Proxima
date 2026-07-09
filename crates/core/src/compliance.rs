@@ -158,6 +158,7 @@ pub struct ComplianceEraseCounts {
     pub source_batches: u64,
     pub citations: u64,
     pub cited_objects: u64,
+    pub source_cursors: u64,
     pub embeddings: u64,
     pub embedding_jobs: u64,
     pub mcp_call_rows: u64,
