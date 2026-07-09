@@ -47,7 +47,7 @@ a narrower DML role.
 | `PROXIMA_OIDC_SUBJECT_MAP_JSON` | yes* | `[{"iss":"https://zitadel.example.com","sub":"...","user_id":"550e8400-e29b-41d4-a716-446655440000"}]` | Issuer-aware `(iss, sub) -> user_id` identity map. Required whenever `PROXIMA_OIDC_ISSUER` is set, unless `PROXIMA_OIDC_SUBJECT_MAP` is given instead (the two are mutually exclusive). |
 | `PROXIMA_OIDC_SUBJECT_MAP` | yes* | `sub-1:550e8400-e29b-41d4-a716-446655440000` | Legacy single-issuer shorthand `sub:<uuid>,sub2:<uuid2>`; every entry binds to `PROXIMA_OIDC_ISSUER`. Valid only because exactly one issuer is ever accepted here. |
 | `PROXIMA_OIDC_ALLOWED_SUBJECTS` | no | `user1,user2` | Comma-separated `sub` allowlist layered on top of the subject map above; never an identity source by itself. |
-| `PROXIMA_TOOL_PROFILE` | no | `full` | Tool profile: `full` default, or curated `memory`; `full` includes `core_membership` and `core_publish`, `memory` excludes them. |
+| `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile. **Unset ⇒ fail-closed `memory`** (excludes `core_membership` + `core_publish`). Set `full` to advertise the whole surface incl. `core_publish` (irreversible World transfer) — logged at startup. |
 | `PROXIMA_TOOL_ALLOW` | no | `core_goal:set` | Comma-separated canonical scope keys added after profile resolution. |
 | `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow. Compliance erase is not exposed as an MCP action. |
 | `MISTRAL_API_KEY` | no | `sk-...` | Enables Mistral embeddings. |
@@ -131,10 +131,21 @@ docker run -p 8080:8080 \
   proxima-mcp
 ```
 
-`PROXIMA_TOOL_PROFILE=memory` shrinks the advertised MCP surface for
-better LLM tool selection and lower operational blast radius. It is not a
-security boundary: every tool call remains gated by per-actor authz and
+The default `memory` profile keeps the advertised MCP surface small (better LLM
+tool selection, lower blast radius) and fail-closed — `core_publish` and
+`core_membership` are opt-in via `PROXIMA_TOOL_PROFILE=full`. The profile is not
+itself a security boundary: every tool call remains gated by per-actor authz and
 role checks.
+
+**Per-user tool scope is a host concern, not a substrate feature.** The env
+profile is one deployment-wide ceiling. A host that composes Proxima as a library
+resolves a per-subject `ToolScope` (e.g. derived from the subject's resolved
+role) and attaches it with
+`AuthzContext::server_resolved(roles, path).with_tool_scope(scope)`; the MCP edge
+intersects it with the env ceiling (`ToolScope::intersect` only narrows, never
+widens), so a per-user scope can restrict but never exceed the deployment
+ceiling. Proxima ships the mechanism; which subject gets which scope is the
+host's policy.
 
 MCP clients send `X-Proxima-Owner` on `initialize`; the bound owner is
 server-side session state, not a per-call tool argument.
@@ -183,6 +194,10 @@ Ingress MUST:
 - Statelessly validate the Zitadel JWT (NOT a session login-proxy).
 - Forward the `Authorization` header.
 - Restrict pod ingress to the gateway with a `NetworkPolicy`.
+- Cap request body size and apply a per-client rate/concurrency limit. The MCP
+  server rejects an oversized request body before parsing and caps individual
+  tool-arg fields, but does no rate limiting of its own, so the proxy is the
+  first bound on abusive request volume.
 
 Envoy `jwt_authn` filter snippet:
 ```yaml
@@ -207,3 +222,19 @@ Ingress-nginx annotation:
 nginx.ingress.kubernetes.io/auth-url: https://zitadel.example.com/oauth/v2/introspect
 nginx.ingress.kubernetes.io/auth-response-headers: X-Auth-Request-User, X-Auth-Request-Email
 ```
+
+## Blob storage lifecycle
+
+Uploaded cited blobs live under `objects/<owner_hash>/…`; in-flight uploads live
+under `pending/<owner_hash>/…`. Proxima runs no in-process pending sweep, so the
+bucket MUST carry an S3 lifecycle-expiration rule on the `pending/` prefix
+(≥ the configured upload TTL) to reclaim uploads that never complete. Owner
+erasure removes the canonical objects as part of compliance erase (see
+[13 §External side effects](13-compliance.md#external-side-effects)).
+
+## SSE stream revocation
+
+The OIDC path carries no out-of-band revocation signal, so a live SSE stream is
+bounded by `min(JWT exp, PROXIMA_STREAM_MAX_LIFETIME)`. For prompt revocation set
+a low `PROXIMA_STREAM_MAX_LIFETIME` (e.g. a few minutes); a revoked token cannot
+outlive that window.
