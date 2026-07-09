@@ -31,6 +31,11 @@ pub struct GetGraphOutput {
     /// means no retryable/in-flight backlog remains (not a proof that every
     /// memory embedded successfully).
     pub pending_embedding_jobs: u64,
+    /// Counts the owner's embedding jobs in the terminal `failed` state (retries
+    /// exhausted). A non-zero value means some Facts are stuck without an
+    /// embedding until a `reconcile` requeues them — an operator signal on this
+    /// readiness resource (analysis 2026-07-05 P1.1/K9).
+    pub failed_embedding_jobs: u64,
     /// Owner Fact-retention duration in seconds, if configured.
     pub fact_retention_seconds: Option<i64>,
     /// Static schema catalog from the frozen `FlavorRegistry`.
@@ -91,6 +96,7 @@ pub async fn get_graph(
     Ok(GetGraphOutput {
         embeddings_client_configured,
         pending_embedding_jobs: graph.pending_embedding_jobs,
+        failed_embedding_jobs: graph.failed_embedding_jobs,
         fact_retention_seconds: graph.fact_retention_seconds,
         schemas,
         edge_types,

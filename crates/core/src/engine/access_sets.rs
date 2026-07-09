@@ -477,6 +477,10 @@ pub(in crate::engine) mod tests {
         async fn count_pending_embedding_jobs(&self, _owner: &Owner) -> Result<u64, StorageError> {
             Ok(0)
         }
+
+        async fn count_failed_embedding_jobs(&self, _owner: &Owner) -> Result<u64, StorageError> {
+            Ok(0)
+        }
     }
 
     #[async_trait::async_trait]

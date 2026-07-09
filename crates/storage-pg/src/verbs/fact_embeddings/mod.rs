@@ -9,8 +9,9 @@ mod text;
 mod write;
 
 pub use jobs::{
-    claim_pending_embedding_jobs, complete_embedding_job, count_pending_embedding_jobs,
-    enqueue_missing_embedding_jobs, fail_embedding_job, list_facts_missing_embedding,
+    claim_pending_embedding_jobs, complete_embedding_job, count_failed_embedding_jobs,
+    count_pending_embedding_jobs, enqueue_missing_embedding_jobs, fail_embedding_job,
+    list_facts_missing_embedding,
 };
 pub(crate) use ops::{embedding_ann_observability, sweep_orphan_embedding_rows};
 pub use reconcile::{

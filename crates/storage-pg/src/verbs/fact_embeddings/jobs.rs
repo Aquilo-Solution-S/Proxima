@@ -338,3 +338,29 @@ pub async fn count_pending_embedding_jobs(
     u64::try_from(row.0)
         .map_err(|_| StorageError::Internal("pending embedding job count is negative".into()))
 }
+
+/// Owner-scoped count of embedding jobs in the terminal `failed` state.
+///
+/// # Errors
+///
+/// Maps SQL failures through the shared mapper.
+pub async fn count_failed_embedding_jobs(
+    pool: &PgPool,
+    owner: &Owner,
+) -> Result<u64, StorageError> {
+    let (owner_kind, owner_id) = owner_parts(owner);
+    let row: (i64,) = sqlx::query_as(
+        "SELECT count(*)
+           FROM proxima_core.embedding_jobs
+          WHERE owner_kind = $1
+            AND owner_id = $2
+            AND status = 'failed'",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .fetch_one(pool)
+    .await
+    .map_err(map_err)?;
+    u64::try_from(row.0)
+        .map_err(|_| StorageError::Internal("failed embedding job count is negative".into()))
+}

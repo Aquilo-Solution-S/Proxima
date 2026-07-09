@@ -9,7 +9,7 @@ use proxima_core::{MemoryId, StorageError};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::error::{internal, map_err};
+use crate::error::{internal, map_err, with_bounded_retry};
 
 /// Persist one MCP call log in a new transaction.
 ///
@@ -21,10 +21,16 @@ pub async fn persist_mcp_call_atomic(
     permit: &OwnerWritePermit,
     input: &McpCallLogInput,
 ) -> Result<McpCallLogOutcome, StorageError> {
-    let mut tx = pool.begin().await.map_err(internal)?;
-    let outcome = persist_mcp_call_in_tx(&mut tx, permit, input).await?;
-    tx.commit().await.map_err(map_err)?;
-    Ok(outcome)
+    // K7: retry the whole transaction on a transient deadlock/serialization
+    // failure (this is the per-MCP-call write path, the hottest goal-adjacent
+    // writer), so a 40P01 does not surface to the host as a bare Internal.
+    with_bounded_retry(move || async move {
+        let mut tx = pool.begin().await.map_err(internal)?;
+        let outcome = persist_mcp_call_in_tx(&mut tx, permit, input).await?;
+        tx.commit().await.map_err(map_err)?;
+        Ok(outcome)
+    })
+    .await
 }
 
 /// Persist one MCP call log using an existing transaction.

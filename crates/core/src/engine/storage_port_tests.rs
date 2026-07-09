@@ -327,6 +327,13 @@ mod storage_port_tests_support {
         ) -> Result<u64, StorageError> {
             Ok(0)
         }
+
+        async fn count_failed_embedding_jobs(
+            &self,
+            _owner: &crate::Owner,
+        ) -> Result<u64, StorageError> {
+            Ok(0)
+        }
     }
 
     #[async_trait::async_trait]
