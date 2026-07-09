@@ -20,6 +20,24 @@ enum SelectionScope<'a> {
     Source(&'a SourceId),
 }
 
+/// Begin a bulk-erase transaction: disable the pool's request-serving
+/// `statement_timeout` (P1.4 — a full-owner Art. 17 erase DELETEs across every
+/// owner-scoped table and can legitimately run longer than the request bound;
+/// `SET LOCAL` scopes the override to this transaction only) and defer
+/// constraint checks until commit.
+async fn begin_bulk_erase_tx(pool: &PgPool) -> Result<Tx<'_>, StorageError> {
+    let mut tx = pool.begin().await.map_err(map_err)?;
+    sqlx::query("SET LOCAL statement_timeout = 0")
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
+    sqlx::query("SET CONSTRAINTS ALL DEFERRED")
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
+    Ok(tx)
+}
+
 pub async fn record_compliance_outcome(
     pool: &PgPool,
     audit: &ComplianceAuditContext,
@@ -41,11 +59,7 @@ pub async fn erase_group_owner_if_abandoned(
     cited_object_sidecar_tables: &[String],
 ) -> Result<ComplianceEraseOutcome, StorageError> {
     let owner = OwnerRef::Group(group_id);
-    let mut tx = pool.begin().await.map_err(map_err)?;
-    sqlx::query("SET CONSTRAINTS ALL DEFERRED")
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
+    let mut tx = begin_bulk_erase_tx(pool).await?;
     if let Some(outcome) = refuse_if_legal_hold_active(&mut tx, auth, owner).await? {
         tx.commit().await.map_err(map_err)?;
         return Ok(outcome);
@@ -96,11 +110,7 @@ pub async fn erase_personal_owner_if_drop_verified(
     cited_object_sidecar_tables: &[String],
 ) -> Result<ComplianceEraseOutcome, StorageError> {
     let owner = OwnerRef::Personal(user_id);
-    let mut tx = pool.begin().await.map_err(map_err)?;
-    sqlx::query("SET CONSTRAINTS ALL DEFERRED")
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
+    let mut tx = begin_bulk_erase_tx(pool).await?;
     if let Some(outcome) = refuse_if_legal_hold_active(&mut tx, auth, owner).await? {
         tx.commit().await.map_err(map_err)?;
         return Ok(outcome);
@@ -139,11 +149,7 @@ pub async fn erase_group_source_scope_if_owner_abandoned(
     cited_object_sidecar_tables: &[String],
 ) -> Result<ComplianceEraseOutcome, StorageError> {
     let owner = OwnerRef::Group(group_id);
-    let mut tx = pool.begin().await.map_err(map_err)?;
-    sqlx::query("SET CONSTRAINTS ALL DEFERRED")
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
+    let mut tx = begin_bulk_erase_tx(pool).await?;
     if let Some(outcome) = refuse_if_legal_hold_active(&mut tx, auth, owner).await? {
         tx.commit().await.map_err(map_err)?;
         return Ok(outcome);
@@ -195,11 +201,7 @@ pub async fn erase_personal_source_scope_if_drop_verified(
     cited_object_sidecar_tables: &[String],
 ) -> Result<ComplianceEraseOutcome, StorageError> {
     let owner = OwnerRef::Personal(user_id);
-    let mut tx = pool.begin().await.map_err(map_err)?;
-    sqlx::query("SET CONSTRAINTS ALL DEFERRED")
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
+    let mut tx = begin_bulk_erase_tx(pool).await?;
     if let Some(outcome) = refuse_if_legal_hold_active(&mut tx, auth, owner).await? {
         tx.commit().await.map_err(map_err)?;
         return Ok(outcome);

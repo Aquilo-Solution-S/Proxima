@@ -457,10 +457,10 @@ const fn write_relation_for_access_kind(kind: AccessKind) -> Relation {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use crate::access::{AccessKind, AccessScope, EntityId, Relation, world};
+    use crate::access::{AccessKind, EntityId, Relation, world};
     use crate::authz::{
         AuthPath, AuthorizationHook, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome,
-        AuthzVeto, OwnerResolver, ToolScope,
+        AuthzVeto, OwnerResolver,
     };
     use crate::error::ErrorCode;
     use crate::error::ProtocolError;
@@ -535,11 +535,19 @@ mod tests {
     }
 
     fn granted_context(owner: &Owner) -> ResolvedAuthz {
-        AuthzContext::scoped_access(
-            *owner,
-            [*owner],
-            ToolScope::All,
-            AccessScope::Granted,
+        AuthzContext::single_owner(owner, AuthPath::HostBearer)
+    }
+
+    /// Server-resolved caller holding `relation` on `group` (group access now
+    /// flows from host-resolved `OwnerRoles`, not from a per-request membership
+    /// storage lookup).
+    fn member_context(owner: &Owner, group: GroupId, relation: Relation) -> ResolvedAuthz {
+        let OwnerRef::Personal(subject) = owner else {
+            panic!("member_context requires a personal owner");
+        };
+        AuthzContext::for_subject_with_role(
+            *subject,
+            [(OwnerRef::Group(group), relation.role())],
             AuthPath::HostBearer,
         )
     }
@@ -676,13 +684,7 @@ mod tests {
     #[tokio::test]
     async fn authorize_owner_write_denies_world() {
         let p = owner();
-        let authz = AuthzContext::scoped_access(
-            p,
-            [p, world()],
-            ToolScope::All,
-            AccessScope::Unrestricted,
-            AuthPath::HostBearer,
-        );
+        let authz = AuthzContext::single_owner(&p, AuthPath::HostBearer);
 
         let err = engine()
             .authorize_owner_write(&authz, &world(), AccessKind::Fact)
@@ -699,7 +701,7 @@ mod tests {
         let g1 = GroupId::new(uuid::Uuid::now_v7());
         let g1_owner = OwnerRef::Group(g1);
         let engine = engine_with_ports(storage(p, g1));
-        let authz = granted_context(&p);
+        let authz = member_context(&p, g1, Relation::Viewer);
 
         let err = engine
             .authorize_write(&authz, &g1_owner, Relation::Editor)
@@ -715,7 +717,7 @@ mod tests {
         let g1 = GroupId::new(uuid::Uuid::now_v7());
         let g1_owner = OwnerRef::Group(g1);
         let engine = engine_with_ports(storage_with_relation(p, g1, Relation::Editor));
-        let authz = granted_context(&p);
+        let authz = member_context(&p, g1, Relation::Editor);
 
         let permit = engine
             .authorize_write(&authz, &g1_owner, Relation::Editor)
@@ -764,13 +766,7 @@ mod tests {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
         let engine = engine_with_ports(storage(p, g1));
-        let authz = AuthzContext::scoped_access(
-            p,
-            [p, world()],
-            ToolScope::All,
-            AccessScope::Unrestricted,
-            AuthPath::HostBearer,
-        );
+        let authz = AuthzContext::single_owner(&p, AuthPath::HostBearer);
 
         for relation in [Relation::Admin, Relation::Editor, Relation::Ingest] {
             let err = engine
@@ -789,12 +785,12 @@ mod tests {
         let g1 = GroupId::new(uuid::Uuid::now_v7());
         let g1_owner = OwnerRef::Group(g1);
         let engine = engine_with_ports(storage(p, g1));
-        let authz = granted_context(&p);
+        let authz = member_context(&p, g1, Relation::Viewer);
 
         let read = engine
             .authorize_read(&authz)
             .await
-            .expect("granted context should resolve read owners");
+            .expect("member context should resolve read owners");
 
         assert!(read.contains(&p));
         assert!(read.contains(&g1_owner));

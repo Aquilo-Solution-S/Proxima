@@ -251,3 +251,105 @@ async fn purge_owner_objects_removes_completed_blob() {
     drop(pool);
     drop_db(&db_name).await.expect("drop db");
 }
+
+/// P1.7: on a VERSIONED bucket (the deployment our runbook recommends), a
+/// key-only delete only writes a delete marker and leaves the PII object as a
+/// recoverable noncurrent version. The purge must delete by `(key, version_id)`
+/// so no version survives an Art. 17 owner erasure.
+#[tokio::test]
+async fn versioned_bucket_purge_removes_all_object_versions() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset (run MinIO to enable)");
+        return;
+    }
+
+    let (pool, db_name) = fresh_pool().await;
+    let base = s3_config_for_dev();
+    let config = S3RuntimeConfig {
+        bucket: format!("{}-versioned", base.bucket),
+        ..base
+    };
+    let client = s3_client(&config).await;
+
+    // Self-provision a versioned bucket (idempotent across runs).
+    let _ = client.create_bucket().bucket(&config.bucket).send().await;
+    client
+        .put_bucket_versioning()
+        .bucket(&config.bucket)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .expect("enable versioning");
+
+    let store = CitedBlobStore::new(pool.clone(), config.clone());
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::System);
+    let body = b"versioned-pii-bytes";
+
+    let prepared = store
+        .prepare_upload(
+            &ctx,
+            CitedBlobUploadPrepareTs {
+                owner,
+                filename: "doc.pdf".into(),
+                mime: "application/pdf".into(),
+                byte_len: u64::try_from(body.len()).unwrap(),
+            },
+        )
+        .await
+        .expect("prepare");
+    let pending: (String, String) = sqlx::query_as(
+        "SELECT bucket, object_key FROM proxima_core.cited_object_uploads WHERE upload_id = $1",
+    )
+    .bind(Uuid::parse_str(&prepared.upload_id).expect("upload id"))
+    .fetch_one(&pool)
+    .await
+    .expect("upload row");
+    put_object_via_sdk(&config, &pending.1, body).await;
+    let completed = store
+        .complete_upload(
+            &ctx,
+            CitedBlobUploadCompleteTs {
+                owner,
+                upload_id: prepared.upload_id,
+            },
+        )
+        .await
+        .expect("complete");
+    let cited_object_id = Uuid::parse_str(&completed.cited_object_id).expect("cited object id");
+    let final_key: (String,) = sqlx::query_as(
+        "SELECT object_key FROM proxima_core.cited_uploaded_blob_v1 WHERE cited_object_id = $1",
+    )
+    .bind(cited_object_id)
+    .fetch_one(&pool)
+    .await
+    .expect("completed blob row");
+
+    // Re-put the same content-addressed key to mint a second version, so a
+    // key-only delete would demonstrably leave a noncurrent version behind.
+    put_object_via_sdk(&config, &final_key.0, body).await;
+
+    store.purge_owner_objects(owner).await.expect("purge");
+
+    let versions = client
+        .list_object_versions()
+        .bucket(&config.bucket)
+        .prefix(&final_key.0)
+        .send()
+        .await
+        .expect("list object versions");
+    assert!(
+        versions.versions().is_empty() && versions.delete_markers().is_empty(),
+        "versioned purge must remove every object version and delete marker; \
+         found {} version(s) / {} marker(s)",
+        versions.versions().len(),
+        versions.delete_markers().len(),
+    );
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}

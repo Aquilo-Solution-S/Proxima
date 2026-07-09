@@ -318,14 +318,6 @@ impl Relation {
     }
 }
 
-/// Temporary transport capability mode retained while call sites move to
-/// `OwnerRoles`. It is not an owner model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AccessScope {
-    Unrestricted,
-    Granted,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EntityId {
     Memory(MemoryId),

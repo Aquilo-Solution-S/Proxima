@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
-use crate::{AccessScope, GroupId, Owner, OwnerRef, OwnerRefKind, UserId};
+use crate::{AccessKind, GroupId, Owner, OwnerRef, OwnerRefKind, UserId};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MemorySpacesArgs {}
@@ -22,7 +22,10 @@ pub struct MemorySpaceOutput {
 
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct MemorySpaceAccessOutput {
-    pub unrestricted: bool,
+    /// Whether the caller holds write authority (Fact-write) on this space, as
+    /// opposed to read-only visibility. Resolved per space from the caller's
+    /// host-resolved owner roles (K8 — there is no blanket "unrestricted" mode).
+    pub writable: bool,
 }
 
 #[derive(Debug)]
@@ -48,9 +51,6 @@ impl McpTool for MemorySpacesTool {
 
 #[must_use]
 pub fn list_memory_spaces(ctx: &McpToolCtx) -> Vec<MemorySpaceOutput> {
-    let access = MemorySpaceAccessOutput {
-        unrestricted: ctx.authz.access_scope() == AccessScope::Unrestricted,
-    };
     sorted_accessible_principals(ctx)
         .into_iter()
         .map(|owner| {
@@ -66,7 +66,9 @@ pub fn list_memory_spaces(ctx: &McpToolCtx) -> Vec<MemorySpaceOutput> {
                 } else {
                     space_label(&owner)
                 },
-                access,
+                access: MemorySpaceAccessOutput {
+                    writable: ctx.authz.may_write(&owner, AccessKind::Fact),
+                },
             }
         })
         .collect()
@@ -216,40 +218,27 @@ pub(crate) fn space_label(owner: &Owner) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
     use std::sync::Arc;
 
+    use crate::access::Role;
     use crate::mcp::{McpAuthorContext, McpTool, McpToolExtensions, OutputMode};
-    use crate::{
-        AccessScope, AuthPath, AuthzContext, FlavorRegistry, GroupId, OwnerRef, ToolScope, UserId,
-    };
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, GroupId, OwnerRef, UserId};
 
     use super::*;
 
-    fn make_ctx_with_accessible(owners: Vec<OwnerRef>, access: AccessScope) -> McpToolCtx {
-        let principal = owners
-            .first()
-            .copied()
-            .unwrap_or_else(|| OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7())));
-        let accessible_principals = owners.into_iter().collect::<HashSet<_>>();
-        make_ctx(principal, principal, accessible_principals, access)
+    /// Build a server-resolved caller context: personal role on `subject`'s own
+    /// owner, World viewer, plus the given per-group roles.
+    fn ctx_for(subject: UserId, group_roles: Vec<(OwnerRef, Role)>) -> McpToolCtx {
+        make_ctx(
+            OwnerRef::Personal(subject),
+            AuthzContext::for_subject_with_role(subject, group_roles, AuthPath::HostBearer),
+        )
     }
 
-    fn make_ctx(
-        owner: OwnerRef,
-        principal: OwnerRef,
-        accessible_principals: HashSet<OwnerRef>,
-        access: AccessScope,
-    ) -> McpToolCtx {
+    fn make_ctx(owner: OwnerRef, authz: AuthzContext) -> McpToolCtx {
         McpToolCtx {
             owner,
-            authz: AuthzContext::scoped_access(
-                principal,
-                accessible_principals,
-                ToolScope::All,
-                access,
-                AuthPath::HostBearer,
-            ),
+            authz,
             handles: None,
             mode: OutputMode::PrefixedIds,
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
@@ -265,54 +254,66 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn memory_spaces_lists_accessible_principals_without_raw_authority() {
-        let personal = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-        let shared = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
-        let shared_key = MemorySpaceKey::owner(shared).to_wire();
-        let ctx = make_ctx_with_accessible(vec![personal, shared], AccessScope::Unrestricted);
-
-        let out = MemorySpacesTool::call(ctx, MemorySpacesArgs {})
-            .await
-            .unwrap();
-        assert_eq!(out.spaces.len(), 2);
-        assert_eq!(out.spaces[0].key, "current");
-        assert!(out.spaces[0].access.unrestricted);
-        assert_eq!(out.spaces[1].key, shared_key);
-        assert!(out.spaces[1].access.unrestricted);
+    fn writable_for(spaces: &[MemorySpaceOutput], key: &str) -> bool {
+        spaces
+            .iter()
+            .find(|space| space.key == key)
+            .unwrap_or_else(|| panic!("space {key} present"))
+            .access
+            .writable
     }
 
     #[tokio::test]
-    async fn memory_spaces_granted_scope_reports_grant_gated_access() {
-        let personal = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-        let ctx = make_ctx_with_accessible(vec![personal], AccessScope::Granted);
+    async fn memory_spaces_reports_per_space_writability() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let shared = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let shared_key = MemorySpaceKey::owner(shared).to_wire();
+        let world_key = MemorySpaceKey::owner(OwnerRef::World).to_wire();
+        let ctx = ctx_for(subject, vec![(shared, Role::editor())]);
 
         let out = MemorySpacesTool::call(ctx, MemorySpacesArgs {})
             .await
             .unwrap();
-        assert_eq!(out.spaces.len(), 1);
+        // current (own personal) sorts first; World and the editor group follow.
         assert_eq!(out.spaces[0].key, "current");
-        assert!(!out.spaces[0].access.unrestricted);
+        assert!(writable_for(&out.spaces, "current"));
+        // Editor on the group → writable; World is public-read, never writable.
+        assert!(writable_for(&out.spaces, &shared_key));
+        assert!(!writable_for(&out.spaces, &world_key));
+    }
+
+    #[tokio::test]
+    async fn memory_spaces_viewer_group_is_not_writable() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let shared = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let shared_key = MemorySpaceKey::owner(shared).to_wire();
+        let ctx = ctx_for(subject, vec![(shared, Role::viewer())]);
+
+        let out = MemorySpacesTool::call(ctx, MemorySpacesArgs {})
+            .await
+            .unwrap();
+        // Read-only member: the group space is visible but not writable; the
+        // caller's own space still is.
+        assert!(writable_for(&out.spaces, "current"));
+        assert!(!writable_for(&out.spaces, &shared_key));
     }
 
     #[test]
     fn resolution_omitted_space_matches_current_owner() {
-        let personal = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let subject = UserId::new(uuid::Uuid::now_v7());
         let shared = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
-        let ctx = make_ctx_with_accessible(vec![personal, shared], AccessScope::Unrestricted);
+        let ctx = ctx_for(subject, vec![(shared, Role::editor())]);
 
         let resolved = resolve_space_owner(&ctx, None, SpaceDefault::Current).unwrap();
         assert_eq!(resolved.key, "current");
-        assert_eq!(resolved.owner, personal);
+        assert_eq!(resolved.owner, OwnerRef::Personal(subject));
     }
 
     #[test]
     fn resolution_rejects_owner_without_visibility() {
-        let user = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let subject = UserId::new(uuid::Uuid::now_v7());
         let hidden = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
-        let mut accessible_principals = HashSet::new();
-        accessible_principals.insert(user);
-        let ctx = make_ctx(user, user, accessible_principals, AccessScope::Unrestricted);
+        let ctx = ctx_for(subject, vec![]);
         let hidden_key = MemorySpaceKey::owner(hidden).to_wire();
 
         let err = resolve_space_owner(&ctx, Some(&hidden_key), SpaceDefault::Current).unwrap_err();
@@ -320,6 +321,7 @@ mod tests {
             err.to_string()
                 .contains(&format!("unknown memory space: {hidden_key}"))
         );
-        assert_eq!(list_memory_spaces(&ctx).len(), 1);
+        // A bare subject sees only its own space + World (public read).
+        assert_eq!(list_memory_spaces(&ctx).len(), 2);
     }
 }

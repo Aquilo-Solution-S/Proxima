@@ -4,7 +4,7 @@ use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::types::{Delete, ObjectIdentifier};
 use proxima_core::storage_ports::CitedObjectErasePort;
 use proxima_core::{
-    AuthzContext, Owner, OwnerRef, OwnerRefKind, StorageError, UPLOADED_BLOB_SCHEMA_ID,
+    AccessKind, AuthzContext, Owner, OwnerRef, OwnerRefKind, StorageError, UPLOADED_BLOB_SCHEMA_ID,
 };
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -162,8 +162,7 @@ impl CitedBlobStore {
     ) -> Result<CitedBlobUploadPrepareOutcomeTs, BlobError> {
         validate_prepare(&req, self.config.max_blob_bytes)?;
         let owner = req.owner();
-        ensure_write_owner(&owner)?;
-        ensure_owner_access(ctx, &owner)?;
+        ensure_owner_write_access(ctx, &owner)?;
         let upload_id = Uuid::now_v7();
         let owner_hash = owner_hash_hex(&owner);
         let object_key = pending_object_key(&owner_hash, upload_id);
@@ -234,7 +233,7 @@ impl CitedBlobStore {
         req: CitedBlobUploadCompleteTs,
     ) -> Result<CitedBlobUploadCompleteOutcomeTs, BlobError> {
         let owner = req.owner();
-        ensure_owner_access(ctx, &owner)?;
+        ensure_owner_write_access(ctx, &owner)?;
         let upload_id = parse_uuid(&req.upload_id)?;
         let row = load_upload(&self.pool, &owner, upload_id).await?;
         match row.status.as_str() {
@@ -350,7 +349,7 @@ impl CitedBlobStore {
         req: CitedBlobUploadAbortTs,
     ) -> Result<CitedBlobUploadAbortOutcomeTs, BlobError> {
         let owner = req.owner();
-        ensure_owner_access(ctx, &owner)?;
+        ensure_owner_write_access(ctx, &owner)?;
         let upload_id = parse_uuid(&req.upload_id)?;
         let row = load_upload(&self.pool, &owner, upload_id).await?;
         if row.status == "completed" {
@@ -472,33 +471,61 @@ impl CitedObjectErasePort for CitedBlobStore {
     }
 }
 
-/// List and batch-delete every object under one S3 `prefix`, paging over the
-/// `list_objects_v2` continuation token. Returns the number of objects deleted.
+/// List and batch-delete EVERY version (and delete marker) under one S3
+/// `prefix`, paging over the `list_object_versions` key/version markers.
+/// Returns the number of object versions + delete markers deleted.
+///
+/// P1.7 (analysis 2026-07-05): deletion is by `(key, version_id)`, not by key
+/// alone. On a *versioned* bucket — the deployment recommended in
+/// `docs/how-to/operate.md` — a key-only `delete_objects` merely inserts a
+/// delete marker and leaves the noncurrent PII object versions recoverable via
+/// `GetObject?versionId`, defeating the Art. 17 erasure guarantee. Enumerating
+/// versions and deleting each by its `version_id` physically removes the bytes.
+/// On a non-versioned bucket every entry has `version_id = "null"`, so the same
+/// path deletes the live object and remains correct.
 async fn purge_prefix(
     client: &aws_sdk_s3::Client,
     bucket: &str,
     prefix: &str,
 ) -> Result<u64, StorageError> {
     let mut deleted = 0_u64;
-    let mut continuation: Option<String> = None;
+    let mut key_marker: Option<String> = None;
+    let mut version_id_marker: Option<String> = None;
     loop {
-        let mut list = client.list_objects_v2().bucket(bucket).prefix(prefix);
-        if let Some(token) = &continuation {
-            list = list.continuation_token(token);
+        let mut list = client.list_object_versions().bucket(bucket).prefix(prefix);
+        if let Some(km) = &key_marker {
+            list = list.key_marker(km);
         }
-        let page = list
-            .send()
-            .await
-            .map_err(|e| StorageError::Unavailable(format!("list objects under {prefix}: {e}")))?;
+        if let Some(vm) = &version_id_marker {
+            list = list.version_id_marker(vm);
+        }
+        let page = list.send().await.map_err(|e| {
+            StorageError::Unavailable(format!("list object versions under {prefix}: {e}"))
+        })?;
 
+        // A single `list_object_versions` page returns at most `max-keys`
+        // (default 1000) versions + delete markers combined, which is within
+        // `delete_objects`' 1000-identifier limit, so one batch per page fits.
         let mut identifiers = Vec::new();
-        for object in page.contents() {
-            if let Some(key) = object.key() {
-                let id = ObjectIdentifier::builder()
-                    .key(key)
-                    .build()
-                    .map_err(|e| StorageError::Internal(format!("object identifier: {e}")))?;
-                identifiers.push(id);
+        for (key, version_id) in page
+            .versions()
+            .iter()
+            .map(|v| (v.key(), v.version_id()))
+            .chain(
+                page.delete_markers()
+                    .iter()
+                    .map(|m| (m.key(), m.version_id())),
+            )
+        {
+            if let Some(key) = key {
+                let mut id = ObjectIdentifier::builder().key(key);
+                if let Some(vid) = version_id {
+                    id = id.version_id(vid);
+                }
+                identifiers.push(
+                    id.build()
+                        .map_err(|e| StorageError::Internal(format!("object identifier: {e}")))?,
+                );
             }
         }
         if !identifiers.is_empty() {
@@ -530,9 +557,11 @@ async fn purge_prefix(
                 deleted.saturating_add(u64::try_from(response.deleted().len()).unwrap_or(u64::MAX));
         }
 
-        match (page.is_truncated(), page.next_continuation_token()) {
-            (Some(true), Some(token)) => continuation = Some(token.to_string()),
-            _ => break,
+        if page.is_truncated() == Some(true) {
+            key_marker = page.next_key_marker().map(str::to_string);
+            version_id_marker = page.next_version_id_marker().map(str::to_string);
+        } else {
+            break;
         }
     }
     Ok(deleted)
@@ -878,6 +907,23 @@ fn ensure_owner_access(ctx: &AuthzContext, owner: &Owner) -> Result<(), BlobErro
     }
 }
 
+/// Gate a blob WRITE (prepare/complete/abort) on host-resolved write authority,
+/// not mere read access. A cited blob is a Fact-attached payload, so the caller
+/// must hold Fact-write (Ingest/Editor/Admin) on `owner`: a read-only group
+/// Viewer, though it can *read* the group, must not be able to mint pending rows
+/// or canonical cited-blob rows in the group's namespace (analysis 2026-07-05
+/// S5). Also rejects World, which never owns cited blobs.
+fn ensure_owner_write_access(ctx: &AuthzContext, owner: &Owner) -> Result<(), BlobError> {
+    ensure_write_owner(owner)?;
+    if ctx.may_write(owner, AccessKind::Fact) {
+        Ok(())
+    } else {
+        Err(BlobError::Denied(
+            "owner is not writable for this authorization context".into(),
+        ))
+    }
+}
+
 fn parse_uuid(value: &str) -> Result<Uuid, BlobError> {
     Uuid::parse_str(value).map_err(|_| BlobError::State(format!("invalid uuid: {value}")))
 }
@@ -1061,6 +1107,40 @@ mod tests {
         let foreign = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let err = ensure_owner_access(&ctx, &foreign).expect_err("foreign owner denied");
         assert!(matches!(err, BlobError::Denied(_)));
+    }
+
+    // S5: blob writes require WRITE authority, not mere read access. A group
+    // Viewer can read the group (owner_access gate passes) but must not be able
+    // to create cited blobs in it (owner_write gate denies).
+    #[test]
+    fn owner_write_gate_denies_read_only_group_viewer() {
+        use proxima_core::{GroupId, Role};
+        let subject = UserId::new(Uuid::now_v7());
+        let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let ctx = AuthzContext::for_subject_with_role(
+            subject,
+            [(group, Role::viewer())],
+            proxima_core::AuthPath::HostBearer,
+        );
+        // Read gate passes (the viewer can see the group)…
+        ensure_owner_access(&ctx, &group).expect("viewer can read the group");
+        // …but the write gate denies.
+        let err = ensure_owner_write_access(&ctx, &group).expect_err("viewer cannot write");
+        assert!(matches!(err, BlobError::Denied(_)));
+    }
+
+    #[test]
+    fn owner_write_gate_allows_editor_group_and_self() {
+        use proxima_core::{GroupId, Role};
+        let subject = UserId::new(Uuid::now_v7());
+        let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let ctx = AuthzContext::for_subject_with_role(
+            subject,
+            [(group, Role::editor())],
+            proxima_core::AuthPath::HostBearer,
+        );
+        ensure_owner_write_access(&ctx, &group).expect("editor can write the group");
+        ensure_owner_write_access(&ctx, &OwnerRef::Personal(subject)).expect("self is writable");
     }
 
     #[tokio::test]

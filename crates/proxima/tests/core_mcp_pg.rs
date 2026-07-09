@@ -9,8 +9,8 @@ use proxima::{
 };
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
-    AccessScope, AuthPath, CitationMappingPayload, CitedObjectPayload, FlavorRegistry, GroupId,
-    MemoryId, Owner, OwnerRef, Relation, Role, SchemaId, UserId, all_core_resources,
+    AuthPath, CitationMappingPayload, CitedObjectPayload, FlavorRegistry, GroupId, MemoryId, Owner,
+    OwnerRef, Relation, Role, SchemaId, UserId, all_core_resources,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
@@ -171,13 +171,9 @@ fn host_authz(owner: &Owner, tool_scope: ToolScope) -> ResolvedAuthz {
     authz.with_tool_scope(tool_scope)
 }
 
-fn space_authz(subject: OwnerRef, owners: Vec<Owner>, access: AccessScope) -> ResolvedAuthz {
+fn space_authz(subject: OwnerRef, owners: Vec<Owner>, group_role: Role) -> ResolvedAuthz {
     let OwnerRef::Personal(user) = subject else {
         panic!("space auth test subjects must be users");
-    };
-    let group_role = match access {
-        AccessScope::Unrestricted => Role::admin(),
-        AccessScope::Granted => Role::viewer(),
     };
     let roles = owners
         .into_iter()
@@ -280,7 +276,7 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
         let authz = space_authz(
             personal,
             vec![personal, shared],
-            AccessScope::Granted,
+            Role::viewer(),
         );
         let shared_space = server_issued_group_space_selector(&tools, authz.clone(), personal).await;
 
@@ -348,7 +344,7 @@ async fn shared_space_include_body_uses_shared_owner() {
         let authz = space_authz(
             personal,
             vec![personal, shared],
-            AccessScope::Unrestricted,
+            Role::admin(),
         );
         let shared_space = server_issued_group_space_selector(&tools, authz.clone(), personal).await;
 
@@ -409,7 +405,7 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
         let authz = space_authz(
             personal,
             vec![personal, shared],
-            AccessScope::Unrestricted,
+            Role::admin(),
         );
         let shared_space = server_issued_group_space_selector(&tools, authz.clone(), personal).await;
 

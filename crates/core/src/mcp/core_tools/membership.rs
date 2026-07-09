@@ -282,9 +282,10 @@ fn format_relation(relation: Relation) -> &'static str {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use crate::access::Role;
     use crate::mcp::core_tools::memory_spaces::MemorySpaceKey;
     use crate::mcp::{McpAuthorContext, McpToolExtensions, OutputMode, validate_action_args};
-    use crate::{AccessScope, AuthPath, AuthzContext, FlavorRegistry, ToolScope};
+    use crate::{AuthPath, AuthzContext, FlavorRegistry};
 
     use super::*;
 
@@ -337,15 +338,21 @@ mod tests {
     }
 
     fn ctx_with_principals(owner: OwnerRef, accessible: Vec<OwnerRef>) -> McpToolCtx {
+        let OwnerRef::Personal(subject) = owner else {
+            panic!("ctx_with_principals requires a personal owner");
+        };
+        // Server-resolved: the caller manages (admin) every group it can reach,
+        // plus its own personal owner and World (viewer). Faithful to the old
+        // unrestricted-over-accessible semantics for these membership tests.
+        let group_roles = accessible
+            .into_iter()
+            .filter_map(|principal| match principal {
+                OwnerRef::Group(_) => Some((principal, Role::admin())),
+                OwnerRef::Personal(_) | OwnerRef::World => None,
+            });
         McpToolCtx {
             owner,
-            authz: AuthzContext::scoped_access(
-                owner,
-                accessible,
-                ToolScope::All,
-                AccessScope::Unrestricted,
-                AuthPath::HostBearer,
-            ),
+            authz: AuthzContext::for_subject_with_role(subject, group_roles, AuthPath::HostBearer),
             handles: None,
             mode: OutputMode::PrefixedIds,
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),

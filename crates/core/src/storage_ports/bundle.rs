@@ -42,11 +42,6 @@ pub struct StoragePorts {
 }
 
 #[derive(Clone)]
-pub(crate) struct AccessReadStoragePorts {
-    pub owner_access_read: OwnerAccessReadHandle,
-}
-
-#[derive(Clone)]
 #[allow(clippy::struct_field_names)] // all three ports are owner-* by domain, not incidental naming
 pub(crate) struct AccessAdminStoragePorts {
     pub owner_membership_admin: OwnerMembershipAdminHandle,
@@ -120,7 +115,6 @@ pub(crate) struct ComplianceStoragePorts {
 
 #[derive(Clone)]
 pub(crate) struct EngineStoragePorts {
-    pub access_read: AccessReadStoragePorts,
     pub access_admin: AccessAdminStoragePorts,
     pub compliance: ComplianceStoragePorts,
     pub fact_retention: FactRetentionStoragePorts,
@@ -232,9 +226,6 @@ impl StoragePorts {
 impl From<StoragePorts> for EngineStoragePorts {
     fn from(ports: StoragePorts) -> Self {
         Self {
-            access_read: AccessReadStoragePorts {
-                owner_access_read: ports.owner_access_read.clone(),
-            },
             access_admin: AccessAdminStoragePorts {
                 owner_membership_admin: ports.owner_membership_admin.clone(),
                 owner_access_read: ports.owner_access_read.clone(),
