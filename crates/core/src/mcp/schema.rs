@@ -87,12 +87,26 @@ fn flatten_root_tagged_enum(value: &mut serde_json::Value) {
         }
     }
 
+    let discriminator_description = {
+        let base = format!(
+            "Dispatcher {discriminator} to execute. Additional fields depend on the selected {discriminator}."
+        );
+        let signatures = action_signature_block(&action_values, &action_metadata);
+        if signatures.is_empty() {
+            base
+        } else {
+            // Standard MCP clients render a property's description but not our
+            // `x-proxima-actions` extension, so the per-action field contract is
+            // inlined here where every client can see it.
+            format!("{base}\nAction signatures (required, then +optional):\n{signatures}")
+        }
+    };
     merged_properties.insert(
         discriminator.clone(),
         serde_json::json!({
             "type": "string",
             "enum": action_values,
-            "description": format!("Dispatcher {discriminator} to execute. Additional fields depend on the selected {discriminator}.")
+            "description": discriminator_description,
         }),
     );
     map.remove("oneOf");
@@ -180,6 +194,81 @@ fn merge_variant(
         }),
     );
     Some(())
+}
+
+/// Build a compact one-line-per-action signature block from the accumulated
+/// `x-proxima-actions` metadata: `- <action>: <required> (+ <optional>)`.
+/// Optional fields are `allowed_fields` minus `required_fields`. Empty when no
+/// action carries any field.
+fn action_signature_block(
+    action_values: &[serde_json::Value],
+    action_metadata: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    use std::fmt::Write as _;
+    let mut lines = Vec::new();
+    for action_value in action_values {
+        let Some(action) = action_value.as_str() else {
+            continue;
+        };
+        let Some(meta) = action_metadata.get(action).and_then(serde_json::Value::as_object) else {
+            continue;
+        };
+        let field_list = |key: &str| -> Vec<String> {
+            meta.get(key)
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let required = field_list("required_fields");
+        let optional: Vec<String> = field_list("allowed_fields")
+            .into_iter()
+            .filter(|field| !required.contains(field))
+            .collect();
+        let mut line = format!("- {action}: ");
+        match (required.is_empty(), optional.is_empty()) {
+            (true, true) => line.push_str("(no args)"),
+            (true, false) => write!(line, "(+ {})", optional.join(", "))
+                .expect("write to String is infallible"),
+            (false, true) => line.push_str(&required.join(", ")),
+            (false, false) => {
+                line.push_str(&required.join(", "));
+                write!(line, " (+ {})", optional.join(", "))
+                    .expect("write to String is infallible");
+            }
+        }
+        lines.push(line);
+    }
+    lines.join("\n")
+}
+
+/// Top-level property names in `args_schema` that carry no non-empty
+/// `description`. Used by tool registration to warn (never fail) on
+/// under-documented MCP tool fields.
+pub(crate) fn undescribed_property_names(args_schema: &serde_json::Value) -> Vec<String> {
+    let Some(properties) = args_schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Vec::new();
+    };
+    let mut out = properties
+        .iter()
+        .filter(|(_, schema)| {
+            schema
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|description| description.trim().is_empty())
+        })
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    out.sort();
+    out
 }
 
 /// Detect the internally-tagged discriminator KEY across a root `oneOf`'s
@@ -445,6 +534,42 @@ mod tests {
         Left { shared: Option<String> },
         #[serde(rename = "right")]
         Right { shared: Option<String> },
+    }
+
+    #[derive(JsonSchema)]
+    #[allow(dead_code)]
+    struct PartiallyDescribed {
+        #[schemars(description = "A described field.")]
+        described: String,
+        bare: String,
+    }
+
+    #[test]
+    fn dispatcher_description_carries_per_action_signatures() {
+        let schema = mcp_tool_schema::<Demo>();
+        let description = schema
+            .pointer("/properties/kind/description")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("kind discriminator description present: {schema:#}"));
+        assert!(
+            description.contains("Action signatures"),
+            "dispatcher description must inline the signature block: {description}",
+        );
+        // Variant `a` carries one optional field `x`; variant `b` carries none.
+        assert!(
+            description.contains("- a: (+ x)"),
+            "per-action signature must list optional fields: {description}",
+        );
+        assert!(
+            description.contains("- b: (no args)"),
+            "a variant with no fields must render `(no args)`: {description}",
+        );
+    }
+
+    #[test]
+    fn undescribed_property_names_flags_only_bare_fields() {
+        let schema = mcp_tool_schema::<PartiallyDescribed>();
+        assert_eq!(undescribed_property_names(&schema), vec!["bare".to_string()]);
     }
 
     #[test]

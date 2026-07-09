@@ -106,7 +106,7 @@ pub struct GoalSetArgs {
     #[serde(flatten)]
     pub payload: GoalPayloadArgs,
     #[schemars(
-        description = "Required Abstraction memory handles (`A...`) that motivate this operator-authored goal."
+        description = "Required Fact or Abstraction memory handles (`F...`/`A...`) that motivate this operator-authored goal; at least one is required."
     )]
     pub evidence: Vec<String>,
     #[schemars(
@@ -230,6 +230,11 @@ impl McpTool for CoreGoalTool {
 }
 
 async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput, McpToolError> {
+    if args.evidence.is_empty() {
+        return Err(McpToolError::InvalidInput(
+            "goal set requires >=1 Fact|Abstraction evidence handle motivating the goal".into(),
+        ));
+    }
     let payload = encode_goal_payload(&ctx, args.payload)?;
     let evidence = resolve_evidence(&ctx, &args.evidence)?;
     let assignment = target_perspective(&ctx, args.target_perspective.as_deref())?;
@@ -262,8 +267,11 @@ async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput,
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalTransition {
+    #[serde(alias = "Pause", alias = "PAUSE")]
     Pause,
+    #[serde(alias = "Resume", alias = "RESUME")]
     Resume,
+    #[serde(alias = "Abandon", alias = "ABANDON")]
     Abandon,
 }
 
@@ -370,7 +378,7 @@ pub struct GoalModifyArgs {
     #[serde(flatten)]
     pub payload: GoalPayloadArgs,
     #[schemars(
-        description = "Abstraction evidence handles (`A...`) for the operator-authored modified goal head."
+        description = "Fact or Abstraction evidence handles (`F...`/`A...`) for the operator-authored modified goal head."
     )]
     pub evidence: Option<Vec<String>>,
     #[schemars(description = "Optional stable idempotency key for replay-safe modification.")]
@@ -438,7 +446,7 @@ pub struct ChildGoalInput {
     pub payload: GoalPayloadArgs,
     #[serde(default)]
     #[schemars(
-        description = "Required Abstraction memory handles (`A...`) that motivate this operator-authored child goal."
+        description = "Required Fact or Abstraction memory handles (`F...`/`A...`) that motivate this operator-authored child goal."
     )]
     pub evidence: Vec<String>,
 }
@@ -640,6 +648,89 @@ fn format_goal_write_output(ctx: &McpToolCtx, outcome: GoalWriteOutcome) -> Goal
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::{McpAuthorContext, McpToolExtensions, OutputMode};
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, OwnerRef, UserId};
+    use std::sync::Arc;
+
+    fn test_ctx() -> McpToolCtx {
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        McpToolCtx {
+            owner,
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+            handles: None,
+            mode: OutputMode::PrefixedIds,
+            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            author: McpAuthorContext {
+                model_id: "m".into(),
+                client_name: "c".into(),
+                client_version: "0".into(),
+                caller_self_perspective: None,
+            },
+            caller_self_perspective: None,
+            extensions: McpToolExtensions::default(),
+            engine: None,
+        }
+    }
+
+    fn goal_set_args(evidence: Vec<String>) -> GoalSetArgs {
+        GoalSetArgs {
+            payload: GoalPayloadArgs {
+                schema_id: "bogus/goal".into(),
+                schema_version: None,
+                title: "t".into(),
+                text: "b".into(),
+                body: serde_json::json!({}),
+            },
+            evidence,
+            target_perspective: None,
+            idempotency_key: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn goal_set_rejects_empty_evidence() {
+        let err = goal_set(test_ctx(), goal_set_args(Vec::new()))
+            .await
+            .expect_err("empty evidence must be rejected");
+        assert!(
+            matches!(err, McpToolError::InvalidInput(ref m) if m.contains("requires >=1")),
+            "got {err:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn goal_set_accepts_nonempty_evidence_before_payload_resolution() {
+        // With evidence present the empty-evidence guard must pass; the call
+        // then fails downstream on the unregistered schema, proving the guard
+        // only fires on empty evidence (a Fact/Abstraction handle is accepted).
+        let err = goal_set(test_ctx(), goal_set_args(vec![format!("A:{}", uuid::Uuid::now_v7())]))
+            .await
+            .expect_err("bogus schema still fails downstream");
+        assert!(
+            !matches!(err, McpToolError::InvalidInput(ref m) if m.contains("requires >=1")),
+            "guard must not fire for non-empty evidence: {err:?}",
+        );
+        assert!(
+            matches!(err, McpToolError::InvalidInput(ref m) if m.contains("unregistered GoalPayload")),
+            "expected downstream schema error, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn goal_transition_accepts_mixed_case() {
+        assert!(matches!(
+            serde_json::from_value::<GoalTransition>(serde_json::json!("Pause")).unwrap(),
+            GoalTransition::Pause
+        ));
+        assert!(matches!(
+            serde_json::from_value::<GoalTransition>(serde_json::json!("resume")).unwrap(),
+            GoalTransition::Resume
+        ));
+        assert!(matches!(
+            serde_json::from_value::<GoalTransition>(serde_json::json!("ABANDON")).unwrap(),
+            GoalTransition::Abandon
+        ));
+    }
 
     #[test]
     fn goal_payload_args_body_schema_is_object() {

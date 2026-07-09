@@ -10,8 +10,8 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use proxima_core::mcp::{
-    McpToolAnnotations, McpToolError, McpToolErrorKind, all_core_resources, core_tool_annotations,
-    provider_safe_tool_name, tool_name_matches,
+    McpToolAnnotations, McpToolError, McpToolErrorKind, all_core_actions, all_core_resources,
+    core_tool_annotations, provider_safe_tool_name, scope_permits_action, tool_name_matches,
 };
 use proxima_core::{AccessKind, McpAuthorContext, MemoryId};
 use rmcp::ServerHandler;
@@ -138,6 +138,7 @@ impl ServerHandler for DynamicHandler {
     ) -> impl Future<Output = Result<ReadResourceResult, ErrorData>> + MaybeSendFuture + '_ {
         let uri = request.uri;
         let auth = auth_context(&context);
+        let (client_name, client_version) = peer_implementation(&context);
         let server = self.server.clone();
         async move {
             if uri == selfdoc::HOW_TO_URI {
@@ -162,7 +163,7 @@ impl ServerHandler for DynamicHandler {
                     None,
                 ));
             }
-            let author = author_from_ctx(auth.as_ref());
+            let author = author_from_ctx(auth.as_ref(), &client_name, &client_version);
             let value = server
                 .read_resource(&uri, author, auth)
                 .await
@@ -180,6 +181,7 @@ impl ServerHandler for DynamicHandler {
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + MaybeSendFuture + '_ {
         let auth = auth_context(&context);
+        let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
         let tools: Vec<Tool> = self
             .server
             .registry()
@@ -187,10 +189,12 @@ impl ServerHandler for DynamicHandler {
             .iter()
             .filter(|descriptor| tool_allowed_for_auth(auth.as_ref(), descriptor.name))
             .map(|descriptor| {
+                let schema =
+                    project_dispatcher_actions(&descriptor.args_schema, scope, descriptor.name);
                 let tool = Tool::new(
                     Cow::Owned(provider_safe_tool_name(descriptor.name)),
                     Cow::Borrowed(descriptor.description),
-                    Arc::new(rmcp::model::object(descriptor.args_schema.clone())),
+                    Arc::new(rmcp::model::object(schema)),
                 );
                 match core_tool_annotations(descriptor.name) {
                     Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
@@ -230,6 +234,7 @@ impl ServerHandler for DynamicHandler {
     ) -> impl Future<Output = Result<CallToolResult, ErrorData>> + MaybeSendFuture + '_ {
         let server = self.server.clone();
         let auth = auth_context(&context);
+        let (client_name, client_version) = peer_implementation(&context);
         async move {
             let request_name = request.name.to_string();
             let canonical_name =
@@ -237,12 +242,13 @@ impl ServerHandler for DynamicHandler {
             let mut args = request
                 .arguments
                 .map_or_else(|| serde_json::json!({}), serde_json::Value::Object);
-            let author = author_from_args(&args, auth.as_ref())?;
+            let author = author_from_args(&args, auth.as_ref(), &client_name, &client_version)?;
             strip_call_context_args(&mut args);
+            let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope().clone());
             let output = server
                 .call_tool(&canonical_name, args, author, auth)
                 .await
-                .map_err(tool_invocation_error_to_error_data)?;
+                .map_err(|err| tool_invocation_error_to_error_data(err, scope.as_ref()))?;
             let text = serde_json::to_string(&output).map_err(generic_internal_error)?;
             let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
             result.structured_content = Some(output);
@@ -254,16 +260,41 @@ impl ServerHandler for DynamicHandler {
 /// Map a tool-invocation failure to a typed JSON-RPC error so external
 /// agents can tell bad input from a server fault, instead of every failure
 /// collapsing to `internal_error` (-32603).
-fn tool_invocation_error_to_error_data(err: ToolInvocationError) -> ErrorData {
+fn tool_invocation_error_to_error_data(
+    err: ToolInvocationError,
+    scope: Option<&ToolScope>,
+) -> ErrorData {
     match err {
-        ToolInvocationError::NotAuthorized(name) => ErrorData::invalid_request(
-            format!("tool {name} not authorized for this MCP token"),
-            None,
-        ),
+        ToolInvocationError::NotAuthorized(name) => {
+            ErrorData::invalid_request(not_authorized_message(&name, scope), None)
+        }
         ToolInvocationError::ToolNotFound(name) => {
             ErrorData::invalid_params(format!("unknown tool: {name}"), None)
         }
         ToolInvocationError::Tool(inner) => mcp_tool_error_to_error_data(&inner),
+    }
+}
+
+/// Build the not-authorized message, enriched with the caller's still-allowed
+/// actions on the denied dispatcher tool so an agent can immediately retry with
+/// a permitted action instead of guessing. `name` is either a tool id or a
+/// `tool:action` leaf.
+fn not_authorized_message(name: &str, scope: Option<&ToolScope>) -> String {
+    let tool = name.split_once(':').map_or(name, |(tool, _)| tool);
+    let allowed: Vec<&str> = scope.map_or_else(Vec::new, |scope| {
+        all_core_actions()
+            .filter(|meta| meta.tool == tool)
+            .filter(|meta| scope_permits_action(scope, tool, meta.action))
+            .map(|meta| meta.action)
+            .collect()
+    });
+    if allowed.is_empty() {
+        format!("tool {name} not authorized for this MCP token")
+    } else {
+        format!(
+            "tool {name} not authorized for this MCP token; allowed {tool} actions: {}",
+            allowed.join(", ")
+        )
     }
 }
 
@@ -295,6 +326,68 @@ fn mcp_tool_error_to_error_data(err: &McpToolError) -> ErrorData {
 fn generic_internal_error(err: impl std::fmt::Display) -> ErrorData {
     tracing::error!(error = %err, "mcp internal error");
     ErrorData::internal_error("internal server error", None)
+}
+
+/// Narrow a dispatcher tool's advertised `action` enum and `x-proxima-actions`
+/// to the actions a `Palette` scope permits, so `tools/list` never advertises
+/// an action the caller cannot invoke. `All` (or absent) scopes and flat tools
+/// are returned unchanged.
+fn project_dispatcher_actions(
+    schema: &serde_json::Value,
+    scope: Option<&ToolScope>,
+    tool: &str,
+) -> serde_json::Value {
+    let Some(scope_ref) = scope else {
+        return schema.clone();
+    };
+    if !matches!(scope_ref, ToolScope::Palette(_)) {
+        return schema.clone();
+    }
+    let Some(actions) = schema
+        .get("x-proxima-actions")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return schema.clone();
+    };
+    let permitted: Vec<String> = actions
+        .keys()
+        .filter(|action| scope_permits_action(scope_ref, tool, action))
+        .cloned()
+        .collect();
+    // Whole-tool grant (or exactly the full action set) needs no narrowing.
+    if permitted.len() == actions.len() {
+        return schema.clone();
+    }
+    let mut projected = schema.clone();
+    let Some(map) = projected.as_object_mut() else {
+        return schema.clone();
+    };
+    if let Some(actions) = map
+        .get_mut("x-proxima-actions")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        actions.retain(|action, _| permitted.iter().any(|permit| permit == action));
+    }
+    // The flattener sets `required = [discriminator]`; use it to find the enum.
+    let discriminator = map
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    if let Some(discriminator) = discriminator
+        && let Some(enum_values) = map
+            .get_mut("properties")
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|properties| properties.get_mut(&discriminator))
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|property| property.get_mut("enum"))
+            .and_then(serde_json::Value::as_array_mut)
+    {
+        enum_values
+            .retain(|value| value.as_str().is_some_and(|s| permitted.iter().any(|p| p == s)));
+    }
+    projected
 }
 
 fn to_rmcp_annotations(annotations: McpToolAnnotations) -> ToolAnnotations {
@@ -349,16 +442,35 @@ fn advertised_resource_scope_keys(scope: Option<&ToolScope>) -> BTreeSet<&'stati
         .collect()
 }
 
-fn author_from_ctx(auth: Option<&McpAuthContext>) -> McpAuthorContext {
+fn author_from_ctx(
+    auth: Option<&McpAuthContext>,
+    client_name: &str,
+    client_version: &str,
+) -> McpAuthorContext {
     McpAuthorContext {
         model_id: auth
             .and_then(|ctx| ctx.model_id.as_deref())
             .unwrap_or("unknown")
             .to_string(),
-        client_name: "unknown".into(),
-        client_version: "0".into(),
+        client_name: client_name.to_string(),
+        client_version: client_version.to_string(),
         caller_self_perspective: None,
     }
+}
+
+/// Client `(name, version)` from the initialize handshake's `client_info`,
+/// recorded as operator provenance. Falls back to `("unknown", "0")` when the
+/// peer info is absent (e.g. a request that never completed `initialize`).
+fn peer_implementation(context: &RequestContext<RoleServer>) -> (String, String) {
+    context.peer.peer_info().map_or_else(
+        || ("unknown".to_string(), "0".to_string()),
+        |info| {
+            (
+                info.client_info.name.clone(),
+                info.client_info.version.clone(),
+            )
+        },
+    )
 }
 
 fn canonical_tool_name(server: &McpToolHost, request_name: &str) -> Option<String> {
@@ -428,6 +540,8 @@ const UNAUTHENTICATED_SCOPE_ALLOWS: bool = true;
 fn author_from_args(
     args: &serde_json::Value,
     auth: Option<&McpAuthContext>,
+    client_name: &str,
+    client_version: &str,
 ) -> Result<McpAuthorContext, ErrorData> {
     let model_id = args
         .get("model_id")
@@ -438,8 +552,8 @@ fn author_from_args(
     let caller_self_perspective = caller_self_perspective_from_args(args)?;
     Ok(McpAuthorContext {
         model_id,
-        client_name: "unknown".into(),
-        client_version: "0".into(),
+        client_name: client_name.to_string(),
+        client_version: client_version.to_string(),
         caller_self_perspective,
     })
 }
@@ -475,6 +589,12 @@ fn strip_call_context_args(args: &mut serde_json::Value) {
     obj.remove("_proxima_caller_self_perspective");
     obj.remove("caller_self_perspective");
     obj.remove("current_root_perspective_memory_id");
+    // `model_id` is the reserved operator label: `author_from_args` has already
+    // captured it into the author context, so strip it as a context field. This
+    // lets any dispatcher tool (whose per-action specs do not list `model_id`)
+    // accept it without a spurious unexpected-field rejection; flat tools that
+    // want it (e.g. core_derive) read it from `ctx.author.model_id`.
+    obj.remove("model_id");
 }
 
 #[cfg(test)]
@@ -490,7 +610,7 @@ mod tests {
             "_proxima_caller_self_perspective": self_id.to_string(),
         });
 
-        let author = author_from_args(&args, None).expect("author context");
+        let author = author_from_args(&args, None, "unknown", "0").expect("author context");
 
         assert_eq!(author.model_id, "test-model");
         assert_eq!(
@@ -517,11 +637,119 @@ mod tests {
     }
 
     #[test]
+    fn strip_call_context_args_removes_reserved_model_id() {
+        // `model_id` is captured into the author context before stripping, then
+        // removed so a dispatcher tool that does not list it as an action field
+        // is not tripped by an unexpected-field rejection.
+        let args = serde_json::json!({ "action": "set", "model_id": "claude" });
+        let author =
+            author_from_args(&args, None, "unknown", "0").expect("author reads model_id");
+        assert_eq!(author.model_id, "claude");
+
+        let mut args = args;
+        strip_call_context_args(&mut args);
+        assert!(args.get("model_id").is_none(), "model_id stripped: {args}");
+        assert_eq!(args["action"], "set");
+    }
+
+    #[test]
+    fn author_from_args_carries_peer_implementation() {
+        let args = serde_json::json!({ "model_id": "m" });
+        let author = author_from_args(&args, None, "example-client", "1.2.3")
+            .expect("author with peer info");
+        assert_eq!(author.client_name, "example-client");
+        assert_eq!(author.client_version, "1.2.3");
+    }
+
+    #[test]
+    fn palette_scope_narrows_advertised_dispatcher_actions() {
+        use proxima_core::ToolScope;
+
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let goal = registry
+            .list_mcp_tools()
+            .iter()
+            .find(|descriptor| descriptor.name == protocol_tool::CORE_GOAL)
+            .expect("core_goal descriptor")
+            .clone();
+
+        // A palette that permits only the `set` leaf of core_goal.
+        let scope = ToolScope::Palette(vec![protocol_action::CORE_GOAL_SET.to_string()]);
+        let projected =
+            project_dispatcher_actions(&goal.args_schema, Some(&scope), protocol_tool::CORE_GOAL);
+
+        let enum_values = projected
+            .pointer("/properties/action/enum")
+            .and_then(serde_json::Value::as_array)
+            .expect("action enum");
+        assert_eq!(enum_values, &vec![serde_json::json!("set")]);
+
+        let advertised: Vec<&str> = projected
+            .get("x-proxima-actions")
+            .and_then(serde_json::Value::as_object)
+            .expect("x-proxima-actions")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(advertised, vec!["set"]);
+    }
+
+    #[test]
+    fn all_scope_leaves_dispatcher_actions_unchanged() {
+        use proxima_core::ToolScope;
+
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let goal = registry
+            .list_mcp_tools()
+            .iter()
+            .find(|descriptor| descriptor.name == protocol_tool::CORE_GOAL)
+            .expect("core_goal descriptor")
+            .clone();
+        let projected = project_dispatcher_actions(
+            &goal.args_schema,
+            Some(&ToolScope::All),
+            protocol_tool::CORE_GOAL,
+        );
+        assert_eq!(projected, goal.args_schema);
+    }
+
+    #[test]
+    fn not_authorized_message_lists_allowed_actions() {
+        use proxima_core::ToolScope;
+
+        let scope = ToolScope::Palette(vec![protocol_action::CORE_GOAL_SET.to_string()]);
+        let err = tool_invocation_error_to_error_data(
+            McpToolError::NotAuthorized(protocol_action::CORE_GOAL_TRANSITION.into()).into(),
+            Some(&scope),
+        );
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert!(
+            err.message
+                .contains(&format!("allowed {} actions: set", protocol_tool::CORE_GOAL)),
+            "message: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn unavailable_error_reaches_caller_as_invalid_request() {
+        let err = mcp_tool_error_to_error_data(&McpToolError::Unavailable(
+            "semantic search unavailable: no embedding client is configured for this host".into(),
+        ));
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert_eq!(
+            err.message,
+            "semantic search unavailable: no embedding client is configured for this host"
+        );
+    }
+
+    #[test]
     fn caller_self_perspective_metadata_errors_are_invalid_params() {
         let args = serde_json::json!({
             "caller_self_perspective": 42,
         });
-        let err = author_from_args(&args, None).expect_err("non-string metadata fails");
+        let err =
+            author_from_args(&args, None, "unknown", "0").expect_err("non-string metadata fails");
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert!(
             err.message.contains("caller_self_perspective"),
@@ -532,7 +760,8 @@ mod tests {
         let args = serde_json::json!({
             "current_root_perspective_memory_id": "not-a-uuid",
         });
-        let err = author_from_args(&args, None).expect_err("invalid uuid metadata fails");
+        let err = author_from_args(&args, None, "unknown", "0")
+            .expect_err("invalid uuid metadata fails");
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert!(
             err.message.contains("current_root_perspective_memory_id"),
@@ -550,8 +779,11 @@ mod tests {
 
     #[test]
     fn tool_scope_denials_remain_invalid_request() {
+        // No scope threaded (e.g. direct-handler path) → bare message, no
+        // allowed-action enrichment.
         let err = tool_invocation_error_to_error_data(
             McpToolError::NotAuthorized(protocol_action::CORE_GOAL_SET.into()).into(),
+            None,
         );
 
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_REQUEST);

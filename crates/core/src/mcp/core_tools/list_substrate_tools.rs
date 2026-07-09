@@ -114,11 +114,18 @@ fn action_spec(
 }
 
 fn action_visible(ctx: &McpToolCtx, tool: &str, action: &str) -> bool {
-    match ctx.authz.tool_scope() {
+    scope_permits_action(ctx.authz.tool_scope(), tool, action)
+}
+
+/// Whether `scope` advertises `action` of dispatcher `tool`: either the whole
+/// tool is in the palette, or its specific `tool:action` leaf is. Shared by the
+/// substrate tool catalog and the MCP server's scope-projected `tools/list`.
+#[must_use]
+pub fn scope_permits_action(scope: &crate::authz::ToolScope, tool: &str, action: &str) -> bool {
+    match scope {
         crate::authz::ToolScope::All => true,
         crate::authz::ToolScope::Palette(allowed) => {
-            allowed.iter().any(|entry| entry == tool)
-                || ctx.authz.tool_scope().allows_action(tool, action)
+            allowed.iter().any(|entry| entry == tool) || scope.allows_action(tool, action)
         }
     }
 }

@@ -2,6 +2,20 @@ use super::{
     FlavorRegistry, FlavorRegistryError, McpCallFn, McpTool, McpToolDescriptor, McpToolError,
     McpToolOrigin, Tool, mcp_tool_schema, validate_action_args,
 };
+use crate::mcp::prepare_flat_tool_args;
+use crate::mcp::schema::undescribed_property_names;
+
+/// Warn (never fail) on MCP tool properties that ship without a description.
+/// Downstream flavors must not be hard-blocked by this lint, so it only logs.
+fn warn_undescribed_properties(tool_name: &str, args_schema: &serde_json::Value) {
+    for field in undescribed_property_names(args_schema) {
+        tracing::warn!(
+            tool = tool_name,
+            field = %field,
+            "MCP tool property has no description",
+        );
+    }
+}
 
 impl FlavorRegistry {
     /// # Errors
@@ -16,9 +30,10 @@ impl FlavorRegistry {
         let under = format!("{expected_prefix}_");
         validate_tool_name(T::NAME, expected_prefix, &slash, &under)?;
         let args_schema = mcp_tool_schema::<T::Args>();
-        let call: McpCallFn = |ctx, args| {
+        warn_undescribed_properties(T::NAME, &args_schema);
+        let call: McpCallFn = |ctx, mut args| {
             Box::pin(async move {
-                validate_action_args(T::NAME, &[], &args)?;
+                prepare_flat_tool_args::<T::Args>(T::NAME, &mut args)?;
                 let typed: T::Args = serde_json::from_value(args)
                     .map_err(|e| McpToolError::InvalidInput(e.to_string()))?;
                 let output = <T as McpTool>::call(ctx, typed).await?;
@@ -57,9 +72,17 @@ impl FlavorRegistry {
         let under = format!("{expected_prefix}_");
         validate_tool_name(T::NAME, expected_prefix, &slash, &under)?;
         let args_schema = mcp_tool_schema::<T::Args>();
-        let call: McpCallFn = |ctx, args| {
+        warn_undescribed_properties(T::NAME, &args_schema);
+        let call: McpCallFn = |ctx, mut args| {
             Box::pin(async move {
-                validate_action_args(T::NAME, T::ACTION_ARG_SPECS, &args)?;
+                // Dispatcher tools (non-empty specs) run per-action validation;
+                // flat McpTools run the flat unknown-field + space-alias guard
+                // instead of silently accepting unknown fields.
+                if T::ACTION_ARG_SPECS.is_empty() {
+                    prepare_flat_tool_args::<T::Args>(T::NAME, &mut args)?;
+                } else {
+                    validate_action_args(T::NAME, T::ACTION_ARG_SPECS, &args)?;
+                }
                 let typed: T::Args = serde_json::from_value(args)
                     .map_err(|e| McpToolError::InvalidInput(e.to_string()))?;
                 let output = T::call(ctx, typed).await?;

@@ -225,7 +225,7 @@ impl ToolHarness {
                 body: "Abstraction that refers to the target fact.".into(),
                 tags: Vec::new(),
                 source_handles: vec![fact.handle.clone()],
-                model_id: "codex-test".into(),
+                model_id: Some("codex-test".into()),
                 idempotency_key: Some("list-events-source".into()),
                 space: None,
             })

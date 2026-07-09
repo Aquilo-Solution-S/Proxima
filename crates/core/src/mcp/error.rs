@@ -16,6 +16,12 @@ pub enum McpToolError {
     LayeringViolation(String),
     #[error("storage: {0}")]
     Storage(#[from] crate::StorageError),
+    /// A required capability (e.g. a semantic-search embedding client) is not
+    /// configured for this host. Unlike [`Self::Other`], its message is a
+    /// caller-actionable precondition and is passed through verbatim rather
+    /// than redacted to a generic internal-server-error.
+    #[error("{0}")]
+    Unavailable(String),
     #[error("{0}")]
     Other(String),
 }
@@ -32,7 +38,9 @@ impl McpToolError {
     pub fn kind(&self) -> McpToolErrorKind {
         match self {
             Self::InvalidInput(_) | Self::Resolve(_) => McpToolErrorKind::InvalidInput,
-            Self::NotAuthorized(_) | Self::LayeringViolation(_) => McpToolErrorKind::InvalidRequest,
+            Self::NotAuthorized(_) | Self::LayeringViolation(_) | Self::Unavailable(_) => {
+                McpToolErrorKind::InvalidRequest
+            }
             Self::Protocol(e) => match e.code {
                 crate::error::ErrorCode::InvalidArgument => McpToolErrorKind::InvalidInput,
                 crate::error::ErrorCode::Internal => McpToolErrorKind::Internal,
@@ -90,5 +98,25 @@ impl From<ToolError> for McpToolError {
             ToolError::Storage(err) => Self::Storage(err),
             ToolError::Other(message) => Self::Other(message),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{McpToolError, McpToolErrorKind};
+
+    #[test]
+    fn unavailable_message_reaches_caller_verbatim() {
+        let err = McpToolError::Unavailable(
+            "semantic search unavailable: no embedding client is configured for this host".into(),
+        );
+        // Precondition faults classify as a well-formed-but-illegal request,
+        // NOT an internal fault (which would redact the message).
+        assert_eq!(err.kind(), McpToolErrorKind::InvalidRequest);
+        assert_eq!(
+            err.client_message(),
+            "semantic search unavailable: no embedding client is configured for this host"
+        );
+        assert_ne!(err.client_message(), "internal server error");
     }
 }
