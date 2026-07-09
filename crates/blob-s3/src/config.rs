@@ -16,6 +16,11 @@ pub struct S3RuntimeConfig {
     pub force_path_style: bool,
     pub upload_ttl_seconds: u64,
     pub read_ttl_seconds: u64,
+    /// Hard cap on a single blob's byte length. `None` = no cap. Enforced
+    /// at prepare time (declared `byte_len`) and again while streaming the
+    /// uploaded object at completion, so a client that under-declares its
+    /// size cannot smuggle an oversized object past the cap.
+    pub max_blob_bytes: Option<u64>,
 }
 
 impl S3RuntimeConfig {
@@ -27,10 +32,14 @@ impl S3RuntimeConfig {
     pub fn from_env() -> Result<Self, BlobError> {
         let bucket = required_env("PROXIMA_S3_BUCKET")?;
         let region = required_env("PROXIMA_S3_REGION")?;
+        let endpoint_url = optional_env("PROXIMA_S3_ENDPOINT_URL");
+        if let Some(endpoint_url) = &endpoint_url {
+            validate_endpoint_url(endpoint_url)?;
+        }
         Ok(Self {
             bucket,
             region,
-            endpoint_url: optional_env("PROXIMA_S3_ENDPOINT_URL"),
+            endpoint_url,
             force_path_style: parse_bool_env("PROXIMA_S3_FORCE_PATH_STYLE")?,
             upload_ttl_seconds: parse_u64_env(
                 "PROXIMA_S3_UPLOAD_TTL_SECONDS",
@@ -40,6 +49,7 @@ impl S3RuntimeConfig {
                 "PROXIMA_S3_READ_TTL_SECONDS",
                 DEFAULT_READ_TTL_SECONDS,
             )?,
+            max_blob_bytes: parse_optional_u64_env("PROXIMA_S3_MAX_BLOB_BYTES")?,
         })
     }
 
@@ -99,6 +109,51 @@ fn parse_u64_env(key: &str, default: u64) -> Result<u64, BlobError> {
         .map_err(|_| BlobError::Config(format!("invalid integer {key}={value}")))
 }
 
+fn parse_optional_u64_env(key: &str) -> Result<Option<u64>, BlobError> {
+    let Some(value) = optional_env(key) else {
+        return Ok(None);
+    };
+    value
+        .parse::<u64>()
+        .map(Some)
+        .map_err(|_| BlobError::Config(format!("invalid integer {key}={value}")))
+}
+
+/// Reject an S3 endpoint that would carry presigned URLs (and the credentials
+/// signed into them) over plaintext HTTP. HTTPS is always accepted; plaintext
+/// HTTP is accepted only for a loopback host (local MinIO/dev), unlike
+/// production S3 endpoints which must be TLS.
+fn validate_endpoint_url(raw: &str) -> Result<(), BlobError> {
+    let uri = raw.parse::<http::Uri>().map_err(|e| {
+        BlobError::Config(format!("PROXIMA_S3_ENDPOINT_URL is not a valid URL: {e}"))
+    })?;
+    let scheme = uri.scheme_str().ok_or_else(|| {
+        BlobError::Config(format!(
+            "PROXIMA_S3_ENDPOINT_URL must include a scheme: {raw}"
+        ))
+    })?;
+    if scheme.eq_ignore_ascii_case("https") {
+        return Ok(());
+    }
+    if scheme.eq_ignore_ascii_case("http") && endpoint_host_is_loopback(&uri) {
+        return Ok(());
+    }
+    Err(BlobError::Config(format!(
+        "PROXIMA_S3_ENDPOINT_URL must use https (plaintext http allowed only for loopback): {raw}"
+    )))
+}
+
+fn endpoint_host_is_loopback(uri: &http::Uri) -> bool {
+    let Some(host) = uri.host() else {
+        return false;
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|addr| addr.is_loopback())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +178,40 @@ mod tests {
             panic!("wrong variant");
         };
         assert!(msg.contains("PROXIMA_BLOB_TEST_REQUIRED_UNSET"));
+    }
+
+    #[test]
+    fn parse_optional_u64_env_is_none_when_unset() {
+        assert_eq!(
+            parse_optional_u64_env("PROXIMA_BLOB_TEST_OPT_U64_UNSET").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn https_endpoint_is_accepted() {
+        validate_endpoint_url("https://s3.eu-central-1.amazonaws.com").expect("https accepted");
+    }
+
+    #[test]
+    fn loopback_http_endpoint_is_accepted() {
+        validate_endpoint_url("http://localhost:9000").expect("localhost http accepted");
+        validate_endpoint_url("http://127.0.0.1:9000").expect("ipv4 loopback http accepted");
+        validate_endpoint_url("http://[::1]:9000").expect("ipv6 loopback http accepted");
+    }
+
+    #[test]
+    fn non_loopback_http_endpoint_is_rejected() {
+        let err = validate_endpoint_url("http://s3.example.com").unwrap_err();
+        let BlobError::Config(msg) = err else {
+            panic!("wrong variant");
+        };
+        assert!(msg.contains("must use https"));
+    }
+
+    #[test]
+    fn schemeless_endpoint_is_rejected() {
+        let err = validate_endpoint_url("s3.example.com").unwrap_err();
+        assert!(matches!(err, BlobError::Config(_)));
     }
 }

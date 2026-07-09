@@ -51,6 +51,15 @@ pub(crate) fn s3_from_lookup(
             "PROXIMA_S3_READ_TTL_SECONDS",
             DEFAULT_READ_TTL_SECONDS,
         )?,
+        max_blob_bytes: lookup("PROXIMA_S3_MAX_BLOB_BYTES")
+            .map(|raw| {
+                raw.trim().parse::<u64>().map_err(|e| {
+                    EmbedError::Config(format!(
+                        "PROXIMA_S3_MAX_BLOB_BYTES must be a non-negative integer: {e}"
+                    ))
+                })
+            })
+            .transpose()?,
     }))
 }
 
