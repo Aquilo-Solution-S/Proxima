@@ -72,7 +72,13 @@ impl McpSessionBindings {
         let mut guard = self.inner.write().await;
         let map = &mut *guard;
         self.prune(map, now);
-        map.insert(session_id, Binding { owner, last_seen: now });
+        map.insert(
+            session_id,
+            Binding {
+                owner,
+                last_seen: now,
+            },
+        );
     }
 
     pub async fn owner_for(&self, session_id: &str) -> Option<Owner> {

@@ -165,8 +165,7 @@ pub async fn ingest_fact_atomic(
     // K7: retry the whole transaction on transient deadlock/serialization.
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
-        let outcome =
-            ingest_fact_command_in_tx(&mut tx, permit, draft, embedding_model_id).await?;
+        let outcome = ingest_fact_command_in_tx(&mut tx, permit, draft, embedding_model_id).await?;
         tx.commit().await.map_err(map_err)?;
         Ok(outcome)
     })

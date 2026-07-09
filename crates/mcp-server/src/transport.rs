@@ -294,9 +294,10 @@ mod tests {
             .layer(axum::middleware::from_fn(enforce_body_limit));
 
         let oversized = vec![0u8; MAX_REQUEST_BODY_BYTES + 1];
-        let stream = futures_util::stream::once(async move {
-            Ok::<_, std::io::Error>(Bytes::from(oversized))
-        });
+        let stream =
+            futures_util::stream::once(
+                async move { Ok::<_, std::io::Error>(Bytes::from(oversized)) },
+            );
         let request = Request::builder()
             .uri("/mcp")
             .body(Body::from_stream(stream))

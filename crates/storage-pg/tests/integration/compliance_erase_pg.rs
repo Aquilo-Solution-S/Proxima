@@ -1074,7 +1074,10 @@ async fn abandoned_group_owner_erase_removes_source_cursors()
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
         };
-        assert_eq!(counts.source_cursors, 1, "owner erase counts the deleted cursor");
+        assert_eq!(
+            counts.source_cursors, 1,
+            "owner erase counts the deleted cursor"
+        );
 
         let remaining: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.source_cursors WHERE owner_id = $1",
@@ -1082,7 +1085,10 @@ async fn abandoned_group_owner_erase_removes_source_cursors()
         .bind(group_uuid)
         .fetch_one(pg.pool_for_tests())
         .await?;
-        assert_eq!(remaining, 0, "the cursor is physically erased with the owner");
+        assert_eq!(
+            remaining, 0,
+            "the cursor is physically erased with the owner"
+        );
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;

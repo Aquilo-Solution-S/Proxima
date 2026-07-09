@@ -384,8 +384,11 @@ fn project_dispatcher_actions(
             .and_then(|property| property.get_mut("enum"))
             .and_then(serde_json::Value::as_array_mut)
     {
-        enum_values
-            .retain(|value| value.as_str().is_some_and(|s| permitted.iter().any(|p| p == s)));
+        enum_values.retain(|value| {
+            value
+                .as_str()
+                .is_some_and(|s| permitted.iter().any(|p| p == s))
+        });
     }
     projected
 }
@@ -642,8 +645,7 @@ mod tests {
         // removed so a dispatcher tool that does not list it as an action field
         // is not tripped by an unexpected-field rejection.
         let args = serde_json::json!({ "action": "set", "model_id": "claude" });
-        let author =
-            author_from_args(&args, None, "unknown", "0").expect("author reads model_id");
+        let author = author_from_args(&args, None, "unknown", "0").expect("author reads model_id");
         assert_eq!(author.model_id, "claude");
 
         let mut args = args;
@@ -724,8 +726,10 @@ mod tests {
         );
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_REQUEST);
         assert!(
-            err.message
-                .contains(&format!("allowed {} actions: set", protocol_tool::CORE_GOAL)),
+            err.message.contains(&format!(
+                "allowed {} actions: set",
+                protocol_tool::CORE_GOAL
+            )),
             "message: {}",
             err.message
         );
@@ -760,8 +764,8 @@ mod tests {
         let args = serde_json::json!({
             "current_root_perspective_memory_id": "not-a-uuid",
         });
-        let err = author_from_args(&args, None, "unknown", "0")
-            .expect_err("invalid uuid metadata fails");
+        let err =
+            author_from_args(&args, None, "unknown", "0").expect_err("invalid uuid metadata fails");
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert!(
             err.message.contains("current_root_perspective_memory_id"),

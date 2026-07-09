@@ -50,10 +50,7 @@ pub(super) async fn citation_of_fact(
         .engine()
         .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
     let citation = engine
-        .read_fact_citation(
-            &ctx.authz,
-            &FactCitationReadRequest { fact_memory_id },
-        )
+        .read_fact_citation(&ctx.authz, &FactCitationReadRequest { fact_memory_id })
         .await?
         .map(|row| fact_citation_output(&row));
     Ok(CitationOfFactOutput {
