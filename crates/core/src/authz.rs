@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use tokio::time::{Instant, Interval, Sleep};
 
-use crate::access::{AccessKind, AccessScope, OwnerRoles};
+use crate::access::{AccessKind, OwnerRoles};
 use crate::auth::{AuthError, Credentials};
 use crate::{Owner, OwnerRef, UserId};
 
@@ -106,11 +106,6 @@ impl ToolScope {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CapabilitySet {
     pub tool_scope: ToolScope,
-    /// The sole surviving per-token memory capability after the RoleSet/grant
-    /// collapse. Unrestricted = acts as owner on every accessible principal;
-    /// Granted = decided by the persisted `group_membership` + owner-row
-    /// reachability rows (the resolved `S_read`/`S_write` sets).
-    pub access: AccessScope,
 }
 
 impl CapabilitySet {
@@ -118,7 +113,6 @@ impl CapabilitySet {
     pub fn all() -> Self {
         Self {
             tool_scope: ToolScope::All,
-            access: AccessScope::Unrestricted,
         }
     }
 }
@@ -189,11 +183,6 @@ impl AuthzContext {
     #[must_use]
     pub fn tool_scope(&self) -> &ToolScope {
         &self.capabilities.tool_scope
-    }
-
-    #[must_use]
-    pub fn access_scope(&self) -> AccessScope {
-        self.capabilities.access
     }
 
     #[must_use]
@@ -345,55 +334,6 @@ impl AuthzContext {
         }
     }
 
-    #[cfg(test)]
-    #[must_use]
-    pub fn scoped_access<I>(
-        owner: Owner,
-        accessible_owners: I,
-        tool_scope: ToolScope,
-        access: AccessScope,
-        auth_path: AuthPath,
-    ) -> Self
-    where
-        I: IntoIterator<Item = OwnerRef>,
-    {
-        let mut accessible_principals = accessible_owners.into_iter().collect::<HashSet<_>>();
-        let subject = match owner {
-            OwnerRef::Personal(subject) => Some(subject),
-            OwnerRef::World | OwnerRef::Group(_) => None,
-        };
-        if matches!(owner, OwnerRef::Personal(_)) {
-            accessible_principals.insert(owner);
-        }
-        Self {
-            identity: Identity {
-                subject,
-                principal: owner,
-                accessible_principals,
-                expires_at: None,
-                auth_epoch: 0,
-            },
-            capabilities: CapabilitySet { tool_scope, access },
-            auth_path,
-            owner_roles: None,
-        }
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub fn from_identity(
-        identity: Identity,
-        capabilities: CapabilitySet,
-        auth_path: AuthPath,
-    ) -> Self {
-        Self {
-            identity,
-            capabilities,
-            auth_path,
-            owner_roles: None,
-        }
-    }
-
     /// Fail-closed, zero-capability context. Carries the owner's
     /// identity for audit but grants no roles, an empty tool palette,
     /// and no accessible principals — every capability check and every
@@ -415,7 +355,6 @@ impl AuthzContext {
             },
             capabilities: CapabilitySet {
                 tool_scope: ToolScope::Palette(Vec::new()),
-                access: AccessScope::Granted,
             },
             auth_path: AuthPath::Denied,
             owner_roles: None,
@@ -672,12 +611,13 @@ mod tests {
     }
 
     #[test]
-    fn single_owner_context_is_unrestricted_and_owner_accessible() {
+    fn single_owner_context_is_server_resolved_and_owner_accessible() {
         let o = owner();
         let ctx = AuthzContext::single_owner(&o, AuthPath::System);
 
         assert_eq!(ctx.auth_path, AuthPath::System);
-        assert_eq!(ctx.capabilities.access, AccessScope::Unrestricted);
+        assert!(ctx.is_server_resolved());
+        assert!(ctx.may_write(&o, AccessKind::Fact));
         assert!(ctx.identity.can_access_principal(&o));
         assert!(ctx.identity.expires_at.is_none());
     }
@@ -690,7 +630,6 @@ mod tests {
         assert_eq!(ctx.auth_path, AuthPath::Denied);
         assert!(ctx.identity.accessible_principals.is_empty());
         assert!(!ctx.identity.can_access_principal(&o));
-        assert_eq!(ctx.capabilities.access, AccessScope::Granted);
         assert!(
             !ctx.capabilities
                 .tool_scope

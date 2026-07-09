@@ -1,7 +1,7 @@
-use crate::access::{AccessKind, AccessScope, Relation, world};
+use crate::OwnerRef;
+use crate::access::{AccessKind, Relation, world};
 use crate::authz::{AuthPath, AuthzContext};
 use crate::error::ProtocolError;
-use crate::{MembershipRow, OwnerRef};
 
 use super::Engine;
 
@@ -46,60 +46,27 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Internal` when storage-backed membership expansion fails.
+    // Resolution is a pure function of the (server-resolved) authorization
+    // context: it stays an Engine method (`&self`) for call-site stability and
+    // because access resolution may consult storage again in future, but the
+    // current body needs neither `self` nor `.await`.
+    #[allow(clippy::unused_self, clippy::unused_async)]
     pub(in crate::engine) async fn resolve_access(
         &self,
         authz: &AuthzContext,
     ) -> Result<AccessSets, ProtocolError> {
-        if authz.auth_path() == AuthPath::Denied {
-            return Ok(AccessSets {
-                read: Vec::new(),
-                write: Vec::new(),
-            });
-        }
-
         let mut access = AccessSets {
             read: Vec::new(),
             write: Vec::new(),
         };
-
-        if authz.is_server_resolved() {
-            push_role_access(&mut access, authz);
+        // Production authorization is uniformly server-resolved: `OwnerRoles`
+        // carry per-owner role ceilings already resolved by the host/OIDC layer
+        // (which itself expands group membership at auth time). A Denied context
+        // — or any context without resolved roles — gets no access. Fail closed.
+        if authz.auth_path() == AuthPath::Denied || !authz.is_server_resolved() {
             return Ok(access);
         }
-
-        if authz.accessible_owners().next().is_none() {
-            return Ok(access);
-        }
-
-        match authz.access_scope() {
-            AccessScope::Granted => {
-                let principal = authz.principal();
-                if matches!(principal, OwnerRef::Personal(_)) && authz.can_access_owner(&principal)
-                {
-                    push_read_owner(&mut access.read, principal);
-                    push_full_authority(&mut access.write, principal);
-
-                    let memberships = self
-                        .storage()
-                        .access_read
-                        .owner_access_read
-                        .resolve_membership(&principal)
-                        .await
-                        .map_err(|err| {
-                            ProtocolError::internal(format!("resolve_membership: {err}"))
-                        })?;
-                    push_memberships(&mut access, memberships);
-                }
-            }
-            AccessScope::Unrestricted => {
-                for principal in authz.accessible_owners() {
-                    push_read_owner(&mut access.read, principal);
-                    push_full_authority(&mut access.write, principal);
-                }
-            }
-        }
-
-        push_read_owner(&mut access.read, world());
+        push_role_access(&mut access, authz);
         Ok(access)
     }
 }
@@ -126,12 +93,6 @@ fn push_read_owner(read: &mut Vec<OwnerRef>, owner: OwnerRef) {
     }
 }
 
-fn push_full_authority(write: &mut Vec<(OwnerRef, Relation)>, principal: OwnerRef) {
-    push_write_owner(write, principal, Relation::Admin);
-    push_write_owner(write, principal, Relation::Editor);
-    push_write_owner(write, principal, Relation::Ingest);
-}
-
 fn push_write_owner(write: &mut Vec<(OwnerRef, Relation)>, owner: OwnerRef, relation: Relation) {
     if is_world(&owner) {
         return;
@@ -141,16 +102,6 @@ fn push_write_owner(write: &mut Vec<(OwnerRef, Relation)>, owner: OwnerRef, rela
         .any(|(candidate, existing)| candidate == &owner && existing == &relation)
     {
         write.push((owner, relation));
-    }
-}
-
-fn push_memberships(access: &mut AccessSets, memberships: Vec<MembershipRow>) {
-    for MembershipRow { group, relation } in memberships {
-        let owner = OwnerRef::Group(group);
-        push_read_owner(&mut access.read, owner);
-        if relation != Relation::Viewer && !is_world(&owner) {
-            push_write_owner(&mut access.write, owner, relation);
-        }
     }
 }
 
@@ -984,69 +935,6 @@ pub(in crate::engine) mod tests {
     }
 
     #[tokio::test]
-    async fn granted_context_resolves_read_set_and_write_set() {
-        let p = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-        let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let g1_owner = OwnerRef::Group(g1);
-        let world_owner = world();
-        let engine = Engine::compose_or_panic_for_tests(
-            MembershipStorage {
-                member: p,
-                group: g1,
-                membership_relation: Relation::Viewer,
-                home_owner: None,
-                entity_readable: false,
-                memory_kind: None,
-            }
-            .storage_ports(),
-            |_| {},
-        );
-        let authz = AuthzContext::scoped_access(
-            p,
-            [p],
-            ToolScope::All,
-            AccessScope::Granted,
-            AuthPath::HostBearer,
-        );
-
-        let access = engine
-            .resolve_access(&authz)
-            .await
-            .expect("granted access should resolve");
-
-        assert!(access.read_owners().contains(&p));
-        assert!(access.read_owners().contains(&g1_owner));
-        assert!(access.read_owners().contains(&world_owner));
-        assert!(access.can_write(&p, Relation::Editor));
-        assert!(!access.can_write(&g1_owner, Relation::Editor));
-        assert!(!access.can_write(&g1_owner, Relation::Viewer));
-        assert!(!access.can_write(&world_owner, Relation::Viewer));
-    }
-
-    #[tokio::test]
-    async fn granted_context_does_not_treat_foreign_accessible_personal_owner_as_role() {
-        let subject = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-        let foreign = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
-        let authz = AuthzContext::scoped_access(
-            subject,
-            [foreign],
-            ToolScope::All,
-            AccessScope::Granted,
-            AuthPath::HostBearer,
-        );
-
-        let access = engine
-            .resolve_access(&authz)
-            .await
-            .expect("foreign accessible owner should deny without storage lookup");
-
-        assert!(!access.read_owners().contains(&foreign));
-        assert!(access.read_owners().contains(&world()));
-        assert!(!access.can_write(&foreign, Relation::Admin));
-    }
-
-    #[tokio::test]
     async fn server_resolved_context_uses_owner_role_ceilings() {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let personal = OwnerRef::Personal(subject);
@@ -1070,75 +958,5 @@ pub(in crate::engine) mod tests {
         assert!(access.can_write(&group, Relation::Editor));
         assert!(access.can_write(&group, Relation::Ingest));
         assert!(!access.can_write(&world(), Relation::Ingest));
-    }
-
-    #[tokio::test]
-    async fn unrestricted_context_keeps_world_readable_but_never_writable() {
-        let p = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-        let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let world_owner = world();
-        let engine = Engine::compose_or_panic_for_tests(
-            MembershipStorage {
-                member: p,
-                group: g1,
-                membership_relation: Relation::Viewer,
-                home_owner: None,
-                entity_readable: false,
-                memory_kind: None,
-            }
-            .storage_ports(),
-            |_| {},
-        );
-        let authz = AuthzContext::scoped_access(
-            p,
-            [p, world_owner],
-            ToolScope::All,
-            AccessScope::Unrestricted,
-            AuthPath::HostBearer,
-        );
-
-        let access = engine
-            .resolve_access(&authz)
-            .await
-            .expect("unrestricted access should resolve");
-
-        assert!(access.read_owners().contains(&world_owner));
-        assert!(access.can_write(&p, Relation::Editor));
-        assert!(!access.can_write(&world_owner, Relation::Admin));
-        assert!(!access.can_write(&world_owner, Relation::Editor));
-        assert!(!access.can_write(&world_owner, Relation::Ingest));
-    }
-
-    #[tokio::test]
-    async fn granted_world_membership_is_read_only() {
-        let p = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-        let world_owner = world();
-        let engine = Engine::compose_or_panic_for_tests(
-            MembershipStorage {
-                member: p,
-                group: crate::WORLD_GROUP_ID,
-                membership_relation: Relation::Editor,
-                home_owner: None,
-                entity_readable: false,
-                memory_kind: None,
-            }
-            .storage_ports(),
-            |_| {},
-        );
-        let authz = AuthzContext::scoped_access(
-            p,
-            [p],
-            ToolScope::All,
-            AccessScope::Granted,
-            AuthPath::HostBearer,
-        );
-
-        let access = engine
-            .resolve_access(&authz)
-            .await
-            .expect("granted access should resolve");
-
-        assert!(access.read_owners().contains(&world_owner));
-        assert!(!access.can_write(&world_owner, Relation::Editor));
     }
 }

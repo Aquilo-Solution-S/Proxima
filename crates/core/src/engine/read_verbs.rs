@@ -431,8 +431,7 @@ fn storage_error(context: &str, err: &StorageError) -> ProtocolError {
 
 #[cfg(test)]
 mod tests {
-    use crate::access::AccessScope;
-    use crate::authz::{AuthPath, AuthzContext, ToolScope};
+    use crate::authz::{AuthPath, AuthzContext};
     use crate::error::ErrorCode;
     use crate::verbs::query::{
         MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
@@ -487,13 +486,7 @@ mod tests {
     }
 
     fn granted_authz(owner: &OwnerRef) -> ResolvedAuthz {
-        AuthzContext::scoped_access(
-            *owner,
-            [*owner],
-            ToolScope::All,
-            AccessScope::Granted,
-            AuthPath::HostBearer,
-        )
+        AuthzContext::single_owner(owner, AuthPath::HostBearer)
     }
 
     #[tokio::test]

@@ -262,8 +262,11 @@ impl PgStorage {
         // P1.4 (analysis 2026-07-05): a conservative per-statement timeout bounds
         // a runaway query (e.g. a pathological search) so it cannot pin a pool
         // connection indefinitely and starve the gateway. Generous by default
-        // (5 min — only a truly stuck statement hits it, so bulk compliance
-        // erase/migrations are unaffected); tune or disable (0) per deployment.
+        // (5 min — only a truly stuck statement hits it); tune or disable (0)
+        // per deployment. The two operations that can legitimately exceed it —
+        // schema migrations and bulk compliance erase — explicitly opt out
+        // (`run_migrations` runs on a detached timeout-free connection; the erase
+        // transaction issues `SET LOCAL statement_timeout = 0`).
         let statement_timeout_ms = env_u64_or("PROXIMA_PG_STATEMENT_TIMEOUT_MS", 300_000);
         if statement_timeout_ms > 0 {
             opts = opts.options([("statement_timeout", statement_timeout_ms.to_string())]);
@@ -414,7 +417,20 @@ impl PgStorage {
     /// recorded checksum, etc.).
     pub async fn run_migrations(&self) -> Result<(), StorageError> {
         ensure_v004_baseline_compatible(&self.pool).await?;
-        core_migrator().run(&self.pool).await.map_err(internal)?;
+        // P1.4 (analysis 2026-07-05): the pool's default `statement_timeout`
+        // bounds request-serving queries, but a schema migration (CREATE INDEX,
+        // backfill) may legitimately run longer than that — aborting one
+        // mid-flight would leave the schema half-migrated. Run migrations on a
+        // dedicated connection with the timeout disabled, then detach it so the
+        // override is never returned to the shared pool.
+        let mut conn = self.pool.acquire().await.map_err(internal)?;
+        sqlx::query("SET statement_timeout = 0")
+            .execute(&mut *conn)
+            .await
+            .map_err(internal)?;
+        let migrated = core_migrator().run(&mut *conn).await.map_err(internal);
+        conn.detach();
+        migrated?;
         ensure_pgvector_runtime_compatible(&self.pool).await?;
         Ok(())
     }

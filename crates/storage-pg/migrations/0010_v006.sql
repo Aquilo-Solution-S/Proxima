@@ -41,25 +41,40 @@ DROP INDEX IF EXISTS proxima_core.idx_goals_owner_state;        -- prefix of idx
 DROP INDEX IF EXISTS proxima_core.idx_memories_retention_due;
 
 -- ---------------------------------------------------------------------------
--- K6: DB-hard append-only for `memories`. Rust convention plus the (line-scoped,
--- easy-to-evade) guardrail script previously protected these columns; this
--- BEFORE UPDATE trigger enforces content, identity, and provenance immutability
--- at the database, so an admin script or faulty migration cannot silently
--- rewrite a Fact's text/payload/operator/schema — the substantive append-only
--- guarantee (analysis 2026-07-05 K6).
+-- K6: DB-hard append-only for Facts, Abstractions, and Perspectives. Rust
+-- convention plus the (line-scoped, easy-to-evade) guardrail script previously
+-- protected these rows; these BEFORE UPDATE triggers enforce content, identity,
+-- and provenance immutability at the database, so an admin script or faulty
+-- migration cannot silently rewrite a Fact's text/payload/operator/schema —
+-- the substantive append-only guarantee (analysis 2026-07-05 K6).
 --
--- The trigger allows exactly the columns a legitimate write mutates:
--- fact_entity_id (post-ingest link), owner_kind/owner_id (publish-to-World
--- transfer), citation_mapping_id (inline citation attach), supersedes
--- (compliance erase clears it), tombstoned_at (tombstone).
+-- Two layers:
+--   1. `memories` (the F/A/P row) — a column-whitelist trigger that allows
+--      exactly the columns a legitimate write mutates: fact_entity_id
+--      (post-ingest link), owner_kind/owner_id (publish-to-World transfer),
+--      citation_mapping_id (inline citation attach), supersedes (compliance
+--      erase clears it), tombstoned_at (tombstone). Every content, identity,
+--      and provenance column is frozen.
 --
--- `created_at` is DELIBERATELY EXCLUDED: it is temporal metadata, not content.
--- Production never updates it (INSERT sets now() and no code path mutates it),
--- but test harnesses must fabricate temporal scenarios — ordering, staleness,
--- and the fact-entity head `current_created_at` guard — for which there is no
--- production-API path to a custom `created_at`. Making it DB-hard would break
--- that fabrication with no legitimate substitute, while adding no content-
--- integrity protection. It remains guarded by convention + the guardrail script.
+--      `created_at` is DELIBERATELY EXCLUDED. It is temporal metadata, not
+--      content, and no production path mutates it (INSERT sets now(); an
+--      independent adversarial review confirmed zero production UPDATE writes
+--      it). Test harnesses, however, must fabricate temporal scenarios —
+--      ordering, staleness, retention/head-guard windows — for which there is
+--      no production-API path to a custom created_at; freezing it would break
+--      that fabrication while adding no content-integrity protection. It stays
+--      guarded by convention + the line-scoped guardrail script.
+--   2. The typed payload SIDECAR tables (utterance_v1, agent_note_v1, …) — a
+--      generic append-only trigger that rejects EVERY column UPDATE, because a
+--      Fact/Abstraction/Perspective payload is never rewritten in place (a new
+--      observation is a new row). Goal sidecars (task_goal_v1) are EXCLUDED:
+--      goals are the one mutable entity (state transitions). Compliance erase
+--      uses DELETE, which BEFORE UPDATE triggers do not intercept, so
+--      abandonment-only hard delete is unaffected.
+--
+-- Flavor Fact/Abstraction/Perspective/edge/citation sidecar tables must attach
+-- `proxima_core.enforce_row_append_only` in their own migration (see
+-- flavors/code baseline); the reusable function lives here so they can.
 -- ---------------------------------------------------------------------------
 CREATE FUNCTION proxima_core.memories_enforce_immutable() RETURNS trigger
     LANGUAGE plpgsql
@@ -87,3 +102,37 @@ $$;
 CREATE TRIGGER memories_enforce_immutable
     BEFORE UPDATE ON proxima_core.memories
     FOR EACH ROW EXECUTE FUNCTION proxima_core.memories_enforce_immutable();
+
+-- Generic append-only guard for immutable typed payload sidecars. Any UPDATE
+-- raises; INSERT (incl. ON CONFLICT DO NOTHING) and DELETE (compliance erase)
+-- are untouched.
+CREATE FUNCTION proxima_core.enforce_row_append_only() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    RAISE EXCEPTION 'append-only: % is immutable (UPDATE rejected)', TG_TABLE_NAME;
+END;
+$$;
+
+CREATE TRIGGER agent_note_v1_append_only BEFORE UPDATE ON proxima_core.agent_note_v1
+    FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+CREATE TRIGGER utterance_v1_append_only BEFORE UPDATE ON proxima_core.utterance_v1
+    FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+CREATE TRIGGER mcp_call_logged_v1_append_only BEFORE UPDATE ON proxima_core.mcp_call_logged_v1
+    FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+CREATE TRIGGER goal_activated_v1_append_only BEFORE UPDATE ON proxima_core.goal_activated_v1
+    FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+CREATE TRIGGER goal_paused_v1_append_only BEFORE UPDATE ON proxima_core.goal_paused_v1
+    FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+CREATE TRIGGER goal_achieved_v1_append_only BEFORE UPDATE ON proxima_core.goal_achieved_v1
+    FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+CREATE TRIGGER goal_abandoned_v1_append_only BEFORE UPDATE ON proxima_core.goal_abandoned_v1
+    FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+CREATE TRIGGER agent_derivation_v1_append_only BEFORE UPDATE ON proxima_core.agent_derivation_v1
+    FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+CREATE TRIGGER agent_link_v1_append_only BEFORE UPDATE ON proxima_core.agent_link_v1
+    FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+CREATE TRIGGER cited_uploaded_blob_v1_append_only BEFORE UPDATE ON proxima_core.cited_uploaded_blob_v1
+    FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+CREATE TRIGGER cited_mcp_call_io_v1_append_only BEFORE UPDATE ON proxima_core.cited_mcp_call_io_v1
+    FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
