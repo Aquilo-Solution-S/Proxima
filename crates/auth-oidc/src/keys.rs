@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use jsonwebtoken::DecodingKey;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::config::{OidcConfigError, validate_https_url};
 
@@ -104,6 +104,8 @@ pub struct HttpJwksResolver {
     last_refresh: RwLock<Option<Instant>>,
     /// Last refetch attempt (success or failure); drives unknown-kid cooldown.
     last_attempt: RwLock<Option<Instant>>,
+    /// Serializes the cooldown check, attempt mark, and outbound JWKS fetch.
+    refresh_gate: Mutex<()>,
 }
 
 impl std::fmt::Debug for HttpJwksResolver {
@@ -131,6 +133,7 @@ impl HttpJwksResolver {
             cache: RwLock::new(HashMap::new()),
             last_refresh: RwLock::new(None),
             last_attempt: RwLock::new(None),
+            refresh_gate: Mutex::new(()),
         })
     }
 
@@ -191,18 +194,9 @@ impl HttpJwksResolver {
         Ok(())
     }
 
-    /// Whether a refresh is permitted: never fetched, or the last successful
-    /// refresh is at least `min_age` old. Bounds TTL-driven refetches.
-    async fn refresh_due(&self, min_age: Duration) -> bool {
-        match *self.last_refresh.read().await {
-            Some(last) => last.elapsed() >= min_age,
-            None => true,
-        }
-    }
-
-    /// Whether another outbound JWKS fetch is allowed after any prior attempt.
-    async fn attempt_due(&self, min_age: Duration) -> bool {
-        match *self.last_attempt.read().await {
+    /// Whether an optional clock is unset or at least `min_age` old.
+    async fn clock_due(clock: &RwLock<Option<Instant>>, min_age: Duration) -> bool {
+        match *clock.read().await {
             Some(last) => last.elapsed() >= min_age,
             None => true,
         }
@@ -234,12 +228,24 @@ impl KeyResolver for HttpJwksResolver {
             // On success, resolve strictly against the fresh set so a rotated-
             // out kid stops validating; on a refresh error, degrade to the
             // still-cached key rather than failing an otherwise-valid request.
-            if self.refresh_due(JWKS_MAX_AGE).await {
-                if !self.attempt_due(JWKS_REFRESH_COOLDOWN).await {
+            if Self::clock_due(&self.last_refresh, JWKS_MAX_AGE).await {
+                let _refresh_guard = self.refresh_gate.lock().await;
+
+                // Another task may have refreshed while this task waited for
+                // the gate. Resolve against that fresh set, including a kid
+                // that disappeared during rotation.
+                if !Self::clock_due(&self.last_refresh, JWKS_MAX_AGE).await {
+                    return self
+                        .cache
+                        .read()
+                        .await
+                        .get(kid)
+                        .cloned()
+                        .ok_or(KeyError::UnknownKid);
+                }
+                if !Self::clock_due(&self.last_attempt, JWKS_REFRESH_COOLDOWN).await {
                     tracing::warn!("jwks cache past max age but refresh throttled");
-                    return Err(KeyError::Fetch(
-                        "jwks cache stale and refresh throttled".to_string(),
-                    ));
+                    return Ok(k);
                 }
                 self.mark_attempt().await;
                 match self.refresh().await {
@@ -254,8 +260,8 @@ impl KeyResolver for HttpJwksResolver {
                             .ok_or(KeyError::UnknownKid);
                     }
                     Err(err) => {
-                        tracing::warn!(error = %err, "jwks ttl refresh failed; rejecting stale cache");
-                        return Err(err);
+                        tracing::warn!(error = %err, "jwks ttl refresh failed; using stale cached key");
+                        return Ok(k);
                     }
                 }
             }
@@ -263,7 +269,13 @@ impl KeyResolver for HttpJwksResolver {
         }
         // Cache miss: refetch at most once per cooldown so a stream of
         // unknown-kid tokens can't drive one upstream JWKS fetch per request.
-        if !self.attempt_due(JWKS_REFRESH_COOLDOWN).await {
+        let _refresh_guard = self.refresh_gate.lock().await;
+
+        // Another task may have fetched this kid while this task waited.
+        if let Some(key) = self.cache.read().await.get(kid).cloned() {
+            return Ok(key);
+        }
+        if !Self::clock_due(&self.last_attempt, JWKS_REFRESH_COOLDOWN).await {
             return Err(KeyError::UnknownKid);
         }
         self.mark_attempt().await;
@@ -284,7 +296,8 @@ mod http_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
-    use axum::{Router, routing::get};
+    use axum::{Router, http::StatusCode, routing::get};
+    use tokio::sync::Barrier;
 
     use crate::config::{OidcConfigError, validate_https_url};
 
@@ -296,6 +309,29 @@ mod http_tests {
     // public JWK from a mock IdP and resolves it; nothing signs here.
     const TEST_JWK_N: &str = "vcvNMtDvpJExXOyytyqUOWhX2sxa-Xtxd4KmfJ05-iPgT_RiyZzx3UoTuJYtvDCCRcXKU13Rn8cIc0ushWlKpLDW08U4r9bBVctcajpnOumCcuIvnM1_HEiM-WuYPRFk0I5h--ueLA0KhIfPs0ORLpqsvF0XIuL6_uZtObrH9wxPMmG4r5Hh7h3Gm5PchY0R8H7VrEOm79fnra7OGg5nh7XkmStnZnwozODW0FFnpW-kMeCK2-2fzmSWg1A_clFdicji1-xIvk7Wog9CVsZZK9iRHgAIxmsU-Iawb_Wwlwuu-_gIZWFkund24iA2qLktFx_39CORZqfFRNiIsHSvIQ";
     const TEST_JWK_E: &str = "AQAB";
+
+    fn test_key() -> Arc<jsonwebtoken::DecodingKey> {
+        Arc::new(
+            jsonwebtoken::DecodingKey::from_rsa_components(TEST_JWK_N, TEST_JWK_E)
+                .expect("valid baked test key"),
+        )
+    }
+
+    async fn seed_stale_key(
+        resolver: &HttpJwksResolver,
+        kid: &str,
+    ) -> Arc<jsonwebtoken::DecodingKey> {
+        let key = test_key();
+        resolver
+            .cache
+            .write()
+            .await
+            .insert(kid.to_string(), Arc::clone(&key));
+        *resolver.last_refresh.write().await = Instant::now()
+            .checked_sub(JWKS_MAX_AGE)
+            .and_then(|time| time.checked_sub(Duration::from_secs(1)));
+        key
+    }
 
     #[tokio::test]
     async fn discovers_and_loads_jwks() {
@@ -381,6 +417,35 @@ mod http_tests {
         (issuer, fetches, server)
     }
 
+    /// Serves a failing explicit JWKS endpoint and counts fetch attempts.
+    async fn spawn_failing_jwks() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("read listener addr");
+        let issuer = format!("http://{addr}");
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route(
+            "/keys",
+            get({
+                let fetches = Arc::clone(&fetches);
+                move || {
+                    let fetches = Arc::clone(&fetches);
+                    async move {
+                        fetches.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::SERVICE_UNAVAILABLE
+                    }
+                }
+            }),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("mock idp server failed");
+        });
+        (issuer, fetches, server)
+    }
+
     #[tokio::test]
     async fn non_rsa_entry_does_not_break_rsa_resolution() {
         // A mixed set: an EC key and an OKP key (each lacking n/e) alongside
@@ -448,6 +513,94 @@ mod http_tests {
         assert!(resolver.key_for("k1").await.is_ok());
         assert_eq!(fetches.load(Ordering::SeqCst), 2);
 
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn stale_cache_uses_cached_key_when_refresh_fails() {
+        let (issuer, fetches, server) = spawn_failing_jwks().await;
+        let resolver = HttpJwksResolver::new(issuer.clone(), Some(format!("{issuer}/keys")))
+            .expect("loopback http allowed in tests");
+        let cached = seed_stale_key(&resolver, "k1").await;
+        *resolver.last_attempt.write().await = Instant::now()
+            .checked_sub(JWKS_REFRESH_COOLDOWN)
+            .and_then(|time| time.checked_sub(Duration::from_secs(1)));
+
+        let returned_key = resolver
+            .key_for("k1")
+            .await
+            .expect("stale cached key must survive an IdP outage");
+
+        assert!(Arc::ptr_eq(&returned_key, &cached));
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn stale_cache_uses_cached_key_when_refresh_is_throttled() {
+        let jwks = serde_json::json!({ "keys": [] }).to_string();
+        let (issuer, fetches, server) = spawn_mock_idp(jwks).await;
+        let resolver = HttpJwksResolver::new(issuer.clone(), Some(format!("{issuer}/keys")))
+            .expect("loopback http allowed in tests");
+        let cached = seed_stale_key(&resolver, "k1").await;
+        *resolver.last_attempt.write().await = Some(Instant::now());
+
+        let returned_key = resolver
+            .key_for("k1")
+            .await
+            .expect("throttling must not discard a stale cached key");
+
+        assert!(Arc::ptr_eq(&returned_key, &cached));
+        assert_eq!(fetches.load(Ordering::SeqCst), 0);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cache_miss_returns_fetch_error_when_refresh_fails() {
+        let (issuer, fetches, server) = spawn_failing_jwks().await;
+        let resolver = HttpJwksResolver::new(issuer.clone(), Some(format!("{issuer}/keys")))
+            .expect("loopback http allowed in tests");
+
+        assert!(matches!(
+            resolver.key_for("missing").await,
+            Err(KeyError::Fetch(_))
+        ));
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn concurrent_cache_misses_share_one_refresh_attempt() {
+        const CALLERS: usize = 16;
+
+        let jwks = serde_json::json!({
+            "keys": [{ "kid": "k1", "kty": "RSA", "n": TEST_JWK_N, "e": TEST_JWK_E }]
+        })
+        .to_string();
+        let (issuer, fetches, server) = spawn_mock_idp(jwks).await;
+        let resolver = Arc::new(
+            HttpJwksResolver::new(issuer.clone(), Some(format!("{issuer}/keys")))
+                .expect("loopback http allowed in tests"),
+        );
+        let barrier = Arc::new(Barrier::new(CALLERS + 1));
+        let mut tasks = Vec::with_capacity(CALLERS);
+        for _ in 0..CALLERS {
+            let resolver = Arc::clone(&resolver);
+            let barrier = Arc::clone(&barrier);
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                resolver.key_for("missing").await
+            }));
+        }
+
+        barrier.wait().await;
+        for task in tasks {
+            assert!(matches!(
+                task.await.expect("key lookup task completed"),
+                Err(KeyError::UnknownKid)
+            ));
+        }
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
         server.abort();
     }
 
