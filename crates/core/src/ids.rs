@@ -200,7 +200,7 @@ impl SourceId {
     }
 }
 
-// M2.5 — GoalWrite verb newtypes.
+// GoalWrite verb newtypes.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct OperatorId(uuid::Uuid);

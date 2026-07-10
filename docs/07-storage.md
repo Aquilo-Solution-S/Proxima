@@ -68,8 +68,8 @@ Rows that carry an `Owner` store two identity columns:
 | `owner_kind` | `world`, `personal`, or `group` |
 | `owner_id` | `NULL` for `world`; UserId or GroupId otherwise |
 
-`OwnerRef` is the storage owner handle (doc 01 §Owner; Track B / S0
-removed the tenant field from Core — no org column exists). Access
+`OwnerRef` is the storage owner handle (doc 01 §Owner; the Owner=OwnerRef
+collapse removed the tenant field from Core — no org column exists). Access
 predicates and identity comparisons (operator gates, edge scoping, dedup
 keys) use `owner_kind` + nullable `owner_id` with null-safe equality.
 Edges are source-owned; target rendering is separately redacted.

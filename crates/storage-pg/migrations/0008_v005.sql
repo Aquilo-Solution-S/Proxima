@@ -16,7 +16,7 @@
 -- numbers are burned forever; the core sequence continues at 8.
 
 -- ---------------------------------------------------------------------------
--- Task 4: publish-to-World constraint correction
+-- Publish-to-World constraint correction
 -- ---------------------------------------------------------------------------
 -- Kernel law: publish-to-World is an owner TRANSFER to OwnerRef::World — not
 -- an ACL flag, not a share row. World is universally readable and never a
@@ -58,7 +58,7 @@ COMMENT ON TABLE proxima_core.goals IS
   'The Goal node kind (desired end-states), kept out of memories because it carries a lifecycle and authorship model. Goal topology is ordinary proxima_core.edges. See docs/06-goals-and-self.md. Unlike every owner-shadow table (edges, embeddings, fact_receipts, change_event, ...), this table intentionally carries no world_not_write_owner_chk since v0.0.5: owner_kind = world is the persisted result of a deliberate publish-to-World owner transfer (Engine::publish_to_world), not a fresh write under World. goals_owner_ref_shape_chk still enforces the owner_kind/owner_id shape; the engine authz layer (authorize_write) is the sole enforcement point blocking fresh writes with a World owner.';
 
 -- ---------------------------------------------------------------------------
--- Task 11: owner-scoped opaque source cursors
+-- Owner-scoped opaque source cursors
 -- ---------------------------------------------------------------------------
 -- Crash-safe resume positions for host-owned evidence projectors. Cursor bytes
 -- are opaque to Proxima and round-trip as bytea; only owner/source identity and
@@ -79,7 +79,7 @@ COMMENT ON TABLE proxima_core.source_cursors IS
   'Owner-scoped opaque source resume cursors for host projectors. Proxima persists and returns cursor bytea verbatim; it never interprets, validates, decodes, normalizes, or derives ordering from cursor bytes. Fresh writes remain engine-authorized owner writes; World cannot own cursor rows.';
 
 -- ---------------------------------------------------------------------------
--- Task 12: owner-scoped legal/security holds
+-- Owner-scoped legal/security holds
 -- ---------------------------------------------------------------------------
 -- A hold is an operator-controlled legal instrument that narrows physical
 -- destruction permission only. It never changes abandonment law, reads, writes,

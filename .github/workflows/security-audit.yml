@@ -1,4 +1,4 @@
-# Scheduled RUSTSEC advisory scan (analysis 2026-07-05 F9).
+# Scheduled RUSTSEC advisory scan.
 #
 # The `deny` job in ci.yml runs cargo-deny only on push/PR, so an advisory
 # published between pushes stays invisible until the next commit. This cron

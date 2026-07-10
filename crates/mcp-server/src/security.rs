@@ -560,7 +560,7 @@ mod tests {
         app.oneshot(request).await.unwrap().status()
     }
 
-    // P3: a bad token yields 401 even when a valid owner is selected.
+    // A bad token yields 401 even when a valid owner is selected.
     #[tokio::test]
     async fn bad_token_with_valid_owner_is_unauthorized() {
         let owner = user_owner();
@@ -572,7 +572,7 @@ mod tests {
         assert_eq!(status_of(app, request).await, StatusCode::UNAUTHORIZED);
     }
 
-    // P3 + P1.6: a bad token with a present-but-unbound session id yields
+    // A bad token with a present-but-unbound session id yields
     // 401 (not 404 and not 403) — token validity is checked first.
     #[tokio::test]
     async fn bad_token_with_unbound_session_is_unauthorized() {
@@ -585,7 +585,7 @@ mod tests {
         assert_eq!(status_of(app, request).await, StatusCode::UNAUTHORIZED);
     }
 
-    // P1.6: a valid token with a present-but-unbound session id yields 404
+    // A valid token with a present-but-unbound session id yields 404
     // so a standard Streamable-HTTP client re-initializes.
     #[tokio::test]
     async fn valid_token_with_unbound_session_is_not_found() {

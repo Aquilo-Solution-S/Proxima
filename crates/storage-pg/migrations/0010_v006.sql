@@ -4,10 +4,10 @@
 -- edit). 0008/0009 are the prior append-only lanes. Versions 2..7 are
 -- RETIRED_PRE_V004_MIGRATION_VERSIONS (crates/storage-pg/src/lib.rs); SQLx
 -- derives the version from the filename prefix, so the core sequence continues
--- at 10. Findings from the 2026-07-05 analysis (.local/analyse-2026-07-05).
+-- at 10.
 
 -- ---------------------------------------------------------------------------
--- P1.1: embedding-job retry backoff.
+-- Embedding-job retry backoff.
 -- `fail_embedding_job` stamps `next_attempt_at` with exponential backoff and
 -- the claim query gates on it, so a transient provider outage (Mistral 5xx)
 -- no longer burns all attempts in a hot re-claim loop. NULL means immediately
@@ -17,7 +17,7 @@ ALTER TABLE proxima_core.embedding_jobs
     ADD COLUMN next_attempt_at timestamp with time zone;
 
 -- ---------------------------------------------------------------------------
--- P3-redundant-idx: drop 8 prefix-redundant btree indexes on the hottest
+-- Drop prefix-redundant btree indexes on the hottest write tables.
 -- write tables. Each is a strict prefix of a same-predicate superset
 -- (…_created / …_state_created), so the planner still serves prefix lookups
 -- from the superset; dropping them cuts per-insert index maintenance. Mirrors
@@ -33,7 +33,7 @@ DROP INDEX IF EXISTS proxima_core.idx_edges_target_fact_entity; -- prefix of idx
 DROP INDEX IF EXISTS proxima_core.idx_goals_owner_state;        -- prefix of idx_goals_owner_state_created
 
 -- ---------------------------------------------------------------------------
--- P1.8: drop the dead retention partial index. Its only consumer was the
+-- Drop the dead retention partial index.
 -- retention sweep deleted in 4940295e (2026-07-01); owner fact-retention is
 -- now consumer-less config metadata (enforcement deferred), so this index only
 -- adds insert cost.
@@ -41,12 +41,12 @@ DROP INDEX IF EXISTS proxima_core.idx_goals_owner_state;        -- prefix of idx
 DROP INDEX IF EXISTS proxima_core.idx_memories_retention_due;
 
 -- ---------------------------------------------------------------------------
--- K6: DB-hard append-only for Facts, Abstractions, and Perspectives. Rust
+-- DB-hard append-only for Facts, Abstractions, and Perspectives. Rust
 -- convention plus the (line-scoped, easy-to-evade) guardrail script previously
 -- protected these rows; these BEFORE UPDATE triggers enforce content, identity,
 -- and provenance immutability at the database, so an admin script or faulty
 -- migration cannot silently rewrite a Fact's text/payload/operator/schema —
--- the substantive append-only guarantee (analysis 2026-07-05 K6).
+-- the substantive append-only guarantee.
 --
 -- Two layers:
 --   1. `memories` (the F/A/P row) — a column-whitelist trigger that allows

@@ -163,7 +163,7 @@ async fn prepare_then_complete_then_read_roundtrip() {
 
 #[tokio::test]
 async fn purge_owner_objects_removes_completed_blob() {
-    // P1.7 (analysis 2026-07-05): owner erasure must physically remove the
+    // Owner erasure must physically remove the
     // owner's S3 objects in-band. Opt-in, needs MinIO like the roundtrip above.
     if !S3RuntimeConfig::present_in_env() {
         eprintln!("skipped: PROXIMA_S3_* unset (run MinIO to enable)");
@@ -252,7 +252,7 @@ async fn purge_owner_objects_removes_completed_blob() {
     drop_db(&db_name).await.expect("drop db");
 }
 
-/// P1.7: on a VERSIONED bucket (the deployment our runbook recommends), a
+/// On a VERSIONED bucket (the deployment our runbook recommends), a
 /// key-only delete only writes a delete marker and leaves the PII object as a
 /// recoverable noncurrent version. The purge must delete by `(key, version_id)`
 /// so no version survives an Art. 17 owner erasure.

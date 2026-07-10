@@ -74,7 +74,7 @@ fn calls_edge_natural_key(
 
 /// Deterministic `edge_id` for a `proxima-code/calls` edge: the v5 of
 /// the natural key under [`PROXIMA_CODE_EDGE_NAMESPACE`]. Org-free
-/// (Track B / S0) — the key folds the owner *principal* only.
+/// Org-free: the key folds the owner *principal* only.
 fn calls_edge_id(
     owner: &Owner,
     source_memory_id: uuid::Uuid,
@@ -149,8 +149,8 @@ mod tests {
     use proxima_core::{OwnerRef, UserId};
     use uuid::Uuid;
 
-    /// Pins the org-free call-edge `edge_id` against drift. Track B / S0:
-    /// the natural key folds the owner *principal* ‖ relation ‖ endpoints
+    /// Pins the org-free call-edge `edge_id` against drift. The natural key folds
+    /// the owner *principal* ‖ relation ‖ endpoints
     /// ‖ chunk-relative callsite — no org. A fixed input must reproduce
     /// exactly this uuid so re-ingested call sites dedup by `edge_id`.
     #[test]

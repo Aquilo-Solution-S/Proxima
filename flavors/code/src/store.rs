@@ -6,7 +6,7 @@ use sqlx::PgPool;
 
 /// Private code-flavor storage service passed to tools by the host.
 ///
-/// All authorized-read logic lives in `proxima::flavor` (v0.0.5 Task 5);
+/// All authorized-read logic lives in `proxima::flavor`;
 /// the methods here are thin delegating wrappers so call sites across this
 /// crate keep a stable `pool.authorized_*(...)` shape while `pool()` itself
 /// stays private — no `PgPool` and no `proxima_core.*` SQL ever leaves this

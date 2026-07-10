@@ -21,7 +21,7 @@ pub async fn persist_mcp_call_atomic(
     permit: &OwnerWritePermit,
     input: &McpCallLogInput,
 ) -> Result<McpCallLogOutcome, StorageError> {
-    // K7: retry the whole transaction on a transient deadlock/serialization
+    // Retry the whole transaction on a transient deadlock/serialization
     // failure (this is the per-MCP-call write path, the hottest goal-adjacent
     // writer), so a 40P01 does not surface to the host as a bare Internal.
     with_bounded_retry(move || async move {

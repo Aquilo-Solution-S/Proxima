@@ -88,7 +88,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
 
         assert_owner_ref_constraints(pg.pool_for_tests()).await?;
 
-        // S0 (Owner = OwnerRef collapse, Track B): the full-collapse decision
+        // After the Owner = OwnerRef collapse, the full-collapse decision
         // removes the legacy owner org column from proxima_code too. Keystone gate for the
         // flavor DDL-drop migration — a missed column would silently keep org
         // in the flavor schema and pass every check above.
@@ -100,7 +100,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
         .await?;
         assert_eq!(
             org_cols.0, 0,
-            "legacy owner org column must be absent from proxima_code after S0; found {}",
+            "legacy owner org column must be absent from proxima_code after Owner=OwnerRef collapse; found {}",
             org_cols.0
         );
 

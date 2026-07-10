@@ -5,7 +5,7 @@
 //! optional typed sidecar row (keyed on `edge_id`) plus the
 //! `EdgeAppend` change_event row, all in a single transaction.
 //!
-//! Used by M5.5 typed F-layer edges (e.g. `proxima-code/calls`).
+//! Used by typed F-layer edges (e.g. `proxima-code/calls`).
 
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{

@@ -28,7 +28,7 @@ impl FactIngestPort for PgStorage {
         sidecar_payload: &SidecarPayload,
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
-        // K7: retry the whole begin→body→commit on transient deadlock/
+        // Retry the whole begin→body→commit on transient deadlock/
         // serialization. The typed sidecar is data (`SidecarPayload`), so each
         // attempt re-clones it and rebuilds the insert closure — unlike an
         // `FnOnce` closure, this is safely re-runnable.
@@ -63,7 +63,7 @@ impl FactIngestPort for PgStorage {
         sidecar_payload: &SidecarPayload,
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
-        // K7: retry the whole begin→body→commit on transient deadlock/
+        // Retry the whole begin→body→commit on transient deadlock/
         // serialization; re-clone the citation sidecar payload per attempt.
         with_bounded_retry(move || {
             let sidecars = self.sidecars.clone();

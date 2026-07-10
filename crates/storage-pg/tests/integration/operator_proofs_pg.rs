@@ -443,13 +443,13 @@ async fn author_derived_rejects_operator_input_created_at_not_strictly_before_ou
     result
 }
 
-/// ENGINE-path sibling of the flavor-path fixture above (Checkpoint 2
-/// finding 1): `PgStorage::author_derived` — the port `Engine::
+/// ENGINE-path sibling of the flavor-path fixture above:
+/// `PgStorage::author_derived` — the port `Engine::
 /// author_derived_authorized` reaches via MCP `core_derive` — historically
 /// validated proof rows through its own inline SELECT in
 /// `crates/storage-pg/src/lib.rs`, which lacked the `created_at`
 /// strict-time gate the flavor path (`append_derived_with_edges_in_tx`)
-/// gained in Task 8. This test drives the full engine path with a
+/// already had. This test drives the full engine path with a
 /// future-`created_at` input and pins the typed rejection + zero persisted
 /// rows.
 #[tokio::test]

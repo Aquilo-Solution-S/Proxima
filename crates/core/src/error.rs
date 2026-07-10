@@ -8,7 +8,7 @@ pub struct ProtocolError {
     pub request_id: Option<String>,
 }
 
-/// Subset of docs/14's `ErrorCode` exercised in M1. Additional
+/// Subset of docs/14's `ErrorCode` exercised so far. Additional
 /// variants land with the verbs that raise them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]

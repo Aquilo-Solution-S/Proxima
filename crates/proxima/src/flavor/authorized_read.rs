@@ -1,6 +1,6 @@
 //! Authorized flavor-read facade.
 //!
-//! Lifted from `flavors/code/src/store.rs` (v0.0.5 Task 5): every one of
+//! Lifted from `flavors/code/src/store.rs`: every one of
 //! these helpers routes candidate filtering through
 //! [`proxima_core::Engine::query`], the same authorization/visibility path
 //! Owner-scoped reads use everywhere else (owner/group scoping plus

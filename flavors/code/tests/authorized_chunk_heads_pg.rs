@@ -1,10 +1,9 @@
-//! Direct coverage for `proxima::flavor::authorized_code_chunk_head_candidates`
-//! (v0.0.5 Task 5 fix round, I3).
+//! Direct coverage for `proxima::flavor::authorized_code_chunk_head_candidates`.
 //!
 //! This is the one authorized-read helper that implements owner-or-World
 //! scoping in its own SQL (`crates/storage-pg/src/verbs/query/abstraction_heads.rs`)
 //! instead of routing through `Engine::query`'s authz-resolved read set, so
-//! the Task-5 World-visibility test on `authorized_memory_ids` never touched
+//! the World-visibility test on `authorized_memory_ids` never touched
 //! it. These tests exercise the verb directly against seeded
 //! `code-chunk-v1` rows: owner scoping, World visibility for a non-owner
 //! caller, and the per-owner scoping of the same-natural-key recency dedup.

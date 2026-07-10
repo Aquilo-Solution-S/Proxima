@@ -190,7 +190,7 @@ async fn fact_entity_schema_matches_task_1_contract() {
     result.expect("fact-entity schema contract");
 }
 
-/// K6 (analysis 2026-07-05): the `memories` append-only trigger makes content,
+/// The `memories` append-only trigger makes content,
 /// identity, and provenance columns DB-hard immutable — an admin script cannot
 /// silently rewrite a Fact — while leaving the legitimately-mutable columns
 /// (here: `tombstoned_at`) writable.

@@ -1041,7 +1041,7 @@ async fn personal_source_scope_with_verified_drop_erases_only_scope()
     result
 }
 
-/// Persistence-scaling P0 (analysis 2026-07-05): an owner erase physically
+/// An owner erase physically
 /// removes the owner's persisted projector cursors and counts them, so a
 /// re-provisioned owner never resumes from a stale offset.
 #[tokio::test]

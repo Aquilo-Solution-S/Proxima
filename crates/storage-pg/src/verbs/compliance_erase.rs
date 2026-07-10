@@ -21,7 +21,7 @@ enum SelectionScope<'a> {
 }
 
 /// Begin a bulk-erase transaction: disable the pool's request-serving
-/// `statement_timeout` (P1.4 — a full-owner Art. 17 erase DELETEs across every
+/// `statement_timeout` — a full-owner Art. 17 erase DELETEs across every
 /// owner-scoped table and can legitimately run longer than the request bound;
 /// `SET LOCAL` scopes the override to this transaction only) and defer
 /// constraint checks until commit.
@@ -1309,7 +1309,7 @@ async fn delete_change_events(tx: &mut Tx<'_>, owner: OwnerRef) -> Result<u64, S
 }
 
 /// Delete persisted projector source cursors for the erased scope inside the
-/// erase transaction (persistence-scaling P0, analysis 2026-07-05). Owner erase
+/// erase transaction. Owner erase
 /// removes every cursor for the owner; source-scope erase removes only the
 /// matching `source`. Cursor bytes stay opaque — this is pure lawful cleanup so
 /// a re-provisioned owner/source does not resume from a stale offset.

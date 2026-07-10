@@ -158,7 +158,7 @@ Runtime search:
 
 | Item | Runtime value |
 |---|---|
-| vector type | `vector(1024)`; no halfvec migration in v0.0.6 Plan-4 |
+| vector type | `vector(1024)`; no halfvec migration in v0.0.6 |
 | ANN index | shared `idx_embeddings_vec_hnsw` |
 | semantic-search GUCs | `SET LOCAL hnsw.ef_search = 100`; `SET LOCAL hnsw.iterative_scan = relaxed_order` |
 | cold owner subsets | planner may prefer owner btree + exact sort |

@@ -51,7 +51,7 @@ use sqlx::PgPool;
 /// One Owner per embedded host: a Group principal.
 ///
 /// This is the single place embedded hosts construct `Owner`. Since the
-/// `Owner = OwnerRef` collapse (S0, Track B), the former org scalar is
+/// `Owner = OwnerRef` collapse removed the org scalar from Core; the
 /// gone — tenancy is a flavor/app concern, not a substrate one.
 #[must_use]
 pub fn company_owner(id: uuid::Uuid) -> Owner {

@@ -34,7 +34,7 @@ pub struct GetGraphOutput {
     /// Counts the owner's embedding jobs in the terminal `failed` state (retries
     /// exhausted). A non-zero value means some Facts are stuck without an
     /// embedding until a `reconcile` requeues them — an operator signal on this
-    /// readiness resource (analysis 2026-07-05 P1.1/K9).
+    /// readiness resource.
     pub failed_embedding_jobs: u64,
     /// Owner Fact-retention duration in seconds, if configured.
     pub fact_retention_seconds: Option<i64>,

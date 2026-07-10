@@ -1,9 +1,9 @@
-//! Slice 2B correctness regressions.
+//! Concurrent same-idempotency-key write correctness regressions.
 //!
-//! K3: two concurrent same-idempotency-key writes must both succeed — one
+//! Two concurrent same-idempotency-key writes must both succeed — one
 //! original, one idempotent replay — instead of the loser surfacing a spurious
 //! unique-violation. The loser collides mid-transaction on the receipt / goal
-//! idempotency-key unique index; the SAVEPOINT added in this slice lets it roll
+//! idempotency-key unique index; the SAVEPOINT lets it roll
 //! back and replay the winner's committed row.
 
 use std::sync::Arc;
@@ -92,7 +92,7 @@ async fn concurrent_same_receipt_fact_ingests_replay_without_error() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("K3 concurrent fact ingest replay failed");
+    result.expect("concurrent fact ingest replay failed");
 }
 
 const GOAL_REQUEST_ID: &str = "k3:goal:same-key:1";
@@ -196,5 +196,5 @@ async fn concurrent_same_key_goal_creates_replay_without_error() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("K3 concurrent goal create replay failed");
+    result.expect("concurrent goal create replay failed");
 }

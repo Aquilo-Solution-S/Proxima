@@ -729,7 +729,7 @@ async fn failed_embedding_jobs_retry_until_attempt_cap() -> Result<(), Box<dyn s
                 "last_error must preserve the embedding failure"
             );
 
-            // P1.1 backoff: a pending retry is NOT immediately re-claimable, so
+            // Backoff: a pending retry is NOT immediately re-claimable, so
             // a second drain right away burns no attempt (the hot-loop that
             // previously spent all attempts in seconds). Only after the backoff
             // window elapses does the next attempt run.
@@ -784,13 +784,13 @@ async fn reconcile_requeues_failed_embedding_jobs() -> Result<(), Box<dyn std::e
         assert_eq!(status, "failed");
         assert_eq!(attempts, EMBEDDING_JOB_MAX_ATTEMPTS);
 
-        // K9: the terminal failure is visible on the readiness count.
+        // The terminal failure is visible on the readiness count.
         assert_eq!(pg.count_failed_embedding_jobs(&owner).await?, 1);
         assert_eq!(pg.count_pending_embedding_jobs(&owner).await?, 0);
 
         // Reconcile lifts the Fact out of the dead-end: status back to pending,
         // attempts reset, last_error cleared — so a fresh provider/model or a
-        // process restart can retry it (analysis 2026-07-05 P1.1).
+        // process restart can retry it.
         let reconciled = pg
             .reconcile_embeddings(EmbeddingReconcileOptions {
                 model_id: "stub-fact-embed",

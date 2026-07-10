@@ -1,4 +1,4 @@
-//! Task 3 fact-entity edge write, graph resolution, and change-log coverage.
+//! Fact-entity edge write, graph resolution, and change-log coverage.
 
 #![allow(clippy::too_many_lines)]
 

@@ -1,4 +1,4 @@
-//! Task 2 fact-entity derivation and head-pointer ingest coverage.
+//! Fact-entity derivation and head-pointer ingest coverage.
 
 #![allow(clippy::too_many_lines)]
 
@@ -764,11 +764,11 @@ async fn replay_is_idempotent_and_does_not_mint_or_move_entity() {
     result.expect("replay_is_idempotent_and_does_not_mint_or_move_entity failed");
 }
 
-// Removed: `full_owner_triple_participates_in_entity_identity`. Track B (S0)
-// collapsed `Owner = OwnerRef` — org no longer participates in Fact-entity
+// Removed: `full_owner_triple_participates_in_entity_identity`. The
+// `Owner = OwnerRef` collapse means org no longer participates in Fact-entity
 // identity, so two owners differing only by org are now the same Owner and
 // must collapse to one entity. The org-invariance assertion that replaces this
-// is a separate verification-test task (see the S0 plan, Step 8).
+// lives in a separate verification test.
 
 #[tokio::test]
 async fn schema_version_participates_in_entity_identity() {

@@ -1,4 +1,4 @@
-//! Embedding lifecycle compliance proofs for Plan-4 I8.
+//! Embedding lifecycle compliance proofs.
 
 use std::sync::Arc;
 

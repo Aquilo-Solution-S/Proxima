@@ -1,4 +1,4 @@
-//! Task 4 fact-entity citation helper coverage.
+//! Fact-entity citation helper coverage.
 
 use std::sync::Arc;
 

@@ -568,10 +568,10 @@ async fn author_derived_rejects_empty_operator_inputs() {
     );
 }
 
-/// Task 8 operator-provenance fixtures.
+/// Operator-provenance fixtures.
 ///
 /// Cases 1 ("missing output-to-input provenance edge") and 2 ("edge source
-/// not equal to output memory") from the hardening plan collapse onto the
+/// not equal to output memory") collapse onto the
 /// SAME runtime check in this data model: `AuthorDerivedRequestInput`'s
 /// `edges` array supplies both the manifest's `inputs` list AND its
 /// `output_edges` list from the same element (`OperatorInvocationManifest`

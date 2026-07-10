@@ -15,7 +15,7 @@ after intentional reducer changes.
 `python3 tools/ann-bench/ann_bench.py --database-url <url> --output
 bench/ann-final.json --artifact-kind final --hot-rows 5000 --cold-rows 120
 --noise-rows 15000 --queries-per-case 3 --ef-search 100 --iterative-scan
-relaxed_order` writes the Plan-4 final comparison artifact.
+relaxed_order` writes the tracked final comparison artifact.
 
 The tracked artifacts use a production-style synthetic query shape:
 `candidates -> eligible_entities -> vector_candidates` with the production
@@ -38,13 +38,13 @@ The final artifact applies the runtime semantic-search settings:
 `hnsw.ef_search = 100` and `hnsw.iterative_scan = relaxed_order`. On the
 tracked synthetic production-shaped corpus, the planner chooses exact /
 owner-index paths rather than HNSW, so the tracked comparison proves no recall
-loss/regression under that query shape. Plan-4 accepts that exact/owner-index
+loss/regression under that query shape. The tracked corpus accepts that exact/owner-index
 behavior for the tracked corpus; it does not claim this artifact validates HNSW
 index execution. Forced-HNSW probes remain local dossier evidence only.
 Halfvec, partial indexes, and partitioning remain schema decisions outside this
 change.
 
-Current Plan-4 baseline vs final:
+Current tracked baseline vs final:
 
 | case | baseline recall avg/min | final recall avg/min | baseline p95 ms | final p95 ms | planner |
 |---|---:|---:|---:|---:|---|
@@ -89,4 +89,4 @@ Maintenance rules:
 | lawful wipe | compliance erase synchronously deletes embeddings, heads, and jobs at transaction commit |
 | orphan sweep | `Engine::sweep_orphan_embedding_rows(authz)` deletes crash-residue only; never part of compliance erase semantics |
 | HNSW churn | vacuum is physical-index maintenance; schedule from dead tuples, bytes, latency, and recall canary |
-| halfvec | rejected for this slice; final benchmark recovered filtered recall without schema/type migration |
+| halfvec | rejected for v0.0.6; final benchmark recovered filtered recall without schema/type migration |

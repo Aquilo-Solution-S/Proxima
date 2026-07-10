@@ -261,7 +261,7 @@ impl PgStorage {
         let mut opts: PgConnectOptions = url.parse().map_err(|e: sqlx::Error| {
             StorageError::Unavailable(format!("invalid DATABASE_URL: {e}"))
         })?;
-        // P1.4 (analysis 2026-07-05): a conservative per-statement timeout bounds
+        // A conservative per-statement timeout bounds
         // a runaway query (e.g. a pathological search) so it cannot pin a pool
         // connection indefinitely and starve the gateway. Generous by default
         // (5 min — only a truly stuck statement hits it); tune or disable (0)
@@ -419,7 +419,7 @@ impl PgStorage {
     /// recorded checksum, etc.).
     pub async fn run_migrations(&self) -> Result<(), StorageError> {
         ensure_v004_baseline_compatible(&self.pool).await?;
-        // P1.4 (analysis 2026-07-05): the pool's default `statement_timeout`
+        // The pool's default `statement_timeout`
         // bounds request-serving queries, but a schema migration (CREATE INDEX,
         // backfill) may legitimately run longer than that — aborting one
         // mid-flight would leave the schema half-migrated. Run migrations on a
@@ -480,7 +480,7 @@ mod tests {
     #[test]
     fn pool_env_helpers_default_when_unset() {
         // Fixed-key helpers fall back to the default for an unset/garbage key
-        // (P1.4 pool tuning). Use keys nothing else in the process sets.
+        // (pool tuning). Use keys nothing else in the process sets.
         assert_eq!(
             super::env_u32_min1("PROXIMA_PG_MAX_CONNECTIONS_TEST_UNSET", 10),
             10

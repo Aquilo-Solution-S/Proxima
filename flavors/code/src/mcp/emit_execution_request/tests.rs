@@ -13,8 +13,8 @@ use super::input_validation::{resolve_evidence, validate_plan_items};
 use super::plan_persistence::execution_plan_memory_id;
 use super::types::{ExecutionPlanItemArgs, ExecutionPlanItemKind};
 
-/// Pins the org-free execution-plan `MemoryId` against drift. Track B
-/// / S0: the v5 key folds the owner *principal* id ‖ repo ‖ goal
+/// Pins the org-free execution-plan `MemoryId` against drift. The v5 key folds
+/// the owner *principal* id ‖ repo ‖ goal
 /// memory ‖ plan key — no org. A fixed input must reproduce exactly
 /// this uuid so re-issued plans stay idempotent.
 #[test]

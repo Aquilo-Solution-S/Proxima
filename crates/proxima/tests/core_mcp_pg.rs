@@ -1007,7 +1007,7 @@ async fn ensure_fact_embedding_for_handle(
     Ok(())
 }
 
-/// v0.0.5 Task 5: the authorized flavor-read facade
+/// The authorized flavor-read facade
 /// (`proxima::flavor::authorized_memory_ids` and friends) routes candidate
 /// filtering through `Engine::query`, which must treat a World-owned
 /// (published) memory as visible to any caller, not just its original

@@ -1,4 +1,4 @@
-//! M3.B.4 done-when — `Engine::query` with `SupersessionStatus::HeadsOnly`
+//! `Engine::query` with `SupersessionStatus::HeadsOnly`
 //! against a stateful Fact schema returns the latest observation per
 //! natural-key tuple.
 //!
