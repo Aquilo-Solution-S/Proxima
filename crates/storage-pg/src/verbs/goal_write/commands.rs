@@ -16,7 +16,7 @@ use super::{
 };
 use crate::error::with_bounded_retry;
 
-// K7: the goal `*_atomic` verbs are pool-scoped write transactions. Each wraps
+// The goal `*_atomic` verbs are pool-scoped write transactions. Each wraps
 // its `_in_pool` body in `with_bounded_retry` so a transient deadlock /
 // serialization failure (SQLSTATE 40P01/40001) re-runs the whole idempotent
 // transaction instead of surfacing to the host as a bare `Internal`.

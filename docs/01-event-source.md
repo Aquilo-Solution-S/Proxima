@@ -21,8 +21,8 @@ enum OwnerRef {
 
 **Organizations are not an ontology concept** (renegotiated
 2026-06-11 — decision `domain/decisions/2026-06-11-org-out-of-kernel.md`;
-previously `Owner` was a `{ principal, org_id }` record). Track B (S0)
-removed the tenant field from Core entirely: `OwnerRef` is the row-scoping
+previously `Owner` was a `{ principal, org_id }` record). The Owner=OwnerRef
+collapse removed the tenant field from Core entirely: `OwnerRef` is the row-scoping
 handle. Tenancy / billing attribution is a flavor/app concern, not part
 of Core access, **identity**, or storage. Operator gates, edge scoping,
 and dedup keys compare owner handles; the same user under two tenants is

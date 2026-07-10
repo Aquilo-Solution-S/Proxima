@@ -6,11 +6,11 @@
 //! Schemes for v1:
 //!
 //! - `env:NAME` — process environment variable lookup
-//! - `keychain:service:account` — OS keychain (impl in S1.c)
+//! - `keychain:service:account` — OS keychain (impl deferred)
 //! - `file:path` — local file read (impl deferred)
 //! - `aws-sm:arn` — AWS Secrets Manager (impl deferred)
 //!
-//! S1.b ships the trait + `EnvResolver` + a `ResolverRegistry` keyed
+//! v1 ships the trait + `EnvResolver` + a `ResolverRegistry` keyed
 //! by scheme prefix. Other resolvers register against the same trait.
 
 use std::fmt;

@@ -7,7 +7,7 @@
 //!
 //! [`ingest_fact_in_tx`] exposes the same body inside an existing
 //! transaction so flavor crates can append a typed sidecar row
-//! atomically with the Fact materialization (M3.B.5+). The pool-level
+//! atomically with the Fact materialization. The pool-level
 //! [`ingest_fact_atomic`] is a thin wrapper that opens its own tx.
 
 use std::future::Future;
@@ -162,7 +162,7 @@ pub async fn ingest_fact_atomic(
     draft: &FactWriteCommand,
     embedding_model_id: Option<&str>,
 ) -> Result<FactIngestOutcome, StorageError> {
-    // K7: retry the whole transaction on transient deadlock/serialization.
+    // Retry the whole transaction on transient deadlock/serialization.
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
         let outcome = ingest_fact_command_in_tx(&mut tx, permit, draft, embedding_model_id).await?;
@@ -359,7 +359,7 @@ pub async fn ingest_fact_for_owner_plain<P>(
 where
     P: FactPayload,
 {
-    // K7: retry the whole transaction on transient deadlock/serialization.
+    // Retry the whole transaction on transient deadlock/serialization.
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
         let outcome =
@@ -919,7 +919,7 @@ where
             ));
         }
 
-        // K3: two concurrent same-receipt ingests both pass the existing
+        // Two concurrent same-receipt ingests both pass the existing
         // check above; the loser collides on `fact_receipts_pkey` here (the
         // receipt row is written before the memories row, so this is the
         // race's first collision). Guard the insert with a SAVEPOINT so the
@@ -1086,7 +1086,7 @@ where
 }
 
 /// True when a `fact_receipts`/`memories` insert failed because another
-/// transaction already claimed the same receipt id (the K3 idempotent race).
+/// transaction already claimed the same receipt id (the idempotent race).
 /// Matched on the constraint name so it never mistakes an unrelated unique
 /// violation for a replay signal.
 fn is_receipt_race(err: &sqlx::Error) -> bool {

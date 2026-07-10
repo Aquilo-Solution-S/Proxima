@@ -22,7 +22,7 @@ pub(super) async fn insert_or_replay_goal(
         return Ok(inserted);
     }
 
-    // K3: two concurrent same-key goal creates both miss the replay lookup
+    // Two concurrent same-key goal creates both miss the replay lookup
     // above; the loser collides on `goals_idempotency_key`. Guard the insert
     // with a SAVEPOINT so the mid-tx unique violation does not poison the
     // whole transaction — then roll back and replay the winner's committed
@@ -125,7 +125,7 @@ async fn insert_new_goal(
 }
 
 /// True when a goal insert failed because another transaction already claimed
-/// the same `goals_idempotency_key` (the K3 race sentinel from
+/// the same `goals_idempotency_key` (the idempotent-race sentinel from
 /// [`map_goal_insert_err`]).
 fn is_goal_idempotency_race(err: &StorageError) -> bool {
     matches!(err, StorageError::Conflict(message) if message == "goals_idempotency_key")
@@ -255,7 +255,7 @@ fn map_goal_insert_err(err: sqlx::Error) -> StorageError {
             Some("goals_supersedes_unique") => {
                 return StorageError::Conflict("stale goal head".into());
             }
-            // K3 idempotent-race sentinel: the caller rolls back to its
+            // Idempotent-race sentinel: the caller rolls back to its
             // SAVEPOINT and replays the winner's committed goal.
             Some("goals_idempotency_key") => {
                 return StorageError::Conflict("goals_idempotency_key".into());

@@ -35,7 +35,7 @@ fn flavor_sdk_imports_from_flavor_module() {
 
 #[test]
 fn flavor_sdk_exposes_mcp_tool_authoring_surface() {
-    // F6: the MCP tool family is reachable from `proxima::flavor` so flavor
+    // The MCP tool family is reachable from `proxima::flavor` so flavor
     // authors never import `proxima_core::mcp` directly.
     use proxima::flavor::{
         McpActionArgSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,

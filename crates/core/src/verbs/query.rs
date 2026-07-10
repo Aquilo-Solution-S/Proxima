@@ -13,7 +13,7 @@ use crate::{EdgeId, GoalId, MemoryId, Owner, OwnerRef, SchemaId, SchemaVersion, 
 
 /// Re-export the canonical `EntityKind` from `change_event` so query
 /// callers don't need a second import path. The duplicate
-/// definition that lived here pre-M6.5 produced two identical
+/// definition that lived here previously produced two identical
 /// types.
 pub use crate::change_event::EntityKind;
 

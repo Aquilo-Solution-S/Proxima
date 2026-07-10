@@ -1,8 +1,8 @@
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
-//! M3.B.7 done-when — full `LocalGitSource` lifecycle against a real
-//! Postgres + a fixture git repo on disk.
+//! Full `LocalGitSource` lifecycle against a real Postgres + a fixture git repo
+//! on disk.
 //!
-//! Exercises the five assertions from M3-PLAN.md:
+//! Covers:
 //! 1. After initial index: heads-only Query returns chunks for every
 //!    Present file.
 //! 2. After mutation + reindex: head returns new chunk text; old derived
@@ -512,7 +512,7 @@ async fn head_snapshot_repeated_after_change_and_delete_is_idempotent() {
     result.expect("head_snapshot_repeated_after_change_and_delete_is_idempotent failed");
 }
 
-/// I2 regression (v0.0.5 Task 5 fix round): a heavily-churned file can hold
+/// Regression: a heavily-churned file can hold
 /// more historical `Present`-state chunk rows than one authorized-read batch
 /// (`MAX_AUTHZ_CANDIDATES` = 2,000). `present_chunk_indexes` must evaluate
 /// EVERY candidate — the pre-fix facade silently truncated the candidate

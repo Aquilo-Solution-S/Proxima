@@ -110,7 +110,7 @@ async fn migrations_apply_to_fresh_db() {
             row.0
         );
 
-        // S0 (Owner = OwnerRef collapse, Track B): the legacy owner org column must be GONE
+        // After the Owner = OwnerRef collapse, the legacy owner org column must be GONE
         // from every proxima_core table. This is the keystone gate for the
         // DDL-drop migration — a single missed column would silently keep org
         // in storage and pass the table-count check above.
@@ -122,7 +122,7 @@ async fn migrations_apply_to_fresh_db() {
         .await?;
         assert_eq!(
             org_cols.0, 0,
-            "legacy owner org column must be absent from proxima_core after S0; found {} column(s)",
+            "legacy owner org column must be absent from proxima_core after Owner=OwnerRef collapse; found {} column(s)",
             org_cols.0
         );
 
@@ -348,7 +348,7 @@ async fn append_only_triggers_reject_content_mutation_but_allow_noop() {
         .execute(pool)
         .await?;
 
-        // K6: mutating a frozen content column is rejected by the trigger…
+        // Mutating a frozen content column is rejected by the trigger…
         let err = sqlx::query("UPDATE proxima_core.memories SET text = 'tampered' WHERE memory_id = $1")
             .bind(memory_id)
             .execute(pool)

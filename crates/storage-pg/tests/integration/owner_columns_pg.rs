@@ -858,7 +858,7 @@ async fn engine_publish_to_world_personal_owner_self_publish() {
     common::drop_db(&db).await.unwrap();
 }
 
-/// Read half of Goal publish (v0.0.5 Task 5 fix round, I1): `query_goals`'s
+/// Read half of Goal publish: `query_goals`'s
 /// owner join used plain `g.owner_id = s.id`, and both sides are NULL for the
 /// World slot (`goals.owner_id` after a publish transfer; `s.id` for the World
 /// member of every caller's read-owner set), so `NULL = NULL → NULL` silently

@@ -90,7 +90,7 @@ impl MemoryAuthoringPort for PgStorage {
         permit: &OwnerWritePermit,
         _proof: proxima_core::storage_ports::OperatorWriteProof,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
-        // K7: retry the whole begin→body→commit on transient deadlock/
+        // Retry the whole begin→body→commit on transient deadlock/
         // serialization. A retryable error fully rolls the transaction back, so
         // re-running is clean — the derived row replays on its idempotency key
         // and any edges mint fresh ids on the fresh attempt.
@@ -116,7 +116,7 @@ impl MemoryAuthoringPort for PgStorage {
             // ONE validator for both derived-write paths (this engine port and
             // the flavor-SDK `append_derived_with_edges_in_tx`): the port used
             // to carry its own near-duplicate proof validation here, which
-            // silently missed the Task 8 created_at strict-time gate.
+            // silently missed the created_at strict-time gate.
             verbs::derive_append::validate_derived_draft_edges_in_tx(&mut tx, &draft, req.edges)
                 .await?;
             let sidecars = self.sidecars.clone();
@@ -188,7 +188,7 @@ impl MemoryAuthoringPort for PgStorage {
                 "operator-authored edges require an operator proof-carrier write path".into(),
             ));
         }
-        // K7: retry the whole begin→body→commit on transient deadlock/
+        // Retry the whole begin→body→commit on transient deadlock/
         // serialization. A retryable error fully rolls the transaction back;
         // the edge id is minted per attempt, so a re-run inserts exactly one edge.
         with_bounded_retry(move || async move {

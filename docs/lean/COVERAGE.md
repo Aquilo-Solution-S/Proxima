@@ -10,9 +10,8 @@ record); this mirrors the row's existing kernel-side "excluded" only when that
 exclusion is also true at runtime — several rows the kernel excludes from its
 proof scope are nonetheless runtime-enforced (e.g. a Postgres constraint), and
 those are marked `enforced`, not `excluded`. `planned` — accepted future work
-named in `docs/superpowers/plans/2026-07-02-proxima-hardening-roadmap.md`; used
-only where a row's subject matter maps directly onto one of those named items.
-Currently no row carries `planned`.
+documented in tracked design docs; used only where a row's subject matter maps
+directly onto one of those named items. Currently no row carries `planned`.
 
 ## universe.md (U)
 
@@ -27,7 +26,7 @@ Currently no row carries `planned`.
 
 | ID | Invariant | Carrier | Runtime enforcement |
 |---|---|---|---|
-| ES-1 | Group org → no kernel face | excluded: org has no kernel face and (Track B / S0) is absent from Core storage and identity — `OwnerRef` / resolved `Owner := Group` carry no org predicate; tenancy is a flavor/app concern. Decisions `2026-06-11-org-out-of-kernel.md`, S0 collapse, owner-ontology realign 2026-06-28 (was THEOREM `owner_org_denormalized` when Owner carried org) | enforced — structural: no org field on `OwnerRef`/storage schema; `check-architecture-guardrails.py check_stale_access` guards regression |
+| ES-1 | Group org → no kernel face | excluded: org has no kernel face and the Owner=OwnerRef collapse is absent from Core storage and identity — `OwnerRef` / resolved `Owner := Group` carry no org predicate; tenancy is a flavor/app concern. Decisions `2026-06-11-org-out-of-kernel.md`, owner-ontology realign 2026-06-28 (was THEOREM `owner_org_denormalized` when Owner carried org) | enforced — structural: no org field on `OwnerRef`/storage schema; `check-architecture-guardrails.py check_stale_access` guards regression |
 | ES-2 | Visibility rule (group membership) | def `visible` (`o r ≠ none`, i.e. holds any `Role`) + theorem `visible_personal` | enforced — `Role::may_read`/`OwnerRoles`/`Engine::resolve_access` |
 | ES-3 | org never enters access or identity | structural: org absent from `OwnerRef`, `OwnerState`, and resolved `Owner := Group` — decisions `2026-06-11-org-out-of-kernel.md`, owner realign 2026-06-28 | enforced — same as ES-1 (structural absence + `check_stale_access` guardrail) |
 | ES-4 | source-ingest dedup key deterministic over source/owner/payload | excluded: source/flavor ingest metadata after D1; no core `FactReceiptId` entity | excluded — dedup-key generation is caller-owned, no Proxima runtime check |
@@ -161,7 +160,7 @@ Currently no row carries `planned`.
 | ST-5 | Edges insert-only | `Immutable Edge`, `AppendOnly Edge` | enforced — no UPDATE/DELETE verb on `edges` |
 | ST-6 | source-ingest dedup key deterministic; duplicate = replay | excluded: source/flavor ingest metadata after D1; no core `FactReceiptId` entity | enforced for the duplicate-receipt branch — runtime stores owner-scoped receipt ids and replays duplicates without inserting new rows (`isolation_proof_pg::isolation_proof_covers_reads_replay_and_receipt_scope`); key determinism remains caller/source-owned and is still excluded under ES-4 |
 | ST-7/8 | CitedObject/CitationMapping ids, insert-only, one mapping per Fact | structural ids + scoped defs `CitedObjectIdUnique`/`CitationMappingIdUnique`/`CitationMappingUniqueByFact`, `Immutable`/`AppendOnly` instances + theorem `citation_unique_per_fact` | enforced — `citation_mappings_pkey`, `citation_mappings_one_per_fact` UNIQUE(memory_id), `cited_objects_pkey` |
-| ST-9 | Owner identity columns (principal kind + id) | `OwnerRef` is the stable stored owner reference (`world` / `personal u` / `group id`); `OwnerState.resolve` maps it to resolved `Owner := Group` for access. The exact SQL column shape is engine storage. org has no kernel face — decisions `2026-06-11-org-out-of-kernel.md`, S0 collapse, owner realign 2026-06-28; no-op under 2026-07-06 User token change | enforced — `owner_kind`/`owner_id` columns on every owned table; `check_stale_access` guardrail bars stale org/principal vocabulary |
+| ST-9 | Owner identity columns (principal kind + id) | `OwnerRef` is the stable stored owner reference (`world` / `personal u` / `group id`); `OwnerState.resolve` maps it to resolved `Owner := Group` for access. The exact SQL column shape is engine storage. org has no kernel face — decisions `2026-06-11-org-out-of-kernel.md`, owner realign 2026-06-28; no-op under 2026-07-06 User token change | enforced — `owner_kind`/`owner_id` columns on every owned table; `check_stale_access` guardrail bars stale org/principal vocabulary |
 | ST-10 | Edge ownership: source-owned rows; only Supersession forbids cross-owner target | row-validity predicates `EdgeSourceOwned`, `EdgeSupersessionIntraOwner`; non-Supersession cross-owner targets are allowed by source-owned Edge policy; target erasure/visibility affects `edge_target_redacted`, not `edge_owner` | enforced — `validate_relation_owner_policy` (Supersession-only cross-owner-target ban) |
 | ST-11 | INSERT-only cognitive lifecycle | class `AppendOnly` + instances | enforced — no UPDATE/DELETE verb on `memories`/`goals`/`edges` |
 | ST-13 | Only compliance erasure deletes | Compliance.lean: def `abandoned` is the SOLE delete trigger (owning group empty) + THEOREMs `drop_personal_abandoned`, `source_abandoned_cascades_to_edge`, `target_abandoned_does_not_abandon_source_owned_edge`, `world_never_abandoned` — target abandonment redacts/suppresses target projection only | enforced — `engine/compliance.rs`/`storage-pg/verbs/compliance_erase.rs` abandonment-gated `erase_*` family; `check_public_witnesses`/`check_caller_supplied_audit` guardrails bar forgeable witnesses and caller-supplied audit metadata |

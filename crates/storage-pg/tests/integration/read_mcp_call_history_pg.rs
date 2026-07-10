@@ -244,7 +244,7 @@ async fn seed_history_fixture(
     Ok(())
 }
 
-// `include_body: true` here mirrors the pre-K5 default (body always
+// `include_body: true` here mirrors the prior default (body always
 // hydrated); the new default is `false`, so this helper opts back in to keep
 // the body-present assertions above meaningful. Body-omission and cursor
 // paging get dedicated tests below.

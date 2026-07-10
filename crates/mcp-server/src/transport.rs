@@ -250,7 +250,7 @@ mod tests {
             .layer(axum::middleware::from_fn(enforce_body_limit))
     }
 
-    // S3: an over-cap declared Content-Length is 413'd before auth.
+    // An over-cap declared Content-Length is 413'd before auth.
     #[tokio::test]
     async fn oversized_content_length_is_rejected_before_auth() {
         let app = guarded_app();
@@ -277,7 +277,7 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
-    // S3: a stream with no Content-Length that exceeds the cap errors when
+    // A stream with no Content-Length that exceeds the cap errors when
     // read, rather than buffering unbounded memory.
     #[tokio::test]
     async fn oversized_streamed_body_is_truncated_with_error() {

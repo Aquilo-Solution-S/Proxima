@@ -1,4 +1,4 @@
--- Code flavor — v0.0.6 append-only lane (analysis 2026-07-05, K6).
+-- Code flavor — v0.0.6 append-only lane.
 --
 -- Core migration 0010 makes the F/A/P `memories` row and every CORE typed
 -- payload sidecar DB-hard append-only, and ships the reusable guard

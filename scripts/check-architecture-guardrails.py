@@ -24,7 +24,7 @@ OWNER_WRITE_PERMIT = "OwnerWritePermit"
 # stops suppressing findings and the failure renders the expiration date so
 # reviewers see why it started failing.
 #
-# v0.0.5 Task 5 migrated the three prior entries here (search_chunks.rs,
+# The authorized-read helpers migrated the three prior entries here (search_chunks.rs,
 # open_file_revision.rs, local_git_source.rs) onto
 # `proxima::flavor::authorized_*` — production `flavors/code/src` now holds
 # zero raw `proxima_core.*` SQL, so this allowlist is empty until the next

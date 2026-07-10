@@ -13,7 +13,7 @@
 //! is by construction (same payload -> same receipt).
 //!
 //! The flavor depends on `proxima-storage-pg` for these helpers; the
-//! flavor crate is no longer storage-agnostic post-M3.B.5. That coupling
+//! flavor crate is no longer storage-agnostic. That coupling
 //! is the v1 trade-off — keeping Fact materialization and sidecar
 //! population in one tx is non-negotiable (AGENTS.md invariant 15).
 

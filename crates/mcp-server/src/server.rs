@@ -443,7 +443,7 @@ mod tests {
         }
     }
 
-    /// Task 7: `read_resource` now traverses the same `RequestBehavior`
+    /// `read_resource` now traverses the same `RequestBehavior`
     /// onion (`ScopeGateBehavior`) as `call_tool`, instead of a hand-rolled
     /// scope check outside the chain. An out-of-palette caller must still
     /// be denied, and denial must still surface as `NotAuthorized` keyed by

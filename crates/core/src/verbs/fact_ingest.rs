@@ -2,7 +2,7 @@
 //!
 //! See docs/14-protocol-surface.md §"Fact write" and
 //! docs/01-event-source.md §"Fact membrane". The storage-side body
-//! lives in `proxima-storage-pg` (M2.4b).
+//! lives in `proxima-storage-pg`.
 
 use uuid::Uuid;
 
@@ -530,8 +530,8 @@ mod tests {
         );
     }
 
-    /// Pins the org-free `receipt_id` BLAKE3 against drift. Track B / S0:
-    /// the hash folds source ‖ principal kind/id ‖ payload — no org. A
+    /// Pins the org-free `receipt_id` BLAKE3 against drift. The hash folds
+    /// source ‖ principal kind/id ‖ payload — no org. A
     /// fixed input must reproduce exactly this hex forever.
     #[test]
     fn receipt_id_golden_is_org_free() {

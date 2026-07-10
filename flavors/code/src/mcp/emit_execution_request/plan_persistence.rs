@@ -46,7 +46,7 @@ pub(super) fn default_plan_key(
 
 /// Deterministic, idempotent `MemoryId` for an execution plan.
 ///
-/// Org-free (Track B / S0): the key folds the owner *principal* id, the
+/// Org-free: the key folds the owner *principal* id, the
 /// repo, the activated-goal memory, and the plan key — never a tenant/org
 /// scalar. Re-issuing the same plan under the same principal reproduces
 /// this id by construction.

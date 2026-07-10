@@ -1,5 +1,4 @@
-//! Smoke test for `proxima_flavor!` and `proxima_schema_id!`
-//! macros in M3.A.1.
+//! Smoke test for `proxima_flavor!` and `proxima_schema_id!` macros.
 
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{

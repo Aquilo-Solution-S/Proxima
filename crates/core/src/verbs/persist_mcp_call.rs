@@ -181,8 +181,8 @@ mod tests {
     use crate::{OwnerRef, UserId};
     use uuid::Uuid;
 
-    /// Pins the org-free MCP-call replay key against drift. Track B / S0:
-    /// the BLAKE3 folds source ‖ principal kind/id ‖ payload key ‖
+    /// Pins the org-free MCP-call replay key against drift. The BLAKE3 folds
+    /// source ‖ principal kind/id ‖ payload key ‖
     /// timestamps — no org. A fixed input must reproduce exactly this hex.
     #[test]
     fn mcp_call_receipt_id_golden_is_org_free() {

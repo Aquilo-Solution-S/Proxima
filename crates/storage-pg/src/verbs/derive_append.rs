@@ -215,9 +215,8 @@ fn edge_draft_from_spec<'a>(
 
 /// Shared operator proof-ledger validation for BOTH derived-write paths:
 /// the flavor-SDK in-tx tier (`append_derived_with_edges_in_tx`) and the
-/// engine port (`PgStorage::author_derived` in `lib.rs`). Checkpoint 2 of
-/// the v0.0.5 hardening pass found the engine port carrying its own
-/// near-duplicate of this validation that had silently missed the Task 8
+/// engine port (`PgStorage::author_derived` in `lib.rs`). A prior review found the engine port carrying its own
+/// near-duplicate of this validation that had silently missed the
 /// `created_at` strict-time gate — one validator, `pub(crate)`, kills that
 /// drift class structurally (same spirit as the `engine::authorize_action`
 /// consolidation).

@@ -320,8 +320,8 @@ Rust+Lean bump, never just one.
 
 Before bumping `rev`, run `python3 scripts/check-lean-axioms.py` — it
 rebuilds `docs/lean` itself and diffs the kernel's current axiom set
-against the checked-in allowlist at `scripts/lean-axioms.allowlist.txt`
-(Task 8 of this hardening pass). A silent axiom-set change must never be
+against the checked-in allowlist at `scripts/lean-axioms.allowlist.txt`.
+A silent axiom-set change must never be
 absorbed into a downstream kernel unnoticed — if the script reports a
 diff, that's a stop-and-review signal before the rev bump, not a rubber
 stamp.

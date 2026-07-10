@@ -160,7 +160,7 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
-        // K1: `Achieved` is never a legal plain-transition target (achievement
+        // `Achieved` is never a legal plain-transition target (achievement
         // carries mandatory evidence via `mark_goal_achieved`). Reject it here,
         // before opening a storage transaction. Prior-state-dependent legality
         // (e.g. `Paused → Abandoned`) stays enforced storage-side by
@@ -940,7 +940,7 @@ mod tests {
 
     #[tokio::test]
     async fn transition_goal_rejects_achieved_target_pre_storage() {
-        // K1: transitioning to Achieved is rejected at the engine boundary,
+        // Transitioning to Achieved is rejected at the engine boundary,
         // after authz but before any storage transaction. The membership
         // storage authorizes the self-owner write; the guard fires first, so
         // the goal write port is never reached.

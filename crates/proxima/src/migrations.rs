@@ -110,7 +110,7 @@ pub async fn run_core_and_flavor_migrations(
     match (migration_result, reset_result) {
         (Ok(()), Ok(())) => {
             // The migration connection carried a disabled statement_timeout
-            // (P1.4); never return it to the pool with that override.
+            // Never return it to the pool with that override.
             conn.close_on_drop();
             Ok(report)
         }
@@ -174,7 +174,7 @@ async fn pin_migration_search_path(conn: &mut PgConnection) -> Result<(), sqlx::
     sqlx::query("SET search_path TO public")
         .execute(&mut *conn)
         .await?;
-    // P1.4 (analysis 2026-07-05): the pool's request-serving `statement_timeout`
+    // The pool's request-serving `statement_timeout`
     // must not abort a long schema migration (CREATE INDEX / backfill) mid-way.
     // Disable it for this boot connection; the caller marks the connection
     // close-on-drop so the override never returns to the shared pool.

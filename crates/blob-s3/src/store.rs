@@ -475,7 +475,7 @@ impl CitedObjectErasePort for CitedBlobStore {
 /// `prefix`, paging over the `list_object_versions` key/version markers.
 /// Returns the number of object versions + delete markers deleted.
 ///
-/// P1.7 (analysis 2026-07-05): deletion is by `(key, version_id)`, not by key
+/// Deletion is by `(key, version_id)`, not by key
 /// alone. On a *versioned* bucket — the deployment recommended in
 /// `docs/how-to/operate.md` — a key-only `delete_objects` merely inserts a
 /// delete marker and leaves the noncurrent PII object versions recoverable via
@@ -899,7 +899,7 @@ fn validate_prepare(
 /// [`ensure_owner_write_access`]: a cited blob is a Fact-attached payload, so
 /// read access is `may_read(owner, Fact)` — the same per-kind role ceiling the
 /// write gate uses, not a coarser "any accessible principal" check that a
-/// Goal-only-read role could slip through (analysis 2026-07-05 S5).
+/// Goal-only-read role could slip through.
 fn ensure_owner_access(ctx: &AuthzContext, owner: &Owner) -> Result<(), BlobError> {
     if ctx.may_read(owner, AccessKind::Fact) {
         Ok(())
@@ -914,8 +914,7 @@ fn ensure_owner_access(ctx: &AuthzContext, owner: &Owner) -> Result<(), BlobErro
 /// not mere read access. A cited blob is a Fact-attached payload, so the caller
 /// must hold Fact-write (Ingest/Editor/Admin) on `owner`: a read-only group
 /// Viewer, though it can *read* the group, must not be able to mint pending rows
-/// or canonical cited-blob rows in the group's namespace (analysis 2026-07-05
-/// S5). Also rejects World, which never owns cited blobs.
+/// or canonical cited-blob rows in the group's namespace. Also rejects World, which never owns cited blobs.
 fn ensure_owner_write_access(ctx: &AuthzContext, owner: &Owner) -> Result<(), BlobError> {
     ensure_write_owner(owner)?;
     if ctx.may_write(owner, AccessKind::Fact) {
@@ -1112,7 +1111,7 @@ mod tests {
         assert!(matches!(err, BlobError::Denied(_)));
     }
 
-    // S5: blob writes require WRITE authority, not mere read access. A group
+    // Blob writes require WRITE authority, not mere read access. A group
     // Viewer can read the group (owner_access gate passes) but must not be able
     // to create cited blobs in it (owner_write gate denies).
     #[test]
@@ -1181,8 +1180,8 @@ mod tests {
         assert_ne!(owner_hash_hex(&a), owner_hash_hex(&b));
     }
 
-    /// Pins the org-free S3 `owner_hash_hex` against drift. Track B / S0:
-    /// the BLAKE3 folds the domain tag ‖ principal kind/id — no org. A
+    /// Pins the org-free S3 `owner_hash_hex` against drift. The BLAKE3 folds
+    /// the domain tag ‖ principal kind/id — no org. A
     /// fixed principal must reproduce exactly this hex (and thus the same
     /// stored S3 object path) forever.
     #[test]

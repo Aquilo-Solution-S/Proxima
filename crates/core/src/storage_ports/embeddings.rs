@@ -192,7 +192,7 @@ pub trait EmbeddingJobPort: Send + Sync {
 
     /// Count the owner's embedding jobs in the terminal `failed` state (retries
     /// exhausted). Surfaced on the readiness resource so an operator can see the
-    /// retry dead-end that `reconcile` requeues (analysis 2026-07-05 P1.1/K9).
+    /// retry dead-end that `reconcile` requeues.
     async fn count_failed_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError>;
 }
 

@@ -24,7 +24,7 @@ pub struct MemorySpaceOutput {
 pub struct MemorySpaceAccessOutput {
     /// Whether the caller holds write authority (Fact-write) on this space, as
     /// opposed to read-only visibility. Resolved per space from the caller's
-    /// host-resolved owner roles (K8 — there is no blanket "unrestricted" mode).
+    /// host-resolved owner roles (there is no blanket "unrestricted" mode).
     pub writable: bool,
 }
 

@@ -342,7 +342,7 @@ fn resolve_tool_scope(
     deny_raw: Option<&str>,
     registered_ids: &[&str],
 ) -> Result<ToolScope, CliError> {
-    // S7 (analysis 2026-07-05): fail closed. With no PROXIMA_TOOL_PROFILE set,
+    // Fail closed. With no PROXIMA_TOOL_PROFILE set,
     // default to `memory` — which excludes core_publish (irreversible owner
     // transfer to World) and core_membership — instead of the old `full`
     // default that advertised those to every token. Operators opt into the
@@ -698,7 +698,7 @@ mod tests {
             "proxima-code_emit_execution_request",
         ];
 
-        // S7: no PROXIMA_TOOL_PROFILE => fail-closed `memory` default, NOT full.
+        // No PROXIMA_TOOL_PROFILE => fail-closed `memory` default, NOT full.
         let default_scope =
             resolve_tool_scope(None, None, None, &registered_ids).expect("default profile");
         assert!(default_scope.allows(protocol_tool::CORE_SEARCH_MEMORIES));

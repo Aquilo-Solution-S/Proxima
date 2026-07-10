@@ -1,10 +1,9 @@
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
-//! M4.B.5 done-when — self-ingestion against a tmp clone of the
-//! Proxima repo.
+//! Self-ingestion against a tmp clone of the Proxima repo.
 //!
-//! Asserts the ROADMAP.md M4 criterion against whichever ref the
-//! workspace checkout exposes (locally `main`; in CI the checked-out
-//! branch, since a single-branch CI checkout has no local `main`):
+//! Asserts against whichever ref the workspace checkout exposes (locally
+//! `main`; in CI the checked-out branch, since a single-branch CI checkout
+//! has no local `main`):
 //! * every commit on the ingested ref appears as a Code Fact (commit-v1)
 //! * a new commit on the clone surfaces as a new commit-v1 Fact on re-poll
 //! * a follow-up no-op poll emits zero events (idempotency)

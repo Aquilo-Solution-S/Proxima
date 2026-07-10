@@ -371,7 +371,7 @@ mod tests {
     }
 
     /// Pins the org-free deterministic `derive` `MemoryId` against drift.
-    /// Track B / S0: the v5 key folds principal kind/id ‖ kind ‖ key — no
+    /// Org-free: the v5 key folds principal kind/id ‖ kind ‖ key — no
     /// org. A fixed input must reproduce exactly this uuid.
     #[test]
     fn derived_memory_id_golden_is_org_free() {

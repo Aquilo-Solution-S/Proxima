@@ -9,13 +9,13 @@ use sqlx::Row;
 use crate::change_event::{hydrate_change_event, hydrate_change_events_batch};
 use crate::error::map_err;
 
-/// Env var (milliseconds) enabling the K4 commit-safety grace window on the
+/// Env var (milliseconds) enabling the commit-safety grace window on the
 /// forward change-event cursor. Unset/`0` = disabled (default).
 const COMMIT_GRACE_ENV: &str = "PROXIMA_CHANGE_EVENT_COMMIT_GRACE_MS";
 
 /// Configured commit-safety grace, read once from [`COMMIT_GRACE_ENV`].
 ///
-/// K4: `change_event.seq` is a `UUIDv7` stamped at INSERT time, so a slow
+/// `change_event.seq` is a `UUIDv7` stamped at INSERT time, so a slow
 /// writer can commit a *smaller* seq after a faster writer's larger seq is
 /// already visible. A forward cursor (`ce.seq > after`) that advanced past the
 /// larger seq would then skip the smaller one forever. When a positive grace
@@ -78,7 +78,7 @@ pub async fn list_change_events_after(
     let (world_kind, world_id) =
         crate::access::owner_columns::owner_binds(&proxima_core::access::world());
     let edge_visibility = edge_event_visibility_predicate(1, 2, 5, 6);
-    // K4 commit-safety horizon (opt-in via COMMIT_GRACE_ENV). When set, bind it
+    // Commit-safety horizon (opt-in via COMMIT_GRACE_ENV). When set, bind it
     // as $7 and only return events stamped before `now - grace`.
     let horizon = commit_horizon_seq(now_unix_ms(), configured_commit_grace());
     let horizon_clause = if horizon.is_some() {
@@ -275,7 +275,7 @@ mod commit_horizon_tests {
         );
 
         // Stamped 100ms ago (newer than now-grace): at/above the horizon →
-        // withheld until it ages past the grace window (K4 skip-prevention).
+        // withheld until it ages past the grace window.
         let recent = uuidv7_at_ms(now_ms - 100);
         assert!(
             recent >= horizon,

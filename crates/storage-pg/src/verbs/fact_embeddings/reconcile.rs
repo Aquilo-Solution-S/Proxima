@@ -119,8 +119,8 @@ WHERE NULLIF(btrim(m.text), '') IS NOT NULL
 /// enqueues via `proxima_core.embedding_jobs`. A row that already holds a
 /// `failed` job (retries exhausted per `fail_embedding_job`) is requeued —
 /// status back to `pending`, attempts reset, backoff cleared — so reconcile is
-/// the operator/startup reset that lifts a Fact out of the retry dead-end
-/// (analysis 2026-07-05 P1.1). `pending`/`processing` jobs are left untouched.
+/// the operator/startup reset that lifts a Fact out of the retry dead-end.
+/// `pending`/`processing` jobs are left untouched.
 ///
 /// # Errors
 ///
