@@ -5,6 +5,7 @@ use aws_sdk_s3::config::Region;
 use crate::BlobError;
 
 pub(crate) const DEFAULT_UPLOAD_TTL_SECONDS: u64 = 900;
+pub(crate) const DEFAULT_MAX_BLOB_BYTES: u64 = 100 * 1024 * 1024;
 pub(crate) const DEFAULT_READ_TTL_SECONDS: u64 = 300;
 
 /// Runtime S3 target and TTL settings for cited-blob uploads.
@@ -49,7 +50,8 @@ impl S3RuntimeConfig {
                 "PROXIMA_S3_READ_TTL_SECONDS",
                 DEFAULT_READ_TTL_SECONDS,
             )?,
-            max_blob_bytes: parse_optional_u64_env("PROXIMA_S3_MAX_BLOB_BYTES")?,
+            max_blob_bytes: parse_optional_u64_env("PROXIMA_S3_MAX_BLOB_BYTES")?
+                .or(Some(DEFAULT_MAX_BLOB_BYTES)),
         })
     }
 
@@ -186,6 +188,22 @@ mod tests {
             parse_optional_u64_env("PROXIMA_BLOB_TEST_OPT_U64_UNSET").unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn from_env_applies_default_max_blob_bytes_when_unset() {
+        let cfg = S3RuntimeConfig {
+            bucket: "b".into(),
+            region: "eu-central-1".into(),
+            endpoint_url: None,
+            force_path_style: false,
+            upload_ttl_seconds: DEFAULT_UPLOAD_TTL_SECONDS,
+            read_ttl_seconds: DEFAULT_READ_TTL_SECONDS,
+            max_blob_bytes: parse_optional_u64_env("PROXIMA_BLOB_TEST_OPT_U64_UNSET")
+                .unwrap()
+                .or(Some(DEFAULT_MAX_BLOB_BYTES)),
+        };
+        assert_eq!(cfg.max_blob_bytes, Some(DEFAULT_MAX_BLOB_BYTES));
     }
 
     #[test]

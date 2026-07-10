@@ -278,9 +278,7 @@ fn parse_resource_uri(uri: &str) -> Option<ParsedResource> {
         })),
         protocol_resource_path::EDGE_TYPES => Some(ParsedResource::EdgeTypes(ListEdgeTypesArgs {})),
         protocol_resource_path::TOOLS => Some(ParsedResource::Tools(ListSubstrateToolsArgs {})),
-        protocol_resource_path::GRAPH => Some(ParsedResource::Graph(GetGraphArgs {
-            include_tombstoned: query_bool(&query, "include_tombstoned"),
-        })),
+        protocol_resource_path::GRAPH => Some(ParsedResource::Graph(GetGraphArgs {})),
         protocol_resource_path::CHANGE_EVENTS => {
             Some(ParsedResource::ChangeEvents(ListChangeEventsArgs {
                 since: query_value(&query, "since").map(ToOwned::to_owned),

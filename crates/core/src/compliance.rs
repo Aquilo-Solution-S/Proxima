@@ -174,6 +174,11 @@ pub enum ComplianceEraseOutcome {
     Completed {
         operation_id: uuid::Uuid,
         counts: ComplianceEraseCounts,
+        /// Postgres rows are deleted but cited-object purge in the wired object
+        /// store failed or was not attempted. Operators must retry purge
+        /// out-of-band before treating erasure as fully complete.
+        #[serde(default)]
+        cited_object_purge_pending: bool,
     },
     /// Erasure was refused due to policy.
     Refused {

@@ -14,11 +14,7 @@ use super::list_substrate_tools::{
 };
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
-pub struct GetGraphArgs {
-    /// Include tombstoned memories where the underlying read supports it.
-    #[serde(default)]
-    pub include_tombstoned: bool,
-}
+pub struct GetGraphArgs {}
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct GetGraphOutput {

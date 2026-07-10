@@ -230,6 +230,7 @@ fn compliance_outcome_counts_are_content_free() {
     let outcome = ComplianceEraseOutcome::Completed {
         operation_id: Uuid::now_v7(),
         counts,
+        cited_object_purge_pending: false,
     };
     assert!(matches!(
         outcome,

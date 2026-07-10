@@ -70,6 +70,22 @@ versions 2-7 are permanently retired, see
 through your normal deploy pipeline (ArgoCD/Forgejo or equivalent) against
 a real backup, not this binary.
 
+### v0.0.6 schema lane (core 9→10 + flavor append-only)
+
+After v0.0.5, apply these migrations through GitOps before booting a
+`skip_migrations` host:
+
+| Source | Files | Notes |
+|---|---|---|
+| Proxima core | `0009_v006.sql`, `0010_v006.sql` | GIN index drops; embedding backoff column; prefix-redundant btree drops; F/A/P append-only triggers |
+| Code flavor | `20260709000020_append_only.sql` | Code sidecar append-only triggers |
+
+Online-safe: nullable column add, idempotent index drops, trigger creation —
+no backfill. `ProximaBuilder::skip_migrations(true)` boot now also runs
+`ensure_core_schema_current`: core migration version ≥ 10 (lane `version <=
+9999`), core v0.0.6 structural markers, and the code-flavor
+`code_chunk_v1_append_only` trigger when `proxima_code` is present.
+
 ## 3. Confirm app restart
 
 ```sh

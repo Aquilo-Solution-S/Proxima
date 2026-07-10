@@ -154,7 +154,7 @@ Physical shape source of truth:
 | Operation | Rule |
 |---|---|
 | `INSERT` | normal write path |
-| `UPDATE` | not part of cognitive entity lifecycle |
+| `UPDATE` | whitelisted columns only (owner transfer, tombstone, citation attach, compliance supersedes clear); DB triggers reject all other column mutations on F/A/P rows and typed sidecars |
 | `DELETE` | compliance erasure only |
 
 Facts are immutable observations. A/P and Goals revise by new row plus

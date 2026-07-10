@@ -165,6 +165,80 @@ pub async fn ensure_v004_baseline_compatible(pool: &PgPool) -> Result<(), Storag
     })
 }
 
+/// Minimum applied core migration version for the current release lane.
+pub const MIN_CORE_MIGRATION_VERSION: i64 = 10;
+
+/// Fail closed when `skip_migrations` boot runs against a database that has
+/// not yet applied the v0.0.6 schema lane.
+///
+/// # Errors
+///
+/// Returns [`StorageError::Internal`] when the recorded core migration version
+/// or structural v0.0.6 markers are absent.
+pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageError> {
+    let migration_table_exists: bool =
+        sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
+            .fetch_one(pool)
+            .await
+            .map_err(internal)?;
+
+    if migration_table_exists {
+        let max_version: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(version) FROM public._sqlx_migrations WHERE success AND version <= 9999",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(internal)?;
+        if max_version.unwrap_or(0) < MIN_CORE_MIGRATION_VERSION {
+            return Err(StorageError::Internal(format!(
+                "database core migrations at version {}; version {MIN_CORE_MIGRATION_VERSION}+ required — apply v0.0.6 core migrations before boot (see MIGRATING.md)",
+                max_version.unwrap_or(0)
+            )));
+        }
+    }
+
+    let ready: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM information_schema.columns
+              WHERE table_schema = 'proxima_core'
+                AND table_name = 'embedding_jobs'
+                AND column_name = 'next_attempt_at'
+         )
+         AND EXISTS (
+             SELECT 1
+               FROM pg_trigger t
+               JOIN pg_class c ON c.oid = t.tgrelid
+               JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'proxima_core'
+                AND c.relname = 'memories'
+                AND t.tgname = 'memories_enforce_immutable'
+         )
+         AND (
+             to_regclass('proxima_code.code_chunk_v1') IS NULL
+             OR EXISTS (
+                 SELECT 1
+                   FROM pg_trigger t
+                   JOIN pg_class c ON c.oid = t.tgrelid
+                   JOIN pg_namespace n ON n.oid = c.relnamespace
+                  WHERE n.nspname = 'proxima_code'
+                    AND c.relname = 'code_chunk_v1'
+                    AND t.tgname = 'code_chunk_v1_append_only'
+             )
+         )",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(internal)?;
+
+    if !ready {
+        return Err(StorageError::Internal(
+            "database is missing v0.0.6 schema markers (embedding_jobs.next_attempt_at or memories append-only trigger); apply migrations before boot (see MIGRATING.md)".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn parse_pgvector_version(version: &str) -> Option<(u32, u32, u32)> {
     let mut parts = version
         .split(|ch: char| !ch.is_ascii_digit())
