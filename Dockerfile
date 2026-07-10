@@ -3,7 +3,7 @@
 # cache so no database is needed at build time. cmake + pkg-config are
 # required to build native crypto deps (aws-lc-sys / ring).
 # Pin bookworm so the builder's glibc matches the distroless cc-debian12 runtime.
-FROM rust:1.96-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663 AS builder
+FROM rust:1.97-bookworm@sha256:7d0723df719e7f213b69dc7c8c595985c3f4b060cfbee4f7bc0e347a86fe3b6a AS builder
 ENV SQLX_OFFLINE=true
 RUN apt-get update \
     && apt-get install -y --no-install-recommends cmake pkg-config \
