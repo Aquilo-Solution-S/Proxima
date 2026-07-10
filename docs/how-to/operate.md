@@ -61,6 +61,5 @@ not an MCP tool (see [15 §Embedding Ops](../15-deployment.md#embedding-ops)):
 | `orphan_rows.{embeddings,heads,jobs}` | `> 0` | crash-residue infra rows; run `Engine::sweep_orphan_embedding_rows` (same authz) |
 | `recall_canary.recall_at_k` | low vs `k` | ANN recall degraded against exact; consider HNSW rebuild / `hnsw.ef_search` tuning (see [15 §Embedding Ops](../15-deployment.md#embedding-ops)) |
 
-Orphan sweep is crash-residue maintenance only; owner/source compliance erase
-deletes embeddings, `embedding_heads`, and `embedding_jobs` synchronously at
-commit.
+The orphan sweep's relationship to compliance erase is defined in
+[15 §Embedding Ops](../15-deployment.md#embedding-ops).
