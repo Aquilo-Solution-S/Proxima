@@ -12,7 +12,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::DecodingKey;
 use proxima::{Proxima, ResourceServerMetadata};
 use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, StaticJwksResolver};
-use proxima_core::{OwnerAccessPort, OwnerRef, UserId};
+use proxima_core::{OwnerAccessPort, OwnerRef, ToolScope, UserId};
 use proxima_mcp::ProximaMcpApp;
 use proxima_storage_pg::PgOwnerAccessResolver;
 use serde_json::json;
@@ -84,6 +84,7 @@ async fn oidc_host_auth_serves_tools_list() -> Result<(), Box<dyn std::error::Er
     )?;
 
     let running = Proxima::<ProximaMcpApp>::app()
+        .tool_scope(ToolScope::All)
         .database_url(database_url)
         .owner(OwnerRef::Personal(subject))
         .owner_access(owner_access)
