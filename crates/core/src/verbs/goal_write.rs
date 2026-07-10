@@ -27,9 +27,10 @@ impl GoalState {
     /// `Achieved` is **never** a legal target here — achievement carries
     /// mandatory evidence and flows through the dedicated achieve path, not a
     /// plain transition. `Achieved`/`Abandoned` are terminal (no outgoing
-    /// transition). This mirrors the storage-side `validate_goal_transition`
-    /// guard minus the `Active → Achieved` edge, which only the achieve verb
-    /// may take.
+    /// transition).
+    ///
+    /// This predicate and [`Self::may_achieve`] are the authoritative matrix
+    /// consulted by the engine routing gate and the storage transition guards.
     #[must_use]
     pub const fn may_transition_to(self, next: Self) -> bool {
         matches!(
@@ -37,6 +38,15 @@ impl GoalState {
             (Self::Active, Self::Active | Self::Paused | Self::Abandoned)
                 | (Self::Paused, Self::Active)
         )
+    }
+
+    /// Whether `self` may enter `Achieved` through the dedicated achieve verb.
+    ///
+    /// See [`Self::may_transition_to`] for the authoritative plain-transition
+    /// matrix and its engine/storage callers.
+    #[must_use]
+    pub const fn may_achieve(self) -> bool {
+        matches!(self, Self::Active)
     }
 }
 
@@ -766,6 +776,14 @@ mod goal_state_matrix_tests {
                 "{prior:?} -> Achieved must be rejected as a plain transition"
             );
         }
+    }
+
+    #[test]
+    fn only_active_may_achieve() {
+        assert!(GoalState::Active.may_achieve());
+        assert!(!GoalState::Paused.may_achieve());
+        assert!(!GoalState::Achieved.may_achieve());
+        assert!(!GoalState::Abandoned.may_achieve());
     }
 
     #[test]
