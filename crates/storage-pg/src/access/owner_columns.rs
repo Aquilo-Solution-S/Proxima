@@ -5,7 +5,7 @@ use proxima_core::{
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
-use crate::error::map_err;
+use crate::error::{internal, map_err, with_bounded_retry};
 
 #[must_use]
 pub fn owner_binds(owner: &OwnerRef) -> (OwnerRefKind, Option<uuid::Uuid>) {
@@ -112,35 +112,42 @@ pub(crate) async fn bootstrap_group_admin(
     first_admin_user_id: UserId,
     _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
-    let mut tx = pool.begin().await.map_err(map_err)?;
-    lock_group_membership_tx(&mut tx, group_id).await?;
-    let inserted = sqlx::query(
-        "INSERT INTO proxima_core.group_memberships
-            (group_id, member_user_id, relation)
-         SELECT $1, $2, $3
-          WHERE NOT EXISTS (
-              SELECT 1
-                FROM proxima_core.group_memberships
-               WHERE group_id = $1
-                 AND relation = $3
-          )",
-    )
-    .bind(group_id.into_inner())
-    .bind(first_admin_user_id.into_inner())
-    .bind(Relation::Admin)
-    .execute(&mut *tx)
+    // Retry the whole transaction on a transient deadlock/serialization
+    // failure, like every other atomic writer (fact ingest, MCP call log,
+    // goal commands): this advisory-locked membership write previously had
+    // no retry at all, so a 40P01/40001 surfaced straight to the host.
+    with_bounded_retry(move || async move {
+        let mut tx = pool.begin().await.map_err(internal)?;
+        lock_group_membership_tx(&mut tx, group_id).await?;
+        let inserted = sqlx::query(
+            "INSERT INTO proxima_core.group_memberships
+                (group_id, member_user_id, relation)
+             SELECT $1, $2, $3
+              WHERE NOT EXISTS (
+                  SELECT 1
+                    FROM proxima_core.group_memberships
+                   WHERE group_id = $1
+                     AND relation = $3
+              )",
+        )
+        .bind(group_id.into_inner())
+        .bind(first_admin_user_id.into_inner())
+        .bind(Relation::Admin)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
+
+        if inserted.rows_affected() == 0 {
+            tx.rollback().await.map_err(map_err)?;
+            return Err(StorageError::Conflict(
+                "group already has an Admin membership".into(),
+            ));
+        }
+
+        tx.commit().await.map_err(map_err)?;
+        Ok(())
+    })
     .await
-    .map_err(map_err)?;
-
-    if inserted.rows_affected() == 0 {
-        tx.rollback().await.map_err(map_err)?;
-        return Err(StorageError::Conflict(
-            "group already has an Admin membership".into(),
-        ));
-    }
-
-    tx.commit().await.map_err(map_err)?;
-    Ok(())
 }
 
 /// # Errors
@@ -153,22 +160,27 @@ pub(crate) async fn add_group_member(
     relation: Relation,
     _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
-    let mut tx = pool.begin().await.map_err(map_err)?;
-    lock_group_membership_tx(&mut tx, group_id).await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.group_memberships
-            (group_id, member_user_id, relation)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (group_id, member_user_id, relation) DO NOTHING",
-    )
-    .bind(group_id.into_inner())
-    .bind(member_user_id.into_inner())
-    .bind(relation)
-    .execute(&mut *tx)
+    // Retry the whole transaction on a transient deadlock/serialization
+    // failure, matching every other atomic writer.
+    with_bounded_retry(move || async move {
+        let mut tx = pool.begin().await.map_err(internal)?;
+        lock_group_membership_tx(&mut tx, group_id).await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.group_memberships
+                (group_id, member_user_id, relation)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (group_id, member_user_id, relation) DO NOTHING",
+        )
+        .bind(group_id.into_inner())
+        .bind(member_user_id.into_inner())
+        .bind(relation)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
+        tx.commit().await.map_err(map_err)?;
+        Ok(())
+    })
     .await
-    .map_err(map_err)?;
-    tx.commit().await.map_err(map_err)?;
-    Ok(())
 }
 
 /// # Errors
@@ -179,20 +191,25 @@ pub(crate) async fn remove_group_member(
     group_id: GroupId,
     member_user_id: UserId,
 ) -> Result<(), StorageError> {
-    let mut tx = pool.begin().await.map_err(map_err)?;
-    lock_group_membership_tx(&mut tx, group_id).await?;
-    sqlx::query(
-        "DELETE FROM proxima_core.group_memberships
-          WHERE group_id = $1
-            AND member_user_id = $2",
-    )
-    .bind(group_id.into_inner())
-    .bind(member_user_id.into_inner())
-    .execute(&mut *tx)
+    // Retry the whole transaction on a transient deadlock/serialization
+    // failure, matching every other atomic writer.
+    with_bounded_retry(move || async move {
+        let mut tx = pool.begin().await.map_err(internal)?;
+        lock_group_membership_tx(&mut tx, group_id).await?;
+        sqlx::query(
+            "DELETE FROM proxima_core.group_memberships
+              WHERE group_id = $1
+                AND member_user_id = $2",
+        )
+        .bind(group_id.into_inner())
+        .bind(member_user_id.into_inner())
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
+        tx.commit().await.map_err(map_err)?;
+        Ok(())
+    })
     .await
-    .map_err(map_err)?;
-    tx.commit().await.map_err(map_err)?;
-    Ok(())
 }
 
 /// True iff `member_user_id` currently holds exactly `relation` on `group_id`.

@@ -21,6 +21,7 @@ impl ComplianceErasePort for PgStorage {
         &self,
         auth: &EraseAuthorization,
         group_id: GroupId,
+        object_purge_planned: bool,
         fact_sidecar_tables: &[String],
         goal_sidecar_tables: &[String],
         edge_sidecar_tables: &[String],
@@ -31,6 +32,7 @@ impl ComplianceErasePort for PgStorage {
             &self.pool,
             auth,
             group_id,
+            object_purge_planned,
             fact_sidecar_tables,
             goal_sidecar_tables,
             edge_sidecar_tables,
@@ -44,6 +46,7 @@ impl ComplianceErasePort for PgStorage {
         &self,
         auth: &EraseAuthorization,
         user_id: UserId,
+        object_purge_planned: bool,
         fact_sidecar_tables: &[String],
         goal_sidecar_tables: &[String],
         edge_sidecar_tables: &[String],
@@ -54,6 +57,7 @@ impl ComplianceErasePort for PgStorage {
             &self.pool,
             auth,
             user_id,
+            object_purge_planned,
             fact_sidecar_tables,
             goal_sidecar_tables,
             edge_sidecar_tables,
@@ -132,5 +136,12 @@ impl ComplianceErasePort for PgStorage {
             cited_object_sidecar_tables,
         )
         .await
+    }
+
+    async fn clear_cited_object_purge_pending(
+        &self,
+        operation_id: uuid::Uuid,
+    ) -> Result<(), StorageError> {
+        verbs::compliance_erase::clear_cited_object_purge_pending(&self.pool, operation_id).await
     }
 }

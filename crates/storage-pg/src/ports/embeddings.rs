@@ -1,6 +1,6 @@
 use proxima_core::storage_ports::{
-    EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort, EmbeddingWritePort,
-    OperatorMaintenanceProof, OwnerWritePermit,
+    EmbeddingJobPort, EmbeddingJobStatusCounts, EmbeddingMaintenancePort, EmbeddingTextPort,
+    EmbeddingWritePort, OperatorMaintenanceProof, OwnerWritePermit,
 };
 use proxima_core::{
     EmbeddableEntityRef, EmbeddingAnnObservability, EmbeddingJobClaim, EmbeddingOrphanSweepOutcome,
@@ -121,6 +121,13 @@ impl EmbeddingJobPort for PgStorage {
 
     async fn count_failed_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError> {
         verbs::fact_embeddings::count_failed_embedding_jobs(&self.pool, owner).await
+    }
+
+    async fn count_embedding_job_status(
+        &self,
+        owner: &Owner,
+    ) -> Result<EmbeddingJobStatusCounts, StorageError> {
+        verbs::fact_embeddings::count_embedding_job_status(&self.pool, owner).await
     }
 }
 

@@ -194,6 +194,31 @@ pub trait EmbeddingJobPort: Send + Sync {
     /// exhausted). Surfaced on the readiness resource so an operator can see the
     /// retry dead-end that `reconcile` requeues.
     async fn count_failed_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError>;
+
+    /// Owner-scoped pending+failed embedding job counts in one call. Both
+    /// counts read the same `embedding_jobs` table and differ only in the
+    /// status predicate, so `get_graph_authorized` merges them instead of two
+    /// serial round trips. The default falls back to the two independent
+    /// calls above (run concurrently); the Postgres storage backend overrides
+    /// this with a single `count(*) FILTER (WHERE …)` query.
+    async fn count_embedding_job_status(
+        &self,
+        owner: &Owner,
+    ) -> Result<EmbeddingJobStatusCounts, StorageError> {
+        let (pending, failed) = tokio::try_join!(
+            self.count_pending_embedding_jobs(owner),
+            self.count_failed_embedding_jobs(owner)
+        )?;
+        Ok(EmbeddingJobStatusCounts { pending, failed })
+    }
+}
+
+/// Owner-scoped pending+failed embedding job counts, merged into a single
+/// read. See [`EmbeddingJobPort::count_embedding_job_status`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddingJobStatusCounts {
+    pub pending: u64,
+    pub failed: u64,
 }
 
 #[async_trait::async_trait]

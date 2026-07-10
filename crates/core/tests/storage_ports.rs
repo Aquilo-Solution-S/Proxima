@@ -634,6 +634,7 @@ impl ComplianceErasePort for ComplianceEraseFake {
         &self,
         _auth: &proxima_core::compliance::EraseAuthorization,
         _group_id: GroupId,
+        _object_purge_planned: bool,
         _fact_sidecar_tables: &[String],
         _goal_sidecar_tables: &[String],
         _edge_sidecar_tables: &[String],
@@ -647,6 +648,7 @@ impl ComplianceErasePort for ComplianceEraseFake {
         &self,
         _auth: &proxima_core::compliance::EraseAuthorization,
         _user_id: UserId,
+        _object_purge_planned: bool,
         _fact_sidecar_tables: &[String],
         _goal_sidecar_tables: &[String],
         _edge_sidecar_tables: &[String],
@@ -693,6 +695,13 @@ impl ComplianceErasePort for ComplianceEraseFake {
         _citation_mapping_sidecar_tables: &[String],
         _cited_object_sidecar_tables: &[String],
     ) -> Result<proxima_core::compliance::ComplianceExportBundle, StorageError> {
+        fake_error()
+    }
+
+    async fn clear_cited_object_purge_pending(
+        &self,
+        _operation_id: uuid::Uuid,
+    ) -> Result<(), StorageError> {
         fake_error()
     }
 }

@@ -691,6 +691,7 @@ impl ComplianceErasePort for RejectingStorage {
         &self,
         _auth: &crate::compliance::EraseAuthorization,
         _group_id: GroupId,
+        _object_purge_planned: bool,
         _fact_sidecar_tables: &[String],
         _goal_sidecar_tables: &[String],
         _edge_sidecar_tables: &[String],
@@ -706,6 +707,7 @@ impl ComplianceErasePort for RejectingStorage {
         &self,
         _auth: &crate::compliance::EraseAuthorization,
         _user_id: UserId,
+        _object_purge_planned: bool,
         _fact_sidecar_tables: &[String],
         _goal_sidecar_tables: &[String],
         _edge_sidecar_tables: &[String],
@@ -760,6 +762,15 @@ impl ComplianceErasePort for RejectingStorage {
     ) -> Result<crate::compliance::ComplianceExportBundle, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects reads".into(),
+        ))
+    }
+
+    async fn clear_cited_object_purge_pending(
+        &self,
+        _operation_id: uuid::Uuid,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
         ))
     }
 }

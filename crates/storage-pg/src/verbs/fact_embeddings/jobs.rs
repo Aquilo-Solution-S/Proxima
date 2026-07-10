@@ -1,5 +1,5 @@
 use proxima_core::llm::EMBEDDING_JOB_MAX_ATTEMPTS;
-use proxima_core::storage_ports::OwnerWritePermit;
+use proxima_core::storage_ports::{EmbeddingJobStatusCounts, OwnerWritePermit};
 use proxima_core::{EmbeddingJobClaim, EntityKind, MemoryId, Owner, OwnerRefKind, StorageError};
 use sqlx::PgPool;
 
@@ -363,4 +363,38 @@ pub async fn count_failed_embedding_jobs(
     .map_err(map_err)?;
     u64::try_from(row.0)
         .map_err(|_| StorageError::Internal("failed embedding job count is negative".into()))
+}
+
+/// Owner-scoped pending+failed embedding job counts in a single round trip.
+/// `get_graph_authorized` used to run [`count_pending_embedding_jobs`] and
+/// [`count_failed_embedding_jobs`] strictly in series even though both read
+/// `embedding_jobs` and differ only in the status predicate; this merges
+/// them into one `count(*) FILTER (WHERE …)` query.
+///
+/// # Errors
+///
+/// Maps SQL failures through the shared mapper.
+pub async fn count_embedding_job_status(
+    pool: &PgPool,
+    owner: &Owner,
+) -> Result<EmbeddingJobStatusCounts, StorageError> {
+    let (owner_kind, owner_id) = owner_parts(owner);
+    let row: (i64, i64) = sqlx::query_as(
+        "SELECT
+             count(*) FILTER (WHERE status IN ('pending', 'processing')),
+             count(*) FILTER (WHERE status = 'failed')
+           FROM proxima_core.embedding_jobs
+          WHERE owner_kind = $1
+            AND owner_id = $2",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .fetch_one(pool)
+    .await
+    .map_err(map_err)?;
+    let pending = u64::try_from(row.0)
+        .map_err(|_| StorageError::Internal("pending embedding job count is negative".into()))?;
+    let failed = u64::try_from(row.1)
+        .map_err(|_| StorageError::Internal("failed embedding job count is negative".into()))?;
+    Ok(EmbeddingJobStatusCounts { pending, failed })
 }

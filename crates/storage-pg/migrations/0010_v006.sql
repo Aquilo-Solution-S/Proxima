@@ -158,3 +158,19 @@ CREATE TRIGGER citation_mappings_append_only BEFORE UPDATE ON proxima_core.citat
     FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
 CREATE TRIGGER cited_objects_append_only BEFORE UPDATE ON proxima_core.cited_objects
     FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+
+-- ---------------------------------------------------------------------------
+-- Durable cited-object purge-pending flag on the compliance audit log.
+-- Owner-scope erase used to commit its audit row as Completed with this
+-- state hardcoded false BEFORE the post-commit S3/object-store purge ran; a
+-- purge failure only logged a `tracing::warn` and returned `pending: true`
+-- in memory, so the durable record could claim a clean erase while owner
+-- PII stayed in the object store. The erase verb now persists
+-- `cited_object_purge_pending` in the SAME transaction as the audit row
+-- (true iff a cited-object purge was planned for this owner-scope erase),
+-- and the engine clears it only after a confirmed successful purge — a
+-- crash or purge failure between commit and clear leaves the row truthfully
+-- reporting `pending = true` for out-of-band retry.
+-- ---------------------------------------------------------------------------
+ALTER TABLE proxima_core.compliance_audit_log
+    ADD COLUMN cited_object_purge_pending boolean NOT NULL DEFAULT false;

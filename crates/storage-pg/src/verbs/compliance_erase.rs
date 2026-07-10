@@ -48,10 +48,32 @@ pub async fn record_compliance_outcome(
     tx.commit().await.map_err(map_err)
 }
 
+/// Clear the durable purge-pending flag after a cited-object purge has been
+/// confirmed to succeed. A single-statement `UPDATE`, deliberately outside
+/// any erase transaction: the purge itself runs post-commit in the engine
+/// (see `Engine::finalize_owner_erase_with_object_purge`), so clearing the
+/// flag is a separate, later write against the already-committed audit row.
+pub async fn clear_cited_object_purge_pending(
+    pool: &PgPool,
+    operation_id: uuid::Uuid,
+) -> Result<(), StorageError> {
+    sqlx::query(
+        "UPDATE proxima_core.compliance_audit_log
+            SET cited_object_purge_pending = false
+          WHERE operation_id = $1",
+    )
+    .bind(operation_id)
+    .execute(pool)
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}
+
 pub async fn erase_group_owner_if_abandoned(
     pool: &PgPool,
     auth: &EraseAuthorization,
     group_id: GroupId,
+    object_purge_planned: bool,
     fact_sidecar_tables: &[String],
     goal_sidecar_tables: &[String],
     edge_sidecar_tables: &[String],
@@ -93,7 +115,7 @@ pub async fn erase_group_owner_if_abandoned(
     let outcome = ComplianceEraseOutcome::Completed {
         operation_id: auth.audit().operation_id(),
         counts,
-        cited_object_purge_pending: false,
+        cited_object_purge_pending: object_purge_planned,
     };
     upsert_audit_outcome(&mut tx, auth.audit(), &outcome, counts).await?;
     tx.commit().await.map_err(map_err)?;
@@ -104,6 +126,7 @@ pub async fn erase_personal_owner_if_drop_verified(
     pool: &PgPool,
     auth: &EraseAuthorization,
     user_id: UserId,
+    object_purge_planned: bool,
     fact_sidecar_tables: &[String],
     goal_sidecar_tables: &[String],
     edge_sidecar_tables: &[String],
@@ -132,7 +155,7 @@ pub async fn erase_personal_owner_if_drop_verified(
     let outcome = ComplianceEraseOutcome::Completed {
         operation_id: auth.audit().operation_id(),
         counts,
-        cited_object_purge_pending: false,
+        cited_object_purge_pending: object_purge_planned,
     };
     upsert_audit_outcome(&mut tx, auth.audit(), &outcome, counts).await?;
     tx.commit().await.map_err(map_err)?;
@@ -922,6 +945,7 @@ async fn upsert_audit_outcome(
         )
     });
     let (outcome_name, refusal) = outcome_labels(outcome);
+    let purge_pending = outcome_purge_pending(outcome);
     sqlx::query(
         "INSERT INTO proxima_core.compliance_audit_log(
              operation_id, target_kind, outcome, refusal, owner_ref_digest,
@@ -929,10 +953,10 @@ async fn upsert_audit_outcome(
              completed_at, memories_count, goals_count, edges_count, fact_entities_count,
              receipts_count, source_batches_count, citations_count, cited_objects_count,
              embeddings_count, embedding_jobs_count, mcp_call_rows_count, change_events_count,
-             redacted_edge_targets_count, suppressed_keys_count)
+             redacted_edge_targets_count, suppressed_keys_count, cited_object_purge_pending)
          VALUES ($1, $2, $3::proxima_core.compliance_erase_outcome,
                  $4::proxima_core.compliance_erase_refusal, $5, $6, $7, $8, $9,
-                 now(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+                 now(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
          ON CONFLICT (operation_id) DO UPDATE SET
              outcome = EXCLUDED.outcome,
              refusal = EXCLUDED.refusal,
@@ -950,7 +974,8 @@ async fn upsert_audit_outcome(
              mcp_call_rows_count = EXCLUDED.mcp_call_rows_count,
              change_events_count = EXCLUDED.change_events_count,
              redacted_edge_targets_count = EXCLUDED.redacted_edge_targets_count,
-             suppressed_keys_count = EXCLUDED.suppressed_keys_count",
+             suppressed_keys_count = EXCLUDED.suppressed_keys_count,
+             cited_object_purge_pending = EXCLUDED.cited_object_purge_pending",
     )
     .bind(audit.operation_id())
     .bind(target_kind)
@@ -975,6 +1000,7 @@ async fn upsert_audit_outcome(
     .bind(i64::try_from(counts.change_events).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.redacted_edge_targets).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.suppressed_keys).unwrap_or(i64::MAX))
+    .bind(purge_pending)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -1024,6 +1050,22 @@ fn outcome_labels(outcome: &ComplianceEraseOutcome) -> (&'static str, Option<&'s
         ComplianceEraseOutcome::Refused { reason, .. } => ("Refused", Some(refusal_label(reason))),
         ComplianceEraseOutcome::NotFound { .. } => ("NotFound", None),
         ComplianceEraseOutcome::Unauthorized { .. } => ("Unauthorized", None),
+    }
+}
+
+/// The durable purge-pending flag mirrors the outcome's own field: only a
+/// `Completed` erase can have a cited-object purge outstanding, and every
+/// other outcome (refused/not-found/unauthorized) never touched an object
+/// store, so it is always `false`.
+fn outcome_purge_pending(outcome: &ComplianceEraseOutcome) -> bool {
+    match outcome {
+        ComplianceEraseOutcome::Completed {
+            cited_object_purge_pending,
+            ..
+        } => *cited_object_purge_pending,
+        ComplianceEraseOutcome::Refused { .. }
+        | ComplianceEraseOutcome::NotFound { .. }
+        | ComplianceEraseOutcome::Unauthorized { .. } => false,
     }
 }
 
