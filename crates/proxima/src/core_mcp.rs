@@ -274,7 +274,7 @@ mod tests {
             produces_schema_ids: &[],
             args_schema: serde_json::json!({ "type": "object" }),
             action_arg_specs: &[],
-            call,
+            call: &call,
         }];
 
         assert_eq!(
