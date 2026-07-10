@@ -952,11 +952,12 @@ async fn upsert_audit_outcome(
              requester_digest, source_scope_digest, derived_auth_path, requested_at,
              completed_at, memories_count, goals_count, edges_count, fact_entities_count,
              receipts_count, source_batches_count, citations_count, cited_objects_count,
-             embeddings_count, embedding_jobs_count, mcp_call_rows_count, change_events_count,
-             redacted_edge_targets_count, suppressed_keys_count, cited_object_purge_pending)
+             source_cursors_count, embeddings_count, embedding_jobs_count, mcp_call_rows_count,
+             change_events_count, redacted_edge_targets_count, suppressed_keys_count,
+             cited_object_purge_pending)
          VALUES ($1, $2, $3::proxima_core.compliance_erase_outcome,
                  $4::proxima_core.compliance_erase_refusal, $5, $6, $7, $8, $9,
-                 now(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+                 now(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
          ON CONFLICT (operation_id) DO UPDATE SET
              outcome = EXCLUDED.outcome,
              refusal = EXCLUDED.refusal,
@@ -969,6 +970,7 @@ async fn upsert_audit_outcome(
              source_batches_count = EXCLUDED.source_batches_count,
              citations_count = EXCLUDED.citations_count,
              cited_objects_count = EXCLUDED.cited_objects_count,
+             source_cursors_count = EXCLUDED.source_cursors_count,
              embeddings_count = EXCLUDED.embeddings_count,
              embedding_jobs_count = EXCLUDED.embedding_jobs_count,
              mcp_call_rows_count = EXCLUDED.mcp_call_rows_count,
@@ -994,6 +996,7 @@ async fn upsert_audit_outcome(
     .bind(i64::try_from(counts.source_batches).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.citations).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.cited_objects).unwrap_or(i64::MAX))
+    .bind(i64::try_from(counts.source_cursors).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.embeddings).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.embedding_jobs).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.mcp_call_rows).unwrap_or(i64::MAX))

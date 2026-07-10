@@ -1091,7 +1091,12 @@ async fn abandoned_group_owner_erase_removes_source_cursors()
         .await?;
 
         let outcome = engine.erase_abandoned_group_owner(&authz, group).await?;
-        let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
+        let ComplianceEraseOutcome::Completed {
+            operation_id,
+            counts,
+            ..
+        } = outcome
+        else {
             panic!("expected completed erase, got {outcome:?}");
         };
         assert_eq!(
@@ -1108,6 +1113,18 @@ async fn abandoned_group_owner_erase_removes_source_cursors()
         assert_eq!(
             remaining, 0,
             "the cursor is physically erased with the owner"
+        );
+
+        let persisted: i64 = sqlx::query_scalar(
+            "SELECT source_cursors_count FROM proxima_core.compliance_audit_log
+              WHERE operation_id = $1",
+        )
+        .bind(operation_id)
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(
+            persisted, 1,
+            "the durable audit row records the cursor erasure count"
         );
         Ok::<(), Box<dyn std::error::Error>>(())
     }

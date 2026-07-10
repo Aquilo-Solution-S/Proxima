@@ -190,6 +190,9 @@ impl HttpJwksResolver {
                 .map_err(|e| KeyError::Parse(e.to_string()))?;
             next.insert(jwk.kid, Arc::new(key));
         }
+        if next.is_empty() {
+            return Err(KeyError::Parse("jwks contained no RSA keys".into()));
+        }
         *self.cache.write().await = next;
         Ok(())
     }
@@ -532,6 +535,31 @@ mod http_tests {
             .expect("stale cached key must survive an IdP outage");
 
         assert!(Arc::ptr_eq(&returned_key, &cached));
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn stale_cache_uses_cached_key_when_refresh_has_no_rsa_keys() {
+        let jwks = serde_json::json!({
+            "keys": [{ "kid": "ec1", "kty": "EC", "crv": "P-256", "x": "AQ", "y": "AQ" }]
+        })
+        .to_string();
+        let (issuer, fetches, server) = spawn_mock_idp(jwks).await;
+        let resolver = HttpJwksResolver::new(issuer.clone(), Some(format!("{issuer}/keys")))
+            .expect("loopback http allowed in tests");
+        let cached = seed_stale_key(&resolver, "k1").await;
+        *resolver.last_attempt.write().await = Instant::now()
+            .checked_sub(JWKS_REFRESH_COOLDOWN)
+            .and_then(|time| time.checked_sub(Duration::from_secs(1)));
+
+        let returned_key = resolver
+            .key_for("k1")
+            .await
+            .expect("stale cached key must survive an empty RSA refresh");
+
+        assert!(Arc::ptr_eq(&returned_key, &cached));
+        assert!(resolver.cache.read().await.contains_key("k1"));
         assert_eq!(fetches.load(Ordering::SeqCst), 1);
         server.abort();
     }
