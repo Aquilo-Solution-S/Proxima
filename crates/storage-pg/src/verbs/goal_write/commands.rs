@@ -11,8 +11,8 @@ use super::{
     ensure_create_goal_replay_side_effects_match, goal_evidence_edges_match, idempotency_conflict,
     insert_or_replay_goal, internal, lifecycle_outcome, load_prior_goal, map_err,
     motivated_by_authorship_kind, outgoing_motivated_by_evidence, replay_goal_outcome,
-    validate_active_head, validate_evidence_in_owner, validate_goal_transition,
-    validate_operator_goal_evidence,
+    validate_active_head, validate_evidence_in_owner, validate_goal_achievement,
+    validate_goal_transition, validate_operator_goal_evidence,
 };
 use crate::error::with_bounded_retry;
 
@@ -257,7 +257,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
     let evidence = validate_evidence_in_owner(&mut tx, &req.owner, &req.evidence).await?;
     validate_operator_goal_evidence(&req.authorship, &evidence)?;
     let prior = load_prior_goal(&mut tx, &req.owner, req.prior_goal_id).await?;
-    validate_goal_transition(prior.state, GoalState::Achieved)?;
+    validate_goal_achievement(prior.state)?;
     let draft = draft_from_stored(
         &req.owner,
         &prior,

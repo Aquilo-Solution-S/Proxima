@@ -161,11 +161,10 @@ impl Engine {
             .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
         // `Achieved` is never a legal plain-transition target (achievement
-        // carries mandatory evidence via `mark_goal_achieved`). Reject it here,
-        // before opening a storage transaction. Prior-state-dependent legality
-        // (e.g. `Paused → Abandoned`) stays enforced storage-side by
-        // `validate_goal_transition` as defense-in-depth; the reusable matrix
-        // lives in `GoalState::may_transition_to`.
+        // carries mandatory evidence via `mark_goal_achieved`); the
+        // authoritative matrix is `GoalState::{may_transition_to, may_achieve}`,
+        // enforced storage-side. Pre-screen only this target here for an
+        // actionable error before opening a storage transaction.
         if req.next_state == GoalState::Achieved {
             return Err(ProtocolError::invalid_argument(
                 "next_state",

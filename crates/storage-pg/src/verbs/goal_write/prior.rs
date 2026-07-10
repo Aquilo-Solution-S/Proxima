@@ -118,15 +118,23 @@ pub(super) fn validate_goal_transition(
     prior: GoalState,
     next: GoalState,
 ) -> Result<(), StorageError> {
-    match (prior, next) {
-        (
-            GoalState::Active,
-            GoalState::Active | GoalState::Paused | GoalState::Achieved | GoalState::Abandoned,
-        )
-        | (GoalState::Paused, GoalState::Active) => Ok(()),
-        _ => Err(StorageError::ConstraintViolation(format!(
+    if prior.may_transition_to(next) {
+        Ok(())
+    } else {
+        Err(StorageError::ConstraintViolation(format!(
             "invalid goal transition: {prior:?} -> {next:?}",
-        ))),
+        )))
+    }
+}
+
+pub(super) fn validate_goal_achievement(prior: GoalState) -> Result<(), StorageError> {
+    if prior.may_achieve() {
+        Ok(())
+    } else {
+        Err(StorageError::ConstraintViolation(format!(
+            "invalid goal transition: {prior:?} -> {:?}",
+            GoalState::Achieved,
+        )))
     }
 }
 

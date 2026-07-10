@@ -53,7 +53,7 @@ use lifecycle::{
 };
 use prior::{
     DraftFromPayload, child_draft, dependency_goal_ids, draft_from_payload, draft_from_stored,
-    load_prior_goal, validate_active_head, validate_goal_transition,
+    load_prior_goal, validate_active_head, validate_goal_achievement, validate_goal_transition,
 };
 use replay::{
     CreateGoalReplayExpectation, authorship_matches, ensure_create_goal_replay_side_effects_match,
