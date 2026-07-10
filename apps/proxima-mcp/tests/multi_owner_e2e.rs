@@ -20,7 +20,7 @@ use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, Stati
 use proxima_core::storage_ports::{OwnerMembershipAdminPort, OwnerWritePermit};
 use proxima_core::{
     AccessKind, AuthPath, AuthzContext, Engine, FlavorRegistry, GroupId, Owner, OwnerAccessPort,
-    OwnerRef, Relation, Role, UserId,
+    OwnerRef, Relation, Role, ToolScope, UserId,
 };
 use proxima_mcp::ProximaMcpApp;
 use proxima_storage_pg::{PgOwnerAccessResolver, PgStorage};
@@ -69,6 +69,7 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
     )?;
 
     let running = Proxima::<ProximaMcpApp>::app()
+        .tool_scope(ToolScope::All)
         .database_url(database_url.clone())
         .owner_access(owner_access)
         .authenticator(Arc::new(authn))
@@ -181,10 +182,21 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
         json!({"jsonrpc": "2.0", "id": 5, "method": "tools/list", "params": {}}),
     )
     .await?;
+    // Membership is re-checked on the next request. A session whose bound
+    // owner the principal can no longer narrow to answers the same 404 as an
+    // unknown session (no cross-owner session-existence oracle); the client
+    // re-initializes and owner selection then fails with 401.
     assert_eq!(
         oidc_after_revoke.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "revoked membership must invalidate the bound session on next request"
+    );
+    let reinit_after_revoke =
+        initialize_raw(&client, &url, &bearer_a, &owner_header(owner_a)).await?;
+    assert_eq!(
+        reinit_after_revoke.status(),
         reqwest::StatusCode::UNAUTHORIZED,
-        "bound OIDC session must re-check membership on next request"
+        "re-initialization after revocation must fail owner selection"
     );
 
     running.shutdown().await;

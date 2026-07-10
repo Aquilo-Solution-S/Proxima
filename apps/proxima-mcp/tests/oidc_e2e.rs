@@ -23,7 +23,7 @@ use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, Stati
 use proxima_core::storage_ports::OwnerMembershipAdminPort;
 use proxima_core::{
     AccessKind, AuthPath, AuthzContext, Engine, FlavorRegistry, GroupId, Owner, OwnerAccessPort,
-    OwnerRef, Relation, Role, UserId,
+    OwnerRef, Relation, Role, ToolScope, UserId,
 };
 use proxima_mcp::ProximaMcpApp;
 use proxima_storage_pg::{PgOwnerAccessResolver, PgStorage};
@@ -100,6 +100,7 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
     )?;
 
     let running = Proxima::<ProximaMcpApp>::app()
+        .tool_scope(ToolScope::All)
         .database_url(database_url)
         .owner_access(owner_access)
         .authenticator(Arc::new(authn))
@@ -235,6 +236,7 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
     )?;
 
     let running = Proxima::<ProximaMcpApp>::app()
+        .tool_scope(ToolScope::All)
         .database_url(database_url.clone())
         .owner(group_owner)
         .owner_access(owner_access)
