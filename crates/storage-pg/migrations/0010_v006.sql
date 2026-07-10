@@ -174,3 +174,21 @@ CREATE TRIGGER cited_objects_append_only BEFORE UPDATE ON proxima_core.cited_obj
 -- ---------------------------------------------------------------------------
 ALTER TABLE proxima_core.compliance_audit_log
     ADD COLUMN cited_object_purge_pending boolean NOT NULL DEFAULT false;
+
+-- Source-cursor erasures are part of the durable audit record.
+ALTER TABLE proxima_core.compliance_audit_log
+    ADD COLUMN source_cursors_count bigint NOT NULL DEFAULT 0;
+
+ALTER TABLE proxima_core.compliance_audit_log
+    DROP CONSTRAINT compliance_audit_log_no_negative_counts_chk;
+
+ALTER TABLE proxima_core.compliance_audit_log
+    ADD CONSTRAINT compliance_audit_log_no_negative_counts_chk CHECK (
+        memories_count >= 0 AND goals_count >= 0 AND edges_count >= 0
+        AND fact_entities_count >= 0 AND receipts_count >= 0
+        AND source_batches_count >= 0 AND citations_count >= 0
+        AND cited_objects_count >= 0 AND source_cursors_count >= 0
+        AND embeddings_count >= 0 AND embedding_jobs_count >= 0
+        AND mcp_call_rows_count >= 0 AND change_events_count >= 0
+        AND redacted_edge_targets_count >= 0 AND suppressed_keys_count >= 0
+    );
