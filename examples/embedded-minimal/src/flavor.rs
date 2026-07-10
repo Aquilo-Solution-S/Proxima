@@ -103,7 +103,8 @@ impl FlavorApp for EmbeddedMinimalFlavor {
 mod tests {
     use proxima::flavor::{PgMemoryPayload, PgSidecarReadCtx, SidecarPayload};
     use proxima::{
-        FactWriteCommand, OwnerRef, PayloadKind, Proxima, Relation, SourceBatchId, UserId,
+        FactWriteCommand, OwnerRef, PayloadKind, Proxima, Relation, SourceBatchId, ToolScope,
+        UserId,
     };
     use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 
@@ -120,6 +121,7 @@ mod tests {
                 .database_url(url)
                 .owner(OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7())))
                 .allow_insecure_single_owner()
+                .tool_scope(ToolScope::All)
                 .build()
                 .await?;
             let authz = booted

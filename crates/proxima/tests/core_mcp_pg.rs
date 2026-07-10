@@ -268,6 +268,7 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(db_url.clone())
             .owner(personal)
+            .tool_scope(ToolScope::All)
             .build()
             .await?;
         let tools = built.core_mcp_tools();
@@ -338,6 +339,7 @@ async fn shared_space_include_body_uses_shared_owner() {
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(db_url)
             .owner(personal)
+            .tool_scope(ToolScope::All)
             .build()
             .await?;
         let tools = built.core_mcp_tools();
@@ -399,6 +401,7 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(db_url)
             .owner(personal)
+            .tool_scope(ToolScope::All)
             .build()
             .await?;
         let tools = built.core_mcp_tools();
@@ -509,6 +512,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         let built = Proxima::<EmptyApp>::app()
             .database_url(db_url)
             .owner(owner)
+            .tool_scope(ToolScope::All)
             .build()
             .await?;
         let tools = built.core_mcp_tools();
@@ -619,6 +623,7 @@ async fn facade_reads_core_resources_with_resource_scope() {
         let built = Proxima::<EmptyApp>::app()
             .database_url(db_url)
             .owner(owner)
+            .tool_scope(ToolScope::All)
             .build()
             .await?;
         let tools = built.core_mcp_tools();
@@ -692,6 +697,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
             .database_url(db_url)
             .owner(owner)
             .embed_client(test_embedding())
+            .tool_scope(ToolScope::All)
             .build()
             .await?;
         let tools = built.core_mcp_tools();
@@ -798,6 +804,7 @@ async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() 
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(db_url)
             .owner(owner)
+            .tool_scope(ToolScope::All)
             .build()
             .await?;
         let tools = built.core_mcp_tools();
@@ -885,6 +892,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             .database_url(db_url)
             .owner(owner)
             .embed_client(test_embedding())
+            .tool_scope(ToolScope::All)
             .build()
             .await?;
         create_citation_sidecars(built.pool_for_tests()).await?;
@@ -1027,6 +1035,7 @@ async fn facade_authorized_read_surfaces_world_published_fact_to_non_owner() {
         let built = Proxima::<EmptyApp>::app()
             .database_url(db_url)
             .owner(owner)
+            .tool_scope(ToolScope::All)
             .build()
             .await?;
         let tools = built.core_mcp_tools();

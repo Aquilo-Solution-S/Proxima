@@ -342,6 +342,44 @@ absorbed into a downstream kernel unnoticed — if the script reports a
 diff, that's a stop-and-review signal before the rev bump, not a rubber
 stamp.
 
+## 13. `RuntimeBuilder::tool_scope` is now required
+
+`RuntimeBuilder`/`Proxima::<App>::app()` no longer defaults an unset tool
+scope to `ToolScope::All`. An embedding host that never called
+`.tool_scope(...)` used to silently advertise the full MCP tool surface —
+including `core_publish` (irreversible owner transfer to World) and
+`core_membership` — to every token. `build()`/`run()` now return
+`ProximaError::Config("tool_scope is required: ...")` at `resolve()` time
+until the host makes an explicit choice:
+
+```rust
+// one-line fix — restores the previous full-surface behavior explicitly
+Proxima::<App>::app()
+    .tool_scope(proxima::ToolScope::All)
+    // ...
+    .run()
+    .await?;
+```
+
+Agent-facing hosts should prefer a narrow palette instead:
+`.tool_scope(proxima::ToolScope::Palette(vec!["core_search_memories".into(), /* ... */]))`.
+This applies even when the host never enables MCP (`.with_mcp()`) — the
+check is unconditional in the builder, not gated on transport wiring.
+`apps/proxima-mcp` already always resolves and passes an explicit scope,
+so it is unaffected.
+
+## 14. `layered_router`/`layered_router_with_revalidation` now cap body size
+
+These two `crates/proxima::runtime` composition-seam routers previously
+had no `DefaultBodyLimit`/`enforce_body_limit` layer, unlike `build_router`
+and the streamable transport (`crates/mcp-server/src/transport.rs`) — an
+embedding host serving `layered_router` network-facing had no cap on
+inbound request body size. Both now carry the same
+`proxima_mcp_server::enforce_body_limit` layer, outermost, matching
+`build_router`'s order (body limit runs before auth). No caller-visible
+signature change; hosts composing their own router around
+`layered_router`'s output get the cap for free.
+
 ## Checks before calling an upgrade done
 
 ```sh

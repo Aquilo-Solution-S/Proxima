@@ -6,7 +6,7 @@ mod flavor;
 use proxima::flavor::{FactPayload, SchemaId};
 use proxima::{
     CitationSpec, EntityKind, FactWriteCommand, OwnerRef, Proxima, QueryRequest, QueryResponse,
-    SourceBatchId, UPLOADED_BLOB_SCHEMA_ID, UserId,
+    SourceBatchId, ToolScope, UPLOADED_BLOB_SCHEMA_ID, UserId,
 };
 
 const CORE_CITATION_SCHEMA_ID: &str = "proxima-core/wake-trace-citation-v1";
@@ -17,10 +17,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // here we mint a fresh Personal owner so the documented `cargo run` (only
     // DATABASE_URL set) boots instead of panicking on a missing boot owner.
     let boot_owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    // No MCP transport is enabled by this demo (no `.with_mcp()`), so the
+    // full surface is never network-advertised; ToolScope::All is chosen
+    // explicitly to satisfy the fail-closed builder requirement.
     let booted = Proxima::<flavor::EmbeddedMinimalFlavor>::app()
         .from_env()
         .allow_insecure_single_owner()
         .owner(boot_owner)
+        .tool_scope(ToolScope::All)
         .run()
         .await?;
     let embedding_worker = booted.spawn_embedding_worker(booted.cancel.clone());

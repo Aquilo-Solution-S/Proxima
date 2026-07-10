@@ -8,7 +8,7 @@ use proxima::flavor::{
 };
 use proxima::{
     AppInfo, AuthPath, AuthzContext, EdgeExistsRequest, EdgeFilter, EdgeReadRequest, FlavorApp,
-    MemoryLineageDirection, MemoryLineageRequest, Proxima, StorageError, company_owner,
+    MemoryLineageDirection, MemoryLineageRequest, Proxima, StorageError, ToolScope, company_owner,
 };
 use proxima_core::{
     AuthorDerivedEdgeInput, AuthorDerivedRequestInput, EdgeAuthorshipKind, EdgeTargetProjection,
@@ -300,6 +300,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         let built = Proxima::<FacadeSurfaceApp>::app()
             .database_url(db_url)
             .owner(owner)
+            .tool_scope(ToolScope::All)
             .build()
             .await?;
         create_sidecar_tables(built.pool_for_tests()).await?;
