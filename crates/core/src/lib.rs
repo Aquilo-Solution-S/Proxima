@@ -20,6 +20,7 @@ pub mod llm;
 pub mod mcp;
 pub mod memory;
 pub mod models;
+pub mod net;
 pub mod operator_proofs;
 pub mod owner;
 pub mod payload;
@@ -68,6 +69,7 @@ pub use mcp::{
 };
 pub use memory::*;
 pub use models::*;
+pub use net::*;
 pub use operator_proofs::*;
 pub use owner::*;
 pub use payload::*;

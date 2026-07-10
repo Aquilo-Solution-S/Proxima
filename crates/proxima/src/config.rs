@@ -39,6 +39,8 @@ pub(crate) fn s3_from_lookup(
         region: lookup("PROXIMA_S3_REGION").ok_or_else(|| {
             EmbedError::Config("PROXIMA_S3_REGION is required with PROXIMA_S3_BUCKET".into())
         })?,
+        // Raw carrier only: `CitedBlobStore::new` validates the endpoint at the
+        // consuming boundary so facade and direct construction cannot bypass it.
         endpoint_url: lookup("PROXIMA_S3_ENDPOINT_URL"),
         force_path_style: parse_bool(lookup, "PROXIMA_S3_FORCE_PATH_STYLE")?,
         upload_ttl_seconds: parse_ttl(

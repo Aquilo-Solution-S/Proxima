@@ -1,6 +1,7 @@
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Region;
+use proxima_core::{EndpointUrlError, EndpointUrlPolicy};
 
 use crate::BlobError;
 
@@ -17,10 +18,10 @@ pub struct S3RuntimeConfig {
     pub force_path_style: bool,
     pub upload_ttl_seconds: u64,
     pub read_ttl_seconds: u64,
-    /// Hard cap on a single blob's byte length. `None` = no cap. Enforced
-    /// at prepare time (declared `byte_len`) and again while streaming the
-    /// uploaded object at completion, so a client that under-declares its
-    /// size cannot smuggle an oversized object past the cap.
+    /// Hard cap on a single blob's byte length. `None` selects the 100 MiB
+    /// default when the store is constructed. Enforced at prepare time (declared
+    /// `byte_len`) and again while streaming the uploaded object at completion,
+    /// so an under-declared object cannot bypass the cap.
     pub max_blob_bytes: Option<u64>,
 }
 
@@ -125,35 +126,17 @@ fn parse_optional_u64_env(key: &str) -> Result<Option<u64>, BlobError> {
 /// signed into them) over plaintext HTTP. HTTPS is always accepted; plaintext
 /// HTTP is accepted only for a loopback host (local MinIO/dev), unlike
 /// production S3 endpoints which must be TLS.
-fn validate_endpoint_url(raw: &str) -> Result<(), BlobError> {
-    let uri = raw.parse::<http::Uri>().map_err(|e| {
-        BlobError::Config(format!("PROXIMA_S3_ENDPOINT_URL is not a valid URL: {e}"))
-    })?;
-    let scheme = uri.scheme_str().ok_or_else(|| {
-        BlobError::Config(format!(
-            "PROXIMA_S3_ENDPOINT_URL must include a scheme: {raw}"
-        ))
-    })?;
-    if scheme.eq_ignore_ascii_case("https") {
-        return Ok(());
-    }
-    if scheme.eq_ignore_ascii_case("http") && endpoint_host_is_loopback(&uri) {
-        return Ok(());
-    }
-    Err(BlobError::Config(format!(
-        "PROXIMA_S3_ENDPOINT_URL must use https (plaintext http allowed only for loopback): {raw}"
-    )))
-}
-
-fn endpoint_host_is_loopback(uri: &http::Uri) -> bool {
-    let Some(host) = uri.host() else {
-        return false;
-    };
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|addr| addr.is_loopback())
+pub(crate) fn validate_endpoint_url(raw: &str) -> Result<(), BlobError> {
+    proxima_core::validate_endpoint_url(raw, EndpointUrlPolicy::AllowLoopbackHttp).map_err(
+        |error| match error {
+            EndpointUrlError::InvalidUrl(reason) => BlobError::Config(format!(
+                "PROXIMA_S3_ENDPOINT_URL is not a valid URL: {reason}"
+            )),
+            EndpointUrlError::InsecureTransport => BlobError::Config(format!(
+                "PROXIMA_S3_ENDPOINT_URL must use https (plaintext http allowed only for loopback): {raw}"
+            )),
+        },
+    )
 }
 
 #[cfg(test)]
