@@ -140,6 +140,33 @@ async fn host_guard_empty_override_stays_loopback_only_not_allow_all() {
     assert_ne!(loopback, StatusCode::FORBIDDEN);
 }
 
+// Regression: `layered_router`/`layered_router_with_revalidation` must
+// carry the same body-size cap as `build_router` (runtime.rs) and the
+// streamable transport (crates/mcp-server/src/transport.rs). Before the
+// fix, this composition seam had no `enforce_body_limit` layer at all —
+// an embedding host serving `layered_router` network-facing had no body
+// cap. A declared oversized `Content-Length` must 413 before auth runs
+// (no Authorization header is sent; a 401 here would mean the limit
+// wasn't applied, or wasn't applied outermost).
+#[tokio::test]
+async fn layered_router_rejects_oversized_body_before_auth() {
+    const OVER_CAP_BYTES: usize = 8 * 1024 * 1024;
+
+    let owner = owner();
+    let auth = Arc::new(edge_auth().with_host(Arc::new(StubHostAuth { owner })));
+    let app = router(auth, owner);
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/mcp")
+        .header(header::CONTENT_LENGTH, OVER_CAP_BYTES.to_string())
+        .body(Body::from("x"))
+        .unwrap();
+    let status = app.oneshot(request).await.unwrap().status();
+
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
 #[tokio::test]
 async fn layered_router_protects_app_and_mcp_with_host_token() {
     let owner = owner();

@@ -324,6 +324,14 @@ impl RuntimeBuilder {
                 .unwrap_or(default_revalidation.epoch_check_interval),
         };
         validate_revalidation_config(stream_revalidation)?;
+        let tool_scope = self.tool_scope.ok_or_else(|| {
+            ProximaError::Config(
+                "tool_scope is required: pass ToolScope::All to expose the full tool surface \
+                 (previous implicit default) or ToolScope::Palette([...]) for a restricted \
+                 keep-set; agent-facing hosts should prefer a narrow palette"
+                    .into(),
+            )
+        })?;
         let owner = self.owner;
         let owner_access = self.owner_access;
         let parts = RuntimeParts {
@@ -340,7 +348,7 @@ impl RuntimeBuilder {
             expose_network: self.expose_network.unwrap_or(false),
             allowed_origins: self.allowed_origins.unwrap_or_default(),
             allowed_hosts: self.allowed_hosts.unwrap_or_default(),
-            tool_scope: self.tool_scope.unwrap_or(ToolScope::All),
+            tool_scope,
             stream_revalidation,
             insecure_single_owner: self.insecure_single_owner,
             skip_migrations: self.skip_migrations.unwrap_or(false),
@@ -975,6 +983,7 @@ mod tests {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
             .owner(owner(uuid::Uuid::now_v7()))
+            .tool_scope(ToolScope::All)
             .apply_lookup(lookup(&[
                 ("PROXIMA_STREAM_MAX_LIFETIME", "7"),
                 ("PROXIMA_STREAM_EPOCH_INTERVAL", "2"),
@@ -1010,6 +1019,7 @@ mod tests {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
             .owner(owner(uuid::Uuid::now_v7()))
+            .tool_scope(ToolScope::All)
             .resolve()
             .unwrap();
 
@@ -1026,10 +1036,39 @@ mod tests {
     }
 
     #[test]
+    fn resolve_without_tool_scope_fails_closed_with_actionable_message() {
+        // No embedding host may silently advertise the full tool surface
+        // (core_publish/core_membership included) by omitting `.tool_scope(...)`.
+        let err = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .resolve()
+            .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("tool_scope is required"));
+        assert!(message.contains("ToolScope::All"));
+        assert!(message.contains("ToolScope::Palette"));
+    }
+
+    #[test]
+    fn resolve_with_explicit_tool_scope_all_builds_as_before() {
+        let (config, _) = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .tool_scope(ToolScope::All)
+            .resolve()
+            .unwrap();
+
+        assert_eq!(config.tool_scope, ToolScope::All);
+    }
+
+    #[test]
     fn default_mcp_bind_is_loopback_when_enabled_without_bind() {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
             .owner(owner(uuid::Uuid::now_v7()))
+            .tool_scope(ToolScope::All)
             .with_mcp()
             .owner_access(owner_access())
             .authenticator(Arc::new(TestAuthenticator))

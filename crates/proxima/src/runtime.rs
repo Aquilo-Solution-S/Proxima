@@ -583,6 +583,9 @@ where
             allowlist,
             revalidation,
         ))
+        .layer(axum::middleware::from_fn(
+            proxima_mcp_server::enforce_body_limit,
+        ))
 }
 
 async fn boot_app<A: FlavorApp + 'static>(
@@ -823,6 +826,7 @@ mod tests {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
             .owner(owner)
+            .tool_scope(ToolScope::All)
             .with_mcp()
             .owner_access(owner_access())
             .authenticator(Arc::new(StubAuth { owner }))
@@ -843,6 +847,7 @@ mod tests {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
             .owner(owner)
+            .tool_scope(ToolScope::All)
             .with_mcp()
             .owner_access(owner_access())
             .mcp_bind("0.0.0.0:8080".parse().unwrap())
@@ -873,6 +878,7 @@ mod tests {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
             .owner(owner)
+            .tool_scope(ToolScope::All)
             .with_mcp()
             .owner_access(owner_access())
             .mcp_bind("0.0.0.0:8080".parse().unwrap())
@@ -904,6 +910,7 @@ mod tests {
             .authenticator(Arc::new(StubAuth { owner: owner() }));
         let overlay = RuntimeBuilder::default()
             .database_url("postgres://overlay/proxima")
+            .tool_scope(ToolScope::All)
             .stream_max_lifetime(std::time::Duration::from_secs(12));
 
         let (config, _) = overlay.merge_over(env.merge_over(base)).resolve().unwrap();
@@ -923,8 +930,9 @@ mod tests {
 
         assert_eq!(<(AlphaApp, BetaApp) as FlavorApp>::app_info().id, "alpha");
 
-        let builder =
-            <(AlphaApp, BetaApp) as FlavorApp>::configure(RuntimeBuilder::default()).owner(owner());
+        let builder = <(AlphaApp, BetaApp) as FlavorApp>::configure(RuntimeBuilder::default())
+            .owner(owner())
+            .tool_scope(ToolScope::All);
         let (config, _) = builder.resolve().unwrap();
         assert_eq!(config.database_url, "postgres://beta/proxima");
     }
@@ -934,6 +942,7 @@ mod tests {
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
             .owner(owner())
+            .tool_scope(ToolScope::All)
             .with_mcp()
             .build()
             .await
@@ -947,6 +956,7 @@ mod tests {
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
             .owner(owner())
+            .tool_scope(ToolScope::All)
             .with_mcp()
             .allow_insecure_single_owner()
             .expose_network(true)
@@ -963,6 +973,7 @@ mod tests {
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
             .owner(owner())
+            .tool_scope(ToolScope::All)
             .with_mcp()
             .mcp_bind("0.0.0.0:31415".parse().unwrap())
             .allow_insecure_single_owner()
@@ -979,6 +990,7 @@ mod tests {
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
             .owner(owner)
+            .tool_scope(ToolScope::All)
             .with_mcp()
             .owner_access(owner_access())
             .expose_network(true)
@@ -988,5 +1000,21 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, ProximaError::Security(_)));
+    }
+
+    #[tokio::test]
+    async fn build_refuses_missing_tool_scope_with_config_error() {
+        // Fail-closed default: an embedding host that never calls
+        // `.tool_scope(...)` gets a config error instead of silently
+        // advertising `ToolScope::All` (the retired implicit default).
+        let err = Proxima::<AlphaApp>::app()
+            .database_url("postgres://unused:5432/unused")
+            .owner(owner())
+            .build()
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, ProximaError::Config(_)));
+        assert!(err.to_string().contains("tool_scope is required"));
     }
 }

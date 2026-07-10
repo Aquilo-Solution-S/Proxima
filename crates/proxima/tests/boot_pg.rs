@@ -13,7 +13,7 @@ use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FactPayload, FlavorRegistry,
     FlavorRegistryError, GoalActivatedV1, MemoryId, Owner, Role, SchemaId, SchemaVersion,
-    SourceBatchId, UserId,
+    SourceBatchId, ToolScope, UserId,
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::{PgOwnerAccessResolver, PgSidecarKey, PgStorage};
@@ -440,6 +440,7 @@ async fn facade_run_binds_loopback_mcp_and_sets_engine_url() {
             .owner(owner)
             .owner_access(Arc::new(PgOwnerAccessResolver::connect_lazy(&db_url)?))
             .authenticator(Arc::new(TestAuthenticator { subject, owner }))
+            .tool_scope(ToolScope::All)
             .with_mcp()
             .mcp_bind("127.0.0.1:0".parse()?)
             .run()
@@ -474,6 +475,7 @@ async fn facade_boot_exposes_pg_sidecars_and_worker_drains_embedding_jobs() {
             .database_url(db_url)
             .owner(owner)
             .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
             .embed_client(Arc::new(ConstantEmbedding::prefixed(
                 model_id,
                 &[0.25, 0.5, 0.75],

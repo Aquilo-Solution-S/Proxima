@@ -43,7 +43,12 @@ the protocol surface [14](14-protocol-surface.md).
 ## Framework facade (host-app boot)
 
 ```rust
-Proxima::<App>::app().from_env().authenticator(auth).run().await?;
+Proxima::<App>::app()
+    .from_env()
+    .authenticator(auth)
+    .tool_scope(ToolScope::All) // or ToolScope::Palette([...]) for a restricted keep-set
+    .run()
+    .await?;
 ```
 
 | Env var | Meaning |
