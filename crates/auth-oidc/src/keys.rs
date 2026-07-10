@@ -100,8 +100,10 @@ pub struct HttpJwksResolver {
     jwks_uri: Option<String>,
     http: reqwest::Client,
     cache: RwLock<HashMap<String, Arc<DecodingKey>>>,
-    /// Last time a refetch was attempted; gates the unknown-kid refresh.
+    /// Last successful JWKS refetch; drives TTL staleness checks.
     last_refresh: RwLock<Option<Instant>>,
+    /// Last refetch attempt (success or failure); drives unknown-kid cooldown.
+    last_attempt: RwLock<Option<Instant>>,
 }
 
 impl std::fmt::Debug for HttpJwksResolver {
@@ -128,6 +130,7 @@ impl HttpJwksResolver {
             http: reqwest::Client::new(),
             cache: RwLock::new(HashMap::new()),
             last_refresh: RwLock::new(None),
+            last_attempt: RwLock::new(None),
         })
     }
 
@@ -173,7 +176,8 @@ impl HttpJwksResolver {
             // Tolerant parse: only RSA keys are materialized (the verifier pins
             // the RSA family). Skip EC/OKP or component-less entries so a mixed
             // set still yields its RSA keys instead of erroring wholesale.
-            if jwk.kty != "RSA" {
+            // Providers that omit `kty` but publish `n`/`e` are treated as RSA.
+            if !is_rsa_jwk(&jwk) {
                 continue;
             }
             let (Some(n), Some(e)) = (&jwk.n, &jwk.e) else {
@@ -187,14 +191,34 @@ impl HttpJwksResolver {
         Ok(())
     }
 
-    /// Whether a refresh is permitted: never fetched, or the last attempt is at
-    /// least `min_age` old. Bounds the outbound JWKS fetch rate.
+    /// Whether a refresh is permitted: never fetched, or the last successful
+    /// refresh is at least `min_age` old. Bounds TTL-driven refetches.
     async fn refresh_due(&self, min_age: Duration) -> bool {
         match *self.last_refresh.read().await {
             Some(last) => last.elapsed() >= min_age,
             None => true,
         }
     }
+
+    /// Whether another outbound JWKS fetch is allowed after any prior attempt.
+    async fn attempt_due(&self, min_age: Duration) -> bool {
+        match *self.last_attempt.read().await {
+            Some(last) => last.elapsed() >= min_age,
+            None => true,
+        }
+    }
+
+    async fn mark_attempt(&self) {
+        *self.last_attempt.write().await = Some(Instant::now());
+    }
+}
+
+/// True when a JWK entry should be materialized as RSA.
+fn is_rsa_jwk(jwk: &Jwk) -> bool {
+    if jwk.kty.eq_ignore_ascii_case("RSA") {
+        return true;
+    }
+    jwk.kty.is_empty() && jwk.n.is_some() && jwk.e.is_some()
 }
 
 #[async_trait]
@@ -211,9 +235,16 @@ impl KeyResolver for HttpJwksResolver {
             // out kid stops validating; on a refresh error, degrade to the
             // still-cached key rather than failing an otherwise-valid request.
             if self.refresh_due(JWKS_MAX_AGE).await {
-                *self.last_refresh.write().await = Some(Instant::now());
+                if !self.attempt_due(JWKS_REFRESH_COOLDOWN).await {
+                    tracing::warn!("jwks cache past max age but refresh throttled");
+                    return Err(KeyError::Fetch(
+                        "jwks cache stale and refresh throttled".to_string(),
+                    ));
+                }
+                self.mark_attempt().await;
                 match self.refresh().await {
                     Ok(()) => {
+                        *self.last_refresh.write().await = Some(Instant::now());
                         return self
                             .cache
                             .read()
@@ -223,7 +254,8 @@ impl KeyResolver for HttpJwksResolver {
                             .ok_or(KeyError::UnknownKid);
                     }
                     Err(err) => {
-                        tracing::warn!(error = %err, "jwks ttl refresh failed; serving cached key");
+                        tracing::warn!(error = %err, "jwks ttl refresh failed; rejecting stale cache");
+                        return Err(err);
                     }
                 }
             }
@@ -231,11 +263,12 @@ impl KeyResolver for HttpJwksResolver {
         }
         // Cache miss: refetch at most once per cooldown so a stream of
         // unknown-kid tokens can't drive one upstream JWKS fetch per request.
-        if !self.refresh_due(JWKS_REFRESH_COOLDOWN).await {
+        if !self.attempt_due(JWKS_REFRESH_COOLDOWN).await {
             return Err(KeyError::UnknownKid);
         }
-        *self.last_refresh.write().await = Some(Instant::now());
+        self.mark_attempt().await;
         self.refresh().await?;
+        *self.last_refresh.write().await = Some(Instant::now());
         self.cache
             .read()
             .await
@@ -255,7 +288,7 @@ mod http_tests {
 
     use crate::config::{OidcConfigError, validate_https_url};
 
-    use super::{HttpJwksResolver, JWKS_MAX_AGE, KeyError, KeyResolver};
+    use super::{HttpJwksResolver, JWKS_MAX_AGE, JWKS_REFRESH_COOLDOWN, KeyError, KeyResolver};
 
     // Static 2048-bit RSA public key as JWK n/e (base64url). Baked so this
     // test needs neither `rsa` nor `rand` (RUSTSEC-2023-0071: the `rsa` crate
@@ -374,6 +407,20 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn rsa_jwk_without_kty_is_materialized() {
+        let jwks = serde_json::json!({
+            "keys": [{ "kid": "k1", "n": TEST_JWK_N, "e": TEST_JWK_E }]
+        })
+        .to_string();
+        let (issuer, _fetches, server) = spawn_mock_idp(jwks).await;
+
+        let resolver = HttpJwksResolver::new(issuer, None).expect("loopback http allowed in tests");
+        assert!(resolver.key_for("k1").await.is_ok());
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn stale_cache_past_max_age_refetches_on_hit() {
         let jwks = serde_json::json!({
             "keys": [{ "kid": "k1", "kty": "RSA", "n": TEST_JWK_N, "e": TEST_JWK_E }]
@@ -388,10 +435,14 @@ mod http_tests {
         assert!(resolver.key_for("k1").await.is_ok());
         assert_eq!(fetches.load(Ordering::SeqCst), 1);
 
-        // Age the cache past JWKS_MAX_AGE. `checked_sub` yields None on a very
-        // young monotonic clock, which refresh_due also reads as stale.
-        *resolver.last_refresh.write().await =
-            Instant::now().checked_sub(JWKS_MAX_AGE + Duration::from_secs(1));
+        // Age the cache past JWKS_MAX_AGE and clear the refresh cooldown so the
+        // ttl-driven refetch is not blocked by the initial miss-path fetch.
+        let stale = Instant::now().checked_sub(JWKS_MAX_AGE + Duration::from_secs(1));
+        *resolver.last_refresh.write().await = stale;
+        *resolver.last_attempt.write().await = stale.and_then(|t| {
+            t.checked_sub(JWKS_REFRESH_COOLDOWN)
+                .and_then(|t| t.checked_sub(Duration::from_secs(1)))
+        });
 
         // A hit on the stale set triggers exactly one refetch and still resolves.
         assert!(resolver.key_for("k1").await.is_ok());

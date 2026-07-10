@@ -5,6 +5,7 @@ use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn flavor_migrations_apply_to_fresh_db() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
@@ -106,6 +107,41 @@ async fn flavor_migrations_apply_to_fresh_db() {
 
         // Idempotency — a second run must not error.
         proxima_code::migrator().run(pg.pool_for_tests()).await?;
+
+        let memory_id = uuid::Uuid::now_v7();
+        let repo_id = uuid::Uuid::now_v7();
+        let owner_id = uuid::Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.memories
+                 (memory_id, owner_kind, owner_id, schema_id, schema_version, text)
+             VALUES ($1, 'personal', $2, 'code/chunk-v1', 1, 'fn main() {}')",
+        )
+        .bind(memory_id)
+        .bind(owner_id)
+        .execute(pg.pool_for_tests())
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_code.code_chunk_v1
+                 (memory_id, repo_id, file_path, chunk_index, text, chunk_type,
+                  byte_range_start, byte_range_end, line_range_start, line_range_end, state)
+             VALUES ($1, $2, 'src/lib.rs', 0, 'fn main() {}', 'file',
+                     0, 12, 1, 1, 'Present')",
+        )
+        .bind(memory_id)
+        .bind(repo_id)
+        .execute(pg.pool_for_tests())
+        .await?;
+        let err = sqlx::query(
+            "UPDATE proxima_code.code_chunk_v1 SET text = 'rewritten' WHERE memory_id = $1",
+        )
+        .bind(memory_id)
+        .execute(pg.pool_for_tests())
+        .await
+        .expect_err("code_chunk_v1 content rewrite must be rejected");
+        assert!(
+            err.to_string().contains("append-only"),
+            "expected append-only rejection, got: {err}"
+        );
 
         Ok(())
     }

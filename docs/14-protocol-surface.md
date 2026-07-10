@@ -71,7 +71,7 @@ Canonical substrate resources:
 | `proxima://schemas{?kind}` | registered payload schemas |
 | `proxima://edge-types` | registered relation descriptors |
 | `proxima://tools` | live tool catalog |
-| `proxima://graph{?include_tombstoned}` | graph snapshot and status fields, including `fact_retention_seconds` |
+| `proxima://graph` | graph snapshot and status fields, including `fact_retention_seconds` |
 | `proxima://memory/{id}{?expand_neighbors}` | hydrate memory by id; optional neighbor edges |
 | `proxima://memory/{id}/lineage{?direction,depth,limit}` | traverse provenance / supersession lineage |
 | `proxima://change-events{?since,limit}` | forward `change_event` poll, ascending, with `next_since` and `has_more` |

@@ -132,6 +132,21 @@ async fn migrations_apply_to_fresh_db() {
                 "{index_name} must be dropped by v0.0.6; lexical search ranks candidates from a CTE"
             );
         }
+        for index_name in [
+            "idx_edges_owner",
+            "idx_edges_source_memory",
+            "idx_edges_source_goal",
+            "idx_edges_source_fact_entity",
+            "idx_edges_target_memory",
+            "idx_edges_target_goal",
+            "idx_edges_target_fact_entity",
+            "idx_goals_owner_state",
+        ] {
+            assert!(
+                !index_exists(&pg, index_name).await,
+                "{index_name} must be dropped by v0.0.6 as prefix-redundant"
+            );
+        }
         Ok(())
     }
     .await;

@@ -55,7 +55,7 @@ pub mod resource_uri {
     pub const SCHEMAS: &str = "proxima://schemas{?kind}";
     pub const EDGE_TYPES: &str = "proxima://edge-types";
     pub const TOOLS: &str = "proxima://tools";
-    pub const GRAPH: &str = "proxima://graph{?include_tombstoned}";
+    pub const GRAPH: &str = "proxima://graph";
     pub const MEMORY: &str = "proxima://memory/{id}{?expand_neighbors}";
     pub const MEMORY_LINEAGE: &str = "proxima://memory/{id}/lineage{?direction,depth,limit}";
     pub const CHANGE_EVENTS: &str = "proxima://change-events{?since,limit}";

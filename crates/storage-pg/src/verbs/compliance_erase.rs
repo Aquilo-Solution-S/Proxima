@@ -93,6 +93,7 @@ pub async fn erase_group_owner_if_abandoned(
     let outcome = ComplianceEraseOutcome::Completed {
         operation_id: auth.audit().operation_id(),
         counts,
+        cited_object_purge_pending: false,
     };
     upsert_audit_outcome(&mut tx, auth.audit(), &outcome, counts).await?;
     tx.commit().await.map_err(map_err)?;
@@ -131,6 +132,7 @@ pub async fn erase_personal_owner_if_drop_verified(
     let outcome = ComplianceEraseOutcome::Completed {
         operation_id: auth.audit().operation_id(),
         counts,
+        cited_object_purge_pending: false,
     };
     upsert_audit_outcome(&mut tx, auth.audit(), &outcome, counts).await?;
     tx.commit().await.map_err(map_err)?;
@@ -183,6 +185,7 @@ pub async fn erase_group_source_scope_if_owner_abandoned(
     let outcome = ComplianceEraseOutcome::Completed {
         operation_id: auth.audit().operation_id(),
         counts,
+        cited_object_purge_pending: false,
     };
     upsert_audit_outcome(&mut tx, auth.audit(), &outcome, counts).await?;
     tx.commit().await.map_err(map_err)?;
@@ -222,6 +225,7 @@ pub async fn erase_personal_source_scope_if_drop_verified(
     let outcome = ComplianceEraseOutcome::Completed {
         operation_id: auth.audit().operation_id(),
         counts,
+        cited_object_purge_pending: false,
     };
     upsert_audit_outcome(&mut tx, auth.audit(), &outcome, counts).await?;
     tx.commit().await.map_err(map_err)?;

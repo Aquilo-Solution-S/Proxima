@@ -137,7 +137,8 @@ const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 /// immediately; the body is otherwise wrapped in [`Limited`] so a chunked
 /// or length-lying stream errors past the cap instead of buffering
 /// unbounded memory.
-async fn enforce_body_limit(request: Request<Body>, next: Next) -> Response {
+/// Outermost MCP guard: reject oversized bodies with 413 before auth or parsing.
+pub async fn enforce_body_limit(request: Request<Body>, next: Next) -> Response {
     if let Some(len) = request
         .headers()
         .get(http::header::CONTENT_LENGTH)

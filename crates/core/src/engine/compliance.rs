@@ -209,38 +209,38 @@ impl Engine {
         }
     }
 
-    /// Best-effort external object-store purge after an OWNER-scope erase.
-    ///
-    /// The owner's authoritative Postgres rows (including
-    /// `cited_uploaded_blob_v1`) are already committed-deleted by the time this
-    /// runs; this reclaims the owner's cited-object payloads from the
-    /// host-wired object store (e.g. S3 uploaded OCR documents) so PII does not
-    /// survive an Art. 17 owner erasure.
-    ///
-    /// It fires only on [`ComplianceEraseOutcome::Completed`] and NEVER on a
-    /// refusal / unauthorized / not-found outcome. A purge failure is logged
-    /// and swallowed: the object store is eventually consistent and the lawful
-    /// wipe (rows) already succeeded, so a transient object-store error must not
-    /// turn a completed erase into a failure.
-    ///
-    /// Not called from the source-scope erase verbs: a source scope is a
-    /// partial owner and the object store keys purely by owner, so a
-    /// prefix-delete would over-delete the owner's other sources (see
-    /// [`Self::erase_abandoned_group_source_scope`]).
-    async fn purge_owner_objects_best_effort(
+    /// Reclaim cited-object payloads from the host-wired object store after an
+    /// owner-scope erase completes in Postgres. Returns the outcome with
+    /// [`ComplianceEraseOutcome::Completed::cited_object_purge_pending`] set
+    /// when purge fails so operators can retry out-of-band.
+    async fn finalize_owner_erase_with_object_purge(
         &self,
         owner: OwnerRef,
-        outcome: &ComplianceEraseOutcome,
-    ) {
-        if !matches!(outcome, ComplianceEraseOutcome::Completed { .. }) {
-            return;
-        }
+        outcome: ComplianceEraseOutcome,
+    ) -> ComplianceEraseOutcome {
+        let ComplianceEraseOutcome::Completed {
+            operation_id,
+            counts,
+            ..
+        } = outcome
+        else {
+            return outcome;
+        };
         let Some(port) = self.cited_object_erase() else {
-            return;
+            return ComplianceEraseOutcome::Completed {
+                operation_id,
+                counts,
+                cited_object_purge_pending: false,
+            };
         };
         match port.purge_owner_objects(owner).await {
             Ok(purged) => {
                 tracing::debug!(?owner, purged, "owner-scope erase purged cited objects");
+                ComplianceEraseOutcome::Completed {
+                    operation_id,
+                    counts,
+                    cited_object_purge_pending: false,
+                }
             }
             Err(error) => {
                 tracing::warn!(
@@ -249,6 +249,11 @@ impl Engine {
                     "owner-scope compliance erase committed but cited-object purge failed; \
                      object-store cleanup must be retried out-of-band"
                 );
+                ComplianceEraseOutcome::Completed {
+                    operation_id,
+                    counts,
+                    cited_object_purge_pending: true,
+                }
             }
         }
     }
@@ -274,10 +279,6 @@ impl Engine {
                 },
             )
             .await?;
-        // World erase always refuses, so this is a guarded no-op; kept for
-        // uniform owner-scope handling.
-        self.purge_owner_objects_best_effort(OwnerRef::World, &outcome)
-            .await;
         Ok(outcome)
     }
 
@@ -364,9 +365,9 @@ impl Engine {
             )
             .await
             .map_err(|e| ProtocolError::internal(format!("erase_group_owner_if_abandoned: {e}")))?;
-        self.purge_owner_objects_best_effort(OwnerRef::Group(group_id), &outcome)
-            .await;
-        Ok(outcome)
+        Ok(self
+            .finalize_owner_erase_with_object_purge(OwnerRef::Group(group_id), outcome)
+            .await)
     }
 
     /// Erase a dropped personal owner and all its owned rows.
@@ -434,9 +435,9 @@ impl Engine {
             .map_err(|e| {
                 ProtocolError::internal(format!("erase_personal_owner_if_drop_verified: {e}"))
             })?;
-        self.purge_owner_objects_best_effort(OwnerRef::Personal(user_id), &outcome)
-            .await;
-        Ok(outcome)
+        Ok(self
+            .finalize_owner_erase_with_object_purge(OwnerRef::Personal(user_id), outcome)
+            .await)
     }
 
     /// Erase one source scope for an abandoned group owner.
@@ -596,6 +597,7 @@ mod purge_tests {
                 outcome: ComplianceEraseOutcome::Completed {
                     operation_id: uuid::Uuid::now_v7(),
                     counts: ComplianceEraseCounts::default(),
+                    cited_object_purge_pending: false,
                 },
             }
         }
@@ -834,7 +836,16 @@ mod purge_tests {
             .await
             .expect("best-effort purge failure must not fail the erase");
 
-        assert!(matches!(outcome, ComplianceEraseOutcome::Completed { .. }));
+        assert!(
+            matches!(
+                outcome,
+                ComplianceEraseOutcome::Completed {
+                    cited_object_purge_pending: true,
+                    ..
+                }
+            ),
+            "purge failure must surface cited_object_purge_pending on Completed"
+        );
         // Attempted exactly once even though it errored.
         assert_eq!(purge.purged.lock().unwrap().len(), 1);
     }

@@ -641,7 +641,10 @@ fn build_router<A: FlavorApp>(
     let mut router = Router::new()
         .nest_service("/mcp", mcp_service)
         .merge(app_router)
-        .layer(auth_layer);
+        .layer(auth_layer)
+        .layer(axum::middleware::from_fn(
+            proxima_mcp_server::enforce_body_limit,
+        ));
     if let Some(md) = &config.resource_metadata {
         router = router.merge(proxima_mcp_server::protected_resource_router(md));
     }
