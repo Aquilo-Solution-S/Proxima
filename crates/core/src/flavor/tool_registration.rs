@@ -4,6 +4,18 @@ use super::{
 };
 use crate::mcp::prepare_flat_tool_args;
 use crate::mcp::schema::undescribed_property_names;
+use futures::future::BoxFuture;
+
+/// Top-level property names advertised by the flat tool's `Args` schema. This
+/// is the single source of truth for the unknown-field guard (no hardcoded
+/// field list to drift from the struct).
+fn flat_tool_property_names(args_schema: &serde_json::Value) -> std::sync::Arc<[String]> {
+    args_schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .map(|properties| properties.keys().cloned().collect::<Vec<_>>().into())
+        .unwrap_or_default()
+}
 
 /// Warn (never fail) on MCP tool properties that ship without a description.
 /// Downstream flavors must not be hard-blocked by this lint, so it only logs.
@@ -31,15 +43,19 @@ impl FlavorRegistry {
         validate_tool_name(T::NAME, expected_prefix, &slash, &under)?;
         let args_schema = mcp_tool_schema::<T::Args>();
         warn_undescribed_properties(T::NAME, &args_schema);
-        let call: McpCallFn = |ctx, mut args| {
+        let properties = flat_tool_property_names(&args_schema);
+        // Tool registrations live for the process lifetime; leaking the
+        // closure preserves the descriptor's copyable call-handle semantics.
+        let call: McpCallFn = Box::leak(Box::new(move |ctx, mut args| -> BoxFuture<'static, _> {
+            let properties = properties.clone();
             Box::pin(async move {
-                prepare_flat_tool_args::<T::Args>(T::NAME, &mut args)?;
+                prepare_flat_tool_args(T::NAME, &properties, &mut args)?;
                 let typed: T::Args = serde_json::from_value(args)
                     .map_err(|e| McpToolError::InvalidInput(e.to_string()))?;
                 let output = <T as McpTool>::call(ctx, typed).await?;
                 serde_json::to_value(output).map_err(|e| McpToolError::InvalidInput(e.to_string()))
             })
-        };
+        }));
         self.mcp_tools.push(McpToolDescriptor {
             name: T::NAME,
             description: T::DESCRIPTION,
@@ -73,13 +89,17 @@ impl FlavorRegistry {
         validate_tool_name(T::NAME, expected_prefix, &slash, &under)?;
         let args_schema = mcp_tool_schema::<T::Args>();
         warn_undescribed_properties(T::NAME, &args_schema);
-        let call: McpCallFn = |ctx, mut args| {
+        let properties = flat_tool_property_names(&args_schema);
+        // Tool registrations live for the process lifetime; leaking the
+        // closure preserves the descriptor's copyable call-handle semantics.
+        let call: McpCallFn = Box::leak(Box::new(move |ctx, mut args| -> BoxFuture<'static, _> {
+            let properties = properties.clone();
             Box::pin(async move {
                 // Dispatcher tools (non-empty specs) run per-action validation;
                 // flat McpTools run the flat unknown-field + space-alias guard
                 // instead of silently accepting unknown fields.
                 if T::ACTION_ARG_SPECS.is_empty() {
-                    prepare_flat_tool_args::<T::Args>(T::NAME, &mut args)?;
+                    prepare_flat_tool_args(T::NAME, &properties, &mut args)?;
                 } else {
                     validate_action_args(T::NAME, T::ACTION_ARG_SPECS, &args)?;
                 }
@@ -88,7 +108,7 @@ impl FlavorRegistry {
                 let output = T::call(ctx, typed).await?;
                 serde_json::to_value(output).map_err(|e| McpToolError::InvalidInput(e.to_string()))
             })
-        };
+        }));
         self.mcp_tools.push(McpToolDescriptor {
             name: T::NAME,
             description: T::DESCRIPTION,

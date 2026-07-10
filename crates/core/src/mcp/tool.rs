@@ -10,7 +10,7 @@ pub enum McpToolOrigin {
     Flavor(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct McpToolDescriptor {
     pub name: &'static str,
     pub description: &'static str,
@@ -19,6 +19,21 @@ pub struct McpToolDescriptor {
     pub args_schema: serde_json::Value,
     pub action_arg_specs: &'static [McpActionArgSpec],
     pub call: McpCallFn,
+}
+
+impl std::fmt::Debug for McpToolDescriptor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpToolDescriptor")
+            .field("name", &self.name)
+            .field("description", &self.description)
+            .field("origin", &self.origin)
+            .field("produces_schema_ids", &self.produces_schema_ids)
+            .field("args_schema", &self.args_schema)
+            .field("action_arg_specs", &self.action_arg_specs)
+            .field("call", &"<callable>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,18 +115,18 @@ pub(crate) fn validate_action_args(
 /// [`validate_action_args`] instead; flat tools previously short-circuited on
 /// empty specs and silently accepted (and dropped) unknown fields — a
 /// mistyped `space` on `core_search_memories` searched the wrong owner.
-pub(crate) fn prepare_flat_tool_args<A: schemars::JsonSchema>(
+pub(crate) fn prepare_flat_tool_args(
     tool_name: &str,
+    properties: &[String],
     args: &mut serde_json::Value,
 ) -> Result<(), McpToolError> {
-    let properties = flat_tool_property_names::<A>();
-    coerce_space_aliases(args, &properties);
+    coerce_space_aliases(tool_name, args, properties)?;
     let object = args.as_object().ok_or_else(|| {
         McpToolError::InvalidInput(format!("{tool_name} arguments must be a JSON object"))
     })?;
     let mut unexpected = object
         .keys()
-        .filter(|field| !properties.contains(field.as_str()))
+        .filter(|field| !properties.iter().any(|property| property == field.as_str()))
         .cloned()
         .collect::<Vec<_>>();
     if !unexpected.is_empty() {
@@ -124,36 +139,40 @@ pub(crate) fn prepare_flat_tool_args<A: schemars::JsonSchema>(
     Ok(())
 }
 
-/// Top-level property names advertised by the flat tool's `Args` schema. This
-/// is the single source of truth for the unknown-field guard (no hardcoded
-/// field list to drift from the struct).
-fn flat_tool_property_names<A: schemars::JsonSchema>() -> std::collections::BTreeSet<String> {
-    super::schema::mcp_tool_schema::<A>()
-        .get("properties")
-        .and_then(serde_json::Value::as_object)
-        .map(|properties| properties.keys().cloned().collect())
-        .unwrap_or_default()
-}
-
 /// Reconcile the `space` (scalar) vs `spaces` (array) argument names so a
 /// mismatched name is coerced, not silently ignored. Driven by the tool's own
 /// schema: a tool declaring `spaces` accepts a scalar `space`; a tool declaring
-/// `space` accepts a `spaces` scalar-or-array (first element wins for arrays).
+/// `space` accepts a scalar `spaces` or a single-element `spaces` array.
 fn coerce_space_aliases(
+    tool_name: &str,
     args: &mut serde_json::Value,
-    properties: &std::collections::BTreeSet<String>,
-) {
+    properties: &[String],
+) -> Result<(), McpToolError> {
     let Some(object) = args.as_object_mut() else {
-        return;
+        return Ok(());
     };
-    if properties.contains("spaces")
-        && !properties.contains("space")
+    let has_spaces = properties.iter().any(|property| property == "spaces");
+    let has_space = properties.iter().any(|property| property == "space");
+    if has_space
+        && !has_spaces
+        && let Some(count) = object
+            .get("spaces")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len)
+        && count > 1
+    {
+        return Err(McpToolError::InvalidInput(format!(
+            "{tool_name} accepts a single `space`; received `spaces` array with {count} elements"
+        )));
+    }
+    if has_spaces
+        && !has_space
         && !object.contains_key("spaces")
         && let Some(value) = object.remove("space")
     {
         object.insert("spaces".to_string(), serde_json::Value::Array(vec![value]));
-    } else if properties.contains("space")
-        && !properties.contains("spaces")
+    } else if has_space
+        && !has_spaces
         && !object.contains_key("space")
         && let Some(value) = object.remove("spaces")
     {
@@ -165,12 +184,15 @@ fn coerce_space_aliases(
             object.insert("space".to_string(), scalar);
         }
     }
+    Ok(())
 }
 
-pub type McpCallFn = fn(
-    McpToolCtx,
-    serde_json::Value,
-) -> BoxFuture<'static, Result<serde_json::Value, McpToolError>>;
+type McpCall = dyn Fn(McpToolCtx, serde_json::Value) -> BoxFuture<'static, Result<serde_json::Value, McpToolError>>
+    + Send
+    + Sync;
+
+/// Copyable handle to a capture-capable, process-lifetime registered tool call.
+pub type McpCallFn = &'static McpCall;
 
 pub trait McpTool: Send + Sync + 'static {
     const NAME: &'static str;
@@ -222,32 +244,17 @@ where
 #[cfg(test)]
 mod flat_tool_tests {
     use super::prepare_flat_tool_args;
-    use crate::mcp::McpToolError;
-    use schemars::JsonSchema;
-
-    #[derive(JsonSchema)]
-    #[allow(dead_code)]
-    struct SearchLike {
-        #[schemars(description = "the query")]
-        query: String,
-        #[schemars(description = "spaces")]
-        spaces: Vec<String>,
-    }
-
-    #[derive(JsonSchema)]
-    #[allow(dead_code)]
-    struct RememberLike {
-        #[schemars(description = "body")]
-        body: String,
-        #[schemars(description = "space")]
-        space: Option<String>,
-    }
+    use crate::mcp::{McpToolError, McpToolErrorKind};
 
     #[test]
     fn flat_tool_rejects_unknown_field() {
         let mut args = serde_json::json!({ "query": "x", "spaces": [], "bogus": 1 });
-        let err = prepare_flat_tool_args::<SearchLike>("core_search_memories", &mut args)
-            .expect_err("unknown field rejected");
+        let err = prepare_flat_tool_args(
+            "core_search_memories",
+            &["query".to_string(), "spaces".to_string()],
+            &mut args,
+        )
+        .expect_err("unknown field rejected");
         assert!(
             matches!(err, McpToolError::InvalidInput(ref m) if m.contains("does not accept field(s): bogus")),
             "got {err:?}",
@@ -257,30 +264,66 @@ mod flat_tool_tests {
     #[test]
     fn scalar_space_alias_coerces_to_spaces_array() {
         let mut args = serde_json::json!({ "query": "x", "space": "team" });
-        prepare_flat_tool_args::<SearchLike>("core_search_memories", &mut args)
-            .expect("space alias accepted");
+        prepare_flat_tool_args(
+            "core_search_memories",
+            &["query".to_string(), "spaces".to_string()],
+            &mut args,
+        )
+        .expect("space alias accepted");
         assert_eq!(args["spaces"], serde_json::json!(["team"]));
         assert!(args.get("space").is_none(), "alias key removed: {args}");
     }
 
     #[test]
-    fn spaces_alias_coerces_to_scalar_space() {
+    fn multi_element_spaces_alias_is_rejected_for_scalar_space() {
         let mut args = serde_json::json!({ "body": "b", "spaces": ["team", "other"] });
-        prepare_flat_tool_args::<RememberLike>("core_remember", &mut args)
-            .expect("spaces alias accepted");
+        let err = prepare_flat_tool_args(
+            "core_remember",
+            &["body".to_string(), "space".to_string()],
+            &mut args,
+        )
+        .expect_err("multiple spaces rejected for a scalar-space tool");
+        assert_eq!(err.kind(), McpToolErrorKind::InvalidInput);
+        assert!(
+            matches!(err, McpToolError::InvalidInput(ref message)
+                if message == "core_remember accepts a single `space`; received `spaces` array with 2 elements"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn single_element_spaces_alias_coerces_to_scalar_space() {
+        let mut args = serde_json::json!({ "body": "b", "spaces": ["team"] });
+        prepare_flat_tool_args(
+            "core_remember",
+            &["body".to_string(), "space".to_string()],
+            &mut args,
+        )
+        .expect("single spaces alias accepted");
         assert_eq!(args["space"], serde_json::json!("team"));
         assert!(args.get("spaces").is_none(), "alias key removed: {args}");
+    }
 
-        let mut scalar = serde_json::json!({ "body": "b", "spaces": "team" });
-        prepare_flat_tool_args::<RememberLike>("core_remember", &mut scalar)
-            .expect("scalar spaces alias accepted");
-        assert_eq!(scalar["space"], serde_json::json!("team"));
+    #[test]
+    fn scalar_spaces_alias_coerces_to_scalar_space() {
+        let mut args = serde_json::json!({ "body": "b", "spaces": "team" });
+        prepare_flat_tool_args(
+            "core_remember",
+            &["body".to_string(), "space".to_string()],
+            &mut args,
+        )
+        .expect("scalar spaces alias accepted");
+        assert_eq!(args["space"], serde_json::json!("team"));
     }
 
     #[test]
     fn known_fields_pass() {
         let mut args = serde_json::json!({ "query": "x", "spaces": ["a"] });
-        prepare_flat_tool_args::<SearchLike>("core_search_memories", &mut args)
-            .expect("known fields accepted");
+        prepare_flat_tool_args(
+            "core_search_memories",
+            &["query".to_string(), "spaces".to_string()],
+            &mut args,
+        )
+        .expect("known fields accepted");
     }
 }
