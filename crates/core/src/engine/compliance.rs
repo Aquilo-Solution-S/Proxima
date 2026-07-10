@@ -209,10 +209,25 @@ impl Engine {
         }
     }
 
+    /// True iff a cited-object erase port is wired, i.e. an owner-scope erase
+    /// will attempt a post-commit object-store purge. The storage verb
+    /// persists this planned state as `cited_object_purge_pending` on the
+    /// audit row inside the same transaction as the erase, so the durable
+    /// record never claims a clean erase while a purge is still outstanding.
+    fn owner_object_purge_planned(&self) -> bool {
+        self.cited_object_erase().is_some()
+    }
+
     /// Reclaim cited-object payloads from the host-wired object store after an
-    /// owner-scope erase completes in Postgres. Returns the outcome with
-    /// [`ComplianceEraseOutcome::Completed::cited_object_purge_pending`] set
-    /// when purge fails so operators can retry out-of-band.
+    /// owner-scope erase completes in Postgres, then reconcile the durable
+    /// `cited_object_purge_pending` audit flag to match reality:
+    ///
+    /// - no port configured: the storage verb already persisted `false`.
+    /// - purge succeeds: clear the durable flag and report `false`.
+    /// - purge fails: leave the durable flag set (already `true` from the
+    ///   storage verb) and report `true`; retried out-of-band.
+    /// - purge succeeds but the clear itself fails: warn and report `true` —
+    ///   over-reporting pending is safe, under-reporting is not.
     async fn finalize_owner_erase_with_object_purge(
         &self,
         owner: OwnerRef,
@@ -226,35 +241,47 @@ impl Engine {
         else {
             return outcome;
         };
-        let Some(port) = self.cited_object_erase() else {
-            return ComplianceEraseOutcome::Completed {
-                operation_id,
-                counts,
-                cited_object_purge_pending: false,
-            };
+        let cited_object_purge_pending = if let Some(port) = self.cited_object_erase() {
+            match port.purge_owner_objects(owner).await {
+                Ok(purged) => {
+                    tracing::debug!(?owner, purged, "owner-scope erase purged cited objects");
+                    match self
+                        .storage
+                        .compliance
+                        .compliance_erase
+                        .clear_cited_object_purge_pending(operation_id)
+                        .await
+                    {
+                        Ok(()) => false,
+                        Err(error) => {
+                            tracing::warn!(
+                                ?owner,
+                                %error,
+                                "owner-scope erase purged cited objects but failed to clear \
+                                 the durable purge-pending audit flag; the row stays pending \
+                                 until an operator retries the clear"
+                            );
+                            true
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        ?owner,
+                        %error,
+                        "owner-scope compliance erase committed but cited-object purge failed; \
+                         object-store cleanup must be retried out-of-band"
+                    );
+                    true
+                }
+            }
+        } else {
+            false
         };
-        match port.purge_owner_objects(owner).await {
-            Ok(purged) => {
-                tracing::debug!(?owner, purged, "owner-scope erase purged cited objects");
-                ComplianceEraseOutcome::Completed {
-                    operation_id,
-                    counts,
-                    cited_object_purge_pending: false,
-                }
-            }
-            Err(error) => {
-                tracing::warn!(
-                    ?owner,
-                    %error,
-                    "owner-scope compliance erase committed but cited-object purge failed; \
-                     object-store cleanup must be retried out-of-band"
-                );
-                ComplianceEraseOutcome::Completed {
-                    operation_id,
-                    counts,
-                    cited_object_purge_pending: true,
-                }
-            }
+        ComplianceEraseOutcome::Completed {
+            operation_id,
+            counts,
+            cited_object_purge_pending,
         }
     }
 
@@ -350,6 +377,7 @@ impl Engine {
 
         let auth = EraseAuthorization::new(audit);
         let sidecars = self.compliance_sidecar_tables();
+        let object_purge_planned = self.owner_object_purge_planned();
         let outcome = self
             .storage
             .compliance
@@ -357,6 +385,7 @@ impl Engine {
             .erase_group_owner_if_abandoned(
                 &auth,
                 group_id,
+                object_purge_planned,
                 &sidecars.fact,
                 &sidecars.goal,
                 &sidecars.edge,
@@ -418,6 +447,7 @@ impl Engine {
 
         let auth = EraseAuthorization::new(audit);
         let sidecars = self.compliance_sidecar_tables();
+        let object_purge_planned = self.owner_object_purge_planned();
         let outcome = self
             .storage
             .compliance
@@ -425,6 +455,7 @@ impl Engine {
             .erase_personal_owner_if_drop_verified(
                 &auth,
                 user_id,
+                object_purge_planned,
                 &sidecars.fact,
                 &sidecars.goal,
                 &sidecars.edge,
@@ -585,20 +616,37 @@ mod purge_tests {
     use crate::{GroupId, OwnerRef, SourceId, UserId};
 
     /// `ComplianceErasePort` whose erase verbs return a fixed outcome and whose
-    /// `record_compliance_outcome` succeeds (so the refused audit path can run).
+    /// `record_compliance_outcome` succeeds (so the refused audit path can
+    /// run). Also records every `clear_cited_object_purge_pending` call so
+    /// tests can assert the durable flag was (or was not) cleared.
     #[derive(Debug)]
     struct FixedOutcomeErase {
         outcome: ComplianceEraseOutcome,
+        clear_calls: Mutex<Vec<uuid::Uuid>>,
+        fail_clear: bool,
     }
 
     impl FixedOutcomeErase {
         fn completed() -> Self {
+            Self::completed_with_clear_outcome(true)
+        }
+
+        /// Same fixed `Completed` outcome, but
+        /// `clear_cited_object_purge_pending` fails every call — exercises
+        /// the "purge succeeded but the durable clear itself failed" corner.
+        fn completed_with_failing_clear() -> Self {
+            Self::completed_with_clear_outcome(false)
+        }
+
+        fn completed_with_clear_outcome(clear_succeeds: bool) -> Self {
             Self {
                 outcome: ComplianceEraseOutcome::Completed {
                     operation_id: uuid::Uuid::now_v7(),
                     counts: ComplianceEraseCounts::default(),
                     cited_object_purge_pending: false,
                 },
+                clear_calls: Mutex::new(Vec::new()),
+                fail_clear: !clear_succeeds,
             }
         }
     }
@@ -617,6 +665,7 @@ mod purge_tests {
             &self,
             _auth: &EraseAuthorization,
             _group_id: GroupId,
+            _object_purge_planned: bool,
             _fact: &[String],
             _goal: &[String],
             _edge: &[String],
@@ -630,6 +679,7 @@ mod purge_tests {
             &self,
             _auth: &EraseAuthorization,
             _user_id: UserId,
+            _object_purge_planned: bool,
             _fact: &[String],
             _goal: &[String],
             _edge: &[String],
@@ -677,6 +727,20 @@ mod purge_tests {
             _cited_object: &[String],
         ) -> Result<ComplianceExportBundle, StorageError> {
             Err(StorageError::Internal("export not used in test".into()))
+        }
+
+        async fn clear_cited_object_purge_pending(
+            &self,
+            operation_id: uuid::Uuid,
+        ) -> Result<(), StorageError> {
+            self.clear_calls.lock().unwrap().push(operation_id);
+            if self.fail_clear {
+                Err(StorageError::Internal(
+                    "clear_cited_object_purge_pending failed in test".into(),
+                ))
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -732,21 +796,34 @@ mod purge_tests {
     async fn completed_group_owner_erase_purges_once_with_owner() {
         let group = GroupId::new(uuid::Uuid::now_v7());
         let purge = Arc::new(RecordingPurge::default());
-        let engine = engine_with(
-            Arc::new(FixedOutcomeErase::completed()),
-            None,
-            purge.clone(),
-        );
+        let erase = Arc::new(FixedOutcomeErase::completed());
+        let engine = engine_with(erase.clone(), None, purge.clone());
 
         let outcome = engine
             .erase_abandoned_group_owner(&system_authz(), group)
             .await
             .expect("erase returns an outcome");
 
-        assert!(matches!(outcome, ComplianceEraseOutcome::Completed { .. }));
+        let ComplianceEraseOutcome::Completed {
+            operation_id,
+            cited_object_purge_pending,
+            ..
+        } = outcome
+        else {
+            panic!("expected completed erase, got {outcome:?}");
+        };
+        assert!(
+            !cited_object_purge_pending,
+            "a successful purge must clear the pending flag"
+        );
         assert_eq!(
             purge.purged.lock().unwrap().as_slice(),
             &[OwnerRef::Group(group)]
+        );
+        assert_eq!(
+            erase.clear_calls.lock().unwrap().as_slice(),
+            &[operation_id],
+            "purge success must clear the durable audit flag exactly once"
         );
     }
 
@@ -754,21 +831,34 @@ mod purge_tests {
     async fn completed_personal_owner_erase_purges_once_with_owner() {
         let user = UserId::new(uuid::Uuid::now_v7());
         let purge = Arc::new(RecordingPurge::default());
-        let engine = engine_with(
-            Arc::new(FixedOutcomeErase::completed()),
-            Some(Arc::new(DropVerified)),
-            purge.clone(),
-        );
+        let erase = Arc::new(FixedOutcomeErase::completed());
+        let engine = engine_with(erase.clone(), Some(Arc::new(DropVerified)), purge.clone());
 
         let outcome = engine
             .erase_dropped_personal_owner(&system_authz(), user, "drop-1".into())
             .await
             .expect("erase returns an outcome");
 
-        assert!(matches!(outcome, ComplianceEraseOutcome::Completed { .. }));
+        let ComplianceEraseOutcome::Completed {
+            operation_id,
+            cited_object_purge_pending,
+            ..
+        } = outcome
+        else {
+            panic!("expected completed erase, got {outcome:?}");
+        };
+        assert!(
+            !cited_object_purge_pending,
+            "a successful purge must clear the pending flag"
+        );
         assert_eq!(
             purge.purged.lock().unwrap().as_slice(),
             &[OwnerRef::Personal(user)]
+        );
+        assert_eq!(
+            erase.clear_calls.lock().unwrap().as_slice(),
+            &[operation_id],
+            "purge success must clear the durable audit flag exactly once"
         );
     }
 
@@ -825,11 +915,8 @@ mod purge_tests {
             purged: Mutex::default(),
             fail: true,
         });
-        let engine = engine_with(
-            Arc::new(FixedOutcomeErase::completed()),
-            None,
-            purge.clone(),
-        );
+        let erase = Arc::new(FixedOutcomeErase::completed());
+        let engine = engine_with(erase.clone(), None, purge.clone());
 
         let outcome = engine
             .erase_abandoned_group_owner(&system_authz(), group)
@@ -848,5 +935,39 @@ mod purge_tests {
         );
         // Attempted exactly once even though it errored.
         assert_eq!(purge.purged.lock().unwrap().len(), 1);
+        assert!(
+            erase.clear_calls.lock().unwrap().is_empty(),
+            "a failed purge must leave the durable pending flag untouched (already true)"
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_failure_after_successful_purge_still_reports_pending() {
+        let group = GroupId::new(uuid::Uuid::now_v7());
+        let purge = Arc::new(RecordingPurge::default());
+        let erase = Arc::new(FixedOutcomeErase::completed_with_failing_clear());
+        let engine = engine_with(erase.clone(), None, purge.clone());
+
+        let outcome = engine
+            .erase_abandoned_group_owner(&system_authz(), group)
+            .await
+            .expect("a failed clear must not fail the erase itself");
+
+        assert!(
+            matches!(
+                outcome,
+                ComplianceEraseOutcome::Completed {
+                    cited_object_purge_pending: true,
+                    ..
+                }
+            ),
+            "a failed clear must over-report pending rather than silently under-report"
+        );
+        assert_eq!(purge.purged.lock().unwrap().len(), 1);
+        assert_eq!(
+            erase.clear_calls.lock().unwrap().len(),
+            1,
+            "the clear must still be attempted exactly once"
+        );
     }
 }

@@ -808,6 +808,7 @@ pub(in crate::engine) mod tests {
             &self,
             _auth: &proxima_core::compliance::EraseAuthorization,
             _group_id: GroupId,
+            _object_purge_planned: bool,
             _fact_sidecar_tables: &[String],
             _goal_sidecar_tables: &[String],
             _edge_sidecar_tables: &[String],
@@ -823,6 +824,7 @@ pub(in crate::engine) mod tests {
             &self,
             _auth: &proxima_core::compliance::EraseAuthorization,
             _user_id: UserId,
+            _object_purge_planned: bool,
             _fact_sidecar_tables: &[String],
             _goal_sidecar_tables: &[String],
             _edge_sidecar_tables: &[String],
@@ -877,6 +879,15 @@ pub(in crate::engine) mod tests {
         ) -> Result<proxima_core::compliance::ComplianceExportBundle, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects reads".into(),
+            ))
+        }
+
+        async fn clear_cited_object_purge_pending(
+            &self,
+            _operation_id: uuid::Uuid,
+        ) -> Result<(), StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
             ))
         }
     }

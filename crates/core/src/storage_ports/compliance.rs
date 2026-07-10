@@ -32,10 +32,17 @@ pub trait ComplianceErasePort: Send + Sync {
         outcome: &crate::compliance::ComplianceEraseOutcome,
     ) -> Result<(), StorageError>;
 
+    /// `object_purge_planned` is true iff the engine has a cited-object erase
+    /// port configured for this owner-scope erase. The verb persists
+    /// `cited_object_purge_pending = object_purge_planned` on the audit row in
+    /// the same transaction as the erase and echoes it back on the outcome, so
+    /// the durable record never claims a clean erase while a planned purge is
+    /// still outstanding.
     async fn erase_group_owner_if_abandoned(
         &self,
         auth: &crate::compliance::EraseAuthorization,
         group_id: GroupId,
+        object_purge_planned: bool,
         fact_sidecar_tables: &[String],
         goal_sidecar_tables: &[String],
         edge_sidecar_tables: &[String],
@@ -43,10 +50,13 @@ pub trait ComplianceErasePort: Send + Sync {
         cited_object_sidecar_tables: &[String],
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError>;
 
+    /// See [`ComplianceErasePort::erase_group_owner_if_abandoned`] for the
+    /// meaning of `object_purge_planned`.
     async fn erase_personal_owner_if_drop_verified(
         &self,
         auth: &crate::compliance::EraseAuthorization,
         user_id: UserId,
+        object_purge_planned: bool,
         fact_sidecar_tables: &[String],
         goal_sidecar_tables: &[String],
         edge_sidecar_tables: &[String],
@@ -87,6 +97,16 @@ pub trait ComplianceErasePort: Send + Sync {
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
     ) -> Result<crate::compliance::ComplianceExportBundle, StorageError>;
+
+    /// Clear the durable purge-pending flag on one audit row after a
+    /// cited-object purge has been confirmed to succeed. A single-statement
+    /// `UPDATE … WHERE operation_id = $1`; never sets the flag, only clears
+    /// it — a failed clear must leave the row over-reporting pending rather
+    /// than silently losing the signal.
+    async fn clear_cited_object_purge_pending(
+        &self,
+        operation_id: uuid::Uuid,
+    ) -> Result<(), StorageError>;
 }
 
 /// Trusted host port for compliance erase authorization.

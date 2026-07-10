@@ -31,9 +31,10 @@ pub use compliance::{
 };
 pub use cursors::SourceCursorPort;
 pub use embeddings::{
-    EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingJobPort, EmbeddingMaintenancePort,
-    EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, EmbeddingTextPort,
-    EmbeddingWriteOutcome, EmbeddingWritePort, EmbeddingWriteProof,
+    EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingJobPort, EmbeddingJobStatusCounts,
+    EmbeddingMaintenancePort, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome,
+    EmbeddingRecallCanary, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort,
+    EmbeddingWriteProof,
 };
 pub use fact::{FactIngestPort, SourceBatchPort};
 pub use goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};

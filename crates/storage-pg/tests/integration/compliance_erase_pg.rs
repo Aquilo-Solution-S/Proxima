@@ -10,8 +10,8 @@ use proxima_core::access::{AccessError, Role};
 use proxima_core::change_event::EdgeTargetProjection;
 use proxima_core::engine::Engine;
 use proxima_core::storage_ports::{
-    ComplianceAdminPort, EdgeReadPort, FactIngestPort, OwnerDropProofPort,
-    OwnerMembershipAdminPort, OwnerWritePermit,
+    CitedObjectErasePort, ComplianceAdminPort, ComplianceErasePort, EdgeReadPort, FactIngestPort,
+    OwnerDropProofPort, OwnerMembershipAdminPort, OwnerWritePermit,
 };
 use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
 use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, QueryRequest};
@@ -75,6 +75,25 @@ fn compliance_engine(pg: &PgStorage) -> Engine {
             Some(Arc::new(AllowDropProof)),
         ),
     )
+}
+
+/// `CitedObjectErasePort` that always fails, so an owner-scope erase leaves
+/// the durable `cited_object_purge_pending` audit flag set — used to observe
+/// the persisted state independently of the engine's own post-purge clear.
+#[derive(Debug)]
+struct FailingObjectPurge;
+
+#[async_trait::async_trait]
+impl CitedObjectErasePort for FailingObjectPurge {
+    async fn purge_owner_objects(&self, _owner: OwnerRef) -> Result<u64, StorageError> {
+        Err(StorageError::Unavailable(
+            "object store unavailable in test".into(),
+        ))
+    }
+}
+
+fn compliance_engine_with_failing_purge(pg: &PgStorage) -> Engine {
+    compliance_engine(pg).with_cited_object_erase(Arc::new(FailingObjectPurge))
 }
 
 fn engine_without_compliance_admin(pg: &PgStorage) -> Engine {
@@ -1089,6 +1108,77 @@ async fn abandoned_group_owner_erase_removes_source_cursors()
         assert_eq!(
             remaining, 0,
             "the cursor is physically erased with the owner"
+        );
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+/// GDPR audit-truth contract: an owner-scope erase with a planned cited-
+/// object purge persists `cited_object_purge_pending = true` on the audit
+/// row in the SAME transaction as the erase (independent of whether the
+/// purge itself later succeeds), and the dedicated clear verb is the only
+/// thing that flips it back to false.
+#[tokio::test]
+async fn owner_erase_with_planned_purge_persists_pending_until_cleared()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await?;
+    let url = db_url(&db_name);
+    let result = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let engine = compliance_engine_with_failing_purge(&pg);
+        let group = GroupId::new(Uuid::now_v7());
+        let owner = OwnerRef::Group(group);
+        let authz = AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::HostBearer);
+        seed_fact(
+            &pg,
+            &owner,
+            &receipt_draft("test/purge-source", Uuid::now_v7(), b"purge-me"),
+        )
+        .await?;
+
+        let outcome = engine.erase_abandoned_group_owner(&authz, group).await?;
+        let ComplianceEraseOutcome::Completed {
+            operation_id,
+            cited_object_purge_pending,
+            ..
+        } = outcome
+        else {
+            panic!("expected completed erase, got {outcome:?}");
+        };
+        assert!(
+            cited_object_purge_pending,
+            "a failed purge must surface pending on the returned outcome"
+        );
+
+        let persisted: bool = sqlx::query_scalar(
+            "SELECT cited_object_purge_pending FROM proxima_core.compliance_audit_log
+              WHERE operation_id = $1",
+        )
+        .bind(operation_id)
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert!(
+            persisted,
+            "the durable audit row must persist pending=true when the purge fails"
+        );
+
+        pg.clear_cited_object_purge_pending(operation_id).await?;
+
+        let cleared: bool = sqlx::query_scalar(
+            "SELECT cited_object_purge_pending FROM proxima_core.compliance_audit_log
+              WHERE operation_id = $1",
+        )
+        .bind(operation_id)
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert!(
+            !cleared,
+            "the clear verb must flip the durable flag back to false"
         );
         Ok::<(), Box<dyn std::error::Error>>(())
     }
