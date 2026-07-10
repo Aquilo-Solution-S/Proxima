@@ -51,9 +51,16 @@ impl McpAuthContext {
 }
 
 #[derive(Debug, Clone)]
-struct ResolvedAuth {
+pub(crate) struct ResolvedAuth {
     authz: AuthzContext,
     model_id: Option<String>,
+}
+
+impl ResolvedAuth {
+    pub(crate) fn narrowed_to_owner(self, owner: Owner) -> Option<McpAuthContext> {
+        let authz = self.authz.narrowed_to_owner(owner)?;
+        Some(McpAuthContext::bound(authz, owner, self.model_id))
+    }
 }
 
 /// Edge resolver replacing the probe-by-UUID auth store. Composition
@@ -101,21 +108,15 @@ impl McpEdgeAuth {
     }
 
     pub async fn resolve(&self, raw_bearer: &str, owner: Owner) -> Option<McpAuthContext> {
-        let resolved = self.resolve_unbound(raw_bearer).await?;
-        let authz = resolved.authz.narrowed_to_owner(owner)?;
-        Some(McpAuthContext::bound(authz, owner, resolved.model_id))
+        self.resolve_unbound(raw_bearer)
+            .await?
+            .narrowed_to_owner(owner)
     }
 
-    /// Authenticate `raw_bearer` on an accepted path WITHOUT narrowing to
-    /// any owner. The edge middleware calls this to reject an invalid token
-    /// with a uniform 401 *before* owner/session resolution, closing the
-    /// 401/403 oracle (an unauthenticated caller must not learn owner or
-    /// session state). Owner binding still happens in [`Self::resolve`].
-    pub async fn accepts_token(&self, raw_bearer: &str) -> bool {
-        self.resolve_unbound(raw_bearer).await.is_some()
-    }
-
-    async fn resolve_unbound(&self, raw_bearer: &str) -> Option<ResolvedAuth> {
+    /// Authenticate `raw_bearer` on an accepted path without narrowing to
+    /// an owner. The edge middleware retains this result across owner/session
+    /// selection so host authentication happens exactly once per request.
+    pub(crate) async fn resolve_unbound(&self, raw_bearer: &str) -> Option<ResolvedAuth> {
         match parse_wire_token(raw_bearer) {
             WireToken::Host(material) => self.resolve_host(material).await,
             WireToken::Malformed => None,

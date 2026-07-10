@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use proxima_core::{Owner, parse_external_key};
@@ -18,10 +19,9 @@ const SESSION_IDLE_TTL: Duration = Duration::from_hours(1);
 /// bound.
 const MAX_SESSIONS: usize = 4096;
 
-#[derive(Clone, Copy)]
 struct Binding {
     owner: Owner,
-    last_seen: Instant,
+    last_seen: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -29,6 +29,7 @@ pub struct McpSessionBindings {
     inner: Arc<RwLock<HashMap<String, Binding>>>,
     idle_ttl: Duration,
     max_sessions: usize,
+    clock_origin: Instant,
 }
 
 impl Default for McpSessionBindings {
@@ -37,6 +38,7 @@ impl Default for McpSessionBindings {
             inner: Arc::default(),
             idle_ttl: SESSION_IDLE_TTL,
             max_sessions: MAX_SESSIONS,
+            clock_origin: Instant::now(),
         }
     }
 }
@@ -61,6 +63,7 @@ impl McpSessionBindings {
             inner: Arc::default(),
             idle_ttl,
             max_sessions,
+            clock_origin: Instant::now(),
         }
     }
 
@@ -76,7 +79,7 @@ impl McpSessionBindings {
             session_id,
             Binding {
                 owner,
-                last_seen: now,
+                last_seen: AtomicU64::new(self.timestamp_at(now)),
             },
         );
     }
@@ -86,40 +89,58 @@ impl McpSessionBindings {
     }
 
     async fn owner_for_at(&self, session_id: &str, now: Instant) -> Option<Owner> {
-        let mut guard = self.inner.write().await;
-        match guard.get_mut(session_id) {
-            Some(binding) if now.saturating_duration_since(binding.last_seen) < self.idle_ttl => {
+        let now = self.timestamp_at(now);
+        {
+            let guard = self.inner.read().await;
+            let binding = guard.get(session_id)?;
+            let last_seen = binding.last_seen.load(Ordering::Relaxed);
+            if !self.is_expired(last_seen, now) {
                 // Refresh so the TTL is idle-based, not creation-based:
                 // active sessions never expire mid-use.
-                binding.last_seen = now;
-                Some(binding.owner)
+                binding.last_seen.fetch_max(now, Ordering::Relaxed);
+                return Some(binding.owner);
             }
-            // Aged past the idle TTL: drop it and report unknown so the
-            // transport answers 404 and the client re-initializes.
-            Some(_) => {
-                guard.remove(session_id);
-                None
-            }
-            None => None,
         }
+
+        // Aged past the idle TTL: acquire the write lock only for removal,
+        // then report unknown so the transport answers 404 and the client
+        // re-initializes.
+        let mut guard = self.inner.write().await;
+        if guard
+            .get(session_id)
+            .is_some_and(|binding| self.is_expired(binding.last_seen.load(Ordering::Relaxed), now))
+        {
+            guard.remove(session_id);
+        }
+        None
     }
 
     /// Drop idle-expired bindings, then enforce the hard size cap by
     /// evicting the least-recently-seen entries, leaving room for one
     /// pending insert.
     fn prune(&self, map: &mut HashMap<String, Binding>, now: Instant) {
-        map.retain(|_, binding| now.saturating_duration_since(binding.last_seen) < self.idle_ttl);
+        let now = self.timestamp_at(now);
+        map.retain(|_, binding| !self.is_expired(binding.last_seen.load(Ordering::Relaxed), now));
         if map.len() >= self.max_sessions {
             let overflow = map.len() + 1 - self.max_sessions;
-            let mut by_age: Vec<(Instant, String)> = map
+            let mut by_age: Vec<(u64, String)> = map
                 .iter()
-                .map(|(id, binding)| (binding.last_seen, id.clone()))
+                .map(|(id, binding)| (binding.last_seen.load(Ordering::Relaxed), id.clone()))
                 .collect();
             by_age.sort_unstable();
             for (_, id) in by_age.into_iter().take(overflow) {
                 map.remove(&id);
             }
         }
+    }
+
+    fn timestamp_at(&self, now: Instant) -> u64 {
+        u64::try_from(now.saturating_duration_since(self.clock_origin).as_nanos())
+            .unwrap_or(u64::MAX)
+    }
+
+    fn is_expired(&self, last_seen: u64, now: u64) -> bool {
+        now.saturating_sub(last_seen) >= u64::try_from(self.idle_ttl.as_nanos()).unwrap_or(u64::MAX)
     }
 }
 
