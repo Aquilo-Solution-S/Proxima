@@ -13,7 +13,7 @@ use time::format_description::well_known::Rfc3339;
 use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
-use crate::config::S3RuntimeConfig;
+use crate::config::{DEFAULT_MAX_BLOB_BYTES, S3RuntimeConfig, validate_endpoint_url};
 use crate::error::BlobError;
 
 /// Tauri/TS-compatible cited-blob upload request.
@@ -133,13 +133,22 @@ pub struct CitedBlobStore {
 }
 
 impl CitedBlobStore {
-    #[must_use]
-    pub fn new(pool: sqlx::PgPool, config: S3RuntimeConfig) -> Self {
-        Self {
+    /// Validate and normalize the S3 configuration at its consuming boundary.
+    ///
+    /// # Errors
+    /// Returns [`BlobError::Config`] when the configured endpoint violates the
+    /// HTTPS-or-loopback transport policy.
+    pub fn new(pool: sqlx::PgPool, mut config: S3RuntimeConfig) -> Result<Self, BlobError> {
+        if let Some(endpoint_url) = &config.endpoint_url {
+            validate_endpoint_url(endpoint_url)?;
+        }
+        config.max_blob_bytes.get_or_insert(DEFAULT_MAX_BLOB_BYTES);
+
+        Ok(Self {
             pool,
             config,
             client: tokio::sync::OnceCell::new(),
-        }
+        })
     }
 
     /// The memoized S3 client, built on first use from the runtime config.
@@ -1013,6 +1022,7 @@ fn abort_transition_decision(
 #[cfg(test)]
 mod tests {
     use proxima_core::UserId;
+    use sqlx::postgres::PgPoolOptions;
 
     use super::*;
 
@@ -1080,6 +1090,50 @@ mod tests {
             mime: "application/pdf".into(),
             byte_len,
         }
+    }
+
+    fn store_config(endpoint_url: Option<&str>, max_blob_bytes: Option<u64>) -> S3RuntimeConfig {
+        S3RuntimeConfig {
+            bucket: "test-bucket".into(),
+            region: "eu-central-1".into(),
+            endpoint_url: endpoint_url.map(ToOwned::to_owned),
+            force_path_style: false,
+            upload_ttl_seconds: 900,
+            read_ttl_seconds: 300,
+            max_blob_bytes,
+        }
+    }
+
+    fn lazy_test_pool() -> sqlx::PgPool {
+        PgPoolOptions::new()
+            .connect_lazy("postgres://postgres@localhost/proxima_blob_test")
+            .expect("test database URL is valid")
+    }
+
+    #[tokio::test]
+    async fn store_rejects_plaintext_non_loopback_endpoint() {
+        let error = CitedBlobStore::new(
+            lazy_test_pool(),
+            store_config(Some("http://s3.internal:9000"), Some(1_024)),
+        )
+        .expect_err("plaintext remote S3 endpoint rejected");
+
+        assert!(matches!(error, BlobError::Config(_)));
+        assert!(error.to_string().contains("must use https"));
+    }
+
+    #[tokio::test]
+    async fn store_applies_default_cap_when_config_omits_it() {
+        let store = CitedBlobStore::new(lazy_test_pool(), store_config(None, None))
+            .expect("default-capped store builds");
+
+        assert_eq!(store.config.max_blob_bytes, Some(DEFAULT_MAX_BLOB_BYTES));
+        let error = validate_prepare(
+            &prepare_req(DEFAULT_MAX_BLOB_BYTES + 1),
+            store.config.max_blob_bytes,
+        )
+        .expect_err("default cap rejects an oversized prepare request");
+        assert!(error.to_string().contains("exceeds max blob size"));
     }
 
     #[test]

@@ -2,6 +2,8 @@
 
 use std::collections::HashSet;
 
+use proxima_core::{EndpointUrlError, EndpointUrlPolicy};
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum OidcConfigError {
     #[error("{field} must be a valid URL: {parse_error}")]
@@ -56,36 +58,21 @@ impl OidcAuthConfig {
 /// Returns an error when `raw` is not a URL or uses a non-HTTPS scheme. Test
 /// builds allow loopback HTTP so resolver tests can run against local Axum.
 pub fn validate_https_url(field: &'static str, raw: &str) -> Result<(), OidcConfigError> {
-    let url = reqwest::Url::parse(raw).map_err(|err| OidcConfigError::InvalidUrl {
-        field,
-        parse_error: err.to_string(),
-    })?;
-    if url.scheme() == "https" || test_allows_loopback_http(&url) {
-        return Ok(());
-    }
-    Err(OidcConfigError::InsecureUrl {
-        field,
-        value: raw.to_string(),
-    })
-}
-
-#[cfg(test)]
-fn test_allows_loopback_http(url: &reqwest::Url) -> bool {
-    if url.scheme() != "http" {
-        return false;
-    }
-    let Some(host) = url.host_str() else {
-        return false;
+    let policy = if cfg!(test) {
+        EndpointUrlPolicy::AllowLoopbackHttp
+    } else {
+        EndpointUrlPolicy::HttpsOnly
     };
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|addr| addr.is_loopback())
-}
 
-#[cfg(not(test))]
-fn test_allows_loopback_http(_url: &reqwest::Url) -> bool {
-    false
+    proxima_core::validate_endpoint_url(raw, policy).map_err(|error| match error {
+        EndpointUrlError::InvalidUrl(parse_error) => {
+            OidcConfigError::InvalidUrl { field, parse_error }
+        }
+        EndpointUrlError::InsecureTransport => OidcConfigError::InsecureUrl {
+            field,
+            value: raw.to_string(),
+        },
+    })
 }
 
 #[cfg(test)]

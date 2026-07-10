@@ -5,7 +5,7 @@ use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::models::EmbedCaps;
 use serde::{Deserialize, Serialize};
 
-use crate::{build_client, join_endpoint};
+use crate::{build_client, ensure_secure_base_url, join_endpoint};
 
 // =====================================================================
 // OpenAI-compatible embedding client — /embeddings
@@ -62,43 +62,6 @@ impl OpenAiCompatConfig {
         self.timeout = timeout;
         self
     }
-}
-
-/// Reject plaintext `http://` base URLs unless they target a loopback host.
-/// The default local embedding endpoint (Ollama `http://localhost:11434`) is
-/// loopback and stays allowed; any non-loopback plaintext base would ship the
-/// bearer token in the clear.
-fn ensure_secure_base_url(base_url: &str) -> Result<(), LlmError> {
-    if let Some(rest) = base_url.strip_prefix("http://") {
-        let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
-        if !is_loopback_host(host_of_authority(authority)) {
-            return Err(LlmError::Internal(format!(
-                "insecure embedding base_url {base_url:?}: plaintext http is only \
-                 permitted for loopback hosts (use https for remote endpoints)"
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// Extract the host from an `authority` (`userinfo@host:port`), handling
-/// bracketed IPv6 literals (`[::1]:8080`).
-fn host_of_authority(authority: &str) -> &str {
-    let hostport = authority.rsplit('@').next().unwrap_or(authority);
-    if let Some(rest) = hostport.strip_prefix('[') {
-        return rest.split(']').next().unwrap_or(rest);
-    }
-    hostport.split(':').next().unwrap_or(hostport)
-}
-
-fn is_loopback_host(host: &str) -> bool {
-    host == "localhost"
-        || host
-            .parse::<std::net::Ipv4Addr>()
-            .is_ok_and(|ip| ip.is_loopback())
-        || host
-            .parse::<std::net::Ipv6Addr>()
-            .is_ok_and(|ip| ip.is_loopback())
 }
 
 #[derive(Serialize)]
@@ -307,7 +270,7 @@ mod tests {
 
     #[test]
     fn client_rejects_plaintext_non_loopback_base_url() {
-        let cfg = super::OpenAiCompatConfig::new("http://api.mistral.ai/v1", Some("t".into()));
+        let cfg = super::OpenAiCompatConfig::new("HTTP://api.example.com/v1", Some("t".into()));
         let err =
             super::OpenAiCompatEmbeddingClient::new(super::MISTRAL_EMBED_MODEL, probe_caps(), cfg)
                 .expect_err("plaintext remote base must be rejected");
@@ -327,7 +290,7 @@ mod tests {
     fn client_allows_loopback_http_base_url() {
         // Ollama default and IPv4/IPv6 loopback plaintext must keep working.
         for base in [
-            "http://localhost:11434/v1",
+            "http://LOCALHOST:11434/v1",
             "http://127.0.0.1:11434/v1",
             "http://[::1]:11434/v1",
         ] {

@@ -5,7 +5,7 @@ use std::time::Duration;
 use proxima_blob_s3::S3RuntimeConfig;
 use proxima_core::{
     AnthropicClient, Authenticator, EmbeddingClient, Owner, OwnerAccessPort, RevalidationConfig,
-    ToolScope,
+    ToolScope, is_loopback_host,
 };
 use proxima_mcp_server::ResourceServerMetadata;
 
@@ -605,13 +605,6 @@ fn host_of_url(raw: &str) -> Option<String> {
     };
     let host = host.trim().to_ascii_lowercase();
     (!host.is_empty()).then_some(host)
-}
-
-fn is_loopback_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback())
 }
 
 fn dedup_hosts(hosts: impl IntoIterator<Item = String>) -> Vec<String> {

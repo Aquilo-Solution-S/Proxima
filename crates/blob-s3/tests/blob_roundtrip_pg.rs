@@ -82,7 +82,7 @@ async fn prepare_then_complete_then_read_roundtrip() {
 
     let (pool, db_name) = fresh_pool().await;
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone());
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
     let body = b"test-bytes";
     let owner = owner_fixture();
     let ctx = AuthzContext::single_owner(&owner, AuthPath::System);
@@ -172,7 +172,7 @@ async fn purge_owner_objects_removes_completed_blob() {
 
     let (pool, db_name) = fresh_pool().await;
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone());
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
     let body = b"ocr-scan-with-pii";
     let owner = owner_fixture();
     let ctx = AuthzContext::single_owner(&owner, AuthPath::System);
@@ -285,7 +285,7 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
         .await
         .expect("enable versioning");
 
-    let store = CitedBlobStore::new(pool.clone(), config.clone());
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
     let owner = owner_fixture();
     let ctx = AuthzContext::single_owner(&owner, AuthPath::System);
     let body = b"versioned-pii-bytes";

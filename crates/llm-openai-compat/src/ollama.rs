@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use serde::{Deserialize, Serialize};
 
-use crate::{DEFAULT_BASE_URL, build_client};
+use crate::{DEFAULT_BASE_URL, build_client, ensure_secure_base_url};
 
 #[derive(Debug, Clone)]
 pub struct OllamaConfig {
@@ -52,12 +52,14 @@ impl OllamaEmbeddingClient {
     ///
     /// # Errors
     ///
-    /// Returns `LlmError::Internal` if the reqwest client cannot be built.
+    /// Returns `LlmError::Internal` if the reqwest client cannot be built or if
+    /// `config.base_url` is a non-loopback plaintext HTTP endpoint.
     pub fn new(
         model_id: impl Into<String>,
         dim: usize,
         config: OllamaConfig,
     ) -> Result<Self, LlmError> {
+        ensure_secure_base_url(&config.base_url)?;
         let client = build_client(config.timeout)?;
         Ok(Self {
             config,
@@ -71,9 +73,40 @@ impl OllamaEmbeddingClient {
     ///
     /// # Errors
     ///
-    /// Returns `LlmError::Internal` if the reqwest client cannot be built.
+    /// Returns `LlmError::Internal` if the reqwest client cannot be built or if
+    /// `OLLAMA_URL` is a non-loopback plaintext HTTP endpoint.
     pub fn from_env(model_id: impl Into<String>, dim: usize) -> Result<Self, LlmError> {
         Self::new(model_id, dim, OllamaConfig::from_env())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use proxima_core::llm::LlmError;
+
+    use super::*;
+
+    #[test]
+    fn constructor_rejects_plaintext_non_loopback_endpoint() {
+        let config = OllamaConfig {
+            base_url: "http://ollama.internal:11434".into(),
+            ..OllamaConfig::default()
+        };
+
+        let error = OllamaEmbeddingClient::new("test-model", 8, config)
+            .expect_err("plaintext remote Ollama endpoint rejected");
+        assert!(matches!(error, LlmError::Internal(_)));
+    }
+
+    #[test]
+    fn constructor_allows_case_insensitive_loopback_endpoint() {
+        let config = OllamaConfig {
+            base_url: "HTTP://LOCALHOST:11434".into(),
+            ..OllamaConfig::default()
+        };
+
+        OllamaEmbeddingClient::new("test-model", 8, config)
+            .expect("loopback Ollama endpoint accepted");
     }
 }
 

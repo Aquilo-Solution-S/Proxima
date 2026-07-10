@@ -10,6 +10,7 @@
 use std::time::Duration;
 
 use proxima_core::llm::LlmError;
+use proxima_core::{EndpointUrlPolicy, validate_endpoint_url};
 
 pub mod ollama;
 pub mod openai_compat;
@@ -24,6 +25,17 @@ pub(crate) fn build_client(timeout: Duration) -> Result<reqwest::Client, LlmErro
         .timeout(timeout)
         .build()
         .map_err(|e| LlmError::Internal(format!("reqwest builder: {e}")))
+}
+
+/// Reject non-loopback plaintext embedding endpoints before constructing a
+/// client that may attach credentials or sensitive request bodies.
+pub(crate) fn ensure_secure_base_url(base_url: &str) -> Result<(), LlmError> {
+    validate_endpoint_url(base_url, EndpointUrlPolicy::AllowLoopbackHttp).map_err(|error| {
+        LlmError::Internal(format!(
+            "invalid or insecure embedding base_url {base_url:?}: {error}; plaintext http is only \
+             permitted for loopback hosts"
+        ))
+    })
 }
 
 pub(crate) fn join_endpoint(base_url: &str, path: &str) -> String {
