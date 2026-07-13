@@ -90,7 +90,7 @@ jobs:
       # cargo-deny-action v2.0.20 pinned by commit SHA (bundles cargo-deny 0.19.8,
       # the schema deny.toml targets). Dependabot's github-actions ecosystem keeps
       # this current via reviewable PRs.
-      - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25
         with:
           command: check advisories licenses bans sources
 
