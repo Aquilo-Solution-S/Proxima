@@ -176,6 +176,7 @@ async fn read_verb_helper_accepts_only_read_verb_handles() {
         change_event: Arc::new(storage_port_tests_support::ChangeEventFake),
         citation: Arc::new(storage_port_tests_support::CitationFake),
         fact_retention: Arc::new(storage_port_tests_support::FactRetentionFake),
+        goal_wake_candidate: Arc::new(storage_port_tests_support::GoalWakeCandidateFake),
     };
     let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
     let req = super::read_verbs::ListChangeEventsReadRequest {
@@ -245,6 +246,19 @@ mod storage_port_tests_support {
             _after: uuid::Uuid,
             _limit: usize,
         ) -> Result<Vec<crate::read_models::ChangeEventForWake>, StorageError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct GoalWakeCandidateFake;
+
+    #[async_trait::async_trait]
+    impl crate::storage_ports::GoalWakeCandidatePort for GoalWakeCandidateFake {
+        async fn list_goal_wake_candidates(
+            &self,
+            _req: &crate::read_models::GoalWakeCandidateRequest<'_>,
+        ) -> Result<Vec<crate::read_models::GoalWakeCandidate>, StorageError> {
             Ok(Vec::new())
         }
     }

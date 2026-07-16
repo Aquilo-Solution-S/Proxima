@@ -18,6 +18,7 @@ pub use proxima_core::compliance::{
     ComplianceEraseTarget,
 };
 pub use proxima_core::cursor::Cursor;
+pub use proxima_core::engine::{ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse};
 pub use proxima_core::error::ProtocolError;
 pub use proxima_core::llm;
 pub use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
@@ -26,8 +27,9 @@ pub use proxima_core::verbs::fact_ingest::{
 };
 pub use proxima_core::verbs::goal_write::{
     GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalEvidenceRef, GoalPayloadWrite,
-    GoalState, GoalWriteBuildError, GoalWriteOutcome, IdempotencyKey, MAX_GOAL_TEXT_CHARS,
-    MAX_GOAL_TITLE_CHARS, OperatorKind, SystemOrigin,
+    GoalState, GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger, GoalWriteBuildError,
+    GoalWriteOutcome, IdempotencyKey, MAX_GOAL_TEXT_CHARS, MAX_GOAL_TITLE_CHARS, OperatorKind,
+    SystemOrigin,
 };
 pub use proxima_core::verbs::mcp_call_history::{
     MAX_MCP_CALL_HISTORY_LIMIT, McpCallHistoryRequest, McpCallHistoryResponse, McpCallRecord,
@@ -45,9 +47,9 @@ pub use proxima_core::verbs::schema::{
 pub use proxima_core::{
     AuthPath, AuthzContext, EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingOrphanCounts,
     EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, Engine, EngineHandle, FlavorRegistryFrozen,
-    MemoryId, Owner, OwnerAccessPort, OwnerExternalKeyParseError, OwnerRef, Relation,
-    SourceBatchId, StorageError, ToolScope, UPLOADED_BLOB_SCHEMA_ID, UserId, canonical_json_bytes,
-    parse_external_key, provider_safe_tool_name,
+    GoalWakeCandidate, MemoryId, Owner, OwnerAccessPort, OwnerExternalKeyParseError, OwnerRef,
+    Relation, SourceBatchId, StorageError, ToolScope, UPLOADED_BLOB_SCHEMA_ID, UserId,
+    canonical_json_bytes, parse_external_key, provider_safe_tool_name,
 };
 #[cfg(feature = "openai-compat-embed")]
 pub use proxima_llm_openai_compat::{

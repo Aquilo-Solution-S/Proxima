@@ -9,6 +9,7 @@ use proxima_core::mcp::core_tools::{
     list_edge_types::{ListEdgeTypesArgs, list_edge_types},
     list_schemas::{ListSchemasArgs, list_schemas},
     list_substrate_tools::{ListSubstrateToolsArgs, list_substrate_tools},
+    list_wake_candidates::{ListWakeCandidatesArgs, list_wake_candidates},
     walk_memory_lineage::{
         WalkMemoryLineageArgs, WalkMemoryLineageDirectionArg, walk_memory_lineage,
     },
@@ -208,6 +209,9 @@ async fn dispatch_resource(
         ParsedResource::ChangeEvents(args) => {
             resource_output_value(list_change_events(ctx, args).await?)
         }
+        ParsedResource::WakeCandidates(args) => {
+            resource_output_value(list_wake_candidates(ctx, args).await?)
+        }
     }
 }
 
@@ -249,6 +253,7 @@ enum ParsedResource {
     Memory(GetMemoryArgs),
     MemoryLineage(WalkMemoryLineageArgs),
     ChangeEvents(ListChangeEventsArgs),
+    WakeCandidates(ListWakeCandidatesArgs),
 }
 
 impl ParsedResource {
@@ -261,6 +266,7 @@ impl ParsedResource {
             Self::Memory(_) => protocol_resource::MEMORY,
             Self::MemoryLineage(_) => protocol_resource::MEMORY_LINEAGE,
             Self::ChangeEvents(_) => protocol_resource::CHANGE_EVENTS,
+            Self::WakeCandidates(_) => protocol_resource::WAKE_CANDIDATES,
         }
     }
 }
@@ -282,6 +288,14 @@ fn parse_resource_uri(uri: &str) -> Option<ParsedResource> {
         protocol_resource_path::CHANGE_EVENTS => {
             Some(ParsedResource::ChangeEvents(ListChangeEventsArgs {
                 since: query_value(&query, "since").map(ToOwned::to_owned),
+                limit: query_parse(&query, "limit").ok()?,
+            }))
+        }
+        protocol_resource_path::WAKE_CANDIDATES => {
+            Some(ParsedResource::WakeCandidates(ListWakeCandidatesArgs {
+                fact: query_value(&query, "fact")
+                    .filter(|fact| !fact.is_empty())?
+                    .to_owned(),
                 limit: query_parse(&query, "limit").ok()?,
             }))
         }
@@ -415,6 +429,21 @@ mod tests {
         assert!(parse_resource_uri("proxima://memory//lineage").is_none());
         assert!(parse_resource_uri("proxima://memory/F:one/two/lineage").is_none());
         assert!(parse_resource_uri("proxima://change-events?limit=not-a-number").is_none());
+
+        let wake = parse_resource_uri(
+            "proxima://wake-candidates?fact=F:018f0000-0000-7000-8000-000000000001&limit=5",
+        )
+        .expect("wake-candidates resource");
+        assert!(matches!(
+            wake,
+            ParsedResource::WakeCandidates(ListWakeCandidatesArgs { limit: Some(5), .. })
+        ));
+        assert!(parse_resource_uri("proxima://wake-candidates").is_none());
+        assert!(parse_resource_uri("proxima://wake-candidates?fact=").is_none());
+        assert!(
+            parse_resource_uri("proxima://wake-candidates?fact=F:018f0000-0000-7000-8000-000000000001&limit=not-a-number")
+                .is_none()
+        );
     }
 
     #[test]
@@ -433,6 +462,10 @@ mod tests {
                 protocol_resource::MEMORY_LINEAGE,
             ),
             ("proxima://change-events", protocol_resource::CHANGE_EVENTS),
+            (
+                "proxima://wake-candidates?fact=F:018f0000-0000-7000-8000-000000000001",
+                protocol_resource::WAKE_CANDIDATES,
+            ),
         ];
 
         for (uri, scope_key) in cases {

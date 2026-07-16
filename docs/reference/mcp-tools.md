@@ -18,6 +18,7 @@ binary/profile.
 | publish | `core_publish` | irreversible owner transfer via `publish_to_world`; not ACL/share |
 | introspection | `proxima://tools`, `proxima://how-to` | generated from runtime profile |
 | change-events | `proxima://change-events{?since,limit}` | poll-only change notification |
+| wake-candidates | `proxima://wake-candidates{?fact,limit}` | armed Active Goals admitted for one trigger Fact; arm via `core_goal` `wake`/`clear_wake` |
 
 ## Offline Catalog
 

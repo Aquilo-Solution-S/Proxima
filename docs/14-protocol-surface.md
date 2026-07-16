@@ -35,7 +35,7 @@ the Flavor SDK and typed services only.
 
 Agent long-term memory is core substrate. MCP tools are thin callers of
 Engine verbs; MCP resources expose read-only graph and registry views.
-Storage stays behind the Engine. The substrate surface is 10 tools + 7
+Storage stays behind the Engine. The substrate surface is 10 tools + 8
 resources; `proxima://tools` returns the live tool catalog only, and
 resources are discovered through MCP `resources/list` and
 `resources/templates/list`.
@@ -75,8 +75,9 @@ Canonical substrate resources:
 | `proxima://memory/{id}{?expand_neighbors}` | hydrate memory by id; optional neighbor edges |
 | `proxima://memory/{id}/lineage{?direction,depth,limit}` | traverse provenance / supersession lineage |
 | `proxima://change-events{?since,limit}` | forward `change_event` poll, ascending, with `next_since` and `has_more` |
+| `proxima://wake-candidates{?fact,limit}` | armed Active Goal heads admitted for wake planning by one readable trigger Fact; read model only, no executor |
 
-`proxima://how-to` is an instructional MCP resource outside the 7-resource
+`proxima://how-to` is an instructional MCP resource outside the 8-resource
 protocol count.
 
 ## The verbs
@@ -93,9 +94,14 @@ is now a durable, owner-scoped, seq-ordered **pull log** (see
 > **`proxima://change-events{?since,limit}`** MCP resource — change records with
 > `seq > since`, ascending, plus a `next_since` cursor and a `has_more`
 > hint — a thin owner-scoped wrapper over `Engine::list_change_events`, which
-> routes to `ChangeEventPort::list_change_events_after`. It is not one of
-> the five transport-level graph verbs; storage still stays behind the
-> Engine/port boundary.
+> routes to `ChangeEventPort::list_change_events_after`. The admission half of
+> the loop ships as **`proxima://wake-candidates{?fact,limit}`** over
+> `Engine::list_goal_wake_candidates` /
+> `GoalWakeCandidatePort::list_goal_wake_candidates`: given one appended Fact,
+> the armed Active Goal heads it wakes, narrowed to the caller's read/write
+> owner sets and effective tool scope. Neither is one of the five
+> transport-level graph verbs; storage still stays behind the Engine/port
+> boundary.
 
 | Verb | Direction | Idempotency | Scope | Current status |
 |---|---|---|---|---|

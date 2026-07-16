@@ -124,6 +124,14 @@ pub const CORE_RESOURCES: &[CoreResourceMeta] = &[
         description: "Owner-scoped change-event pull log.",
         is_template: true,
     },
+    CoreResourceMeta {
+        uri_template: protocol_resource_uri::WAKE_CANDIDATES,
+        name: "proxima-wake-candidates",
+        title: "Proxima Wake Candidates",
+        scope_key: protocol_resource::WAKE_CANDIDATES,
+        description: "Armed Active Goals admitted for wake planning by a trigger Fact.",
+        is_template: true,
+    },
 ];
 
 #[must_use = "iterators are lazy and must be consumed"]

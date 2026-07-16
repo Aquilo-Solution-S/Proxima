@@ -434,6 +434,7 @@ impl PgStorage {
             .embedding_maintenance(self.clone())
             .goal_write(self.clone())
             .goal_read(self.clone())
+            .goal_wake_candidate(self.clone())
             .change_event(self.clone())
             .edge_read(self.clone())
             .citation(self.clone())

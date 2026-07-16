@@ -13,7 +13,10 @@ use proxima_core::goal::relations::CORE_MOTIVATED_BY_RELATION;
 use proxima_core::mcp::core_tools::goal::{
     ChildGoalInput, CoreGoalArgs, CoreGoalOutput, CoreGoalTool, GoalDecomposeArgs,
     GoalDecomposeOutput, GoalMarkAchievedArgs, GoalModifyArgs, GoalPayloadArgs, GoalSetArgs,
-    GoalTransition, GoalTransitionArgs, GoalWriteOutput,
+    GoalTransition, GoalTransitionArgs, GoalWakeArgs, GoalWriteOutput,
+};
+use proxima_core::mcp::core_tools::list_wake_candidates::{
+    ListWakeCandidatesArgs, WakeCandidateItem, list_wake_candidates,
 };
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
 use proxima_core::{
@@ -229,6 +232,8 @@ async fn goal_full_lifecycle_accepts_structured_body_payload() -> TestResult {
                         "Medium",
                     ),
                     evidence: Some(vec![evidence.handle.clone()]),
+                    wake: None,
+                    clear_wake: false,
                     idempotency_key: Some("structured-lifecycle-modify".into()),
                 }))
                 .await?;
@@ -382,6 +387,8 @@ async fn goal_modify_tool_supersedes_head() -> TestResult {
                     goal: prior.handle.clone(),
                     payload: simple_payload("Modified title", "Modified goal text."),
                     evidence: Some(vec![evidence.handle.clone()]),
+                    wake: None,
+                    clear_wake: false,
                     idempotency_key: Some("goal-modify-replacement".into()),
                 }))
                 .await?;
@@ -395,6 +402,183 @@ async fn goal_modify_tool_supersedes_head() -> TestResult {
             assert_eq!(supersedes, Some(prior_id.into_inner()));
             assert_eq!(title, "Modified title");
             assert_eq!(text, "Modified goal text.");
+            Ok(())
+        })
+    })
+    .await
+}
+
+#[tokio::test]
+async fn goal_wake_config_arms_and_surfaces_wake_candidates() -> TestResult {
+    with_harness(|harness| {
+        Box::pin(async move {
+            let (evidence, trigger_id, trigger_handle, armed) =
+                arm_wake_goal(harness, "goal-wake-set").await?;
+            let armed_id = harness.goal_id(&armed.handle)?;
+
+            let (trigger_kind, trigger_memory_id, tool_ids, prompt): (
+                String,
+                Option<Uuid>,
+                Vec<String>,
+                String,
+            ) = sqlx::query_as(
+                "SELECT trigger_kind::text, trigger_memory_id, tool_ids, prompt
+                   FROM proxima_core.goal_wake_config
+                  WHERE goal_id = $1",
+            )
+            .bind(armed_id.into_inner())
+            .fetch_one(harness.pg.pool_for_tests())
+            .await?;
+            assert_eq!(trigger_kind, "fact_memory");
+            assert_eq!(trigger_memory_id, Some(trigger_id.into_inner()));
+            assert_eq!(tool_ids, vec!["core_search_memories".to_string()]);
+            assert_eq!(prompt, "Plan next steps from the trigger fact.");
+
+            let candidates = pull_wake_candidates(harness, &trigger_handle).await?;
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates[0].goal, armed.handle);
+            assert_eq!(
+                candidates[0].tool_ids,
+                vec!["core_search_memories".to_string()]
+            );
+            assert_eq!(
+                candidates[0].prompt,
+                "Plan next steps from the trigger fact."
+            );
+            assert_eq!(
+                candidates[0].hard_memories,
+                vec![evidence.id.into_inner().to_string()]
+            );
+            Ok(())
+        })
+    })
+    .await
+}
+
+#[tokio::test]
+async fn goal_modify_carries_then_clears_wake_config() -> TestResult {
+    with_harness(|harness| {
+        Box::pin(async move {
+            let (evidence, _trigger_id, trigger_handle, armed) =
+                arm_wake_goal(harness, "goal-wake-lifecycle").await?;
+
+            let carried = harness
+                .call_goal_write(CoreGoalArgs::Modify(GoalModifyArgs {
+                    goal: armed.handle.clone(),
+                    payload: simple_payload("Wake-armed goal v2", "Still armed after modify."),
+                    evidence: Some(vec![evidence.handle.clone()]),
+                    wake: None,
+                    clear_wake: false,
+                    idempotency_key: Some("goal-wake-carry".into()),
+                }))
+                .await?;
+            let carried_pull = pull_wake_candidates(harness, &trigger_handle).await?;
+            assert_eq!(carried_pull.len(), 1);
+            assert_eq!(carried_pull[0].goal, carried.handle);
+
+            let disarmed = harness
+                .call_goal_write(CoreGoalArgs::Modify(GoalModifyArgs {
+                    goal: carried.handle.clone(),
+                    payload: simple_payload("Wake goal disarmed", "No longer armed."),
+                    evidence: Some(vec![evidence.handle.clone()]),
+                    wake: None,
+                    clear_wake: true,
+                    idempotency_key: Some("goal-wake-clear".into()),
+                }))
+                .await?;
+            let disarmed_pull = pull_wake_candidates(harness, &trigger_handle).await?;
+            assert!(
+                disarmed_pull.is_empty(),
+                "cleared wake config must not surface {disarmed:?}",
+            );
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// Seed a trigger Fact + evidence, then arm one goal on that Fact through
+/// `core_goal` action=set with a wake config.
+async fn arm_wake_goal(
+    harness: &ToolHarness,
+    idempotency_key: &str,
+) -> Result<(EvidenceHandle, MemoryId, String, GoalWriteOutput), Box<dyn std::error::Error>> {
+    let evidence = harness.seed_evidence_memory("wake evidence").await?;
+    let trigger_id = seed_trigger_fact(&harness.pg, &harness.owner, "wake trigger fact").await?;
+    let trigger_handle = harness
+        .handles
+        .assign_fact_memory(trigger_id)
+        .as_str()
+        .to_string();
+
+    let mut set_args = goal_set_args_with_evidence(
+        "Wake-armed goal",
+        "Wake when the trigger fact appears.",
+        idempotency_key,
+        &evidence,
+    );
+    set_args.wake = Some(GoalWakeArgs {
+        trigger_fact: Some(trigger_handle.clone()),
+        trigger_schema_id: None,
+        trigger_schema_version: None,
+        tool_ids: vec!["core_search_memories".into()],
+        prompt: "Plan next steps from the trigger fact.".into(),
+        hard_memories: Some(vec![evidence.handle.clone()]),
+    });
+    let armed = harness.call_goal_write(CoreGoalArgs::Set(set_args)).await?;
+    Ok((evidence, trigger_id, trigger_handle, armed))
+}
+
+async fn pull_wake_candidates(
+    harness: &ToolHarness,
+    trigger_handle: &str,
+) -> Result<Vec<WakeCandidateItem>, McpToolError> {
+    Ok(list_wake_candidates(
+        harness.ctx(),
+        ListWakeCandidatesArgs {
+            fact: trigger_handle.to_string(),
+            limit: None,
+        },
+    )
+    .await?
+    .candidates)
+}
+
+#[tokio::test]
+async fn goal_wake_and_clear_wake_are_mutually_exclusive() -> TestResult {
+    with_harness(|harness| {
+        Box::pin(async move {
+            let evidence = harness.seed_evidence_memory("wake exclusivity").await?;
+            let armed = harness
+                .call_goal_write(CoreGoalArgs::Set(goal_set_args_with_evidence(
+                    "Exclusivity goal",
+                    "Reject wake plus clear_wake.",
+                    "goal-wake-exclusive-set",
+                    &evidence,
+                )))
+                .await?;
+            let err = harness
+                .call_goal_write(CoreGoalArgs::Modify(GoalModifyArgs {
+                    goal: armed.handle.clone(),
+                    payload: simple_payload("Exclusivity goal", "Reject wake plus clear_wake."),
+                    evidence: Some(vec![evidence.handle.clone()]),
+                    wake: Some(GoalWakeArgs {
+                        trigger_fact: None,
+                        trigger_schema_id: Some("test/fact-v1".into()),
+                        trigger_schema_version: None,
+                        tool_ids: vec!["core_search_memories".into()],
+                        prompt: "conflicting".into(),
+                        hard_memories: None,
+                    }),
+                    clear_wake: true,
+                    idempotency_key: Some("goal-wake-exclusive-modify".into()),
+                }))
+                .await
+                .expect_err("wake plus clear_wake must be rejected");
+            assert!(
+                matches!(err, McpToolError::InvalidInput(ref m) if m.contains("mutually exclusive")),
+                "got {err:?}",
+            );
             Ok(())
         })
     })
@@ -557,6 +741,7 @@ fn goal_set_args(title: &str, text: &str, idempotency_key: &str) -> GoalSetArgs 
         payload: simple_payload(title, text),
         evidence: Vec::new(),
         target_perspective: None,
+        wake: None,
         idempotency_key: Some(idempotency_key.into()),
     }
 }
@@ -582,6 +767,7 @@ fn task_goal_set_args(
         payload: task_payload(title, text, priority),
         evidence: Vec::new(),
         target_perspective: None,
+        wake: None,
         idempotency_key: Some(idempotency_key.into()),
     }
 }
@@ -602,6 +788,7 @@ fn child_goal_with_evidence(title: &str, text: &str, evidence: &EvidenceHandle) 
     ChildGoalInput {
         payload: simple_payload(title, text),
         evidence: vec![evidence.handle.clone()],
+        wake: None,
     }
 }
 
@@ -614,6 +801,7 @@ fn task_child_goal_with_evidence(
     ChildGoalInput {
         payload: task_payload(title, text, priority),
         evidence: vec![evidence.handle.clone()],
+        wake: None,
     }
 }
 
@@ -681,6 +869,30 @@ async fn seed_fact_memory(
                  'AtoA', '00000000-0000-0000-0000-000000000471'::uuid,
                  '00000000-0000-0000-0000-000000000472'::uuid, NULL,
                  'test-model', 'goal-tools-v1')",
+    )
+    .bind(memory_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(text)
+    .execute(pg.pool_for_tests())
+    .await?;
+    Ok(memory_id)
+}
+
+/// Seed a plain Fact row (kind NULL per `memories_variant_chk`) usable as a
+/// wake trigger; `seed_fact_memory` above seeds an Abstraction despite its
+/// name and cannot arm a Fact-triggered wake.
+async fn seed_trigger_fact(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    text: &str,
+) -> Result<MemoryId, Box<dyn std::error::Error>> {
+    let memory_id = MemoryId::new(Uuid::now_v7());
+    let (owner_kind, owner_id) = owner_parts(owner);
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text)
+         VALUES ($1, $2, $3, 'test/wake-trigger-v1', 1, NULL, $4)",
     )
     .bind(memory_id.into_inner())
     .bind(owner_kind)

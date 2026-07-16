@@ -1,17 +1,22 @@
 use crate::access::Relation;
-use crate::authz::AuthzContext;
+use crate::authz::{AuthzContext, ToolScope};
 use crate::change_event::{ChangeEventKind, EdgeTargetProjection};
 use crate::error::ProtocolError;
-use crate::read_models::{ChangeEventForWake, MemorySnapshot, SidecarSpec};
+use crate::read_models::{
+    ChangeEventForWake, GoalWakeCandidate, GoalWakeCandidateRequest, MemorySnapshot, SidecarSpec,
+};
 use crate::storage::{EdgeEndpointKindRow, MemoryGraphPayloadRow, NeighborEdgeRow, StorageError};
 use crate::storage_ports::ReadVerbStoragePorts;
 use crate::verbs::query::{FactCitationReadback, MemorySearchRequest, MemorySearchResult};
 use crate::verbs::schema::{MemorySearchProjection, PayloadKind};
-use crate::{EdgeId, EntityId, FactEntityId, MemoryId, OwnerRef, SchemaId, SchemaVersion};
+use crate::{
+    EdgeId, EntityId, EntityKind, FactEntityId, MemoryId, OwnerRef, SchemaId, SchemaVersion,
+};
 
 use super::Engine;
 
 const NEIGHBOR_EDGE_LIMIT: usize = 200;
+pub const MAX_WAKE_CANDIDATE_LIMIT: usize = 200;
 
 #[derive(Debug, Clone)]
 pub struct SearchReadRequest {
@@ -61,6 +66,17 @@ pub struct ListChangeEventsReadRequest {
 pub struct ListChangeEventsReadResponse {
     pub events: Vec<ChangeEventForWake>,
     pub edge_endpoint_kinds: Vec<EdgeEndpointKindRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListWakeCandidatesReadRequest {
+    pub trigger_fact_id: MemoryId,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListWakeCandidatesReadResponse {
+    pub candidates: Vec<GoalWakeCandidate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,6 +168,71 @@ impl Engine {
     ) -> Result<ListChangeEventsReadResponse, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
         list_change_events_authorized(&self.storage.read_verb, &read_owners, req).await
+    }
+
+    /// Wake-candidate admission read: armed Active Goal heads whose wake
+    /// trigger matches one readable trigger Fact, narrowed to the caller's
+    /// resolved read/write owner sets and effective tool scope.
+    ///
+    /// This is a read model only — no scheduler, executor, tool invocation
+    /// row, or emitted Fact write path exists behind it (04 §Execution).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context cannot read `req.trigger_fact_id`;
+    /// `InvalidArgument` when the trigger is not a live Fact memory or
+    /// `req.limit` is zero; and `Internal` when storage reads fail.
+    pub async fn list_goal_wake_candidates(
+        &self,
+        authz: &AuthzContext,
+        req: &ListWakeCandidatesReadRequest,
+    ) -> Result<ListWakeCandidatesReadResponse, ProtocolError> {
+        if req.limit == 0 {
+            return Err(ProtocolError::invalid_argument(
+                "limit",
+                "limit must be at least 1",
+            ));
+        }
+        let permit = self
+            .authorize_entry_read(authz, EntityId::Memory(req.trigger_fact_id))
+            .await?;
+        let trigger_owner = *permit.owner();
+        let access = self.resolve_access(authz).await?;
+        let snapshot = self
+            .storage
+            .read_verb
+            .memory_inspect
+            .load_memory_by_id(req.trigger_fact_id, &[])
+            .await
+            .map_err(|err| storage_error("load_memory_by_id", &err))?
+            .ok_or_else(|| {
+                ProtocolError::invalid_argument("fact", "wake trigger fact not found")
+            })?;
+        if snapshot.kind != EntityKind::Fact.as_str() {
+            return Err(ProtocolError::invalid_argument(
+                "fact",
+                "wake trigger must be a Fact memory",
+            ));
+        }
+        let actor_write_owners = access.write_owners_for(Relation::Editor);
+        let candidates = self
+            .storage
+            .read_verb
+            .goal_wake_candidate
+            .list_goal_wake_candidates(&GoalWakeCandidateRequest {
+                actor_read_owners: access.read_owners(),
+                actor_write_owners: &actor_write_owners,
+                trigger_owner,
+                trigger_fact_id: req.trigger_fact_id,
+                trigger_schema_id: &snapshot.schema_id,
+                trigger_schema_version: snapshot.schema_version,
+                actor_tool_scope: authz.tool_scope(),
+                deployment_tool_scope: &ToolScope::All,
+                limit: req.limit.min(MAX_WAKE_CANDIDATE_LIMIT),
+            })
+            .await
+            .map_err(|err| storage_error("list_goal_wake_candidates", &err))?;
+        Ok(ListWakeCandidatesReadResponse { candidates })
     }
 
     /// Confirmed-id inverse citation read for one Fact memory.
@@ -550,6 +631,34 @@ mod tests {
             .await
             .expect_err("denied context must fail");
         assert_forbidden(&err);
+    }
+
+    #[tokio::test]
+    async fn list_goal_wake_candidates_denies_denied_context() {
+        let owner = owner();
+        let req = super::ListWakeCandidatesReadRequest {
+            trigger_fact_id: MemoryId::new(uuid::Uuid::now_v7()),
+            limit: 10,
+        };
+        let err = engine()
+            .list_goal_wake_candidates(&AuthzContext::denied_for_owner(&owner), &req)
+            .await
+            .expect_err("denied context must fail");
+        assert_forbidden(&err);
+    }
+
+    #[tokio::test]
+    async fn list_goal_wake_candidates_rejects_zero_limit() {
+        let owner = owner();
+        let req = super::ListWakeCandidatesReadRequest {
+            trigger_fact_id: MemoryId::new(uuid::Uuid::now_v7()),
+            limit: 0,
+        };
+        let err = engine()
+            .list_goal_wake_candidates(&granted_authz(&owner), &req)
+            .await
+            .expect_err("zero limit must fail");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
     }
 
     #[tokio::test]

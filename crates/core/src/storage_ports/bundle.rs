@@ -4,10 +4,11 @@ use std::sync::Arc;
 use super::handles::{
     ChangeEventHandle, CitationHandle, ComplianceAdminHandle, ComplianceEraseHandle,
     EdgeReadHandle, EmbeddingJobHandle, EmbeddingMaintenanceHandle, EmbeddingTextHandle,
-    EmbeddingWriteHandle, FactIngestHandle, FactRetentionHandle, GoalReadHandle, GoalWriteHandle,
-    McpCallReadHandle, McpCallWriteHandle, MemoryAuthoringHandle, MemoryInspectHandle,
-    MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle, OwnerMembershipAdminHandle,
-    OwnerTransferHandle, RegistryProjectionHandle, SourceBatchHandle, SourceCursorHandle,
+    EmbeddingWriteHandle, FactIngestHandle, FactRetentionHandle, GoalReadHandle,
+    GoalWakeCandidateHandle, GoalWriteHandle, McpCallReadHandle, McpCallWriteHandle,
+    MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle,
+    OwnerDropProofHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
+    RegistryProjectionHandle, SourceBatchHandle, SourceCursorHandle,
 };
 use super::rejecting::RejectingStorage;
 
@@ -26,6 +27,7 @@ pub struct StoragePorts {
     embedding_maintenance: EmbeddingMaintenanceHandle,
     goal_write: GoalWriteHandle,
     goal_read: GoalReadHandle,
+    goal_wake_candidate: GoalWakeCandidateHandle,
     change_event: ChangeEventHandle,
     edge_read: EdgeReadHandle,
     citation: CitationHandle,
@@ -102,6 +104,7 @@ pub(crate) struct ReadVerbStoragePorts {
     pub change_event: ChangeEventHandle,
     pub citation: CitationHandle,
     pub fact_retention: FactRetentionHandle,
+    pub goal_wake_candidate: GoalWakeCandidateHandle,
 }
 
 #[derive(Clone)]
@@ -141,6 +144,7 @@ pub struct StoragePortsBuilder {
     embedding_maintenance: Option<EmbeddingMaintenanceHandle>,
     goal_write: Option<GoalWriteHandle>,
     goal_read: Option<GoalReadHandle>,
+    goal_wake_candidate: Option<GoalWakeCandidateHandle>,
     change_event: Option<ChangeEventHandle>,
     edge_read: Option<EdgeReadHandle>,
     citation: Option<CitationHandle>,
@@ -191,6 +195,7 @@ impl StoragePorts {
             embedding_maintenance: rejecting.clone(),
             goal_write: rejecting.clone(),
             goal_read: rejecting.clone(),
+            goal_wake_candidate: rejecting.clone(),
             change_event: rejecting.clone(),
             edge_read: rejecting.clone(),
             citation: rejecting.clone(),
@@ -275,6 +280,7 @@ impl From<StoragePorts> for EngineStoragePorts {
                 change_event: ports.change_event.clone(),
                 citation: ports.citation.clone(),
                 fact_retention: ports.fact_retention.clone(),
+                goal_wake_candidate: ports.goal_wake_candidate.clone(),
             },
         }
     }
@@ -350,6 +356,12 @@ impl StoragePortsBuilder {
     #[must_use]
     pub fn goal_read(mut self, handle: GoalReadHandle) -> Self {
         self.goal_read = Some(handle);
+        self
+    }
+
+    #[must_use]
+    pub fn goal_wake_candidate(mut self, handle: GoalWakeCandidateHandle) -> Self {
+        self.goal_wake_candidate = Some(handle);
         self
     }
 
@@ -475,6 +487,7 @@ impl StoragePortsBuilder {
             embedding_maintenance,
             goal_write,
             goal_read,
+            goal_wake_candidate,
             change_event,
             edge_read,
             citation,

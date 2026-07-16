@@ -12,6 +12,7 @@ pub mod list_change_events;
 pub mod list_edge_types;
 pub mod list_schemas;
 pub mod list_substrate_tools;
+pub mod list_wake_candidates;
 pub mod membership;
 pub mod memory;
 pub mod memory_spaces;

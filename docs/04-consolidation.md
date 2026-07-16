@@ -108,12 +108,14 @@ Goal-owned wake config:
 Harness wake loop (driven externally, served by core pull verbs):
 
 1. Pull owner `change_event` rows after the harness-held cursor
-   (`list_change_events_after`).
+   (`list_change_events_after`; MCP: `proxima://change-events{?since,limit}`).
 2. Match only armed Active Goal heads; Paused/Achieved/Abandoned Goals do not fire.
 3. Check trigger readability against the trigger Fact's actual owner.
 4. Check each hard-memory context row against that memory's actual owner/kind.
 5. Admit only configured tool/action ids within actor tool scope intersected
    with the deployment tool-surface profile (`ToolScope::Palette` when narrowed).
+   Steps 2-5 are one admission read: `Engine::list_goal_wake_candidates`
+   (MCP: `proxima://wake-candidates{?fact,limit}`).
 6. Execute externally; core does not run a scheduler, plugin host, or tool executor.
 7. Validate every write through schema and relation registries.
 8. Commit output rows and emitted `change_event` rows atomically; any emitted Fact

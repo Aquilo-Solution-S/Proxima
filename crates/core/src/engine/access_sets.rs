@@ -509,7 +509,6 @@ pub(in crate::engine) mod tests {
     }
 
     #[async_trait::async_trait]
-    #[async_trait::async_trait]
     impl GoalReadPort for MembershipStorage {
         async fn list_active_goals(
             &self,
@@ -517,6 +516,16 @@ pub(in crate::engine) mod tests {
             _self_perspective_memory_id: MemoryId,
             _limit: usize,
         ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::storage_ports::GoalWakeCandidatePort for MembershipStorage {
+        async fn list_goal_wake_candidates(
+            &self,
+            _req: &GoalWakeCandidateRequest<'_>,
+        ) -> Result<Vec<GoalWakeCandidate>, StorageError> {
             Ok(Vec::new())
         }
     }
@@ -930,6 +939,7 @@ pub(in crate::engine) mod tests {
                 .embedding_maintenance(storage.clone())
                 .goal_write(storage.clone())
                 .goal_read(storage.clone())
+                .goal_wake_candidate(storage.clone())
                 .change_event(storage.clone())
                 .edge_read(storage.clone())
                 .citation(storage.clone())
