@@ -9,9 +9,10 @@ use crate::engine::SearchReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
 use crate::verbs::query::{
-    EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
+    EntityKind, MemorySearchRequest, SearchCursor, SearchMode, SearchOrder, SupersessionStatus,
+    TagMatch,
 };
-use crate::{McpTool, SchemaId};
+use crate::{McpTool, MemoryId, SchemaId};
 
 use super::memory::search::{NeighborEdge, neighbor_edges_from_rows};
 
@@ -137,6 +138,16 @@ pub struct SearchMemoriesArgs {
     #[serde(default)]
     #[schemars(description = "Result ordering: relevance or recency. Defaults to relevance.")]
     pub order: SearchOrder,
+    #[serde(default)]
+    #[schemars(
+        description = "Minimum fused relevance score in 0..=1; results scoring below it are dropped. Omit or null for no floor."
+    )]
+    pub min_score: Option<f32>,
+    #[serde(default)]
+    #[schemars(
+        description = "Hybrid fusion weight on the semantic component in 0..=1; the lexical component gets the complement. Defaults to 0.6. Only valid with mode=hybrid."
+    )]
+    pub semantic_weight: Option<f32>,
     #[serde(default = "default_include_neighbor_edges")]
     #[schemars(
         description = "Include neighbor edges touching matched memories. Defaults to true; set false for lean results."
@@ -155,6 +166,11 @@ pub struct SearchMemoriesArgs {
         description = "Memory space keys from core_memory_spaces. Empty/omitted searches current owner."
     )]
     pub spaces: Vec<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Opaque pagination cursor from a previous response's next_cursor. Returns the page after it; every argument except limit must stay unchanged."
+    )]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -163,6 +179,8 @@ pub struct SearchMemoriesOutput {
     pub degraded_to_lexical: bool,
     pub memories: Vec<SearchMemoryOutput>,
     pub neighbor_edges: Vec<NeighborEdge>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -183,7 +201,7 @@ pub struct SearchMemoryOutput {
 
 impl McpTool for SearchMemoriesTool {
     const NAME: &'static str = protocol_tool::CORE_SEARCH_MEMORIES;
-    const DESCRIPTION: &'static str = "Search owner-scoped memories by lexical, semantic, or hybrid ranking. Defaults to current heads only; pass supersession=all for full history. Set include_body=true to hydrate body text in the same batched read.";
+    const DESCRIPTION: &'static str = "Search owner-scoped memories by lexical, semantic, or hybrid ranking. Defaults to current heads only; pass supersession=all for full history. Set include_body=true to hydrate body text in the same batched read. Drop weak hits with min_score, tune hybrid fusion with semantic_weight, and page past the 50-result cap by passing next_cursor back as cursor.";
     type Args = SearchMemoriesArgs;
     type Output = SearchMemoriesOutput;
 
@@ -198,6 +216,7 @@ impl McpTool for SearchMemoriesTool {
                     "query must be 1..=512 chars".into(),
                 ));
             }
+            validate_score_args(&args)?;
 
             let mode = SearchMode::from(args.mode);
             let embeddings_available = ctx
@@ -208,6 +227,15 @@ impl McpTool for SearchMemoriesTool {
             let mut degraded_to_lexical = resolver_degraded;
             let since = parse_rfc3339(args.since.as_deref(), "since")?;
             let until = parse_rfc3339(args.until.as_deref(), "until")?;
+            let spaces = resolve_search_spaces(&ctx, &args.spaces)?;
+            // The fingerprint binds a cursor to everything that shapes the
+            // result set, so page N+1 provably continues the same query.
+            let fingerprint = query_fingerprint(query, &args, since, until, &spaces);
+            let after = args
+                .cursor
+                .as_deref()
+                .map(|raw| decode_cursor(raw, &fingerprint))
+                .transpose()?;
             let (query_embedding, embedding_model_id) = if matches!(
                 effective_mode,
                 SearchMode::Semantic | SearchMode::Hybrid
@@ -248,25 +276,38 @@ impl McpTool for SearchMemoriesTool {
                 embedding_model_id,
                 body_max_chars: effective_body_max_chars(args.body_max_chars),
                 limit: args.limit.clamp(1, 50),
+                after,
             };
-            let spaces = resolve_search_spaces(&ctx, &args.spaces)?;
             let mut all_memories = Vec::new();
             let mut all_neighbor_edges = Vec::new();
+            // Every space receives the same keyset cursor: a keyset is a
+            // per-row predicate, so filtering each space independently and
+            // re-merging yields exactly the next page of the merged order.
+            let mut any_space_has_more = false;
             for space in spaces {
                 let result = search_one_space(&ctx, &args, &prepared, space).await?;
                 degraded_to_lexical |= result.degraded_to_lexical;
+                any_space_has_more |= result.has_more;
                 all_memories.extend(result.memories);
                 all_neighbor_edges.extend(result.neighbor_edges);
             }
-            sort_search_outputs(&mut all_memories, args.order);
-            all_memories.truncate(prepared.limit as usize);
-            retain_surviving_neighbor_edges(&all_memories, &mut all_neighbor_edges);
+            let (memories, has_more, next_cursor) = paginate_merged_outputs(
+                all_memories,
+                args.order,
+                prepared.limit as usize,
+                any_space_has_more,
+                after,
+                &fingerprint,
+            );
+            retain_surviving_neighbor_edges(&memories, &mut all_neighbor_edges);
 
             Ok(SearchMemoriesOutput {
                 mode: format!("{mode:?}").to_lowercase(),
                 degraded_to_lexical,
-                memories: all_memories,
+                memories,
                 neighbor_edges: all_neighbor_edges,
+                next_cursor,
+                has_more,
             })
         })
     }
@@ -281,12 +322,48 @@ struct PreparedSearch {
     embedding_model_id: Option<String>,
     body_max_chars: usize,
     limit: u32,
+    after: Option<SearchCursor>,
+}
+
+/// A wire output paired with the typed sort/cursor keys it was ranked
+/// by. The wire `memory` field is a prefixed id whose prefix would
+/// distort cross-kind uuid tiebreaks, and `created_at` is a formatted
+/// string — the merge across spaces must sort on the raw values that
+/// storage sorted on.
+struct RankedMemoryOutput {
+    memory_id: uuid::Uuid,
+    created_at: time::OffsetDateTime,
+    output: SearchMemoryOutput,
 }
 
 struct SpaceSearchResult {
     degraded_to_lexical: bool,
-    memories: Vec<SearchMemoryOutput>,
+    has_more: bool,
+    memories: Vec<RankedMemoryOutput>,
     neighbor_edges: Vec<NeighborEdge>,
+}
+
+fn validate_score_args(args: &SearchMemoriesArgs) -> Result<(), McpToolError> {
+    if let Some(floor) = args.min_score
+        && !(floor.is_finite() && (0.0..=1.0).contains(&floor))
+    {
+        return Err(McpToolError::InvalidInput(
+            "min_score must be within 0.0..=1.0".into(),
+        ));
+    }
+    if let Some(weight) = args.semantic_weight {
+        if !(weight.is_finite() && (0.0..=1.0).contains(&weight)) {
+            return Err(McpToolError::InvalidInput(
+                "semantic_weight must be within 0.0..=1.0".into(),
+            ));
+        }
+        if !matches!(args.mode, SearchMemoriesMode::Hybrid) {
+            return Err(McpToolError::InvalidInput(
+                "semantic_weight applies only to mode=hybrid".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn resolve_search_spaces(
@@ -334,6 +411,9 @@ async fn search_one_space(
         since: prepared.since,
         until: prepared.until,
         order: args.order,
+        min_score: args.min_score,
+        semantic_weight: args.semantic_weight,
+        after: prepared.after,
         query_embedding: prepared.query_embedding.clone(),
         embedding_model_id: prepared.embedding_model_id.clone(),
     };
@@ -362,6 +442,7 @@ async fn search_one_space(
         .into_iter()
         .map(|row| {
             let mid = row.memory_id.into_inner();
+            let created_at = row.created_at;
             let tags = payloads
                 .get(&mid)
                 .and_then(|payload| payload.tags.clone())
@@ -375,32 +456,166 @@ async fn search_one_space(
                         .map(|body| truncate_body(&body, prepared.body_max_chars))
                 })
                 .flatten();
-            search_memory_output(ctx, &space.key, row, tags, body)
+            search_memory_output(ctx, &space.key, row, tags, body).map(|output| {
+                RankedMemoryOutput {
+                    memory_id: mid,
+                    created_at,
+                    output,
+                }
+            })
         })
         .collect::<Result<Vec<_>, McpToolError>>()?;
     Ok(SpaceSearchResult {
         degraded_to_lexical,
+        has_more: response.has_more,
         memories,
         neighbor_edges,
     })
 }
 
-fn sort_search_outputs(memories: &mut [SearchMemoryOutput], order: SearchOrder) {
+/// Sort the merged cross-space rows, cut the page, and mint the next
+/// opaque cursor from the last emitted row. `seen` accumulates across
+/// pages so storage can widen its relevance overfetch window.
+fn paginate_merged_outputs(
+    mut all_memories: Vec<RankedMemoryOutput>,
+    order: SearchOrder,
+    page_len: usize,
+    any_space_has_more: bool,
+    after: Option<SearchCursor>,
+    fingerprint: &str,
+) -> (Vec<SearchMemoryOutput>, bool, Option<String>) {
+    sort_ranked_outputs(&mut all_memories, order);
+    let has_more = any_space_has_more || all_memories.len() > page_len;
+    all_memories.truncate(page_len);
+    let next_cursor = (has_more && !all_memories.is_empty()).then(|| {
+        let last = all_memories.last().expect("non-empty page");
+        let seen = after
+            .map_or(0, |cursor| cursor.seen())
+            .saturating_add(u32::try_from(all_memories.len()).unwrap_or(u32::MAX));
+        let cursor = match order {
+            SearchOrder::Relevance => SearchCursor::Relevance {
+                score_bits: last.output.score.to_bits(),
+                memory_id: MemoryId::new(last.memory_id),
+                seen,
+            },
+            SearchOrder::Recency => SearchCursor::Recency {
+                created_at: last.created_at,
+                memory_id: MemoryId::new(last.memory_id),
+                seen,
+            },
+        };
+        encode_cursor(cursor, fingerprint)
+    });
+    let memories = all_memories
+        .into_iter()
+        .map(|ranked| ranked.output)
+        .collect();
+    (memories, has_more, next_cursor)
+}
+
+/// Merged cross-space sort with the exact comparator storage pages by:
+/// `(score desc, memory_id desc)` / `(created_at desc, memory_id desc)`.
+/// A cursor built from the last row of this order resumes correctly in
+/// every space at once.
+fn sort_ranked_outputs(memories: &mut [RankedMemoryOutput], order: SearchOrder) {
     match order {
         SearchOrder::Relevance => memories.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| b.created_at.cmp(&a.created_at))
+            b.output
+                .score
+                .total_cmp(&a.output.score)
+                .then_with(|| b.memory_id.cmp(&a.memory_id))
         }),
         SearchOrder::Recency => memories.sort_by(|a, b| {
-            b.created_at.cmp(&a.created_at).then_with(|| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.memory_id.cmp(&a.memory_id))
         }),
     }
+}
+
+/// Wire envelope for the opaque cursor: version + query fingerprint +
+/// the typed resume point, JSON-encoded then base64url'd. Clients must
+/// treat the token as opaque; the fingerprint rejects replay against a
+/// different query shape, and `v` gates format evolution.
+#[derive(Debug, Serialize, Deserialize)]
+struct WireSearchCursor {
+    v: u8,
+    fp: String,
+    c: SearchCursor,
+}
+
+const WIRE_CURSOR_VERSION: u8 = 1;
+
+fn encode_cursor(cursor: SearchCursor, fingerprint: &str) -> String {
+    use base64::Engine as _;
+    let json = serde_json::to_vec(&WireSearchCursor {
+        v: WIRE_CURSOR_VERSION,
+        fp: fingerprint.to_string(),
+        c: cursor,
+    })
+    .expect("cursor serializes");
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
+}
+
+fn decode_cursor(raw: &str, fingerprint: &str) -> Result<SearchCursor, McpToolError> {
+    use base64::Engine as _;
+    let malformed = || {
+        McpToolError::InvalidInput(
+            "malformed cursor: pass next_cursor from a previous core_search_memories response"
+                .into(),
+        )
+    };
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(raw.as_bytes())
+        .map_err(|_| malformed())?;
+    let wire: WireSearchCursor = serde_json::from_slice(&bytes).map_err(|_| malformed())?;
+    if wire.v != WIRE_CURSOR_VERSION {
+        return Err(malformed());
+    }
+    if wire.fp != fingerprint {
+        return Err(McpToolError::InvalidInput(
+            "cursor does not match this query: repeat the query, mode, filters, order, and spaces that produced it".into(),
+        ));
+    }
+    Ok(wire.c)
+}
+
+/// Canonical fingerprint over everything that shapes the result set or
+/// its order. Page size (`limit`) and presentation flags (bodies,
+/// neighbor edges) stay out so they may vary between pages. Tags and
+/// resolved space owners are sorted first, making equivalent filter
+/// sets fingerprint identically.
+fn query_fingerprint(
+    query: &str,
+    args: &SearchMemoriesArgs,
+    since: Option<time::OffsetDateTime>,
+    until: Option<time::OffsetDateTime>,
+    spaces: &[super::memory_spaces::ResolvedMemorySpace],
+) -> String {
+    let mut tags = args.tags.clone();
+    tags.sort_unstable();
+    let mut space_keys: Vec<String> = spaces
+        .iter()
+        .map(|space| space.owner.external_key())
+        .collect();
+    space_keys.sort_unstable();
+    let canon = serde_json::to_string(&(
+        query,
+        SearchMode::from(args.mode),
+        SupersessionStatus::from(args.supersession),
+        args.kind.map(|kind| EntityKind::from(kind).as_str()),
+        args.schema_id.as_deref(),
+        &tags,
+        args.tag_match,
+        since.map(time::OffsetDateTime::unix_timestamp_nanos),
+        until.map(time::OffsetDateTime::unix_timestamp_nanos),
+        args.order,
+        args.min_score.map(f32::to_bits),
+        args.semantic_weight.map(f32::to_bits),
+        &space_keys,
+    ))
+    .expect("fingerprint canon serializes");
+    blake3::hash(canon.as_bytes()).to_hex()[..16].to_string()
 }
 
 fn truncate_body(body: &str, max_chars: usize) -> String {
@@ -534,13 +749,15 @@ fn format_rfc3339(value: time::OffsetDateTime) -> Result<String, McpToolError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_BODY_MAX_CHARS, NeighborEdge, SEMANTIC_SEARCH_UNAVAILABLE, SearchMemoriesMode,
-        SearchMemoriesSupersession, SearchMemoryOutput, degraded_to_lexical,
-        effective_body_max_chars, resolve_effective_search_mode, retain_surviving_neighbor_edges,
-        truncate_body,
+        DEFAULT_BODY_MAX_CHARS, NeighborEdge, SEMANTIC_SEARCH_UNAVAILABLE, SearchMemoriesArgs,
+        SearchMemoriesMode, SearchMemoriesSupersession, SearchMemoryOutput, decode_cursor,
+        degraded_to_lexical, effective_body_max_chars, encode_cursor,
+        resolve_effective_search_mode, retain_surviving_neighbor_edges, truncate_body,
+        validate_score_args,
     };
+    use crate::MemoryId;
     use crate::mcp::McpToolError;
-    use crate::verbs::query::SearchMode;
+    use crate::verbs::query::{SearchCursor, SearchMode, SearchOrder, TagMatch};
 
     fn memory_output(handle: &str) -> SearchMemoryOutput {
         SearchMemoryOutput {
@@ -564,6 +781,93 @@ mod tests {
             relation: "core/derived-from".into(),
             source: source.map(str::to_string),
             target: target.map(str::to_string),
+        }
+    }
+
+    fn args(mode: SearchMemoriesMode) -> SearchMemoriesArgs {
+        SearchMemoriesArgs {
+            query: "needle".into(),
+            mode,
+            limit: 8,
+            supersession: SearchMemoriesSupersession::HeadsOnly,
+            kind: None,
+            schema_id: None,
+            tags: Vec::new(),
+            tag_match: TagMatch::Any,
+            since: None,
+            until: None,
+            order: SearchOrder::Relevance,
+            min_score: None,
+            semantic_weight: None,
+            include_neighbor_edges: false,
+            include_body: false,
+            body_max_chars: None,
+            spaces: Vec::new(),
+            cursor: None,
+        }
+    }
+
+    #[test]
+    fn score_args_reject_out_of_range_and_non_hybrid_weight() {
+        let mut floor_too_high = args(SearchMemoriesMode::Hybrid);
+        floor_too_high.min_score = Some(1.01);
+        assert!(matches!(
+            validate_score_args(&floor_too_high),
+            Err(McpToolError::InvalidInput(message)) if message.contains("min_score")
+        ));
+
+        let mut nan_floor = args(SearchMemoriesMode::Hybrid);
+        nan_floor.min_score = Some(f32::NAN);
+        assert!(validate_score_args(&nan_floor).is_err());
+
+        let mut weight_out_of_range = args(SearchMemoriesMode::Hybrid);
+        weight_out_of_range.semantic_weight = Some(-0.1);
+        assert!(matches!(
+            validate_score_args(&weight_out_of_range),
+            Err(McpToolError::InvalidInput(message)) if message.contains("semantic_weight")
+        ));
+
+        // An explicit weight outside hybrid mode is a contradiction, not a
+        // silently ignored knob.
+        let mut lexical_weight = args(SearchMemoriesMode::Lexical);
+        lexical_weight.semantic_weight = Some(0.5);
+        assert!(matches!(
+            validate_score_args(&lexical_weight),
+            Err(McpToolError::InvalidInput(message)) if message.contains("mode=hybrid")
+        ));
+
+        let mut valid = args(SearchMemoriesMode::Hybrid);
+        valid.min_score = Some(0.25);
+        valid.semantic_weight = Some(1.0);
+        assert!(validate_score_args(&valid).is_ok());
+    }
+
+    #[test]
+    fn cursor_round_trips_and_rejects_foreign_or_garbled_tokens() {
+        let cursor = SearchCursor::Relevance {
+            score_bits: 0.75_f32.to_bits(),
+            memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+            seen: 42,
+        };
+        let token = encode_cursor(cursor, "fp-aaaa");
+        assert_eq!(decode_cursor(&token, "fp-aaaa").unwrap(), cursor);
+
+        // Same token replayed against a different query shape.
+        match decode_cursor(&token, "fp-bbbb") {
+            Err(McpToolError::InvalidInput(message)) => {
+                assert!(message.contains("does not match this query"), "{message}");
+            }
+            other => panic!("expected fingerprint mismatch, got {other:?}"),
+        }
+
+        // Not base64 / not our envelope.
+        for garbage in ["%%%", "bm90LWpzb24"] {
+            match decode_cursor(garbage, "fp-aaaa") {
+                Err(McpToolError::InvalidInput(message)) => {
+                    assert!(message.contains("malformed cursor"), "{message}");
+                }
+                other => panic!("expected malformed cursor error, got {other:?}"),
+            }
         }
     }
 

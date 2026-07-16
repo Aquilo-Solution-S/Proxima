@@ -203,6 +203,154 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
 }
 
 #[tokio::test]
+async fn search_memories_paginates_with_opaque_cursor() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
+    let owner = nil_owner();
+    let author = author_ctx();
+
+    for idx in 0..7 {
+        call_tool(
+            &pg,
+            &owner,
+            &frozen,
+            author.clone(),
+            "core_remember",
+            json!({
+                "title": format!("Cursorgrain {idx}"),
+                "body": "cursorgrain page fodder",
+                "idempotency_key": format!("cursor-page-{idx}"),
+            }),
+        )
+        .await?;
+    }
+
+    let base_args = json!({
+        "query": "cursorgrain",
+        "mode": "lexical",
+        "limit": 3,
+        "include_neighbor_edges": false,
+    });
+
+    let mut seen_handles = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        let mut args = base_args.clone();
+        if let Some(token) = &cursor {
+            args["cursor"] = json!(token);
+        }
+        let page = call_tool(
+            &pg,
+            &owner,
+            &frozen,
+            author.clone(),
+            "core_search_memories",
+            args,
+        )
+        .await?;
+        let memories = page["memories"].as_array().expect("memories array");
+        for memory in memories {
+            seen_handles.push(memory["memory"].as_str().expect("handle").to_string());
+        }
+        pages += 1;
+        if page["has_more"] == json!(true) {
+            cursor = Some(
+                page["next_cursor"]
+                    .as_str()
+                    .expect("has_more implies a next_cursor")
+                    .to_string(),
+            );
+            assert!(pages <= 3, "pagination must terminate");
+        } else {
+            assert_eq!(
+                page["next_cursor"],
+                serde_json::Value::Null,
+                "the final page mints no cursor"
+            );
+            break;
+        }
+    }
+    assert_eq!(
+        pages, 3,
+        "seven results at page size three make three pages"
+    );
+    let mut deduped = seen_handles.clone();
+    deduped.sort_unstable();
+    deduped.dedup();
+    assert_eq!(
+        deduped.len(),
+        7,
+        "pages must be disjoint and exhaustive, got: {seen_handles:?}"
+    );
+
+    let last_cursor = cursor.unwrap_or_default();
+    assert_cursor_misuse_rejected(&pg, &owner, &frozen, author, &last_cursor).await;
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// A cursor replayed against a different query shape fails closed, and
+/// garbage tokens are malformed — never a silent first page.
+async fn assert_cursor_misuse_rejected(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    registry: &Arc<proxima_core::FlavorRegistryFrozen>,
+    author: McpAuthorContext,
+    cursor: &str,
+) {
+    let stale = call_tool(
+        pg,
+        owner,
+        registry,
+        author.clone(),
+        "core_search_memories",
+        json!({
+            "query": "something else entirely",
+            "mode": "lexical",
+            "limit": 3,
+            "include_neighbor_edges": false,
+            "cursor": cursor,
+        }),
+    )
+    .await;
+    match stale {
+        Err(proxima_core::McpToolError::InvalidInput(message)) => {
+            assert!(
+                message.contains("does not match this query"),
+                "unexpected message: {message}"
+            );
+        }
+        other => panic!("expected invalid-input for foreign cursor, got {other:?}"),
+    }
+
+    let garbled = call_tool(
+        pg,
+        owner,
+        registry,
+        author,
+        "core_search_memories",
+        json!({
+            "query": "cursorgrain",
+            "mode": "lexical",
+            "limit": 3,
+            "cursor": "not-a-cursor",
+        }),
+    )
+    .await;
+    match garbled {
+        Err(proxima_core::McpToolError::InvalidInput(message)) => {
+            assert!(message.contains("malformed cursor"), "got: {message}");
+        }
+        other => panic!("expected malformed-cursor error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn remember_enqueues_one_embedding_job_and_replay_does_not_duplicate()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;

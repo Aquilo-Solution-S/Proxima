@@ -25,6 +25,7 @@ uuid = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["process", "time"] }
 async-trait = { workspace = true }
+base64 = { workspace = true }
 blake3 = { workspace = true }
 time = { workspace = true }
 tracing = { workspace = true }

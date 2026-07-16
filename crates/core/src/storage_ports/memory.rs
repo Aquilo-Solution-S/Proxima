@@ -89,7 +89,7 @@ pub trait MemoryReadPort: Send + Sync {
         &self,
         req: &crate::verbs::query::MemorySearchRequest,
         projections: &[crate::verbs::schema::MemorySearchProjection],
-    ) -> Result<Vec<crate::verbs::query::MemorySearchResult>, StorageError>;
+    ) -> Result<crate::verbs::query::MemorySearchPage, StorageError>;
 
     async fn walk_memory_lineage(
         &self,

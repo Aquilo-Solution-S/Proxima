@@ -284,8 +284,11 @@ pub(in crate::engine) mod tests {
             &self,
             _req: &verbs::query::MemorySearchRequest,
             _projections: &[verbs::schema::MemorySearchProjection],
-        ) -> Result<Vec<verbs::query::MemorySearchResult>, StorageError> {
-            Ok(Vec::new())
+        ) -> Result<verbs::query::MemorySearchPage, StorageError> {
+            Ok(verbs::query::MemorySearchPage {
+                results: Vec::new(),
+                has_more: false,
+            })
         }
 
         async fn walk_memory_lineage(

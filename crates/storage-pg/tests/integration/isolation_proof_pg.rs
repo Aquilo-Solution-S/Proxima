@@ -170,11 +170,14 @@ async fn assert_owner_b_cannot_see_owner_a(
         since: None,
         until: None,
         order: SearchOrder::Relevance,
+        min_score: None,
+        semantic_weight: None,
+        after: None,
         query_embedding: None,
         embedding_model_id: None,
     };
     assert!(
-        pg.search_memories(&search, &[]).await?.is_empty(),
+        pg.search_memories(&search, &[]).await?.results.is_empty(),
         "owner B search must not see owner A text"
     );
 

@@ -174,7 +174,7 @@ impl MemoryReadPort for MemoryReadFake {
         &self,
         req: &proxima_core::verbs::query::MemorySearchRequest,
         projections: &[proxima_core::verbs::schema::MemorySearchProjection],
-    ) -> Result<Vec<proxima_core::verbs::query::MemorySearchResult>, StorageError> {
+    ) -> Result<proxima_core::verbs::query::MemorySearchPage, StorageError> {
         fake_error()
     }
 

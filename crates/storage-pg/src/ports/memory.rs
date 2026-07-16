@@ -4,7 +4,7 @@ use proxima_core::storage_ports::{
     MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OwnerWritePermit,
 };
 use proxima_core::verbs::query::{
-    MemoryLineageRequest, MemoryLineageResponse, MemorySearchRequest, MemorySearchResult,
+    MemoryLineageRequest, MemoryLineageResponse, MemorySearchPage, MemorySearchRequest,
     QueryRequest, QueryResponse,
 };
 use proxima_core::{
@@ -492,7 +492,7 @@ impl MemoryReadPort for PgStorage {
         &self,
         req: &MemorySearchRequest,
         projections: &[proxima_core::verbs::schema::MemorySearchProjection],
-    ) -> Result<Vec<MemorySearchResult>, StorageError> {
+    ) -> Result<MemorySearchPage, StorageError> {
         verbs::query::search_memories(&self.pool, req, projections).await
     }
 

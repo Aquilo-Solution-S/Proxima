@@ -420,6 +420,30 @@ with `format_prefixed_uuid`/`parse_prefixed_uuid`
 (`proxima_core::mcp`), which remain public alongside
 `PrefixedUuidClass`, `PrefixedUuidError`, and `MemoryHandleClass`.
 
+## 17. v0.0.7: memory search returns pages and takes retrieval knobs
+
+`MemoryReadPort::search_memories` now returns
+`verbs::query::MemorySearchPage { results, has_more }` instead of
+`Vec<MemorySearchResult>`; port implementors and mocks must wrap their
+row vectors (`has_more: false` preserves prior semantics), and
+`engine::SearchReadResponse` gained a `has_more` field.
+`MemorySearchRequest` gained three `#[serde(default)]` fields:
+`min_score: Option<f32>` (post-fusion relevance floor, `0..=1`),
+`semantic_weight: Option<f32>` (hybrid fusion weight on the semantic
+component; `None` keeps `DEFAULT_HYBRID_SEMANTIC_WEIGHT` = 0.6), and
+`after: Option<SearchCursor>` (typed keyset resume point whose variant
+must match `order`; relevance depth is bounded by
+`MAX_RELEVANCE_SEARCH_DEPTH`). Struct-literal construction sites must add
+the fields; serde consumers are unaffected. The former inline `50` result
+cap is now `verbs::query::MAX_SEARCH_PAGE_LIMIT` and applies per page.
+
+On the MCP wire the change is additive: `core_search_memories` accepts
+optional `min_score`, `semantic_weight` (hybrid only), and `cursor`
+(opaque, from the previous response's `next_cursor`), and its output
+gained `next_cursor` and `has_more`. Cursors are fingerprint-bound to
+the query shape — replaying one with any changed argument except `limit`
+fails closed with `InvalidInput`.
+
 ## Checks before calling an upgrade done
 
 ```sh
