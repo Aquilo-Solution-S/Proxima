@@ -657,7 +657,7 @@ fn encode_wake_config(
                 ));
             }
             GoalWakeTrigger::FactMemory {
-                memory_id: ctx.resolve_memory(fact)?,
+                memory_id: ctx.resolve_fact_memory(fact)?,
             }
         }
         (None, Some(schema_id)) => GoalWakeTrigger::FactSchema {
