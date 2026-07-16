@@ -9,6 +9,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::EntityKind;
 use crate::engine::{ListWakeCandidatesReadRequest, MAX_WAKE_CANDIDATE_LIMIT};
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::read_models::GoalWakeCandidate;
@@ -37,7 +38,8 @@ pub struct WakeCandidateItem {
     pub prompt: String,
     /// Configured wake toolset; already narrowed to the caller's tool scope.
     pub tool_ids: Vec<String>,
-    /// Hard-context memory ids; resolve via `proxima://memory/{id}`.
+    /// Pinned wake-context memory references in this session's output form
+    /// (`F:`/`A:`/`P:`); hydrate via `proxima://memory/{id}`.
     pub hard_memories: Vec<String>,
     /// Owner keys (`personal:<uuid>`/`group:<uuid>`) the caller may write to.
     pub actor_write_owners: Vec<String>,
@@ -80,9 +82,13 @@ fn candidate_item(ctx: &McpToolCtx, candidate: GoalWakeCandidate) -> WakeCandida
         prompt: candidate.prompt,
         tool_ids: candidate.tool_ids,
         hard_memories: candidate
-            .hard_memory_ids
+            .hard_memories
             .into_iter()
-            .map(|memory_id| memory_id.into_inner().to_string())
+            .map(|hard| match hard.kind {
+                EntityKind::Abstraction => ctx.format_abstraction_memory(hard.memory_id),
+                EntityKind::Perspective => ctx.format_perspective_memory(hard.memory_id),
+                EntityKind::Fact | EntityKind::Goal => ctx.format_fact_memory(hard.memory_id),
+            })
             .collect(),
         actor_write_owners: candidate
             .actor_write_owners

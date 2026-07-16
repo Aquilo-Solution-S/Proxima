@@ -1,7 +1,8 @@
 //! Backend-neutral read DTOs shared by engine and storage ports.
 
 use crate::{
-    ChangeEvent, GoalId, MemoryId, OwnerRef, SchemaId, SchemaVersion, SidecarPayload, ToolScope,
+    ChangeEvent, EntityKind, GoalId, MemoryId, OwnerRef, SchemaId, SchemaVersion, SidecarPayload,
+    ToolScope,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +77,14 @@ pub struct GoalWakeCandidate {
     pub goal_id: GoalId,
     pub tool_ids: Vec<String>,
     pub prompt: String,
-    pub hard_memory_ids: Vec<MemoryId>,
+    pub hard_memories: Vec<GoalWakeHardMemory>,
     pub actor_write_owners: Vec<OwnerRef>,
+}
+
+/// One pinned wake-context memory with the kind needed to render a
+/// class-correct reference (`F:`/`A:`/`P:`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GoalWakeHardMemory {
+    pub memory_id: MemoryId,
+    pub kind: EntityKind,
 }
