@@ -281,7 +281,11 @@ def run_fixture(path: Path) -> int:
 # 2026-07-05 analysis: +1 net — K4 change-event commit-grace horizon
 # (verbs/consolidate/events.rs) and K5 mcp-call-history include_body/keyset
 # (verbs/mcp_call_history.rs) add proven fixed-fragment dynamic sites.
-EXPECTED_DYNAMIC_SQL_SITES = 48
+# 2026-07-16 analysis: +2 — the HNSW plan-validation test
+# (storage-pg/tests/integration/search_pg.rs) EXPLAINs the audited
+# production semantic-branch SQL and applies fixed SET LOCAL fragments;
+# both sites carry fixed-fragment proofs.
+EXPECTED_DYNAMIC_SQL_SITES = 50
 
 
 def run_self_test() -> int:
