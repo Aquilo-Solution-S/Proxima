@@ -48,6 +48,15 @@ pub trait GoalReadPort: Send + Sync {
         self_perspective_memory_id: crate::MemoryId,
         limit: usize,
     ) -> Result<Vec<ActiveGoalSummary>, StorageError>;
+
+    /// Wake configs for the given goals, restricted to goals whose owner
+    /// is in `read_owners`. Goals without a wake config are absent from
+    /// the result — absence is data, not an error.
+    async fn load_goal_wake_configs(
+        &self,
+        read_owners: &[OwnerRef],
+        goal_ids: &[crate::GoalId],
+    ) -> Result<Vec<crate::read_models::GoalWakeConfigRow>, StorageError>;
 }
 
 #[async_trait::async_trait]

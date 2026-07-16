@@ -8,6 +8,7 @@ pub mod search_memories;
 pub mod get_graph;
 pub mod get_memory;
 pub mod goal;
+pub mod goal_reads;
 pub mod list_change_events;
 pub mod list_edge_types;
 pub mod list_schemas;

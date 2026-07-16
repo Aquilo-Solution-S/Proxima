@@ -83,6 +83,10 @@ pub struct ListWakeCandidatesReadRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListWakeCandidatesReadResponse {
     pub candidates: Vec<GoalWakeCandidate>,
+    /// More admitted candidates exist past `limit`; re-poll with a higher
+    /// limit (bounded by [`MAX_WAKE_CANDIDATE_LIMIT`]) or narrow the
+    /// trigger. Truncation is a signal, never silent.
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -240,11 +244,45 @@ impl Engine {
                 trigger_schema_version: snapshot.schema_version,
                 actor_tool_scope: authz.tool_scope(),
                 deployment_tool_scope: &self.deployment_tool_scope,
-                limit: req.limit.min(MAX_WAKE_CANDIDATE_LIMIT),
+                // One extra row proves has_more without changing the page.
+                limit: req.limit.min(MAX_WAKE_CANDIDATE_LIMIT).saturating_add(1),
             })
             .await
             .map_err(|err| storage_error("list_goal_wake_candidates", &err))?;
-        Ok(ListWakeCandidatesReadResponse { candidates })
+        let page_len = req.limit.min(MAX_WAKE_CANDIDATE_LIMIT);
+        let has_more = candidates.len() > page_len;
+        let mut candidates = candidates;
+        candidates.truncate(page_len);
+        Ok(ListWakeCandidatesReadResponse {
+            candidates,
+            has_more,
+        })
+    }
+
+    /// Wake-config read-back for goal introspection reads
+    /// (`proxima://goal/{id}` / `proxima://goals`). Returns only configs
+    /// whose goal owner is within the caller's read set; goals without a
+    /// wake config are absent, which is data rather than an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context authorizes no read owners, and
+    /// `Internal` when storage reads fail.
+    pub async fn read_goal_wake_configs(
+        &self,
+        authz: &AuthzContext,
+        goal_ids: &[crate::GoalId],
+    ) -> Result<Vec<crate::read_models::GoalWakeConfigRow>, ProtocolError> {
+        if goal_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let read_owners = self.authorize_read(authz).await?;
+        self.storage
+            .read_verb
+            .goal_read
+            .load_goal_wake_configs(&read_owners, goal_ids)
+            .await
+            .map_err(|err| storage_error("load_goal_wake_configs", &err))
     }
 
     /// Confirmed-id inverse citation read for one Fact memory.

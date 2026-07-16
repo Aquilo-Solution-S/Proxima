@@ -88,3 +88,18 @@ pub struct GoalWakeHardMemory {
     pub memory_id: MemoryId,
     pub kind: EntityKind,
 }
+
+/// One goal's stored wake configuration, read back for introspection
+/// (`proxima://goal/{id}` / `proxima://goals`). Exactly one trigger class
+/// is populated: a concrete trigger Fact (`trigger_memory_id`) or a
+/// schema trigger (`trigger_schema_id` + optional version).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalWakeConfigRow {
+    pub goal_id: GoalId,
+    pub trigger_memory_id: Option<MemoryId>,
+    pub trigger_schema_id: Option<SchemaId>,
+    pub trigger_schema_version: Option<SchemaVersion>,
+    pub tool_ids: Vec<String>,
+    pub prompt: String,
+    pub hard_memories: Vec<GoalWakeHardMemory>,
+}

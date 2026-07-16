@@ -1,5 +1,6 @@
 use std::fmt::Write as _;
 
+use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{
     EntityKind, GoalRow, QueryCursor, QueryRequest, SupersessionStatus,
 };
@@ -92,6 +93,15 @@ pub(super) async fn query_goals(
 
     if let Some(p) = schema_param {
         write!(sql, " AND g.schema_id = ${p}").expect("write to String is infallible");
+    }
+    if let Some(state) = req.goal_state {
+        // SQL-POLICY: fixed-fragment — closed enum match, no caller text.
+        sql.push_str(match state {
+            GoalState::Active => " AND g.state = 'Active'",
+            GoalState::Paused => " AND g.state = 'Paused'",
+            GoalState::Achieved => " AND g.state = 'Achieved'",
+            GoalState::Abandoned => " AND g.state = 'Abandoned'",
+        });
     }
     if let Some(p) = goal_ids_param {
         write!(sql, " AND g.goal_id = ANY(${p})").expect("write to String is infallible");

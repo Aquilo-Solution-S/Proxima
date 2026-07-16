@@ -180,6 +180,7 @@ async fn read_verb_helper_accepts_only_read_verb_handles() {
         citation: Arc::new(storage_port_tests_support::CitationFake),
         fact_retention: Arc::new(storage_port_tests_support::FactRetentionFake),
         goal_wake_candidate: Arc::new(storage_port_tests_support::GoalWakeCandidateFake),
+        goal_read: Arc::new(storage_port_tests_support::GoalReadFake),
     };
     let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
     let req = super::read_verbs::ListChangeEventsReadRequest {
@@ -262,6 +263,29 @@ mod storage_port_tests_support {
             &self,
             _req: &crate::read_models::GoalWakeCandidateRequest<'_>,
         ) -> Result<Vec<crate::read_models::GoalWakeCandidate>, StorageError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct GoalReadFake;
+
+    #[async_trait::async_trait]
+    impl crate::storage_ports::GoalReadPort for GoalReadFake {
+        async fn list_active_goals(
+            &self,
+            _read_owners: &[crate::OwnerRef],
+            _self_perspective_memory_id: crate::MemoryId,
+            _limit: usize,
+        ) -> Result<Vec<crate::read_models::ActiveGoalSummary>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn load_goal_wake_configs(
+            &self,
+            _read_owners: &[crate::OwnerRef],
+            _goal_ids: &[crate::GoalId],
+        ) -> Result<Vec<crate::read_models::GoalWakeConfigRow>, StorageError> {
             Ok(Vec::new())
         }
     }

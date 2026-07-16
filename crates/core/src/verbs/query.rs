@@ -313,6 +313,10 @@ pub struct QueryRequest {
     pub supersession: SupersessionStatus,
     #[serde(default = "default_tombstone_filter")]
     pub tombstones: TombstoneFilter,
+    /// Goal-stream state filter. Only meaningful with
+    /// `entity_kind == Some(EntityKind::Goal)`; other streams ignore it.
+    #[serde(default)]
+    pub goal_state: Option<GoalState>,
     pub limit: u32,
     #[serde(default)]
     pub page: QueryPage,
@@ -346,6 +350,7 @@ impl QueryRequest {
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: TombstoneFilter::PresentOnly,
+            goal_state: None,
             limit: 100,
             page: QueryPage::default(),
             include_payloads: true,

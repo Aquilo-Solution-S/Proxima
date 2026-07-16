@@ -285,7 +285,9 @@ def run_fixture(path: Path) -> int:
 # (storage-pg/tests/integration/search_pg.rs) EXPLAINs the audited
 # production semantic-branch SQL and applies fixed SET LOCAL fragments;
 # both sites carry fixed-fragment proofs.
-EXPECTED_DYNAMIC_SQL_SITES = 50
+# 2026-07-16 analysis: +1 — the goal-state filter in query/goals.rs pushes a
+# closed-enum fixed fragment (no caller text); proof comment inline.
+EXPECTED_DYNAMIC_SQL_SITES = 51
 
 
 def run_self_test() -> int:

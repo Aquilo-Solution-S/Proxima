@@ -75,6 +75,14 @@ impl GoalReadPort for PgStorage {
         )
         .await
     }
+
+    async fn load_goal_wake_configs(
+        &self,
+        read_owners: &[OwnerRef],
+        goal_ids: &[proxima_core::GoalId],
+    ) -> Result<Vec<proxima_core::read_models::GoalWakeConfigRow>, StorageError> {
+        verbs::goal_wake_candidates::load_goal_wake_configs(&self.pool, read_owners, goal_ids).await
+    }
 }
 
 #[async_trait::async_trait]

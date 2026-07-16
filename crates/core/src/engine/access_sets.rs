@@ -521,6 +521,14 @@ pub(in crate::engine) mod tests {
         ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
             Ok(Vec::new())
         }
+
+        async fn load_goal_wake_configs(
+            &self,
+            _read_owners: &[OwnerRef],
+            _goal_ids: &[crate::GoalId],
+        ) -> Result<Vec<crate::read_models::GoalWakeConfigRow>, StorageError> {
+            Ok(Vec::new())
+        }
     }
 
     #[async_trait::async_trait]

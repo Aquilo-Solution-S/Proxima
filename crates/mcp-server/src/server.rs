@@ -5,6 +5,7 @@ use proxima_core::AuthPath;
 use proxima_core::mcp::core_tools::{
     get_graph::{GetGraphArgs, get_graph},
     get_memory::{GetMemoryArgs, get_memory},
+    goal_reads::{ListGoalsArgs, get_goal, list_goals},
     list_change_events::{ListChangeEventsArgs, list_change_events},
     list_edge_types::{ListEdgeTypesArgs, list_edge_types},
     list_schemas::{ListSchemasArgs, list_schemas},
@@ -210,6 +211,8 @@ async fn dispatch_resource(
         ParsedResource::WakeCandidates(args) => {
             resource_output_value(list_wake_candidates(ctx, args).await?)
         }
+        ParsedResource::Goals(args) => resource_output_value(list_goals(ctx, args).await?),
+        ParsedResource::Goal(reference) => resource_output_value(get_goal(ctx, &reference).await?),
     }
 }
 
@@ -252,6 +255,8 @@ enum ParsedResource {
     MemoryLineage(WalkMemoryLineageArgs),
     ChangeEvents(ListChangeEventsArgs),
     WakeCandidates(ListWakeCandidatesArgs),
+    Goals(ListGoalsArgs),
+    Goal(String),
 }
 
 impl ParsedResource {
@@ -265,6 +270,8 @@ impl ParsedResource {
             Self::MemoryLineage(_) => protocol_resource::MEMORY_LINEAGE,
             Self::ChangeEvents(_) => protocol_resource::CHANGE_EVENTS,
             Self::WakeCandidates(_) => protocol_resource::WAKE_CANDIDATES,
+            Self::Goals(_) => protocol_resource::GOALS,
+            Self::Goal(_) => protocol_resource::GOAL,
         }
     }
 }
@@ -297,7 +304,19 @@ fn parse_resource_uri(uri: &str) -> Option<ParsedResource> {
                 limit: query_parse(&query, "limit").ok()?,
             }))
         }
+        protocol_resource_path::GOALS => Some(ParsedResource::Goals(ListGoalsArgs {
+            state: query_value(&query, "state").map(ToOwned::to_owned),
+            limit: query_parse(&query, "limit").ok()?,
+            cursor: query_value(&query, "cursor").map(ToOwned::to_owned),
+        })),
         path if path.starts_with("memory/") => parse_memory_resource_path(path, &query),
+        path if path.starts_with("goal/") => {
+            let id = path.strip_prefix("goal/")?;
+            if id.is_empty() || id.contains('/') {
+                return None;
+            }
+            Some(ParsedResource::Goal(id.to_string()))
+        }
         _ => None,
     }
 }
