@@ -528,6 +528,71 @@ async fn facade_boot_exposes_pg_sidecars_and_worker_drains_embedding_jobs() {
 }
 
 #[tokio::test]
+async fn startup_reconcile_heals_facts_ingested_without_embed_client() {
+    let db_name = unique_db_name("proxima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let model_id = "startup-reconcile-embed";
+
+        // First boot has NO embedding client: fact ingest writes the memory
+        // but enqueues no job — the gap the startup reconcile exists to heal.
+        let degraded = Proxima::<GoalTestApp>::app()
+            .database_url(db_url.clone())
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let payload = TestFact {
+            label: "fact written while embeddings were down".to_string(),
+        };
+        let draft = FactWriteCommand::from_payload(
+            "test/startup-reconcile",
+            SourceBatchId::new(Uuid::now_v7()),
+            &payload,
+            time::OffsetDateTime::now_utc(),
+        );
+        let authz = degraded.single_owner_authz().expect("single owner authz");
+        let outcome = degraded.engine.fact_ingest(&authz, draft).await?;
+        assert_eq!(
+            count_embedding_jobs(degraded.pool_for_tests(), outcome.memory_id, model_id).await?,
+            0,
+            "no embed client -> ingest must not enqueue a job"
+        );
+        degraded.shutdown();
+
+        // Second boot WITH a client: the worker's boot-time reconcile must
+        // enqueue the missing job and the drain loop must embed it, without
+        // any operator command.
+        let healed = Proxima::<GoalTestApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .embed_client(Arc::new(ConstantEmbedding::prefixed(
+                model_id,
+                &[0.5, 0.25, 0.125],
+            )))
+            .build()
+            .await?;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let worker = healed.spawn_embedding_worker(cancel.clone());
+        wait_for_embedding_drain(healed.pool_for_tests(), outcome.memory_id, model_id).await?;
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), worker).await??;
+        healed.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("startup reconcile self-heal test failed");
+}
+
+#[tokio::test]
 async fn skip_migrations_boots_without_applying_ddl() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");

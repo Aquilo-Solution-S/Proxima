@@ -352,6 +352,16 @@ impl EmbeddingMaintenancePort for RejectingStorage {
             "RejectingStorage rejects embedding maintenance".into(),
         ))
     }
+
+    async fn reconcile_embeddings(
+        &self,
+        _options: super::embeddings::EmbeddingReconcileOptions<'_>,
+        _proof: OperatorMaintenanceProof,
+    ) -> Result<super::embeddings::EmbeddingReconcileOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects embedding maintenance".into(),
+        ))
+    }
 }
 
 #[async_trait::async_trait]

@@ -312,6 +312,15 @@ impl EmbeddingMaintenancePort for EmbeddingJobFake {
         let _ = proof;
         fake_error()
     }
+
+    async fn reconcile_embeddings(
+        &self,
+        options: proxima_core::EmbeddingReconcileOptions<'_>,
+        proof: OperatorMaintenanceProof,
+    ) -> Result<proxima_core::EmbeddingReconcileOutcome, StorageError> {
+        let _ = (options, proof);
+        fake_error()
+    }
 }
 
 #[derive(Debug)]

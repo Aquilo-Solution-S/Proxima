@@ -161,25 +161,33 @@ no embedding client is installed,
 semantic/hybrid search reports the missing capability, and lexical-only
 paths remain available. When a client is configured, `proxima-mcp`
 drains queued embedding jobs automatically in-process every few seconds;
-no external drain cron is required.
+no external drain cron is required. At startup with a client configured,
+the worker also runs one `missing-only` reconcile pass before its first
+drain, so memories written during a degraded window (or left in the
+`failed` retry dead-end) heal on the next restart without an operator
+command.
 
-Embedding job reconciliation remains a global maintenance command for
-model-specific missing-head backfill / stale re-embedding, not an
-owner-scoped MCP tool:
+Recurring embedding maintenance stays outside the process — the substrate
+spawns no scheduler beyond the drain worker. One idempotent command runs
+a full self-healing pass (orphan-row sweep, reconcile enqueue for
+missing-head backfill / stale re-embedding, optional inline drain, health
+report with job backlog, orphan counts, and the ANN recall canary):
 
 ```sh
-proxima-mcp reconcile-embeddings
+proxima-mcp maintain-embeddings
 ```
 
-Deploy command form:
+Cron/deploy command form:
 
 ```yaml
-command: ["proxima-mcp", "reconcile-embeddings"]
+command: ["proxima-mcp", "maintain-embeddings"]
 ```
 
-`--drain` processes queued jobs inline with the same Mistral client and
-therefore requires `MISTRAL_API_KEY`; it is no longer required for
-steady-state draining.
+Passes are serialized by a Postgres advisory lock: an invocation that
+finds the lock held prints a skip notice and exits `0`, so overlapping
+cron fires are harmless by construction. `--drain` processes queued jobs
+inline with the same Mistral client and therefore requires
+`MISTRAL_API_KEY`; it is not required for steady-state draining.
 
 `EmbedCaps { dim, matryoshka }` and `LlmCaps { tool_use, json_mode,
 long_context, vision }` remain core vocabulary types but are not a

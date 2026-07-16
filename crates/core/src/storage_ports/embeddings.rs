@@ -221,6 +221,28 @@ pub struct EmbeddingJobStatusCounts {
     pub failed: u64,
 }
 
+/// Which memories a global embedding reconciliation scans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingReconcileScope {
+    MissingOnly,
+    IncludeStale,
+    Since(time::OffsetDateTime),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddingReconcileOptions<'a> {
+    pub model_id: &'a str,
+    pub scope: EmbeddingReconcileScope,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EmbeddingReconcileOutcome {
+    pub scanned: u64,
+    pub enqueued: u64,
+    pub skipped: u64,
+}
+
 #[async_trait::async_trait]
 pub trait EmbeddingMaintenancePort: Send + Sync {
     async fn embedding_ann_observability(
@@ -232,4 +254,14 @@ pub trait EmbeddingMaintenancePort: Send + Sync {
         &self,
         proof: OperatorMaintenanceProof,
     ) -> Result<EmbeddingOrphanSweepOutcome, StorageError>;
+
+    /// Global enqueue-only reconciliation: durable embedding jobs for every
+    /// embeddable memory the scope selects that lacks coverage under
+    /// `options.model_id`. Idempotent; requeues `failed` jobs, leaves
+    /// `pending`/`processing` untouched.
+    async fn reconcile_embeddings(
+        &self,
+        options: EmbeddingReconcileOptions<'_>,
+        proof: OperatorMaintenanceProof,
+    ) -> Result<EmbeddingReconcileOutcome, StorageError>;
 }

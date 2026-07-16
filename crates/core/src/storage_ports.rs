@@ -33,7 +33,8 @@ pub use cursors::SourceCursorPort;
 pub use embeddings::{
     EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingJobPort, EmbeddingJobStatusCounts,
     EmbeddingMaintenancePort, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome,
-    EmbeddingRecallCanary, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort,
+    EmbeddingRecallCanary, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
+    EmbeddingReconcileScope, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort,
     EmbeddingWriteProof,
 };
 pub use fact::{FactIngestPort, SourceBatchPort};

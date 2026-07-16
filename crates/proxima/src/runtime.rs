@@ -501,6 +501,28 @@ fn spawn_embedding_worker(engine: Arc<Engine>, cancel: CancellationToken) -> Joi
         if engine.embed_client().is_none() {
             return;
         }
+        // Boot-time catch-up, not a recurring clock: memories written while
+        // no embedding client was configured never got a job (and exhausted
+        // `failed` jobs stay dead), so one reconcile pass before the first
+        // drain keeps a restart from leaving them silently unsearchable.
+        // Recurring maintenance stays outside the process
+        // (`proxima-mcp maintain-embeddings`).
+        match engine
+            .reconcile_embeddings(proxima_core::EmbeddingReconcileScope::MissingOnly, None)
+            .await
+        {
+            Ok(outcome) if outcome.enqueued > 0 => {
+                tracing::info!(
+                    scanned = outcome.scanned,
+                    enqueued = outcome.enqueued,
+                    "startup embedding reconcile enqueued missing jobs"
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::warn!(error = %err, "startup embedding reconcile failed");
+            }
+        }
         loop {
             if cancel.is_cancelled() {
                 break;

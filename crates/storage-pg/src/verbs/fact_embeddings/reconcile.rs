@@ -1,7 +1,6 @@
 use proxima_core::llm::EmbeddingClient;
 use proxima_core::{EmbeddingJobClaim, StorageError};
 use sqlx::PgPool;
-use time::OffsetDateTime;
 
 use crate::error::map_err;
 
@@ -11,26 +10,9 @@ use super::{
     load_embedding_text,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EmbeddingReconcileScope {
-    MissingOnly,
-    IncludeStale,
-    Since(OffsetDateTime),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EmbeddingReconcileOptions<'a> {
-    pub model_id: &'a str,
-    pub scope: EmbeddingReconcileScope,
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct EmbeddingReconcileOutcome {
-    pub scanned: u64,
-    pub enqueued: u64,
-    pub skipped: u64,
-}
+pub use proxima_core::{
+    EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EmbeddingInlineDrainOutcome {

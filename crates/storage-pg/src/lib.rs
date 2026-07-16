@@ -304,6 +304,25 @@ pub struct PgStorage {
     sidecars: PgSidecarRegistryFrozen,
 }
 
+/// Advisory-lock key serializing embedding maintenance passes across
+/// processes. ASCII `proxembm` as a big-endian i64 — arbitrary but stable;
+/// changing it would let old and new binaries run maintenance concurrently.
+const EMBEDDING_MAINTENANCE_LOCK_KEY: i64 = i64::from_be_bytes(*b"proxembm");
+
+/// Guard for the global embedding-maintenance advisory lock. The session
+/// lock lives on a connection detached from the pool; dropping the guard
+/// closes that connection, and Postgres releases the lock with the session.
+pub struct EmbeddingMaintenanceLock {
+    _conn: sqlx::postgres::PgConnection,
+}
+
+impl std::fmt::Debug for EmbeddingMaintenanceLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmbeddingMaintenanceLock")
+            .finish_non_exhaustive()
+    }
+}
+
 /// Parse a `u64` pool-tuning env var, falling back to `default` when unset or
 /// unparseable. `0` is a legal value (disables the corresponding bound).
 fn env_u64_or(key: &str, default: u64) -> u64 {
@@ -472,6 +491,64 @@ impl PgStorage {
         limit: i64,
     ) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
         verbs::fact_embeddings::drain_embedding_jobs_inline(&self.pool, client, limit).await
+    }
+
+    /// Delete embedding infrastructure rows whose source entity no longer
+    /// exists (crash residue). Operator surface for the maintenance CLI,
+    /// like [`Self::reconcile_embeddings`]; in-engine callers go through
+    /// `Engine::sweep_orphan_embedding_rows`, which gates on operator
+    /// authority — here, holding the database credentials is that authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from the sweep transaction.
+    pub async fn sweep_orphan_embedding_rows(
+        &self,
+    ) -> Result<proxima_core::EmbeddingOrphanSweepOutcome, StorageError> {
+        verbs::fact_embeddings::sweep_orphan_embedding_rows(&self.pool).await
+    }
+
+    /// Owner-agnostic embedding ANN health signals (backlog, orphan counts,
+    /// recall canary). Operator surface for the maintenance CLI; see
+    /// [`Self::sweep_orphan_embedding_rows`] for the authority note.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from the observability reads.
+    pub async fn embedding_ann_observability(
+        &self,
+    ) -> Result<proxima_core::EmbeddingAnnObservability, StorageError> {
+        verbs::fact_embeddings::embedding_ann_observability(&self.pool).await
+    }
+
+    /// Try to take the global embedding-maintenance advisory lock.
+    ///
+    /// Returns `None` when another maintenance pass already holds it, so
+    /// overlapping cron fires skip instead of double-scanning. The lock is
+    /// session-scoped on a connection detached from the pool; dropping the
+    /// returned guard closes that connection, which releases the lock
+    /// server-side — there is no unlock call to forget.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from acquiring the connection or the lock query.
+    pub async fn try_embedding_maintenance_lock(
+        &self,
+    ) -> Result<Option<EmbeddingMaintenanceLock>, StorageError> {
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|err| {
+                StorageError::Unavailable(format!("acquire maintenance lock connection: {err}"))
+            })?
+            .detach();
+        let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+            .bind(EMBEDDING_MAINTENANCE_LOCK_KEY)
+            .fetch_one(&mut conn)
+            .await
+            .map_err(crate::error::map_err)?;
+        Ok(locked.then_some(EmbeddingMaintenanceLock { _conn: conn }))
     }
 
     /// Apply all pending migrations under

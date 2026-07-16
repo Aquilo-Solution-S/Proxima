@@ -6,7 +6,7 @@ pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_de
 pub const USAGE: &str = "\
 Usage:
   proxima-mcp [serve] [OPTIONS]
-  proxima-mcp reconcile-embeddings [OPTIONS]
+  proxima-mcp maintain-embeddings [OPTIONS]
 
 Proxima Streamable HTTP MCP server.
 
@@ -51,7 +51,9 @@ Environment:
   PROXIMA_TOOL_DENY             Comma-separated canonical tool ids removed from profile
 
 Maintenance:
-  reconcile-embeddings     Enqueue missing embedding jobs globally
+  maintain-embeddings      One self-healing pass: orphan sweep, reconcile
+                           enqueue, optional inline drain, health report.
+                           Cron-safe (skips if another pass holds the lock)
 
 Endpoint:
   http://127.0.0.1:31415/mcp
@@ -72,10 +74,14 @@ Tools:
   core_publish
 ";
 
-pub const RECONCILE_USAGE: &str = "\
-Usage: proxima-mcp reconcile-embeddings [OPTIONS]
+pub const MAINTAIN_USAGE: &str = "\
+Usage: proxima-mcp maintain-embeddings [OPTIONS]
 
-Enqueue embedding jobs for embeddable memories that need the target model.
+One embedding self-healing pass, in order: sweep orphaned embedding rows,
+enqueue jobs for memories that need the target model, optionally drain the
+queue inline, then print a health report (backlog, orphans, recall canary).
+Passes are serialized by a Postgres advisory lock; when another pass holds
+it, this run prints a skip notice and exits 0 — safe to fire from cron.
 
 Optional:
   --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxima_dev)
@@ -104,7 +110,7 @@ impl std::fmt::Debug for McpConfig {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct ReconcileConfig {
+pub struct MaintainConfig {
     pub database_url: String,
     pub model: Option<String>,
     pub scope: ReconcileScope,
@@ -112,9 +118,9 @@ pub struct ReconcileConfig {
     pub drain: bool,
 }
 
-impl std::fmt::Debug for ReconcileConfig {
+impl std::fmt::Debug for MaintainConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReconcileConfig")
+        f.debug_struct("MaintainConfig")
             .field("database_url", &"<redacted>")
             .field("model", &self.model)
             .field("scope", &self.scope)
@@ -193,9 +199,9 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
 ///
 /// Returns `ArgsError` for help, unknown flags, missing values, invalid
 /// timestamp, negative limit, or unreadable env defaults.
-pub fn parse_reconcile_args<I: IntoIterator<Item = String>>(
+pub fn parse_maintain_args<I: IntoIterator<Item = String>>(
     args: I,
-) -> Result<ReconcileConfig, ArgsError> {
+) -> Result<MaintainConfig, ArgsError> {
     let mut database_url: Option<String> = None;
     let mut model: Option<String> = None;
     let mut scope = ReconcileScope::MissingOnly;
@@ -245,7 +251,7 @@ pub fn parse_reconcile_args<I: IntoIterator<Item = String>>(
         std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
     });
 
-    Ok(ReconcileConfig {
+    Ok(MaintainConfig {
         database_url,
         model,
         scope,
@@ -288,14 +294,14 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_help_flag_returns_help() {
-        let err = parse_reconcile_args(["--help".to_string()]).expect_err("help");
+    fn maintain_help_flag_returns_help() {
+        let err = parse_maintain_args(["--help".to_string()]).expect_err("help");
         assert!(err.is_help());
     }
 
     #[test]
-    fn reconcile_args_parse_scope_and_limit() {
-        let cfg = parse_reconcile_args([
+    fn maintain_args_parse_scope_and_limit() {
+        let cfg = parse_maintain_args([
             "--database-url".into(),
             "postgres://x/y".into(),
             "--model".into(),
@@ -314,8 +320,8 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_since_parses_rfc3339() {
-        let cfg = parse_reconcile_args(["--since".into(), "2026-06-16T10:00:00Z".into()])
+    fn maintain_since_parses_rfc3339() {
+        let cfg = parse_maintain_args(["--since".into(), "2026-06-16T10:00:00Z".into()])
             .expect("valid args");
         assert!(matches!(cfg.scope, ReconcileScope::Since(_)));
     }
