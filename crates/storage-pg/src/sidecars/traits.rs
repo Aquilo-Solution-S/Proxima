@@ -1,6 +1,7 @@
 use super::{
-    EdgeId, GoalId, MemoryId, PayloadKind, PgConnection, PgFactSidecar, PgMemoryPayloadBatchFuture,
-    PgMemoryPayloadFuture, PgSidecarFuture, PgSidecarReadCtx, Postgres, StorageError, Transaction,
+    EdgeId, GoalId, MemoryId, PayloadKind, PgConnection, PgEdgePayloadBatchFuture, PgFactSidecar,
+    PgMemoryPayloadBatchFuture, PgMemoryPayloadFuture, PgSidecarFuture, PgSidecarReadCtx, Postgres,
+    StorageError, Transaction,
 };
 
 pub trait PgMemorySidecar: Send + Sync + 'static {
@@ -58,6 +59,19 @@ pub trait PgEdgeSidecar: Send + Sync + 'static {
         tx: &'t mut PgConnection,
         edge_id: EdgeId,
     ) -> PgSidecarFuture<'t>;
+}
+
+/// Read-back of typed edge sidecar payloads, batched by edge id. Every
+/// registered edge sidecar must implement it — an edge relation whose
+/// payload can be written but never read back is a write-only API hole
+/// (`PgSidecarRegistry::freeze_against` enforces the pairing, mirroring
+/// the memory-payload read requirement).
+pub trait PgEdgePayload: Send + Sync + 'static {
+    #[must_use]
+    fn load_edge_batch<'t>(
+        ctx: PgSidecarReadCtx<'t>,
+        edge_ids: &'t [EdgeId],
+    ) -> PgEdgePayloadBatchFuture<'t>;
 }
 
 pub trait PgCitedObjectSidecar: Send + Sync + 'static {

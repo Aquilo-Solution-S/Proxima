@@ -410,7 +410,10 @@ async fn target_abandoned_keeps_live_source_edge_as_unavailable()
                     edge_ids: vec![EdgeId::new(edge.into_inner())],
                     filter: EdgeFilter::default(),
                     limit: 10,
+                    cursor: None,
+                    include_payloads: false,
                 },
+                &[],
             )
             .await?;
         assert_eq!(read.edges.len(), 1);
@@ -853,7 +856,10 @@ async fn group_source_scope_erases_only_requested_source_and_suppresses_new_batc
                     edge_ids: vec![EdgeId::new(surviving_edge.into_inner())],
                     filter: EdgeFilter::default(),
                     limit: 10,
+                    cursor: None,
+                    include_payloads: false,
                 },
+                &[],
             )
             .await?;
         assert_eq!(edge_rows.edges.len(), 1);

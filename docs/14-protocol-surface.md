@@ -78,8 +78,10 @@ Canonical substrate resources:
 | `proxima://goals{?state,limit,cursor}` | owner-scoped goal listing: optional state filter (Active/Paused/Achieved/Abandoned), keyset `cursor`/`next_cursor` + `has_more`, wake-config read-back per goal |
 | `proxima://goal/{id}` | single-goal read by `G:<uuid>` reference, including stored wake configuration |
 | `proxima://wake-candidates{?fact,limit}` | armed Active Goal heads admitted for wake planning by one readable trigger Fact; read model only, no executor |
+| `proxima://edges{?relation,source,target,limit,cursor,payloads}` | owner-scoped edge listing by relation and/or endpoint (at least one filter required), keyset `cursor`/`next_cursor` + `has_more`, typed payload read-back (default on; `payloads=false` for lean); source-owned visibility with target redaction |
+| `proxima://edge/{id}` | single-edge read by `E:<uuid>` reference (the handle `core_link` returns), including its typed payload |
 
-`proxima://how-to` is an instructional MCP resource outside the 10-resource
+`proxima://how-to` is an instructional MCP resource outside the 12-resource
 protocol count.
 
 ## The verbs
@@ -151,7 +153,7 @@ Snapshot read of memories, goals, and edges scoped to the server-resolved author
 | payloads | optional typed payload projections; identity hydration by memory/goal/edge ids |
 | stateful Facts | heads by registered natural key; tombstone heads suppress prior present rows |
 | flavor-typed filters | design intent; advertised/validated only when implemented by a linked flavor |
-| edge traversal / time range | deferred |
+| edge traversal / time range | deferred (single-hop edge reads by relation/endpoint ship via `EdgeRead` and `proxima://edges`; the multi-hop traversal *query axis* stays deferred) |
 
 Cursor streams:
 

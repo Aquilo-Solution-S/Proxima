@@ -115,10 +115,16 @@ pub trait MemoryInspectPort: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait EdgeReadPort: Send + Sync {
+    /// `payload_specs` maps relations to their edge sidecar payload schemas
+    /// (engine-resolved from the frozen flavor registry, mirroring
+    /// [`MemoryInspectPort::load_memory_by_id`]'s `sidecars`). Hydration
+    /// runs only when `req.include_payloads` is set and a returned edge's
+    /// relation appears in the specs.
     async fn read_edges(
         &self,
         read_owners: &[OwnerRef],
         req: &crate::verbs::query::EdgeReadRequest,
+        payload_specs: &[crate::verbs::query::EdgePayloadSpec],
     ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError>;
 
     async fn edge_exists(

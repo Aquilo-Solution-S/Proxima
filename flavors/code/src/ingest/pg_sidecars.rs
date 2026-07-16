@@ -1,7 +1,7 @@
 use proxima_core::{EdgeId, MemoryId, SidecarPayload, StorageError};
 use proxima_storage_pg::sidecars::{
-    PgEdgeSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture,
-    PgSidecarReadCtx,
+    PgEdgePayload, PgEdgePayloadBatchFuture, PgEdgeSidecar, PgMemoryPayload, PgMemoryPayloadFuture,
+    PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx,
 };
 use proxima_storage_pg::verbs::fact_ingest::{FactIngestSidecarFuture, PgFactSidecar};
 use sqlx::{Postgres, Transaction};
@@ -370,6 +370,39 @@ impl PgEdgeSidecar for EdgeCallsV1 {
             .await
             .map_err(proxima_storage_pg::map_err)?;
             Ok(())
+        })
+    }
+}
+
+impl PgEdgePayload for EdgeCallsV1 {
+    fn load_edge_batch<'t>(
+        ctx: PgSidecarReadCtx<'t>,
+        edge_ids: &'t [EdgeId],
+    ) -> PgEdgePayloadBatchFuture<'t> {
+        Box::pin(async move {
+            let rows: Vec<(uuid::Uuid, i32, i32, String, bool)> = ctx
+                .fetch_all_by_edge_ids(
+                    "SELECT edge_id, callsite_byte_start, callsite_byte_end,
+                            callee_name, is_dynamic
+                       FROM proxima_code.code_calls_v1
+                      WHERE edge_id = ANY($1::uuid[])",
+                    edge_ids,
+                )
+                .await?;
+            Ok(rows
+                .into_iter()
+                .map(|(edge_id, byte_start, byte_end, callee_name, is_dynamic)| {
+                    (
+                        EdgeId::new(edge_id),
+                        SidecarPayload::edge(EdgeCallsV1 {
+                            callsite_byte_start: u32::try_from(byte_start).unwrap_or(u32::MAX),
+                            callsite_byte_end: u32::try_from(byte_end).unwrap_or(u32::MAX),
+                            callee_name,
+                            is_dynamic,
+                        }),
+                    )
+                })
+                .collect())
         })
     }
 }

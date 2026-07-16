@@ -390,14 +390,23 @@ pub struct GoalRow {
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeRow {
     pub id: uuid::Uuid,
     pub relation: String,
     pub relation_class: String,
     pub source: EntityRef,
+    /// Entity kind of the source endpoint (Goal for Goal endpoints).
+    pub source_kind: EntityKind,
     pub target: EdgeTargetProjection,
-    pub payload: Vec<u8>,
+    /// Entity kind of a visible target. `None` for redacted/unavailable
+    /// targets to avoid leaking the redacted target's kind.
+    pub target_kind: Option<EntityKind>,
+    pub created_at: time::OffsetDateTime,
+    /// Typed sidecar projection populated by storage at read time when the
+    /// request opts in via `include_payloads`. Protocol adapters serialize
+    /// it at the transport boundary.
+    pub payload: Option<SidecarPayload>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -405,6 +414,23 @@ pub struct EdgeFilter {
     pub relation: Option<String>,
     pub source: Option<EntityRef>,
     pub target: Option<EntityRef>,
+}
+
+/// Engine-resolved mapping from a relation to its edge sidecar payload
+/// schema. Storage uses it to dispatch typed payload hydration for
+/// [`EdgeReadRequest::include_payloads`] reads; clients never supply it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EdgePayloadSpec {
+    pub relation: String,
+    pub schema_id: SchemaId,
+    pub schema_version: SchemaVersion,
+}
+
+/// Keyset cursor over the `(created_at, edge_id)` descending edge order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EdgeReadCursor {
+    pub created_at: time::OffsetDateTime,
+    pub edge_id: EdgeId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -415,11 +441,21 @@ pub struct EdgeReadRequest {
     #[serde(default)]
     pub filter: EdgeFilter,
     pub limit: u32,
+    /// Resume after this keyset position (newest-first order).
+    #[serde(default)]
+    pub cursor: Option<EdgeReadCursor>,
+    /// Hydrate typed edge sidecar payloads for relations that declare a
+    /// payload schema.
+    #[serde(default)]
+    pub include_payloads: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeReadResponse {
     pub edges: Vec<EdgeRow>,
+    /// Present when more edges match beyond this page; pass back via
+    /// [`EdgeReadRequest::cursor`] to resume.
+    pub next_cursor: Option<EdgeReadCursor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

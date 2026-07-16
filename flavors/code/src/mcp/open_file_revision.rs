@@ -182,6 +182,8 @@ impl Tool for CodeOpenFileRevisionTool {
                             target: Some(EntityRef::Memory(revision_memory_id)),
                         },
                         limit: 2_000,
+                        cursor: None,
+                        include_payloads: false,
                     },
                 )
                 .await?;

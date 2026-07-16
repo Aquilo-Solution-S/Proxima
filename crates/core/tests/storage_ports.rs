@@ -434,6 +434,7 @@ impl EdgeReadPort for EdgeReadFake {
         &self,
         read_owners: &[OwnerRef],
         req: &proxima_core::verbs::query::EdgeReadRequest,
+        payload_specs: &[proxima_core::verbs::query::EdgePayloadSpec],
     ) -> Result<proxima_core::verbs::query::EdgeReadResponse, StorageError> {
         fake_error()
     }

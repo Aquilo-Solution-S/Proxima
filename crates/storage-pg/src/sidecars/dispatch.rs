@@ -1,8 +1,8 @@
 use super::{
     EdgeId, GoalId, MemoryId, PayloadKind, PgCitationMappingSidecar, PgCitedObjectSidecar,
-    PgConnection, PgEdgeSidecar, PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadBatchFuture,
-    PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx, Postgres,
-    SidecarPayload, StorageError, Transaction,
+    PgConnection, PgEdgePayload, PgEdgePayloadBatchFuture, PgEdgeSidecar, PgGoalSidecar,
+    PgMemoryPayload, PgMemoryPayloadBatchFuture, PgMemoryPayloadFuture, PgMemorySidecar,
+    PgSidecarFuture, PgSidecarReadCtx, Postgres, SidecarPayload, StorageError, Transaction,
 };
 
 pub(super) fn insert_memory_sidecar<'t, P>(
@@ -66,6 +66,16 @@ where
         })?;
         typed.insert_edge_sidecar(tx, edge_id).await
     })
+}
+
+pub(super) fn load_edge_payload_batch<'t, P>(
+    ctx: PgSidecarReadCtx<'t>,
+    edge_ids: &'t [EdgeId],
+) -> PgEdgePayloadBatchFuture<'t>
+where
+    P: PgEdgePayload,
+{
+    P::load_edge_batch(ctx, edge_ids)
 }
 
 pub(super) fn insert_cited_object_sidecar<'t, P>(

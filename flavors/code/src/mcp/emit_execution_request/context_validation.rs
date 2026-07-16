@@ -122,6 +122,8 @@ async fn goal_lineage_assigned_to(
                         target: Some(EntityRef::Memory(planner_root)),
                     },
                     limit: 1,
+                    cursor: None,
+                    include_payloads: false,
                 },
             )
             .await?;
