@@ -498,6 +498,44 @@ deployments:
   `sweep_orphan_embedding_rows()`, `embedding_ann_observability()`, and
   `try_embedding_maintenance_lock()`.
 
+## 20. v0.0.7: edges become readable on the wire; edge sidecars must be readable
+
+The graph was writable but not traversable by edge: `core_link` returned
+an `E:<uuid>` handle no verb could dereference, and its `reason`/
+`confidence` payload was write-only. Two new read resources close that
+hole: `proxima://edges{?relation,source,target,limit,cursor,payloads}`
+(owner-scoped listing — at least one filter required, opaque keyset
+cursor bound to the filter, `has_more`, typed payload read-back on by
+default) and `proxima://edge/{id}` (single `E:<uuid>` read). Source/
+target handles come back kind-correct (`F:`/`A:`/`P:`/`G:`); unreadable
+targets stay `redacted target`/`unavailable target` with no id or kind
+leakage. The MCP wire change is purely additive.
+
+Rust-level changes for embedders and flavor authors:
+
+- **`EdgeRow` reshaped.** Gained `source_kind`, `target_kind`
+  (`Option<EntityKind>`, populated only for visible targets),
+  `created_at`, and its dead `payload: Vec<u8>` (always empty) became
+  `payload: Option<SidecarPayload>` mirroring `MemoryRow`. The struct no
+  longer derives serde.
+- **Edge read pagination.** `EdgeReadRequest` gained `#[serde(default)]`
+  `cursor: Option<EdgeReadCursor>` and `include_payloads: bool` (struct
+  literals must add the fields); `EdgeReadResponse` gained
+  `next_cursor: Option<EdgeReadCursor>` over `(created_at, edge_id)`
+  descending keyset order.
+- **`EdgeReadPort::read_edges` signature.** Now takes
+  `payload_specs: &[EdgePayloadSpec]` (engine-resolved relation → payload
+  schema mapping, mirroring `load_memory_by_id`'s `sidecars`). Custom
+  ports must accept the parameter; ignoring it preserves lean reads.
+- **Edge sidecars must implement read-back.**
+  `PgSidecarRegistry::add_edge` now requires `PgEdgePayload` (a batched
+  `load_edge_batch(ctx, edge_ids)` loader) alongside `PgEdgeSidecar`, and
+  `freeze_against` rejects an edge sidecar without one — an edge payload
+  that can be written but never read back is a write-only API hole. Core
+  ships readers for `AgentLinkV1` and the code flavor's `EdgeCallsV1`;
+  custom edge sidecars add one `SELECT ... WHERE edge_id = ANY($1)`
+  loader. `PgSidecarReadCtx` gained `fetch_all_by_edge_ids`.
+
 ## Checks before calling an upgrade done
 
 ```sh

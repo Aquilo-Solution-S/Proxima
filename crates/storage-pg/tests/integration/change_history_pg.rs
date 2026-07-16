@@ -237,7 +237,10 @@ async fn change_history_surfaces_readable_non_world_source_edge_events()
                     edge_ids: vec![edge],
                     filter: EdgeFilter::default(),
                     limit: 10,
+                    cursor: None,
+                    include_payloads: false,
                 },
+                &[],
             )
             .await?;
         assert_eq!(read_edges.edges.len(), 1);

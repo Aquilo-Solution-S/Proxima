@@ -134,6 +134,38 @@ impl PgSidecarRegistryFrozen {
         .await
     }
 
+    /// Load typed sidecar payload projections for already-created Edge rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConstraintViolation` when no PG edge sidecar with a batch
+    /// reader is registered for the schema. Returns storage errors from the
+    /// concrete loader.
+    pub async fn load_edge_payloads_batch(
+        &self,
+        ctx: PgSidecarReadCtx<'_>,
+        key: &PgSidecarKey,
+        edge_ids: &[EdgeId],
+    ) -> Result<Vec<(EdgeId, SidecarPayload)>, StorageError> {
+        let entry = self.entries.get(key).ok_or_else(|| {
+            StorageError::ConstraintViolation(format!(
+                "no PG sidecar registered for {} v{} {:?}",
+                key.schema_id.as_str(),
+                key.schema_version.into_inner(),
+                key.kind,
+            ))
+        })?;
+        let load = entry.edge_load_batch.ok_or_else(|| {
+            StorageError::ConstraintViolation(format!(
+                "PG sidecar for {} v{} {:?} is not an edge sidecar",
+                key.schema_id.as_str(),
+                key.schema_version.into_inner(),
+                key.kind,
+            ))
+        })?;
+        load(ctx.for_registered_table(&entry.sidecar_table), edge_ids).await
+    }
+
     /// Insert a typed sidecar row for an already-created Edge row.
     ///
     /// # Errors

@@ -148,6 +148,23 @@ pub const CORE_RESOURCES: &[CoreResourceMeta] = &[
         description: "Single-goal read by G:<uuid> reference, including stored wake configuration.",
         is_template: true,
     },
+    CoreResourceMeta {
+        uri_template: protocol_resource_uri::EDGES,
+        name: "proxima-edges",
+        title: "Proxima Edges",
+        scope_key: protocol_resource::EDGES,
+        description: "Owner-scoped edge listing filtered by relation and/or source/target \
+                      endpoint, with keyset cursor and typed payload read-back.",
+        is_template: true,
+    },
+    CoreResourceMeta {
+        uri_template: protocol_resource_uri::EDGE,
+        name: "proxima-edge",
+        title: "Proxima Edge",
+        scope_key: protocol_resource::EDGE,
+        description: "Single-edge read by E:<uuid> reference, including its typed payload.",
+        is_template: true,
+    },
 ];
 
 #[must_use = "iterators are lazy and must be consumed"]

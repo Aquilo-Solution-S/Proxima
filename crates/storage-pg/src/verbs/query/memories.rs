@@ -208,9 +208,9 @@ pub(crate) async fn query_memories(
     let visible_goal_ids: Vec<uuid::Uuid> = goals.iter().map(|row| row.id.into_inner()).collect();
     let edges = query_edges(
         pool,
+        sidecars,
         req,
-        &read_owner_kinds,
-        &read_owner_ids,
+        &req.read_owners,
         &visible_memory_ids,
         &visible_goal_ids,
         schemas,

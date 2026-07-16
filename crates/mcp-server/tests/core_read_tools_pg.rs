@@ -285,6 +285,167 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
     Ok(())
 }
 
+#[tokio::test]
+async fn edge_resources_read_back_agent_links_with_payload()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = create_db().await?;
+    let database_url = db_url(&db_name);
+    let pg = PgStorage::connect(&database_url).await?;
+    pg.run_migrations().await?;
+
+    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let hub = insert_memory(&pg, &owner, "hub abstraction").await?;
+    let spoke = insert_memory(&pg, &owner, "spoke abstraction").await?;
+
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let engine = Arc::new(
+        Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
+    );
+    let server = McpToolHost::from_engine(engine, McpToolExtensions::default());
+    let auth = McpAuthContext {
+        owner,
+        authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+            .narrowed_to_owner(owner)
+            .expect("personal owner narrows"),
+        model_id: None,
+    };
+
+    // Author a link through the write surface, then dereference the very
+    // handle it returned — the loop that was impossible before this slice.
+    let linked = server
+        .call_tool(
+            "core_link",
+            serde_json::json!({
+                "source": format!("A:{hub}"),
+                "target": format!("A:{spoke}"),
+                "reason": "hub summarizes spoke",
+                "confidence": 61,
+            }),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await?;
+    let edge_handle = linked["edge_handle"].as_str().expect("edge handle");
+
+    let listed = server
+        .read_resource(
+            &format!("proxima://edges?relation=core/agent-link-refers-to&source=A:{hub}"),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await?;
+    let edges = listed["edges"].as_array().expect("edges array");
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0]["edge"], edge_handle);
+    assert_eq!(edges[0]["relation"], "core/agent-link-refers-to");
+    assert_eq!(edges[0]["source"], format!("A:{hub}"));
+    assert_eq!(edges[0]["target"], format!("A:{spoke}"));
+    assert_eq!(edges[0]["payload"]["reason"], "hub summarizes spoke");
+    assert_eq!(edges[0]["payload"]["confidence"], 61);
+    assert!(
+        edges[0]["created_at"]
+            .as_str()
+            .is_some_and(|value| value.contains('T')),
+        "created_at is RFC3339: {:?}",
+        edges[0]["created_at"]
+    );
+    assert_eq!(listed["has_more"], serde_json::json!(false));
+    assert_eq!(listed["next_cursor"], serde_json::Value::Null);
+
+    // The exact source+target+relation probe an idempotent linker would run.
+    let probe = server
+        .read_resource(
+            &format!(
+                "proxima://edges?relation=core/agent-link-refers-to&source=A:{hub}&target=A:{spoke}"
+            ),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await?;
+    assert_eq!(probe["edges"].as_array().expect("edges").len(), 1);
+
+    // Single-edge dereference by the handle core_link returned.
+    let single = server
+        .read_resource(
+            &format!("proxima://edge/{edge_handle}"),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await?;
+    assert_eq!(single["edge"], edge_handle);
+    assert_eq!(single["payload"]["reason"], "hub summarizes spoke");
+    assert_eq!(single["payload"]["confidence"], 61);
+
+    // Lean read: payloads=false suppresses hydration.
+    let lean = server
+        .read_resource(
+            &format!(
+                "proxima://edges?relation=core/agent-link-refers-to&source=A:{hub}&payloads=false"
+            ),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await?;
+    assert_eq!(
+        lean["edges"][0]["payload"],
+        serde_json::Value::Null,
+        "payloads=false stays lean"
+    );
+
+    assert_edge_filter_rejections(&server, &auth).await;
+
+    drop(server);
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// Unfiltered dumps, unknown relations, foreign cursors, and bare uuid edge
+/// references all fail closed with actionable messages.
+async fn assert_edge_filter_rejections(server: &McpToolHost, auth: &McpAuthContext) {
+    let unfiltered = server
+        .read_resource("proxima://edges", author_ctx(), Some(auth.clone()))
+        .await
+        .expect_err("unfiltered edge dump must be rejected");
+    assert!(
+        unfiltered.to_string().contains("at least one filter"),
+        "{unfiltered}"
+    );
+    let unknown_relation = server
+        .read_resource(
+            "proxima://edges?relation=core/not-a-relation",
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await
+        .expect_err("unknown relation must be rejected");
+    assert!(
+        unknown_relation.to_string().contains("unknown relation"),
+        "{unknown_relation}"
+    );
+    let bad_cursor = server
+        .read_resource(
+            "proxima://edges?relation=core/agent-link-refers-to&cursor=garbage",
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await
+        .expect_err("malformed cursor must be rejected");
+    assert!(
+        bad_cursor.to_string().contains("malformed cursor"),
+        "{bad_cursor}"
+    );
+    let bare = server
+        .read_resource(
+            &format!("proxima://edge/{}", uuid::Uuid::now_v7()),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await
+        .expect_err("bare uuid edge reference must be rejected");
+    assert!(bare.to_string().contains("malformed"), "{bare}");
+}
+
 /// Class-checked reference and closed state vocabulary fail closed.
 async fn assert_goal_reference_and_state_rejections(
     server: &McpToolHost,

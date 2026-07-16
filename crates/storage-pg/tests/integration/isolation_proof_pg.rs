@@ -213,7 +213,10 @@ async fn assert_owner_b_cannot_see_owner_a(
                 edge_ids: vec![proxima_core::EdgeId::new(edge_id)],
                 filter: EdgeFilter::default(),
                 limit: 10,
+                cursor: None,
+                include_payloads: false,
             },
+            &[],
         )
         .await?;
     assert!(edges.edges.is_empty(), "owner B edge read must be empty");

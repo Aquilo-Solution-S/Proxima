@@ -307,6 +307,8 @@ async fn load_call_edges(
                         edge_ids: Vec::new(),
                         filter,
                         limit: 200,
+                        cursor: None,
+                        include_payloads: false,
                     },
                 )
                 .await?;

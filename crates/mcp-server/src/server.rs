@@ -11,6 +11,7 @@ use proxima_core::mcp::core_tools::{
     list_schemas::{ListSchemasArgs, list_schemas},
     list_substrate_tools::{ListSubstrateToolsArgs, list_substrate_tools},
     list_wake_candidates::{ListWakeCandidatesArgs, list_wake_candidates},
+    read_edges::{ListEdgesArgs, get_edge, list_edges},
     walk_memory_lineage::{
         WalkMemoryLineageArgs, WalkMemoryLineageDirectionArg, walk_memory_lineage,
     },
@@ -213,6 +214,8 @@ async fn dispatch_resource(
         }
         ParsedResource::Goals(args) => resource_output_value(list_goals(ctx, args).await?),
         ParsedResource::Goal(reference) => resource_output_value(get_goal(ctx, &reference).await?),
+        ParsedResource::Edges(args) => resource_output_value(list_edges(ctx, args).await?),
+        ParsedResource::Edge(reference) => resource_output_value(get_edge(ctx, &reference).await?),
     }
 }
 
@@ -257,6 +260,8 @@ enum ParsedResource {
     WakeCandidates(ListWakeCandidatesArgs),
     Goals(ListGoalsArgs),
     Goal(String),
+    Edges(ListEdgesArgs),
+    Edge(String),
 }
 
 impl ParsedResource {
@@ -272,6 +277,8 @@ impl ParsedResource {
             Self::WakeCandidates(_) => protocol_resource::WAKE_CANDIDATES,
             Self::Goals(_) => protocol_resource::GOALS,
             Self::Goal(_) => protocol_resource::GOAL,
+            Self::Edges(_) => protocol_resource::EDGES,
+            Self::Edge(_) => protocol_resource::EDGE,
         }
     }
 }
@@ -309,6 +316,14 @@ fn parse_resource_uri(uri: &str) -> Option<ParsedResource> {
             limit: query_parse(&query, "limit").ok()?,
             cursor: query_value(&query, "cursor").map(ToOwned::to_owned),
         })),
+        protocol_resource_path::EDGES => Some(ParsedResource::Edges(ListEdgesArgs {
+            relation: query_value(&query, "relation").map(ToOwned::to_owned),
+            source: query_value(&query, "source").map(ToOwned::to_owned),
+            target: query_value(&query, "target").map(ToOwned::to_owned),
+            limit: query_parse(&query, "limit").ok()?,
+            cursor: query_value(&query, "cursor").map(ToOwned::to_owned),
+            payloads: query_parse(&query, "payloads").ok()?,
+        })),
         path if path.starts_with("memory/") => parse_memory_resource_path(path, &query),
         path if path.starts_with("goal/") => {
             let id = path.strip_prefix("goal/")?;
@@ -316,6 +331,13 @@ fn parse_resource_uri(uri: &str) -> Option<ParsedResource> {
                 return None;
             }
             Some(ParsedResource::Goal(id.to_string()))
+        }
+        path if path.starts_with("edge/") => {
+            let id = path.strip_prefix("edge/")?;
+            if id.is_empty() || id.contains('/') {
+                return None;
+            }
+            Some(ParsedResource::Edge(id.to_string()))
         }
         _ => None,
     }

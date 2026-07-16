@@ -476,8 +476,12 @@ impl EdgeReadPort for RejectingStorage {
         &self,
         _read_owners: &[OwnerRef],
         _req: &crate::verbs::query::EdgeReadRequest,
+        _payload_specs: &[crate::verbs::query::EdgePayloadSpec],
     ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError> {
-        Ok(crate::verbs::query::EdgeReadResponse { edges: Vec::new() })
+        Ok(crate::verbs::query::EdgeReadResponse {
+            edges: Vec::new(),
+            next_cursor: None,
+        })
     }
 
     async fn edge_exists(

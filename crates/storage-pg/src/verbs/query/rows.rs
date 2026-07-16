@@ -78,13 +78,20 @@ pub(super) fn edge_row_from_db(r: EdgeRowDb) -> Result<EdgeRow, StorageError> {
     } else {
         EdgeTargetProjection::Redacted
     };
+    // Disclose the target kind only alongside a visible target so a
+    // redacted/unavailable projection leaks neither id nor kind.
+    let target_kind =
+        matches!(target, EdgeTargetProjection::Visible { .. }).then_some(r.target_kind);
     Ok(EdgeRow {
         id: r.edge_id,
         relation: r.relation,
         relation_class: r.relation_class.as_str().to_string(),
         source,
+        source_kind: r.source_kind,
         target,
-        payload: Vec::new(),
+        target_kind,
+        created_at: r.created_at,
+        payload: None,
     })
 }
 
@@ -131,6 +138,9 @@ pub(super) struct EdgeRowDb {
     pub(super) edge_id: uuid::Uuid,
     pub(super) relation: String,
     pub(super) relation_class: RelationClass,
+    pub(super) source_kind: EntityKind,
+    pub(super) target_kind: EntityKind,
+    pub(super) created_at: time::OffsetDateTime,
     pub(super) source_memory_id: Option<uuid::Uuid>,
     pub(super) source_goal_id: Option<uuid::Uuid>,
     pub(super) source_fact_entity_id: Option<uuid::Uuid>,

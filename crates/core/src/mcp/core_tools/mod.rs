@@ -18,6 +18,7 @@ pub mod membership;
 pub mod memory;
 pub mod memory_spaces;
 pub mod publish;
+pub mod read_edges;
 pub mod walk_memory_lineage;
 
 pub use fact::CoreFactTool;

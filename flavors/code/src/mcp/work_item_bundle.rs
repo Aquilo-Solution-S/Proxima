@@ -424,6 +424,8 @@ async fn load_memory_edge_targets(
                 edge_ids: Vec::new(),
                 filter,
                 limit: 500,
+                cursor: None,
+                include_payloads: false,
             },
         )
         .await?;

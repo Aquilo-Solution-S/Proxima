@@ -62,7 +62,8 @@ ALLOWLISTED_SITE_LINES = {
     ("crates/storage-pg/tests/integration/fact_entity_ingest_pg.rs", 403, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("flavors/code/src/ingest/pg_sidecars.rs", 33, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("flavors/code/src/mcp/work_item_bundle.rs", 371, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("flavors/code/src/mcp/work_item_bundle.rs", 543, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
+    # 2026-07-16: shifted 543 -> 545 by the EdgeReadRequest cursor/payload fields.
+    ("flavors/code/src/mcp/work_item_bundle.rs", 545, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("flavors/code/tests/erase_repo_pg.rs", 117, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
 }
 
@@ -287,7 +288,10 @@ def run_fixture(path: Path) -> int:
 # both sites carry fixed-fragment proofs.
 # 2026-07-16 analysis: +1 — the goal-state filter in query/goals.rs pushes a
 # closed-enum fixed fragment (no caller text); proof comment inline.
-EXPECTED_DYNAMIC_SQL_SITES = 51
+# 2026-07-16 analysis: +1 — PgSidecarReadCtx::fetch_all_by_edge_ids runs the
+# same validate_sidecar_read_sql-gated backend-owned SQL as its memory-id
+# siblings (edge-id batch reads for edge payload read-back); proof inline.
+EXPECTED_DYNAMIC_SQL_SITES = 52
 
 
 def run_self_test() -> int:

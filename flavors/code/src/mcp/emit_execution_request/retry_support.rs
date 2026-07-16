@@ -157,6 +157,8 @@ pub(super) async fn load_prior_derived_targets(
                     target: None,
                 },
                 limit: 500,
+                cursor: None,
+                include_payloads: false,
             },
         )
         .await?;

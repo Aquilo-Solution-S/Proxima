@@ -523,6 +523,8 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                     edge_ids: Vec::new(),
                     filter: present_filter,
                     limit: 5,
+                    cursor: None,
+                    include_payloads: false,
                 },
             )
             .await?;

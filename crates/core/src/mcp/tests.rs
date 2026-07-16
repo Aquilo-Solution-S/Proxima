@@ -30,7 +30,7 @@ mod manifest_tests {
     fn core_resources_manifest_has_expected_shape() {
         let resources = all_core_resources().collect::<Vec<_>>();
 
-        assert_eq!(resources.len(), 10);
+        assert_eq!(resources.len(), 12);
         assert_eq!(
             resources
                 .iter()
@@ -43,7 +43,7 @@ mod manifest_tests {
                 .iter()
                 .filter(|resource| resource.is_template)
                 .count(),
-            6
+            8
         );
         assert!(
             resources
@@ -65,6 +65,8 @@ mod manifest_tests {
             protocol_resource::WAKE_CANDIDATES,
             protocol_resource::GOALS,
             protocol_resource::GOAL,
+            protocol_resource::EDGES,
+            protocol_resource::EDGE,
         ]);
         let actual = all_core_resources()
             .map(|resource| resource.scope_key)

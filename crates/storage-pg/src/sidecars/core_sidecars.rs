@@ -1,7 +1,7 @@
 use super::{
-    EdgeId, GoalId, PgCitedObjectSidecar, PgConnection, PgEdgeSidecar, PgGoalSidecar,
-    PgSidecarFuture, PgSidecarRegistry, PgSidecarRegistryFrozen, Postgres, StorageError,
-    Transaction,
+    EdgeId, GoalId, PgCitedObjectSidecar, PgConnection, PgEdgePayload, PgEdgePayloadBatchFuture,
+    PgEdgeSidecar, PgGoalSidecar, PgSidecarFuture, PgSidecarReadCtx, PgSidecarRegistry,
+    PgSidecarRegistryFrozen, Postgres, SidecarPayload, StorageError, Transaction,
 };
 
 fn parse_utterance_speaker(value: &str) -> Result<proxima_core::Speaker, StorageError> {
@@ -172,6 +172,37 @@ impl PgEdgeSidecar for proxima_core::AgentLinkV1 {
             .await
             .map_err(crate::error::map_err)?;
             Ok(())
+        })
+    }
+}
+
+impl PgEdgePayload for proxima_core::AgentLinkV1 {
+    fn load_edge_batch<'t>(
+        ctx: PgSidecarReadCtx<'t>,
+        edge_ids: &'t [EdgeId],
+    ) -> PgEdgePayloadBatchFuture<'t> {
+        Box::pin(async move {
+            let rows: Vec<(uuid::Uuid, String, i16)> = ctx
+                .fetch_all_by_edge_ids(
+                    "SELECT edge_id, reason, confidence
+                       FROM proxima_core.agent_link_v1
+                      WHERE edge_id = ANY($1::uuid[])",
+                    edge_ids,
+                )
+                .await?;
+            rows.into_iter()
+                .map(|(edge_id, reason, confidence)| {
+                    let confidence = u8::try_from(confidence).map_err(|_| {
+                        StorageError::Internal(format!(
+                            "agent_link_v1 confidence {confidence} out of range for edge {edge_id}"
+                        ))
+                    })?;
+                    Ok((
+                        EdgeId::new(edge_id),
+                        SidecarPayload::edge(proxima_core::AgentLinkV1 { reason, confidence }),
+                    ))
+                })
+                .collect()
         })
     }
 }

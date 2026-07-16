@@ -580,8 +580,12 @@ pub(in crate::engine) mod tests {
             &self,
             _read_owners: &[OwnerRef],
             _req: &verbs::query::EdgeReadRequest,
+            _payload_specs: &[verbs::query::EdgePayloadSpec],
         ) -> Result<verbs::query::EdgeReadResponse, StorageError> {
-            Ok(verbs::query::EdgeReadResponse { edges: Vec::new() })
+            Ok(verbs::query::EdgeReadResponse {
+                edges: Vec::new(),
+                next_cursor: None,
+            })
         }
 
         async fn edge_exists(

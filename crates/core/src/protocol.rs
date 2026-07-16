@@ -43,6 +43,8 @@ pub mod resource {
     pub const SCHEMAS: &str = "resource:schemas";
     pub const GOALS: &str = "resource:goals";
     pub const GOAL: &str = "resource:goal";
+    pub const EDGES: &str = "resource:edges";
+    pub const EDGE: &str = "resource:edge";
 }
 
 pub mod resource_path {
@@ -55,6 +57,8 @@ pub mod resource_path {
     pub const MEMORY: &str = "memory";
     pub const GOALS: &str = "goals";
     pub const GOAL: &str = "goal";
+    pub const EDGES: &str = "edges";
+    pub const EDGE: &str = "edge";
 }
 
 pub mod resource_uri {
@@ -68,6 +72,8 @@ pub mod resource_uri {
     pub const WAKE_CANDIDATES: &str = "proxima://wake-candidates{?fact,limit}";
     pub const GOALS: &str = "proxima://goals{?state,limit,cursor}";
     pub const GOAL: &str = "proxima://goal/{id}";
+    pub const EDGES: &str = "proxima://edges{?relation,source,target,limit,cursor,payloads}";
+    pub const EDGE: &str = "proxima://edge/{id}";
 }
 
 pub mod profile {
