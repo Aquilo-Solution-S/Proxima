@@ -21,6 +21,10 @@ pub use verbs::fact_embeddings::{
     EmbeddingInlineDrainOutcome, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
     EmbeddingReconcileScope,
 };
+pub use verbs::retention_maintenance::{
+    ChangeEventPruneOptions, ChangeEventPruneOutcome, PruneOwnerOutcome, RetentionEnforceOptions,
+    RetentionEnforceOutcome, RetentionOwnerOutcome,
+};
 
 use crate::error::internal;
 use crate::pgvector::SET_HNSW_ITERATIVE_SCAN_SQL;
@@ -323,6 +327,26 @@ impl std::fmt::Debug for EmbeddingMaintenanceLock {
     }
 }
 
+/// Advisory-lock key serializing retention maintenance passes across
+/// processes. ASCII `proxretn` as a big-endian i64 — arbitrary but stable,
+/// distinct from [`EMBEDDING_MAINTENANCE_LOCK_KEY`] so the two maintenance
+/// families may run concurrently but never overlap themselves.
+const RETENTION_MAINTENANCE_LOCK_KEY: i64 = i64::from_be_bytes(*b"proxretn");
+
+/// Guard for the global retention-maintenance advisory lock. Same
+/// detached-connection design as [`EmbeddingMaintenanceLock`]: dropping the
+/// guard closes the connection, and Postgres releases the session lock.
+pub struct RetentionMaintenanceLock {
+    _conn: sqlx::postgres::PgConnection,
+}
+
+impl std::fmt::Debug for RetentionMaintenanceLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RetentionMaintenanceLock")
+            .finish_non_exhaustive()
+    }
+}
+
 /// Parse a `u64` pool-tuning env var, falling back to `default` when unset or
 /// unparseable. `0` is a legal value (disables the corresponding bound).
 fn env_u64_or(key: &str, default: u64) -> u64 {
@@ -535,6 +559,37 @@ impl PgStorage {
     pub async fn try_embedding_maintenance_lock(
         &self,
     ) -> Result<Option<EmbeddingMaintenanceLock>, StorageError> {
+        Ok(self
+            .try_maintenance_lock_conn(EMBEDDING_MAINTENANCE_LOCK_KEY)
+            .await?
+            .map(|conn| EmbeddingMaintenanceLock { _conn: conn }))
+    }
+
+    /// Try to take the global retention-maintenance advisory lock.
+    ///
+    /// Same contract as [`Self::try_embedding_maintenance_lock`], on its own
+    /// key: `None` means another retention pass already holds it and this
+    /// run should skip.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from acquiring the connection or the lock query.
+    pub async fn try_retention_maintenance_lock(
+        &self,
+    ) -> Result<Option<RetentionMaintenanceLock>, StorageError> {
+        Ok(self
+            .try_maintenance_lock_conn(RETENTION_MAINTENANCE_LOCK_KEY)
+            .await?
+            .map(|conn| RetentionMaintenanceLock { _conn: conn }))
+    }
+
+    /// Session-scoped `pg_try_advisory_lock` on a connection detached from
+    /// the pool; the caller wraps the connection in a guard whose drop
+    /// closes it, releasing the lock server-side.
+    async fn try_maintenance_lock_conn(
+        &self,
+        key: i64,
+    ) -> Result<Option<sqlx::postgres::PgConnection>, StorageError> {
         let mut conn = self
             .pool
             .acquire()
@@ -544,11 +599,44 @@ impl PgStorage {
             })?
             .detach();
         let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
-            .bind(EMBEDDING_MAINTENANCE_LOCK_KEY)
+            .bind(key)
             .fetch_one(&mut conn)
             .await
             .map_err(crate::error::map_err)?;
-        Ok(locked.then_some(EmbeddingMaintenanceLock { _conn: conn }))
+        Ok(locked.then_some(conn))
+    }
+
+    /// Tombstone Facts past their owner's configured retention window.
+    /// Operator surface for the maintenance CLI; see
+    /// [`Self::sweep_orphan_embedding_rows`] for the authority note. Each
+    /// owner is processed under the per-owner legal-hold advisory lock and
+    /// skipped while a hold is active (docs/13 forward rule).
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from the sweep transactions, and
+    /// `ConstraintViolation` for a non-positive batch size.
+    pub async fn enforce_fact_retention(
+        &self,
+        options: RetentionEnforceOptions,
+    ) -> Result<RetentionEnforceOutcome, StorageError> {
+        verbs::retention_maintenance::enforce_fact_retention(&self.pool, options).await
+    }
+
+    /// Delete `change_event` rows older than an explicit age horizon.
+    /// Operator surface for the maintenance CLI; see
+    /// [`Self::sweep_orphan_embedding_rows`] for the authority note. Same
+    /// per-owner legal-hold gate as [`Self::enforce_fact_retention`].
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from the prune transactions, and
+    /// `ConstraintViolation` for a non-positive horizon or batch size.
+    pub async fn prune_change_events(
+        &self,
+        options: ChangeEventPruneOptions,
+    ) -> Result<ChangeEventPruneOutcome, StorageError> {
+        verbs::retention_maintenance::prune_change_events(&self.pool, options).await
     }
 
     /// Apply all pending migrations under

@@ -536,6 +536,43 @@ Rust-level changes for embedders and flavor authors:
   custom edge sidecars add one `SELECT ... WHERE edge_id = ANY($1)`
   loader. `PgSidecarReadCtx` gained `fetch_all_by_edge_ids`.
 
+## 21. v0.0.7: retention is enforced; `change_event` becomes prunable
+
+`owner_fact_retention.retention_seconds` was inert config since the old
+sweep was deleted (v0.0.6), and `change_event` grew without bound. Both
+are now handled by one operator-scheduled, cron-safe CLI pass:
+
+```sh
+proxima-mcp maintain-retention --enforce-fact-retention \
+    --prune-change-events-older-than 90d
+```
+
+Operational consequences to review before scheduling it:
+
+- **Configured retention windows become real.** Owners with a
+  `retention_seconds` value will have Facts older than the window
+  tombstoned (hidden from present-only reads; rows and provenance kept —
+  physical destruction remains exclusive to the compliance-erase
+  family). Audit Facts (`core/mcp-call-logged-v1`) are always excluded.
+  If a window was set speculatively and should NOT be enforced, clear it
+  before scheduling the pass.
+- **Tombstoning now emits `EntityDelete` change events** (the first
+  producer of that kind). Forward pollers of `proxima://change-events`
+  should already handle the variant — it has been part of the wire enum
+  since v0.0.4 — but consumers that only ever matched `EntityAppend`
+  should be checked.
+- **Pruned change events are gone for every consumer.** A forward
+  poller whose `since` cursor predates the prune horizon misses the
+  pruned events with no gap signal. Pick a horizon comfortably larger
+  than the slowest consumer's lag, or re-baseline lagging consumers via
+  cold-start stitching (docs/14 §Change Log).
+- **Legal holds gate both halves.** Held owners are skipped and
+  reported; the pass never blocks on a hold.
+- No MCP wire-surface change: the command is CLI-only, and
+  `EntityDelete` was already a legal wire event. Rust embedders gain
+  `PgStorage::{enforce_fact_retention, prune_change_events,
+  try_retention_maintenance_lock}` (additive).
+
 ## Checks before calling an upgrade done
 
 ```sh

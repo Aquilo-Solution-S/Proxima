@@ -2,7 +2,8 @@ pub mod args;
 
 pub use args::{
     ArgsError, DEFAULT_BIND, DEFAULT_DATABASE_URL, MAINTAIN_USAGE, MaintainConfig, McpConfig,
-    ReconcileScope, USAGE, parse_args, parse_maintain_args,
+    RETENTION_USAGE, ReconcileScope, RetentionConfig, USAGE, parse_args, parse_maintain_args,
+    parse_retention_args,
 };
 
 use std::collections::{BTreeSet, HashSet};
@@ -21,7 +22,10 @@ use proxima_core::{
 use proxima_llm_openai_compat::{
     MISTRAL_EMBED_BASE_URL, MISTRAL_EMBED_MODEL, OpenAiCompatEmbeddingClient,
 };
-use proxima_storage_pg::{EmbeddingReconcileOptions, EmbeddingReconcileScope, PgStorage};
+use proxima_storage_pg::{
+    ChangeEventPruneOptions, ChangeEventPruneOutcome, EmbeddingReconcileOptions,
+    EmbeddingReconcileScope, PgStorage, RetentionEnforceOptions, RetentionEnforceOutcome,
+};
 
 const MISTRAL_API_KEY: &str = "MISTRAL_API_KEY";
 const PROXIMA_EMBED_MODEL: &str = "PROXIMA_EMBED_MODEL";
@@ -157,6 +161,14 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
             other @ ArgsError::Invalid(_) => CliError::Args(other),
         })?;
         return run_maintain(config).await;
+    }
+    if args.first().is_some_and(|arg| arg == "maintain-retention") {
+        args.remove(0);
+        let config = parse_retention_args(args).map_err(|err| match err {
+            ArgsError::Help => CliError::Help(RETENTION_USAGE),
+            other @ ArgsError::Invalid(_) => CliError::Args(other),
+        })?;
+        return run_maintain_retention(config).await;
     }
     if args
         .first()
@@ -307,6 +319,105 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
         None => println!("recall-canary: none (no embeddings yet)"),
     }
     Ok(())
+}
+
+/// One retention pass: Fact-retention enforcement (tombstone sweep) and/or
+/// `change_event` pruning, per the explicit action flags. Serialized across
+/// processes by its own Postgres advisory lock — an overlapping pass skips
+/// with exit 0, like `maintain-embeddings`. Owners under an active
+/// legal/security hold are skipped inside each owner's transaction and
+/// surface in the report.
+async fn run_maintain_retention(config: RetentionConfig) -> Result<(), CliError> {
+    let storage = PgStorage::connect(&config.database_url)
+        .await
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    storage
+        .run_migrations()
+        .await
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+
+    let Some(_lock) = storage
+        .try_retention_maintenance_lock()
+        .await
+        .map_err(|err| ProximaError::Storage(err.to_string()))?
+    else {
+        println!("skipped: another retention maintenance pass holds the lock");
+        return Ok(());
+    };
+
+    let dry_run_suffix = if config.dry_run { " (dry-run)" } else { "" };
+
+    if config.enforce_fact_retention {
+        let outcome = storage
+            .enforce_fact_retention(RetentionEnforceOptions {
+                batch_size: config.batch_size,
+                dry_run: config.dry_run,
+            })
+            .await
+            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+        print_retention_report(&outcome, dry_run_suffix);
+    }
+
+    if let Some(older_than_seconds) = config.prune_change_events_older_than_seconds {
+        let outcome = storage
+            .prune_change_events(ChangeEventPruneOptions {
+                older_than_seconds,
+                batch_size: config.batch_size,
+                dry_run: config.dry_run,
+            })
+            .await
+            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+        print_prune_report(&outcome, older_than_seconds, dry_run_suffix);
+    }
+
+    Ok(())
+}
+
+fn print_retention_report(outcome: &RetentionEnforceOutcome, dry_run_suffix: &str) {
+    println!(
+        "fact-retention: owners={} tombstoned={} skipped-hold={}{dry_run_suffix}",
+        outcome.owners.len(),
+        outcome.facts_tombstoned,
+        outcome.owners_skipped_hold
+    );
+    for owner in &outcome.owners {
+        let hold = if owner.skipped_legal_hold {
+            " [legal hold — skipped]"
+        } else {
+            ""
+        };
+        println!(
+            "  {} retention={}s tombstoned={}{hold}",
+            owner.owner.external_key(),
+            owner.retention_seconds,
+            owner.facts_tombstoned
+        );
+    }
+}
+
+fn print_prune_report(
+    outcome: &ChangeEventPruneOutcome,
+    older_than_seconds: i64,
+    dry_run_suffix: &str,
+) {
+    println!(
+        "change-event-prune: horizon={older_than_seconds}s owners={} pruned={} skipped-hold={}{dry_run_suffix}",
+        outcome.owners.len(),
+        outcome.events_pruned,
+        outcome.owners_skipped_hold
+    );
+    for owner in &outcome.owners {
+        let hold = if owner.skipped_legal_hold {
+            " [legal hold — skipped]"
+        } else {
+            ""
+        };
+        println!(
+            "  {} pruned={}{hold}",
+            owner.owner.external_key(),
+            owner.events_pruned
+        );
+    }
 }
 
 fn reconcile_scope(scope: ReconcileScope) -> EmbeddingReconcileScope {
