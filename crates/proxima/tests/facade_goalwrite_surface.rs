@@ -1,9 +1,10 @@
 use proxima::flavor::{GoalPayload, PayloadKeyBuilder};
 use proxima::{
-    GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalPayloadWrite, IdempotencyKey,
-    MemoryId, OwnerRef, SystemOrigin,
+    GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalPayloadWrite, GoalWakeConfigWrite,
+    GoalWakeToolId, GoalWakeTrigger, IdempotencyKey, ListWakeCandidatesReadRequest, MemoryId,
+    OwnerRef, SystemOrigin,
 };
-use proxima_core::{ToolId, UserId};
+use proxima_core::{FlavorRegistry, SchemaId, SchemaVersion, ToolId, UserId};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct FacadeGoalPayload {
@@ -56,4 +57,41 @@ fn facade_reexports_typed_goalwrite_surface_for_embedded_hosts() {
         system_request.authorship,
         GoalAuthorship::System(_)
     ));
+}
+
+#[test]
+fn facade_reexports_wake_surface_for_embedded_hosts() {
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let tool = GoalWakeToolId::parse("core_search_memories", &registry)
+        .expect("registered substrate tool id parses through facade re-export");
+    let wake = GoalWakeConfigWrite::new(
+        GoalWakeTrigger::FactSchema {
+            schema_id: SchemaId::new("test/facade-wake-fact-v1".to_string()),
+            schema_version: SchemaVersion::new(1),
+        },
+        vec![tool],
+        "Plan next steps from the trigger fact.",
+        &[],
+    )
+    .expect("wake config validates through facade re-export");
+
+    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let request = GoalCreateRequest::product(
+        owner,
+        GoalAssignmentTarget::perspective(MemoryId::new(uuid::Uuid::now_v7())),
+        IdempotencyKey::new("product:armed-goal").expect("stable product request id is valid"),
+        "Armed goal",
+        "Wake when the trigger fact appears.",
+        FacadeGoalPayload {
+            key: "armed-goal".to_string(),
+        },
+    )
+    .with_wake(Some(wake));
+    assert!(request.wake.is_some());
+
+    let read = ListWakeCandidatesReadRequest {
+        trigger_fact_id: MemoryId::new(uuid::Uuid::now_v7()),
+        limit: 10,
+    };
+    assert_eq!(read.limit, 10);
 }

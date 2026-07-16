@@ -39,6 +39,7 @@ pub mod resource {
     pub const TOOLS: &str = "resource:tools";
     pub const GRAPH: &str = "resource:graph";
     pub const CHANGE_EVENTS: &str = "resource:change-events";
+    pub const WAKE_CANDIDATES: &str = "resource:wake-candidates";
     pub const SCHEMAS: &str = "resource:schemas";
 }
 
@@ -48,6 +49,7 @@ pub mod resource_path {
     pub const TOOLS: &str = "tools";
     pub const GRAPH: &str = "graph";
     pub const CHANGE_EVENTS: &str = "change-events";
+    pub const WAKE_CANDIDATES: &str = "wake-candidates";
     pub const MEMORY: &str = "memory";
 }
 
@@ -59,6 +61,7 @@ pub mod resource_uri {
     pub const MEMORY: &str = "proxima://memory/{id}{?expand_neighbors}";
     pub const MEMORY_LINEAGE: &str = "proxima://memory/{id}/lineage{?direction,depth,limit}";
     pub const CHANGE_EVENTS: &str = "proxima://change-events{?since,limit}";
+    pub const WAKE_CANDIDATES: &str = "proxima://wake-candidates{?fact,limit}";
 }
 
 pub mod profile {

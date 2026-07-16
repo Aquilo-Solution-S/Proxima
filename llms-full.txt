@@ -58,6 +58,7 @@ gotchas at natural breaks. Use idempotency keys for replayable writes.
 | `proxima://tools` | live tool catalog |
 | `proxima://memory/{id}` | memory details |
 | `proxima://change-events{?since,limit}` | pull change events |
+| `proxima://wake-candidates{?fact,limit}` | armed Goals woken by a trigger Fact |
 
 ## More
 

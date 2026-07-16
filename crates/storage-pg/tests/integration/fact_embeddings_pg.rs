@@ -139,6 +139,7 @@ fn compliance_engine_for(pg: proxima_storage_pg::PgStorage) -> proxima_core::Eng
         .embedding_maintenance(pg.clone())
         .goal_write(pg.clone())
         .goal_read(pg.clone())
+        .goal_wake_candidate(pg.clone())
         .change_event(pg.clone())
         .edge_read(pg.clone())
         .citation(pg.clone())

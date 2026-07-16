@@ -10,7 +10,7 @@ use super::embeddings::{
     EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort, EmbeddingWritePort,
 };
 use super::fact::{FactIngestPort, SourceBatchPort};
-use super::goals::{GoalReadPort, GoalWritePort};
+use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
 use super::mcp::{McpCallReadPort, McpCallWritePort};
 use super::memory::{
     CitationPort, EdgeReadPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
@@ -29,6 +29,7 @@ pub type EmbeddingJobHandle = Arc<dyn EmbeddingJobPort>;
 pub type EmbeddingMaintenanceHandle = Arc<dyn EmbeddingMaintenancePort>;
 pub type GoalWriteHandle = Arc<dyn GoalWritePort>;
 pub type GoalReadHandle = Arc<dyn GoalReadPort>;
+pub type GoalWakeCandidateHandle = Arc<dyn GoalWakeCandidatePort>;
 pub type ChangeEventHandle = Arc<dyn ChangeEventPort>;
 pub type EdgeReadHandle = Arc<dyn EdgeReadPort>;
 pub type CitationHandle = Arc<dyn CitationPort>;

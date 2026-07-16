@@ -37,6 +37,7 @@
     "proxima://how-to",
     "proxima://tools",
     "proxima://change-events{?since,limit}",
+    "proxima://wake-candidates{?fact,limit}",
     "proxima://memory/{id}"
   ]
 }

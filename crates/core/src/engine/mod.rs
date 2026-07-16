@@ -47,7 +47,8 @@ pub use pipeline::{MemoryPermit, PermitMode};
 pub use read_verbs::{
     EntityHeadCitationReadRequest, FactCitationReadRequest, FactsCitingObjectReadRequest,
     GetGraphReadRequest, GetGraphReadResponse, GetMemoryReadRequest, GetMemoryReadResponse,
-    ListChangeEventsReadRequest, ListChangeEventsReadResponse, SearchReadRequest,
+    ListChangeEventsReadRequest, ListChangeEventsReadResponse, ListWakeCandidatesReadRequest,
+    ListWakeCandidatesReadResponse, MAX_WAKE_CANDIDATE_LIMIT, SearchReadRequest,
     SearchReadResponse,
 };
 

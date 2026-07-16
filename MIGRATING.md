@@ -380,6 +380,20 @@ inbound request body size. Both now carry the same
 signature change; hosts composing their own router around
 `layered_router`'s output get the cap for free.
 
+## 15. v0.0.7: `goal_wake_candidate` is a new required storage port
+
+`StoragePortsBuilder` gained a required `goal_wake_candidate` handle
+(`GoalWakeCandidatePort`) backing the new wake-candidate admission read
+(`Engine::list_goal_wake_candidates`, MCP
+`proxima://wake-candidates{?fact,limit}`). Hosts assembling ports via
+`PgStorage::storage_ports()` are unaffected. Custom port assemblers must add
+one builder line (`.goal_wake_candidate(backend.clone())`) and implement the
+one-method port, or `try_build()` reports it missing. No schema change: the
+port reads the existing `proxima_core.goal_wake_config` table. Wake config is
+now also writable over MCP (`core_goal` `set`/`decompose` `wake`, `modify`
+`wake`/`clear_wake`); tool-scope palettes that should expose the new resource
+must include `resource:wake-candidates` (profile `memory` includes it).
+
 ## Checks before calling an upgrade done
 
 ```sh

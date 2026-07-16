@@ -232,6 +232,13 @@ hard memories are readable through their actual Owners
 wake.toolset subset-of actor ToolScope intersect deployment profile
 ```
 
+Protocol reachability (see [14 §Core Memory MCP Surface](14-protocol-surface.md#core-memory-mcp-surface)):
+
+| Half | Surface |
+|---|---|
+| arm / re-arm / disarm | `core_goal` `set`/`decompose` `wake`, `modify` `wake`/`clear_wake` (omit both = carry prior head's config forward) |
+| candidate admission | `proxima://wake-candidates{?fact,limit}` over `Engine::list_goal_wake_candidates` |
+
 PR6 does not add a scheduler, executor, runtime plugin body, tool table, or
 tool invocation table. External harnesses plan and execute; emitted outputs
 must be ordinary Facts written through FactIngest and linked:
