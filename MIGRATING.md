@@ -464,6 +464,40 @@ ports; returning an empty vec preserves prior behavior),
 Option<GoalState>` (struct literals must add the field). The MCP wire
 change is purely additive.
 
+## 19. v0.0.7: embedding pipeline self-heals; `maintain-embeddings` CLI
+
+The embedding queue now heals its own gaps instead of waiting for an
+operator. The MCP wire is unchanged; three things move for embedders and
+deployments:
+
+- **CLI rename + wider pass.** `proxima-mcp reconcile-embeddings` is now
+  `proxima-mcp maintain-embeddings` (same flags). The pass gained an
+  orphan-row sweep before the reconcile enqueue and a health report after
+  it (job backlog, orphan counts, ANN recall canary). Passes are
+  serialized by a Postgres advisory lock; a run that finds the lock held
+  prints a skip notice and exits `0`, so cron overlap is safe. Update
+  cron/deploy specs; the old subcommand fails with a message naming the
+  new one.
+- **Startup catch-up.** When an embedding client is configured, the
+  in-process worker (`spawn_embedding_worker`) runs one `missing-only`
+  reconcile before its first drain. Facts ingested while no client was
+  configured — which get no durable job at ingest — and jobs stuck in the
+  `failed` retry dead-end are re-enqueued on the next restart. Degraded
+  boots (no client) are unchanged. There is still no recurring in-process
+  scheduler; recurring maintenance stays external.
+- **Port + types.** `EmbeddingMaintenancePort` gained
+  `reconcile_embeddings(options, proof)`; custom implementors must add
+  it (forward to storage or return an error — the engine only calls it
+  when an embedding client is installed).
+  `EmbeddingReconcileScope`/`EmbeddingReconcileOptions`/
+  `EmbeddingReconcileOutcome` moved from `proxima-storage-pg` to
+  `proxima-core` (storage-pg re-exports them, so existing import paths
+  keep compiling). New host verb `Engine::reconcile_embeddings(scope,
+  limit)` mirrors `drain_embedding_jobs`: host-invoked, no-op without a
+  client. `PgStorage` gained operator-surface inherent methods
+  `sweep_orphan_embedding_rows()`, `embedding_ann_observability()`, and
+  `try_embedding_maintenance_lock()`.
+
 ## Checks before calling an upgrade done
 
 ```sh

@@ -105,6 +105,39 @@ async fn drain_embedding_jobs_without_client_is_noop() {
 }
 
 #[tokio::test]
+async fn reconcile_embeddings_without_client_is_noop() {
+    let (principal, owner) = fresh_owner();
+    let engine = boot_engine(principal, owner);
+
+    let outcome = engine
+        .reconcile_embeddings(proxima_core::EmbeddingReconcileScope::MissingOnly, None)
+        .await
+        .expect("missing embedding client is a no-op");
+
+    assert_eq!(outcome, proxima_core::EmbeddingReconcileOutcome::default());
+}
+
+#[tokio::test]
+async fn reconcile_embeddings_with_client_reaches_maintenance_port() {
+    let (principal, owner) = fresh_owner();
+    let engine =
+        boot_engine(principal, owner).with_embedding_reloader(Arc::new(FixedEmbeddingReloader));
+    engine
+        .reload_embedding_client(&owner)
+        .await
+        .expect("reload hook must install client");
+
+    let err = engine
+        .reconcile_embeddings(proxima_core::EmbeddingReconcileScope::MissingOnly, Some(10))
+        .await
+        .expect_err("rejecting storage must reject the forwarded reconcile");
+    assert!(
+        err.to_string().contains("embedding maintenance"),
+        "error should come from the maintenance port: {err}"
+    );
+}
+
+#[tokio::test]
 async fn query_verb_returns_empty_for_configured_owner() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner);

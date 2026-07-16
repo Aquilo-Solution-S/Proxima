@@ -146,4 +146,12 @@ impl EmbeddingMaintenancePort for PgStorage {
     ) -> Result<EmbeddingOrphanSweepOutcome, StorageError> {
         verbs::fact_embeddings::sweep_orphan_embedding_rows(&self.pool).await
     }
+
+    async fn reconcile_embeddings(
+        &self,
+        options: proxima_core::EmbeddingReconcileOptions<'_>,
+        _proof: OperatorMaintenanceProof,
+    ) -> Result<proxima_core::EmbeddingReconcileOutcome, StorageError> {
+        verbs::fact_embeddings::reconcile_embeddings(&self.pool, options).await
+    }
 }

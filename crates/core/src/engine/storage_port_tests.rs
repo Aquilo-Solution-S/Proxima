@@ -403,6 +403,18 @@ mod storage_port_tests_support {
         ) -> Result<crate::EmbeddingOrphanSweepOutcome, StorageError> {
             Ok(crate::EmbeddingOrphanSweepOutcome::default())
         }
+
+        async fn reconcile_embeddings(
+            &self,
+            _options: crate::EmbeddingReconcileOptions<'_>,
+            _proof: crate::OperatorMaintenanceProof,
+        ) -> Result<crate::EmbeddingReconcileOutcome, StorageError> {
+            Ok(crate::EmbeddingReconcileOutcome {
+                scanned: 3,
+                enqueued: 2,
+                skipped: 1,
+            })
+        }
     }
 
     #[derive(Debug)]

@@ -456,6 +456,16 @@ pub(in crate::engine) mod tests {
                 "MembershipStorage rejects embedding maintenance".into(),
             ))
         }
+
+        async fn reconcile_embeddings(
+            &self,
+            _options: crate::EmbeddingReconcileOptions<'_>,
+            _proof: crate::OperatorMaintenanceProof,
+        ) -> Result<crate::EmbeddingReconcileOutcome, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects embedding maintenance".into(),
+            ))
+        }
     }
 
     #[async_trait::async_trait]

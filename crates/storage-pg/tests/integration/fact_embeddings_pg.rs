@@ -1319,3 +1319,43 @@ async fn reconcile_limit_skips_existing_heads_before_bounding()
     let _ = drop_db(&db_name).await;
     result
 }
+
+#[tokio::test]
+async fn embedding_maintenance_lock_excludes_concurrent_passes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let held = pg
+            .try_embedding_maintenance_lock()
+            .await?
+            .expect("first pass acquires the lock");
+
+        // A concurrent pass (same process or another one — the lock is a
+        // server-side advisory lock) must skip, not queue behind the holder.
+        assert!(
+            pg.try_embedding_maintenance_lock().await?.is_none(),
+            "second pass must observe the held lock and skip"
+        );
+
+        // Dropping the guard closes its detached connection; the server
+        // releases the session lock and the next pass may run. The release
+        // is asynchronous from this process's perspective, so poll briefly.
+        drop(held);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(reacquired) = pg.try_embedding_maintenance_lock().await? {
+                drop(reacquired);
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "lock was not released after guard drop"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+}

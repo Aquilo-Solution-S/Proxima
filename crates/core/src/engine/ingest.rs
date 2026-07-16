@@ -500,6 +500,39 @@ impl Engine {
         Ok(outcome)
     }
 
+    /// Host-invoked global reconciliation: enqueue durable embedding jobs for
+    /// every embeddable memory in `scope` that lacks coverage under the
+    /// active embedding client's model. Complements [`Self::drain_embedding_jobs`]:
+    /// drain heals the queue, reconcile heals the *absence* of queue entries
+    /// (memories written while no embedding client was configured, model
+    /// changes, `failed` jobs whose retries are exhausted). Idempotent; like
+    /// drain, the caller controls invocation — no worker or timer is spawned.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from the reconciliation scan/enqueue.
+    pub async fn reconcile_embeddings(
+        &self,
+        scope: crate::EmbeddingReconcileScope,
+        limit: Option<i64>,
+    ) -> Result<crate::EmbeddingReconcileOutcome, StorageError> {
+        let Some(client) = self.embed_client() else {
+            return Ok(crate::EmbeddingReconcileOutcome::default());
+        };
+        self.storage
+            .compliance
+            .embedding_maintenance
+            .reconcile_embeddings(
+                crate::EmbeddingReconcileOptions {
+                    model_id: client.model_id(),
+                    scope,
+                    limit,
+                },
+                crate::storage_ports::OperatorMaintenanceProof::new(),
+            )
+            .await
+    }
+
     pub(super) fn ingest_protocol_payload<'a>(
         &'a self,
         schema_id: &crate::SchemaId,

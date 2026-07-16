@@ -1,8 +1,8 @@
 pub mod args;
 
 pub use args::{
-    ArgsError, DEFAULT_BIND, DEFAULT_DATABASE_URL, McpConfig, RECONCILE_USAGE, ReconcileConfig,
-    ReconcileScope, USAGE, parse_args, parse_reconcile_args,
+    ArgsError, DEFAULT_BIND, DEFAULT_DATABASE_URL, MAINTAIN_USAGE, MaintainConfig, McpConfig,
+    ReconcileScope, USAGE, parse_args, parse_maintain_args,
 };
 
 use std::collections::{BTreeSet, HashSet};
@@ -150,16 +150,23 @@ impl FlavorApp for ProximaMcpApp {
 /// Returns argument, facade boot, or MCP transport failures.
 pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError> {
     let mut args: Vec<String> = args.into_iter().collect();
+    if args.first().is_some_and(|arg| arg == "maintain-embeddings") {
+        args.remove(0);
+        let config = parse_maintain_args(args).map_err(|err| match err {
+            ArgsError::Help => CliError::Help(MAINTAIN_USAGE),
+            other @ ArgsError::Invalid(_) => CliError::Args(other),
+        })?;
+        return run_maintain(config).await;
+    }
     if args
         .first()
         .is_some_and(|arg| arg == "reconcile-embeddings")
     {
-        args.remove(0);
-        let config = parse_reconcile_args(args).map_err(|err| match err {
-            ArgsError::Help => CliError::Help(RECONCILE_USAGE),
-            other @ ArgsError::Invalid(_) => CliError::Args(other),
-        })?;
-        return run_reconcile(config).await;
+        return Err(CliError::Args(ArgsError::Invalid(
+            "reconcile-embeddings was renamed to maintain-embeddings in v0.0.7; \
+             the pass now also sweeps orphans and prints a health report"
+                .into(),
+        )));
     }
     if args.first().is_some_and(|arg| arg == "serve") {
         args.remove(0);
@@ -205,7 +212,11 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
     Ok(())
 }
 
-async fn run_reconcile(config: ReconcileConfig) -> Result<(), CliError> {
+/// One embedding self-healing pass: orphan sweep, reconcile enqueue,
+/// optional inline drain, health report. Serialized across processes by a
+/// Postgres advisory lock — an overlapping pass skips with exit 0 so cron
+/// overlap is harmless by construction, not by scheduling discipline.
+async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     let model = config
         .model
         .unwrap_or_else(|| active_embedding_model(|key| std::env::var(key).ok()));
@@ -216,6 +227,25 @@ async fn run_reconcile(config: ReconcileConfig) -> Result<(), CliError> {
         .run_migrations()
         .await
         .map_err(|err| ProximaError::Storage(err.to_string()))?;
+
+    let Some(_lock) = storage
+        .try_embedding_maintenance_lock()
+        .await
+        .map_err(|err| ProximaError::Storage(err.to_string()))?
+    else {
+        println!("skipped: another embedding maintenance pass holds the lock");
+        return Ok(());
+    };
+
+    let sweep = storage
+        .sweep_orphan_embedding_rows()
+        .await
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    println!(
+        "orphan-sweep: embeddings={} heads={} jobs={}",
+        sweep.embeddings_deleted, sweep.heads_deleted, sweep.jobs_deleted
+    );
+
     let outcome = storage
         .reconcile_embeddings(EmbeddingReconcileOptions {
             model_id: &model,
@@ -224,21 +254,20 @@ async fn run_reconcile(config: ReconcileConfig) -> Result<(), CliError> {
         })
         .await
         .map_err(|err| ProximaError::Storage(err.to_string()))?;
-
     println!(
-        "scanned={} enqueued={} skipped={}",
+        "reconcile: scanned={} enqueued={} skipped={}",
         outcome.scanned, outcome.enqueued, outcome.skipped
     );
 
     if config.drain {
         let client = mistral_embedding_client(|key| std::env::var(key).ok())?.ok_or_else(|| {
             CliError::Runtime(ProximaError::Config(
-                "reconcile-embeddings --drain requires MISTRAL_API_KEY".into(),
+                "maintain-embeddings --drain requires MISTRAL_API_KEY".into(),
             ))
         })?;
         if client.model_id() != model {
             return Err(CliError::Runtime(ProximaError::Config(format!(
-                "reconcile-embeddings --drain model mismatch: queued model {model:?}, Mistral client model {:?}",
+                "maintain-embeddings --drain model mismatch: queued model {model:?}, Mistral client model {:?}",
                 client.model_id()
             ))));
         }
@@ -247,7 +276,35 @@ async fn run_reconcile(config: ReconcileConfig) -> Result<(), CliError> {
             .drain_embedding_jobs_inline(&client, limit)
             .await
             .map_err(|err| ProximaError::Storage(err.to_string()))?;
-        println!("embedded={} failed={}", drain.embedded, drain.failed);
+        println!("drain: embedded={} failed={}", drain.embedded, drain.failed);
+    }
+
+    let health = storage
+        .embedding_ann_observability()
+        .await
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    println!(
+        "backlog: pending={} processing={} failed={} stale-processing={}",
+        health.backlog.pending,
+        health.backlog.processing,
+        health.backlog.failed,
+        health.stale_processing_jobs
+    );
+    println!(
+        "orphans-remaining: embeddings={} heads={} jobs={}",
+        health.orphan_rows.embeddings, health.orphan_rows.heads, health.orphan_rows.jobs
+    );
+    match health.recall_canary {
+        Some(canary) => println!(
+            "recall-canary: model={} recall@{}={:.3} (ann={} exact={} overlap={})",
+            canary.model_id,
+            canary.k,
+            canary.recall_at_k,
+            canary.ann_count,
+            canary.exact_count,
+            canary.overlap_count
+        ),
+        None => println!("recall-canary: none (no embeddings yet)"),
     }
     Ok(())
 }
@@ -592,6 +649,17 @@ mod tests {
     #[tokio::test]
     async fn app_construction_without_mistral_key_keeps_degraded_mode() {
         build_app(config(), |_| None).expect("app construction does not require embeddings");
+    }
+
+    #[tokio::test]
+    async fn old_reconcile_subcommand_names_the_rename() {
+        let err = run(["reconcile-embeddings".to_string()])
+            .await
+            .expect_err("renamed subcommand must fail with guidance");
+        assert!(
+            err.to_string().contains("maintain-embeddings"),
+            "message: {err}"
+        );
     }
 
     #[tokio::test]
