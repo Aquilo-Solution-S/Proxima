@@ -47,9 +47,10 @@ pub use proxima_core::verbs::schema::{
 pub use proxima_core::{
     AuthPath, AuthzContext, EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingOrphanCounts,
     EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, Engine, EngineHandle, FlavorRegistryFrozen,
-    GoalWakeCandidate, MemoryId, Owner, OwnerAccessPort, OwnerExternalKeyParseError, OwnerRef,
-    Relation, SourceBatchId, StorageError, ToolScope, UPLOADED_BLOB_SCHEMA_ID, UserId,
-    canonical_json_bytes, parse_external_key, provider_safe_tool_name,
+    GoalWakeCandidate, GoalWakeHardMemory, MemoryId, Owner, OwnerAccessPort,
+    OwnerExternalKeyParseError, OwnerRef, Relation, SourceBatchId, StorageError, ToolScope,
+    UPLOADED_BLOB_SCHEMA_ID, UserId, canonical_json_bytes, parse_external_key,
+    provider_safe_tool_name,
 };
 #[cfg(feature = "openai-compat-embed")]
 pub use proxima_llm_openai_compat::{

@@ -4,7 +4,8 @@
 //! Fact write, or tool invocation row is created here.
 
 use proxima_core::{
-    GoalId, GoalWakeCandidate, GoalWakeCandidateRequest, MemoryId, StorageError, ToolScope,
+    EntityKind, GoalId, GoalWakeCandidate, GoalWakeCandidateRequest, GoalWakeHardMemory, MemoryId,
+    StorageError, ToolScope,
 };
 use sqlx::PgPool;
 
@@ -17,6 +18,7 @@ struct CandidateRow {
     tool_ids: Vec<String>,
     prompt: String,
     hard_memory_ids: Vec<uuid::Uuid>,
+    hard_memory_kinds: Vec<String>,
 }
 
 pub(crate) async fn list_goal_wake_candidates(
@@ -29,17 +31,48 @@ pub(crate) async fn list_goal_wake_candidates(
     let allowed_scope = args.allowed_scope.clone();
     let rows = query_candidate_rows(pool, req, &args).await?;
 
-    Ok(rows
-        .into_iter()
+    rows.into_iter()
         .filter(|row| row.tool_ids.iter().all(|tool| allowed_scope.allows(tool)))
-        .map(|row| GoalWakeCandidate {
-            goal_id: GoalId::new(row.goal_id),
-            tool_ids: row.tool_ids,
-            prompt: row.prompt,
-            hard_memory_ids: row.hard_memory_ids.into_iter().map(MemoryId::new).collect(),
-            actor_write_owners: req.actor_write_owners.to_vec(),
+        .map(|row| {
+            Ok(GoalWakeCandidate {
+                goal_id: GoalId::new(row.goal_id),
+                tool_ids: row.tool_ids,
+                prompt: row.prompt,
+                hard_memories: hard_memories(row.hard_memory_ids, &row.hard_memory_kinds)?,
+                actor_write_owners: req.actor_write_owners.to_vec(),
+            })
         })
-        .collect())
+        .collect()
+}
+
+fn hard_memories(
+    ids: Vec<uuid::Uuid>,
+    kinds: &[String],
+) -> Result<Vec<GoalWakeHardMemory>, StorageError> {
+    if ids.len() != kinds.len() {
+        return Err(StorageError::Internal(
+            "hard memory id/kind arrays diverged".into(),
+        ));
+    }
+    ids.into_iter()
+        .zip(kinds)
+        .map(|(memory_id, kind)| {
+            let kind = match kind.as_str() {
+                "Fact" => EntityKind::Fact,
+                "Abstraction" => EntityKind::Abstraction,
+                "Perspective" => EntityKind::Perspective,
+                other => {
+                    return Err(StorageError::Internal(format!(
+                        "unexpected hard memory kind {other}"
+                    )));
+                }
+            };
+            Ok(GoalWakeHardMemory {
+                memory_id: MemoryId::new(memory_id),
+                kind,
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -109,10 +142,19 @@ async fn query_candidate_rows(
          SELECT g.goal_id,
                 w.tool_ids,
                 w.prompt,
-                w.hard_memory_ids
+                COALESCE(hard.ids, '{}') AS hard_memory_ids,
+                COALESCE(hard.kinds, '{}') AS hard_memory_kinds
            FROM proxima_core.goals g
            JOIN proxima_core.goal_wake_config w
              ON w.goal_id = g.goal_id
+           LEFT JOIN LATERAL (
+                SELECT array_agg(hm.memory_id ORDER BY h.ord) AS ids,
+                       array_agg(COALESCE(hm.kind, 'Fact'::proxima_core.entity_kind)::text
+                                 ORDER BY h.ord) AS kinds
+                  FROM unnest(w.hard_memory_ids) WITH ORDINALITY AS h(memory_id, ord)
+                  JOIN proxima_core.memories hm
+                    ON hm.memory_id = h.memory_id
+           ) hard ON TRUE
            JOIN read_owners goal_ro
              ON goal_ro.owner_kind = g.owner_kind
             AND goal_ro.owner_id IS NOT DISTINCT FROM g.owner_id

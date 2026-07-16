@@ -249,7 +249,13 @@ async fn w3_wake_trigger_and_context_must_be_readable() -> Result<(), Box<dyn st
         )
         .await?;
         assert_eq!(readable_context.len(), 1);
-        assert_eq!(readable_context[0].hard_memory_ids, vec![hard_memory]);
+        assert_eq!(
+            readable_context[0].hard_memories,
+            vec![proxima_core::GoalWakeHardMemory {
+                memory_id: hard_memory,
+                kind: EntityKind::Fact,
+            }]
+        );
 
         Ok::<(), Box<dyn std::error::Error>>(())
     }

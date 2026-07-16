@@ -445,10 +445,7 @@ async fn goal_wake_config_arms_and_surfaces_wake_candidates() -> TestResult {
                 candidates[0].prompt,
                 "Plan next steps from the trigger fact."
             );
-            assert_eq!(
-                candidates[0].hard_memories,
-                vec![evidence.id.into_inner().to_string()]
-            );
+            assert_eq!(candidates[0].hard_memories, vec![evidence.handle.clone()]);
             Ok(())
         })
     })
