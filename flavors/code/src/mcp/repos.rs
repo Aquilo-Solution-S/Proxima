@@ -45,7 +45,7 @@ pub struct CodeListReposOutput {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeIngestHeadSnapshotArgs {
     #[schemars(
-        description = "Repo handle returned by proxima-code_register_repo or proxima-code_list_repos, for example `R1`."
+        description = "Repo handle returned by proxima-code_register_repo or proxima-code_list_repos, for example `R:<uuid>`."
     )]
     pub repo_handle: String,
 }

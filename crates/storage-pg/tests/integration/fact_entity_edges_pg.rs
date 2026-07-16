@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit};
 use proxima_core::engine::Engine;
 use proxima_core::mcp::core_tools::list_change_events::{ListChangeEventsArgs, list_change_events};
-use proxima_core::mcp::{McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
+use proxima_core::mcp::{McpAuthorContext, McpToolCtx, McpToolExtensions};
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::change_history::ChangeHistoryRequest;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
@@ -1214,8 +1214,6 @@ async fn change_history_and_list_change_events_preserve_fact_entity_endpoints()
         let ctx = McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
-            handles: None,
-            mode: OutputMode::RawIds,
             registry: Arc::new(registry),
             author: McpAuthorContext {
                 model_id: "test".into(),
@@ -1235,7 +1233,7 @@ async fn change_history_and_list_change_events_preserve_fact_entity_endpoints()
             },
         )
         .await?;
-        let edge_id_text = edge_id.to_string();
+        let edge_id_text = format!("E:{edge_id}");
         let item = listed
             .events
             .iter()

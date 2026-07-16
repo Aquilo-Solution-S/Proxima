@@ -752,7 +752,7 @@ fn format_goal_write_output(ctx: &McpToolCtx, outcome: GoalWriteOutcome) -> Goal
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::{McpAuthorContext, McpToolExtensions, OutputMode};
+    use crate::mcp::{McpAuthorContext, McpToolExtensions};
     use crate::{AuthPath, AuthzContext, FlavorRegistry, OwnerRef, UserId};
     use std::sync::Arc;
 
@@ -761,8 +761,6 @@ mod tests {
         McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
-            handles: None,
-            mode: OutputMode::PrefixedIds,
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "m".into(),

@@ -8,7 +8,7 @@ pub use crate::migrations::NamedMigrator;
 /// imports.
 pub use proxima_core::mcp::{
     McpActionArgSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
-    McpToolErrorKind, OutputMode,
+    McpToolErrorKind,
 };
 pub use proxima_core::{
     AbstractionPayload, AuthorshipKindMask, CapabilitySet, CitationMappingPayload,

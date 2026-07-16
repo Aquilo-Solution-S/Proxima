@@ -24,8 +24,8 @@ pub use behavior::{Next, RequestBehavior, ScopeGateBehavior, TerminalDispatch, T
 pub use core_tools::list_substrate_tools::scope_permits_action;
 pub use error::{McpToolError, McpToolErrorKind};
 pub use handles::{
-    EntityKind, EntityRef, Handle, HandleTable, MemoryHandleClass, PrefixedUuidClass,
-    PrefixedUuidError, ResolveError, format_prefixed_uuid, parse_prefixed_uuid,
+    MemoryHandleClass, PrefixedUuidClass, PrefixedUuidError, format_prefixed_uuid,
+    parse_prefixed_uuid,
 };
 pub use manifest::{
     CORE_RESOURCES, CoreActionMeta, CoreResourceMeta, McpToolAnnotations, all_core_actions,
@@ -35,4 +35,4 @@ pub use names::{provider_safe_tool_name, tool_name_matches};
 pub use presentation::{McpToolCaller, McpToolPresentation};
 pub use tool::{McpActionArgSpec, McpCallFn, McpTool, McpToolDescriptor, McpToolOrigin};
 pub(crate) use tool::{prepare_flat_tool_args, validate_action_args};
-pub use types::{McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
+pub use types::{McpAuthorContext, McpToolCtx, McpToolExtensions};

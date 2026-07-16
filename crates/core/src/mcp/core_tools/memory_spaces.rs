@@ -221,7 +221,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::access::Role;
-    use crate::mcp::{McpAuthorContext, McpTool, McpToolExtensions, OutputMode};
+    use crate::mcp::{McpAuthorContext, McpTool, McpToolExtensions};
     use crate::{AuthPath, AuthzContext, FlavorRegistry, GroupId, OwnerRef, UserId};
 
     use super::*;
@@ -239,8 +239,6 @@ mod tests {
         McpToolCtx {
             owner,
             authz,
-            handles: None,
-            mode: OutputMode::PrefixedIds,
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "test".into(),

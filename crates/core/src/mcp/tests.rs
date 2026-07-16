@@ -288,8 +288,6 @@ mod manifest_tests {
         McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
-            handles: None,
-            mode: OutputMode::PrefixedIds,
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "t".into(),
@@ -323,8 +321,6 @@ mod ctx_engine_tests {
         let ctx = McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
-            handles: Some(Arc::new(HandleTable::new())),
-            mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "t".into(),
@@ -348,8 +344,6 @@ mod ctx_engine_tests {
         let ctx = McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
-            handles: Some(Arc::new(HandleTable::new())),
-            mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "t".into(),

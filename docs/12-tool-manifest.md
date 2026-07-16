@@ -183,7 +183,7 @@ MCP dispatch contract:
 | Tool scope | token capabilities intersected with deployment profile and bound-owner role |
 | Args | action-dispatch tools validate fields strictly (see Tool Schema Contract), then JSON decoded into typed args |
 | Output | serialized typed output |
-| Ids | prefixed ids (`F:/A:/P:/G:/E:` form, `OutputMode::PrefixedIds`) |
+| Ids | prefixed ids (`F:/A:/P:/G:/E:` form) — the only wire reference grammar |
 
 ## Persistence
 

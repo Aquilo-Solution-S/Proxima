@@ -1,17 +1,17 @@
-//! `core/get_memory` — wire-facing single-memory read by id or handle.
+//! `core/get_memory` — wire-facing single-memory read by prefixed id.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::MemoryHandleClass;
 use crate::engine::GetMemoryReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::{MemoryHandleClass, MemoryId};
 
 use super::memory::search::{NeighborEdge, neighbor_edges_from_rows};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetMemoryArgs {
-    /// Memory reference: `F:<uuid>`, `A:<uuid>`, `P:<uuid>`, raw uuid, or handle.
+    /// Memory reference: `F:<uuid>`, `A:<uuid>`, or `P:<uuid>`.
     pub memory: String,
     /// Include edges touching the memory. Default: false.
     #[serde(default)]
@@ -45,7 +45,7 @@ pub async fn get_memory(
     ctx: McpToolCtx,
     args: GetMemoryArgs,
 ) -> Result<GetMemoryOutput, McpToolError> {
-    let memory_id = resolve_memory_reference(&ctx, &args.memory)?;
+    let memory_id = ctx.resolve_memory(&args.memory)?;
     let output_space = args.space.unwrap_or_else(|| "entry".into());
     let engine = ctx
         .engine()
@@ -90,19 +90,6 @@ pub async fn get_memory(
         tags,
         neighbor_edges,
     })
-}
-
-/// Resolve a memory reference accepting a prefixed id (`F:…`), a handle, or a
-/// bare uuid. The bare-uuid fallback serves the prefixed-id / raw-id wire
-/// surfaces; the engine resolves the entry owner from storage before reading.
-fn resolve_memory_reference(ctx: &McpToolCtx, raw: &str) -> Result<MemoryId, McpToolError> {
-    match ctx.resolve_memory(raw) {
-        Ok(memory_id) => Ok(memory_id),
-        Err(resolve_err) => raw
-            .parse::<uuid::Uuid>()
-            .map(MemoryId::new)
-            .map_err(|_| resolve_err),
-    }
 }
 
 pub(super) fn snapshot_payload_value(

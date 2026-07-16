@@ -152,8 +152,8 @@ mod tests {
     use super::*;
     use crate::protocol::tool as protocol_tool;
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, McpAuthorContext, McpToolExtensions, OutputMode,
-        OwnerRef, ToolScope, UserId,
+        AuthPath, AuthzContext, FlavorRegistry, McpAuthorContext, McpToolExtensions, OwnerRef,
+        ToolScope, UserId,
     };
 
     #[derive(Debug)]
@@ -304,8 +304,6 @@ mod tests {
         McpToolCtx {
             owner,
             authz,
-            handles: None,
-            mode: OutputMode::PrefixedIds,
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "test".into(),

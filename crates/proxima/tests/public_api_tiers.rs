@@ -39,11 +39,10 @@ fn flavor_sdk_exposes_mcp_tool_authoring_surface() {
     // authors never import `proxima_core::mcp` directly.
     use proxima::flavor::{
         McpActionArgSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
-        McpToolErrorKind, OutputMode,
+        McpToolErrorKind,
     };
     fn _needs_mcp_tool<T: McpTool>() {}
     let _ = McpToolErrorKind::Internal;
-    let _ = OutputMode::Handles;
     // Name the remaining re-exports as types so an accidental removal fails.
     let _: &[McpActionArgSpec] = &[];
     let _: Option<(

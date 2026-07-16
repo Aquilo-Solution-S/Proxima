@@ -16,10 +16,8 @@ use crate::read_models::GoalWakeCandidate;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListWakeCandidatesArgs {
-    /// Trigger Fact reference in this session's output form — `F:<uuid>` in
-    /// prefixed-id sessions, a Fact handle in handle sessions — exactly as
-    /// emitted by `proxima://change-events`. Non-Fact references are
-    /// rejected at parse.
+    /// Trigger Fact reference (`F:<uuid>`), exactly as emitted by
+    /// `proxima://change-events`. Non-Fact references are rejected at parse.
     pub fact: String,
     /// Max candidates; clamped to 1..=200, default 50.
     pub limit: Option<u32>,
@@ -38,8 +36,8 @@ pub struct WakeCandidateItem {
     pub prompt: String,
     /// Configured wake toolset; already narrowed to the caller's tool scope.
     pub tool_ids: Vec<String>,
-    /// Pinned wake-context memory references in this session's output form
-    /// (`F:`/`A:`/`P:`); hydrate via `proxima://memory/{id}`.
+    /// Pinned wake-context memory references (`F:`/`A:`/`P:` prefixed ids);
+    /// hydrate via `proxima://memory/{id}`.
     pub hard_memories: Vec<String>,
     /// Owner keys (`personal:<uuid>`/`group:<uuid>`) the caller may write to.
     pub actor_write_owners: Vec<String>,

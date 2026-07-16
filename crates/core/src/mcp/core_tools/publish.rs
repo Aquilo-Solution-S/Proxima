@@ -28,8 +28,8 @@ pub enum CorePublishArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PublishToWorldArgs {
-    /// Memory or Goal reference: `F:<uuid>`, `A:<uuid>`, `P:<uuid>`, `G:<uuid>`,
-    /// raw uuid, or handle. The current owner (looked up from storage, not
+    /// Memory or Goal reference: `F:<uuid>`, `A:<uuid>`, `P:<uuid>`, or
+    /// `G:<uuid>`. The current owner (looked up from storage, not
     /// trusted from the caller) must grant the caller write/manage
     /// (`Relation::Admin`) authority.
     pub entity: String,

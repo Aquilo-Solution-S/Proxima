@@ -1,15 +1,11 @@
 use crate::ToolError;
 
-use super::handles::ResolveError;
-
 #[derive(Debug, thiserror::Error)]
 pub enum McpToolError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
     #[error("tool not authorized: {0}")]
     NotAuthorized(String),
-    #[error("{0}")]
-    Resolve(ResolveError),
     #[error("{0}")]
     Protocol(#[from] crate::error::ProtocolError),
     #[error("layering violation: {0}")]
@@ -37,7 +33,7 @@ impl McpToolError {
     #[must_use]
     pub fn kind(&self) -> McpToolErrorKind {
         match self {
-            Self::InvalidInput(_) | Self::Resolve(_) => McpToolErrorKind::InvalidInput,
+            Self::InvalidInput(_) => McpToolErrorKind::InvalidInput,
             Self::NotAuthorized(_) | Self::LayeringViolation(_) | Self::Unavailable(_) => {
                 McpToolErrorKind::InvalidRequest
             }
@@ -82,12 +78,6 @@ impl McpToolError {
             McpToolErrorKind::InvalidInput | McpToolErrorKind::InvalidRequest => self.to_string(),
             McpToolErrorKind::Internal => "internal server error".to_string(),
         }
-    }
-}
-
-impl From<ResolveError> for McpToolError {
-    fn from(e: ResolveError) -> Self {
-        McpToolError::Resolve(e)
     }
 }
 

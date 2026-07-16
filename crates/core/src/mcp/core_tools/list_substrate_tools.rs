@@ -133,7 +133,7 @@ pub fn scope_permits_action(scope: &crate::authz::ToolScope, tool: &str, action:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::{McpAuthorContext, McpToolExtensions, OutputMode};
+    use crate::mcp::{McpAuthorContext, McpToolExtensions};
     use crate::protocol::{action as protocol_action, tool as protocol_tool};
     use crate::{AuthPath, AuthzContext, FlavorRegistry, OwnerRef, UserId};
     use std::sync::Arc;
@@ -158,8 +158,6 @@ mod tests {
         let ctx = McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
-            handles: None,
-            mode: OutputMode::PrefixedIds,
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "test".into(),

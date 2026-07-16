@@ -9,7 +9,7 @@ use crate::mcp::{McpToolCtx, McpToolError};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CitationOfFactArgs {
-    /// Fact memory reference in the ctx output mode: `F:<uuid>`, raw uuid, or handle.
+    /// Fact memory reference: `F:<uuid>`.
     pub fact: String,
 }
 

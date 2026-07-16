@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use proxima_core::mcp::{HandleTable, McpToolCaller, McpToolPresentation, OutputMode};
+use proxima_core::mcp::{
+    McpToolCaller, McpToolPresentation, PrefixedUuidClass, format_prefixed_uuid,
+};
 use proxima_core::{
     AuthPath, AuthzContext, FlavorRegistry, GroupId, MemoryId, OwnerRef, ToolCtx, ToolServices,
     UserId,
@@ -33,10 +35,10 @@ fn execution_plan_memory_id_golden_is_org_free() {
     );
 }
 
-fn test_ctx(handles: Arc<HandleTable>) -> ToolCtx {
+fn test_ctx() -> ToolCtx {
     let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
     let mut services = ToolServices::new();
-    services.insert(McpToolPresentation::new(Some(handles), OutputMode::Handles));
+    services.insert(McpToolPresentation::new());
     services.insert(McpToolCaller::new("test/model".into()));
     ToolCtx::new(
         owner,
@@ -47,26 +49,21 @@ fn test_ctx(handles: Arc<HandleTable>) -> ToolCtx {
 }
 
 #[tokio::test]
-async fn execution_request_evidence_accepts_only_fact_handles() {
-    let handles = Arc::new(HandleTable::new());
+async fn execution_request_evidence_accepts_only_fact_references() {
     let fact = MemoryId::new(Uuid::now_v7());
     let abstraction = MemoryId::new(Uuid::now_v7());
-    let fact_handle = handles.assign_fact_memory(fact).as_str().to_string();
-    let abstraction_handle = handles
-        .assign_abstraction_memory(abstraction)
-        .as_str()
-        .to_string();
-    let ctx = test_ctx(handles);
+    let fact_handle = format_prefixed_uuid(fact.into_inner(), PrefixedUuidClass::Fact);
+    let abstraction_handle =
+        format_prefixed_uuid(abstraction.into_inner(), PrefixedUuidClass::Abstraction);
+    let ctx = test_ctx();
 
     assert_eq!(
         resolve_evidence(&ctx, &[fact_handle]).expect("fact evidence"),
         vec![fact]
     );
-    let err = resolve_evidence(&ctx, &[abstraction_handle]).expect_err("A handle rejected");
-    assert!(
-        err.to_string().contains("expected Fact memory handle"),
-        "{err}"
-    );
+    let err = resolve_evidence(&ctx, &[abstraction_handle]).expect_err("A reference rejected");
+    assert!(err.to_string().contains("expected Fact id"), "{err}");
+    assert!(err.to_string().contains("got prefix 'A'"), "{err}");
 }
 
 fn criterion(key: &str, required: bool) -> AcceptanceCriterionV1 {

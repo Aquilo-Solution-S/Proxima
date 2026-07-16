@@ -14,9 +14,7 @@ use proxima_code::{
     CodeChunkV1, CodeFlavorStore, CommitV1, ExecutionRequestV1, FileRevisionV1, FileState,
 };
 use proxima_core::engine::Engine;
-use proxima_core::mcp::{
-    HandleTable, McpAuthorContext, McpTool, McpToolCtx, McpToolError, McpToolExtensions, OutputMode,
-};
+use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError, McpToolExtensions};
 use proxima_core::verbs::fact_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
@@ -51,7 +49,10 @@ async fn register_repo_tool_registers_local_git_repo_idempotently()
     .await?;
 
     assert_eq!(result["created"], true);
-    assert_eq!(result["repo"]["repo_handle"], "R1");
+    assert_eq!(
+        result["repo"]["repo_handle"].as_str().expect("repo_handle"),
+        format!("R:{}", result["repo"]["repo_id"].as_str().expect("repo_id"))
+    );
     assert_eq!(result["repo"]["display_name"], "Proxima Dogfood");
     assert_eq!(
         result["repo"]["canonical_path"].as_str(),
@@ -613,7 +614,10 @@ async fn open_file_revision_accepts_unambiguous_repo_display_name()
     .await?;
 
     assert_eq!(result["revision"]["indexed_commit_sha"], "v1");
-    assert_eq!(result["revision"]["repo_handle"], "R1");
+    assert_eq!(
+        result["revision"]["repo_handle"].as_str().expect("handle"),
+        format!("R:{repo_id}")
+    );
     Ok(())
 }
 
@@ -920,8 +924,6 @@ fn ctx(pg: PgStorage, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpT
     McpToolCtx {
         owner,
         authz,
-        handles: Some(Arc::new(HandleTable::new())),
-        mode: OutputMode::Handles,
         registry,
         author: McpAuthorContext {
             model_id: "test/0".into(),
@@ -935,9 +937,8 @@ fn ctx(pg: PgStorage, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpT
     }
 }
 
-/// Shell-author context: `PrefixedIds` wire ids, no handle table, and a
-/// `caller_self_perspective` — the shape `McpToolHost` builds for
-/// `code_retry_execution_request` callers.
+/// Shell-author context: carries a `caller_self_perspective` — the shape
+/// `McpToolHost` builds for `code_retry_execution_request` callers.
 fn shell_ctx(
     pg: PgStorage,
     owner: Owner,
@@ -950,8 +951,6 @@ fn shell_ctx(
     McpToolCtx {
         owner,
         authz,
-        handles: None,
-        mode: OutputMode::PrefixedIds,
         registry,
         author: McpAuthorContext {
             model_id: "test/0".into(),

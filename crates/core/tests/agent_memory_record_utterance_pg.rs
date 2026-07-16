@@ -4,7 +4,7 @@ mod common;
 
 use common::{ConstantEmbedding, drop_db, fresh_pg};
 use proxima_core::engine::Engine;
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
+use proxima_core::mcp::{McpAuthorContext, McpToolCtx, McpToolExtensions};
 use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, Owner, OwnerRef, UserId};
 use serde_json::json;
 use sqlx::Row;
@@ -33,8 +33,6 @@ async fn record_utterance_persists_sidecar_and_embedding_job()
         McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
-            handles: Some(Arc::new(HandleTable::new())),
-            mode: OutputMode::Handles,
             registry: frozen,
             author: McpAuthorContext {
                 model_id: "codex-test".into(),
@@ -56,7 +54,7 @@ async fn record_utterance_persists_sidecar_and_embedding_job()
     .await?;
     assert_eq!(output["idempotent_replay"], json!(false));
     let handle = output["handle"].as_str().expect("handle");
-    assert!(handle.starts_with('F'));
+    assert!(handle.starts_with("F:"), "expected F:<uuid>, got {handle}");
 
     let row = sqlx::query(
         r"SELECT u.speaker, u.conversation_id, u.text
