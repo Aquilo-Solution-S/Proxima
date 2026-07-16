@@ -7,6 +7,7 @@ pub const USAGE: &str = "\
 Usage:
   proxima-mcp [serve] [OPTIONS]
   proxima-mcp maintain-embeddings [OPTIONS]
+  proxima-mcp maintain-retention [OPTIONS]
 
 Proxima Streamable HTTP MCP server.
 
@@ -54,6 +55,9 @@ Maintenance:
   maintain-embeddings      One self-healing pass: orphan sweep, reconcile
                            enqueue, optional inline drain, health report.
                            Cron-safe (skips if another pass holds the lock)
+  maintain-retention       One retention pass: tombstone Facts past their
+                           owner's retention window and/or prune old
+                           change_event rows. Cron-safe; legal holds skip
 
 Endpoint:
   http://127.0.0.1:31415/mcp
@@ -91,6 +95,36 @@ Optional:
   --since <RFC3339>        Only scan memories created at/after the timestamp
   --limit <N>              Maximum memories to scan
   --drain                  Process queued jobs inline with the Mistral embedding client
+  -h, --help               Print this message
+";
+
+pub const RETENTION_USAGE: &str = "\
+Usage: proxima-mcp maintain-retention [OPTIONS]
+
+One retention pass over owner-scoped data. Passes are serialized by a
+Postgres advisory lock; when another pass holds it, this run prints a
+skip notice and exits 0 — safe to fire from cron. Every owner is
+processed under its legal-hold gate: owners with an active legal/security
+hold are skipped and reported.
+
+At least one action flag is required — there are deliberately no
+destruction defaults.
+
+Actions (at least one):
+  --enforce-fact-retention Tombstone Facts older than their owner's
+                           configured retention window. Owners without a
+                           configured window are untouched; MCP-call audit
+                           Facts are never aged out (indefinite controller
+                           evidence)
+  --prune-change-events-older-than <DURATION>
+                           Delete change_event rows older than the horizon
+                           (e.g. 90d, 36h, 45m, 3600s)
+
+Optional:
+  --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxima_dev)
+  --batch-size <N>         Rows per transaction (default 1000)
+  --dry-run                Report what would be tombstoned/pruned without
+                           changing anything
   -h, --help               Print this message
 ";
 
@@ -135,6 +169,30 @@ pub enum ReconcileScope {
     MissingOnly,
     IncludeStale,
     Since(time::OffsetDateTime),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct RetentionConfig {
+    pub database_url: String,
+    pub enforce_fact_retention: bool,
+    pub prune_change_events_older_than_seconds: Option<i64>,
+    pub batch_size: i64,
+    pub dry_run: bool,
+}
+
+impl std::fmt::Debug for RetentionConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RetentionConfig")
+            .field("database_url", &"<redacted>")
+            .field("enforce_fact_retention", &self.enforce_fact_retention)
+            .field(
+                "prune_change_events_older_than_seconds",
+                &self.prune_change_events_older_than_seconds,
+            )
+            .field("batch_size", &self.batch_size)
+            .field("dry_run", &self.dry_run)
+            .finish()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -260,6 +318,103 @@ pub fn parse_maintain_args<I: IntoIterator<Item = String>>(
     })
 }
 
+/// # Errors
+///
+/// Returns `ArgsError` for help, unknown flags, missing values, an invalid
+/// duration or batch size, or when no action flag is given — destruction
+/// must be an explicit operator choice, so there is no default action.
+pub fn parse_retention_args<I: IntoIterator<Item = String>>(
+    args: I,
+) -> Result<RetentionConfig, ArgsError> {
+    let mut database_url: Option<String> = None;
+    let mut enforce_fact_retention = false;
+    let mut prune_older_than: Option<i64> = None;
+    let mut batch_size: i64 = 1000;
+    let mut dry_run = false;
+
+    let mut iter = args.into_iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "-h" | "--help" => return Err(ArgsError::Help),
+            "--enforce-fact-retention" => enforce_fact_retention = true,
+            "--dry-run" => dry_run = true,
+            f => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| ArgsError::Invalid(format!("flag {f} expects a value")))?;
+                match f {
+                    "--database-url" => database_url = Some(value),
+                    "--prune-change-events-older-than" => {
+                        let seconds = parse_duration_seconds(&value).map_err(|err| {
+                            ArgsError::Invalid(format!(
+                                "invalid --prune-change-events-older-than {value:?}: {err}"
+                            ))
+                        })?;
+                        prune_older_than = Some(seconds);
+                    }
+                    "--batch-size" => {
+                        let parsed: i64 = value.parse().map_err(|err| {
+                            ArgsError::Invalid(format!("invalid --batch-size {value:?}: {err}"))
+                        })?;
+                        if parsed < 1 {
+                            return Err(ArgsError::Invalid("--batch-size must be positive".into()));
+                        }
+                        batch_size = parsed;
+                    }
+                    other => return Err(ArgsError::Invalid(format!("unknown flag: {other}"))),
+                }
+            }
+        }
+    }
+
+    if !enforce_fact_retention && prune_older_than.is_none() {
+        return Err(ArgsError::Invalid(
+            "maintain-retention requires at least one action: --enforce-fact-retention \
+             and/or --prune-change-events-older-than <DURATION>"
+                .into(),
+        ));
+    }
+
+    let database_url = database_url.unwrap_or_else(|| {
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
+    });
+
+    Ok(RetentionConfig {
+        database_url,
+        enforce_fact_retention,
+        prune_change_events_older_than_seconds: prune_older_than,
+        batch_size,
+        dry_run,
+    })
+}
+
+/// Parse an explicit-unit duration (`3600s`, `45m`, `36h`, `90d`, `12w`)
+/// into seconds. A bare number is rejected on purpose: the value feeds a
+/// destruction horizon, so the unit must be spelled out.
+fn parse_duration_seconds(raw: &str) -> Result<i64, String> {
+    let Some(unit) = raw.chars().last() else {
+        return Err("empty duration".into());
+    };
+    let multiplier: i64 = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 3_600,
+        'd' => 86_400,
+        'w' => 604_800,
+        _ => return Err("duration needs a unit suffix: s, m, h, d, or w".into()),
+    };
+    let digits = &raw[..raw.len() - unit.len_utf8()];
+    let value: i64 = digits
+        .parse()
+        .map_err(|err| format!("invalid duration value {digits:?}: {err}"))?;
+    if value < 1 {
+        return Err("duration must be positive".into());
+    }
+    value
+        .checked_mul(multiplier)
+        .ok_or_else(|| "duration overflows".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,5 +479,89 @@ mod tests {
         let cfg = parse_maintain_args(["--since".into(), "2026-06-16T10:00:00Z".into()])
             .expect("valid args");
         assert!(matches!(cfg.scope, ReconcileScope::Since(_)));
+    }
+
+    #[test]
+    fn retention_help_flag_returns_help() {
+        let err = parse_retention_args(["--help".to_string()]).expect_err("help");
+        assert!(err.is_help());
+    }
+
+    #[test]
+    fn retention_requires_an_action_flag() {
+        let err = parse_retention_args(["--dry-run".to_string()]).expect_err("no action");
+        assert!(err.to_string().contains("at least one action"));
+    }
+
+    #[test]
+    fn retention_full_args_parse() {
+        let cfg = parse_retention_args([
+            "--database-url".into(),
+            "postgres://x/y".into(),
+            "--enforce-fact-retention".into(),
+            "--prune-change-events-older-than".into(),
+            "90d".into(),
+            "--batch-size".into(),
+            "250".into(),
+            "--dry-run".into(),
+        ])
+        .expect("valid args");
+        assert_eq!(cfg.database_url, "postgres://x/y");
+        assert!(cfg.enforce_fact_retention);
+        assert_eq!(
+            cfg.prune_change_events_older_than_seconds,
+            Some(90 * 86_400)
+        );
+        assert_eq!(cfg.batch_size, 250);
+        assert!(cfg.dry_run);
+    }
+
+    #[test]
+    fn retention_single_action_is_enough() {
+        let cfg = parse_retention_args(["--enforce-fact-retention".to_string()])
+            .expect("enforce alone is a valid pass");
+        assert!(cfg.enforce_fact_retention);
+        assert_eq!(cfg.prune_change_events_older_than_seconds, None);
+        assert_eq!(cfg.batch_size, 1000);
+        assert!(!cfg.dry_run);
+    }
+
+    #[test]
+    fn retention_duration_units_parse() {
+        for (raw, seconds) in [
+            ("3600s", 3_600),
+            ("45m", 45 * 60),
+            ("36h", 36 * 3_600),
+            ("90d", 90 * 86_400),
+            ("2w", 2 * 604_800),
+        ] {
+            let cfg = parse_retention_args(["--prune-change-events-older-than".into(), raw.into()])
+                .expect("valid duration");
+            assert_eq!(
+                cfg.prune_change_events_older_than_seconds,
+                Some(seconds),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn retention_duration_rejects_bare_number_zero_and_junk() {
+        for raw in ["90", "0d", "-3h", "", "d", "1.5h", "90x"] {
+            let err = parse_retention_args(["--prune-change-events-older-than".into(), raw.into()])
+                .expect_err(raw);
+            assert!(err.to_string().contains("invalid"), "{raw}: {err}");
+        }
+    }
+
+    #[test]
+    fn retention_batch_size_must_be_positive() {
+        let err = parse_retention_args([
+            "--enforce-fact-retention".into(),
+            "--batch-size".into(),
+            "0".into(),
+        ])
+        .expect_err("zero batch");
+        assert!(err.to_string().contains("--batch-size must be positive"));
     }
 }

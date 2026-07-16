@@ -259,6 +259,18 @@ carries a server-generated UUIDv7 `seq` that doubles as the cursor.
 There is no push transport, no ack protocol, and no per-client server
 cursor state — clients poll.
 
+The log is bounded operationally, not structurally: the operator may
+prune rows older than an explicit age horizon via `proxima-mcp
+maintain-retention` (see [13 §Retention
+enforcement](13-compliance.md#retention-enforcement--maintain-retention-pass)).
+A forward poller whose persisted `since` cursor predates the prune
+horizon silently misses the pruned events — the poll surface does not
+detect the gap. Deployments that prune must pick a horizon comfortably
+larger than their slowest consumer's lag, or have lagging consumers
+re-baseline via the cold-start stitching below. Retention tombstoning
+also writes to this log: a Fact aged out by the owner's retention window
+appears as an `EntityDelete` event.
+
 Forward poll (events after a cursor):
 
 ```

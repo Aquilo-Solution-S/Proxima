@@ -189,6 +189,29 @@ cron fires are harmless by construction. `--drain` processes queued jobs
 inline with the same Mistral client and therefore requires
 `MISTRAL_API_KEY`; it is not required for steady-state draining.
 
+Retention maintenance follows the same doctrine — one idempotent,
+cron-safe command, serialized by its own advisory lock, with no
+in-process scheduler:
+
+```sh
+proxima-mcp maintain-retention --enforce-fact-retention \
+    --prune-change-events-older-than 90d
+```
+
+`--enforce-fact-retention` tombstones Facts older than their owner's
+configured retention window (owners without a window are untouched;
+MCP-call audit Facts are never aged out).
+`--prune-change-events-older-than <DURATION>` deletes `change_event`
+rows older than the horizon (`3600s`, `45m`, `36h`, `90d`, `2w`). At
+least one action flag is required and there is deliberately no default
+horizon — destruction is always an explicit operator choice. Owners
+under an active legal/security hold are skipped and reported.
+`--dry-run` prints per-owner would-be counts without changing anything.
+See [13 §Retention
+enforcement](13-compliance.md#retention-enforcement--maintain-retention-pass)
+for the compliance contract, including the forward-poller cursor-gap
+caveat when choosing a prune horizon.
+
 `EmbedCaps { dim, matryoshka }` and `LlmCaps { tool_use, json_mode,
 long_context, vision }` remain core vocabulary types but are not a
 runtime-config surface here.

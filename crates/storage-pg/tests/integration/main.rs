@@ -40,6 +40,7 @@ mod persist_mcp_call;
 mod query_perf_pg;
 mod query_pg;
 mod read_mcp_call_history_pg;
+mod retention_maintenance_pg;
 mod search_pg;
 mod sidecar_macro_pg;
 mod source_cursor_pg;
