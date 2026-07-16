@@ -18,6 +18,7 @@ impl Engine {
         Self {
             registry,
             storage: EngineStoragePorts::from(StoragePorts::rejecting()),
+            deployment_tool_scope: crate::authz::ToolScope::All,
             anthropic: None,
             embed: Arc::new(RwLock::new(None)),
             embedding_reloader: None,
@@ -89,6 +90,24 @@ impl Engine {
     pub fn with_storage_ports(mut self, storage: StoragePorts) -> Self {
         self.storage = EngineStoragePorts::from(storage);
         self
+    }
+
+    /// Deployment tool-surface profile enforced at engine chokepoints that
+    /// consume tool scope (currently wake-candidate admission). Transport
+    /// hosts additionally intersect this into per-caller `AuthzContext`
+    /// scope; setting it here keeps Host-API callers inside the same
+    /// deployment surface even when their `AuthzContext` carries
+    /// `ToolScope::All`. Defaults to `ToolScope::All`.
+    #[must_use]
+    pub fn with_deployment_tool_scope(mut self, scope: crate::authz::ToolScope) -> Self {
+        self.deployment_tool_scope = scope;
+        self
+    }
+
+    /// The composed deployment tool-surface profile.
+    #[must_use]
+    pub fn deployment_tool_scope(&self) -> &crate::authz::ToolScope {
+        &self.deployment_tool_scope
     }
 
     #[must_use]

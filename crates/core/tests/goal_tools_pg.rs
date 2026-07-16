@@ -545,6 +545,48 @@ async fn pull_wake_candidates(
 }
 
 #[tokio::test]
+async fn wake_admission_enforces_engine_deployment_tool_scope() -> TestResult {
+    with_harness(|harness| {
+        Box::pin(async move {
+            let (_evidence, _trigger_id, trigger_handle, armed) =
+                arm_wake_goal(harness, "goal-wake-deployment-scope").await?;
+
+            // Same storage, same caller (authz tool scope = All), but an
+            // engine composed with a deployment palette that excludes the
+            // armed toolset: admission must come back empty.
+            let denying_engine = Arc::new(
+                Engine::new((*harness.registry).clone())
+                    .with_storage_ports(Arc::new(harness.pg.clone()).storage_ports())
+                    .with_deployment_tool_scope(proxima_core::ToolScope::Palette(vec![
+                        "core_goal:set".to_string(),
+                    ])),
+            );
+            let mut denied_ctx = harness.ctx();
+            denied_ctx.engine = Some(denying_engine);
+            let denied = list_wake_candidates(
+                denied_ctx,
+                ListWakeCandidatesArgs {
+                    fact: trigger_handle.clone(),
+                    limit: None,
+                },
+            )
+            .await?;
+            assert!(
+                denied.candidates.is_empty(),
+                "deployment palette without the armed toolset must deny admission",
+            );
+
+            // The default-All harness engine still admits the goal.
+            let admitted = pull_wake_candidates(harness, &trigger_handle).await?;
+            assert_eq!(admitted.len(), 1);
+            assert_eq!(admitted[0].goal, armed.handle);
+            Ok(())
+        })
+    })
+    .await
+}
+
+#[tokio::test]
 async fn goal_wake_and_clear_wake_are_mutually_exclusive() -> TestResult {
     with_harness(|harness| {
         Box::pin(async move {

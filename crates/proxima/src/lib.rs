@@ -142,6 +142,7 @@ pub struct ProximaBuilder {
     skip_migrations: bool,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
     anthropic: Option<Arc<dyn AnthropicClient>>,
+    deployment_tool_scope: Option<proxima_core::ToolScope>,
 }
 
 impl std::fmt::Debug for ProximaBuilder {
@@ -155,6 +156,7 @@ impl std::fmt::Debug for ProximaBuilder {
             .field("skip_migrations", &self.skip_migrations)
             .field("has_embed_client", &self.embed_client.is_some())
             .field("has_anthropic", &self.anthropic.is_some())
+            .field("deployment_tool_scope", &self.deployment_tool_scope)
             .finish()
     }
 }
@@ -212,6 +214,7 @@ impl ProximaBuilder {
             skip_migrations: false,
             embed_client: None,
             anthropic: None,
+            deployment_tool_scope: None,
         }
     }
 
@@ -294,6 +297,17 @@ impl ProximaBuilder {
         self
     }
 
+    /// Deployment tool-surface profile passthrough
+    /// (`Engine::with_deployment_tool_scope`). The runtime facade forwards
+    /// its required `tool_scope` here so engine chokepoints enforce the
+    /// deployment surface even for Host-API callers whose `AuthzContext`
+    /// carries `ToolScope::All`.
+    #[must_use]
+    pub fn deployment_tool_scope(mut self, scope: proxima_core::ToolScope) -> Self {
+        self.deployment_tool_scope = Some(scope);
+        self
+    }
+
     /// Connect, migrate, compose, and start the embedded engine.
     ///
     /// # Errors
@@ -312,6 +326,7 @@ impl ProximaBuilder {
             skip_migrations,
             embed_client,
             anthropic,
+            deployment_tool_scope,
         } = self;
 
         let pg = PgStorage::connect(&config.database_url)
@@ -355,6 +370,9 @@ impl ProximaBuilder {
 
         let mut engine =
             Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
+        if let Some(scope) = deployment_tool_scope {
+            engine = engine.with_deployment_tool_scope(scope);
+        }
         if let Some(store) = &blobs {
             // In-band Art. 17 owner erasure: register the blob backend so
             // owner-scope compliance erase purges the owner's S3 objects
