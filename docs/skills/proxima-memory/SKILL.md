@@ -68,6 +68,7 @@ is for the rarer case of one Abstraction/Perspective pointing at other memories.
 | **Relate / connect memories** | derive an Abstraction/Perspective over them — **NOT** `core_link` between Facts |
 | Set an intent / objective to pursue | `core_goal` actions `set` / `decompose` |
 | Find prior knowledge | `core_search_memories` (hybrid default) -> read `proxima://memory/{id}?expand_neighbors=true` |
+| Precision recall / big result sets | `core_search_memories` with `min_score` (drop weak hits), `semantic_weight` (retune hybrid fusion), and `cursor`=last `next_cursor` (page past the 50 cap) |
 
 A generalization stored as a Fact flattens the hierarchy and loses its
 grounding — derive it instead.

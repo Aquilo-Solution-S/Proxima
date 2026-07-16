@@ -3,7 +3,8 @@ use proxima_core::storage_ports::*;
 
 use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::query::{
-    EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
+    EntityKind, MemorySearchRequest, SearchCursor, SearchMode, SearchOrder, SupersessionStatus,
+    TagMatch,
 };
 use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
@@ -43,12 +44,16 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
                 since: None,
                 until: None,
                 order: SearchOrder::Relevance,
+                min_score: None,
+                semantic_weight: None,
+                after: None,
                 query_embedding: Some(padded_embedding([1.0, 0.0, 0.0])),
                 embedding_model_id: Some("test-embed".into()),
             },
             &[],
         )
-        .await?;
+        .await?
+        .results;
 
     assert_eq!(
         rows.first().map(|row| row.memory_id.into_inner()),
@@ -110,12 +115,16 @@ async fn search_heads_only_ignores_cross_owner_supersedes_successor()
                 since: None,
                 until: None,
                 order: SearchOrder::Relevance,
+                min_score: None,
+                semantic_weight: None,
+                after: None,
                 query_embedding: None,
                 embedding_model_id: None,
             },
             &[],
         )
-        .await?;
+        .await?
+        .results;
     let ids = rows
         .iter()
         .map(|row| row.memory_id.into_inner())
@@ -173,7 +182,8 @@ async fn semantic_search_matches_pgvector_cosine_and_clamps_zero_query()
 
     let rows = pg
         .search_memories(&semantic_request(&owner, query_vec.clone()), &[])
-        .await?;
+        .await?
+        .results;
 
     let mut expected = [
         (east, brute_cosine(&east_vec, &query_vec)),
@@ -199,7 +209,8 @@ async fn semantic_search_matches_pgvector_cosine_and_clamps_zero_query()
 
     let zero_rows = pg
         .search_memories(&semantic_request(&owner, vec![0.0; EMBEDDING_DIM]), &[])
-        .await?;
+        .await?
+        .results;
     assert!(
         zero_rows
             .iter()
@@ -237,7 +248,8 @@ async fn semantic_search_uses_current_embedding_head() -> Result<(), Box<dyn std
 
     let rows = pg
         .search_memories(&semantic_request(&owner, current_near), &[])
-        .await?;
+        .await?
+        .results;
 
     assert_eq!(
         rows.first().map(|row| row.memory_id.into_inner()),
@@ -297,7 +309,7 @@ async fn semantic_search_filters_current_and_authorized_before_candidate_limit()
 
     let mut req = semantic_request(&owner, query);
     req.limit = 1;
-    let rows = pg.search_memories(&req, &[]).await?;
+    let rows = pg.search_memories(&req, &[]).await?.results;
 
     assert_eq!(
         rows.first().map(|row| row.memory_id.into_inner()),
@@ -335,7 +347,7 @@ async fn semantic_search_filters_query_predicates_before_candidate_limit()
 
     let mut req = semantic_request(&owner, query);
     req.limit = 1;
-    let rows = pg.search_memories(&req, &[]).await?;
+    let rows = pg.search_memories(&req, &[]).await?.results;
 
     assert_eq!(
         rows.first().map(|row| row.memory_id.into_inner()),
@@ -385,12 +397,14 @@ async fn lexical_search_ignores_unprojected_code_chunk_text()
     let projections = vec![code_chunk_projection()];
     let rows = pg
         .search_memories(&lexical_request(&owner, "rawonlyneedle"), &projections)
-        .await?;
+        .await?
+        .results;
     assert!(rows.is_empty(), "{rows:#?}");
 
     let rows = pg
         .search_memories(&lexical_request(&owner, "src search"), &projections)
-        .await?;
+        .await?
+        .results;
     assert_eq!(rows.first().map(|row| row.memory_id), Some(chunk_id));
     assert!(!rows[0].snippet.contains("rawonlyneedle"));
 
@@ -427,7 +441,8 @@ async fn lexical_search_ignores_sidecar_without_projection()
 
     let rows = pg
         .search_memories(&lexical_request(&owner, "hidden payload"), &[])
-        .await?;
+        .await?
+        .results;
     assert!(rows.is_empty(), "{rows:#?}");
 
     drop(pg);
@@ -490,7 +505,7 @@ async fn search_filters_tags_across_modes_and_excludes_untagged()
     any_req.schema_id = None;
     any_req.tags = vec!["blue".into(), "focus".into()];
     any_req.tag_match = TagMatch::Any;
-    let rows = pg.search_memories(&any_req, &projections).await?;
+    let rows = pg.search_memories(&any_req, &projections).await?.results;
     let ids: Vec<_> = rows.iter().map(|row| row.memory_id).collect();
     assert!(ids.contains(&target), "{rows:#?}");
     assert!(ids.contains(&blue_only), "{rows:#?}");
@@ -504,7 +519,7 @@ async fn search_filters_tags_across_modes_and_excludes_untagged()
     all_req.schema_id = None;
     all_req.tags = vec!["blue".into(), "focus".into()];
     all_req.tag_match = TagMatch::All;
-    let rows = pg.search_memories(&all_req, &projections).await?;
+    let rows = pg.search_memories(&all_req, &projections).await?.results;
     assert_eq!(
         rows.iter().map(|row| row.memory_id).collect::<Vec<_>>(),
         vec![target]
@@ -515,7 +530,10 @@ async fn search_filters_tags_across_modes_and_excludes_untagged()
     semantic_req.tags = vec!["focus".into()];
     semantic_req.query_embedding = Some(padded_embedding([1.0, 0.0, 0.0]));
     semantic_req.embedding_model_id = Some("test-embed".into());
-    let rows = pg.search_memories(&semantic_req, &projections).await?;
+    let rows = pg
+        .search_memories(&semantic_req, &projections)
+        .await?
+        .results;
     assert_eq!(rows.first().map(|row| row.memory_id), Some(target));
 
     let mut hybrid_req = tagged_search_request(&owner, "semantic query", SearchMode::Hybrid);
@@ -523,7 +541,7 @@ async fn search_filters_tags_across_modes_and_excludes_untagged()
     hybrid_req.tags = vec!["focus".into()];
     hybrid_req.query_embedding = Some(padded_embedding([1.0, 0.0, 0.0]));
     hybrid_req.embedding_model_id = Some("test-embed".into());
-    let rows = pg.search_memories(&hybrid_req, &projections).await?;
+    let rows = pg.search_memories(&hybrid_req, &projections).await?.results;
     assert_eq!(rows.first().map(|row| row.memory_id), Some(target));
 
     drop(pg);
@@ -585,7 +603,8 @@ async fn search_filters_created_at_range_and_populates_created_at()
     req.until = Some(base + time::Duration::hours(1));
     let rows = pg
         .search_memories(&req, &[tagged_abstraction_projection()])
-        .await?;
+        .await?
+        .results;
 
     assert_eq!(
         rows.iter().map(|row| row.memory_id).collect::<Vec<_>>(),
@@ -640,7 +659,8 @@ async fn search_order_recency_sorts_matching_candidates_newest_first()
     let relevance_req = tagged_search_request(&owner, "recency ordering", SearchMode::Lexical);
     let rows = pg
         .search_memories(&relevance_req, std::slice::from_ref(&projection))
-        .await?;
+        .await?
+        .results;
     assert_eq!(
         rows.iter().map(|row| row.memory_id).collect::<Vec<_>>(),
         vec![older, newer],
@@ -649,7 +669,10 @@ async fn search_order_recency_sorts_matching_candidates_newest_first()
 
     let mut recency_req = tagged_search_request(&owner, "recency ordering", SearchMode::Lexical);
     recency_req.order = SearchOrder::Recency;
-    let rows = pg.search_memories(&recency_req, &[projection]).await?;
+    let rows = pg
+        .search_memories(&recency_req, &[projection])
+        .await?
+        .results;
     assert_eq!(
         rows.iter().map(|row| row.memory_id).collect::<Vec<_>>(),
         vec![newer, older]
@@ -658,6 +681,384 @@ async fn search_order_recency_sorts_matching_candidates_newest_first()
     drop(pg);
     drop_db(&db_name).await?;
     Ok(())
+}
+
+#[tokio::test]
+async fn hybrid_fusion_weight_defaults_and_overrides_rerank()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+    let owner = owner_fixture();
+
+    // Strong lexical match, orthogonal embedding — and vice versa.
+    let lexical_hit =
+        insert_embedded_memory(&pg, &owner, "fusiongrain exact needle", [0.0, 1.0, 0.0]).await?;
+    let semantic_hit =
+        insert_embedded_memory(&pg, &owner, "entirely unrelated prose", [1.0, 0.0, 0.0]).await?;
+
+    let base = hybrid_request(&owner, "fusiongrain", padded_embedding([1.0, 0.0, 0.0]));
+    let rows = pg.search_memories(&base, &[]).await?.results;
+    assert_eq!(
+        rows.first().map(|row| row.memory_id.into_inner()),
+        Some(semantic_hit),
+        "default 0.6 semantic weight must outrank the lexical-only hit"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.memory_id.into_inner() == lexical_hit)
+    );
+    for row in &rows {
+        let expected = (0.6 * row.similarity_score) + (0.4 * row.lexical_score);
+        assert!(
+            (row.score - expected).abs() <= 1.0e-6,
+            "default fused score must be 0.6*semantic + 0.4*lexical; got {} want {expected}",
+            row.score
+        );
+    }
+
+    let mut lexical_only = base.clone();
+    lexical_only.semantic_weight = Some(0.0);
+    let rows = pg.search_memories(&lexical_only, &[]).await?.results;
+    assert_eq!(
+        rows.first().map(|row| row.memory_id.into_inner()),
+        Some(lexical_hit),
+        "semantic_weight=0.0 must rank purely lexically"
+    );
+
+    let mut semantic_only = base;
+    semantic_only.semantic_weight = Some(1.0);
+    let rows = pg.search_memories(&semantic_only, &[]).await?.results;
+    assert_eq!(
+        rows.first().map(|row| row.memory_id.into_inner()),
+        Some(semantic_hit),
+        "semantic_weight=1.0 must rank purely semantically"
+    );
+    for row in &rows {
+        assert!(
+            (row.score - row.similarity_score).abs() <= 1.0e-6,
+            "weight 1.0 score must equal the similarity component"
+        );
+    }
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn min_score_floor_drops_weak_matches() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+    let owner = owner_fixture();
+
+    let strong = insert_search_abstraction(&pg, &owner, "floorgrain strong hit", None).await?;
+    // Substring-only match: no tsquery token, so the LIKE arm scores it 0.25.
+    let weak = insert_search_abstraction(&pg, &owner, "prefix xfloorgrainx suffix", None).await?;
+
+    let mut unfloored = lexical_request(&owner, "floorgrain");
+    unfloored.kind = Some(EntityKind::Abstraction);
+    let page = pg.search_memories(&unfloored, &[]).await?;
+    assert!(!page.has_more);
+    let ids: Vec<_> = page
+        .results
+        .iter()
+        .map(|row| row.memory_id.into_inner())
+        .collect();
+    assert!(ids.contains(&strong) && ids.contains(&weak));
+    let strong_score = page
+        .results
+        .iter()
+        .find(|row| row.memory_id.into_inner() == strong)
+        .expect("strong row")
+        .score;
+    let weak_score = page
+        .results
+        .iter()
+        .find(|row| row.memory_id.into_inner() == weak)
+        .expect("weak row")
+        .score;
+    assert!(
+        strong_score > 0.5,
+        "tsquery match scores high: {strong_score}"
+    );
+    assert!(
+        (weak_score - 0.25).abs() <= 1.0e-6,
+        "LIKE-only match scores 0.25: {weak_score}"
+    );
+
+    let mut floored = unfloored;
+    floored.min_score = Some(0.5);
+    let page = pg.search_memories(&floored, &[]).await?;
+    assert!(
+        !page.has_more,
+        "sub-floor rows must not count toward has_more"
+    );
+    assert_eq!(
+        page.results
+            .iter()
+            .map(|row| row.memory_id.into_inner())
+            .collect::<Vec<_>>(),
+        vec![strong],
+        "the floor must drop the 0.25 substring match"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn relevance_pagination_pages_are_disjoint_and_exhaustive()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+    let owner = owner_fixture();
+
+    for _ in 0..12 {
+        insert_search_abstraction(&pg, &owner, "pagegrain needle", None).await?;
+    }
+
+    let mut req = lexical_request(&owner, "pagegrain");
+    req.kind = Some(EntityKind::Abstraction);
+    req.limit = 5;
+    let full = {
+        let mut one_shot = req.clone();
+        one_shot.limit = 12;
+        pg.search_memories(&one_shot, &[]).await?.results
+    };
+    assert_eq!(full.len(), 12);
+
+    // Every score is identical here, so this exercises the pure
+    // memory_id tiebreak of the relevance keyset.
+    let mut paged = Vec::new();
+    let mut after = None;
+    let mut hops = 0;
+    loop {
+        let mut page_req = req.clone();
+        page_req.after = after;
+        let page = pg.search_memories(&page_req, &[]).await?;
+        assert!(page.results.len() <= 5);
+        paged.extend(page.results);
+        if !page.has_more {
+            break;
+        }
+        let last = paged.last().expect("page emitted rows");
+        after = Some(SearchCursor::Relevance {
+            score_bits: last.score.to_bits(),
+            memory_id: last.memory_id,
+            seen: u32::try_from(paged.len())?,
+        });
+        hops += 1;
+        assert!(hops <= 4, "pagination must terminate");
+    }
+    assert_eq!(paged.len(), 12, "pages must be exhaustive");
+    assert_eq!(
+        paged
+            .iter()
+            .map(|row| row.memory_id.into_inner())
+            .collect::<Vec<_>>(),
+        full.iter()
+            .map(|row| row.memory_id.into_inner())
+            .collect::<Vec<_>>(),
+        "concatenated pages must equal the one-shot listing: no dupes, no gaps"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn recency_pagination_pushes_keyset_into_sql_and_rejects_mismatched_cursor()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+    let owner = owner_fixture();
+
+    for _ in 0..8 {
+        insert_search_abstraction(&pg, &owner, "recencygrain needle", None).await?;
+    }
+
+    let mut req = lexical_request(&owner, "recencygrain");
+    req.kind = Some(EntityKind::Abstraction);
+    req.order = SearchOrder::Recency;
+    req.limit = 3;
+    let full = {
+        let mut one_shot = req.clone();
+        one_shot.limit = 8;
+        pg.search_memories(&one_shot, &[]).await?.results
+    };
+    assert_eq!(full.len(), 8);
+
+    let mut paged = Vec::new();
+    let mut after = None;
+    loop {
+        let mut page_req = req.clone();
+        page_req.after = after;
+        let page = pg.search_memories(&page_req, &[]).await?;
+        paged.extend(page.results);
+        if !page.has_more {
+            break;
+        }
+        let last = paged.last().expect("page emitted rows");
+        after = Some(SearchCursor::Recency {
+            created_at: last.created_at,
+            memory_id: last.memory_id,
+            seen: u32::try_from(paged.len())?,
+        });
+        assert!(paged.len() <= 8, "pagination must terminate");
+    }
+    assert_eq!(
+        paged
+            .iter()
+            .map(|row| row.memory_id.into_inner())
+            .collect::<Vec<_>>(),
+        full.iter()
+            .map(|row| row.memory_id.into_inner())
+            .collect::<Vec<_>>(),
+        "recency pages must equal the one-shot listing"
+    );
+
+    // A cursor of the wrong class for the requested order fails closed.
+    let mut mismatched = req;
+    mismatched.after = Some(SearchCursor::Relevance {
+        score_bits: 1.0_f32.to_bits(),
+        memory_id: full[0].memory_id,
+        seen: 3,
+    });
+    let err = pg
+        .search_memories(&mismatched, &[])
+        .await
+        .expect_err("relevance cursor with recency order must fail");
+    assert!(
+        err.to_string().contains("cursor order"),
+        "unexpected error: {err}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn search_pages_past_the_fifty_result_cap() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+    let owner = owner_fixture();
+
+    for _ in 0..55 {
+        insert_search_abstraction(&pg, &owner, "capgrain needle", None).await?;
+    }
+
+    let mut req = lexical_request(&owner, "capgrain");
+    req.kind = Some(EntityKind::Abstraction);
+    req.limit = 60;
+    let first = pg.search_memories(&req, &[]).await?;
+    assert_eq!(first.results.len(), 50, "the per-page cap holds");
+    assert!(first.has_more, "matches past the cap must be reported");
+
+    let last = first.results.last().expect("full first page");
+    let mut rest_req = req.clone();
+    rest_req.after = Some(SearchCursor::Relevance {
+        score_bits: last.score.to_bits(),
+        memory_id: last.memory_id,
+        seen: 50,
+    });
+    let rest = pg.search_memories(&rest_req, &[]).await?;
+    assert_eq!(rest.results.len(), 5, "the cursor reaches past the cap");
+    assert!(!rest.has_more);
+    let mut all: Vec<_> = first
+        .results
+        .iter()
+        .chain(rest.results.iter())
+        .map(|row| row.memory_id.into_inner())
+        .collect();
+    all.sort_unstable();
+    all.dedup();
+    assert_eq!(
+        all.len(),
+        55,
+        "the two pages cover every match exactly once"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn semantic_search_plan_uses_hnsw_index() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+    let owner = owner_fixture();
+    insert_embedded_memory(&pg, &owner, "plan probe", [1.0, 0.0, 0.0]).await?;
+
+    let mut req = semantic_request(&owner, padded_embedding([1.0, 0.0, 0.0]));
+    // No schema filter: keeps the bind list to owner arrays + vector + model.
+    req.schema_id = None;
+    let sql = proxima_storage_pg::verbs::query::semantic_search_sql_for_tests(&req, &[], 40, 512)?;
+    let explain_sql = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {sql}");
+
+    let (owner_kind, owner_id) = owner.columns();
+    let mut tx = pg.pool_for_tests().begin().await?;
+    // The production session settings, plus seqscan/sort penalized so the
+    // assertion is about capability, not tiny-table costing: the only way
+    // to satisfy `ORDER BY emb.vec <=> $query` without an explicit sort is
+    // the HNSW scan, so if the shipped query shape can no longer be served
+    // by the index (e.g. the ORDER BY expression stops matching the
+    // operator class), no planner setting can save it and this fails.
+    for setting in [
+        "SET LOCAL hnsw.ef_search = 100",
+        "SET LOCAL hnsw.iterative_scan = relaxed_order",
+        "SET LOCAL enable_seqscan = off",
+        "SET LOCAL enable_sort = off",
+    ] {
+        // SQL-POLICY: fixed-fragment
+        sqlx::query(setting).execute(&mut *tx).await?;
+    }
+    // SQL-POLICY: fixed-fragment — EXPLAIN prefix over the audited
+    // production builder's parameterized SQL; only bound values vary.
+    let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(explain_sql.as_str()))
+        .bind(vec![owner_kind])
+        .bind(vec![owner_id])
+        .bind(vector_literal(&padded_embedding([1.0, 0.0, 0.0])))
+        .bind("test-embed")
+        .fetch_one(&mut *tx)
+        .await?;
+    tx.rollback().await?;
+
+    let rendered = plan.to_string();
+    assert!(
+        rendered.contains("idx_embeddings_vec_hnsw"),
+        "the semantic branch must scan the HNSW index; plan:\n{rendered}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+fn hybrid_request(owner: &Owner, query: &str, query_embedding: Vec<f32>) -> MemorySearchRequest {
+    MemorySearchRequest {
+        owner: *owner,
+        read_owners: vec![*owner],
+        query: query.into(),
+        mode: SearchMode::Hybrid,
+        supersession: SupersessionStatus::HeadsOnly,
+        limit: 10,
+        kind: Some(EntityKind::Abstraction),
+        schema_id: Some(SchemaId::new("test/search-abstraction-v1".into())),
+        tags: Vec::new(),
+        tag_match: TagMatch::Any,
+        since: None,
+        until: None,
+        order: SearchOrder::Relevance,
+        min_score: None,
+        semantic_weight: None,
+        after: None,
+        query_embedding: Some(query_embedding),
+        embedding_model_id: Some("test-embed".into()),
+    }
 }
 
 #[derive(Debug)]
@@ -910,6 +1311,9 @@ fn lexical_request(owner: &Owner, query: &str) -> MemorySearchRequest {
         since: None,
         until: None,
         order: SearchOrder::Relevance,
+        min_score: None,
+        semantic_weight: None,
+        after: None,
         query_embedding: None,
         embedding_model_id: None,
     }
@@ -930,6 +1334,9 @@ fn semantic_request(owner: &Owner, query_embedding: Vec<f32>) -> MemorySearchReq
         since: None,
         until: None,
         order: SearchOrder::Relevance,
+        min_score: None,
+        semantic_weight: None,
+        after: None,
         query_embedding: Some(query_embedding),
         embedding_model_id: Some("test-embed".into()),
     }
@@ -950,6 +1357,9 @@ fn tagged_search_request(owner: &Owner, query: &str, mode: SearchMode) -> Memory
         since: None,
         until: None,
         order: SearchOrder::Relevance,
+        min_score: None,
+        semantic_weight: None,
+        after: None,
         query_embedding: None,
         embedding_model_id: None,
     }

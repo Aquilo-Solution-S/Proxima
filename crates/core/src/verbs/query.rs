@@ -75,6 +75,59 @@ pub enum SearchOrder {
     Recency,
 }
 
+/// Hard per-page cap on memory search results. Callers page past it
+/// with [`MemorySearchRequest::after`] / the MCP-level cursor.
+pub const MAX_SEARCH_PAGE_LIMIT: u32 = 50;
+
+/// Hybrid fusion weight on the semantic component when the request
+/// does not override it; the lexical component gets the complement.
+pub const DEFAULT_HYBRID_SEMANTIC_WEIGHT: f32 = 0.6;
+
+/// Upper bound on [`SearchCursor::Relevance`] depth (`seen`). Relevance
+/// keysets re-rank an overfetched candidate window that grows with
+/// depth, so depth is bounded; recency keysets push into SQL and page
+/// without bound.
+pub const MAX_RELEVANCE_SEARCH_DEPTH: u32 = 5_000;
+
+/// Resume point for paged memory search. The variant must match the
+/// request's `order`. A `Relevance` cursor carries the fused score of
+/// the last emitted row as exact bits ([`f32::to_bits`]) plus the total
+/// rows already emitted (`seen`), which storage uses to widen its
+/// candidate overfetch window; a `Recency` cursor is a plain
+/// `(created_at, memory_id)` keyset pushed into SQL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SearchCursor {
+    Relevance {
+        score_bits: u32,
+        memory_id: MemoryId,
+        seen: u32,
+    },
+    Recency {
+        created_at: time::OffsetDateTime,
+        memory_id: MemoryId,
+        seen: u32,
+    },
+}
+
+impl SearchCursor {
+    /// The ordering this cursor was issued under.
+    #[must_use]
+    pub fn order(&self) -> SearchOrder {
+        match self {
+            Self::Relevance { .. } => SearchOrder::Relevance,
+            Self::Recency { .. } => SearchOrder::Recency,
+        }
+    }
+
+    /// Total results emitted by the pages before this cursor.
+    #[must_use]
+    pub fn seen(&self) -> u32 {
+        match *self {
+            Self::Relevance { seen, .. } | Self::Recency { seen, .. } => seen,
+        }
+    }
+}
+
 /// Owner-scoped memory search. Semantic modes require the engine/tool
 /// layer to populate the query embedding and active embedding-space
 /// metadata before dispatching to storage.
@@ -101,6 +154,19 @@ pub struct MemorySearchRequest {
     pub until: Option<time::OffsetDateTime>,
     #[serde(default)]
     pub order: SearchOrder,
+    /// Drop results whose mode-appropriate fused score is below this
+    /// floor (0..=1). `None` disables the floor.
+    #[serde(default)]
+    pub min_score: Option<f32>,
+    /// Hybrid fusion weight on the semantic component (0..=1); the
+    /// lexical component gets the complement. `None` uses
+    /// [`DEFAULT_HYBRID_SEMANTIC_WEIGHT`]. Unused outside `Hybrid`.
+    #[serde(default)]
+    pub semantic_weight: Option<f32>,
+    /// Resume point from a previous page. The variant must match
+    /// `order`.
+    #[serde(default)]
+    pub after: Option<SearchCursor>,
     #[serde(skip)]
     pub query_embedding: Option<Vec<f32>>,
     #[serde(skip)]
@@ -117,6 +183,17 @@ pub struct MemorySearchResult {
     pub score: f32,
     pub lexical_score: f32,
     pub similarity_score: f32,
+}
+
+/// One page of search results. `has_more` reports whether at least one
+/// further post-floor match exists past the last returned row inside
+/// the ranking horizon (relevance ordering re-ranks an overfetched
+/// candidate window, so a false negative is possible at extreme
+/// depths; recency ordering is exact).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MemorySearchPage {
+    pub results: Vec<MemorySearchResult>,
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -37,8 +37,11 @@ impl crate::MemoryReadPort for ReadOnlyFake {
         &self,
         _req: &crate::verbs::query::MemorySearchRequest,
         _projections: &[crate::verbs::schema::MemorySearchProjection],
-    ) -> Result<Vec<crate::verbs::query::MemorySearchResult>, StorageError> {
-        Ok(Vec::new())
+    ) -> Result<crate::verbs::query::MemorySearchPage, StorageError> {
+        Ok(crate::verbs::query::MemorySearchPage {
+            results: Vec::new(),
+            has_more: false,
+        })
     }
 
     async fn walk_memory_lineage(

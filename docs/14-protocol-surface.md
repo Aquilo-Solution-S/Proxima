@@ -50,7 +50,7 @@ Canonical substrate tools:
 | `core_record_utterance` | write utterance Fact |
 | `core_derive` | write agent-authored Abstraction |
 | `core_link` | write registered relation edge |
-| `core_search_memories` | search memories; may include neighbor edges, per-result tags, lexical-degradation status, and selected memory-space labels |
+| `core_search_memories` | search memories; may include neighbor edges, per-result tags, lexical-degradation status, and selected memory-space labels. Optional `min_score` relevance floor and hybrid `semantic_weight` (default 0.6 semantic / 0.4 lexical). Pages of at most 50: `has_more` plus an opaque `next_cursor` that is passed back as `cursor` with the identical query shape (the cursor is fingerprint-bound and fails closed on any other query, order, filter, or space set) |
 | `core_memory_spaces` | list server-issued memory-space keys with labels and coarse unrestricted-access flags |
 | `core_membership` | group roster dispatcher: `add_member`, `remove_member`, `list_members`; host/controller scoped |
 | `core_publish` | owner-transfer dispatcher: `publish_to_world`; irreversible transfer to `OwnerRef::World`, not membership or ACL |

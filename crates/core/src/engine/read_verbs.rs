@@ -7,7 +7,10 @@ use crate::read_models::{
 };
 use crate::storage::{EdgeEndpointKindRow, MemoryGraphPayloadRow, NeighborEdgeRow, StorageError};
 use crate::storage_ports::ReadVerbStoragePorts;
-use crate::verbs::query::{FactCitationReadback, MemorySearchRequest, MemorySearchResult};
+use crate::verbs::query::{
+    FactCitationReadback, MAX_RELEVANCE_SEARCH_DEPTH, MemorySearchRequest, MemorySearchResult,
+    SearchCursor,
+};
 use crate::verbs::schema::{MemorySearchProjection, PayloadKind};
 use crate::{
     EdgeId, EntityId, EntityKind, FactEntityId, MemoryId, OwnerRef, SchemaId, SchemaVersion,
@@ -28,6 +31,9 @@ pub struct SearchReadRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchReadResponse {
     pub memories: Vec<MemorySearchResult>,
+    /// At least one further match exists past the last returned row;
+    /// see [`crate::verbs::query::MemorySearchPage`].
+    pub has_more: bool,
     pub payloads: Vec<MemoryGraphPayloadRow>,
     pub neighbor_edges: Vec<NeighborEdgeRow>,
 }
@@ -99,13 +105,17 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.search.owner`
-    /// or lacks [`Relation::Viewer`]; returns `Internal` when storage reads fail.
+    /// Returns `InvalidArgument` when `min_score`/`semantic_weight` fall
+    /// outside `0.0..=1.0`, or when `after` disagrees with `order` or
+    /// exceeds the relevance pagination depth bound; `Forbidden` when the
+    /// context cannot access `req.search.owner` or lacks
+    /// [`Relation::Viewer`]; `Internal` when storage reads fail.
     pub async fn search(
         &self,
         authz: &AuthzContext,
         req: &SearchReadRequest,
     ) -> Result<SearchReadResponse, ProtocolError> {
+        validate_search_request(&req.search)?;
         let read_permit = self
             .authorize_request(authz, &req.search.owner, Relation::Viewer)
             .await?;
@@ -314,6 +324,43 @@ impl Engine {
     }
 }
 
+/// Bounds check for caller-supplied search knobs, shared by every
+/// entry into the search verb. Storage re-validates the cursor/order
+/// pairing as defense in depth for direct port callers.
+fn validate_search_request(search: &MemorySearchRequest) -> Result<(), ProtocolError> {
+    if let Some(floor) = search.min_score
+        && !(floor.is_finite() && (0.0..=1.0).contains(&floor))
+    {
+        return Err(ProtocolError::invalid_argument(
+            "min_score",
+            "min_score must be within 0.0..=1.0",
+        ));
+    }
+    if let Some(weight) = search.semantic_weight
+        && !(weight.is_finite() && (0.0..=1.0).contains(&weight))
+    {
+        return Err(ProtocolError::invalid_argument(
+            "semantic_weight",
+            "semantic_weight must be within 0.0..=1.0",
+        ));
+    }
+    match search.after {
+        Some(after) if after.order() != search.order => Err(ProtocolError::invalid_argument(
+            "cursor",
+            "search cursor order does not match request order",
+        )),
+        Some(after @ SearchCursor::Relevance { .. })
+            if after.seen() > MAX_RELEVANCE_SEARCH_DEPTH =>
+        {
+            Err(ProtocolError::invalid_argument(
+                "cursor",
+                "relevance pagination depth exceeded; narrow the query or switch to order=recency",
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
 pub(in crate::engine) async fn search_authorized(
     ports: &ReadVerbStoragePorts,
     search_projections: &[MemorySearchProjection],
@@ -323,11 +370,12 @@ pub(in crate::engine) async fn search_authorized(
 ) -> Result<SearchReadResponse, ProtocolError> {
     let mut effective = req.search.clone();
     effective.read_owners = read_owners.to_vec();
-    let memories = ports
+    let page = ports
         .memory_read
         .search_memories(&effective, search_projections)
         .await
         .map_err(|err| storage_error("search_memories", &err))?;
+    let memories = page.results;
 
     let memory_ids = memories.iter().map(|row| row.memory_id).collect::<Vec<_>>();
     let payloads = if memory_ids.is_empty() {
@@ -355,6 +403,7 @@ pub(in crate::engine) async fn search_authorized(
 
     Ok(SearchReadResponse {
         memories,
+        has_more: page.has_more,
         payloads,
         neighbor_edges,
     })
@@ -557,6 +606,9 @@ mod tests {
                 since: None,
                 until: None,
                 order: SearchOrder::Relevance,
+                min_score: None,
+                semantic_weight: None,
+                after: None,
                 query_embedding: None,
                 embedding_model_id: None,
             },
@@ -571,6 +623,55 @@ mod tests {
 
     fn granted_authz(owner: &OwnerRef) -> ResolvedAuthz {
         AuthzContext::single_owner(owner, AuthPath::HostBearer)
+    }
+
+    #[tokio::test]
+    async fn search_rejects_out_of_range_floor_weight_and_cursor() {
+        use crate::verbs::query::{MAX_RELEVANCE_SEARCH_DEPTH, SearchCursor};
+
+        let owner = owner();
+        let engine = engine();
+        let authz = granted_authz(&owner);
+
+        let mut bad_floor = search_req(&owner);
+        bad_floor.search.min_score = Some(1.5);
+        let err = engine
+            .search(&authz, &bad_floor)
+            .await
+            .expect_err("floor above 1.0 must fail");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+
+        let mut nan_weight = search_req(&owner);
+        nan_weight.search.semantic_weight = Some(f32::NAN);
+        let err = engine
+            .search(&authz, &nan_weight)
+            .await
+            .expect_err("NaN weight must fail");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+
+        let mut order_mismatch = search_req(&owner);
+        order_mismatch.search.after = Some(SearchCursor::Recency {
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+            memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+            seen: 8,
+        });
+        let err = engine
+            .search(&authz, &order_mismatch)
+            .await
+            .expect_err("recency cursor with relevance order must fail");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+
+        let mut too_deep = search_req(&owner);
+        too_deep.search.after = Some(SearchCursor::Relevance {
+            score_bits: 0.5_f32.to_bits(),
+            memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+            seen: MAX_RELEVANCE_SEARCH_DEPTH + 1,
+        });
+        let err = engine
+            .search(&authz, &too_deep)
+            .await
+            .expect_err("relevance depth beyond the bound must fail");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
     }
 
     #[tokio::test]

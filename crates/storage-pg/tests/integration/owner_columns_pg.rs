@@ -556,6 +556,9 @@ async fn discovery_reads_filter_by_owner_read_set() {
                 since: None,
                 until: None,
                 order: SearchOrder::Relevance,
+                min_score: None,
+                semantic_weight: None,
+                after: None,
                 query_embedding: None,
                 embedding_model_id: None,
             },
@@ -563,7 +566,11 @@ async fn discovery_reads_filter_by_owner_read_set() {
         )
         .await
         .unwrap();
-    let search_ids = search.iter().map(|row| row.memory_id).collect::<Vec<_>>();
+    let search_ids = search
+        .results
+        .iter()
+        .map(|row| row.memory_id)
+        .collect::<Vec<_>>();
     assert!(search_ids.contains(&f1));
     assert!(
         !search_ids.contains(&a),

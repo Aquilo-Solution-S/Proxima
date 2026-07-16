@@ -3,7 +3,8 @@ use std::fmt::Write as _;
 
 use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::query::{
-    EntityKind, MemorySearchRequest, MemorySearchResult, SearchMode, SearchOrder,
+    DEFAULT_HYBRID_SEMANTIC_WEIGHT, EntityKind, MAX_SEARCH_PAGE_LIMIT, MemorySearchPage,
+    MemorySearchRequest, MemorySearchResult, SearchCursor, SearchMode, SearchOrder,
     SupersessionStatus, TagMatch,
 };
 use proxima_core::verbs::schema::{
@@ -62,6 +63,10 @@ struct CandidateFilterParams {
     since: Option<usize>,
     until: Option<usize>,
     tags: Option<usize>,
+    /// First of two params (`created_at`, `memory_id`) for a pushed-down
+    /// recency keyset. Relevance cursors filter post-fusion instead —
+    /// the fused score does not exist per SQL branch.
+    recency_cursor: Option<usize>,
 }
 
 const MIN_VECTOR_CANDIDATE_OVERFETCH: u64 = 512;
@@ -70,14 +75,37 @@ pub(crate) async fn search_memories(
     pool: &PgPool,
     req: &MemorySearchRequest,
     projections: &[MemorySearchProjection],
-) -> Result<Vec<MemorySearchResult>, StorageError> {
+) -> Result<MemorySearchPage, StorageError> {
     if matches!(req.kind, Some(EntityKind::Goal)) || req.limit == 0 {
-        return Ok(Vec::new());
+        return Ok(MemorySearchPage {
+            results: Vec::new(),
+            has_more: false,
+        });
+    }
+    // The engine validates this pairing; re-check for direct port callers.
+    if let Some(after) = req.after
+        && after.order() != req.order
+    {
+        return Err(StorageError::ConstraintViolation(
+            "search cursor order does not match request order".into(),
+        ));
     }
 
-    let limit = req.limit.min(50);
+    let limit = req.limit.min(MAX_SEARCH_PAGE_LIMIT);
+    // One extra fused row past the page proves has_more. A relevance
+    // cursor additionally widens the window by the rows earlier pages
+    // already emitted, so page N still reaches candidates ranked past
+    // them; recency cursors filter in SQL and need no widening.
+    let relevance_depth = match req.after {
+        Some(after @ SearchCursor::Relevance { .. }) => after.seen(),
+        _ => 0,
+    };
+    let fetch_target = limit.saturating_add(1).saturating_add(relevance_depth);
     let mut candidates = BTreeMap::<uuid::Uuid, Candidate>::new();
-    let overfetch = limit.saturating_mul(4);
+    let overfetch = fetch_target.saturating_mul(4);
+    let candidate_overfetch = u64::from(fetch_target)
+        .saturating_mul(VECTOR_CANDIDATE_OVERFETCH_PER_RESULT)
+        .max(MIN_VECTOR_CANDIDATE_OVERFETCH);
 
     match req.mode {
         SearchMode::Lexical => {
@@ -86,7 +114,7 @@ pub(crate) async fn search_memories(
             }
         }
         SearchMode::Semantic => {
-            for row in run_semantic(pool, req, projections, overfetch).await? {
+            for row in run_semantic(pool, req, projections, overfetch, candidate_overfetch).await? {
                 merge_row(&mut candidates, row);
             }
         }
@@ -96,7 +124,7 @@ pub(crate) async fn search_memories(
             // to halve wall-clock latency. Weights/ef_search are unchanged.
             let (lexical, semantic) = tokio::try_join!(
                 run_lexical(pool, req, projections, overfetch),
-                run_semantic(pool, req, projections, overfetch),
+                run_semantic(pool, req, projections, overfetch, candidate_overfetch),
             )?;
             for row in lexical {
                 merge_row(&mut candidates, row);
@@ -107,6 +135,10 @@ pub(crate) async fn search_memories(
         }
     }
 
+    let semantic_weight = req
+        .semantic_weight
+        .unwrap_or(DEFAULT_HYBRID_SEMANTIC_WEIGHT)
+        .clamp(0.0, 1.0);
     let mut results: Vec<MemorySearchResult> = candidates
         .into_values()
         .map(|candidate| {
@@ -114,7 +146,8 @@ pub(crate) async fn search_memories(
                 SearchMode::Lexical => candidate.lexical_score,
                 SearchMode::Semantic => candidate.similarity_score,
                 SearchMode::Hybrid => {
-                    (0.6 * candidate.similarity_score) + (0.4 * candidate.lexical_score)
+                    (semantic_weight * candidate.similarity_score)
+                        + ((1.0 - semantic_weight) * candidate.lexical_score)
                 }
             };
             MemorySearchResult {
@@ -130,6 +163,13 @@ pub(crate) async fn search_memories(
         })
         .collect();
 
+    if let Some(floor) = req.min_score {
+        results.retain(|result| result.score >= floor);
+    }
+    if let Some(after) = req.after {
+        results.retain(|result| ranks_after_cursor(result, after));
+    }
+
     match req.order {
         SearchOrder::Relevance => results.sort_by(|a, b| {
             b.score
@@ -142,8 +182,38 @@ pub(crate) async fn search_memories(
                 .then_with(|| b.memory_id.into_inner().cmp(&a.memory_id.into_inner()))
         }),
     }
-    results.truncate(usize::try_from(limit).unwrap_or(50));
-    Ok(results)
+    let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
+    let has_more = results.len() > page_len;
+    results.truncate(page_len);
+    Ok(MemorySearchPage { results, has_more })
+}
+
+/// Strictly-after-the-cursor keyset predicate, matching the descending
+/// `(score, memory_id)` / `(created_at, memory_id)` sort above. The
+/// recency variant is also pushed into SQL; re-checking here keeps
+/// correctness independent of which branch produced the row. Scores
+/// round-trip as exact `f32` bits, so equality against the recomputed
+/// fused score is meaningful.
+fn ranks_after_cursor(result: &MemorySearchResult, after: SearchCursor) -> bool {
+    match after {
+        SearchCursor::Relevance {
+            score_bits,
+            memory_id,
+            ..
+        } => match result.score.total_cmp(&f32::from_bits(score_bits)) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Equal => result.memory_id.into_inner() < memory_id.into_inner(),
+            std::cmp::Ordering::Greater => false,
+        },
+        SearchCursor::Recency {
+            created_at,
+            memory_id,
+            ..
+        } => {
+            (result.created_at, result.memory_id.into_inner())
+                < (created_at, memory_id.into_inner())
+        }
+    }
 }
 
 fn merge_row(candidates: &mut BTreeMap<uuid::Uuid, Candidate>, row: SearchRow) {
@@ -235,37 +305,23 @@ async fn run_lexical(
     q.fetch_all(pool).await.map_err(internal)
 }
 
-async fn run_semantic(
-    pool: &PgPool,
+/// Exact SQL of the semantic vector branch, factored out so
+/// EXPLAIN-based plan tests can assert against precisely what
+/// production executes. Parameter order: read-owner kind/id arrays,
+/// per-projection `(schema_id, version)` pairs, optional filter
+/// params, query vector literal, model id.
+fn semantic_branch_sql<'p>(
     req: &MemorySearchRequest,
-    projections: &[MemorySearchProjection],
+    projections: &'p [MemorySearchProjection],
     limit: u32,
-) -> Result<Vec<SearchRow>, StorageError> {
-    let Some(query_embedding) = req.query_embedding.as_ref() else {
-        return Err(StorageError::ConstraintViolation(
-            "semantic search requires query_embedding".into(),
-        ));
-    };
-    let Some(model_id) = req.embedding_model_id.as_ref() else {
-        return Err(StorageError::ConstraintViolation(
-            "semantic search requires embedding_model_id".into(),
-        ));
-    };
-    if query_embedding.len() != EMBEDDING_DIM {
-        return Err(StorageError::ConstraintViolation(
-            "semantic search embedding length must be 1024".into(),
-        ));
-    }
-
+    candidate_overfetch: u64,
+) -> Result<(String, Vec<&'p MemorySearchProjection>), StorageError> {
     let projections = memory_search_projections(req, projections);
     let mut next_param = 3;
     let mut sql = common_candidates_sql(req, &projections, &mut next_param)?;
     let vec_param = next_param;
     let model_param = next_param + 1;
     let order_by = branch_order_by(req, "similarity_score");
-    let candidate_overfetch = u64::from(req.limit.min(50))
-        .saturating_mul(VECTOR_CANDIDATE_OVERFETCH_PER_RESULT)
-        .max(MIN_VECTOR_CANDIDATE_OVERFETCH);
 
     write!(
         sql,
@@ -312,6 +368,45 @@ async fn run_semantic(
         order_by = order_by
     )
     .expect("write to String is infallible");
+    Ok((sql, projections))
+}
+
+/// The semantic branch SQL for EXPLAIN-based plan assertions in tests.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+pub fn semantic_search_sql_for_tests(
+    req: &MemorySearchRequest,
+    projections: &[MemorySearchProjection],
+    limit: u32,
+    candidate_overfetch: u64,
+) -> Result<String, StorageError> {
+    semantic_branch_sql(req, projections, limit, candidate_overfetch).map(|(sql, _)| sql)
+}
+
+async fn run_semantic(
+    pool: &PgPool,
+    req: &MemorySearchRequest,
+    projections: &[MemorySearchProjection],
+    limit: u32,
+    candidate_overfetch: u64,
+) -> Result<Vec<SearchRow>, StorageError> {
+    let Some(query_embedding) = req.query_embedding.as_ref() else {
+        return Err(StorageError::ConstraintViolation(
+            "semantic search requires query_embedding".into(),
+        ));
+    };
+    let Some(model_id) = req.embedding_model_id.as_ref() else {
+        return Err(StorageError::ConstraintViolation(
+            "semantic search requires embedding_model_id".into(),
+        ));
+    };
+    if query_embedding.len() != EMBEDDING_DIM {
+        return Err(StorageError::ConstraintViolation(
+            "semantic search embedding length must be 1024".into(),
+        ));
+    }
+
+    let (sql, projections) = semantic_branch_sql(req, projections, limit, candidate_overfetch)?;
 
     // SQL-POLICY: PgIdent
     let mut q = bind_common(
@@ -367,11 +462,17 @@ fn common_candidates_sql(
         *next_param += 1;
         param
     });
+    let recency_cursor_param = matches!(req.after, Some(SearchCursor::Recency { .. })).then(|| {
+        let param = *next_param;
+        *next_param += 2;
+        param
+    });
     let filters = CandidateFilterParams {
         schema_filter: schema_filter_param,
         since: since_param,
         until: until_param,
         tags: tags_param,
+        recency_cursor: recency_cursor_param,
     };
 
     let mut sql = String::from("WITH candidates AS (");
@@ -490,6 +591,7 @@ fn push_base_memory_filters(
         write!(sql, " AND m.schema_id = ${param}").expect("write to String is infallible");
     }
     push_time_filters(sql, filters);
+    push_recency_cursor_filter(sql, filters);
     push_tag_filter(sql, req, filters.tags, "NULL::text[]");
     push_search_head_filter(sql, req);
 }
@@ -521,6 +623,7 @@ fn push_sidecar_memory_filters(
     .expect("write to String is infallible");
     push_payload_kind_filter(sql, kind);
     push_time_filters(sql, filters);
+    push_recency_cursor_filter(sql, filters);
     push_tag_filter(sql, req, filters.tags, tag_expr);
     push_search_head_filter(sql, req);
 }
@@ -543,6 +646,20 @@ fn push_time_filters(sql: &mut String, filters: CandidateFilterParams) {
     }
     if let Some(param) = filters.until {
         write!(sql, " AND m.created_at <= ${param}").expect("write to String is infallible");
+    }
+}
+
+/// Keyset continuation for recency-ordered pages: only rows strictly
+/// older than the cursor row survive, mirroring `query_memories`'
+/// `(created_at, memory_id)` tiebreak.
+fn push_recency_cursor_filter(sql: &mut String, filters: CandidateFilterParams) {
+    if let Some(param) = filters.recency_cursor {
+        write!(
+            sql,
+            " AND (m.created_at, m.memory_id) < (${param}, ${next})",
+            next = param + 1
+        )
+        .expect("write to String is infallible");
     }
 }
 
@@ -622,6 +739,15 @@ fn bind_filter_params<'q>(
     }
     if !req.tags.is_empty() {
         q = q.bind(req.tags.clone());
+    }
+    if let Some(SearchCursor::Recency {
+        created_at,
+        memory_id,
+        ..
+    }) = req.after
+    {
+        q = q.bind(created_at);
+        q = q.bind(memory_id.into_inner());
     }
     q
 }
