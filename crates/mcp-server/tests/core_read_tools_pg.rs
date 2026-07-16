@@ -272,10 +272,28 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
         .await?;
     assert!(unarmed.get("wake").is_none(), "unarmed goal has no wake");
 
-    // Class-checked reference and closed state vocabulary fail closed.
+    assert_goal_reference_and_state_rejections(&server, &auth, goal_ids[0]).await;
+
+    // Wake candidates now signal truncation instead of dropping silently.
+    arm_goal_for_fact(&pg, goal_ids[1], trigger).await?;
+    arm_goal_for_fact(&pg, goal_ids[2], trigger).await?;
+    assert_wake_candidates_signal_truncation(&server, &auth, trigger).await?;
+
+    drop(server);
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// Class-checked reference and closed state vocabulary fail closed.
+async fn assert_goal_reference_and_state_rejections(
+    server: &McpToolHost,
+    auth: &McpAuthContext,
+    goal_id: uuid::Uuid,
+) {
     let bare = server
         .read_resource(
-            &format!("proxima://goal/{}", goal_ids[0]),
+            &format!("proxima://goal/{goal_id}"),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -294,10 +312,15 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
         bad_state.to_string().contains("must be one of"),
         "{bad_state}"
     );
+}
 
-    // Wake candidates now signal truncation instead of dropping silently.
-    arm_goal_for_fact(&pg, goal_ids[1], trigger).await?;
-    arm_goal_for_fact(&pg, goal_ids[2], trigger).await?;
+/// A page smaller than the admitted set reports `has_more`; a page that
+/// covers it reports completion.
+async fn assert_wake_candidates_signal_truncation(
+    server: &McpToolHost,
+    auth: &McpAuthContext,
+    trigger: uuid::Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
     let capped = server
         .read_resource(
             &format!("proxima://wake-candidates?fact=F:{trigger}&limit=2"),
@@ -314,15 +337,11 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
         .read_resource(
             &format!("proxima://wake-candidates?fact=F:{trigger}&limit=10"),
             author_ctx(),
-            Some(auth),
+            Some(auth.clone()),
         )
         .await?;
     assert_eq!(full["candidates"].as_array().expect("candidates").len(), 3);
     assert_eq!(full["has_more"], serde_json::json!(false));
-
-    drop(server);
-    drop(pg);
-    drop_db(&db_name).await?;
     Ok(())
 }
 
