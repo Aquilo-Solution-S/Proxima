@@ -137,19 +137,34 @@ async fn wake_candidates_resource_returns_armed_goal() -> Result<(), Box<dyn std
     assert_eq!(candidates[0]["tool_ids"][0], "core_search_memories");
     assert_eq!(candidates[0]["actor_write_owners"][0], owner.external_key());
 
-    // A non-Fact trigger reference is rejected, not silently empty.
+    // A non-Fact reference class is rejected at parse (F:<uuid> required)...
     let abstraction = insert_memory(&pg, &owner, "not a fact").await?;
-    let err = server
+    let wrong_class = server
         .read_resource(
             &format!("proxima://wake-candidates?fact=A:{abstraction}"),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await
+        .expect_err("non-Fact reference class must be rejected at parse");
+    assert!(
+        wrong_class.to_string().contains("got prefix 'A'"),
+        "unexpected error: {wrong_class}"
+    );
+
+    // ...and a Fact-classed reference to a non-Fact row is still rejected by
+    // the engine's kind check (defense in depth behind the parse gate).
+    let mislabeled = server
+        .read_resource(
+            &format!("proxima://wake-candidates?fact=F:{abstraction}"),
             author_ctx(),
             Some(auth),
         )
         .await
-        .expect_err("non-Fact trigger must be rejected");
+        .expect_err("Fact-classed reference to an Abstraction row must be rejected");
     assert!(
-        err.to_string().contains("must be a Fact"),
-        "unexpected error: {err}"
+        mislabeled.to_string().contains("must be a Fact"),
+        "unexpected error: {mislabeled}"
     );
 
     drop(server);

@@ -15,7 +15,10 @@ use crate::read_models::GoalWakeCandidate;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListWakeCandidatesArgs {
-    /// Trigger Fact reference: `F:<uuid>`, raw uuid, or handle.
+    /// Trigger Fact reference in this session's output form — `F:<uuid>` in
+    /// prefixed-id sessions, a Fact handle in handle sessions — exactly as
+    /// emitted by `proxima://change-events`. Non-Fact references are
+    /// rejected at parse.
     pub fact: String,
     /// Max candidates; clamped to 1..=200, default 50.
     pub limit: Option<u32>,
@@ -47,7 +50,7 @@ pub async fn list_wake_candidates(
     ctx: McpToolCtx,
     args: ListWakeCandidatesArgs,
 ) -> Result<ListWakeCandidatesOutput, McpToolError> {
-    let trigger_fact_id = ctx.resolve_memory(&args.fact)?;
+    let trigger_fact_id = ctx.resolve_fact_memory(&args.fact)?;
     let limit = args.limit.unwrap_or(50).clamp(1, 200) as usize;
     debug_assert!(limit <= MAX_WAKE_CANDIDATE_LIMIT);
     let engine = ctx
