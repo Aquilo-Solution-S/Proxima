@@ -1,5 +1,5 @@
 use crate::access::Relation;
-use crate::authz::{AuthzContext, ToolScope};
+use crate::authz::AuthzContext;
 use crate::change_event::{ChangeEventKind, EdgeTargetProjection};
 use crate::error::ProtocolError;
 use crate::read_models::{
@@ -172,7 +172,9 @@ impl Engine {
 
     /// Wake-candidate admission read: armed Active Goal heads whose wake
     /// trigger matches one readable trigger Fact, narrowed to the caller's
-    /// resolved read/write owner sets and effective tool scope.
+    /// resolved read/write owner sets and the intersection of the caller's
+    /// tool scope with the engine's composed deployment tool scope
+    /// (`Engine::with_deployment_tool_scope`).
     ///
     /// This is a read model only — no scheduler, executor, tool invocation
     /// row, or emitted Fact write path exists behind it (04 §Execution).
@@ -227,7 +229,7 @@ impl Engine {
                 trigger_schema_id: &snapshot.schema_id,
                 trigger_schema_version: snapshot.schema_version,
                 actor_tool_scope: authz.tool_scope(),
-                deployment_tool_scope: &ToolScope::All,
+                deployment_tool_scope: &self.deployment_tool_scope,
                 limit: req.limit.min(MAX_WAKE_CANDIDATE_LIMIT),
             })
             .await

@@ -55,6 +55,7 @@ pub use read_verbs::{
 pub struct Engine {
     registry: FlavorRegistryFrozen,
     storage: EngineStoragePorts,
+    deployment_tool_scope: crate::authz::ToolScope,
     anthropic: Option<Arc<dyn AnthropicClient>>,
     embed: Arc<RwLock<Option<Arc<dyn EmbeddingClient>>>>,
     embedding_reloader: Option<Arc<dyn EmbeddingClientReloader>>,

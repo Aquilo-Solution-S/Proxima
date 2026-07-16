@@ -394,6 +394,13 @@ now also writable over MCP (`core_goal` `set`/`decompose` `wake`, `modify`
 `wake`/`clear_wake`); tool-scope palettes that should expose the new resource
 must include `resource:wake-candidates` (profile `memory` includes it).
 
+Admission additionally intersects the engine's composed deployment
+tool-surface profile: `Engine::with_deployment_tool_scope` (default
+`ToolScope::All`). The `proxima` runtime facade forwards its required
+`tool_scope` automatically; hosts composing `Engine` directly should pass
+their deployment palette so Host-API wake reads cannot exceed the deployed
+tool surface even under an `AuthzContext` with `ToolScope::All`.
+
 ## Checks before calling an upgrade done
 
 ```sh
