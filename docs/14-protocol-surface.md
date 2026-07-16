@@ -35,7 +35,7 @@ the Flavor SDK and typed services only.
 
 Agent long-term memory is core substrate. MCP tools are thin callers of
 Engine verbs; MCP resources expose read-only graph and registry views.
-Storage stays behind the Engine. The substrate surface is 10 tools + 8
+Storage stays behind the Engine. The substrate surface is 10 tools + 10
 resources; `proxima://tools` returns the live tool catalog only, and
 resources are discovered through MCP `resources/list` and
 `resources/templates/list`.
@@ -75,9 +75,11 @@ Canonical substrate resources:
 | `proxima://memory/{id}{?expand_neighbors}` | hydrate memory by id; optional neighbor edges |
 | `proxima://memory/{id}/lineage{?direction,depth,limit}` | traverse provenance / supersession lineage |
 | `proxima://change-events{?since,limit}` | forward `change_event` poll, ascending, with `next_since` and `has_more` |
+| `proxima://goals{?state,limit,cursor}` | owner-scoped goal listing: optional state filter (Active/Paused/Achieved/Abandoned), keyset `cursor`/`next_cursor` + `has_more`, wake-config read-back per goal |
+| `proxima://goal/{id}` | single-goal read by `G:<uuid>` reference, including stored wake configuration |
 | `proxima://wake-candidates{?fact,limit}` | armed Active Goal heads admitted for wake planning by one readable trigger Fact; read model only, no executor |
 
-`proxima://how-to` is an instructional MCP resource outside the 8-resource
+`proxima://how-to` is an instructional MCP resource outside the 10-resource
 protocol count.
 
 ## The verbs

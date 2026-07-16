@@ -41,6 +41,8 @@ pub mod resource {
     pub const CHANGE_EVENTS: &str = "resource:change-events";
     pub const WAKE_CANDIDATES: &str = "resource:wake-candidates";
     pub const SCHEMAS: &str = "resource:schemas";
+    pub const GOALS: &str = "resource:goals";
+    pub const GOAL: &str = "resource:goal";
 }
 
 pub mod resource_path {
@@ -51,6 +53,8 @@ pub mod resource_path {
     pub const CHANGE_EVENTS: &str = "change-events";
     pub const WAKE_CANDIDATES: &str = "wake-candidates";
     pub const MEMORY: &str = "memory";
+    pub const GOALS: &str = "goals";
+    pub const GOAL: &str = "goal";
 }
 
 pub mod resource_uri {
@@ -62,6 +66,8 @@ pub mod resource_uri {
     pub const MEMORY_LINEAGE: &str = "proxima://memory/{id}/lineage{?direction,depth,limit}";
     pub const CHANGE_EVENTS: &str = "proxima://change-events{?since,limit}";
     pub const WAKE_CANDIDATES: &str = "proxima://wake-candidates{?fact,limit}";
+    pub const GOALS: &str = "proxima://goals{?state,limit,cursor}";
+    pub const GOAL: &str = "proxima://goal/{id}";
 }
 
 pub mod profile {

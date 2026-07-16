@@ -132,6 +132,22 @@ pub const CORE_RESOURCES: &[CoreResourceMeta] = &[
         description: "Armed Active Goals admitted for wake planning by a trigger Fact.",
         is_template: true,
     },
+    CoreResourceMeta {
+        uri_template: protocol_resource_uri::GOALS,
+        name: "proxima-goals",
+        title: "Proxima Goals",
+        scope_key: protocol_resource::GOALS,
+        description: "Owner-scoped goal listing with state filter, keyset cursor, and wake-config read-back.",
+        is_template: true,
+    },
+    CoreResourceMeta {
+        uri_template: protocol_resource_uri::GOAL,
+        name: "proxima-goal",
+        title: "Proxima Goal",
+        scope_key: protocol_resource::GOAL,
+        description: "Single-goal read by G:<uuid> reference, including stored wake configuration.",
+        is_template: true,
+    },
 ];
 
 #[must_use = "iterators are lazy and must be consumed"]

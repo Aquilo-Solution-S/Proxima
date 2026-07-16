@@ -210,3 +210,82 @@ async fn query_candidate_rows(
     .await
     .map_err(map_err)
 }
+
+#[derive(Debug, sqlx::FromRow)]
+struct WakeConfigDbRow {
+    goal_id: uuid::Uuid,
+    trigger_memory_id: Option<uuid::Uuid>,
+    trigger_schema_id: Option<String>,
+    trigger_schema_version: Option<i32>,
+    tool_ids: Vec<String>,
+    prompt: String,
+    hard_memory_ids: Vec<uuid::Uuid>,
+    hard_memory_kinds: Vec<String>,
+}
+
+/// Wake-config read-back for goal introspection. Owner-scoped through the
+/// caller's read set; goals without a wake config simply produce no row.
+pub(crate) async fn load_goal_wake_configs(
+    pool: &PgPool,
+    read_owners: &[proxima_core::OwnerRef],
+    goal_ids: &[GoalId],
+) -> Result<Vec<proxima_core::read_models::GoalWakeConfigRow>, StorageError> {
+    if goal_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (owner_kinds, owner_ids) = owner_arrays(read_owners);
+    let ids: Vec<uuid::Uuid> = goal_ids.iter().map(|id| id.into_inner()).collect();
+    let rows: Vec<WakeConfigDbRow> = sqlx::query_as(
+        "WITH read_owners AS (
+             SELECT * FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[])
+                 AS s(owner_kind, owner_id)
+         )
+         SELECT w.goal_id,
+                w.trigger_memory_id,
+                w.trigger_schema_id,
+                w.trigger_schema_version,
+                w.tool_ids,
+                w.prompt,
+                COALESCE(hard.ids, '{}') AS hard_memory_ids,
+                COALESCE(hard.kinds, '{}') AS hard_memory_kinds
+           FROM proxima_core.goal_wake_config w
+           JOIN proxima_core.goals g
+             ON g.goal_id = w.goal_id
+           JOIN read_owners goal_ro
+             ON goal_ro.owner_kind = g.owner_kind
+            AND goal_ro.owner_id IS NOT DISTINCT FROM g.owner_id
+           LEFT JOIN LATERAL (
+                SELECT array_agg(hm.memory_id ORDER BY h.ord) AS ids,
+                       array_agg(COALESCE(hm.kind, 'Fact'::proxima_core.entity_kind)::text
+                                 ORDER BY h.ord) AS kinds
+                  FROM unnest(w.hard_memory_ids) WITH ORDINALITY AS h(memory_id, ord)
+                  JOIN proxima_core.memories hm
+                    ON hm.memory_id = h.memory_id
+           ) hard ON TRUE
+          WHERE w.goal_id = ANY($3::uuid[])
+          ORDER BY w.goal_id",
+    )
+    .bind(owner_kinds)
+    .bind(owner_ids)
+    .bind(ids)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
+
+    rows.into_iter()
+        .map(|row| {
+            let hard = hard_memories(row.hard_memory_ids, &row.hard_memory_kinds)?;
+            Ok(proxima_core::read_models::GoalWakeConfigRow {
+                goal_id: GoalId::new(row.goal_id),
+                trigger_memory_id: row.trigger_memory_id.map(MemoryId::new),
+                trigger_schema_id: row.trigger_schema_id.map(proxima_core::SchemaId::new),
+                trigger_schema_version: row
+                    .trigger_schema_version
+                    .map(|version| proxima_core::SchemaVersion::new(version.cast_unsigned())),
+                tool_ids: row.tool_ids,
+                prompt: row.prompt,
+                hard_memories: hard,
+            })
+        })
+        .collect()
+}

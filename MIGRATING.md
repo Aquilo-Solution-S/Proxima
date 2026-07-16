@@ -444,6 +444,26 @@ gained `next_cursor` and `has_more`. Cursors are fingerprint-bound to
 the query shape — replaying one with any changed argument except `limit`
 fails closed with `InvalidInput`.
 
+## 18. v0.0.7: goal introspection reads and wake truncation signals
+
+Two new read resources make stored intent inspectable:
+`proxima://goals{?state,limit,cursor}` (owner-scoped listing with a
+closed state vocabulary, opaque keyset cursor bound to the state filter,
+and `has_more`) and `proxima://goal/{id}` (single `G:<uuid>` read).
+Both read back the goal's stored wake configuration (`trigger_fact` or
+`trigger_schema_id`/`version`, `tool_ids`, `prompt`, `hard_memories` as
+prefixed ids). `proxima://wake-candidates` output gained `has_more` —
+truncation at the 200-candidate cap is now signalled, never silent.
+
+Rust-level changes for embedders: `GoalReadPort` gained
+`load_goal_wake_configs(read_owners, goal_ids)` (implement it on custom
+ports; returning an empty vec preserves prior behavior),
+`ReadVerbStoragePorts` carries a `goal_read` handle,
+`ListWakeCandidatesReadResponse`/`ListWakeCandidatesOutput` gained
+`has_more`, and `QueryRequest` gained `#[serde(default)] goal_state:
+Option<GoalState>` (struct literals must add the field). The MCP wire
+change is purely additive.
+
 ## Checks before calling an upgrade done
 
 ```sh

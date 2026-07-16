@@ -105,6 +105,7 @@ pub(crate) struct ReadVerbStoragePorts {
     pub citation: CitationHandle,
     pub fact_retention: FactRetentionHandle,
     pub goal_wake_candidate: GoalWakeCandidateHandle,
+    pub goal_read: GoalReadHandle,
 }
 
 #[derive(Clone)]
@@ -281,6 +282,7 @@ impl From<StoragePorts> for EngineStoragePorts {
                 citation: ports.citation.clone(),
                 fact_retention: ports.fact_retention.clone(),
                 goal_wake_candidate: ports.goal_wake_candidate.clone(),
+                goal_read: ports.goal_read.clone(),
             },
         }
     }

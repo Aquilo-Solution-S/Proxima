@@ -186,6 +186,146 @@ async fn wake_candidates_resource_returns_armed_goal() -> Result<(), Box<dyn std
     Ok(())
 }
 
+#[tokio::test]
+async fn goal_resources_list_read_back_wake_config_and_paginate()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = create_db().await?;
+    let database_url = db_url(&db_name);
+    let pg = PgStorage::connect(&database_url).await?;
+    pg.run_migrations().await?;
+
+    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let trigger = insert_fact(&pg, &owner, "goal read trigger fact").await?;
+    let mut goal_ids = Vec::new();
+    for _ in 0..3 {
+        goal_ids.push(insert_active_goal(&pg, &owner).await?);
+    }
+    arm_goal_for_fact(&pg, goal_ids[0], trigger).await?;
+
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let engine = Arc::new(
+        Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
+    );
+    let server = McpToolHost::from_engine(engine, McpToolExtensions::default());
+    let auth = McpAuthContext {
+        owner,
+        authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+            .narrowed_to_owner(owner)
+            .expect("personal owner narrows"),
+        model_id: None,
+    };
+
+    // Paginate Active goals two-at-a-time: disjoint, exhaustive, terminated.
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let uri = match &cursor {
+            Some(token) => format!("proxima://goals?state=Active&limit=2&cursor={token}"),
+            None => "proxima://goals?state=Active&limit=2".to_string(),
+        };
+        let page = server
+            .read_resource(&uri, author_ctx(), Some(auth.clone()))
+            .await?;
+        for goal in page["goals"].as_array().expect("goals array") {
+            seen.push(goal["goal"].as_str().expect("goal ref").to_string());
+        }
+        if page["has_more"] == serde_json::json!(true) {
+            cursor = Some(
+                page["next_cursor"]
+                    .as_str()
+                    .expect("has_more implies next_cursor")
+                    .to_string(),
+            );
+            assert!(seen.len() <= 3, "pagination must terminate");
+        } else {
+            assert_eq!(page["next_cursor"], serde_json::Value::Null);
+            break;
+        }
+    }
+    let mut deduped = seen.clone();
+    deduped.sort_unstable();
+    deduped.dedup();
+    assert_eq!(deduped.len(), 3, "pages disjoint and exhaustive: {seen:?}");
+    for goal_id in &goal_ids {
+        assert!(seen.contains(&format!("G:{goal_id}")));
+    }
+
+    // The armed goal reads back its wake config; unarmed goals carry none.
+    let armed = server
+        .read_resource(
+            &format!("proxima://goal/G:{}", goal_ids[0]),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await?;
+    assert_eq!(armed["goal"], format!("G:{}", goal_ids[0]));
+    assert_eq!(armed["state"], "Active");
+    assert_eq!(armed["wake"]["trigger_fact"], format!("F:{trigger}"));
+    assert_eq!(armed["wake"]["prompt"], "plan only");
+    assert_eq!(armed["wake"]["tool_ids"][0], "core_search_memories");
+    let unarmed = server
+        .read_resource(
+            &format!("proxima://goal/G:{}", goal_ids[1]),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await?;
+    assert!(unarmed.get("wake").is_none(), "unarmed goal has no wake");
+
+    // Class-checked reference and closed state vocabulary fail closed.
+    let bare = server
+        .read_resource(
+            &format!("proxima://goal/{}", goal_ids[0]),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await
+        .expect_err("bare uuid goal reference must be rejected");
+    assert!(bare.to_string().contains("malformed Goal id"), "{bare}");
+    let bad_state = server
+        .read_resource(
+            "proxima://goals?state=Everything",
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await
+        .expect_err("unknown state must be rejected");
+    assert!(
+        bad_state.to_string().contains("must be one of"),
+        "{bad_state}"
+    );
+
+    // Wake candidates now signal truncation instead of dropping silently.
+    arm_goal_for_fact(&pg, goal_ids[1], trigger).await?;
+    arm_goal_for_fact(&pg, goal_ids[2], trigger).await?;
+    let capped = server
+        .read_resource(
+            &format!("proxima://wake-candidates?fact=F:{trigger}&limit=2"),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await?;
+    assert_eq!(
+        capped["candidates"].as_array().expect("candidates").len(),
+        2
+    );
+    assert_eq!(capped["has_more"], serde_json::json!(true));
+    let full = server
+        .read_resource(
+            &format!("proxima://wake-candidates?fact=F:{trigger}&limit=10"),
+            author_ctx(),
+            Some(auth),
+        )
+        .await?;
+    assert_eq!(full["candidates"].as_array().expect("candidates").len(), 3);
+    assert_eq!(full["has_more"], serde_json::json!(false));
+
+    drop(server);
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
 async fn insert_fact(
     pg: &PgStorage,
     owner: &Owner,

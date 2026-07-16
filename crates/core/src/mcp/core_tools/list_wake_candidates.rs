@@ -26,6 +26,9 @@ pub struct ListWakeCandidatesArgs {
 #[derive(Debug, Serialize)]
 pub struct ListWakeCandidatesOutput {
     pub candidates: Vec<WakeCandidateItem>,
+    /// More admitted candidates exist past `limit`; re-poll with a
+    /// higher limit (max 200) or narrow the trigger.
+    pub has_more: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,6 +69,7 @@ pub async fn list_wake_candidates(
         )
         .await?;
     Ok(ListWakeCandidatesOutput {
+        has_more: response.has_more,
         candidates: response
             .candidates
             .into_iter()
