@@ -401,6 +401,25 @@ tool-surface profile: `Engine::with_deployment_tool_scope` (default
 their deployment palette so Host-API wake reads cannot exceed the deployed
 tool surface even under an `AuthzContext` with `ToolScope::All`.
 
+## 16. v0.0.7: one MCP reference grammar — prefixed ids only
+
+The MCP presentation tier collapsed to the single canonical wire form:
+typed prefixed uuids (`F:`/`A:`/`P:`/`G:`/`E:<uuid>`; flavor objects use
+their registered uppercase prefix). `OutputMode`, `HandleTable`, `Handle`,
+the mcp-level `EntityKind`/`EntityRef`, and `McpToolError::Resolve` /
+`ResolveError` are removed; `McpToolCtx` lost its `handles`/`mode` fields
+and `McpToolPresentation` is now stateless (`new()` takes no arguments).
+Deployed MCP clients are unaffected: production servers already spoke
+prefixed ids exclusively, and every `format_*`/`resolve_*` helper keeps its
+signature. Two wire-visible tightenings: `core_get_memory` no longer
+accepts a bare uuid for `memory` (pass the `F:`/`A:`/`P:` form it emits),
+and resolve errors now always report the prefixed-id grammar
+(`expected Fact id (F:<uuid>), got prefix 'A' in '…'`). Test harnesses
+that projected session-scoped handles (`F1`, `G7`) must format references
+with `format_prefixed_uuid`/`parse_prefixed_uuid`
+(`proxima_core::mcp`), which remain public alongside
+`PrefixedUuidClass`, `PrefixedUuidError`, and `MemoryHandleClass`.
+
 ## Checks before calling an upgrade done
 
 ```sh

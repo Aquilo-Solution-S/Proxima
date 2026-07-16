@@ -13,7 +13,7 @@ use proxima_core::mcp::core_tools::memory::derive::{DeriveArgs, DerivedKind};
 use proxima_core::mcp::core_tools::memory::link::LinkArgs;
 use proxima_core::mcp::core_tools::memory::remember::RememberArgs;
 use proxima_core::mcp::core_tools::{DeriveTool, LinkTool, RememberTool};
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
+use proxima_core::mcp::{McpAuthorContext, McpToolCtx, McpToolExtensions};
 use proxima_core::{
     AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryFrozen, McpTool, McpToolError, Owner,
 };
@@ -160,7 +160,6 @@ where
 struct ToolHarness {
     pg: proxima_storage_pg::PgStorage,
     owner: Owner,
-    handles: Arc<HandleTable>,
     registry: Arc<FlavorRegistryFrozen>,
     author: McpAuthorContext,
     engine: Arc<Engine>,
@@ -176,7 +175,6 @@ impl ToolHarness {
     fn new(pg: proxima_storage_pg::PgStorage) -> Self {
         let owner = owner_fixture();
         let registry = Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests());
-        let handles = Arc::new(HandleTable::new());
         let author = author_ctx();
         let engine = Arc::new(
             Engine::new((*registry).clone())
@@ -189,7 +187,6 @@ impl ToolHarness {
         Self {
             pg,
             owner,
-            handles,
             registry,
             author,
             engine,
@@ -250,8 +247,6 @@ impl ToolHarness {
         McpToolCtx {
             owner: self.owner,
             authz: AuthzContext::single_owner(&self.owner, AuthPath::HostBearer),
-            handles: Some(self.handles.clone()),
-            mode: OutputMode::Handles,
             registry: self.registry.clone(),
             author: self.author.clone(),
             caller_self_perspective: None,
@@ -283,8 +278,10 @@ fn author_ctx() -> McpAuthorContext {
 
 fn assert_non_empty_handle(value: Option<&str>, prefix: char) {
     let handle = value.expect("expected handle");
-    assert!(
-        handle.starts_with(prefix) && handle.len() > 1,
-        "expected {prefix} handle, got {handle}"
-    );
+    let uuid_part = handle
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .unwrap_or_else(|| panic!("expected {prefix}:<uuid> reference, got {handle}"));
+    uuid::Uuid::parse_str(uuid_part)
+        .unwrap_or_else(|e| panic!("expected {prefix}:<uuid> reference, got {handle}: {e}"));
 }

@@ -18,7 +18,10 @@ use proxima_core::mcp::core_tools::goal::{
 use proxima_core::mcp::core_tools::list_wake_candidates::{
     ListWakeCandidatesArgs, WakeCandidateItem, list_wake_candidates,
 };
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
+use proxima_core::mcp::{
+    McpAuthorContext, McpToolCtx, McpToolExtensions, PrefixedUuidClass, PrefixedUuidError,
+    format_prefixed_uuid, parse_prefixed_uuid,
+};
 use proxima_core::{
     AccessKind, AuthPath, AuthzContext, CORE_DEPENDS_ON_RELATION, EntityKind, FlavorRegistry,
     FlavorRegistryFrozen, GoalId, GroupId, McpTool, McpToolError, MemoryId, MemoryOperatorKind,
@@ -48,7 +51,7 @@ async fn goal_set_tool_creates_active_goal() -> TestResult {
             assert_goal_write(&first.handle, first.lifecycle_memory.as_deref());
             assert!(!first.idempotent_replay);
 
-            let goal_id = harness.goal_id(&first.handle)?;
+            let goal_id = goal_id(&first.handle)?;
             let (state, authorship_kind, authorship_origin, operator_kind, model_id, prompt) =
                 goal_set_authorship_row(harness.pg.pool_for_tests(), goal_id).await?;
             assert_eq!(state, "Active");
@@ -115,10 +118,10 @@ async fn goal_lifecycle_tool_chain() -> TestResult {
                 }))
                 .await?;
 
-            let active_id = harness.goal_id(&active.handle)?;
-            let paused_id = harness.goal_id(&paused.handle)?;
-            let resumed_id = harness.goal_id(&resumed.handle)?;
-            let achieved_id = harness.goal_id(&achieved.handle)?;
+            let active_id = goal_id(&active.handle)?;
+            let paused_id = goal_id(&paused.handle)?;
+            let resumed_id = goal_id(&resumed.handle)?;
+            let achieved_id = goal_id(&achieved.handle)?;
 
             assert_goal_state_supersedes(harness.pg.pool_for_tests(), active_id, "Active", None)
                 .await?;
@@ -180,7 +183,7 @@ async fn goal_full_lifecycle_accepts_structured_body_payload() -> TestResult {
                 .await?;
             assert_fresh_goal_write(&active);
 
-            let active_id = harness.goal_id(&active.handle)?;
+            let active_id = goal_id(&active.handle)?;
             let decomposed = harness
                 .call_goal_decompose(GoalDecomposeArgs {
                     parent_goal: active.handle.clone(),
@@ -199,7 +202,7 @@ async fn goal_full_lifecycle_accepts_structured_body_payload() -> TestResult {
             assert_eq!(decomposed.children.len(), 1);
             let child = decomposed.children.first().expect("one child output");
             assert_fresh_goal_write(child);
-            let child_id = harness.goal_id(&child.handle)?;
+            let child_id = goal_id(&child.handle)?;
             assert_eq!(
                 count_parent_link(harness.pg.pool_for_tests(), child_id, active_id).await?,
                 1,
@@ -248,10 +251,10 @@ async fn goal_full_lifecycle_accepts_structured_body_payload() -> TestResult {
                 .await?;
             assert_fresh_goal_write(&achieved);
 
-            let paused_id = harness.goal_id(&paused.handle)?;
-            let resumed_id = harness.goal_id(&resumed.handle)?;
-            let modified_id = harness.goal_id(&modified.handle)?;
-            let achieved_id = harness.goal_id(&achieved.handle)?;
+            let paused_id = goal_id(&paused.handle)?;
+            let resumed_id = goal_id(&resumed.handle)?;
+            let modified_id = goal_id(&modified.handle)?;
+            let achieved_id = goal_id(&achieved.handle)?;
             assert_structured_lifecycle_chain(
                 harness.pg.pool_for_tests(),
                 active_id,
@@ -310,10 +313,12 @@ async fn goal_transition_tool_rejects_raw_uuid() -> TestResult {
                     idempotency_key: Some("goal-transition-raw-uuid".into()),
                 }))
                 .await
-                .expect_err("raw UUID must not resolve in handle mode");
+                .expect_err("bare uuid must not resolve as a goal reference");
             match err {
-                McpToolError::Resolve(_) => {}
-                other => panic!("expected handle resolution error, got {other:?}"),
+                McpToolError::InvalidInput(message) => {
+                    assert!(message.contains("malformed Goal id"), "message: {message}");
+                }
+                other => panic!("expected invalid-input resolution error, got {other:?}"),
             }
             Ok(())
         })
@@ -334,7 +339,7 @@ async fn goal_decompose_tool_writes_children() -> TestResult {
                     &evidence,
                 )))
                 .await?;
-            let parent_id = harness.goal_id(&parent.handle)?;
+            let parent_id = goal_id(&parent.handle)?;
             let decomposed = harness
                 .call_goal_decompose(GoalDecomposeArgs {
                     parent_goal: parent.handle.clone(),
@@ -353,7 +358,7 @@ async fn goal_decompose_tool_writes_children() -> TestResult {
             for child in &decomposed.children {
                 assert_goal_write(&child.handle, child.lifecycle_memory.as_deref());
                 assert!(!child.idempotent_replay);
-                let child_id = harness.goal_id(&child.handle)?;
+                let child_id = goal_id(&child.handle)?;
                 assert_eq!(
                     count_parent_link(harness.pg.pool_for_tests(), child_id, parent_id).await?,
                     1,
@@ -393,8 +398,8 @@ async fn goal_modify_tool_supersedes_head() -> TestResult {
                 }))
                 .await?;
 
-            let prior_id = harness.goal_id(&prior.handle)?;
-            let modified_id = harness.goal_id(&modified.handle)?;
+            let prior_id = goal_id(&prior.handle)?;
+            let modified_id = goal_id(&modified.handle)?;
             assert_ne!(modified_id, prior_id);
             let (state, supersedes, title, text) =
                 goal_content_row(harness.pg.pool_for_tests(), modified_id).await?;
@@ -414,7 +419,7 @@ async fn goal_wake_config_arms_and_surfaces_wake_candidates() -> TestResult {
         Box::pin(async move {
             let (evidence, trigger_id, trigger_handle, armed) =
                 arm_wake_goal(harness, "goal-wake-set").await?;
-            let armed_id = harness.goal_id(&armed.handle)?;
+            let armed_id = goal_id(&armed.handle)?;
 
             let (trigger_kind, trigger_memory_id, tool_ids, prompt): (
                 String,
@@ -502,11 +507,7 @@ async fn arm_wake_goal(
 ) -> Result<(EvidenceHandle, MemoryId, String, GoalWriteOutput), Box<dyn std::error::Error>> {
     let evidence = harness.seed_evidence_memory("wake evidence").await?;
     let trigger_id = seed_trigger_fact(&harness.pg, &harness.owner, "wake trigger fact").await?;
-    let trigger_handle = harness
-        .handles
-        .assign_fact_memory(trigger_id)
-        .as_str()
-        .to_string();
+    let trigger_handle = format_prefixed_uuid(trigger_id.into_inner(), PrefixedUuidClass::Fact);
 
     let mut set_args = goal_set_args_with_evidence(
         "Wake-armed goal",
@@ -641,7 +642,6 @@ where
 struct ToolHarness {
     pg: proxima_storage_pg::PgStorage,
     owner: Owner,
-    handles: Arc<HandleTable>,
     registry: Arc<FlavorRegistryFrozen>,
     author: McpAuthorContext,
     engine: Arc<Engine>,
@@ -651,14 +651,12 @@ impl ToolHarness {
     async fn new(pg: proxima_storage_pg::PgStorage) -> Result<Self, Box<dyn std::error::Error>> {
         let owner = nil_owner();
         let registry = Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests());
-        let handles = Arc::new(HandleTable::new());
         let root_memory_id = seed_assignment_perspective(&pg, &owner).await?;
         let author = author_ctx().with_self_perspective(root_memory_id);
         let engine = engine_for_registry(&registry, &pg);
         Ok(Self {
             pg,
             owner,
-            handles,
             registry,
             author,
             engine,
@@ -698,16 +696,8 @@ impl ToolHarness {
         text: &str,
     ) -> Result<EvidenceHandle, Box<dyn std::error::Error>> {
         let id = seed_fact_memory(&self.pg, &self.owner, text).await?;
-        let handle = self
-            .handles
-            .assign_abstraction_memory(id)
-            .as_str()
-            .to_string();
+        let handle = format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Abstraction);
         Ok(EvidenceHandle { id, handle })
-    }
-
-    fn goal_id(&self, handle: &str) -> Result<GoalId, proxima_core::mcp::ResolveError> {
-        self.handles.resolve_goal(handle)
     }
 
     async fn viewer_without_memory_write(&self) -> ResolvedAuthz {
@@ -759,8 +749,6 @@ impl ToolHarness {
         McpToolCtx {
             owner: self.owner,
             authz,
-            handles: Some(self.handles.clone()),
-            mode: OutputMode::Handles,
             registry: self.registry.clone(),
             author: self.author.clone(),
             caller_self_perspective: self.author.caller_self_perspective,
@@ -773,6 +761,10 @@ impl ToolHarness {
 struct EvidenceHandle {
     id: MemoryId,
     handle: String,
+}
+
+fn goal_id(handle: &str) -> Result<GoalId, PrefixedUuidError> {
+    parse_prefixed_uuid(handle, PrefixedUuidClass::Goal).map(GoalId::new)
 }
 
 fn goal_set_args(title: &str, text: &str, idempotency_key: &str) -> GoalSetArgs {
@@ -943,15 +935,11 @@ async fn seed_trigger_fact(
 }
 
 fn assert_goal_write(handle: &str, lifecycle_memory: Option<&str>) {
-    assert!(
-        handle.starts_with('G') && handle.len() > 1,
-        "goal output must carry a goal handle, got {handle}"
-    );
+    parse_prefixed_uuid(handle, PrefixedUuidClass::Goal)
+        .unwrap_or_else(|e| panic!("goal output must carry a G:<uuid> reference: {e}"));
     let lifecycle = lifecycle_memory.expect("goal output lifecycle memory");
-    assert!(
-        lifecycle.starts_with('F') && lifecycle.len() > 1,
-        "lifecycle output must carry a fact handle, got {lifecycle}"
-    );
+    parse_prefixed_uuid(lifecycle, PrefixedUuidClass::Fact)
+        .unwrap_or_else(|e| panic!("lifecycle output must carry an F:<uuid> reference: {e}"));
 }
 
 fn assert_fresh_goal_write(output: &GoalWriteOutput) {

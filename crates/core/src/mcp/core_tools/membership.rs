@@ -54,7 +54,7 @@ pub enum CoreMembershipArgs {
 pub struct AddMemberArgs {
     /// Group space key from `core_memory_spaces`, e.g. `group:<uuid>`.
     pub group: String,
-    /// User UUID string. Users have no MCP handle system.
+    /// User UUID string. Users are not MCP entities and take no prefix.
     pub member: String,
     /// Membership relation: `admin`, `editor`, `viewer`, or `ingest`.
     pub relation: String,
@@ -284,7 +284,7 @@ mod tests {
 
     use crate::access::Role;
     use crate::mcp::core_tools::memory_spaces::MemorySpaceKey;
-    use crate::mcp::{McpAuthorContext, McpToolExtensions, OutputMode, validate_action_args};
+    use crate::mcp::{McpAuthorContext, McpToolExtensions, validate_action_args};
     use crate::{AuthPath, AuthzContext, FlavorRegistry};
 
     use super::*;
@@ -353,8 +353,6 @@ mod tests {
         McpToolCtx {
             owner,
             authz: AuthzContext::for_subject_with_role(subject, group_roles, AuthPath::HostBearer),
-            handles: None,
-            mode: OutputMode::PrefixedIds,
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "test".into(),

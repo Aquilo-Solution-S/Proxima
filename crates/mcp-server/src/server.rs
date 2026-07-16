@@ -16,7 +16,7 @@ use proxima_core::mcp::core_tools::{
 };
 use proxima_core::mcp::{
     McpAuthorContext, McpToolCtx, McpToolError, McpToolErrorKind, McpToolExtensions, Next,
-    OutputMode, TerminalDispatch, ToolCall, tool_name_matches,
+    TerminalDispatch, ToolCall, tool_name_matches,
 };
 use proxima_core::protocol::{
     resource as protocol_resource, resource_path as protocol_resource_path,
@@ -90,8 +90,8 @@ impl McpToolHost {
 
     /// Build a per-call `McpToolCtx` derived from the auth regime.
     ///
-    /// Host-bearer and unauthenticated test calls receive no handle table
-    /// and `OutputMode::PrefixedIds`.
+    /// All references cross the wire as typed prefixed uuids
+    /// (`F:`/`A:`/`P:`/`G:`/`E:`).
     #[must_use]
     pub fn ctx_for(&self, author: McpAuthorContext, auth: &McpAuthContext) -> McpToolCtx {
         let owner = auth.owner;
@@ -99,8 +99,6 @@ impl McpToolHost {
         McpToolCtx {
             owner,
             authz,
-            handles: None,
-            mode: OutputMode::PrefixedIds,
             registry: self.registry.clone(),
             caller_self_perspective: author.caller_self_perspective,
             extensions: self.extensions.clone(),
@@ -512,7 +510,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ctx_for_uses_prefixed_ids_without_handles() {
+    async fn ctx_for_speaks_prefixed_ids() {
         let server = make_server();
         let author = McpAuthorContext {
             model_id: "test-model".into(),
@@ -530,8 +528,15 @@ mod tests {
         };
 
         let ctx = server.ctx_for(author, &auth);
-        assert_eq!(ctx.mode, OutputMode::PrefixedIds);
-        assert!(ctx.handles.is_none());
+        let id = proxima_core::MemoryId::new(uuid::Uuid::now_v7());
+        let wire = ctx.format_fact_memory(id);
+        assert_eq!(wire, format!("F:{}", id.into_inner()));
+        assert_eq!(ctx.resolve_fact_memory(&wire).expect("round trip"), id);
+        assert!(
+            ctx.resolve_fact_memory(&id.into_inner().to_string())
+                .is_err(),
+            "bare uuids must not be accepted on the wire"
+        );
     }
 
     #[tokio::test]

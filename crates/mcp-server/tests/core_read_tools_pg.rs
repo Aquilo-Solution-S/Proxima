@@ -55,9 +55,22 @@ async fn core_read_resources_return_prefixed_ids_and_author()
         "neighbor_edges should be omitted unless expand_neighbors is true"
     );
 
+    let bare_uuid_err = server
+        .read_resource(
+            &format!("proxima://memory/{derived}"),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await
+        .expect_err("bare uuid must be rejected; the wire speaks prefixed ids only");
+    assert!(
+        bare_uuid_err.to_string().contains("malformed memory id"),
+        "unexpected error: {bare_uuid_err}"
+    );
+
     let expanded = server
         .read_resource(
-            &format!("proxima://memory/{derived}?expand_neighbors=true"),
+            &format!("proxima://memory/A:{derived}?expand_neighbors=true"),
             author_ctx(),
             Some(auth.clone()),
         )

@@ -105,7 +105,7 @@ pub const CORE_RESOURCES: &[CoreResourceMeta] = &[
         name: "proxima-memory",
         title: "Proxima Memory",
         scope_key: protocol_resource::MEMORY,
-        description: "Owner-scoped memory by prefixed id, raw id, or handle.",
+        description: "Owner-scoped memory by prefixed id (`F:`/`A:`/`P:`).",
         is_template: true,
     },
     CoreResourceMeta {
@@ -113,7 +113,7 @@ pub const CORE_RESOURCES: &[CoreResourceMeta] = &[
         name: "proxima-memory-lineage",
         title: "Proxima Memory Lineage",
         scope_key: protocol_resource::MEMORY_LINEAGE,
-        description: "Owner-scoped Provenance/Supersession lineage from a memory id or handle.",
+        description: "Owner-scoped Provenance/Supersession lineage from a prefixed memory id.",
         is_template: true,
     },
     CoreResourceMeta {

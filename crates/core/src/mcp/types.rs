@@ -5,31 +5,12 @@ use std::sync::Arc;
 use crate::authz::AuthzContext;
 use crate::{MemoryId, Owner, ToolServices, verbs::schema::FlavorRegistryFrozen};
 
-use super::handles::HandleTable;
-
 #[derive(Debug, Clone)]
 pub struct McpAuthorContext {
     pub model_id: String,
     pub client_name: String,
     pub client_version: String,
     pub caller_self_perspective: Option<MemoryId>,
-}
-
-/// Selects the regime that `McpToolCtx::format_*` / `resolve_*`
-/// helpers operate in.
-///
-/// - `Handles`: handle-projected, model-facing. Emits/parses handle
-///   strings (`F1`, `A1`, `P1`, `G7`, …) against a `HandleTable`.
-/// - `RawIds`: human-facing. Emits/parses raw UUID strings. No
-///   `HandleTable` is consulted.
-/// - `PrefixedIds`: wire-facing. Emits/parses typed `F:<uuid>`,
-///   `A:<uuid>`, `P:<uuid>`, `G:<uuid>`, and `E:<uuid>` strings.
-///   No `HandleTable` is consulted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputMode {
-    Handles,
-    RawIds,
-    PrefixedIds,
 }
 
 #[derive(Clone, Default)]
@@ -89,10 +70,6 @@ pub struct McpToolCtx {
     /// edge. Tools pass this to engine verbs — never a substituted
     /// engine identity (privilege-escalation guard).
     pub authz: AuthzContext,
-    /// `Some` for handle-projected calls. Must be `Some` when
-    /// `mode == OutputMode::Handles`.
-    pub handles: Option<Arc<HandleTable>>,
-    pub mode: OutputMode,
     pub registry: Arc<FlavorRegistryFrozen>,
     pub author: McpAuthorContext,
     pub caller_self_perspective: Option<MemoryId>,

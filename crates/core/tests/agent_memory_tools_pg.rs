@@ -5,7 +5,10 @@ mod common;
 use common::{ConstantEmbedding, drop_db, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
 use proxima_core::mcp::core_tools::get_memory::{GetMemoryArgs, get_memory};
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolExtensions, OutputMode};
+use proxima_core::mcp::{
+    McpAuthorContext, McpToolCtx, McpToolExtensions, PrefixedUuidClass, PrefixedUuidError,
+    parse_prefixed_uuid,
+};
 use proxima_core::{
     AgentNoteV1, AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, ErrorCode,
     FactPayload, FlavorRegistry, FlavorRegistryFrozen, GroupId, McpToolError, MemoryId, Owner,
@@ -117,13 +120,11 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze_or_panic_for_tests());
     let owner = nil_owner();
-    let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
 
     let remembered = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author.clone(),
         "core_remember",
@@ -139,14 +140,13 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
         remembered["handle"]
             .as_str()
             .expect("handle")
-            .starts_with('F'),
-        "remember mints a Fact handle, got: {remembered}"
+            .starts_with("F:"),
+        "remember mints an F:<uuid> reference, got: {remembered}"
     );
 
     let derived = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author.clone(),
         "core_derive",
@@ -165,7 +165,6 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
     let searched = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author.clone(),
         "core_search_memories",
@@ -196,7 +195,7 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
     );
     assert_eq!(searched["neighbor_edges"][0]["source"], derived["handle"]);
 
-    assert_search_since_rejects_invalid_timestamp(&pg, &owner, &handles, &frozen, author).await;
+    assert_search_since_rejects_invalid_timestamp(&pg, &owner, &frozen, author).await;
 
     drop(pg);
     drop_db(&db_name).await?;
@@ -211,7 +210,6 @@ async fn remember_enqueues_one_embedding_job_and_replay_does_not_duplicate()
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze_or_panic_for_tests());
     let owner = nil_owner();
-    let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
     let args = json!({
         "title": "Embedding job",
@@ -223,28 +221,18 @@ async fn remember_enqueues_one_embedding_job_and_replay_does_not_duplicate()
     let first = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author.clone(),
         "core_remember",
         args.clone(),
     )
     .await?;
-    let replay = call_tool(
-        &pg,
-        &owner,
-        &handles,
-        &frozen,
-        author,
-        "core_remember",
-        args,
-    )
-    .await?;
+    let replay = call_tool(&pg, &owner, &frozen, author, "core_remember", args).await?;
 
     assert_eq!(first["idempotent_replay"], json!(false));
     assert_eq!(replay["idempotent_replay"], json!(true));
     assert_eq!(replay["handle"], first["handle"]);
-    let memory_id = handles.resolve_memory(first["handle"].as_str().expect("handle"))?;
+    let memory_id = resolve_memory(first["handle"].as_str().expect("handle"))?;
     assert_eq!(
         embedding_job_count(pg.pool_for_tests(), memory_id, "test-embed").await?,
         1
@@ -264,7 +252,6 @@ async fn remember_reused_idempotency_key_changed_body_creates_new_stateful_fact(
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze_or_panic_for_tests());
     let owner = nil_owner();
-    let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
     let base_args = json!({
         "title": "Stateful remember",
@@ -282,32 +269,20 @@ async fn remember_reused_idempotency_key_changed_body_creates_new_stateful_fact(
     let first = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author.clone(),
         "core_remember",
         base_args,
     )
     .await?;
-    let second = call_tool(
-        &pg,
-        &owner,
-        &handles,
-        &frozen,
-        author,
-        "core_remember",
-        changed_args,
-    )
-    .await?;
+    let second = call_tool(&pg, &owner, &frozen, author, "core_remember", changed_args).await?;
 
     assert_eq!(first["idempotent_replay"], json!(false));
     assert_eq!(second["idempotent_replay"], json!(false));
     assert_ne!(second["handle"], first["handle"]);
 
-    let first_memory_id =
-        handles.resolve_memory(first["handle"].as_str().expect("first handle"))?;
-    let second_memory_id =
-        handles.resolve_memory(second["handle"].as_str().expect("second handle"))?;
+    let first_memory_id = resolve_memory(first["handle"].as_str().expect("first handle"))?;
+    let second_memory_id = resolve_memory(second["handle"].as_str().expect("second handle"))?;
     assert_ne!(second_memory_id, first_memory_id);
 
     let first_note_id = agent_note_id(pg.pool_for_tests(), first_memory_id).await?;
@@ -330,7 +305,6 @@ async fn remember_reused_idempotency_key_changed_body_creates_new_stateful_fact(
     let default_search = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author_ctx(),
         "core_search_memories",
@@ -355,7 +329,6 @@ async fn remember_reused_idempotency_key_changed_body_creates_new_stateful_fact(
     let hydrated_search = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author_ctx(),
         "core_search_memories",
@@ -376,7 +349,6 @@ async fn remember_reused_idempotency_key_changed_body_creates_new_stateful_fact(
     let full_history_search = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author_ctx(),
         "core_search_memories",
@@ -412,12 +384,10 @@ async fn search_memories_heads_filter_runs_before_limit() -> Result<(), Box<dyn 
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze_or_panic_for_tests());
     let owner = nil_owner();
-    let handles = Arc::new(HandleTable::new());
 
     let independent = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author_ctx(),
         "core_remember",
@@ -434,7 +404,6 @@ async fn search_memories_heads_filter_runs_before_limit() -> Result<(), Box<dyn 
         chain_head = call_tool(
             &pg,
             &owner,
-            &handles,
             &frozen,
             author_ctx(),
             "core_remember",
@@ -451,7 +420,6 @@ async fn search_memories_heads_filter_runs_before_limit() -> Result<(), Box<dyn 
     let search = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author_ctx(),
         "core_search_memories",
@@ -486,7 +454,6 @@ async fn remember_reused_idempotency_key_identical_content_is_idempotent_replay(
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze_or_panic_for_tests());
     let owner = nil_owner();
-    let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
     let args = json!({
         "title": "Identical remember",
@@ -498,29 +465,19 @@ async fn remember_reused_idempotency_key_identical_content_is_idempotent_replay(
     let first = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author.clone(),
         "core_remember",
         args.clone(),
     )
     .await?;
-    let replay = call_tool(
-        &pg,
-        &owner,
-        &handles,
-        &frozen,
-        author,
-        "core_remember",
-        args,
-    )
-    .await?;
+    let replay = call_tool(&pg, &owner, &frozen, author, "core_remember", args).await?;
 
     assert_eq!(first["idempotent_replay"], json!(false));
     assert_eq!(replay["idempotent_replay"], json!(true));
     assert_eq!(replay["handle"], first["handle"]);
 
-    let memory_id = handles.resolve_memory(first["handle"].as_str().expect("handle"))?;
+    let memory_id = resolve_memory(first["handle"].as_str().expect("handle"))?;
     let note_id = agent_note_id(pg.pool_for_tests(), memory_id).await?;
     assert_eq!(
         agent_note_fact_count(pg.pool_for_tests(), note_id).await?,
@@ -548,13 +505,11 @@ async fn remember_cited_and_uncited_persist_citation_rows() -> Result<(), Box<dy
 
     let frozen = registry_with_remember_test_citation();
     let owner = nil_owner();
-    let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
 
     let cited = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author.clone(),
         "core_remember",
@@ -584,7 +539,6 @@ async fn remember_cited_and_uncited_persist_citation_rows() -> Result<(), Box<dy
     let uncited = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author,
         "core_remember",
@@ -597,12 +551,10 @@ async fn remember_cited_and_uncited_persist_citation_rows() -> Result<(), Box<dy
     )
     .await?;
 
-    let cited_memory_id = handles
-        .resolve_memory(cited["handle"].as_str().expect("cited handle"))?
-        .into_inner();
-    let uncited_memory_id = handles
-        .resolve_memory(uncited["handle"].as_str().expect("uncited handle"))?
-        .into_inner();
+    let cited_memory_id =
+        resolve_memory(cited["handle"].as_str().expect("cited handle"))?.into_inner();
+    let uncited_memory_id =
+        resolve_memory(uncited["handle"].as_str().expect("uncited handle"))?.into_inner();
 
     let cited_row: (Option<uuid::Uuid>,) = sqlx::query_as(
         "SELECT citation_mapping_id
@@ -694,13 +646,11 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze_or_panic_for_tests());
     let owner = nil_owner();
-    let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
 
     let first = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author.clone(),
         "core_remember",
@@ -714,7 +664,6 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
     let second = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author.clone(),
         "core_remember",
@@ -729,7 +678,6 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
     let link = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author,
         "core_link",
@@ -768,14 +716,12 @@ async fn search_memories_hybrid_returns_embedding_only_match()
     let frozen_inner = registry.freeze_or_panic_for_tests();
     let frozen = Arc::new(frozen_inner.clone());
     let owner = nil_owner();
-    let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
 
     let engine = engine_for_registry(&frozen, &pg);
     let remembered = call_tool_with_engine(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author.clone(),
         Some(engine.clone()),
@@ -788,13 +734,11 @@ async fn search_memories_hybrid_returns_embedding_only_match()
         }),
     )
     .await?;
-    let remembered_id =
-        handles.resolve_memory(remembered["handle"].as_str().expect("remember handle"))?;
+    let remembered_id = resolve_memory(remembered["handle"].as_str().expect("remember handle"))?;
     engine.ensure_fact_embedding(&owner, remembered_id).await?;
     let lexical = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author.clone(),
         "core_search_memories",
@@ -806,7 +750,6 @@ async fn search_memories_hybrid_returns_embedding_only_match()
     let hybrid = call_tool_with_engine(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author,
         Some(engine),
@@ -923,13 +866,9 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     let frozen_b = frozen.clone();
     let owner_a = nil_owner();
     let owner_b: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::from_u128(1)));
-
-    let handles_a = Arc::new(HandleTable::new());
-    let handles_b = Arc::new(HandleTable::new());
     let fact_a = call_tool(
         &pg,
         &owner_a,
-        &handles_a,
         &frozen,
         author_ctx(),
         "core_remember",
@@ -943,7 +882,6 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     let fact_b = call_tool(
         &pg,
         &owner_b,
-        &handles_b,
         &frozen,
         author_ctx(),
         "core_remember",
@@ -968,7 +906,6 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     let a = call_tool(
         &pg,
         &owner_a,
-        &handles_a,
         &frozen,
         author_ctx(),
         "core_derive",
@@ -978,7 +915,6 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     let b = call_tool(
         &pg,
         &owner_b,
-        &handles_b,
         &frozen,
         author_ctx(),
         "core_derive",
@@ -1002,7 +938,6 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     let kind_fact = call_tool(
         &pg,
         &owner_a,
-        &handles_a,
         &frozen,
         author_ctx(),
         "core_remember",
@@ -1016,7 +951,6 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     let abstraction = call_tool(
         &pg,
         &owner_a,
-        &handles_a,
         &frozen,
         author_ctx(),
         "core_derive",
@@ -1033,7 +967,6 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     let perspective = call_tool(
         &pg,
         &owner_a,
-        &handles_a,
         &frozen_b,
         author_ctx(),
         "core_derive",
@@ -1072,13 +1005,11 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze_or_panic_for_tests());
     let owner = nil_owner();
-    let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
 
     let fact = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author.clone(),
         "core_remember",
@@ -1092,7 +1023,6 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
     let abstraction = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author.clone(),
         "core_derive",
@@ -1109,7 +1039,6 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
     let perspective = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author.clone(),
         "core_derive",
@@ -1128,7 +1057,6 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
     let upward = call_tool(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author,
         "core_derive",
@@ -1161,7 +1089,6 @@ async fn publish_to_world_transfers_owner_denies_rewrite_and_allows_ordinary_rea
 
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze_or_panic_for_tests());
-    let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
     let engine = engine_for_registry(&frozen, &pg);
 
@@ -1179,7 +1106,6 @@ async fn publish_to_world_transfers_owner_denies_rewrite_and_allows_ordinary_rea
         &pg,
         &group_owner,
         admin_authz.clone(),
-        &handles,
         &frozen,
         author.clone(),
         Some(engine.clone()),
@@ -1194,9 +1120,7 @@ async fn publish_to_world_transfers_owner_denies_rewrite_and_allows_ordinary_rea
     )
     .await?;
     let handle = remembered["handle"].as_str().expect("handle").to_string();
-    let memory_id = handles
-        .resolve_memory(&handle)
-        .expect("resolves the just-created Fact handle");
+    let memory_id = resolve_memory(&handle).expect("resolves the just-created Fact handle");
 
     // an ordinary outsider with zero group role cannot read it yet.
     let outsider_subject = UserId::new(Uuid::now_v7());
@@ -1204,7 +1128,6 @@ async fn publish_to_world_transfers_owner_denies_rewrite_and_allows_ordinary_rea
     let pre_publish_read = get_memory(
         outsider_ctx(
             &pg,
-            &handles,
             &frozen,
             author.clone(),
             &engine,
@@ -1227,7 +1150,6 @@ async fn publish_to_world_transfers_owner_denies_rewrite_and_allows_ordinary_rea
         &pg,
         &group_owner,
         admin_authz.clone(),
-        &handles,
         &frozen,
         author.clone(),
         Some(engine.clone()),
@@ -1252,7 +1174,6 @@ async fn publish_to_world_transfers_owner_denies_rewrite_and_allows_ordinary_rea
         &pg,
         &group_owner,
         admin_authz.clone(),
-        &handles,
         &frozen,
         author.clone(),
         Some(engine.clone()),
@@ -1267,7 +1188,7 @@ async fn publish_to_world_transfers_owner_denies_rewrite_and_allows_ordinary_rea
 
     // reads now work for the same ordinary outsider.
     let post_publish_read = get_memory(
-        outsider_ctx(&pg, &handles, &frozen, author, &engine, outsider_authz),
+        outsider_ctx(&pg, &frozen, author, &engine, outsider_authz),
         GetMemoryArgs {
             memory: handle,
             expand_neighbors: false,
@@ -1294,7 +1215,6 @@ async fn core_membership_add_member_denies_missing_resolver_role()
     let (pg, db_name) = fresh_pg().await;
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze_or_panic_for_tests());
-    let handles = Arc::new(HandleTable::new());
     let owner = nil_owner();
     let group = GroupId::new(Uuid::now_v7());
     let member = UserId::new(Uuid::now_v7());
@@ -1304,7 +1224,6 @@ async fn core_membership_add_member_denies_missing_resolver_role()
     let err = call_tool_with_engine(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author_ctx(),
         Some(engine_for_registry(&frozen, &pg)),
@@ -1334,7 +1253,6 @@ async fn core_membership_remove_member_denies_missing_resolver_role()
     let (pg, db_name) = fresh_pg().await;
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze_or_panic_for_tests());
-    let handles = Arc::new(HandleTable::new());
     let owner = nil_owner();
     let group = GroupId::new(Uuid::now_v7());
     let member = UserId::new(Uuid::now_v7());
@@ -1342,7 +1260,6 @@ async fn core_membership_remove_member_denies_missing_resolver_role()
     let err = call_tool_with_engine(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author_ctx(),
         Some(engine_for_registry(&frozen, &pg)),
@@ -1371,14 +1288,12 @@ async fn core_membership_list_members_denies_missing_resolver_role()
     let (pg, db_name) = fresh_pg().await;
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze_or_panic_for_tests());
-    let handles = Arc::new(HandleTable::new());
     let owner = nil_owner();
     let group = GroupId::new(Uuid::now_v7());
 
     let err = call_tool_with_engine(
         &pg,
         &owner,
-        &handles,
         &frozen,
         author_ctx(),
         Some(engine_for_registry(&frozen, &pg)),
@@ -1402,7 +1317,6 @@ async fn core_membership_list_members_denies_missing_resolver_role()
 
 fn outsider_ctx(
     pg: &proxima_storage_pg::PgStorage,
-    handles: &Arc<HandleTable>,
     registry: &Arc<proxima_core::FlavorRegistryFrozen>,
     author: McpAuthorContext,
     engine: &Arc<Engine>,
@@ -1412,8 +1326,6 @@ fn outsider_ctx(
     McpToolCtx {
         owner: OwnerRef::Personal(subject),
         authz,
-        handles: Some(handles.clone()),
-        mode: OutputMode::Handles,
         registry: registry.clone(),
         author,
         caller_self_perspective: None,
@@ -1425,7 +1337,6 @@ fn outsider_ctx(
 async fn call_tool(
     pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,
-    handles: &Arc<HandleTable>,
     registry: &Arc<proxima_core::FlavorRegistryFrozen>,
     author: McpAuthorContext,
     name: &str,
@@ -1434,7 +1345,6 @@ async fn call_tool(
     call_tool_with_engine(
         pg,
         owner,
-        handles,
         registry,
         author,
         Some(engine_for_registry(registry, pg)),
@@ -1447,14 +1357,12 @@ async fn call_tool(
 async fn assert_search_since_rejects_invalid_timestamp(
     pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,
-    handles: &Arc<HandleTable>,
     registry: &Arc<proxima_core::FlavorRegistryFrozen>,
     author: McpAuthorContext,
 ) {
     let invalid_since = call_tool(
         pg,
         owner,
-        handles,
         registry,
         author,
         "core_search_memories",
@@ -1488,8 +1396,6 @@ async fn call_tool_prefixed(
         McpToolCtx {
             owner: *owner,
             authz: AuthzContext::single_owner(owner, AuthPath::HostBearer),
-            handles: None,
-            mode: OutputMode::PrefixedIds,
             registry: registry.clone(),
             author,
             caller_self_perspective,
@@ -1514,8 +1420,6 @@ async fn read_memory_prefixed(
         McpToolCtx {
             owner: *owner,
             authz: AuthzContext::single_owner(owner, AuthPath::HostBearer),
-            handles: None,
-            mode: OutputMode::PrefixedIds,
             registry: registry.clone(),
             author,
             caller_self_perspective,
@@ -1533,11 +1437,9 @@ async fn read_memory_prefixed(
         .map_err(|err| proxima_core::McpToolError::Other(format!("serialize memory read: {err}")))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn call_tool_with_engine(
     pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,
-    handles: &Arc<HandleTable>,
     registry: &Arc<proxima_core::FlavorRegistryFrozen>,
     author: McpAuthorContext,
     engine: Option<Arc<Engine>>,
@@ -1548,7 +1450,6 @@ async fn call_tool_with_engine(
         pg,
         owner,
         AuthzContext::single_owner(owner, AuthPath::HostBearer),
-        handles,
         registry,
         author,
         engine,
@@ -1568,7 +1469,6 @@ async fn call_tool_as(
     pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,
     authz: AuthzContext,
-    handles: &Arc<HandleTable>,
     registry: &Arc<proxima_core::FlavorRegistryFrozen>,
     author: McpAuthorContext,
     engine: Option<Arc<Engine>>,
@@ -1584,8 +1484,6 @@ async fn call_tool_as(
         McpToolCtx {
             owner: *owner,
             authz,
-            handles: Some(handles.clone()),
-            mode: OutputMode::Handles,
             registry: registry.clone(),
             author,
             caller_self_perspective: None,
@@ -1599,6 +1497,17 @@ async fn call_tool_as(
 
 fn nil_owner() -> Owner {
     owner_fixture()
+}
+
+/// Parse a wire memory reference by its class prefix (`F:`/`A:`/`P:`),
+/// mirroring the server's prefixed-id grammar on the assertion side.
+fn resolve_memory(raw: &str) -> Result<MemoryId, PrefixedUuidError> {
+    let class = match raw.split_once(':').map(|(prefix, _)| prefix) {
+        Some("A") => PrefixedUuidClass::Abstraction,
+        Some("P") => PrefixedUuidClass::Perspective,
+        _ => PrefixedUuidClass::Fact,
+    };
+    parse_prefixed_uuid(raw, class).map(MemoryId::new)
 }
 
 fn author_ctx() -> McpAuthorContext {

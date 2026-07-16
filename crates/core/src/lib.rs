@@ -60,12 +60,12 @@ pub use goal::{
 pub use ids::*;
 pub use llm::*;
 pub use mcp::{
-    CoreActionMeta, CoreResourceMeta, Handle, HandleTable, McpAuthorContext, McpCallFn, McpTool,
-    McpToolAnnotations, McpToolCtx, McpToolDescriptor, McpToolError, McpToolErrorKind,
-    McpToolExtensions, McpToolOrigin, MemoryHandleClass, Next, OutputMode, PrefixedUuidClass,
-    PrefixedUuidError, RequestBehavior, ScopeGateBehavior, TerminalDispatch, all_core_actions,
-    all_core_resources, core_action_meta, core_tool_annotations, core_tool_has_actions,
-    format_prefixed_uuid, parse_prefixed_uuid, provider_safe_tool_name, tool_name_matches,
+    CoreActionMeta, CoreResourceMeta, McpAuthorContext, McpCallFn, McpTool, McpToolAnnotations,
+    McpToolCtx, McpToolDescriptor, McpToolError, McpToolErrorKind, McpToolExtensions,
+    McpToolOrigin, MemoryHandleClass, Next, PrefixedUuidClass, PrefixedUuidError, RequestBehavior,
+    ScopeGateBehavior, TerminalDispatch, all_core_actions, all_core_resources, core_action_meta,
+    core_tool_annotations, core_tool_has_actions, format_prefixed_uuid, parse_prefixed_uuid,
+    provider_safe_tool_name, tool_name_matches,
 };
 pub use memory::*;
 pub use models::*;
