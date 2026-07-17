@@ -58,10 +58,37 @@ pub async fn get_memory(
                 include_neighbor_edges: args.expand_neighbors,
             },
         )
-        .await?;
+        .await
+        .map_err(|err| {
+            // Re-word the engine's handle-less not-found with the wire
+            // handle the caller actually passed.
+            let err = McpToolError::from(err);
+            if err.kind() == crate::mcp::McpToolErrorKind::NotFound {
+                McpToolError::NotFound(format!("memory {} not found", args.memory))
+            } else {
+                err
+            }
+        })?;
     let snapshot = response
         .memory
-        .ok_or_else(|| McpToolError::InvalidInput(format!("memory {memory_id:?} not found")))?;
+        .ok_or_else(|| McpToolError::NotFound(format!("memory {} not found", args.memory)))?;
+    let neighbor_edges = if args.expand_neighbors {
+        Some(neighbor_edges_from_rows(&ctx, response.neighbor_edges))
+    } else {
+        None
+    };
+    project_memory_snapshot(&ctx, snapshot, output_space, neighbor_edges)
+}
+
+/// Project a storage snapshot into the wire output shape shared by
+/// `get_memory`, the `proxima://memories` batch read, and
+/// `facts_citing_object`.
+pub(super) fn project_memory_snapshot(
+    ctx: &McpToolCtx,
+    snapshot: crate::read_models::MemorySnapshot,
+    space: String,
+    neighbor_edges: Option<Vec<NeighborEdge>>,
+) -> Result<GetMemoryOutput, McpToolError> {
     let class = memory_class(&snapshot.kind)?;
     let handle = ctx.format_memory_with_class(snapshot.memory_id, class);
     let payload = snapshot_payload_value(snapshot.payload.as_ref())?;
@@ -71,15 +98,10 @@ pub async fn get_memory(
         .or_else(|| payload_string(&payload, "text"))
         .or_else(|| snapshot.text.clone());
     let tags = payload_tags(&payload);
-    let neighbor_edges = if args.expand_neighbors {
-        Some(neighbor_edges_from_rows(&ctx, response.neighbor_edges))
-    } else {
-        None
-    };
     Ok(GetMemoryOutput {
         handle: handle.clone(),
         memory: handle,
-        space: output_space,
+        space,
         kind: snapshot.kind,
         schema_id: snapshot.schema_id.as_str().to_string(),
         schema_version: snapshot.schema_version.into_inner(),

@@ -1,5 +1,5 @@
-use proxima_core::read_models::{MemorySnapshot, SidecarSpec};
-use proxima_core::verbs::query::FactCitationReadback;
+use proxima_core::read_models::SidecarSpec;
+use proxima_core::verbs::query::{FactCitationCursor, FactCitationPage, FactCitationReadback};
 use proxima_core::{FactEntityId, MemoryId, OwnerRef, SchemaId, StorageError};
 use sqlx::PgPool;
 
@@ -15,13 +15,19 @@ pub(crate) async fn facts_citing_object(
     read_owners: &[OwnerRef],
     cited_object_id: uuid::Uuid,
     sidecars: &[SidecarSpec],
-) -> Result<Vec<MemorySnapshot>, StorageError> {
+    after: Option<FactCitationCursor>,
+    limit: u32,
+) -> Result<FactCitationPage, StorageError> {
     if read_owners.is_empty() {
-        return Ok(Vec::new());
+        return Ok(FactCitationPage {
+            facts: Vec::new(),
+            next_cursor: None,
+            has_more: false,
+        });
     }
     let (read_owner_kinds, read_owner_ids) = read_owner_columns(read_owners);
     let sql = format!(
-        "SELECT m.memory_id
+        "SELECT m.memory_id, m.created_at
            FROM proxima_core.memories m
            JOIN proxima_core.citation_mappings cm
              ON cm.memory_id = m.memory_id
@@ -37,28 +43,53 @@ pub(crate) async fn facts_citing_object(
             )
             AND m.kind IS NULL
             AND m.tombstoned_at IS NULL
-          ORDER BY m.created_at DESC, m.memory_id DESC",
+            AND ($4::timestamptz IS NULL
+                 OR (m.created_at, m.memory_id) < ($4::timestamptz, $5::uuid))
+          ORDER BY m.created_at DESC, m.memory_id DESC
+          LIMIT $6",
         entity_owner_union = entity_owner_union(),
         read_owner_predicate = read_owner_predicate("eo", "s"),
     );
+    let after_created_at = after.map(|cursor| cursor.created_at);
+    let after_memory_id = after.map(|cursor| cursor.memory_id.into_inner());
+    let fetch = i64::from(limit).saturating_add(1);
     // SQL-POLICY: fixed-fragment
-    let memory_ids: Vec<uuid::Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
-        .bind(cited_object_id)
-        .bind(&read_owner_kinds)
-        .bind(&read_owner_ids)
-        .fetch_all(pool)
-        .await
-        .map_err(map_err)?;
+    let mut rows: Vec<(uuid::Uuid, time::OffsetDateTime)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(sql))
+            .bind(cited_object_id)
+            .bind(&read_owner_kinds)
+            .bind(&read_owner_ids)
+            .bind(after_created_at)
+            .bind(after_memory_id)
+            .bind(fetch)
+            .fetch_all(pool)
+            .await
+            .map_err(map_err)?;
 
-    let mut snapshots = Vec::with_capacity(memory_ids.len());
-    for memory_id in memory_ids {
+    let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
+    let has_more = rows.len() > page_len;
+    rows.truncate(page_len);
+    let next_cursor = (has_more && !rows.is_empty()).then(|| {
+        let (memory_id, created_at) = rows.last().expect("non-empty page");
+        FactCitationCursor {
+            created_at: *created_at,
+            memory_id: MemoryId::new(*memory_id),
+        }
+    });
+
+    let mut snapshots = Vec::with_capacity(rows.len());
+    for (memory_id, _created_at) in rows {
         if let Some(snapshot) =
             load_memory_by_id(pool, pg_sidecars, MemoryId::new(memory_id), sidecars).await?
         {
             snapshots.push(snapshot);
         }
     }
-    Ok(snapshots)
+    Ok(FactCitationPage {
+        facts: snapshots,
+        next_cursor,
+        has_more,
+    })
 }
 
 pub(crate) async fn citation_of_fact(

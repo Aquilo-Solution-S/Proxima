@@ -47,6 +47,10 @@ const fn default_include_calls() -> bool {
 pub struct CodeSearchChunksOutput {
     pub matches: Vec<ChunkMatch>,
     pub calls_edges: Vec<CallEdge>,
+    /// At least one further eligible match exists past `limit` in the
+    /// scanned candidate window; retry with a higher limit (max 50) or
+    /// narrow the query. Truncation is a signal, never silent.
+    pub has_more: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -177,6 +181,7 @@ impl Tool for CodeSearchChunksTool {
                 .await?;
 
             let mut matches = Vec::new();
+            let mut has_more = false;
             let mut chunk_ids = Vec::with_capacity(rows.len());
             let mut seen_keys = HashSet::new();
             for (memory_id, payload) in rows {
@@ -190,6 +195,12 @@ impl Tool for CodeSearchChunksTool {
                 }
                 if payload.state != FileState::Present {
                     continue;
+                }
+                if u32::try_from(matches.len()).unwrap_or(u32::MAX) >= limit {
+                    // One more eligible match past the page proves
+                    // truncation without emitting the row.
+                    has_more = true;
+                    break;
                 }
                 let raw_id = memory_id.into_inner();
                 chunk_ids.push(raw_id);
@@ -225,9 +236,6 @@ impl Tool for CodeSearchChunksTool {
                     matched_excerpt,
                     score: score_by_id.get(&raw_id).copied().unwrap_or_default(),
                 });
-                if u32::try_from(matches.len()).unwrap_or(u32::MAX) >= limit {
-                    break;
-                }
             }
 
             let calls_edges = if args.include_calls && !chunk_ids.is_empty() {
@@ -239,6 +247,7 @@ impl Tool for CodeSearchChunksTool {
             Ok(CodeSearchChunksOutput {
                 matches,
                 calls_edges,
+                has_more,
             })
         })
     }

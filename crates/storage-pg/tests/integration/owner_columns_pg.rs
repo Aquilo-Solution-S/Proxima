@@ -181,6 +181,52 @@ async fn visible_to_any_respects_membership() {
     common::drop_db(&db).await.unwrap();
 }
 
+/// Keyset pages over `(member_user_id, relation)` are disjoint,
+/// exhaustive, and terminate.
+#[tokio::test]
+async fn list_group_members_page_walks_membership_exactly_once() {
+    let (pg, db) = common::fresh_pg().await;
+    let group = GroupId::new(uuid::Uuid::now_v7());
+    let group_owner = OwnerRef::Group(group);
+    let permit = owner_write_permit(&group_owner, proxima_core::AccessKind::Goal).await;
+
+    let mut expected = Vec::new();
+    for _ in 0..5 {
+        let member = UserId::new(uuid::Uuid::now_v7());
+        pg.add_group_member(&permit, group, member, Relation::Viewer, Uuid::now_v7())
+            .await
+            .unwrap();
+        expected.push((member, Relation::Viewer));
+    }
+    expected.sort_unstable_by_key(|(member, _)| member.into_inner());
+
+    let mut walked = Vec::new();
+    let mut after = None;
+    let mut pages = 0;
+    loop {
+        let page = pg.list_group_members_page(group, after, 3).await.unwrap();
+        pages += 1;
+        assert!(
+            pages <= 3,
+            "five members at page size two walk in three rounds"
+        );
+        let full = page.len() == 3;
+        walked.extend(page.iter().copied().take(2));
+        if full {
+            after = Some(page[1]);
+        } else {
+            break;
+        }
+    }
+    // 5 members walked as 2 + 2 + 1 with an over-fetch row proving
+    // continuation each round.
+    assert_eq!(pages, 3, "expected three pages of two");
+    walked.sort_unstable_by_key(|(member, _)| member.into_inner());
+    assert_eq!(walked, expected, "pages cover every member exactly once");
+
+    common::drop_db(&db).await.unwrap();
+}
+
 #[tokio::test]
 async fn group_membership_verbs_round_trip_and_engine_gates_admin_editor() {
     let (pg, db) = common::fresh_pg().await;
@@ -249,10 +295,13 @@ async fn group_membership_verbs_round_trip_and_engine_gates_admin_editor() {
         engine
             .list_members(
                 &authz_with_role(&admin, OwnerRef::Group(group), Role::admin(),),
-                group
+                group,
+                200,
+                None,
             )
             .await
             .unwrap()
+            .members
             .contains(&(outsider_id, Relation::Viewer))
     );
     engine
@@ -267,10 +316,13 @@ async fn group_membership_verbs_round_trip_and_engine_gates_admin_editor() {
         !engine
             .list_members(
                 &authz_with_role(&admin, OwnerRef::Group(group), Role::admin(),),
-                group
+                group,
+                200,
+                None,
             )
             .await
             .unwrap()
+            .members
             .iter()
             .any(|(member, _)| *member == outsider_id)
     );

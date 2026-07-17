@@ -300,6 +300,7 @@ pub(in crate::engine) mod tests {
                 nodes: Vec::new(),
                 edges: Vec::new(),
                 truncated: false,
+                next_cursor: None,
             })
         }
 
@@ -337,6 +338,15 @@ pub(in crate::engine) mod tests {
             _sidecars: &[SidecarSpec],
         ) -> Result<Option<MemorySnapshot>, StorageError> {
             Ok(None)
+        }
+
+        async fn load_memories_by_ids(
+            &self,
+            _read_owners: &[OwnerRef],
+            _memory_ids: &[MemoryId],
+            _sidecars: &[SidecarSpec],
+        ) -> Result<Vec<MemorySnapshot>, StorageError> {
+            Ok(Vec::new())
         }
 
         async fn list_memory_dependencies(
@@ -614,8 +624,14 @@ pub(in crate::engine) mod tests {
             _read_owners: &[OwnerRef],
             _cited_object_id: uuid::Uuid,
             _sidecars: &[SidecarSpec],
-        ) -> Result<Vec<MemorySnapshot>, StorageError> {
-            Ok(Vec::new())
+            _after: Option<verbs::query::FactCitationCursor>,
+            _limit: u32,
+        ) -> Result<verbs::query::FactCitationPage, StorageError> {
+            Ok(verbs::query::FactCitationPage {
+                facts: Vec::new(),
+                next_cursor: None,
+                has_more: false,
+            })
         }
 
         async fn citation_of_fact(
@@ -711,6 +727,15 @@ pub(in crate::engine) mod tests {
             } else {
                 Ok(Vec::new())
             }
+        }
+
+        async fn list_group_members_page(
+            &self,
+            group_id: GroupId,
+            _after: Option<(UserId, Relation)>,
+            _limit: i64,
+        ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+            self.list_group_members(group_id).await
         }
     }
 

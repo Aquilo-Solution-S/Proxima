@@ -200,6 +200,15 @@ impl MemoryInspectPort for MemoryInspectFake {
         fake_error()
     }
 
+    async fn load_memories_by_ids(
+        &self,
+        _read_owners: &[OwnerRef],
+        _memory_ids: &[proxima_core::MemoryId],
+        _sidecars: &[SidecarSpec],
+    ) -> Result<Vec<MemorySnapshot>, StorageError> {
+        fake_error()
+    }
+
     async fn list_memory_dependencies(
         &self,
         _owner: &Owner,
@@ -468,7 +477,9 @@ impl CitationPort for CitationFake {
         read_owners: &[OwnerRef],
         cited_object_id: uuid::Uuid,
         sidecars: &[SidecarSpec],
-    ) -> Result<Vec<MemorySnapshot>, StorageError> {
+        _after: Option<proxima_core::verbs::query::FactCitationCursor>,
+        _limit: u32,
+    ) -> Result<proxima_core::verbs::query::FactCitationPage, StorageError> {
         fake_error()
     }
 
@@ -551,6 +562,15 @@ impl OwnerMembershipAdminPort for OwnerMembershipAdminFake {
     async fn list_group_members(
         &self,
         group_id: GroupId,
+    ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+        fake_error()
+    }
+
+    async fn list_group_members_page(
+        &self,
+        _group_id: GroupId,
+        _after: Option<(UserId, Relation)>,
+        _limit: i64,
     ) -> Result<Vec<(UserId, Relation)>, StorageError> {
         fake_error()
     }

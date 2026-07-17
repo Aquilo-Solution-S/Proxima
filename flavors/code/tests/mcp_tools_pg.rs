@@ -80,6 +80,77 @@ async fn register_repo_tool_registers_local_git_repo_idempotently()
     Ok(())
 }
 
+/// Keyset pages over `(created_at, repo_id)` are disjoint, exhaustive,
+/// and terminate; a garbage cursor fails closed.
+#[tokio::test]
+async fn list_repos_tool_pages_with_opaque_cursor() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let mut temps = Vec::new();
+    let mut expected = Vec::new();
+    for index in 0..3 {
+        let temp = TempDir::new()?;
+        std::process::Command::new("git")
+            .arg("init")
+            .arg(temp.path())
+            .output()?;
+        let result = run_tool::<CodeRegisterRepoTool>(
+            ctx(fixture.pg.clone(), owner, registry.clone()),
+            json!({ "path": temp.path().to_string_lossy(), "display_name": format!("Paged Repo {index}") }),
+        )
+        .await?;
+        expected.push(
+            result["repo"]["repo_id"]
+                .as_str()
+                .expect("repo_id")
+                .to_string(),
+        );
+        temps.push(temp);
+    }
+
+    let first = run_tool::<CodeListReposTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "limit": 2 }),
+    )
+    .await?;
+    assert_eq!(first["repos"].as_array().expect("repos").len(), 2);
+    assert_eq!(first["has_more"], json!(true));
+    let token = first["next_cursor"].as_str().expect("cursor").to_string();
+
+    let second = run_tool::<CodeListReposTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "limit": 2, "cursor": token }),
+    )
+    .await?;
+    assert_eq!(second["repos"].as_array().expect("repos").len(), 1);
+    assert_eq!(second["has_more"], json!(false));
+    assert_eq!(second["next_cursor"], serde_json::Value::Null);
+
+    let mut walked: Vec<String> = first["repos"]
+        .as_array()
+        .expect("repos")
+        .iter()
+        .chain(second["repos"].as_array().expect("repos"))
+        .map(|repo| repo["repo_id"].as_str().expect("repo_id").to_string())
+        .collect();
+    walked.sort_unstable();
+    expected.sort_unstable();
+    assert_eq!(walked, expected, "pages cover every repo exactly once");
+
+    let err = run_tool::<CodeListReposTool>(
+        ctx(fixture.pg.clone(), owner, registry),
+        json!({ "cursor": "garbage" }),
+    )
+    .await
+    .expect_err("garbage cursor must fail closed");
+    assert!(
+        err.to_string().contains("malformed cursor"),
+        "unexpected error: {err}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn ingest_head_snapshot_tool_indexes_current_tree() -> Result<(), Box<dyn std::error::Error>>
 {

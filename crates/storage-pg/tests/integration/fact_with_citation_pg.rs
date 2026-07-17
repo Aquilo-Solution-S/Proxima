@@ -630,16 +630,116 @@ async fn facts_citing_object_filters_by_read_owners() -> Result<(), Box<dyn std:
             .expect("p fact citation");
 
         let q_read_owners = vec![q, g1];
-        let group_facts = pg
-            .facts_citing_object(&q_read_owners, group_citation.cited_object_id, &[])
-            .await?;
+        let group_facts = citing_facts(&pg, &q_read_owners, group_citation.cited_object_id).await?;
         assert_eq!(group_facts.len(), 1);
         assert_eq!(group_facts[0].memory_id, group_outcome.memory_id);
 
-        let p_facts = pg
-            .facts_citing_object(&q_read_owners, p_citation.cited_object_id, &[])
-            .await?;
+        let p_facts = citing_facts(&pg, &q_read_owners, p_citation.cited_object_id).await?;
         assert!(p_facts.is_empty(), "Q must not see P's personal citation");
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+/// First unpaged page of the Facts citing `cited_object_id`, as visible
+/// to `read_owners`.
+async fn citing_facts(
+    pg: &PgStorage,
+    read_owners: &[OwnerRef],
+    cited_object_id: Uuid,
+) -> Result<Vec<proxima_core::read_models::MemorySnapshot>, Box<dyn std::error::Error>> {
+    Ok(pg
+        .facts_citing_object(read_owners, cited_object_id, &[], None, 50)
+        .await?
+        .facts)
+}
+
+/// Newest-first keyset pages over `(created_at DESC, memory_id DESC)`
+/// are disjoint, exhaustive, and terminate; `next_cursor` accompanies
+/// exactly the truncated pages.
+#[tokio::test]
+async fn facts_citing_object_pages_newest_first() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg_with_sidecars().await;
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        pg.run_migrations().await?;
+        create_sidecar_tables(pg.pool_for_tests()).await?;
+
+        let engine = engine();
+        let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let mut expected = Vec::new();
+        for index in 0..3 {
+            let authorized = engine
+                .authorize_fact_with_citation(
+                    &AuthzContext::single_owner(&p, AuthPath::HostBearer),
+                    Relation::Ingest,
+                    draft(&p, &format!("citing fact {index}")),
+                    cited_object(),
+                    citation_mapping(0, 4),
+                )
+                .await?;
+            let outcome = ingest_fact_with_citation_atomic(
+                pg.pool_for_tests(),
+                pg.sidecars(),
+                &authorized,
+                None,
+                |tx, outcome| {
+                    Box::pin(async move {
+                        sqlx::query(
+                            "INSERT INTO public.inline_cited_fact_sidecar (memory_id, note)
+                             VALUES ($1, 'citing fact')",
+                        )
+                        .bind(outcome.memory_id.into_inner())
+                        .execute(&mut **tx)
+                        .await
+                        .map_err(|e| StorageError::Internal(e.to_string()))?;
+                        Ok(())
+                    })
+                },
+            )
+            .await?;
+            expected.push(outcome.memory_id);
+        }
+        let cited_object_id = pg
+            .citation_of_fact(expected[0])
+            .await?
+            .expect("citation readback")
+            .cited_object_id;
+
+        let read_owners = vec![p];
+        let mut walked = Vec::new();
+        let mut after = None;
+        let mut pages = 0;
+        loop {
+            let page = pg
+                .facts_citing_object(&read_owners, cited_object_id, &[], after, 2)
+                .await?;
+            pages += 1;
+            assert!(
+                pages <= 2,
+                "three facts at page size two walk in two rounds"
+            );
+            assert_eq!(page.has_more, page.next_cursor.is_some());
+            walked.extend(page.facts.iter().map(|snapshot| snapshot.memory_id));
+            match page.next_cursor {
+                Some(cursor) => after = Some(cursor),
+                None => break,
+            }
+        }
+        assert_eq!(pages, 2);
+        let mut expected_sorted = expected.clone();
+        expected_sorted.sort_unstable();
+        let mut walked_sorted = walked.clone();
+        walked_sorted.sort_unstable();
+        assert_eq!(
+            walked_sorted, expected_sorted,
+            "pages cover every citing fact exactly once"
+        );
+        // Newest first: the last-ingested fact leads the first page.
+        assert_eq!(walked[0], expected[2]);
         Ok(())
     }
     .await;

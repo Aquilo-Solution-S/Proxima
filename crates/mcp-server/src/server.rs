@@ -4,6 +4,7 @@ use std::sync::Arc;
 use proxima_core::AuthPath;
 use proxima_core::mcp::core_tools::{
     get_graph::{GetGraphArgs, get_graph},
+    get_memories::{GetMemoriesArgs, get_memories},
     get_memory::{GetMemoryArgs, get_memory},
     goal_reads::{ListGoalsArgs, get_goal, list_goals},
     list_change_events::{ListChangeEventsArgs, list_change_events},
@@ -149,11 +150,7 @@ impl McpToolHost {
         author: McpAuthorContext,
         auth: Option<McpAuthContext>,
     ) -> Result<serde_json::Value, ToolInvocationError> {
-        let parsed = parse_resource_uri(uri).ok_or_else(|| {
-            ToolInvocationError::Tool(McpToolError::InvalidInput(format!(
-                "unknown resource {uri}"
-            )))
-        })?;
+        let parsed = parse_resource_uri(uri).map_err(|err| err.into_invocation_error(uri))?;
         let auth =
             auth.ok_or_else(|| ToolInvocationError::NotAuthorized(parsed.scope_key().to_string()))?;
         let ctx = self.ctx_for(author, &auth);
@@ -203,6 +200,7 @@ async fn dispatch_resource(
         }
         ParsedResource::Graph(args) => resource_output_value(get_graph(ctx, args).await?),
         ParsedResource::Memory(args) => resource_output_value(get_memory(ctx, args).await?),
+        ParsedResource::Memories(args) => resource_output_value(get_memories(ctx, args).await?),
         ParsedResource::MemoryLineage(args) => {
             resource_output_value(walk_memory_lineage(ctx, args).await?)
         }
@@ -249,12 +247,58 @@ impl ToolInvocationError {
     }
 }
 
+/// Why a `proxima://` URI failed to parse into a resource read. Each
+/// failure keeps its shape instead of collapsing into a generic "unknown
+/// resource": an unmatched path is a JSON-RPC `resource_not_found`, while
+/// a bad or missing query parameter on a known template is an
+/// `invalid_params` naming the parameter.
+#[derive(Debug, PartialEq, Eq)]
+enum ResourceUriError {
+    /// The URI matches no resource template.
+    UnknownPath,
+    /// A query pair without a `=` separator.
+    MalformedQueryPair { pair: String },
+    /// A required query parameter is absent or empty.
+    MissingParam { param: &'static str },
+    /// A query parameter failed to parse.
+    InvalidParam {
+        param: &'static str,
+        value: String,
+        expected: &'static str,
+    },
+}
+
+impl ResourceUriError {
+    fn into_invocation_error(self, uri: &str) -> ToolInvocationError {
+        let invalid =
+            |message: String| ToolInvocationError::Tool(McpToolError::InvalidInput(message));
+        match self {
+            Self::UnknownPath => ToolInvocationError::ToolNotFound(uri.to_string()),
+            Self::MalformedQueryPair { pair } => invalid(format!(
+                "resource {uri}: malformed query parameter '{pair}': expected key=value"
+            )),
+            Self::MissingParam { param } => invalid(format!(
+                "resource {uri}: missing required parameter `{param}`"
+            )),
+            Self::InvalidParam {
+                param,
+                value,
+                expected,
+            } => invalid(format!(
+                "resource {uri}: invalid parameter `{param}`: expected {expected}, got '{value}'"
+            )),
+        }
+    }
+}
+
+#[derive(Debug)]
 enum ParsedResource {
     Schemas(ListSchemasArgs),
     EdgeTypes(ListEdgeTypesArgs),
     Tools(ListSubstrateToolsArgs),
     Graph(GetGraphArgs),
     Memory(GetMemoryArgs),
+    Memories(GetMemoriesArgs),
     MemoryLineage(WalkMemoryLineageArgs),
     ChangeEvents(ListChangeEventsArgs),
     WakeCandidates(ListWakeCandidatesArgs),
@@ -272,6 +316,7 @@ impl ParsedResource {
             Self::Tools(_) => protocol_resource::TOOLS,
             Self::Graph(_) => protocol_resource::GRAPH,
             Self::Memory(_) => protocol_resource::MEMORY,
+            Self::Memories(_) => protocol_resource::MEMORIES,
             Self::MemoryLineage(_) => protocol_resource::MEMORY_LINEAGE,
             Self::ChangeEvents(_) => protocol_resource::CHANGE_EVENTS,
             Self::WakeCandidates(_) => protocol_resource::WAKE_CANDIDATES,
@@ -283,102 +328,124 @@ impl ParsedResource {
     }
 }
 
-fn parse_resource_uri(uri: &str) -> Option<ParsedResource> {
-    let rest = uri.strip_prefix("proxima://")?;
+fn parse_resource_uri(uri: &str) -> Result<ParsedResource, ResourceUriError> {
+    let rest = uri
+        .strip_prefix("proxima://")
+        .ok_or(ResourceUriError::UnknownPath)?;
     let (path, query) = rest
         .split_once('?')
         .map_or((rest, None), |(path, query)| (path, Some(query)));
     let query = parse_query(query)?;
 
     match path {
-        protocol_resource_path::SCHEMAS => Some(ParsedResource::Schemas(ListSchemasArgs {
+        protocol_resource_path::SCHEMAS => Ok(ParsedResource::Schemas(ListSchemasArgs {
             kind: query_value(&query, "kind").map(ToOwned::to_owned),
         })),
-        protocol_resource_path::EDGE_TYPES => Some(ParsedResource::EdgeTypes(ListEdgeTypesArgs {})),
-        protocol_resource_path::TOOLS => Some(ParsedResource::Tools(ListSubstrateToolsArgs {})),
-        protocol_resource_path::GRAPH => Some(ParsedResource::Graph(GetGraphArgs {})),
+        protocol_resource_path::EDGE_TYPES => Ok(ParsedResource::EdgeTypes(ListEdgeTypesArgs {})),
+        protocol_resource_path::TOOLS => Ok(ParsedResource::Tools(ListSubstrateToolsArgs {})),
+        protocol_resource_path::GRAPH => Ok(ParsedResource::Graph(GetGraphArgs {})),
         protocol_resource_path::CHANGE_EVENTS => {
-            Some(ParsedResource::ChangeEvents(ListChangeEventsArgs {
+            Ok(ParsedResource::ChangeEvents(ListChangeEventsArgs {
                 since: query_value(&query, "since").map(ToOwned::to_owned),
-                limit: query_parse(&query, "limit").ok()?,
+                limit: query_parse(&query, "limit", "a non-negative integer")?,
             }))
         }
         protocol_resource_path::WAKE_CANDIDATES => {
-            Some(ParsedResource::WakeCandidates(ListWakeCandidatesArgs {
+            Ok(ParsedResource::WakeCandidates(ListWakeCandidatesArgs {
                 fact: query_value(&query, "fact")
-                    .filter(|fact| !fact.is_empty())?
+                    .filter(|fact| !fact.is_empty())
+                    .ok_or(ResourceUriError::MissingParam { param: "fact" })?
                     .to_owned(),
-                limit: query_parse(&query, "limit").ok()?,
+                limit: query_parse(&query, "limit", "a non-negative integer")?,
             }))
         }
-        protocol_resource_path::GOALS => Some(ParsedResource::Goals(ListGoalsArgs {
+        protocol_resource_path::MEMORIES => {
+            let ids = query_value(&query, "ids")
+                .filter(|ids| !ids.is_empty())
+                .ok_or(ResourceUriError::MissingParam { param: "ids" })?;
+            Ok(ParsedResource::Memories(GetMemoriesArgs {
+                memories: ids.split(',').map(ToOwned::to_owned).collect(),
+            }))
+        }
+        protocol_resource_path::GOALS => Ok(ParsedResource::Goals(ListGoalsArgs {
             state: query_value(&query, "state").map(ToOwned::to_owned),
-            limit: query_parse(&query, "limit").ok()?,
+            limit: query_parse(&query, "limit", "a non-negative integer")?,
             cursor: query_value(&query, "cursor").map(ToOwned::to_owned),
         })),
-        protocol_resource_path::EDGES => Some(ParsedResource::Edges(ListEdgesArgs {
+        protocol_resource_path::EDGES => Ok(ParsedResource::Edges(ListEdgesArgs {
             relation: query_value(&query, "relation").map(ToOwned::to_owned),
             source: query_value(&query, "source").map(ToOwned::to_owned),
             target: query_value(&query, "target").map(ToOwned::to_owned),
-            limit: query_parse(&query, "limit").ok()?,
+            limit: query_parse(&query, "limit", "a non-negative integer")?,
             cursor: query_value(&query, "cursor").map(ToOwned::to_owned),
-            payloads: query_parse(&query, "payloads").ok()?,
+            payloads: query_parse(&query, "payloads", "'true' or 'false'")?,
         })),
         path if path.starts_with("memory/") => parse_memory_resource_path(path, &query),
         path if path.starts_with("goal/") => {
-            let id = path.strip_prefix("goal/")?;
+            let id = path.strip_prefix("goal/").unwrap_or_default();
             if id.is_empty() || id.contains('/') {
-                return None;
+                return Err(ResourceUriError::UnknownPath);
             }
-            Some(ParsedResource::Goal(id.to_string()))
+            Ok(ParsedResource::Goal(id.to_string()))
         }
         path if path.starts_with("edge/") => {
-            let id = path.strip_prefix("edge/")?;
+            let id = path.strip_prefix("edge/").unwrap_or_default();
             if id.is_empty() || id.contains('/') {
-                return None;
+                return Err(ResourceUriError::UnknownPath);
             }
-            Some(ParsedResource::Edge(id.to_string()))
+            Ok(ParsedResource::Edge(id.to_string()))
         }
-        _ => None,
+        _ => Err(ResourceUriError::UnknownPath),
     }
 }
 
-fn parse_memory_resource_path(path: &str, query: &[(&str, &str)]) -> Option<ParsedResource> {
+fn parse_memory_resource_path(
+    path: &str,
+    query: &[(&str, &str)],
+) -> Result<ParsedResource, ResourceUriError> {
     let rest = path
-        .strip_prefix(protocol_resource_path::MEMORY)?
-        .strip_prefix('/')?;
+        .strip_prefix(protocol_resource_path::MEMORY)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .ok_or(ResourceUriError::UnknownPath)?;
     if let Some(id) = rest.strip_suffix("/lineage") {
         if id.is_empty() || id.contains('/') {
-            return None;
+            return Err(ResourceUriError::UnknownPath);
         }
-        return Some(ParsedResource::MemoryLineage(WalkMemoryLineageArgs {
+        return Ok(ParsedResource::MemoryLineage(WalkMemoryLineageArgs {
             memory: id.to_string(),
             direction: query_lineage_direction(query)?,
-            depth: query_parse(query, "depth").ok()?.unwrap_or(3),
-            limit: query_parse(query, "limit").ok()?.unwrap_or(50),
+            depth: query_parse(query, "depth", "a non-negative integer (clamped to 1..=8)")?
+                .unwrap_or(3),
+            limit: query_parse(query, "limit", "a non-negative integer")?.unwrap_or(50),
+            cursor: query_value(query, "cursor").map(ToOwned::to_owned),
         }));
     }
     if rest.is_empty() || rest.contains('/') {
-        return None;
+        return Err(ResourceUriError::UnknownPath);
     }
-    Some(ParsedResource::Memory(GetMemoryArgs {
+    Ok(ParsedResource::Memory(GetMemoryArgs {
         memory: rest.to_string(),
         expand_neighbors: query_bool(query, "expand_neighbors"),
         space: None,
     }))
 }
 
-fn parse_query(query: Option<&str>) -> Option<Vec<(&str, &str)>> {
+fn parse_query(query: Option<&str>) -> Result<Vec<(&str, &str)>, ResourceUriError> {
     let Some(query) = query else {
-        return Some(Vec::new());
+        return Ok(Vec::new());
     };
     if query.is_empty() {
-        return Some(Vec::new());
+        return Ok(Vec::new());
     }
     query
         .split('&')
         .filter(|pair| !pair.is_empty())
-        .map(|pair| pair.split_once('='))
+        .map(|pair| {
+            pair.split_once('=')
+                .ok_or_else(|| ResourceUriError::MalformedQueryPair {
+                    pair: pair.to_string(),
+                })
+        })
         .collect()
 }
 
@@ -392,20 +459,37 @@ fn query_bool(query: &[(&str, &str)], key: &str) -> bool {
     query_value(query, key) == Some("true")
 }
 
-fn query_parse<T>(query: &[(&str, &str)], key: &str) -> Result<Option<T>, ()>
+fn query_parse<T>(
+    query: &[(&str, &str)],
+    key: &'static str,
+    expected: &'static str,
+) -> Result<Option<T>, ResourceUriError>
 where
     T: std::str::FromStr,
 {
     query_value(query, key).map_or(Ok(None), |value| {
-        value.parse::<T>().map(Some).map_err(|_| ())
+        value
+            .parse::<T>()
+            .map(Some)
+            .map_err(|_| ResourceUriError::InvalidParam {
+                param: key,
+                value: value.to_string(),
+                expected,
+            })
     })
 }
 
-fn query_lineage_direction(query: &[(&str, &str)]) -> Option<WalkMemoryLineageDirectionArg> {
+fn query_lineage_direction(
+    query: &[(&str, &str)],
+) -> Result<WalkMemoryLineageDirectionArg, ResourceUriError> {
     match query_value(query, "direction") {
-        None | Some("ancestors") => Some(WalkMemoryLineageDirectionArg::Ancestors),
-        Some("descendants") => Some(WalkMemoryLineageDirectionArg::Descendants),
-        Some(_) => None,
+        None | Some("ancestors") => Ok(WalkMemoryLineageDirectionArg::Ancestors),
+        Some("descendants") => Ok(WalkMemoryLineageDirectionArg::Descendants),
+        Some(other) => Err(ResourceUriError::InvalidParam {
+            param: "direction",
+            value: other.to_string(),
+            expected: "'ancestors' or 'descendants'",
+        }),
     }
 }
 
@@ -465,9 +549,22 @@ mod tests {
             })
         ));
 
-        assert!(parse_resource_uri("proxima://memory//lineage").is_none());
-        assert!(parse_resource_uri("proxima://memory/F:one/two/lineage").is_none());
-        assert!(parse_resource_uri("proxima://change-events?limit=not-a-number").is_none());
+        assert_eq!(
+            parse_resource_uri("proxima://memory//lineage").unwrap_err(),
+            ResourceUriError::UnknownPath
+        );
+        assert_eq!(
+            parse_resource_uri("proxima://memory/F:one/two/lineage").unwrap_err(),
+            ResourceUriError::UnknownPath
+        );
+        assert_eq!(
+            parse_resource_uri("proxima://change-events?limit=not-a-number").unwrap_err(),
+            ResourceUriError::InvalidParam {
+                param: "limit",
+                value: "not-a-number".into(),
+                expected: "a non-negative integer",
+            }
+        );
 
         let wake = parse_resource_uri(
             "proxima://wake-candidates?fact=F:018f0000-0000-7000-8000-000000000001&limit=5",
@@ -477,12 +574,81 @@ mod tests {
             wake,
             ParsedResource::WakeCandidates(ListWakeCandidatesArgs { limit: Some(5), .. })
         ));
-        assert!(parse_resource_uri("proxima://wake-candidates").is_none());
-        assert!(parse_resource_uri("proxima://wake-candidates?fact=").is_none());
-        assert!(
-            parse_resource_uri("proxima://wake-candidates?fact=F:018f0000-0000-7000-8000-000000000001&limit=not-a-number")
-                .is_none()
+        assert_eq!(
+            parse_resource_uri("proxima://wake-candidates").unwrap_err(),
+            ResourceUriError::MissingParam { param: "fact" }
         );
+        assert_eq!(
+            parse_resource_uri("proxima://wake-candidates?fact=").unwrap_err(),
+            ResourceUriError::MissingParam { param: "fact" }
+        );
+        assert_eq!(
+            parse_resource_uri("proxima://wake-candidates?fact=F:018f0000-0000-7000-8000-000000000001&limit=not-a-number")
+                .unwrap_err(),
+            ResourceUriError::InvalidParam {
+                param: "limit",
+                value: "not-a-number".into(),
+                expected: "a non-negative integer",
+            }
+        );
+    }
+
+    /// Each parse-failure class carries its own wire shape: unknown paths
+    /// surface as resource-not-found, while bad or missing parameters on a
+    /// known template name the parameter (backed by `invalid_params` at
+    /// the rmcp layer) — no failure may collapse into a generic
+    /// "unknown resource".
+    #[test]
+    fn parse_resource_uri_distinguishes_error_classes() {
+        assert_eq!(
+            parse_resource_uri("proxima://no-such-resource").unwrap_err(),
+            ResourceUriError::UnknownPath
+        );
+        assert_eq!(
+            parse_resource_uri("nothing://schemas").unwrap_err(),
+            ResourceUriError::UnknownPath
+        );
+        // depth=300 no longer collapses into "unknown resource": it parses
+        // as a wide integer and the tool clamps it to the documented 1..=8.
+        let lineage = parse_resource_uri(
+            "proxima://memory/F:018f0000-0000-7000-8000-000000000001/lineage?depth=300",
+        )
+        .expect("oversized depth parses; the tool clamps");
+        assert!(matches!(
+            lineage,
+            ParsedResource::MemoryLineage(WalkMemoryLineageArgs { depth: 300, .. })
+        ));
+        assert_eq!(
+            parse_resource_uri(
+                "proxima://memory/F:018f0000-0000-7000-8000-000000000001/lineage?direction=sideways"
+            )
+            .unwrap_err(),
+            ResourceUriError::InvalidParam {
+                param: "direction",
+                value: "sideways".into(),
+                expected: "'ancestors' or 'descendants'",
+            }
+        );
+        assert_eq!(
+            parse_resource_uri("proxima://goals?limit").unwrap_err(),
+            ResourceUriError::MalformedQueryPair {
+                pair: "limit".into()
+            }
+        );
+
+        let unknown = ResourceUriError::UnknownPath.into_invocation_error("proxima://nope");
+        assert!(
+            matches!(unknown, ToolInvocationError::ToolNotFound(uri) if uri == "proxima://nope")
+        );
+        let missing = ResourceUriError::MissingParam { param: "fact" }
+            .into_invocation_error("proxima://wake-candidates");
+        match missing {
+            ToolInvocationError::Tool(McpToolError::InvalidInput(message)) => {
+                assert!(message.contains("missing required parameter `fact`"));
+                assert!(message.contains("proxima://wake-candidates"));
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
     }
 
     #[test]

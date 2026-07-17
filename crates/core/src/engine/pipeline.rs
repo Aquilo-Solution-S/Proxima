@@ -63,6 +63,12 @@ impl From<WritePermit> for MemoryPermit {
     }
 }
 
+/// The uniform answer [`Engine::authorize_entry_read`] gives for both a
+/// nonexistent entity and one the caller may not see — existence is not
+/// disclosed to non-readers. Read verbs that want to present the case as
+/// a not-found (rather than a forbidden) match on this constant.
+pub(in crate::engine) const ENTRY_NOT_FOUND_MESSAGE: &str = "entry not found";
+
 /// Proof that one entry passed the read-scope predicate. Sealed: only this
 /// module's authorization gates can mint it.
 #[derive(Debug)]
@@ -316,7 +322,7 @@ impl Engine {
             .home_owner(entity)
             .await
             .map_err(|err| storage_error("home_owner", &err))?
-            .ok_or_else(|| ProtocolError::forbidden("entry not found"))?;
+            .ok_or_else(|| ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE))?;
 
         let readable = self
             .storage()
@@ -326,7 +332,7 @@ impl Engine {
             .await
             .map_err(|err| storage_error("visible_to_any", &err))?;
         if !readable {
-            return Err(ProtocolError::forbidden("entry not found"));
+            return Err(ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE));
         }
 
         Ok(EntryReadPermit { owner: home })

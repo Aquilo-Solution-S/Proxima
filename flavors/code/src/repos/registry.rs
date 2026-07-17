@@ -32,6 +32,44 @@ pub async fn list_repos(
     Ok(rows.into_iter().map(Into::into).collect())
 }
 
+/// One page of `owner`'s repos in the keyset total order
+/// `(created_at ASC, repo_id ASC)`, starting strictly after `after` when
+/// given. Fetches at most `limit` rows; callers over-fetch by one to
+/// detect further pages.
+///
+/// # Errors
+/// Returns `RepoRegistryError::Database` on database failures.
+pub async fn list_repos_page(
+    pool: &PgPool,
+    owner: &Owner,
+    after: Option<(time::OffsetDateTime, Uuid)>,
+    limit: i64,
+) -> Result<Vec<RepoRecord>, RepoRegistryError> {
+    let (kind, principal_id) = owner.columns();
+    let after_created_at = after.map(|(created_at, _)| created_at);
+    let after_repo_id = after.map(|(_, repo_id)| repo_id);
+
+    let rows = sqlx::query_as::<_, RepoRow>(
+        "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at \
+         FROM proxima_code.repos \
+         WHERE owner_kind = $1 \
+           AND owner_id = $2 \
+           AND ($3::timestamptz IS NULL \
+                OR (created_at, repo_id) > ($3::timestamptz, $4::uuid)) \
+         ORDER BY created_at ASC, repo_id ASC \
+         LIMIT $5",
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(after_created_at)
+    .bind(after_repo_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
 /// Caller pre-canonicalizes the path. On unique-violation, returns
 /// `RepoRegistryError::DuplicatePath`.
 ///

@@ -4,10 +4,10 @@
 //! Until this surface, edges were write-only on the wire — `core_link`
 //! returned an `E:<uuid>` handle nothing could dereference.
 
-use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 
+use crate::mcp::cursor as wire_cursor;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::verbs::query::{
     EdgeFilter, EdgeReadCursor, EdgeReadRequest, EdgeRow, EdgeTargetProjection, EntityKind,
@@ -181,7 +181,7 @@ pub async fn get_edge(ctx: McpToolCtx, raw: &str) -> Result<EdgeItem, McpToolErr
         .edges
         .into_iter()
         .next()
-        .ok_or_else(|| McpToolError::InvalidInput(format!("edge not found: {raw}")))?;
+        .ok_or_else(|| McpToolError::NotFound(format!("edge {raw} not found")))?;
     edge_item(&ctx, row)
 }
 
@@ -241,7 +241,7 @@ fn resolve_endpoint(ctx: &McpToolCtx, field: &str, raw: &str) -> Result<EntityRe
 }
 
 fn encode_edge_cursor(cursor: EdgeReadCursor, args: &ListEdgesArgs) -> String {
-    let json = serde_json::to_vec(&WireEdgeCursor {
+    wire_cursor::encode_token(&WireEdgeCursor {
         v: EDGE_CURSOR_VERSION,
         relation: args.relation.clone(),
         source: args.source.clone(),
@@ -249,29 +249,19 @@ fn encode_edge_cursor(cursor: EdgeReadCursor, args: &ListEdgesArgs) -> String {
         created_at_nanos: cursor.created_at.unix_timestamp_nanos(),
         edge_id: cursor.edge_id.into_inner(),
     })
-    .expect("edge cursor serializes");
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
 }
 
 fn decode_edge_cursor(raw: &str, args: &ListEdgesArgs) -> Result<EdgeReadCursor, McpToolError> {
-    let malformed = || {
-        McpToolError::InvalidInput(
-            "malformed cursor: pass next_cursor from a previous proxima://edges page".into(),
-        )
-    };
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(raw.as_bytes())
-        .map_err(|_| malformed())?;
-    let wire: WireEdgeCursor = serde_json::from_slice(&bytes).map_err(|_| malformed())?;
+    let malformed = || wire_cursor::malformed_cursor("proxima://edges page");
+    let wire: WireEdgeCursor = wire_cursor::decode_token(raw).ok_or_else(malformed)?;
     if wire.v != EDGE_CURSOR_VERSION {
-        return Err(malformed());
+        return Err(malformed().into());
     }
     if wire.relation != args.relation || wire.source != args.source || wire.target != args.target {
-        return Err(McpToolError::InvalidInput(
-            "cursor does not match this query: repeat the relation/source/target filter that \
-             produced it"
-                .into(),
-        ));
+        return Err(wire_cursor::cursor_query_mismatch(
+            "repeat the relation/source/target filter that produced it",
+        )
+        .into());
     }
     let created_at = time::OffsetDateTime::from_unix_timestamp_nanos(wire.created_at_nanos)
         .map_err(|_| malformed())?;

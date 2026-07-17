@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use proxima_core::mcp::cursor as wire_cursor;
 use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -35,11 +36,46 @@ pub struct CodeRegisterRepoOutput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct CodeListReposArgs {}
+pub struct CodeListReposArgs {
+    #[schemars(description = "Max repos per page; clamped to 1..=200, default 50.")]
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[schemars(
+        description = "Opaque pagination cursor from a previous response's `next_cursor`. `limit` may vary between pages."
+    )]
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
 
 #[derive(Debug, Serialize)]
 pub struct CodeListReposOutput {
     pub repos: Vec<RepoItem>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+}
+
+const MAX_REPO_PAGE_LIMIT: u32 = 200;
+const DEFAULT_REPO_PAGE_LIMIT: u32 = 50;
+
+/// Opaque cursor codec: the shared `{v, fp, c}` envelope with the
+/// `(created_at, repo_id)` keyset under `c`. The fingerprint binds the
+/// calling owner (the listing has no other query shape).
+const REPO_CURSOR: wire_cursor::FingerprintedCursor = wire_cursor::FingerprintedCursor {
+    version: 1,
+    source: "proxima-code_list_repos response",
+    rebind_hint: "repeat the call as the same owner that produced it",
+};
+
+/// Keyset resume point carried inside the opaque repo cursor.
+#[derive(Debug, Serialize, Deserialize)]
+struct RepoCursorPos {
+    created_at_nanos: i128,
+    repo_id: Uuid,
+}
+
+fn repo_fingerprint(owner: &proxima_core::Owner) -> String {
+    let canon = serde_json::to_string(&owner.external_key()).expect("fingerprint canon serializes");
+    wire_cursor::fingerprint(&canon)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -209,17 +245,53 @@ impl Tool for CodeListReposTool {
 
     fn call(
         ctx: ToolCtx,
-        _args: CodeListReposArgs,
+        args: CodeListReposArgs,
     ) -> futures::future::BoxFuture<'static, Result<CodeListReposOutput, ToolError>> {
         Box::pin(async move {
             let pool = code_store(&ctx)?;
-            let repos = crate::repos::list_repos(pool.pool(), &ctx.owner())
-                .await
-                .map_err(map_repo_registry)?
+            let limit = args
+                .limit
+                .unwrap_or(DEFAULT_REPO_PAGE_LIMIT)
+                .clamp(1, MAX_REPO_PAGE_LIMIT);
+            let fingerprint = repo_fingerprint(&ctx.owner());
+            let after = args
+                .cursor
+                .as_deref()
+                .map(|raw| {
+                    let pos: RepoCursorPos = REPO_CURSOR.decode(&fingerprint, raw)?;
+                    let created_at =
+                        time::OffsetDateTime::from_unix_timestamp_nanos(pos.created_at_nanos)
+                            .map_err(|_| wire_cursor::malformed_cursor(REPO_CURSOR.source))?;
+                    Ok::<_, ToolError>((created_at, pos.repo_id))
+                })
+                .transpose()?;
+            let fetch = i64::from(limit).saturating_add(1);
+            let mut records =
+                crate::repos::list_repos_page(pool.pool(), &ctx.owner(), after, fetch)
+                    .await
+                    .map_err(map_repo_registry)?;
+            let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
+            let has_more = records.len() > page_len;
+            records.truncate(page_len);
+            let next_cursor = (has_more && !records.is_empty()).then(|| {
+                let last = records.last().expect("non-empty page");
+                REPO_CURSOR.encode(
+                    &fingerprint,
+                    &RepoCursorPos {
+                        created_at_nanos: last.created_at.unix_timestamp_nanos(),
+                        repo_id: last.repo_id,
+                    },
+                )
+            });
+            let repos = records
                 .into_iter()
                 .map(|record| repo_item(&ctx, record))
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(CodeListReposOutput { repos })
+            Ok(CodeListReposOutput {
+                repos,
+                next_cursor,
+                has_more,
+            })
         })
     }
 }

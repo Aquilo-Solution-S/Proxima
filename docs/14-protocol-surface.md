@@ -52,10 +52,10 @@ Canonical substrate tools:
 | `core_link` | write registered relation edge |
 | `core_search_memories` | search memories; may include neighbor edges, per-result tags, lexical-degradation status, and selected memory-space labels. Optional `min_score` relevance floor and hybrid `semantic_weight` (default 0.6 semantic / 0.4 lexical). Pages of at most 50: `has_more` plus an opaque `next_cursor` that is passed back as `cursor` with the identical query shape (the cursor is fingerprint-bound and fails closed on any other query, order, filter, or space set) |
 | `core_memory_spaces` | list server-issued memory-space keys with labels and coarse unrestricted-access flags |
-| `core_membership` | group roster dispatcher: `add_member`, `remove_member`, `list_members`; host/controller scoped |
+| `core_membership` | group roster dispatcher: `add_member`, `remove_member`, `list_members`; host/controller scoped. `list_members` pages (default 50, max 200) with keyset `cursor`/`next_cursor` + `has_more`, cursor bound to the group |
 | `core_publish` | owner-transfer dispatcher: `publish_to_world`; irreversible transfer to `OwnerRef::World`, not membership or ACL |
 | `core_goal` | goal action dispatcher: `set`, `transition`, `modify`, `mark_achieved`, `decompose` |
-| `core_fact` | Fact action dispatcher: `citation_of_fact`, `citation_of_entity_head`, `facts_citing_object` |
+| `core_fact` | Fact action dispatcher: `citation_of_fact`, `citation_of_entity_head`, `facts_citing_object`. `facts_citing_object` pages newest-first (default 50, max 200) with keyset `cursor`/`next_cursor` + `has_more`, cursor bound to the cited object |
 
 Compatibility: `core_membership:publish_to_world` is removed. Clients and
 tool-scope palettes must use `core_publish:publish_to_world`; no compatibility
@@ -73,7 +73,8 @@ Canonical substrate resources:
 | `proxima://tools` | live tool catalog |
 | `proxima://graph` | graph snapshot and status fields, including `fact_retention_seconds` |
 | `proxima://memory/{id}{?expand_neighbors}` | hydrate memory by id; optional neighbor edges |
-| `proxima://memory/{id}/lineage{?direction,depth,limit}` | traverse provenance / supersession lineage |
+| `proxima://memories{?ids}` | batch memory read by comma-separated prefixed ids, at most 100 per call; returns found memories in request order plus a `missing` list (not-exists and not-visible are deliberately indistinguishable) |
+| `proxima://memory/{id}/lineage{?direction,depth,limit,cursor}` | traverse provenance / supersession lineage; keyset `cursor`/`next_cursor` alongside the `truncated` flag, cursor bound to memory + direction + depth |
 | `proxima://change-events{?since,limit}` | forward `change_event` poll, ascending, with `next_since` and `has_more` |
 | `proxima://goals{?state,limit,cursor}` | owner-scoped goal listing: optional state filter (Active/Paused/Achieved/Abandoned), keyset `cursor`/`next_cursor` + `has_more`, wake-config read-back per goal |
 | `proxima://goal/{id}` | single-goal read by `G:<uuid>` reference, including stored wake configuration |
@@ -81,8 +82,30 @@ Canonical substrate resources:
 | `proxima://edges{?relation,source,target,limit,cursor,payloads}` | owner-scoped edge listing by relation and/or endpoint (at least one filter required), keyset `cursor`/`next_cursor` + `has_more`, typed payload read-back (default on; `payloads=false` for lean); source-owned visibility with target redaction |
 | `proxima://edge/{id}` | single-edge read by `E:<uuid>` reference (the handle `core_link` returns), including its typed payload |
 
-`proxima://how-to` is an instructional MCP resource outside the 12-resource
+`proxima://how-to` is an instructional MCP resource outside the 13-resource
 protocol count.
+
+### Resource errors
+
+Resource reads fail in three distinct shapes; none collapses into a
+generic "unknown resource":
+
+- **Unknown path** (no template matches the URI) → JSON-RPC
+  `resource_not_found` (-32002). Note the MCP SDK re-codes -32002 to
+  `invalid_params` for clients negotiating protocol `2026-07-28`+
+  (SEP-2164); the message is authoritative either way.
+- **Bad or missing query parameter** on a known template →
+  `invalid_params` naming the parameter, its offending value, and the
+  expected form (e.g. ``resource …: invalid parameter `direction`:
+  expected 'ancestors' or 'descendants', got 'sideways'``).
+- **Well-formed reference to a missing or invisible entity** →
+  `resource_not_found` naming the wire handle (`memory F:<uuid> not
+  found`). The same fault through a tool call is `invalid_params`.
+  Not-exists and not-visible are deliberately indistinguishable.
+
+Out-of-range numerics do not error: `depth` and `limit` values beyond the
+documented bounds clamp to them (house behavior across the surface), and
+truncation is always signaled via `has_more`/`truncated` + cursor.
 
 ## The verbs
 

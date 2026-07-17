@@ -430,6 +430,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                     direction: MemoryLineageDirection::Ancestors,
                     depth: 2,
                     limit: 10,
+                    after: None,
                 },
             )
             .await?;

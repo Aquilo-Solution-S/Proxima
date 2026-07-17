@@ -533,51 +533,23 @@ fn sort_ranked_outputs(memories: &mut [RankedMemoryOutput], order: SearchOrder) 
     }
 }
 
-/// Wire envelope for the opaque cursor: version + query fingerprint +
-/// the typed resume point, JSON-encoded then base64url'd. Clients must
-/// treat the token as opaque; the fingerprint rejects replay against a
-/// different query shape, and `v` gates format evolution.
-#[derive(Debug, Serialize, Deserialize)]
-struct WireSearchCursor {
-    v: u8,
-    fp: String,
-    c: SearchCursor,
-}
-
-const WIRE_CURSOR_VERSION: u8 = 1;
+/// Opaque cursor codec: the shared `{v, fp, c}` envelope with the typed
+/// resume point under `c`. Clients must treat the token as opaque; the
+/// fingerprint rejects replay against a different query shape, and `v`
+/// gates format evolution.
+const SEARCH_CURSOR: crate::mcp::cursor::FingerprintedCursor =
+    crate::mcp::cursor::FingerprintedCursor {
+        version: 1,
+        source: "core_search_memories response",
+        rebind_hint: "repeat the query, mode, filters, order, and spaces that produced it",
+    };
 
 fn encode_cursor(cursor: SearchCursor, fingerprint: &str) -> String {
-    use base64::Engine as _;
-    let json = serde_json::to_vec(&WireSearchCursor {
-        v: WIRE_CURSOR_VERSION,
-        fp: fingerprint.to_string(),
-        c: cursor,
-    })
-    .expect("cursor serializes");
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
+    SEARCH_CURSOR.encode(fingerprint, &cursor)
 }
 
 fn decode_cursor(raw: &str, fingerprint: &str) -> Result<SearchCursor, McpToolError> {
-    use base64::Engine as _;
-    let malformed = || {
-        McpToolError::InvalidInput(
-            "malformed cursor: pass next_cursor from a previous core_search_memories response"
-                .into(),
-        )
-    };
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(raw.as_bytes())
-        .map_err(|_| malformed())?;
-    let wire: WireSearchCursor = serde_json::from_slice(&bytes).map_err(|_| malformed())?;
-    if wire.v != WIRE_CURSOR_VERSION {
-        return Err(malformed());
-    }
-    if wire.fp != fingerprint {
-        return Err(McpToolError::InvalidInput(
-            "cursor does not match this query: repeat the query, mode, filters, order, and spaces that produced it".into(),
-        ));
-    }
-    Ok(wire.c)
+    SEARCH_CURSOR.decode(fingerprint, raw).map_err(Into::into)
 }
 
 /// Canonical fingerprint over everything that shapes the result set or
@@ -615,7 +587,7 @@ fn query_fingerprint(
         &space_keys,
     ))
     .expect("fingerprint canon serializes");
-    blake3::hash(canon.as_bytes()).to_hex()[..16].to_string()
+    crate::mcp::cursor::fingerprint(&canon)
 }
 
 fn truncate_body(body: &str, max_chars: usize) -> String {

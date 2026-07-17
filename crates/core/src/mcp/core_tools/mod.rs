@@ -6,6 +6,7 @@ pub mod facts_citing_object;
 pub mod search_memories;
 
 pub mod get_graph;
+pub mod get_memories;
 pub mod get_memory;
 pub mod goal;
 pub mod goal_reads;

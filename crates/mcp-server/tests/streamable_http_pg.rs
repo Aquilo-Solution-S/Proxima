@@ -241,7 +241,10 @@ async fn host_bearer_lists_all_tools_without_origin() -> Result<(), Box<dyn std:
         })
         .collect();
     assert!(template_uris.contains(&"proxima://memory/{id}{?expand_neighbors}"));
-    assert!(template_uris.contains(&"proxima://memory/{id}/lineage{?direction,depth,limit}"));
+    assert!(template_uris.contains(&"proxima://memories{?ids}"));
+    assert!(
+        template_uris.contains(&"proxima://memory/{id}/lineage{?direction,depth,limit,cursor}")
+    );
 
     handle.abort();
     let _ = handle.await;

@@ -4,10 +4,10 @@
 //! write-only through `core_goal`; these are pull verbs for the same
 //! external harnesses that drive the wake loop.
 
-use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use crate::GoalId;
+use crate::mcp::cursor as wire_cursor;
 use crate::mcp::handles::{PrefixedUuidClass, format_prefixed_uuid, parse_prefixed_uuid};
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::read_models::GoalWakeConfigRow;
@@ -160,7 +160,7 @@ pub async fn get_goal(ctx: McpToolCtx, raw: &str) -> Result<GoalItem, McpToolErr
     project_goals(&ctx, response.goals, wake_configs)
         .into_iter()
         .next()
-        .ok_or_else(|| McpToolError::InvalidInput(format!("goal not found: {raw}")))
+        .ok_or_else(|| McpToolError::NotFound(format!("goal {raw} not found")))
 }
 
 fn project_goals(
@@ -250,33 +250,24 @@ fn encode_goal_cursor(
     goal_id: uuid::Uuid,
     state_tag: Option<&str>,
 ) -> String {
-    let json = serde_json::to_vec(&WireGoalCursor {
+    wire_cursor::encode_token(&WireGoalCursor {
         v: GOAL_CURSOR_VERSION,
         state: state_tag.map(str::to_string),
         created_at_nanos: created_at.unix_timestamp_nanos(),
         goal_id,
     })
-    .expect("goal cursor serializes");
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
 }
 
 fn decode_goal_cursor(raw: &str, state_tag: Option<&str>) -> Result<QueryCursor, McpToolError> {
-    let malformed = || {
-        McpToolError::InvalidInput(
-            "malformed cursor: pass next_cursor from a previous proxima://goals page".into(),
-        )
-    };
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(raw.as_bytes())
-        .map_err(|_| malformed())?;
-    let wire: WireGoalCursor = serde_json::from_slice(&bytes).map_err(|_| malformed())?;
+    let malformed = || wire_cursor::malformed_cursor("proxima://goals page");
+    let wire: WireGoalCursor = wire_cursor::decode_token(raw).ok_or_else(malformed)?;
     if wire.v != GOAL_CURSOR_VERSION {
-        return Err(malformed());
+        return Err(malformed().into());
     }
     if wire.state.as_deref() != state_tag {
-        return Err(McpToolError::InvalidInput(
-            "cursor does not match this query: repeat the state filter that produced it".into(),
-        ));
+        return Err(
+            wire_cursor::cursor_query_mismatch("repeat the state filter that produced it").into(),
+        );
     }
     let created_at = time::OffsetDateTime::from_unix_timestamp_nanos(wire.created_at_nanos)
         .map_err(|_| malformed())?;

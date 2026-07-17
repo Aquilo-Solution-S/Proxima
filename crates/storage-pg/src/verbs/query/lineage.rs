@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use proxima_core::change_event::{EdgeTargetProjection, EntityRef};
 use proxima_core::verbs::query::{
-    EntityKind, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode, MemoryLineageRequest,
-    MemoryLineageResponse,
+    EntityKind, MemoryLineageCursor, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode,
+    MemoryLineageRequest, MemoryLineageResponse,
 };
 use proxima_core::{MemoryId, OwnerRef, OwnerRefKind, RelationClass, SchemaId, StorageError};
 use sqlx::PgPool;
@@ -43,6 +43,7 @@ pub(crate) async fn walk_memory_lineage(
             nodes: Vec::new(),
             edges: Vec::new(),
             truncated: false,
+            next_cursor: None,
         });
     }
     let limit = req.limit.min(200);
@@ -61,6 +62,7 @@ pub(crate) async fn walk_memory_lineage(
             nodes: Vec::new(),
             edges: Vec::new(),
             truncated: false,
+            next_cursor: None,
         });
     }
 
@@ -78,17 +80,15 @@ pub(crate) async fn walk_memory_lineage(
         .into_iter()
         .take(usize::try_from(limit).unwrap_or(200))
         .collect();
-
-    let mut distances = BTreeMap::from([(req.start_memory_id.into_inner(), 0_u8)]);
-    for row in &edge_rows {
-        let distance = u8::try_from(row.distance).unwrap_or(u8::MAX);
-        if row.next_readable {
-            distances
-                .entry(row.next_memory_id)
-                .and_modify(|prior| *prior = (*prior).min(distance))
-                .or_insert(distance);
+    let next_cursor = (truncated && !edge_rows.is_empty()).then(|| {
+        let last = edge_rows.last().expect("non-empty page");
+        MemoryLineageCursor {
+            distance: u8::try_from(last.distance).unwrap_or(u8::MAX),
+            edge_id: last.edge_id,
         }
-    }
+    });
+
+    let distances = page_node_distances(req.start_memory_id, &edge_rows);
     let memory_ids: Vec<_> = distances.keys().copied().collect();
     let node_rows = load_nodes(pool, &read_owner_kinds, &read_owner_ids, &memory_ids).await?;
     let visible_ids: BTreeSet<_> = node_rows.iter().map(|row| row.memory_id).collect();
@@ -127,7 +127,41 @@ pub(crate) async fn walk_memory_lineage(
         nodes,
         edges,
         truncated,
+        next_cursor,
     })
+}
+
+/// Node ids for one page of the walk, keyed to their minimal observed
+/// distance: the start, each edge's anchor endpoint, and each readable
+/// next endpoint. The anchor (the endpoint the walk arrived FROM, one
+/// hop nearer the start) is always readable per the walk SQL, but on a
+/// paged walk its node row may have been emitted on an earlier page —
+/// loading it with this page's nodes keeps every page self-contained
+/// and the source-visibility edge filter working past the first page.
+fn page_node_distances(
+    start_memory_id: MemoryId,
+    edge_rows: &[EdgeWalkRow],
+) -> BTreeMap<uuid::Uuid, u8> {
+    let mut distances = BTreeMap::from([(start_memory_id.into_inner(), 0_u8)]);
+    for row in edge_rows {
+        let distance = u8::try_from(row.distance).unwrap_or(u8::MAX);
+        let anchor = if row.next_memory_id == row.target_memory_id {
+            row.source_memory_id
+        } else {
+            row.target_memory_id
+        };
+        distances
+            .entry(anchor)
+            .and_modify(|prior| *prior = (*prior).min(distance.saturating_sub(1)))
+            .or_insert(distance.saturating_sub(1));
+        if row.next_readable {
+            distances
+                .entry(row.next_memory_id)
+                .and_modify(|prior| *prior = (*prior).min(distance))
+                .or_insert(distance);
+        }
+    }
+    distances
 }
 
 async fn start_memory_visible(
@@ -174,6 +208,8 @@ async fn walk_edges(
     };
     let (world_kind, world_id) =
         crate::access::owner_columns::owner_binds(&proxima_core::access::world());
+    let after_distance = req.after.map(|after| i32::from(after.distance));
+    let after_edge_id = req.after.map(|after| after.edge_id);
     // SQL-POLICY: fixed-fragment
     let query = sqlx::query_as::<_, EdgeWalkRow>(sqlx::AssertSqlSafe(sql))
         .bind(read_owner_kinds)
@@ -182,7 +218,9 @@ async fn walk_edges(
         .bind(world_id)
         .bind(req.start_memory_id.into_inner())
         .bind(i32::from(depth))
-        .bind(i64::from(limit));
+        .bind(i64::from(limit))
+        .bind(after_distance)
+        .bind(after_edge_id);
     query.fetch_all(pool).await.map_err(internal)
 }
 
@@ -303,10 +341,13 @@ walk AS (
       AND NOT e.target_memory_id = ANY(w.path)
       AND NOT (e.source_world_visible AND NOT e.target_visible)
 )
-SELECT distance, edge_id, relation, relation_class,
+SELECT DISTINCT distance, edge_id, relation, relation_class,
        source_kind, source_memory_id, target_kind, target_memory_id,
        next_memory_id, next_readable
 FROM walk
+WHERE ($8::int IS NULL
+       OR distance > $8
+       OR (distance = $8 AND edge_id < $9::uuid))
 ORDER BY distance ASC, edge_id DESC
 LIMIT $7
 ",
@@ -398,10 +439,13 @@ walk AS (
       AND NOT e.source_memory_id = ANY(w.path)
       AND NOT (e.source_world_visible AND NOT e.target_visible)
 )
-SELECT distance, edge_id, relation, relation_class,
+SELECT DISTINCT distance, edge_id, relation, relation_class,
        source_kind, source_memory_id, target_kind, target_memory_id,
        next_memory_id, next_readable
 FROM walk
+WHERE ($8::int IS NULL
+       OR distance > $8
+       OR (distance = $8 AND edge_id < $9::uuid))
 ORDER BY distance ASC, edge_id DESC
 LIMIT $7
 ",

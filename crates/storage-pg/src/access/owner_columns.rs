@@ -266,6 +266,47 @@ pub(crate) async fn list_group_members(
         .collect())
 }
 
+/// One page of group members in the keyset total order
+/// `(member_user_id, relation)`, starting strictly after `after` when
+/// given. Fetches at most `limit` rows; callers over-fetch by one to
+/// detect further pages. Relation ties order by the
+/// `proxima_core.membership_relation` enum definition.
+///
+/// # Errors
+///
+/// Returns `Internal` on sqlx failure.
+pub(crate) async fn list_group_members_page(
+    pool: &PgPool,
+    group_id: GroupId,
+    after: Option<(UserId, Relation)>,
+    limit: i64,
+) -> Result<Vec<(UserId, Relation)>, StorageError> {
+    let after_member = after.map(|(member, _)| member.into_inner());
+    let after_relation = after.map(|(_, relation)| relation);
+    let rows: Vec<(uuid::Uuid, Relation)> = sqlx::query_as(
+        "SELECT member_user_id, relation
+           FROM proxima_core.group_memberships
+          WHERE group_id = $1
+            AND ($2::uuid IS NULL
+                 OR (member_user_id, relation)
+                    > ($2::uuid, $3::proxima_core.membership_relation))
+          ORDER BY member_user_id, relation
+          LIMIT $4",
+    )
+    .bind(group_id.into_inner())
+    .bind(after_member)
+    .bind(after_relation)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(member, relation)| (UserId::new(member), relation))
+        .collect())
+}
+
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.

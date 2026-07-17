@@ -63,4 +63,14 @@ pub trait OwnerMembershipAdminPort: Send + Sync {
         &self,
         group_id: GroupId,
     ) -> Result<Vec<(UserId, Relation)>, StorageError>;
+
+    /// One page of group members in the keyset total order
+    /// `(member_user_id, relation)`, starting strictly after `after` when
+    /// given. Callers over-fetch by one to detect further pages.
+    async fn list_group_members_page(
+        &self,
+        group_id: GroupId,
+        after: Option<(UserId, Relation)>,
+        limit: i64,
+    ) -> Result<Vec<(UserId, Relation)>, StorageError>;
 }

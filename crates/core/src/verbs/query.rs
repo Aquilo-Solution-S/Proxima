@@ -204,6 +204,24 @@ pub struct FactCitationReadback {
     pub cited_object_schema_id: SchemaId,
 }
 
+/// Keyset position in the citing-Facts total order
+/// (`created_at DESC, memory_id DESC`): the next page starts strictly
+/// after this Fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FactCitationCursor {
+    pub created_at: time::OffsetDateTime,
+    pub memory_id: MemoryId,
+}
+
+/// One page of Facts citing an object, newest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactCitationPage {
+    pub facts: Vec<crate::read_models::MemorySnapshot>,
+    /// Resume point for the page after this one; `Some` iff `has_more`.
+    pub next_cursor: Option<FactCitationCursor>,
+    pub has_more: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MemoryLineageDirection {
     Ancestors,
@@ -217,6 +235,19 @@ pub struct MemoryLineageRequest {
     pub direction: MemoryLineageDirection,
     pub depth: u8,
     pub limit: u32,
+    /// Keyset resume point from a previous response's `next_cursor`;
+    /// `None` starts from the first page.
+    pub after: Option<MemoryLineageCursor>,
+}
+
+/// Keyset position in the lineage walk's total order
+/// (`distance ASC, edge_id DESC`): the next page starts strictly after
+/// this edge. Pages recompute the walk, so the usual keyset caveat
+/// applies — mutations between pages shift later pages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MemoryLineageCursor {
+    pub distance: u8,
+    pub edge_id: uuid::Uuid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,6 +275,8 @@ pub struct MemoryLineageResponse {
     pub nodes: Vec<MemoryLineageNode>,
     pub edges: Vec<MemoryLineageEdge>,
     pub truncated: bool,
+    /// Resume point for the page after this one; `Some` iff `truncated`.
+    pub next_cursor: Option<MemoryLineageCursor>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

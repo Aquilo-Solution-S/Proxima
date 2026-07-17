@@ -5,6 +5,7 @@
 
 pub mod behavior;
 pub mod core_tools;
+pub mod cursor;
 pub mod handles;
 pub(crate) mod schema;
 

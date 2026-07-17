@@ -4,6 +4,13 @@ use crate::ToolError;
 pub enum McpToolError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    /// A well-formed reference to an entity that does not exist or is not
+    /// visible to the caller (deliberately indistinguishable). Resource
+    /// reads surface this as JSON-RPC `resource_not_found`; tool calls as
+    /// `invalid_params`. The message names the wire handle, e.g.
+    /// `memory F:<uuid> not found`.
+    #[error("{0}")]
+    NotFound(String),
     #[error("tool not authorized: {0}")]
     NotAuthorized(String),
     #[error("{0}")]
@@ -25,6 +32,8 @@ pub enum McpToolError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpToolErrorKind {
     InvalidInput,
+    /// Well-formed reference to a missing (or invisible) entity.
+    NotFound,
     InvalidRequest,
     Internal,
 }
@@ -34,27 +43,27 @@ impl McpToolError {
     pub fn kind(&self) -> McpToolErrorKind {
         match self {
             Self::InvalidInput(_) => McpToolErrorKind::InvalidInput,
+            Self::NotFound(_) => McpToolErrorKind::NotFound,
             Self::NotAuthorized(_) | Self::LayeringViolation(_) | Self::Unavailable(_) => {
                 McpToolErrorKind::InvalidRequest
             }
             Self::Protocol(e) => match e.code {
                 crate::error::ErrorCode::InvalidArgument => McpToolErrorKind::InvalidInput,
+                crate::error::ErrorCode::NotFound => McpToolErrorKind::NotFound,
                 crate::error::ErrorCode::Internal => McpToolErrorKind::Internal,
                 crate::error::ErrorCode::AuthRequired
                 | crate::error::ErrorCode::Forbidden
                 | crate::error::ErrorCode::UnknownSchema
                 | crate::error::ErrorCode::AlreadyIngested
                 | crate::error::ErrorCode::IdempotencyConflict
-                | crate::error::ErrorCode::NotFound
                 | crate::error::ErrorCode::ToolNotRegistered
                 | crate::error::ErrorCode::TriggerConflict
                 | crate::error::ErrorCode::DuplicateTriggerInRequest
                 | crate::error::ErrorCode::Suppressed => McpToolErrorKind::InvalidRequest,
             },
             Self::Storage(storage) => match storage {
-                crate::StorageError::ConstraintViolation(_) | crate::StorageError::NotFound => {
-                    McpToolErrorKind::InvalidInput
-                }
+                crate::StorageError::ConstraintViolation(_) => McpToolErrorKind::InvalidInput,
+                crate::StorageError::NotFound => McpToolErrorKind::NotFound,
                 crate::StorageError::Conflict(_)
                 | crate::StorageError::Suppressed(_)
                 | crate::StorageError::IdempotencyConflict { .. } => {
@@ -75,7 +84,9 @@ impl McpToolError {
             return format!("tool {name} not authorized for this MCP token");
         }
         match self.kind() {
-            McpToolErrorKind::InvalidInput | McpToolErrorKind::InvalidRequest => self.to_string(),
+            McpToolErrorKind::InvalidInput
+            | McpToolErrorKind::NotFound
+            | McpToolErrorKind::InvalidRequest => self.to_string(),
             McpToolErrorKind::Internal => "internal server error".to_string(),
         }
     }
@@ -97,6 +108,27 @@ impl From<ToolError> for McpToolError {
 #[cfg(test)]
 mod tests {
     use super::{McpToolError, McpToolErrorKind};
+
+    /// Missing-entity faults form their own kind so the resource path can
+    /// surface JSON-RPC `resource_not_found` while tools keep
+    /// `invalid_params` — and the message must reach the caller verbatim,
+    /// never redacted to "internal server error".
+    #[test]
+    fn not_found_classifies_uniformly_across_sources() {
+        let direct = McpToolError::NotFound("memory F:018f not found".into());
+        assert_eq!(direct.kind(), McpToolErrorKind::NotFound);
+        assert_eq!(direct.client_message(), "memory F:018f not found");
+
+        let storage = McpToolError::Storage(crate::StorageError::NotFound);
+        assert_eq!(storage.kind(), McpToolErrorKind::NotFound);
+
+        let protocol = McpToolError::Protocol(crate::error::ProtocolError {
+            code: crate::error::ErrorCode::NotFound,
+            message: "goal G:018f not found".into(),
+            request_id: None,
+        });
+        assert_eq!(protocol.kind(), McpToolErrorKind::NotFound);
+    }
 
     #[test]
     fn unavailable_message_reaches_caller_verbatim() {

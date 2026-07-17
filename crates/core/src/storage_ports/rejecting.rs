@@ -199,6 +199,7 @@ impl MemoryReadPort for RejectingStorage {
             nodes: Vec::new(),
             edges: Vec::new(),
             truncated: false,
+            next_cursor: None,
         })
     }
 
@@ -236,6 +237,15 @@ impl MemoryInspectPort for RejectingStorage {
         _sidecars: &[SidecarSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
         Ok(None)
+    }
+
+    async fn load_memories_by_ids(
+        &self,
+        _read_owners: &[OwnerRef],
+        _memory_ids: &[crate::MemoryId],
+        _sidecars: &[SidecarSpec],
+    ) -> Result<Vec<MemorySnapshot>, StorageError> {
+        Ok(Vec::new())
     }
 
     async fn list_memory_dependencies(
@@ -510,8 +520,14 @@ impl CitationPort for RejectingStorage {
         _read_owners: &[OwnerRef],
         _cited_object_id: uuid::Uuid,
         _sidecars: &[SidecarSpec],
-    ) -> Result<Vec<MemorySnapshot>, StorageError> {
-        Ok(Vec::new())
+        _after: Option<crate::verbs::query::FactCitationCursor>,
+        _limit: u32,
+    ) -> Result<crate::verbs::query::FactCitationPage, StorageError> {
+        Ok(crate::verbs::query::FactCitationPage {
+            facts: Vec::new(),
+            next_cursor: None,
+            has_more: false,
+        })
     }
 
     async fn citation_of_fact(
@@ -592,6 +608,15 @@ impl OwnerMembershipAdminPort for RejectingStorage {
     async fn list_group_members(
         &self,
         _group_id: GroupId,
+    ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn list_group_members_page(
+        &self,
+        _group_id: GroupId,
+        _after: Option<(UserId, Relation)>,
+        _limit: i64,
     ) -> Result<Vec<(UserId, Relation)>, StorageError> {
         Ok(Vec::new())
     }

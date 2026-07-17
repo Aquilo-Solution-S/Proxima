@@ -62,6 +62,7 @@ impl CoreMcpError {
             Self::NotFound(_) => CoreMcpErrorKind::NotFound,
             Self::Tool { kind, .. } => match kind {
                 McpToolErrorKind::InvalidInput => CoreMcpErrorKind::InvalidInput,
+                McpToolErrorKind::NotFound => CoreMcpErrorKind::NotFound,
                 McpToolErrorKind::InvalidRequest => CoreMcpErrorKind::InvalidRequest,
                 McpToolErrorKind::Internal => CoreMcpErrorKind::Internal,
             },
