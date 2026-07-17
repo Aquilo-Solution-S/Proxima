@@ -1289,8 +1289,17 @@ async fn publish_to_world_transfers_owner_denies_rewrite_and_allows_ordinary_rea
     )
     .await;
     match pre_publish_read {
-        Err(McpToolError::Protocol(err)) => assert_eq!(err.code, ErrorCode::Forbidden),
-        other => panic!("expected forbidden before publish, got {other:?}"),
+        // Invisible entities read as not-found: existence is not
+        // disclosed to non-readers, so pre-publish the outsider cannot
+        // even learn the Fact exists (not-exists and not-visible are
+        // deliberately indistinguishable).
+        Err(McpToolError::NotFound(message)) => {
+            assert!(
+                message.contains(&handle),
+                "not-found names the wire handle: {message}"
+            );
+        }
+        other => panic!("expected not-found before publish, got {other:?}"),
     }
 
     // publish requires admin authority on the current (Group) owner.

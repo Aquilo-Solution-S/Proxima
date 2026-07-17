@@ -31,6 +31,7 @@ use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage_ports::{CitedObjectErasePort, EngineStoragePorts};
 use crate::verbs::schema::FlavorRegistryFrozen;
 
+pub use access_admin::GroupMemberPage;
 #[allow(unused_imports)]
 pub(in crate::engine) use access_sets::AccessSets;
 pub use goal_write::{
@@ -46,10 +47,10 @@ pub use memory_authoring::{
 pub use pipeline::{MemoryPermit, PermitMode};
 pub use read_verbs::{
     EntityHeadCitationReadRequest, FactCitationReadRequest, FactsCitingObjectReadRequest,
-    GetGraphReadRequest, GetGraphReadResponse, GetMemoryReadRequest, GetMemoryReadResponse,
-    ListChangeEventsReadRequest, ListChangeEventsReadResponse, ListWakeCandidatesReadRequest,
-    ListWakeCandidatesReadResponse, MAX_WAKE_CANDIDATE_LIMIT, SearchReadRequest,
-    SearchReadResponse,
+    GetGraphReadRequest, GetGraphReadResponse, GetMemoriesReadRequest, GetMemoriesReadResponse,
+    GetMemoryReadRequest, GetMemoryReadResponse, ListChangeEventsReadRequest,
+    ListChangeEventsReadResponse, ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse,
+    MAX_WAKE_CANDIDATE_LIMIT, SearchReadRequest, SearchReadResponse,
 };
 
 pub struct Engine {

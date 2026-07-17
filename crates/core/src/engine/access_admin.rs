@@ -9,6 +9,16 @@ use crate::{GroupId, OwnerRef, UserId};
 
 use super::Engine;
 
+/// One page of group members from [`Engine::list_members`], in the
+/// keyset total order `(member_user_id, relation)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupMemberPage {
+    pub members: Vec<(UserId, Relation)>,
+    /// More members exist past this page; resume from the last returned
+    /// `(member, relation)` pair.
+    pub has_more: bool,
+}
+
 impl Engine {
     /// Seed the first Admin membership for a fresh group.
     ///
@@ -153,7 +163,8 @@ impl Engine {
             .map_err(|err| storage_error("remove_group_member", &err))
     }
 
-    /// List members for one group.
+    /// List one page of members for one group, in the keyset total order
+    /// `(member_user_id, relation)`.
     ///
     /// # Errors
     ///
@@ -163,16 +174,23 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         group: GroupId,
-    ) -> Result<Vec<(UserId, Relation)>, ProtocolError> {
+        limit: u32,
+        after: Option<(UserId, Relation)>,
+    ) -> Result<GroupMemberPage, ProtocolError> {
         let group_owner = OwnerRef::Group(group);
         self.authorize_write(authz, &group_owner, Relation::Admin)
             .await?;
-        self.storage()
+        let fetch = i64::from(limit).saturating_add(1);
+        let mut members = self
+            .storage()
             .access_admin
             .owner_membership_admin
-            .list_group_members(group)
+            .list_group_members_page(group, after, fetch)
             .await
-            .map_err(|err| storage_error("list_group_members", &err))
+            .map_err(|err| storage_error("list_group_members_page", &err))?;
+        let has_more = members.len() > usize::try_from(limit).unwrap_or(usize::MAX);
+        members.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        Ok(GroupMemberPage { members, has_more })
     }
 
     /// Transfer one memory or goal's owner to `OwnerRef::World` — the

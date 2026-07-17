@@ -106,6 +106,17 @@ pub trait MemoryInspectPort: Send + Sync {
         sidecars: &[SidecarSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError>;
 
+    /// Batch counterpart of [`Self::load_memory_by_id`], visibility-scoped:
+    /// returns snapshots for the subset of `memory_ids` readable by
+    /// `read_owners`. Unknown, invisible, and tombstoned ids are simply
+    /// absent from the result; order is unspecified.
+    async fn load_memories_by_ids(
+        &self,
+        read_owners: &[OwnerRef],
+        memory_ids: &[crate::MemoryId],
+        sidecars: &[SidecarSpec],
+    ) -> Result<Vec<MemorySnapshot>, StorageError>;
+
     async fn list_memory_dependencies(
         &self,
         owner: &Owner,
@@ -144,12 +155,18 @@ pub trait CitationPort: Send + Sync {
         natural_key: &[String],
     ) -> Result<Option<FactEntityId>, StorageError>;
 
+    /// One page of citing Facts, newest first
+    /// (`created_at DESC, memory_id DESC`), starting strictly after
+    /// `after` when given. The page computes its own `has_more` and
+    /// `next_cursor` by over-fetching one row past `limit`.
     async fn facts_citing_object(
         &self,
         read_owners: &[OwnerRef],
         cited_object_id: uuid::Uuid,
         sidecars: &[SidecarSpec],
-    ) -> Result<Vec<MemorySnapshot>, StorageError>;
+        after: Option<crate::verbs::query::FactCitationCursor>,
+        limit: u32,
+    ) -> Result<crate::verbs::query::FactCitationPage, StorageError>;
 
     async fn citation_of_fact(
         &self,

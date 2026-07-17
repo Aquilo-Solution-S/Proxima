@@ -316,6 +316,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
                 direction: proxima_core::verbs::query::MemoryLineageDirection::Ancestors,
                 depth: 2,
                 limit: 10,
+                after: None,
             },
         )
         .await?;

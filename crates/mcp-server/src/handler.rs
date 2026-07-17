@@ -307,17 +307,27 @@ fn resource_invocation_error_to_error_data(err: ToolInvocationError) -> ErrorDat
         ToolInvocationError::ToolNotFound(name) => {
             ErrorData::resource_not_found(format!("unknown resource: {name}"), None)
         }
+        // A missing entity behind a well-formed resource URI is a
+        // `resource_not_found` (-32002), unlike the tool path where the
+        // same fault is an argument problem.
+        ToolInvocationError::Tool(inner) if inner.kind() == McpToolErrorKind::NotFound => {
+            ErrorData::resource_not_found(inner.client_message(), None)
+        }
         ToolInvocationError::Tool(inner) => mcp_tool_error_to_error_data(&inner),
     }
 }
 
-/// Classify an [`McpToolError`] by JSON-RPC code: caller-input faults →
-/// `invalid_params` (-32602); well-formed-but-illegal requests →
-/// `invalid_request` (-32600); infrastructure faults → `internal_error`
-/// (-32603).
+/// Classify an [`McpToolError`] by JSON-RPC code: caller-input faults —
+/// including references to missing entities — → `invalid_params` (-32602);
+/// well-formed-but-illegal requests → `invalid_request` (-32600);
+/// infrastructure faults → `internal_error` (-32603). Resource reads remap
+/// `NotFound` before reaching here (see
+/// [`resource_invocation_error_to_error_data`]).
 fn mcp_tool_error_to_error_data(err: &McpToolError) -> ErrorData {
     match err.kind() {
-        McpToolErrorKind::InvalidInput => ErrorData::invalid_params(err.client_message(), None),
+        McpToolErrorKind::InvalidInput | McpToolErrorKind::NotFound => {
+            ErrorData::invalid_params(err.client_message(), None)
+        }
         McpToolErrorKind::InvalidRequest => ErrorData::invalid_request(err.client_message(), None),
         McpToolErrorKind::Internal => generic_internal_error(err),
     }
@@ -779,6 +789,35 @@ mod tests {
         let err = mcp_tool_error_to_error_data(&McpToolError::Other("storage DSN leaked".into()));
         assert_eq!(err.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
         assert_eq!(err.message, "internal server error");
+    }
+
+    /// A missing entity is a `resource_not_found` on the resource path but
+    /// an argument fault on the tool path — the same `McpToolError` maps
+    /// to different JSON-RPC codes by surface.
+    #[test]
+    fn not_found_maps_by_surface() {
+        let not_found = || McpToolError::NotFound("memory F:018f not found".into());
+
+        let resource = resource_invocation_error_to_error_data(
+            crate::server::ToolInvocationError::Tool(not_found()),
+        );
+        assert_eq!(resource.code, rmcp::model::ErrorCode::RESOURCE_NOT_FOUND);
+        assert_eq!(resource.message, "memory F:018f not found");
+
+        let tool = mcp_tool_error_to_error_data(&not_found());
+        assert_eq!(tool.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert_eq!(tool.message, "memory F:018f not found");
+    }
+
+    /// An unmatched resource URI is a `resource_not_found`, not the
+    /// `invalid_params` it used to collapse into.
+    #[test]
+    fn unknown_resource_uri_maps_to_resource_not_found() {
+        let err = resource_invocation_error_to_error_data(
+            crate::server::ToolInvocationError::ToolNotFound("proxima://nope".into()),
+        );
+        assert_eq!(err.code, rmcp::model::ErrorCode::RESOURCE_NOT_FOUND);
+        assert!(err.message.contains("proxima://nope"), "{}", err.message);
     }
 
     #[test]

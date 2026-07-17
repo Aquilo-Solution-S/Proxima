@@ -515,6 +515,22 @@ impl MemoryInspectPort for PgStorage {
         verbs::consolidate::load_memory_by_id(&self.pool, &self.sidecars, memory_id, sidecars).await
     }
 
+    async fn load_memories_by_ids(
+        &self,
+        read_owners: &[OwnerRef],
+        memory_ids: &[MemoryId],
+        sidecars: &[SidecarSpec],
+    ) -> Result<Vec<MemorySnapshot>, StorageError> {
+        verbs::consolidate::load_memories_by_ids(
+            &self.pool,
+            &self.sidecars,
+            read_owners,
+            memory_ids,
+            sidecars,
+        )
+        .await
+    }
+
     async fn list_memory_dependencies(
         &self,
         owner: &Owner,

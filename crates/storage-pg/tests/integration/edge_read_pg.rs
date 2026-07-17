@@ -127,6 +127,7 @@ async fn lineage_hides_unreadable_sources_and_stops_at_redacted_fact_targets()
                     direction: MemoryLineageDirection::Descendants,
                     depth: 3,
                     limit: 20,
+                    after: None,
                 },
             )
             .await?;
@@ -153,6 +154,7 @@ async fn lineage_hides_unreadable_sources_and_stops_at_redacted_fact_targets()
                     direction: MemoryLineageDirection::Ancestors,
                     depth: 2,
                     limit: 20,
+                    after: None,
                 },
             )
             .await?;
@@ -180,6 +182,7 @@ async fn lineage_hides_unreadable_sources_and_stops_at_redacted_fact_targets()
                     direction: MemoryLineageDirection::Descendants,
                     depth: 2,
                     limit: 20,
+                    after: None,
                 },
             )
             .await?;

@@ -109,11 +109,21 @@ pub const CORE_RESOURCES: &[CoreResourceMeta] = &[
         is_template: true,
     },
     CoreResourceMeta {
+        uri_template: protocol_resource_uri::MEMORIES,
+        name: "proxima-memories",
+        title: "Proxima Memories",
+        scope_key: protocol_resource::MEMORIES,
+        description: "Batch memory read by comma-separated prefixed ids (`F:`/`A:`/`P:`), \
+                      at most 100 per call; unknown or invisible ids are reported as missing.",
+        is_template: true,
+    },
+    CoreResourceMeta {
         uri_template: protocol_resource_uri::MEMORY_LINEAGE,
         name: "proxima-memory-lineage",
         title: "Proxima Memory Lineage",
         scope_key: protocol_resource::MEMORY_LINEAGE,
-        description: "Owner-scoped Provenance/Supersession lineage from a prefixed memory id.",
+        description: "Owner-scoped Provenance/Supersession lineage from a prefixed memory id, \
+                      with keyset cursor pagination.",
         is_template: true,
     },
     CoreResourceMeta {

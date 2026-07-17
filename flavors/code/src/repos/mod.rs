@@ -11,8 +11,8 @@ pub use records::{
     StageCounters,
 };
 pub use registry::{
-    delete_repo, erase_repo, get_repo, infer_missing_target_branch, list_repos, register_repo,
-    set_repo_target_branch, update_cursor,
+    delete_repo, erase_repo, get_repo, infer_missing_target_branch, list_repos, list_repos_page,
+    register_repo, set_repo_target_branch, update_cursor,
 };
 pub use runs::{
     advance_stage, begin_run, get_active_run, get_run, mark_failed, mark_succeeded, start_run,

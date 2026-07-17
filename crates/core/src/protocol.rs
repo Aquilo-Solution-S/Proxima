@@ -34,6 +34,7 @@ pub mod action {
 
 pub mod resource {
     pub const MEMORY: &str = "resource:memory";
+    pub const MEMORIES: &str = "resource:memories";
     pub const MEMORY_LINEAGE: &str = "resource:memory-lineage";
     pub const EDGE_TYPES: &str = "resource:edge-types";
     pub const TOOLS: &str = "resource:tools";
@@ -55,6 +56,7 @@ pub mod resource_path {
     pub const CHANGE_EVENTS: &str = "change-events";
     pub const WAKE_CANDIDATES: &str = "wake-candidates";
     pub const MEMORY: &str = "memory";
+    pub const MEMORIES: &str = "memories";
     pub const GOALS: &str = "goals";
     pub const GOAL: &str = "goal";
     pub const EDGES: &str = "edges";
@@ -67,7 +69,8 @@ pub mod resource_uri {
     pub const TOOLS: &str = "proxima://tools";
     pub const GRAPH: &str = "proxima://graph";
     pub const MEMORY: &str = "proxima://memory/{id}{?expand_neighbors}";
-    pub const MEMORY_LINEAGE: &str = "proxima://memory/{id}/lineage{?direction,depth,limit}";
+    pub const MEMORIES: &str = "proxima://memories{?ids}";
+    pub const MEMORY_LINEAGE: &str = "proxima://memory/{id}/lineage{?direction,depth,limit,cursor}";
     pub const CHANGE_EVENTS: &str = "proxima://change-events{?since,limit}";
     pub const WAKE_CANDIDATES: &str = "proxima://wake-candidates{?fact,limit}";
     pub const GOALS: &str = "proxima://goals{?state,limit,cursor}";

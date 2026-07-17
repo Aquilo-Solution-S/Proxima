@@ -573,6 +573,55 @@ Operational consequences to review before scheduling it:
   `PgStorage::{enforce_fact_retention, prune_change_events,
   try_retention_maintenance_lock}` (additive).
 
+## 22. v0.0.7: typed resource errors, batch memory read, list pagination sweep
+
+Every bad resource read used to collapse into
+`invalid_params: "invalid input: unknown resource {uri}"`; several list
+surfaces were unbounded or truncated silently. Wire changes to review:
+
+- **Resource error shapes changed.** Unknown `proxima://` paths now
+  return JSON-RPC `resource_not_found` (-32002); bad or missing query
+  parameters return `invalid_params` naming the parameter; dereferencing
+  a missing or invisible memory/goal/edge through a resource returns
+  `resource_not_found` with the wire handle (`memory F:<uuid> not
+  found`). The memory case previously surfaced as
+  `invalid_request: "Forbidden: entry not found"`; existence stays
+  undisclosed — not-exists and not-visible answer identically. Clients
+  matching on the old error strings or codes must be updated
+  (docs/14 §Resource errors).
+- **`Protocol(NotFound)` tool errors shift `-32600` → `-32602`.** The
+  new `NotFound` classification maps to `invalid_params` on the tool
+  path (it was `invalid_request` when raised via engine protocol
+  errors).
+- **`core_membership:list_members` output is an envelope.** Was a bare
+  array; now `{members, next_cursor, has_more}` with keyset pagination
+  (default 50, max 200). `core_fact:facts_citing_object` keeps its
+  envelope but gains `next_cursor`/`has_more` and a page cap; both
+  accept `limit`/`cursor`.
+- **`proxima://memory/{id}/lineage` paginates.** New `cursor` parameter
+  and `next_cursor` output alongside the existing `truncated` flag; the
+  cursor is bound to memory + direction + depth. `depth=300` now clamps
+  to 8 instead of erroring as "unknown resource". An empty walk for a
+  missing/invisible start memory is now a `resource_not_found`, not an
+  empty success.
+- **New `proxima://memories{?ids}` batch read** (at most 100
+  comma-separated prefixed ids): found memories in request order plus a
+  `missing` list. Wake-candidate `hard_memories` hydration no longer
+  needs one round trip per id.
+- **Code flavor:** `proxima-code_list_repos` accepts `limit`/`cursor`
+  and returns `{repos, next_cursor, has_more}` (was unbounded);
+  `proxima-code_search_chunks` gains `has_more`;
+  `proxima-code_search_commits` gains `commits_has_more` /
+  `summaries_has_more`.
+- Rust embedders: `MemoryInspectPort` gains `load_memories_by_ids`,
+  `CitationPort::facts_citing_object` takes `after`/`limit` and returns
+  `FactCitationPage`, `OwnerMembershipAdminPort` gains
+  `list_group_members_page`, `Engine::list_members` takes
+  `limit`/`after` and returns `GroupMemberPage`, and
+  `MemoryLineageRequest`/`MemoryLineageResponse` carry
+  `after`/`next_cursor`. Custom port implementations must add the new
+  methods; cursor plumbing is shared via `proxima_core::mcp::cursor`.
+
 ## Checks before calling an upgrade done
 
 ```sh

@@ -68,6 +68,112 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
     Ok(())
 }
 
+/// Diamond fan-out: the same edge reachable through two equal-length
+/// paths must project once (the recursive walk used to emit one row per
+/// path), and keyset pages must cover the whole walk exactly once.
+#[tokio::test]
+async fn walk_memory_lineage_pages_and_deduplicates_diamonds()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let start = insert_memory(&pg, &owner, "start").await?;
+    let a1 = insert_memory(&pg, &owner, "arm one").await?;
+    let a2 = insert_memory(&pg, &owner, "arm two").await?;
+    let joint = insert_memory(&pg, &owner, "joint").await?;
+    let origin = insert_memory(&pg, &owner, "origin").await?;
+
+    let mut expected_edges = Vec::new();
+    for (source, target) in [(start, a1), (start, a2), (a1, joint), (a2, joint)] {
+        expected_edges.push(
+            insert_edge(
+                &pg,
+                &owner,
+                source,
+                target,
+                "core/derived-from",
+                RelationClass::Provenance,
+            )
+            .await?,
+        );
+    }
+    // The diamond joint's outgoing edge is reachable through both arms at
+    // the same distance — the duplicate-projection case.
+    expected_edges.push(
+        insert_edge(
+            &pg,
+            &owner,
+            joint,
+            origin,
+            "core/derived-from",
+            RelationClass::Provenance,
+        )
+        .await?,
+    );
+
+    let owner_read = vec![owner];
+    let request = |after| MemoryLineageRequest {
+        owner,
+        start_memory_id: MemoryId::new(start),
+        direction: MemoryLineageDirection::Ancestors,
+        depth: 4,
+        limit: 2,
+        after,
+    };
+
+    // Unpaged full walk projects each edge exactly once despite the
+    // two equal-length paths through the diamond.
+    let full = pg
+        .walk_memory_lineage(
+            &owner_read,
+            &MemoryLineageRequest {
+                limit: 20,
+                after: None,
+                ..request(None)
+            },
+        )
+        .await?;
+    assert_eq!(full.edges.len(), expected_edges.len());
+    assert!(!full.truncated);
+    assert!(full.next_cursor.is_none());
+
+    // Keyset pages: 2 + 2 + 1, no duplicates, exact coverage.
+    let mut walked = Vec::new();
+    let mut after = None;
+    let mut pages = 0;
+    loop {
+        let page = pg.walk_memory_lineage(&owner_read, &request(after)).await?;
+        pages += 1;
+        assert!(pages <= 3, "walk must exhaust in three pages");
+        assert!(
+            page.nodes
+                .iter()
+                .any(|node| node.memory_id.into_inner() == start && node.distance == 0),
+            "every page carries the start node"
+        );
+        walked.extend(page.edges.iter().map(|edge| edge.edge_id));
+        assert_eq!(page.truncated, page.next_cursor.is_some());
+        match page.next_cursor {
+            Some(cursor) => after = Some(cursor),
+            None => break,
+        }
+    }
+    assert_eq!(pages, 3);
+    let mut expected = expected_edges.clone();
+    expected.sort_unstable();
+    let mut walked_sorted = walked.clone();
+    walked_sorted.sort_unstable();
+    assert_eq!(
+        walked_sorted, expected,
+        "pages must cover every lineage edge exactly once"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
 async fn assert_owner_lineage(
     pg: &proxima_storage_pg::PgStorage,
     owner: Owner,
@@ -85,6 +191,7 @@ async fn assert_owner_lineage(
                 direction: MemoryLineageDirection::Ancestors,
                 depth: 3,
                 limit: 10,
+                after: None,
             },
         )
         .await?;
@@ -112,6 +219,7 @@ async fn assert_owner_lineage(
                 direction: MemoryLineageDirection::Descendants,
                 depth: 3,
                 limit: 10,
+                after: None,
             },
         )
         .await?;
@@ -142,6 +250,7 @@ async fn assert_world_lineage(
                 direction: MemoryLineageDirection::Descendants,
                 depth: 2,
                 limit: 10,
+                after: None,
             },
         )
         .await?;

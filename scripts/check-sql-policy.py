@@ -291,7 +291,11 @@ def run_fixture(path: Path) -> int:
 # 2026-07-16 analysis: +1 — PgSidecarReadCtx::fetch_all_by_edge_ids runs the
 # same validate_sidecar_read_sql-gated backend-owned SQL as its memory-id
 # siblings (edge-id batch reads for edge payload read-back); proof inline.
-EXPECTED_DYNAMIC_SQL_SITES = 52
+# 2026-07-17 analysis: +1 — load_memories_by_ids (consolidate/memories.rs),
+# the proxima://memories batch head read: the same entity_owner_union /
+# read_owner_predicate fixed fragments every owner-scoped read composes;
+# proof inline.
+EXPECTED_DYNAMIC_SQL_SITES = 53
 
 
 def run_self_test() -> int:

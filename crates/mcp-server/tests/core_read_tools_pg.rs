@@ -111,6 +111,213 @@ async fn core_read_resources_return_prefixed_ids_and_author()
     Ok(())
 }
 
+/// Slice E surface: the batch `proxima://memories` read, typed resource
+/// errors (unknown path vs bad/missing parameter vs missing entity), and
+/// lineage keyset pagination through the resource.
+#[tokio::test]
+async fn batch_memories_resource_error_classes_and_lineage_paging()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = create_db().await?;
+    let database_url = db_url(&db_name);
+    let pg = PgStorage::connect(&database_url).await?;
+    pg.run_migrations().await?;
+
+    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let stranger = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let first = insert_memory(&pg, &owner, "batch first").await?;
+    let second = insert_memory(&pg, &owner, "batch second").await?;
+    let foreign = insert_memory(&pg, &stranger, "foreign memory").await?;
+    let absent = uuid::Uuid::now_v7();
+
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let engine = Arc::new(
+        Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
+    );
+    let server = McpToolHost::from_engine(engine, McpToolExtensions::default());
+    let auth = McpAuthContext {
+        owner,
+        authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+            .narrowed_to_owner(owner)
+            .expect("personal owner narrows"),
+        model_id: None,
+    };
+
+    // One call returns the visible subset in request order and names the
+    // rest as missing — invisible and nonexistent are indistinguishable.
+    let batch = server
+        .read_resource(
+            &format!("proxima://memories?ids=A:{second},A:{absent},A:{first},A:{foreign}"),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await?;
+    let memories = batch["memories"].as_array().expect("memories array");
+    assert_eq!(memories.len(), 2);
+    assert_eq!(memories[0]["memory"], format!("A:{second}"));
+    assert_eq!(memories[1]["memory"], format!("A:{first}"));
+    assert_eq!(memories[1]["body"], "batch first");
+    assert_eq!(
+        batch["missing"],
+        serde_json::json!([format!("A:{absent}"), format!("A:{foreign}")])
+    );
+
+    assert_resource_error_classes(&server, &auth, absent).await;
+
+    // Lineage: oversized depth clamps instead of erroring, pages follow
+    // the opaque cursor to exhaustion, and a missing start is a not-found.
+    let d1 = insert_memory(&pg, &owner, "derived one").await?;
+    let d2 = insert_memory(&pg, &owner, "derived two").await?;
+    insert_edge(&pg, &owner, d1, first).await?;
+    insert_edge(&pg, &owner, d2, d1).await?;
+    assert_lineage_clamps_pages_and_reports_missing_start(&server, &auth, d2, absent).await?;
+
+    drop(server);
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// Error classes keep their shapes instead of collapsing into
+/// "unknown resource": missing/bad parameters name the parameter, an
+/// unknown path classifies as resource-not-found, and a missing entity
+/// dereference names the wire handle.
+async fn assert_resource_error_classes(
+    server: &McpToolHost,
+    auth: &McpAuthContext,
+    absent: uuid::Uuid,
+) {
+    let missing_param = server
+        .read_resource("proxima://memories", author_ctx(), Some(auth.clone()))
+        .await
+        .expect_err("ids is required");
+    assert!(
+        missing_param
+            .to_string()
+            .contains("missing required parameter `ids`"),
+        "{missing_param}"
+    );
+    let over_cap_ids = (0..101)
+        .map(|_| format!("A:{}", uuid::Uuid::now_v7()))
+        .collect::<Vec<_>>()
+        .join(",");
+    let over_cap = server
+        .read_resource(
+            &format!("proxima://memories?ids={over_cap_ids}"),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await
+        .expect_err("101 ids exceed the batch cap");
+    assert!(
+        over_cap.to_string().contains("at most 100 memory ids"),
+        "{over_cap}"
+    );
+    let unknown_path = server
+        .read_resource("proxima://no-such-thing", author_ctx(), Some(auth.clone()))
+        .await
+        .expect_err("unknown resource path");
+    assert!(
+        matches!(
+            &unknown_path,
+            proxima_mcp_server::ToolInvocationError::ToolNotFound(uri)
+                if uri == "proxima://no-such-thing"
+        ),
+        "unknown path must classify as resource-not-found: {unknown_path}"
+    );
+    let bad_param = server
+        .read_resource(
+            "proxima://change-events?limit=not-a-number",
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await
+        .expect_err("unparseable limit");
+    assert!(
+        bad_param.to_string().contains("invalid parameter `limit`"),
+        "{bad_param}"
+    );
+    let not_found = server
+        .read_resource(
+            &format!("proxima://memory/A:{absent}"),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await
+        .expect_err("missing memory dereference");
+    assert!(
+        not_found
+            .to_string()
+            .contains(&format!("memory A:{absent} not found")),
+        "not-found names the wire handle: {not_found}"
+    );
+}
+
+/// Oversized `depth` clamps instead of erroring, keyset pages cover the
+/// walk exactly once, and a missing start memory reads as a not-found.
+async fn assert_lineage_clamps_pages_and_reports_missing_start(
+    server: &McpToolHost,
+    auth: &McpAuthContext,
+    start: uuid::Uuid,
+    absent: uuid::Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let clamped = server
+        .read_resource(
+            &format!("proxima://memory/A:{start}/lineage?depth=300&limit=10"),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await?;
+    assert_eq!(
+        clamped["edges"].as_array().expect("edges").len(),
+        2,
+        "depth=300 clamps to the documented maximum instead of erroring"
+    );
+
+    let mut edges_seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let uri = match &cursor {
+            Some(token) => format!("proxima://memory/A:{start}/lineage?limit=1&cursor={token}"),
+            None => format!("proxima://memory/A:{start}/lineage?limit=1"),
+        };
+        let page = server
+            .read_resource(&uri, author_ctx(), Some(auth.clone()))
+            .await?;
+        for edge in page["edges"].as_array().expect("edges") {
+            edges_seen.push(edge["edge"].as_str().expect("edge handle").to_string());
+        }
+        assert_eq!(
+            page["truncated"] == serde_json::json!(true),
+            page["next_cursor"].is_string(),
+            "truncated iff next_cursor"
+        );
+        match page["next_cursor"].as_str() {
+            Some(token) => cursor = Some(token.to_string()),
+            None => break,
+        }
+        assert!(edges_seen.len() <= 2, "lineage paging must terminate");
+    }
+    edges_seen.sort_unstable();
+    edges_seen.dedup();
+    assert_eq!(edges_seen.len(), 2, "pages disjoint and exhaustive");
+
+    let lineage_missing = server
+        .read_resource(
+            &format!("proxima://memory/A:{absent}/lineage"),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await
+        .expect_err("lineage of a missing memory");
+    assert!(
+        lineage_missing
+            .to_string()
+            .contains(&format!("memory A:{absent} not found")),
+        "{lineage_missing}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn wake_candidates_resource_returns_armed_goal() -> Result<(), Box<dyn std::error::Error>> {
     let db_name = create_db().await?;

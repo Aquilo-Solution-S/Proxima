@@ -190,6 +190,7 @@ async fn assert_owner_b_cannot_see_owner_a(
                 direction: MemoryLineageDirection::Ancestors,
                 depth: 2,
                 limit: 10,
+                after: None,
             },
         )
         .await?;
@@ -199,8 +200,9 @@ async fn assert_owner_b_cannot_see_owner_a(
     );
 
     assert!(
-        pg.facts_citing_object(&[owner_b], cited_object_id, &[])
+        pg.facts_citing_object(&[owner_b], cited_object_id, &[], None, 50)
             .await?
+            .facts
             .is_empty(),
         "owner B citation lookup must not reveal owner A cited facts"
     );

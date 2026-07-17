@@ -76,7 +76,7 @@ impl McpTool for CoreFactTool {
         },
         McpActionArgSpec {
             action: "facts_citing_object",
-            allowed_fields: &["cited_object_id"],
+            allowed_fields: &["cited_object_id", "limit", "cursor"],
             required_fields: &["cited_object_id"],
         },
     ];

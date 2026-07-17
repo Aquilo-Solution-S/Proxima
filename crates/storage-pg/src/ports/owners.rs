@@ -85,6 +85,15 @@ impl OwnerMembershipAdminPort for PgStorage {
     ) -> Result<Vec<(UserId, Relation)>, StorageError> {
         access::owner_columns::list_group_members(&self.pool, group_id).await
     }
+
+    async fn list_group_members_page(
+        &self,
+        group_id: GroupId,
+        after: Option<(UserId, Relation)>,
+        limit: i64,
+    ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+        access::owner_columns::list_group_members_page(&self.pool, group_id, after, limit).await
+    }
 }
 
 #[async_trait::async_trait]

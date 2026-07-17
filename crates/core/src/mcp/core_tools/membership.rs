@@ -4,10 +4,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::access::Relation;
 use crate::authz::AuthzContext;
+use crate::engine::GroupMemberPage;
 use crate::error::ProtocolError;
+use crate::mcp::cursor as wire_cursor;
 use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 use crate::protocol::{action as protocol_action, tool as protocol_tool};
 use crate::{GroupId, OwnerRef, UserId};
+
+const MAX_MEMBER_PAGE_LIMIT: u32 = 200;
+const DEFAULT_MEMBER_PAGE_LIMIT: u32 = 50;
+
+/// Opaque cursor codec: the shared `{v, fp, c}` envelope with the last
+/// `(member, relation)` pair under `c`. The fingerprint binds the group.
+const MEMBER_CURSOR: wire_cursor::FingerprintedCursor = wire_cursor::FingerprintedCursor {
+    version: 1,
+    source: "core_membership list_members response",
+    rebind_hint: "repeat the group that produced it",
+};
 
 use super::memory_spaces::MemorySpaceKey;
 use super::{DESTRUCTIVE_NON_IDEMPOTENT, READ_ONLY, WRITE_NON_IDEMPOTENT};
@@ -72,6 +85,13 @@ pub struct RemoveMemberArgs {
 pub struct ListMembersArgs {
     /// Group space key from `core_memory_spaces`, e.g. `group:<uuid>`.
     pub group: String,
+    /// Max members per page; clamped to 1..=200, default 50.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Opaque pagination cursor from a previous response's `next_cursor`.
+    /// The group must stay unchanged between pages; `limit` may vary.
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -79,7 +99,7 @@ pub struct ListMembersArgs {
 pub enum CoreMembershipOutput {
     AddMember(MutationOutput),
     RemoveMember(MutationOutput),
-    ListMembers(Vec<MemberOutput>),
+    ListMembers(ListMembersOutput),
 }
 
 #[derive(Debug, Serialize)]
@@ -87,10 +107,29 @@ pub struct MutationOutput {
     pub ok: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ListMembersOutput {
+    pub members: Vec<MemberOutput>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+}
+
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct MemberOutput {
     pub member: String,
     pub relation: String,
+}
+
+/// Keyset resume point carried inside the opaque member cursor.
+#[derive(Debug, Serialize, Deserialize)]
+struct MemberCursorPos {
+    member: uuid::Uuid,
+    relation: String,
+}
+
+fn member_fingerprint(group: GroupId) -> String {
+    let canon = serde_json::to_string(&group.into_inner()).expect("fingerprint canon serializes");
+    wire_cursor::fingerprint(&canon)
 }
 
 impl McpTool for CoreMembershipTool {
@@ -110,7 +149,7 @@ impl McpTool for CoreMembershipTool {
         },
         McpActionArgSpec {
             action: "list_members",
-            allowed_fields: &["group"],
+            allowed_fields: &["group", "limit", "cursor"],
             required_fields: &["group"],
         },
     ];
@@ -150,7 +189,9 @@ trait MembershipEngine: Sync {
         &'a self,
         authz: &'a AuthzContext,
         group: GroupId,
-    ) -> BoxFuture<'a, Result<Vec<(UserId, Relation)>, ProtocolError>>;
+        limit: u32,
+        after: Option<(UserId, Relation)>,
+    ) -> BoxFuture<'a, Result<GroupMemberPage, ProtocolError>>;
 }
 
 impl MembershipEngine for crate::Engine {
@@ -179,8 +220,12 @@ impl MembershipEngine for crate::Engine {
         &'a self,
         authz: &'a AuthzContext,
         group: GroupId,
-    ) -> BoxFuture<'a, Result<Vec<(UserId, Relation)>, ProtocolError>> {
-        Box::pin(crate::Engine::list_members(self, authz, group))
+        limit: u32,
+        after: Option<(UserId, Relation)>,
+    ) -> BoxFuture<'a, Result<GroupMemberPage, ProtocolError>> {
+        Box::pin(crate::Engine::list_members(
+            self, authz, group, limit, after,
+        ))
     }
 }
 
@@ -209,16 +254,43 @@ async fn execute_membership(
         }
         CoreMembershipArgs::ListMembers(args) => {
             let group = resolve_group(ctx, &args.group)?;
-            let members = engine
-                .list_members(&ctx.authz, group)
-                .await?
+            let limit = args
+                .limit
+                .unwrap_or(DEFAULT_MEMBER_PAGE_LIMIT)
+                .clamp(1, MAX_MEMBER_PAGE_LIMIT);
+            let fingerprint = member_fingerprint(group);
+            let after = args
+                .cursor
+                .as_deref()
+                .map(|raw| {
+                    let pos: MemberCursorPos = MEMBER_CURSOR.decode(&fingerprint, raw)?;
+                    Ok::<_, McpToolError>((UserId::new(pos.member), parse_relation(&pos.relation)?))
+                })
+                .transpose()?;
+            let page = engine.list_members(&ctx.authz, group, limit, after).await?;
+            let next_cursor = (page.has_more && !page.members.is_empty()).then(|| {
+                let (member, relation) = page.members.last().expect("non-empty page");
+                MEMBER_CURSOR.encode(
+                    &fingerprint,
+                    &MemberCursorPos {
+                        member: member.into_inner(),
+                        relation: format_relation(*relation).to_string(),
+                    },
+                )
+            });
+            let members = page
+                .members
                 .into_iter()
                 .map(|(member, relation)| MemberOutput {
                     member: member.into_inner().to_string(),
                     relation: format_relation(relation).to_string(),
                 })
                 .collect();
-            Ok(CoreMembershipOutput::ListMembers(members))
+            Ok(CoreMembershipOutput::ListMembers(ListMembersOutput {
+                members,
+                next_cursor,
+                has_more: page.has_more,
+            }))
         }
     }
 }
@@ -332,8 +404,23 @@ mod tests {
             &'a self,
             _authz: &'a AuthzContext,
             _group: GroupId,
-        ) -> BoxFuture<'a, Result<Vec<(UserId, Relation)>, ProtocolError>> {
-            Box::pin(async move { Ok(self.members.lock().expect("members lock").clone()) })
+            limit: u32,
+            after: Option<(UserId, Relation)>,
+        ) -> BoxFuture<'a, Result<GroupMemberPage, ProtocolError>> {
+            Box::pin(async move {
+                let all = self.members.lock().expect("members lock").clone();
+                let start = after.map_or(0, |pos| {
+                    all.iter()
+                        .position(|entry| *entry == pos)
+                        .map_or(all.len(), |found| found + 1)
+                });
+                let rest = &all[start..];
+                let page_len = rest.len().min(usize::try_from(limit).unwrap_or(usize::MAX));
+                Ok(GroupMemberPage {
+                    members: rest[..page_len].to_vec(),
+                    has_more: rest.len() > page_len,
+                })
+            })
         }
     }
 
@@ -448,5 +535,90 @@ mod tests {
         let err = parse_relation("owner").expect_err("bad relation rejected");
 
         assert!(matches!(err, McpToolError::InvalidInput(message) if message.contains("relation")));
+    }
+
+    /// Pages walk the whole membership exactly once via the opaque
+    /// cursor, and the cursor fails closed against a different group.
+    #[tokio::test]
+    async fn list_members_pages_with_group_bound_cursor() {
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let group = GroupId::new(uuid::Uuid::now_v7());
+        let group_owner = OwnerRef::Group(group);
+        let ctx = ctx_with_principals(owner, vec![group_owner]);
+        let engine = MockMembershipEngine::default();
+        let all: Vec<(UserId, Relation)> = (0..3)
+            .map(|_| (UserId::new(uuid::Uuid::now_v7()), Relation::Viewer))
+            .collect();
+        *engine.members.lock().expect("members lock") = all.clone();
+
+        let group_key = MemorySpaceKey::owner(group_owner).to_wire();
+        let first = execute_membership(
+            &engine,
+            &ctx,
+            CoreMembershipArgs::ListMembers(ListMembersArgs {
+                group: group_key.clone(),
+                limit: Some(2),
+                cursor: None,
+            }),
+        )
+        .await
+        .expect("first page");
+        let CoreMembershipOutput::ListMembers(first) = first else {
+            panic!("expected list output");
+        };
+        assert_eq!(first.members.len(), 2);
+        assert!(first.has_more);
+        let token = first.next_cursor.expect("cursor on truncated page");
+
+        let second = execute_membership(
+            &engine,
+            &ctx,
+            CoreMembershipArgs::ListMembers(ListMembersArgs {
+                group: group_key,
+                limit: Some(2),
+                cursor: Some(token.clone()),
+            }),
+        )
+        .await
+        .expect("second page");
+        let CoreMembershipOutput::ListMembers(second) = second else {
+            panic!("expected list output");
+        };
+        assert_eq!(second.members.len(), 1);
+        assert!(!second.has_more);
+        assert!(second.next_cursor.is_none());
+
+        let mut walked: Vec<String> = first
+            .members
+            .iter()
+            .chain(second.members.iter())
+            .map(|member| member.member.clone())
+            .collect();
+        walked.sort_unstable();
+        let mut expected: Vec<String> = all
+            .iter()
+            .map(|(member, _)| member.into_inner().to_string())
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(walked, expected, "pages must cover every member once");
+
+        // A cursor minted for one group must fail closed on another.
+        let other_group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let ctx = ctx_with_principals(owner, vec![group_owner, other_group]);
+        let err = execute_membership(
+            &engine,
+            &ctx,
+            CoreMembershipArgs::ListMembers(ListMembersArgs {
+                group: MemorySpaceKey::owner(other_group).to_wire(),
+                limit: Some(2),
+                cursor: Some(token),
+            }),
+        )
+        .await
+        .expect_err("foreign-group cursor must fail closed");
+        assert!(matches!(
+            err,
+            McpToolError::InvalidInput(message) if message.contains("cursor does not match")
+        ));
     }
 }

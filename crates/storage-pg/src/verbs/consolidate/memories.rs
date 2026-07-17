@@ -209,6 +209,33 @@ WHERE m.memory_id = $1
     let Some((kind, schema_id, schema_version, text, _owner_kind, _owner_id)) = head else {
         return Ok(None);
     };
+    snapshot_with_payload(
+        pool,
+        pg_sidecars,
+        memory_id,
+        kind,
+        schema_id,
+        schema_version,
+        text,
+        sidecars,
+    )
+    .await
+}
+
+/// Resolve a head row into a [`MemorySnapshot`], loading its typed sidecar
+/// payload when the schema has one registered. Goal rows project to `None`
+/// (goals are not memories-readable through this path).
+#[allow(clippy::too_many_arguments)]
+async fn snapshot_with_payload(
+    pool: &PgPool,
+    pg_sidecars: &PgSidecarRegistryFrozen,
+    memory_id: MemoryId,
+    kind: Option<EntityKind>,
+    schema_id: String,
+    schema_version: i32,
+    text: Option<String>,
+    sidecars: &[SidecarSpec],
+) -> Result<Option<MemorySnapshot>, StorageError> {
     let kind_str = kind.unwrap_or(EntityKind::Fact).as_str().to_string();
     let payload = if let Some(spec) = sidecars.iter().find(|s| {
         s.schema_id.as_str() == schema_id
@@ -232,6 +259,68 @@ WHERE m.memory_id = $1
         text,
         payload,
     }))
+}
+
+/// Batch counterpart of [`load_memory_by_id`], visibility-scoped: head rows
+/// come back in one owner-predicated query, then each row resolves its
+/// typed sidecar payload. Unknown, invisible, and tombstoned ids are
+/// simply absent from the result.
+pub async fn load_memories_by_ids(
+    pool: &PgPool,
+    pg_sidecars: &PgSidecarRegistryFrozen,
+    read_owners: &[proxima_core::OwnerRef],
+    memory_ids: &[MemoryId],
+    sidecars: &[SidecarSpec],
+) -> Result<Vec<MemorySnapshot>, StorageError> {
+    if read_owners.is_empty() || memory_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (read_owner_kinds, read_owner_ids) = crate::verbs::query::read_owner_columns(read_owners);
+    let ids: Vec<uuid::Uuid> = memory_ids.iter().map(|id| id.into_inner()).collect();
+    let sql = format!(
+        "SELECT m.memory_id, m.kind, m.schema_id, m.schema_version, m.text
+           FROM proxima_core.memories m
+          WHERE EXISTS (
+                    SELECT 1
+                      FROM {entity_owner_union} eo
+                      JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS rs(kind, id)
+                        ON {read_owner_predicate}
+                     WHERE eo.entity_id = m.memory_id
+                )
+            AND m.memory_id = ANY($3::uuid[])
+            AND m.tombstoned_at IS NULL
+          ORDER BY m.created_at, m.memory_id",
+        entity_owner_union = crate::verbs::query::entity_owner_union(),
+        read_owner_predicate = crate::verbs::query::read_owner_predicate("eo", "rs"),
+    );
+    // SQL-POLICY: fixed-fragment
+    let rows: Vec<(uuid::Uuid, Option<EntityKind>, String, i32, Option<String>)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(sql))
+            .bind(&read_owner_kinds)
+            .bind(&read_owner_ids)
+            .bind(&ids)
+            .fetch_all(pool)
+            .await
+            .map_err(map_err)?;
+
+    let mut snapshots = Vec::with_capacity(rows.len());
+    for (memory_id, kind, schema_id, schema_version, text) in rows {
+        if let Some(snapshot) = snapshot_with_payload(
+            pool,
+            pg_sidecars,
+            MemoryId::new(memory_id),
+            kind,
+            schema_id,
+            schema_version,
+            text,
+            sidecars,
+        )
+        .await?
+        {
+            snapshots.push(snapshot);
+        }
+    }
+    Ok(snapshots)
 }
 
 async fn load_memory_sidecar_payload(

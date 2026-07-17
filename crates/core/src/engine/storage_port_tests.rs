@@ -53,6 +53,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
             nodes: Vec::new(),
             edges: Vec::new(),
             truncated: false,
+            next_cursor: None,
         })
     }
 
@@ -316,6 +317,15 @@ mod storage_port_tests_support {
             Ok(None)
         }
 
+        async fn load_memories_by_ids(
+            &self,
+            _read_owners: &[crate::OwnerRef],
+            _memory_ids: &[crate::MemoryId],
+            _sidecars: &[crate::read_models::SidecarSpec],
+        ) -> Result<Vec<crate::read_models::MemorySnapshot>, StorageError> {
+            Ok(Vec::new())
+        }
+
         async fn list_memory_dependencies(
             &self,
             _owner: &crate::Owner,
@@ -437,8 +447,14 @@ mod storage_port_tests_support {
             _read_owners: &[OwnerRef],
             _cited_object_id: uuid::Uuid,
             _sidecars: &[crate::read_models::SidecarSpec],
-        ) -> Result<Vec<crate::read_models::MemorySnapshot>, StorageError> {
-            Ok(Vec::new())
+            _after: Option<crate::verbs::query::FactCitationCursor>,
+            _limit: u32,
+        ) -> Result<crate::verbs::query::FactCitationPage, StorageError> {
+            Ok(crate::verbs::query::FactCitationPage {
+                facts: Vec::new(),
+                next_cursor: None,
+                has_more: false,
+            })
         }
 
         async fn citation_of_fact(

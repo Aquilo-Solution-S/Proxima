@@ -32,6 +32,13 @@ pub struct CodeSearchCommitsArgs {
 pub struct CodeSearchCommitsOutput {
     pub commits: Vec<CommitMatch>,
     pub summaries: Vec<SummaryMatch>,
+    /// At least one further authorized commit match exists past `limit`
+    /// in the scanned candidate window; retry with a higher limit
+    /// (max 50) or narrow the query. Truncation is a signal, never
+    /// silent.
+    pub commits_has_more: bool,
+    /// Same signal for the `summaries` list.
+    pub summaries_has_more: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -103,15 +110,19 @@ impl Tool for CodeSearchCommitsTool {
                 .into_iter()
                 .map(|row| (row.memory_id, row.score))
                 .collect::<std::collections::HashMap<_, _>>();
-            let commits = pool
+            let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
+            let mut commit_payloads = pool
                 .authorized_fact_payloads::<CommitV1>(
                     &engine,
                     ctx.authz(),
                     ctx.owner(),
                     &commit_ids,
-                    usize::try_from(limit).unwrap_or(usize::MAX),
+                    page_len.saturating_add(1),
                 )
-                .await?
+                .await?;
+            let commits_has_more = commit_payloads.len() > page_len;
+            commit_payloads.truncate(page_len);
+            let commits = commit_payloads
                 .into_iter()
                 .map(|(memory_id, row)| CommitMatch {
                     handle: ctx.format_fact_memory(memory_id),
@@ -147,15 +158,18 @@ impl Tool for CodeSearchCommitsTool {
                 .into_iter()
                 .map(|row| (row.memory_id, row.score))
                 .collect::<std::collections::HashMap<_, _>>();
-            let summaries = pool
+            let mut summary_payloads = pool
                 .authorized_abstraction_payloads::<CommitSummaryV1>(
                     &engine,
                     ctx.authz(),
                     ctx.owner(),
                     &summary_ids,
-                    usize::try_from(limit).unwrap_or(usize::MAX),
+                    page_len.saturating_add(1),
                 )
-                .await?
+                .await?;
+            let summaries_has_more = summary_payloads.len() > page_len;
+            summary_payloads.truncate(page_len);
+            let summaries = summary_payloads
                 .into_iter()
                 .map(|(memory_id, row)| SummaryMatch {
                     // CommitSummaryV1 is an AbstractionPayload; emit an `A:` handle.
@@ -176,7 +190,12 @@ impl Tool for CodeSearchCommitsTool {
                 })
                 .collect();
 
-            Ok(CodeSearchCommitsOutput { commits, summaries })
+            Ok(CodeSearchCommitsOutput {
+                commits,
+                summaries,
+                commits_has_more,
+                summaries_has_more,
+            })
         })
     }
 }

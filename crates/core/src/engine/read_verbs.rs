@@ -51,6 +51,18 @@ pub struct GetMemoryReadResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetMemoriesReadRequest {
+    pub memory_ids: Vec<MemoryId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetMemoriesReadResponse {
+    /// Snapshots for the visible subset of the requested ids; unknown and
+    /// invisible ids are simply absent (deliberately indistinguishable).
+    pub memories: Vec<MemorySnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetGraphReadRequest {
     pub owner: OwnerRef,
 }
@@ -102,6 +114,11 @@ pub struct EntityHeadCitationReadRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactsCitingObjectReadRequest {
     pub cited_object_id: uuid::Uuid,
+    /// Max citing Facts per page.
+    pub limit: u32,
+    /// Keyset resume point from a previous page's `next_cursor`; `None`
+    /// starts from the newest citing Fact.
+    pub after: Option<crate::verbs::query::FactCitationCursor>,
 }
 
 impl Engine {
@@ -137,8 +154,10 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.memory_id`, and
-    /// `Internal` when storage reads fail.
+    /// Returns `NotFound` when `req.memory_id` does not exist or is not
+    /// visible to the caller (deliberately indistinguishable), `Forbidden`
+    /// when the context itself authorizes nothing, and `Internal` when
+    /// storage reads fail.
     pub async fn get_memory(
         &self,
         authz: &AuthzContext,
@@ -146,10 +165,52 @@ impl Engine {
     ) -> Result<GetMemoryReadResponse, ProtocolError> {
         let _permit = self
             .authorize_entry_read(authz, EntityId::Memory(req.memory_id))
-            .await?;
+            .await
+            .map_err(|err| {
+                // The entry gate answers uniformly for absent and invisible
+                // entities; on this read verb that uniform answer IS a
+                // not-found. Context-level denials keep their Forbidden.
+                if err.code == crate::error::ErrorCode::Forbidden
+                    && err.message == super::pipeline::ENTRY_NOT_FOUND_MESSAGE
+                {
+                    ProtocolError {
+                        code: crate::error::ErrorCode::NotFound,
+                        message: "memory not found".into(),
+                        request_id: err.request_id,
+                    }
+                } else {
+                    err
+                }
+            })?;
         let read_owners = self.authorize_read(authz).await?;
         let sidecars = self.sidecar_specs();
         get_memory_authorized(&self.storage.read_verb, &read_owners, &sidecars, req).await
+    }
+
+    /// Batch single-memory read: snapshots for the subset of
+    /// `req.memory_ids` visible to the caller's read-owner set. Unknown
+    /// and invisible ids are omitted rather than erroring, so a caller
+    /// can only observe "not returned" (deliberately indistinguishable).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context authorizes no read owners, and
+    /// `Internal` when storage reads fail.
+    pub async fn get_memories(
+        &self,
+        authz: &AuthzContext,
+        req: &GetMemoriesReadRequest,
+    ) -> Result<GetMemoriesReadResponse, ProtocolError> {
+        let read_owners = self.authorize_read(authz).await?;
+        let sidecars = self.sidecar_specs();
+        let memories = self
+            .storage
+            .read_verb
+            .memory_inspect
+            .load_memories_by_ids(&read_owners, &req.memory_ids, &sidecars)
+            .await
+            .map_err(|err| storage_error("load_memories_by_ids", &err))?;
+        Ok(GetMemoriesReadResponse { memories })
     }
 
     /// Owner-scoped graph overview domain read.
@@ -331,16 +392,10 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         req: &FactsCitingObjectReadRequest,
-    ) -> Result<Vec<MemorySnapshot>, ProtocolError> {
+    ) -> Result<crate::verbs::query::FactCitationPage, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
         let sidecars = self.sidecar_specs();
-        facts_citing_object_authorized(
-            &self.storage.read_verb,
-            &read_owners,
-            req.cited_object_id,
-            &sidecars,
-        )
-        .await
+        facts_citing_object_authorized(&self.storage.read_verb, &read_owners, req, &sidecars).await
     }
 
     pub(in crate::engine) fn sidecar_specs(&self) -> Vec<SidecarSpec> {
@@ -586,12 +641,18 @@ pub(in crate::engine) async fn read_entity_head_citation_authorized(
 pub(in crate::engine) async fn facts_citing_object_authorized(
     ports: &ReadVerbStoragePorts,
     read_owners: &[OwnerRef],
-    cited_object_id: uuid::Uuid,
+    req: &FactsCitingObjectReadRequest,
     sidecars: &[SidecarSpec],
-) -> Result<Vec<MemorySnapshot>, ProtocolError> {
+) -> Result<crate::verbs::query::FactCitationPage, ProtocolError> {
     ports
         .citation
-        .facts_citing_object(read_owners, cited_object_id, sidecars)
+        .facts_citing_object(
+            read_owners,
+            req.cited_object_id,
+            sidecars,
+            req.after,
+            req.limit,
+        )
         .await
         .map_err(|err| storage_error("facts_citing_object", &err))
 }
@@ -833,6 +894,8 @@ mod tests {
         let owner = owner();
         let req = FactsCitingObjectReadRequest {
             cited_object_id: uuid::Uuid::now_v7(),
+            limit: 50,
+            after: None,
         };
         let err = engine()
             .facts_citing_object(&AuthzContext::denied_for_owner(&owner), &req)
