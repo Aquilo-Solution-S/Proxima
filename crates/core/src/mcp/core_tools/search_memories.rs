@@ -158,7 +158,7 @@ pub struct SearchMemoriesArgs {
     pub include_body: bool,
     #[serde(default)]
     #[schemars(
-        description = "Optional max character count for hydrated body text. Applies only when include_body=true."
+        description = "Optional max character count for hydrated body text. Applies only when include_body=true. When a body is cut to this cap the result carries body_truncated=true; fetch the full text via proxima://memory/{id}."
     )]
     pub body_max_chars: Option<usize>,
     #[serde(default)]
@@ -197,11 +197,16 @@ pub struct SearchMemoryOutput {
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// `Some(true)` when the hydrated `body` was cut to `body_max_chars`;
+    /// the untruncated text is available via `proxima://memory/{id}`.
+    /// Present only when a body was hydrated (`include_body=true`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body_truncated: Option<bool>,
 }
 
 impl McpTool for SearchMemoriesTool {
     const NAME: &'static str = protocol_tool::CORE_SEARCH_MEMORIES;
-    const DESCRIPTION: &'static str = "Search owner-scoped memories by lexical, semantic, or hybrid ranking. Defaults to current heads only; pass supersession=all for full history. Set include_body=true to hydrate body text in the same batched read. Drop weak hits with min_score, tune hybrid fusion with semantic_weight, and page past the 50-result cap by passing next_cursor back as cursor.";
+    const DESCRIPTION: &'static str = "Search owner-scoped memories by lexical, semantic, or hybrid ranking. Defaults to current heads only; pass supersession=all for full history. Set include_body=true to hydrate body text in the same batched read; a body cut to body_max_chars is flagged with body_truncated=true. Drop weak hits with min_score, tune hybrid fusion with semantic_weight, and page past the 50-result cap by passing next_cursor back as cursor.";
     type Args = SearchMemoriesArgs;
     type Output = SearchMemoriesOutput;
 
@@ -447,7 +452,7 @@ async fn search_one_space(
                 .get(&mid)
                 .and_then(|payload| payload.tags.clone())
                 .unwrap_or_default();
-            let body = args
+            let hydrated = args
                 .include_body
                 .then(|| {
                     payloads
@@ -456,7 +461,11 @@ async fn search_one_space(
                         .map(|body| truncate_body(&body, prepared.body_max_chars))
                 })
                 .flatten();
-            search_memory_output(ctx, &space.key, row, tags, body).map(|output| {
+            let (body, body_truncated) = match hydrated {
+                Some((text, truncated)) => (Some(text), Some(truncated)),
+                None => (None, None),
+            };
+            search_memory_output(ctx, &space.key, row, tags, body, body_truncated).map(|output| {
                 RankedMemoryOutput {
                     memory_id: mid,
                     created_at,
@@ -590,8 +599,14 @@ fn query_fingerprint(
     crate::mcp::cursor::fingerprint(&canon)
 }
 
-fn truncate_body(body: &str, max_chars: usize) -> String {
-    body.chars().take(max_chars).collect()
+/// Cut `body` to at most `max_chars` characters, returning the (possibly
+/// shortened) text and whether anything was dropped. The truncated string
+/// is a char-boundary prefix, so comparing byte lengths is an O(1) exact
+/// "did we cut" test.
+fn truncate_body(body: &str, max_chars: usize) -> (String, bool) {
+    let truncated: String = body.chars().take(max_chars).collect();
+    let did_truncate = truncated.len() < body.len();
+    (truncated, did_truncate)
 }
 
 fn effective_body_max_chars(requested: Option<usize>) -> usize {
@@ -606,6 +621,7 @@ fn search_memory_output(
     row: crate::verbs::query::MemorySearchResult,
     tags: Vec<String>,
     body: Option<String>,
+    body_truncated: Option<bool>,
 ) -> Result<SearchMemoryOutput, McpToolError> {
     let class = super::get_memory::memory_class(row.kind.as_str())?;
     Ok(SearchMemoryOutput {
@@ -620,6 +636,7 @@ fn search_memory_output(
         similarity_score: row.similarity_score,
         tags,
         body,
+        body_truncated,
     })
 }
 
@@ -744,6 +761,7 @@ mod tests {
             similarity_score: 0.0,
             tags: Vec::new(),
             body: None,
+            body_truncated: None,
         }
     }
 
@@ -945,15 +963,25 @@ mod tests {
     #[test]
     fn truncate_body_applies_default_hydration_cap() {
         let body = "x".repeat(DEFAULT_BODY_MAX_CHARS + 1);
-        assert_eq!(
-            truncate_body(&body, DEFAULT_BODY_MAX_CHARS).chars().count(),
-            DEFAULT_BODY_MAX_CHARS
-        );
+        let (text, truncated) = truncate_body(&body, DEFAULT_BODY_MAX_CHARS);
+        assert_eq!(text.chars().count(), DEFAULT_BODY_MAX_CHARS);
+        assert!(truncated, "a body over the cap must flag truncation");
     }
 
     #[test]
     fn truncate_body_respects_smaller_caller_cap() {
-        assert_eq!(truncate_body("abcdef", 3), "abc");
+        assert_eq!(truncate_body("abcdef", 3), ("abc".to_string(), true));
+    }
+
+    #[test]
+    fn truncate_body_signals_no_truncation_when_body_fits() {
+        // Exactly at the cap and comfortably under it both leave the text
+        // whole and report body_truncated=false — the signal only fires on a
+        // real cut. Multi-byte chars count by character, not byte.
+        assert_eq!(truncate_body("abc", 3), ("abc".to_string(), false));
+        assert_eq!(truncate_body("ab", 3), ("ab".to_string(), false));
+        assert_eq!(truncate_body("héllo", 5), ("héllo".to_string(), false));
+        assert_eq!(truncate_body("héllo", 2), ("hé".to_string(), true));
     }
 
     #[test]
