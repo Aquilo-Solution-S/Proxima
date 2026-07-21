@@ -383,15 +383,20 @@ fn resolve_search_spaces(
             super::memory_spaces::SpaceDefault::Current,
         )?]);
     }
+    // Dedup by the *resolved* owner, not the raw key: `current` and the
+    // explicit `personal:<uuid>` spelling of the caller's own space both
+    // name the same owner, and searching it twice would return every hit
+    // (and its neighbor edges) twice in the merged page.
     let mut seen = std::collections::HashSet::with_capacity(raw_spaces.len());
     let mut out = Vec::with_capacity(raw_spaces.len());
     for key in raw_spaces {
-        if seen.insert(key.as_str()) {
-            out.push(super::memory_spaces::resolve_space_owner(
-                ctx,
-                Some(key.as_str()),
-                super::memory_spaces::SpaceDefault::Current,
-            )?);
+        let resolved = super::memory_spaces::resolve_space_owner(
+            ctx,
+            Some(key.as_str()),
+            super::memory_spaces::SpaceDefault::Current,
+        )?;
+        if seen.insert(resolved.owner) {
+            out.push(resolved);
         }
     }
     Ok(out)
@@ -1014,5 +1019,32 @@ mod tests {
         assert!(validate_body_max_chars(Some(0)).is_err());
         assert!(validate_body_max_chars(Some(1)).is_ok());
         assert!(validate_body_max_chars(None).is_ok());
+    }
+
+    #[test]
+    fn spaces_dedup_by_resolved_owner_not_raw_key() {
+        let subject = crate::UserId::new(uuid::Uuid::now_v7());
+        let ctx = crate::mcp::core_tools::memory_spaces::test_ctx::ctx_for(subject, vec![]);
+        // `current` and `personal:<own uuid>` are two spellings of the
+        // same space; a page must not search it twice and return every
+        // hit doubled.
+        let both_spellings = vec![
+            "current".to_string(),
+            format!("personal:{}", subject.into_inner()),
+        ];
+        let deduped = super::resolve_search_spaces(&ctx, &both_spellings).expect("valid spaces");
+        assert_eq!(deduped.len(), 1, "one owner, one search");
+        assert_eq!(deduped[0].owner, crate::OwnerRef::Personal(subject));
+
+        // Both spellings must also continue each other's cursors: the
+        // fingerprint is computed over resolved owners, so after dedup
+        // it matches the single-spelling query exactly.
+        let single = super::resolve_search_spaces(&ctx, &["current".to_string()])
+            .expect("valid space");
+        let query_args = args(SearchMemoriesMode::Lexical);
+        assert_eq!(
+            super::query_fingerprint("needle", &query_args, None, None, &deduped),
+            super::query_fingerprint("needle", &query_args, None, None, &single),
+        );
     }
 }

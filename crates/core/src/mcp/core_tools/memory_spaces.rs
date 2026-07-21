@@ -216,26 +216,26 @@ pub(crate) fn space_label(owner: &Owner) -> String {
     }
 }
 
+/// Engine-free `McpToolCtx` builders shared by unit tests across the core
+/// tools (space resolution has no storage dependency).
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_ctx {
     use std::sync::Arc;
 
     use crate::access::Role;
-    use crate::mcp::{McpAuthorContext, McpTool, McpToolExtensions};
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, GroupId, OwnerRef, UserId};
-
-    use super::*;
+    use crate::mcp::{McpAuthorContext, McpToolCtx, McpToolExtensions};
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, OwnerRef, UserId};
 
     /// Build a server-resolved caller context: personal role on `subject`'s own
     /// owner, World viewer, plus the given per-group roles.
-    fn ctx_for(subject: UserId, group_roles: Vec<(OwnerRef, Role)>) -> McpToolCtx {
+    pub(crate) fn ctx_for(subject: UserId, group_roles: Vec<(OwnerRef, Role)>) -> McpToolCtx {
         make_ctx(
             OwnerRef::Personal(subject),
             AuthzContext::for_subject_with_role(subject, group_roles, AuthPath::HostBearer),
         )
     }
 
-    fn make_ctx(owner: OwnerRef, authz: AuthzContext) -> McpToolCtx {
+    pub(crate) fn make_ctx(owner: OwnerRef, authz: AuthzContext) -> McpToolCtx {
         McpToolCtx {
             owner,
             authz,
@@ -251,6 +251,16 @@ mod tests {
             engine: None,
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::access::Role;
+    use crate::mcp::McpTool;
+    use crate::{GroupId, OwnerRef, UserId};
+
+    use super::test_ctx::ctx_for;
+    use super::*;
 
     fn writable_for(spaces: &[MemorySpaceOutput], key: &str) -> bool {
         spaces
