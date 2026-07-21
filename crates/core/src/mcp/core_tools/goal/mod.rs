@@ -279,9 +279,7 @@ async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput,
     let request_id = IdempotencyKey::optional_or_generated("goal_set", args.idempotency_key)
         .map_err(McpToolError::InvalidInput)?;
     let authorship = system_operator_authorship(&ctx, "goal_set");
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let outcome = engine
         .create_goal_from_payload_write(
             &ctx.authz,
@@ -335,9 +333,7 @@ async fn goal_transition(
     };
     let request_id = IdempotencyKey::optional_or_generated("goal_transition", args.idempotency_key)
         .map_err(McpToolError::InvalidInput)?;
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let outcome = engine
         .transition_goal(
             &ctx.authz,
@@ -383,9 +379,7 @@ async fn goal_mark_achieved(
     let request_id =
         IdempotencyKey::optional_or_generated("goal_mark_achieved", args.idempotency_key)
             .map_err(McpToolError::InvalidInput)?;
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let outcome = engine
         .mark_goal_achieved(
             &ctx.authz,
@@ -453,9 +447,7 @@ async fn goal_modify(
     };
     let request_id = IdempotencyKey::optional_or_generated("goal_modify", args.idempotency_key)
         .map_err(McpToolError::InvalidInput)?;
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let outcome = engine
         .modify_goal(
             &ctx.authz,
@@ -550,9 +542,7 @@ async fn goal_decompose(
                 .map_err(McpToolError::InvalidInput)?,
         });
     }
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let outcome = engine
         .decompose_goal(
             &ctx.authz,

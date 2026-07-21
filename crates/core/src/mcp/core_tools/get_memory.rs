@@ -47,9 +47,7 @@ pub async fn get_memory(
 ) -> Result<GetMemoryOutput, McpToolError> {
     let memory_id = ctx.resolve_memory(&args.memory)?;
     let output_space = args.space.unwrap_or_else(|| "entry".into());
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let response = engine
         .get_memory(
             &ctx.authz,

@@ -318,6 +318,74 @@ mod tests {
     }
 
     #[test]
+    fn resolution_accepts_explicit_owner_keys() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let shared = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let ctx = ctx_for(subject, vec![(shared, Role::viewer())]);
+
+        let world = resolve_space_owner(&ctx, Some("world"), SpaceDefault::Current).unwrap();
+        assert_eq!(world.owner, OwnerRef::World);
+        assert_eq!(world.key, "world");
+
+        let group_key = MemorySpaceKey::owner(shared).to_wire();
+        let group = resolve_space_owner(&ctx, Some(&group_key), SpaceDefault::Current).unwrap();
+        assert_eq!(group.owner, shared);
+        assert_eq!(group.key, group_key);
+
+        // The caller's own space canonicalizes to `current` even when
+        // named by its explicit personal:<uuid> spelling.
+        let own_key = MemorySpaceKey::owner(OwnerRef::Personal(subject)).to_wire();
+        let own = resolve_space_owner(&ctx, Some(&own_key), SpaceDefault::Current).unwrap();
+        assert_eq!(own.owner, OwnerRef::Personal(subject));
+        assert_eq!(own.key, "current");
+    }
+
+    #[test]
+    fn identity_default_resolves_to_principal_not_space_owner() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let shared = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let authz = crate::AuthzContext::for_subject_with_role(
+            subject,
+            vec![(shared, Role::editor())],
+            crate::AuthPath::HostBearer,
+        );
+        let ctx = super::test_ctx::make_ctx(shared, authz);
+
+        // An omitted key with the Current default follows the session's
+        // space owner (here a group)...
+        let current = resolve_space_owner(&ctx, None, SpaceDefault::Current).unwrap();
+        assert_eq!(current.owner, shared);
+        assert_eq!(current.key, "current");
+        // ...while the Identity default follows the authenticated
+        // principal regardless of which space the session is bound to.
+        let identity = resolve_space_owner(&ctx, None, SpaceDefault::Identity).unwrap();
+        assert_eq!(identity.owner, OwnerRef::Personal(subject));
+    }
+
+    #[test]
+    fn space_key_wire_round_trip_covers_every_owner_kind() {
+        for owner in [
+            OwnerRef::World,
+            OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7())),
+            OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7())),
+        ] {
+            let wire = MemorySpaceKey::owner(owner).to_wire();
+            assert_eq!(
+                MemorySpaceKey::parse(&wire),
+                Some(MemorySpaceKey::Owner(owner)),
+                "round trip for {wire}",
+            );
+        }
+        assert_eq!(
+            MemorySpaceKey::parse("current"),
+            Some(MemorySpaceKey::Current)
+        );
+        // Unknown prefixes and malformed uuids fail closed.
+        assert_eq!(MemorySpaceKey::parse("personal:not-a-uuid"), None);
+        assert_eq!(MemorySpaceKey::parse("tenant:123"), None);
+    }
+
+    #[test]
     fn resolution_rejects_owner_without_visibility() {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let hidden = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));

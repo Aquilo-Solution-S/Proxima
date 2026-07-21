@@ -46,9 +46,7 @@ pub(super) async fn citation_of_fact(
     args: CitationOfFactArgs,
 ) -> Result<CitationOfFactOutput, McpToolError> {
     let fact_memory_id = ctx.resolve_fact_memory(&args.fact)?;
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let citation = engine
         .read_fact_citation(&ctx.authz, &FactCitationReadRequest { fact_memory_id })
         .await?
@@ -68,9 +66,7 @@ pub(super) async fn citation_of_entity_head(
         .parse::<uuid::Uuid>()
         .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}")))?;
     let fact_entity_id = FactEntityId::new(fact_entity_uuid);
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let citation = engine
         .read_entity_head_citation(
             &ctx.authz,

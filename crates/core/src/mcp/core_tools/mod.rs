@@ -21,6 +21,7 @@ pub mod memory_spaces;
 pub mod publish;
 pub mod read_edges;
 pub mod walk_memory_lineage;
+pub(crate) mod wire_ref;
 
 pub use fact::CoreFactTool;
 pub use goal::CoreGoalTool;
@@ -31,6 +32,20 @@ pub use publish::CorePublishTool;
 pub use search_memories::SearchMemoriesTool;
 
 use crate::mcp::McpToolAnnotations;
+
+/// Shared page bounds for the keyset-paginated read surfaces (edges,
+/// goals, citations, membership, lineage, wake candidates). One pair of
+/// constants so six tools cannot drift apart on the same contract;
+/// `core_list_change_events` deliberately keeps its own larger bounds
+/// (pull-log semantics, default 100 / max 1000).
+pub(crate) const DEFAULT_PAGE_LIMIT: u32 = 50;
+pub(crate) const MAX_PAGE_LIMIT: u32 = 200;
+
+/// Clamp an optional wire `limit` to `1..=`[`MAX_PAGE_LIMIT`], defaulting
+/// to [`DEFAULT_PAGE_LIMIT`] when omitted.
+pub(crate) fn clamp_page_limit(limit: Option<u32>) -> u32 {
+    limit.unwrap_or(DEFAULT_PAGE_LIMIT).clamp(1, MAX_PAGE_LIMIT)
+}
 
 const READ_ONLY: McpToolAnnotations = McpToolAnnotations::new().read_only(true).open_world(false);
 const WRITE_NON_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()

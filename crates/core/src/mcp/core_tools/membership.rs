@@ -11,9 +11,6 @@ use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolE
 use crate::protocol::{action as protocol_action, tool as protocol_tool};
 use crate::{GroupId, OwnerRef, UserId};
 
-const MAX_MEMBER_PAGE_LIMIT: u32 = 200;
-const DEFAULT_MEMBER_PAGE_LIMIT: u32 = 50;
-
 /// Opaque cursor codec: the shared `{v, fp, c}` envelope with the last
 /// `(member, relation)` pair under `c`. The fingerprint binds the group.
 const MEMBER_CURSOR: wire_cursor::FingerprintedCursor = wire_cursor::FingerprintedCursor {
@@ -162,9 +159,7 @@ impl McpTool for CoreMembershipTool {
         args: CoreMembershipArgs,
     ) -> BoxFuture<'static, Result<CoreMembershipOutput, McpToolError>> {
         Box::pin(async move {
-            let engine = ctx
-                .engine()
-                .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+            let engine = ctx.require_engine()?;
             execute_membership(engine, &ctx, args).await
         })
     }
@@ -255,10 +250,7 @@ async fn execute_membership(
         }
         CoreMembershipArgs::ListMembers(args) => {
             let group = resolve_group(ctx, &args.group)?;
-            let limit = args
-                .limit
-                .unwrap_or(DEFAULT_MEMBER_PAGE_LIMIT)
-                .clamp(1, MAX_MEMBER_PAGE_LIMIT);
+            let limit = super::clamp_page_limit(args.limit);
             let fingerprint = member_fingerprint(group);
             let after = args
                 .cursor

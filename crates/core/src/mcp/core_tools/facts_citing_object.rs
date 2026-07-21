@@ -12,9 +12,6 @@ use crate::verbs::query::FactCitationCursor;
 
 use super::get_memory::{GetMemoryOutput, project_memory_snapshot};
 
-const MAX_CITATION_PAGE_LIMIT: u32 = 200;
-const DEFAULT_CITATION_PAGE_LIMIT: u32 = 50;
-
 /// Opaque cursor codec: the shared `{v, fp, c}` envelope with the
 /// `(created_at, memory_id)` keyset under `c`. The fingerprint binds the
 /// cited object.
@@ -63,10 +60,7 @@ pub(super) async fn facts_citing_object(
     args: FactsCitingObjectArgs,
 ) -> Result<FactsCitingObjectOutput, McpToolError> {
     let cited_object_id = parse_cited_object_id(&args.cited_object_id)?;
-    let limit = args
-        .limit
-        .unwrap_or(DEFAULT_CITATION_PAGE_LIMIT)
-        .clamp(1, MAX_CITATION_PAGE_LIMIT);
+    let limit = super::clamp_page_limit(args.limit);
     let fingerprint = citation_fingerprint(cited_object_id);
     let after = args
         .cursor
@@ -81,9 +75,7 @@ pub(super) async fn facts_citing_object(
             })
         })
         .transpose()?;
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let page = engine
         .facts_citing_object(
             &ctx.authz,

@@ -133,3 +133,44 @@ pub async fn create_db() -> Result<String, Box<dyn std::error::Error>> {
         .expect("PG required for tests");
     Ok(db_name)
 }
+
+/// The serve task returned by [`start_server`].
+#[allow(dead_code)]
+pub type ServeHandle = tokio::task::JoinHandle<Result<(), proxima_mcp_server::McpServerError>>;
+
+/// Boot a streamable-HTTP server on a fresh database — the shared
+/// spin-up every integration test used to hand-roll. Returns the serve
+/// task, the bound loopback address, and the database name to pass to
+/// [`stop_server`].
+#[allow(dead_code)]
+pub async fn start_server(
+    auth_store: std::sync::Arc<proxima_mcp_server::McpEdgeAuth>,
+) -> Result<(ServeHandle, std::net::SocketAddr, String), Box<dyn std::error::Error>> {
+    let db_name = create_db().await?;
+    let server = proxima_mcp_server::McpToolHost::from_database_url(
+        &db_url(&db_name),
+        proxima_core::FlavorRegistry::new(),
+    )
+    .await?;
+    let (handle, addr) = proxima_mcp_server::serve_streamable_http(
+        std::net::SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), 0),
+        server,
+        proxima_mcp_server::default_allowlist(),
+        auth_store,
+    )
+    .await?;
+    Ok((handle, addr, db_name))
+}
+
+/// Tear down a [`start_server`] boot: abort the serve task and drop its
+/// database.
+#[allow(dead_code)]
+pub async fn stop_server(
+    handle: ServeHandle,
+    db_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    handle.abort();
+    let _ = handle.await;
+    drop_db(db_name).await?;
+    Ok(())
+}

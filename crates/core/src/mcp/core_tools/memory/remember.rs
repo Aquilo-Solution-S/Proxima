@@ -126,9 +126,7 @@ impl McpTool for RememberTool {
             let draft =
                 FactWriteCommand::from_payload(SOURCE_ID, source_batch_id, &payload, observed_at);
 
-            let engine = ctx
-                .engine()
-                .ok_or_else(|| McpToolError::InvalidInput("engine required".into()))?;
+            let engine = ctx.require_engine()?;
             let embedding_client = engine.embed_client();
             let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
             let outcome = if let Some(citation) = args.citation {

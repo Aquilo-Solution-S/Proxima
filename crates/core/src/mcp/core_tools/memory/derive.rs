@@ -275,9 +275,7 @@ impl McpTool for DeriveTool {
                     })
                     .collect()
             });
-            let engine = ctx
-                .engine()
-                .ok_or_else(|| McpToolError::InvalidInput("engine required".into()))?;
+            let engine = ctx.require_engine()?;
             let outcome = engine
                 .author_derived_authorized(
                     &ctx.authz,

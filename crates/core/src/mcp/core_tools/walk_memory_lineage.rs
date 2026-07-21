@@ -14,8 +14,6 @@ use super::get_memory::memory_class;
 
 const MAX_LINEAGE_DEPTH: u32 = 8;
 const DEFAULT_LINEAGE_DEPTH: u32 = 3;
-const MAX_LINEAGE_PAGE_LIMIT: u32 = 200;
-const DEFAULT_LINEAGE_PAGE_LIMIT: u32 = 50;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WalkMemoryLineageArgs {
@@ -102,7 +100,7 @@ fn default_depth() -> u32 {
 }
 
 fn default_limit() -> u32 {
-    DEFAULT_LINEAGE_PAGE_LIMIT
+    super::DEFAULT_PAGE_LIMIT
 }
 
 /// Opaque cursor codec: the shared `{v, fp, c}` envelope with the
@@ -137,9 +135,7 @@ pub async fn walk_memory_lineage(
         .as_deref()
         .map(|raw| LINEAGE_CURSOR.decode(&fingerprint, raw))
         .transpose()?;
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let response = engine
         .walk_memory_lineage(
             &ctx.authz,
@@ -148,7 +144,7 @@ pub async fn walk_memory_lineage(
                 start_memory_id: start,
                 direction,
                 depth,
-                limit: args.limit.clamp(1, MAX_LINEAGE_PAGE_LIMIT),
+                limit: args.limit.clamp(1, super::MAX_PAGE_LIMIT),
                 after,
             },
         )
@@ -191,7 +187,7 @@ pub async fn walk_memory_lineage(
             relation: edge.relation,
             relation_class: edge.relation_class,
             source: format_lineage_memory(&ctx, &classes, edge.source_memory_id, edge.source_kind),
-            target: format_lineage_target(&ctx, &classes, edge.target),
+            target: format_lineage_target(&ctx, &classes, &edge.target),
             distance: edge.distance,
         })
         .collect();
@@ -212,27 +208,18 @@ pub async fn walk_memory_lineage(
 fn format_lineage_target(
     ctx: &McpToolCtx,
     classes: &HashMap<MemoryId, MemoryHandleClass>,
-    target: crate::EdgeTargetProjection,
+    target: &crate::EdgeTargetProjection,
 ) -> String {
-    match target {
-        crate::EdgeTargetProjection::Visible {
-            target: crate::EntityRef::Memory(memory_id),
-        } => {
-            let class = classes
-                .get(&memory_id)
-                .copied()
-                .unwrap_or(MemoryHandleClass::Fact);
-            ctx.format_memory_with_class(memory_id, class)
-        }
-        crate::EdgeTargetProjection::Visible {
-            target: crate::EntityRef::Goal(goal_id),
-        } => ctx.format_goal(goal_id),
-        crate::EdgeTargetProjection::Visible {
-            target: crate::EntityRef::FactEntity(fact_entity_id),
-        } => format!("fact_entity:{}", fact_entity_id.into_inner()),
-        crate::EdgeTargetProjection::Redacted => "redacted target".into(),
-        crate::EdgeTargetProjection::Unavailable => "unavailable target".into(),
-    }
+    // Memory prefixes come from the per-walk class map (built off the
+    // node projection) rather than a single kind, so this goes through
+    // the closure variant of the shared formatter.
+    super::wire_ref::format_target_projection_with(ctx, target, |memory_id| {
+        let class = classes
+            .get(&memory_id)
+            .copied()
+            .unwrap_or(MemoryHandleClass::Fact);
+        ctx.format_memory_with_class(memory_id, class)
+    })
 }
 
 fn format_lineage_memory(
