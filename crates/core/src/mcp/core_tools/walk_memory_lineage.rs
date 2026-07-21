@@ -195,12 +195,17 @@ pub async fn walk_memory_lineage(
     let next_cursor = response
         .next_cursor
         .map(|cursor| LINEAGE_CURSOR.encode(&fingerprint, &cursor));
+    // Derived from the cursor, not the verb's separate `truncated` flag,
+    // so the documented "`has_more` iff `next_cursor`" invariant holds by
+    // construction — the same derivation every other paginated surface
+    // uses.
+    let has_more = next_cursor.is_some();
     Ok(WalkMemoryLineageOutput {
         start: args.memory,
         direction: format!("{direction:?}").to_lowercase(),
         nodes,
         edges,
-        has_more: response.truncated,
+        has_more,
         next_cursor,
     })
 }

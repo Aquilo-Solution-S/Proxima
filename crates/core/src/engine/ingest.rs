@@ -415,30 +415,30 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns storage errors from enqueueing missing jobs.
+    /// Returns authorization failures with their protocol category
+    /// (e.g. `Forbidden`) rather than an internal-error string, and
+    /// storage errors from enqueueing missing jobs as `Internal`.
     pub async fn backfill_fact_embeddings(
         &self,
         authz: &AuthzContext,
         owner: &Owner,
         limit: usize,
-    ) -> Result<usize, StorageError> {
+    ) -> Result<usize, ProtocolError> {
         let Some(client) = self.embed_client() else {
             return Ok(0);
         };
         let limit = i64::try_from(limit)
-            .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
-        let permit = self
-            .authorize_write(authz, owner, Relation::Ingest)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            .map_err(|_| ProtocolError::invalid_argument("limit", "too large"))?;
+        let permit = self.authorize_write(authz, owner, Relation::Ingest).await?;
         let enqueued = self
             .storage
             .ingest
             .embedding_job
             .enqueue_missing_embedding_jobs(permit.owner_write_permit(), client.model_id(), limit)
-            .await?;
+            .await
+            .map_err(|err| ProtocolError::internal(err.to_string()))?;
         usize::try_from(enqueued)
-            .map_err(|_| StorageError::Internal("enqueued count does not fit usize".into()))
+            .map_err(|_| ProtocolError::internal("enqueued count does not fit usize"))
     }
 
     /// Host-invoked sweep that drains durable pending memory embedding jobs
