@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::AgentDerivationV1;
 
-use super::util::{normalize_tags, validate_idempotency_key};
+use super::util::{normalize_idempotency_key, normalize_tags};
 
 const MAX_SOURCE_HANDLES: usize = 256;
 const DERIVED_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
@@ -98,7 +98,7 @@ fn operator_shape(
 pub struct DeriveArgs {
     #[schemars(description = "Derived memory kind to author: Abstraction or Perspective.")]
     pub kind: DerivedKind,
-    #[schemars(description = "Short title for the derived memory, 1 to 160 chars.")]
+    #[schemars(description = "Short title for the derived memory, 1 to 240 chars.")]
     pub title: String,
     #[schemars(description = "Body text for the derived memory, 1 to 20000 chars.")]
     pub body: String,
@@ -176,9 +176,11 @@ impl McpTool for DeriveTool {
         Box::pin(async move {
             let title = args.title.trim();
             let body = args.body.trim();
-            if title.is_empty() || title.chars().count() > 160 {
+            // 240 matches the goal-title cap: same-named field, same bound
+            // on every authoring surface.
+            if title.is_empty() || title.chars().count() > 240 {
                 return Err(McpToolError::InvalidInput(
-                    "title must be 1..=160 chars".into(),
+                    "title must be 1..=240 chars".into(),
                 ));
             }
             if body.is_empty() || body.chars().count() > 20_000 {
@@ -186,7 +188,7 @@ impl McpTool for DeriveTool {
                     "body must be 1..=20000 chars".into(),
                 ));
             }
-            validate_idempotency_key(args.idempotency_key.as_deref())?;
+            let idempotency_key = normalize_idempotency_key(args.idempotency_key)?;
             // `model_id` is the reserved operator label. It may arrive as an
             // explicit arg or via the request-context `model_id` (which the MCP
             // server strips into `ctx.author.model_id`); fall back to the latter.
@@ -238,7 +240,7 @@ impl McpTool for DeriveTool {
                     })?,
             );
 
-            let key = args.idempotency_key.clone().unwrap_or_else(|| {
+            let key = idempotency_key.clone().unwrap_or_else(|| {
                 format!("{}:{}", model_id, blake3::hash(body.as_bytes()).to_hex())
             });
             let memory_id = derived_memory_id(&space.owner, args.kind.as_str(), &key);
@@ -246,7 +248,7 @@ impl McpTool for DeriveTool {
                 title: title.to_string(),
                 body: body.to_string(),
                 tags: tags.clone(),
-                idempotency_key: args.idempotency_key.clone(),
+                idempotency_key: idempotency_key.clone(),
                 source_memory_ids: sources
                     .iter()
                     .map(|(memory_id, _class)| memory_id.into_inner())

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AgentNoteV1, SidecarPayload};
 
-use super::util::{normalize_tags, validate_idempotency_key};
+use super::util::{normalize_idempotency_key, normalize_tags};
 
 const SOURCE_ID: &str = "core/agent";
 const NOTE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
@@ -18,7 +18,7 @@ const NOTE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RememberArgs {
-    #[schemars(description = "Short title for the agent-observed Fact, 1 to 160 chars.")]
+    #[schemars(description = "Short title for the agent-observed Fact, 1 to 240 chars.")]
     pub title: String,
     #[schemars(description = "Body text for the agent-observed Fact, 1 to 20000 chars.")]
     pub body: String,
@@ -85,9 +85,11 @@ impl McpTool for RememberTool {
         Box::pin(async move {
             let title = args.title.trim();
             let body = args.body.trim();
-            if title.is_empty() || title.chars().count() > 160 {
+            // 240 matches the goal-title cap: same-named field, same bound
+            // on every authoring surface.
+            if title.is_empty() || title.chars().count() > 240 {
                 return Err(McpToolError::InvalidInput(
-                    "title must be 1..=160 chars".into(),
+                    "title must be 1..=240 chars".into(),
                 ));
             }
             if body.is_empty() || body.chars().count() > 20_000 {
@@ -95,7 +97,7 @@ impl McpTool for RememberTool {
                     "body must be 1..=20000 chars".into(),
                 ));
             }
-            validate_idempotency_key(args.idempotency_key.as_deref())?;
+            let idempotency_key = normalize_idempotency_key(args.idempotency_key)?;
             let space = super::super::memory_spaces::resolve_space_owner(
                 &ctx,
                 args.space.as_deref(),
@@ -107,8 +109,7 @@ impl McpTool for RememberTool {
                 .narrowed_to_owner(space.owner)
                 .ok_or_else(|| McpToolError::NotAuthorized("memory space write".into()))?;
             let tags = normalize_tags(args.tags)?;
-            let note_id = args
-                .idempotency_key
+            let note_id = idempotency_key
                 .as_deref()
                 .map_or_else(uuid::Uuid::now_v7, |key| {
                     uuid::Uuid::new_v5(&NOTE_NAMESPACE, key.as_bytes())
@@ -118,7 +119,7 @@ impl McpTool for RememberTool {
                 title: title.to_string(),
                 body: body.to_string(),
                 tags,
-                idempotency_key: args.idempotency_key,
+                idempotency_key,
             };
             let observed_at = time::OffsetDateTime::now_utc();
             let source_batch_id = SourceBatchId::new(uuid::Uuid::now_v7());

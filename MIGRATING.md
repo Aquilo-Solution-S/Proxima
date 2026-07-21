@@ -610,6 +610,26 @@ surfaces were unbounded or truncated silently. Wire changes to review:
   comma-separated prefixed ids): found memories in request order plus a
   `missing` list. Wake-candidate `hard_memories` hydration no longer
   needs one round trip per id.
+- **Neighbor edges name their edge reference `edge`.** The
+  `neighbor_edges` items returned by `core_search_memories` and
+  `core_get_memory` used to carry the `E:<uuid>` reference under
+  `handle`; it is now `edge`, matching `core_read_edges`, lineage, and
+  change events. Clients reading `handle` must switch.
+- **One idempotency-key contract on every write surface.** The memory
+  append tools (`core_remember`, `core_record_utterance`,
+  `core_derive`) now parse `idempotency_key` through the same type the
+  goal tools use: trimmed, then 1..=180 chars (was untrimmed 1..=200).
+  Keys longer than 180 chars are rejected, and a key with surrounding
+  whitespace now dedups identically to its trimmed spelling — replays
+  of such keys recorded before this release produce a new memory
+  instead of an idempotent replay.
+- **Arg ergonomics, non-breaking:** `title` on
+  `core_remember`/`core_derive` widens to 240 chars, matching goal
+  titles; the `core_search_memories` `kind` filter and the
+  `core_membership` `relation` arg fold case like every other
+  enum-like string arg; oversized `spaces`/`tags` filter lists on
+  `core_search_memories` (over 16 entries) are rejected instead of
+  fanned out.
 - **Code flavor:** `proxima-code_list_repos` accepts `limit`/`cursor`
   and returns `{repos, next_cursor, has_more}` (was unbounded);
   `proxima-code_search_chunks` gains `has_more`;

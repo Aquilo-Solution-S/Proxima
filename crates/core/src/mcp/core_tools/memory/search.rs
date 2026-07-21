@@ -5,7 +5,10 @@ use serde::Serialize;
 
 #[derive(Debug, Serialize)]
 pub struct NeighborEdge {
-    pub handle: String,
+    /// `E:<uuid>` edge reference. Named `edge` to match every other
+    /// edge-bearing output (`core_read_edges`, lineage, change events);
+    /// this field was `handle` before v0.0.7.
+    pub edge: String,
     pub relation: String,
     pub source: Option<String>,
     pub target: Option<String>,
@@ -17,7 +20,7 @@ pub(crate) fn neighbor_edges_from_rows(
 ) -> Vec<NeighborEdge> {
     rows.into_iter()
         .map(|row| NeighborEdge {
-            handle: ctx.format_edge(row.edge_id),
+            edge: ctx.format_edge(row.edge_id),
             relation: row.relation,
             source: row
                 .source_memory_id
