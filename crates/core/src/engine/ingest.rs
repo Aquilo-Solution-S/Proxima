@@ -39,8 +39,10 @@ impl Engine {
     ///
     /// Returns `Forbidden` when the context cannot resolve exactly one writable owner or
     /// lacks [`Relation::Ingest`] on that owner space; `UnknownSchema` when the
-    /// Fact schema or provided citation schemas are not registered; or
-    /// `Internal` when the atomic ingest fails.
+    /// Fact schema or provided citation schemas are not registered.
+    /// Caller-fixable storage rejections (closed batch, concurrent
+    /// citation) surface as `InvalidArgument`; infrastructure faults as
+    /// `Internal`.
     pub async fn fact_ingest(
         &self,
         authz: &AuthzContext,
@@ -61,9 +63,12 @@ impl Engine {
                 embedding_model_id,
             )
             .await
-            .map_err(|e| match e {
-                StorageError::Suppressed(message) => ProtocolError::suppressed(message),
-                other => ProtocolError::internal(other.to_string()),
+            .map_err(|err| {
+                super::errors::map_write_storage_error(
+                    err,
+                    "fact",
+                    "fact ingest referenced row not found",
+                )
             })?;
         Ok(outcome)
     }
@@ -169,7 +174,9 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Internal` when the atomic storage write fails.
+    /// Returns caller-fixable storage rejections (closed batch, concurrent
+    /// citation) as `InvalidArgument` and infrastructure faults as
+    /// `Internal`.
     pub async fn ingest_fact_with_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWrite,
@@ -181,14 +188,22 @@ impl Engine {
             .fact_ingest
             .ingest_fact_with_typed_sidecar(authorized, sidecar, embedding_model_id)
             .await
-            .map_err(|err| ProtocolError::internal(err.to_string()))
+            .map_err(|err| {
+                super::errors::map_write_storage_error(
+                    err,
+                    "fact",
+                    "fact ingest referenced row not found",
+                )
+            })
     }
 
     /// Persist an already-authorized typed-sidecar Fact with inline citation.
     ///
     /// # Errors
     ///
-    /// Returns `Internal` when the atomic storage write fails.
+    /// Returns caller-fixable storage rejections (closed batch, concurrent
+    /// citation) as `InvalidArgument` and infrastructure faults as
+    /// `Internal`.
     pub async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,
@@ -200,7 +215,13 @@ impl Engine {
             .fact_ingest
             .ingest_fact_with_citation_and_typed_sidecar(authorized, sidecar, embedding_model_id)
             .await
-            .map_err(|err| ProtocolError::internal(err.to_string()))
+            .map_err(|err| {
+                super::errors::map_write_storage_error(
+                    err,
+                    "fact",
+                    "fact ingest referenced row not found",
+                )
+            })
     }
 
     /// Authorize + schema-validate + owner-stamp a citation attachment
@@ -585,7 +606,13 @@ impl Engine {
             .mcp_call_write
             .persist_mcp_call_atomic(permit.owner_write_permit(), &input)
             .await
-            .map_err(|e| ProtocolError::internal(e.to_string()))
+            .map_err(|err| {
+                super::errors::map_write_storage_error(
+                    err,
+                    "mcp_call",
+                    "mcp call referenced row not found",
+                )
+            })
     }
 
     /// docs/01 §"The contract" — Owner-scoped, idempotent batch close.
@@ -614,9 +641,12 @@ impl Engine {
             .source_batch
             .close_batch(permit.owner_write_permit(), source_batch_id)
             .await
-            .map_err(|e| match e {
-                StorageError::NotFound => ProtocolError::not_found("source batch not found"),
-                other => ProtocolError::internal(other.to_string()),
+            .map_err(|err| {
+                super::errors::map_write_storage_error(
+                    err,
+                    "source_batch",
+                    "source batch not found",
+                )
             })?;
 
         Ok(outcome)

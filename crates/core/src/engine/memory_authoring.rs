@@ -166,18 +166,32 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context lacks [`Relation::Editor`] on the
-    /// source owner or read access to the target; `InvalidArgument` when
-    /// endpoints are absent or the relation rejects the shape; and
-    /// `Internal` for storage failures.
+    /// requested owner or read access to the target; `InvalidArgument` when
+    /// endpoints are absent, live outside the requested owner space, or the
+    /// relation rejects the shape; and `Internal` for storage failures.
     pub async fn append_memory_edge_authorized(
         &self,
         authz: &AuthzContext,
         req: AppendMemoryEdgeRequestInput<'_>,
     ) -> Result<EdgeId, ProtocolError> {
-        let (owner, source_kind) = self.load_memory_owner_kind(req.source_memory_id).await?;
+        // Authorize the caller-declared owner space before any storage
+        // read, matching `author_derived_authorized`: a denied caller gets
+        // `Forbidden` without learning which memories exist. Agent edges
+        // always require Editor — Fact sources are rejected by the shape
+        // validation below, and Ingest never authors edges.
         let write_permit = self
-            .authorize_write(authz, &owner, write_relation_for_entity_kind(source_kind))
+            .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
+        let (owner, source_kind) = self.load_memory_owner_kind(req.source_memory_id).await?;
+        // The declared owner is load-bearing: a source living in another
+        // space answers exactly like a missing one, so the check discloses
+        // nothing about memories outside the authorized space.
+        if owner != req.owner {
+            return Err(ProtocolError::invalid_argument(
+                "memory_id",
+                "memory not found",
+            ));
+        }
         let (target_owner, target_kind) = self
             .authorize_edge_target_policy(authz, req.relation, req.target_memory_id)
             .await?;
@@ -216,7 +230,13 @@ impl Engine {
                 crate::storage_ports::EdgeWriteProof::new(),
             )
             .await
-            .map_err(|err| ProtocolError::internal(err.to_string()))
+            .map_err(|err| {
+                super::errors::map_write_storage_error(
+                    err,
+                    "edge",
+                    "edge write referenced row not found",
+                )
+            })
     }
 
     /// Author one derived Memory and its already-resolved edges. When an
@@ -590,30 +610,15 @@ fn validate_operator_memory_invocation_request(
 }
 
 /// Maps `author_derived`'s raw storage error onto the public `ProtocolError`
-/// surface, mirroring `engine::goal_write::map_goal_storage_error`.
-///
-/// `ConstraintViolation`/`Conflict` are caller-fixable (a malformed operator
-/// invocation manifest, an idempotent-replay proof mismatch) and must
-/// surface as `InvalidArgument`, not `Internal` — an unconditional
-/// `ProtocolError::internal` here would mask a rejected-before-persistence
-/// client error as a 5xx-shaped internal failure.
+/// surface. `ConstraintViolation`/`Conflict` are caller-fixable (a
+/// malformed operator invocation manifest, an idempotent-replay proof
+/// mismatch) and must surface as `InvalidArgument`, not `Internal`.
 fn map_derived_storage_error(err: StorageError) -> ProtocolError {
-    match err {
-        StorageError::NotFound => {
-            ProtocolError::not_found("operator invocation referenced row not found")
-        }
-        StorageError::ConstraintViolation(message) | StorageError::Conflict(message) => {
-            ProtocolError::invalid_argument("operator_invocation", message)
-        }
-        StorageError::Suppressed(message) => ProtocolError::suppressed(message),
-        StorageError::IdempotencyConflict { request_id } => {
-            ProtocolError::idempotency_conflict(request_id)
-        }
-        StorageError::Retryable(message)
-        | StorageError::Unavailable(message)
-        | StorageError::Internal(message) => ProtocolError::internal(message),
-        StorageError::V004ResetRequired { details } => ProtocolError::internal(details),
-    }
+    super::errors::map_write_storage_error(
+        err,
+        "operator_invocation",
+        "operator invocation referenced row not found",
+    )
 }
 
 fn write_relation_for_entity_kind(kind: EntityKind) -> Relation {
@@ -679,7 +684,7 @@ fn validate_relation_shape(
 
 #[cfg(test)]
 mod tests {
-    use crate::authz::AuthzContext;
+    use crate::authz::{AuthPath, AuthzContext};
     use crate::error::ErrorCode;
     use crate::{
         AbstractionPayload, AgentDerivationV1, CORE_DERIVED_FROM_RELATION, EntityKind,
@@ -790,16 +795,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn append_memory_edge_authorized_rejects_missing_source_before_authz() {
+    async fn append_memory_edge_authorized_denies_before_touching_storage() {
         let engine = engine();
         let owner = owner();
         let relation = engine
             .registry()
             .resolve_relation(CORE_DERIVED_FROM_RELATION)
             .expect("core relation registered");
+        // A denied caller must see `Forbidden` from the declared owner
+        // check, not a storage-shaped "memory not found" answer.
         let err = engine
             .append_memory_edge_authorized(
                 &AuthzContext::denied_for_owner(&owner),
+                AppendMemoryEdgeRequestInput {
+                    owner,
+                    relation,
+                    source_memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+                    target_memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+                    authorship_kind: EdgeAuthorshipKind::OperatorFtoA,
+                    authorship_owner_memory_id: None,
+                    sidecar_payload: None,
+                },
+            )
+            .await
+            .expect_err("denied context must fail before storage");
+
+        assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn append_memory_edge_authorized_rejects_missing_source_after_authz() {
+        let engine = engine();
+        let owner = owner();
+        let relation = engine
+            .registry()
+            .resolve_relation(CORE_DERIVED_FROM_RELATION)
+            .expect("core relation registered");
+        // Authorized caller, but the fake storage resolves no home owner
+        // for the source: the declared-owner admission answers "not
+        // found" for missing and out-of-space sources alike.
+        let err = engine
+            .append_memory_edge_authorized(
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 AppendMemoryEdgeRequestInput {
                     owner,
                     relation,

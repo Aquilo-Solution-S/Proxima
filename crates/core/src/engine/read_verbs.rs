@@ -658,7 +658,7 @@ pub(in crate::engine) async fn facts_citing_object_authorized(
 }
 
 fn storage_error(context: &str, err: &StorageError) -> ProtocolError {
-    ProtocolError::internal(format!("{context}: {err}"))
+    super::errors::internal_storage_error(context, err)
 }
 
 #[cfg(test)]

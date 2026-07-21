@@ -753,6 +753,38 @@ mod tests {
         }
     }
 
+    /// The "Tools:" section in the static help text is hand-written (the
+    /// help path is `&'static str` end to end and must never fail), so
+    /// this test pins it to the registry: adding or removing a tool
+    /// without updating `USAGE` fails here instead of silently drifting.
+    #[test]
+    fn usage_tools_section_matches_registry() {
+        let mut registry = FlavorRegistry::new();
+        <ProximaMcpApp as FlavorBundle>::register(&mut registry).expect("register");
+        let frozen = registry.try_freeze().expect("freeze");
+        let mut expected: Vec<&str> = frozen
+            .list_mcp_tools()
+            .iter()
+            .map(|tool| tool.name)
+            .collect();
+        expected.sort_unstable();
+
+        let section = USAGE
+            .split("Tools:\n")
+            .nth(1)
+            .expect("USAGE carries a Tools section");
+        let mut listed: Vec<&str> = section
+            .lines()
+            .take_while(|line| line.starts_with("  "))
+            .map(str::trim)
+            .collect();
+        listed.sort_unstable();
+        assert_eq!(
+            listed, expected,
+            "USAGE Tools section drifted from the registry"
+        );
+    }
+
     // `#[tokio::test]`, not `#[test]`: `PgOwnerAccessResolver::connect_lazy`
     // constructs a `sqlx::PgPool`, which needs an active Tokio context even
     // though it defers the actual network connect (sqlx panics with "this
