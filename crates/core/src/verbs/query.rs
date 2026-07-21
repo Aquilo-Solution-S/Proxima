@@ -275,7 +275,9 @@ pub struct MemoryLineageResponse {
     pub nodes: Vec<MemoryLineageNode>,
     pub edges: Vec<MemoryLineageEdge>,
     pub truncated: bool,
-    /// Resume point for the page after this one; `Some` iff `truncated`.
+    /// Resume point for the page after this one; `Some` when `truncated`
+    /// and the page carries at least one edge to resume after. The wire
+    /// layer derives its `has_more` from this field, not `truncated`.
     pub next_cursor: Option<MemoryLineageCursor>,
 }
 

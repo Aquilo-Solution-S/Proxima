@@ -641,8 +641,11 @@ surfaces were unbounded or truncated silently. Wire changes to review:
   `list_group_members_page`, `Engine::list_members` takes
   `limit`/`after` and returns `GroupMemberPage`, and
   `MemoryLineageRequest`/`MemoryLineageResponse` carry
-  `after`/`next_cursor`. Custom port implementations must add the new
-  methods; cursor plumbing is shared via `proxima_core::mcp::cursor`.
+  `after`/`next_cursor`, and `Engine::backfill_fact_embeddings` returns
+  `ProtocolError` instead of `StorageError` so an authorization denial
+  keeps its `Forbidden` category. Custom port implementations must add
+  the new methods; cursor plumbing is shared via
+  `proxima_core::mcp::cursor`.
 
 ## Checks before calling an upgrade done
 
