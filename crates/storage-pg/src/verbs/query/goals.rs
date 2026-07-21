@@ -7,7 +7,7 @@ use proxima_core::verbs::query::{
 use proxima_core::{OwnerRefKind, StorageError};
 use sqlx::PgPool;
 
-use crate::error::internal;
+use crate::error::map_err;
 
 use super::read_owner_predicate;
 use super::rows::{GoalRowDb, goal_row_from_db};
@@ -106,11 +106,7 @@ pub(super) async fn query_goals(
     if let Some(p) = goal_ids_param {
         write!(sql, " AND g.goal_id = ANY(${p})").expect("write to String is infallible");
     } else if matches!(req.supersession, SupersessionStatus::HeadsOnly) {
-        // SQL-POLICY: fixed-fragment
-        sql.push_str(
-            " AND NOT EXISTS (SELECT 1 FROM proxima_core.goals g2 \
-                              WHERE g2.supersedes = g.goal_id)",
-        );
+        super::push_goal_heads_only_predicate(&mut sql);
     }
     if let Some((created_at_param, goal_id_param)) = cursor_params {
         write!(
@@ -147,7 +143,7 @@ pub(super) async fn query_goals(
     if let Some((created_at, goal_id)) = cursor {
         q = q.bind(created_at).bind(goal_id);
     }
-    let mut rows = q.fetch_all(pool).await.map_err(internal)?;
+    let mut rows = q.fetch_all(pool).await.map_err(map_err)?;
     let limit = usize::try_from(req.limit)
         .map_err(|_| StorageError::Internal("query limit does not fit usize".into()))?;
     let next_cursor = if single_goal_stream && rows.len() > limit {

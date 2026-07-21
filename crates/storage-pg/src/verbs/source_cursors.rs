@@ -21,7 +21,7 @@ pub(crate) async fn load_source_cursor(
         "SELECT cursor
            FROM proxima_core.source_cursors
           WHERE owner_kind = $1
-            AND owner_id = $2
+            AND owner_id IS NOT DISTINCT FROM $2
             AND source = $3",
     )
     .bind(owner_kind)
@@ -80,7 +80,7 @@ pub(crate) async fn source_cursor_age(
         "SELECT updated_at
            FROM proxima_core.source_cursors
           WHERE owner_kind = $1
-            AND owner_id = $2
+            AND owner_id IS NOT DISTINCT FROM $2
             AND source = $3",
     )
     .bind(owner_kind)

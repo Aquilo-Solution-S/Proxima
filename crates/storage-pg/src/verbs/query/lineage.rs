@@ -8,7 +8,7 @@ use proxima_core::verbs::query::{
 use proxima_core::{MemoryId, OwnerRef, OwnerRefKind, RelationClass, SchemaId, StorageError};
 use sqlx::PgPool;
 
-use crate::error::internal;
+use crate::error::map_err;
 
 use super::{entity_owner_union, read_owner_columns, read_owner_predicate};
 
@@ -190,7 +190,7 @@ async fn start_memory_visible(
         .bind(read_owner_kinds)
         .bind(read_owner_ids)
         .bind(memory_id.into_inner());
-    let present = query.fetch_optional(pool).await.map_err(internal)?;
+    let present = query.fetch_optional(pool).await.map_err(map_err)?;
     Ok(present.is_some())
 }
 
@@ -221,7 +221,7 @@ async fn walk_edges(
         .bind(i64::from(limit))
         .bind(after_distance)
         .bind(after_edge_id);
-    query.fetch_all(pool).await.map_err(internal)
+    query.fetch_all(pool).await.map_err(map_err)
 }
 
 async fn load_nodes(
@@ -253,7 +253,7 @@ async fn load_nodes(
         .bind(read_owner_kinds)
         .bind(read_owner_ids)
         .bind(memory_ids);
-    let rows = query.fetch_all(pool).await.map_err(internal)?;
+    let rows = query.fetch_all(pool).await.map_err(map_err)?;
 
     Ok(rows)
 }

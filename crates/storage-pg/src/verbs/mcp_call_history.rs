@@ -48,7 +48,13 @@ pub(crate) async fn read_mcp_call_history(
     };
 
     // SQL-POLICY: fixed-fragment — every interpolated fragment is a compile
-    // time literal selected by a bool; no value ever reaches the SQL text.
+    // time literal selected by a bool (or the shared owner-union constant);
+    // no value ever reaches the SQL text.
+    //
+    // `tombstoned_at IS NULL` matches every other memory read: MCP-call
+    // facts are currently exempt from retention tombstoning
+    // (`retention_maintenance.rs`), but this read must not depend on that
+    // cross-file invariant staying true.
     let sql = format!(
         "SELECT memories.created_at,
                   memories.memory_id,
@@ -60,17 +66,19 @@ pub(crate) async fn read_mcp_call_history(
              FROM proxima_core.mcp_call_logged_v1 fact
              JOIN proxima_core.memories memories USING (memory_id)
              {body_joins}
-            WHERE EXISTS (
+            WHERE memories.tombstoned_at IS NULL
+              AND EXISTS (
                     SELECT 1
-                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                      FROM {entity_owner_union} eo
                      WHERE eo.entity_id = memories.memory_id
                        AND eo.owner_kind = $1
-                       AND eo.owner_id = $2
+                       AND eo.owner_id IS NOT DISTINCT FROM $2
 )
               AND ($3::text IS NULL OR fact.actor_oid = $3)
               {cursor_predicate}
             ORDER BY memories.created_at DESC, memories.memory_id DESC
-            LIMIT $4"
+            LIMIT $4",
+        entity_owner_union = crate::verbs::query::entity_owner_union(),
     );
 
     // SQL-POLICY: fixed-fragment (cursor_predicate and the include_body join are

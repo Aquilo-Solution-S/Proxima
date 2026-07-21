@@ -73,5 +73,5 @@ pub async fn authorized_code_chunk_head_candidates(
     .bind(owner_id)
     .fetch_all(pool)
     .await
-    .map_err(|err| StorageError::Internal(err.to_string()))
+    .map_err(crate::error::map_err)
 }

@@ -9,7 +9,7 @@ use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{EdgeId, OwnerRef, SidecarPayload, StorageError};
 use sqlx::PgPool;
 
-use crate::error::internal;
+use crate::error::map_err;
 use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 
 use super::rows::{EdgeRowDb, edge_row_from_db};
@@ -184,7 +184,7 @@ pub(crate) async fn read_edges(
         .bind(fetch_limit)
         .fetch_all(pool)
         .await
-        .map_err(internal)?;
+        .map_err(map_err)?;
     let has_more = rows.len() > limit;
     rows.truncate(limit);
     hydrate_fact_entity_heads(pool, &mut rows).await?;
@@ -392,7 +392,7 @@ async fn query_edges_between_visible_nodes(
            AND (e.target_memory_id = ANY($1::uuid[])
                 OR e.target_goal_id = ANY($2::uuid[])
                 OR tfe.current_memory_id = ANY($1::uuid[]))
-         ORDER BY e.created_at DESC
+         ORDER BY e.created_at DESC, e.edge_id DESC
          LIMIT $3",
     )
     .bind(visible_memory_ids)
@@ -400,7 +400,7 @@ async fn query_edges_between_visible_nodes(
     .bind(i64::try_from(MAX_SNAPSHOT_EDGES).expect("MAX_SNAPSHOT_EDGES fits in i64"))
     .fetch_all(pool)
     .await
-    .map_err(internal)?;
+    .map_err(map_err)?;
     rows.into_iter().map(edge_row_from_db).collect()
 }
 
