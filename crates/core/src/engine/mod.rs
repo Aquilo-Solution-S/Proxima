@@ -6,6 +6,7 @@ mod access_admin;
 mod access_sets;
 mod builder;
 mod compliance;
+mod errors;
 mod fact_retention;
 mod goal_write;
 mod ingest;

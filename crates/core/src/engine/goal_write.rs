@@ -351,14 +351,10 @@ impl Engine {
             author_self_perspective_id,
         } = request;
 
-        self.validate_goal_topology_authorized(authz, permit.owner(), &topology)
-            .await?;
-        let author_self_perspective_id = self
-            .author_self_perspective_authorized(authz, author_self_perspective_id)
-            .await?;
-        self.validate_wake_config_for_write(authz, wake.as_ref())
-            .await?;
-
+        // Registry-local schema validation runs before the storage-backed
+        // topology/wake checks, matching `create_goal_from_payload_write`:
+        // both create entry points answer a bad-schema + bad-topology
+        // request with `UnknownSchema` first.
         let mut payload_write =
             GoalPayloadWrite::from_payload(title, text, payload).map_err(map_goal_build_error)?;
         let schema = self
@@ -377,6 +373,14 @@ impl Engine {
         if schema.sidecar_table.is_none() {
             payload_write.sidecar_payload = None;
         }
+
+        self.validate_goal_topology_authorized(authz, permit.owner(), &topology)
+            .await?;
+        let author_self_perspective_id = self
+            .author_self_perspective_authorized(authz, author_self_perspective_id)
+            .await?;
+        self.validate_wake_config_for_write(authz, wake.as_ref())
+            .await?;
 
         let embedding_client = self.embed_client();
         let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
@@ -665,22 +669,7 @@ pub(in crate::engine) async fn transition_goal_authorized(
 }
 
 fn map_goal_storage_error(err: StorageError) -> ProtocolError {
-    match err {
-        StorageError::NotFound => ProtocolError::not_found("goal write referenced row not found"),
-        StorageError::IdempotencyConflict { request_id } => {
-            ProtocolError::idempotency_conflict(request_id)
-        }
-        StorageError::ConstraintViolation(message) | StorageError::Conflict(message) => {
-            ProtocolError::invalid_argument("goal", message)
-        }
-        StorageError::Suppressed(message) => ProtocolError::suppressed(message),
-        // A transient deadlock/serialization failure that outlived the bounded
-        // storage retry surfaces as an internal (retry-later) fault.
-        StorageError::Retryable(message)
-        | StorageError::Unavailable(message)
-        | StorageError::Internal(message) => ProtocolError::internal(message),
-        StorageError::V004ResetRequired { details } => ProtocolError::internal(details),
-    }
+    super::errors::map_write_storage_error(err, "goal", "goal write referenced row not found")
 }
 
 #[cfg(test)]

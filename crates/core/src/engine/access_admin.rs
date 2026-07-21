@@ -315,24 +315,11 @@ fn actor_uuid(authz: &AuthzContext) -> uuid::Uuid {
 }
 
 fn storage_error(context: &str, err: &StorageError) -> ProtocolError {
-    ProtocolError::internal(format!("{context}: {err}"))
+    super::errors::internal_storage_error(context, err)
 }
 
 fn bootstrap_storage_error(err: StorageError) -> ProtocolError {
-    match err {
-        StorageError::ConstraintViolation(message) | StorageError::Conflict(message) => {
-            ProtocolError::invalid_argument("group", message)
-        }
-        StorageError::Suppressed(message) => ProtocolError::suppressed(message),
-        StorageError::NotFound => ProtocolError::not_found("group not found"),
-        StorageError::IdempotencyConflict { request_id } => {
-            ProtocolError::idempotency_conflict(request_id)
-        }
-        StorageError::Retryable(message)
-        | StorageError::Unavailable(message)
-        | StorageError::Internal(message) => ProtocolError::internal(message),
-        StorageError::V004ResetRequired { details } => ProtocolError::internal(details),
-    }
+    super::errors::map_write_storage_error(err, "group", "group not found")
 }
 
 #[cfg(test)]
