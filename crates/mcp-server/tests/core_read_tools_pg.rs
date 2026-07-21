@@ -76,7 +76,7 @@ async fn core_read_resources_return_prefixed_ids_and_author()
         )
         .await?;
     assert_eq!(expanded["memory"], format!("A:{derived}"));
-    assert_eq!(expanded["neighbor_edges"][0]["handle"], format!("E:{edge}"));
+    assert_eq!(expanded["neighbor_edges"][0]["edge"], format!("E:{edge}"));
     assert_eq!(
         expanded["neighbor_edges"][0]["source"],
         format!("A:{derived}")

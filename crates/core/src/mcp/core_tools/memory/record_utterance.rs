@@ -61,7 +61,7 @@ impl McpTool for RecordUtteranceTool {
                     "text must be 1..=20000 chars".into(),
                 ));
             }
-            super::util::validate_idempotency_key(args.idempotency_key.as_deref())?;
+            let idempotency_key = super::util::normalize_idempotency_key(args.idempotency_key)?;
 
             let space = super::super::memory_spaces::resolve_space_owner(
                 &ctx,
@@ -78,8 +78,7 @@ impl McpTool for RecordUtteranceTool {
                 conversation_id: conversation_id.to_string(),
                 text: text.to_string(),
             };
-            let source_instance_id = args
-                .idempotency_key
+            let source_instance_id = idempotency_key
                 .as_deref()
                 .map_or_else(uuid::Uuid::now_v7, |key| {
                     uuid::Uuid::new_v5(&UTTERANCE_NAMESPACE, key.as_bytes())

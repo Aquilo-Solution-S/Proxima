@@ -69,11 +69,11 @@ fn default_supersession() -> SearchMemoriesSupersession {
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 pub enum SearchMemoriesKind {
-    #[serde(rename = "Fact", alias = "fact")]
+    #[serde(rename = "Fact", alias = "fact", alias = "FACT")]
     Fact,
-    #[serde(rename = "Abstraction", alias = "abstraction")]
+    #[serde(rename = "Abstraction", alias = "abstraction", alias = "ABSTRACTION")]
     Abstraction,
-    #[serde(rename = "Perspective", alias = "perspective")]
+    #[serde(rename = "Perspective", alias = "perspective", alias = "PERSPECTIVE")]
     Perspective,
 }
 
@@ -167,7 +167,7 @@ pub struct SearchMemoriesArgs {
     pub include_body: bool,
     #[serde(default)]
     #[schemars(
-        description = "Optional max character count for hydrated body text, at least 1. Applies only when include_body=true. When a body is cut to this cap the result carries body_truncated=true; fetch the full text via proxima://memory/{id}."
+        description = "Optional max character count for hydrated body text, at least 1; values above 8000 are clamped to 8000 (also the default). Applies only when include_body=true. When a body is cut to this cap the result carries body_truncated=true; fetch the full text via proxima://memory/{id}."
     )]
     pub body_max_chars: Option<usize>,
     #[serde(default)]
@@ -751,7 +751,7 @@ fn retain_surviving_neighbor_edges(memories: &[SearchMemoryOutput], edges: &mut 
                 .is_some_and(|target| surviving.contains(target));
         // `&&` short-circuits: a non-touching edge is never marked seen, so a
         // later touching duplicate is still evaluated on its own merits.
-        touches && seen_edges.insert(edge.handle.clone())
+        touches && seen_edges.insert(edge.edge.clone())
     });
 }
 
@@ -787,8 +787,8 @@ fn format_rfc3339(value: time::OffsetDateTime) -> Result<String, McpToolError> {
 mod tests {
     use super::{
         DEFAULT_BODY_MAX_CHARS, NeighborEdge, SEMANTIC_SEARCH_UNAVAILABLE, SearchMemoriesArgs,
-        SearchMemoriesMode, SearchMemoriesSupersession, SearchMemoryOutput, decode_cursor,
-        degraded_to_lexical, effective_body_max_chars, encode_cursor,
+        SearchMemoriesKind, SearchMemoriesMode, SearchMemoriesSupersession, SearchMemoryOutput,
+        decode_cursor, degraded_to_lexical, effective_body_max_chars, encode_cursor,
         resolve_effective_search_mode, retain_surviving_neighbor_edges, truncate_body,
         validate_body_max_chars, validate_list_caps, validate_score_args,
     };
@@ -813,9 +813,9 @@ mod tests {
         }
     }
 
-    fn neighbor_edge(handle: &str, source: Option<&str>, target: Option<&str>) -> NeighborEdge {
+    fn neighbor_edge(edge: &str, source: Option<&str>, target: Option<&str>) -> NeighborEdge {
         NeighborEdge {
-            handle: handle.to_string(),
+            edge: edge.to_string(),
             relation: "core/derived-from".into(),
             source: source.map(str::to_string),
             target: target.map(str::to_string),
@@ -957,8 +957,8 @@ mod tests {
             neighbor_edge("E:target", Some("F:96"), Some("F:1")),
         ];
         retain_surviving_neighbor_edges(&memories, &mut edges);
-        let handles: Vec<_> = edges.iter().map(|edge| edge.handle.as_str()).collect();
-        assert_eq!(handles, ["E:keep", "E:target"]);
+        let kept: Vec<_> = edges.iter().map(|edge| edge.edge.as_str()).collect();
+        assert_eq!(kept, ["E:keep", "E:target"]);
     }
 
     #[test]
@@ -1047,6 +1047,18 @@ mod tests {
         assert!(validate_body_max_chars(Some(0)).is_err());
         assert!(validate_body_max_chars(Some(1)).is_ok());
         assert!(validate_body_max_chars(None).is_ok());
+    }
+
+    #[test]
+    fn kind_filter_accepts_all_casings_like_sibling_enums() {
+        // `mode` and `supersession` already take UPPERCASE spellings;
+        // the kind filter must not be the one arg that rejects them.
+        for spelling in ["\"Fact\"", "\"fact\"", "\"FACT\""] {
+            let kind: SearchMemoriesKind = serde_json::from_str(spelling).expect("valid kind");
+            assert!(matches!(kind, SearchMemoriesKind::Fact));
+        }
+        // Folding case must not widen the accepted set.
+        assert!(serde_json::from_str::<SearchMemoriesKind>("\"Note\"").is_err());
     }
 
     #[test]

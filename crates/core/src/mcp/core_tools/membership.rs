@@ -69,7 +69,8 @@ pub struct AddMemberArgs {
     pub group: String,
     /// User UUID string. Users are not MCP entities and take no prefix.
     pub member: String,
-    /// Membership relation: `admin`, `editor`, `viewer`, or `ingest`.
+    /// Membership relation (case-insensitive): `admin`, `editor`,
+    /// `viewer`, or `ingest`.
     pub relation: String,
 }
 
@@ -329,8 +330,11 @@ fn parse_user_id(raw: &str) -> Result<UserId, McpToolError> {
         .map_err(|err| McpToolError::InvalidInput(format!("member is not a user uuid: {err}")))
 }
 
+/// Casing is not signal for enum-like string args anywhere on the tool
+/// surface (schema kinds, goal states, search modes all fold case), so
+/// the relation arg folds it too; unknown relations still fail closed.
 fn parse_relation(raw: &str) -> Result<Relation, McpToolError> {
-    match raw {
+    match raw.to_ascii_lowercase().as_str() {
         "admin" => Ok(Relation::Admin),
         "editor" => Ok(Relation::Editor),
         "viewer" => Ok(Relation::Viewer),
@@ -535,6 +539,18 @@ mod tests {
         let err = parse_relation("owner").expect_err("bad relation rejected");
 
         assert!(matches!(err, McpToolError::InvalidInput(message) if message.contains("relation")));
+    }
+
+    #[test]
+    fn relation_parse_is_case_insensitive() {
+        for spelling in ["editor", "Editor", "EDITOR"] {
+            assert!(matches!(
+                parse_relation(spelling).expect("valid relation"),
+                Relation::Editor
+            ));
+        }
+        // Folding case must not widen the accepted set.
+        assert!(parse_relation("OWNER").is_err());
     }
 
     /// Pages walk the whole membership exactly once via the opaque
