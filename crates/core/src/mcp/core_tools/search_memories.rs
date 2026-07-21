@@ -1039,8 +1039,8 @@ mod tests {
         // Both spellings must also continue each other's cursors: the
         // fingerprint is computed over resolved owners, so after dedup
         // it matches the single-spelling query exactly.
-        let single = super::resolve_search_spaces(&ctx, &["current".to_string()])
-            .expect("valid space");
+        let single =
+            super::resolve_search_spaces(&ctx, &["current".to_string()]).expect("valid space");
         let query_args = args(SearchMemoriesMode::Lexical);
         assert_eq!(
             super::query_fingerprint("needle", &query_args, None, None, &deduped),
