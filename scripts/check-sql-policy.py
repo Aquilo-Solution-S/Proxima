@@ -27,29 +27,15 @@ VALID_PROOFS = (
 # the allowlist narrow so adjacent new dynamic SQL still fails.
 ALLOWLISTED_SITE_LINES = {
     ("crates/storage-pg/src/sidecars/macros.rs", 401, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
-    ("crates/storage-pg/src/verbs/active_goals.rs", 87, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/change_history.rs", 48, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/change_history.rs", 74, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/compliance_erase.rs", 1092, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
     ("crates/storage-pg/src/verbs/compliance_erase.rs", 1221, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
     ("crates/storage-pg/src/verbs/consolidate/events.rs", 36, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/consolidate/events.rs", 87, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/consolidate/memories.rs", 66, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/consolidate/memories.rs", 136, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/goals.rs", 93, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/goals.rs", 106, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/goals.rs", 113, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/goals.rs", 121, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/query/lineage.rs", 153, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/query/lineage.rs", 175, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/query/lineage.rs", 209, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/memories.rs", 118, "sql-push-str"): "SQL-POLICY: PgIdent",
-    ("crates/storage-pg/src/verbs/query/memories.rs", 148, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
-    ("crates/storage-pg/src/verbs/query/memories.rs", 338, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/memories.rs", 380, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/memories.rs", 386, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/memories.rs", 473, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/memories.rs", 491, "sql-push-str"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/query/rows.rs", 177, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/query/search.rs", 208, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
     ("crates/storage-pg/src/verbs/query/search.rs", 299, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
@@ -295,7 +281,14 @@ def run_fixture(path: Path) -> int:
 # the proxima://memories batch head read: the same entity_owner_union /
 # read_owner_predicate fixed fragments every owner-scoped read composes;
 # proof inline.
-EXPECTED_DYNAMIC_SQL_SITES = 53
+# 2026-07-21 analysis: -2 net — the goals HeadsOnly supersession filter moved
+# into the shared push_goal_heads_only_predicate helper (one proven push_str
+# in query/mod.rs replaces two per-verb copies), and change_history's
+# high-water query was replaced by the shared read_seq_high_water; the
+# remaining sites in the touched files (active_goals, change_history,
+# query/goals, query/memories) now carry inline fixed-fragment proofs, so
+# their line-pinned allowlist entries were removed.
+EXPECTED_DYNAMIC_SQL_SITES = 51
 
 
 def run_self_test() -> int:

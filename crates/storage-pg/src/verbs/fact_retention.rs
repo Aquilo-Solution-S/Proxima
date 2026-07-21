@@ -47,7 +47,7 @@ pub async fn get_fact_retention(pool: &PgPool, owner: &Owner) -> Result<Option<i
         "SELECT retention_seconds
            FROM proxima_core.owner_fact_retention
           WHERE owner_kind = $1
-            AND owner_id = $2",
+            AND owner_id IS NOT DISTINCT FROM $2",
     )
     .bind(owner_kind)
     .bind(owner_id)

@@ -9,7 +9,7 @@ use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{MemoryId, SchemaId, SchemaVersion, SidecarPayload, StorageError};
 use sqlx::PgPool;
 
-use crate::error::internal;
+use crate::error::map_err;
 use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 
 use super::edges::query_edges;
@@ -166,7 +166,7 @@ pub(crate) async fn query_memories(
         q = q.bind(created_at).bind(memory_id);
     }
 
-    let mut rows: Vec<MemoryRowDb> = q.fetch_all(pool).await.map_err(internal)?;
+    let mut rows: Vec<MemoryRowDb> = q.fetch_all(pool).await.map_err(map_err)?;
     let limit = usize::try_from(req.limit)
         .map_err(|_| StorageError::Internal("query limit does not fit usize".into()))?;
     let next_memory_cursor = if single_memory_stream && rows.len() > limit {
@@ -350,7 +350,7 @@ async fn query_visible_memory_ids(
         q = q.bind(sid.clone());
     }
     q = bind_stateful_filters(q, &stateful);
-    let rows = q.fetch_all(pool).await.map_err(internal)?;
+    let rows = q.fetch_all(pool).await.map_err(map_err)?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
@@ -383,11 +383,7 @@ async fn query_visible_goal_ids(
         sql.push_str(" AND g.schema_id = $4");
     }
     if matches!(req.supersession, SupersessionStatus::HeadsOnly) {
-        // SQL-POLICY: fixed-fragment
-        sql.push_str(
-            " AND NOT EXISTS (SELECT 1 FROM proxima_core.goals g2 \
-                              WHERE g2.supersedes = g.goal_id)",
-        );
+        super::push_goal_heads_only_predicate(&mut sql);
     }
     // SQL-POLICY: fixed-fragment
     let mut q = sqlx::query_as::<_, (uuid::Uuid,)>(sqlx::AssertSqlSafe(sql))
@@ -397,7 +393,7 @@ async fn query_visible_goal_ids(
     if let Some(sid) = schema_id_filter {
         q = q.bind(sid);
     }
-    let rows = q.fetch_all(pool).await.map_err(internal)?;
+    let rows = q.fetch_all(pool).await.map_err(map_err)?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 

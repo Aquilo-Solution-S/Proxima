@@ -13,7 +13,7 @@ use proxima_core::verbs::schema::{
 use proxima_core::{MemoryId, SchemaId, SearchProjectionColumnKind, StorageError};
 use sqlx::PgPool;
 
-use crate::error::internal;
+use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::pgvector::{SET_HNSW_EF_SEARCH_SQL, SET_HNSW_ITERATIVE_SCAN_SQL};
 
@@ -302,7 +302,7 @@ async fn run_lexical(
     }
     q = bind_filter_params(q, req);
     q = q.bind(req.query.clone());
-    q.fetch_all(pool).await.map_err(internal)
+    q.fetch_all(pool).await.map_err(map_err)
 }
 
 /// Exact SQL of the semantic vector branch, factored out so
@@ -421,17 +421,17 @@ async fn run_semantic(
     q = q.bind(crate::pgvector::literal(query_embedding));
     q = q.bind(model_id.clone());
 
-    let mut tx = pool.begin().await.map_err(internal)?;
+    let mut tx = pool.begin().await.map_err(map_err)?;
     sqlx::query(SET_HNSW_EF_SEARCH_SQL)
         .execute(&mut *tx)
         .await
-        .map_err(internal)?;
+        .map_err(map_err)?;
     sqlx::query(SET_HNSW_ITERATIVE_SCAN_SQL)
         .execute(&mut *tx)
         .await
-        .map_err(internal)?;
-    let rows = q.fetch_all(&mut *tx).await.map_err(internal)?;
-    tx.commit().await.map_err(internal)?;
+        .map_err(map_err)?;
+    let rows = q.fetch_all(&mut *tx).await.map_err(map_err)?;
+    tx.commit().await.map_err(map_err)?;
     Ok(rows)
 }
 

@@ -1,9 +1,10 @@
 use proxima_core::read_models::ActiveGoalSummary;
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{GoalId, MemoryId, OwnerRef, OwnerRefKind, StorageError};
+use proxima_core::{GoalId, MemoryId, OwnerRef, StorageError};
 use sqlx::PgPool;
 
-use crate::error::internal;
+use crate::error::map_err;
+use crate::verbs::query::{entity_owner_union, read_owner_columns};
 
 pub(crate) async fn list_active_goals(
     pool: &PgPool,
@@ -16,7 +17,14 @@ pub(crate) async fn list_active_goals(
     }
     let (read_owner_kinds, read_owner_ids) = read_owner_columns(read_owners);
 
-    let sql =
+    // SQL-POLICY: fixed-fragment — the only interpolation is the shared
+    // entity-owner-union constant; every value is bound.
+    //
+    // The head filter here is deliberately the *readable-successor*
+    // variant, not the plain heads-only shape `query_goals` uses: this is
+    // the caller's wake view, and a successor the caller cannot read must
+    // not silently hide a goal they can.
+    let sql = format!(
         "WITH RECURSIVE linked_goals(goal_id) AS (
              SELECT e.source_goal_id
                FROM proxima_core.edges e
@@ -27,7 +35,7 @@ pub(crate) async fn list_active_goals(
                 AND e.target_memory_id = $3
                 AND EXISTS (
                     SELECT 1
-                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) teo
+                      FROM {eo_union} teo
                       JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS t(kind, id)
                         ON teo.owner_kind = t.kind
                        AND teo.owner_id IS NOT DISTINCT FROM t.id
@@ -35,7 +43,7 @@ pub(crate) async fn list_active_goals(
                 )
                 AND EXISTS (
                     SELECT 1
-                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                      FROM {eo_union} eo
                       JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
                         ON eo.owner_kind = s.kind
                        AND eo.owner_id IS NOT DISTINCT FROM s.id
@@ -47,7 +55,7 @@ pub(crate) async fn list_active_goals(
                JOIN linked_goals prior ON child.supersedes = prior.goal_id
               WHERE EXISTS (
                     SELECT 1
-                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                      FROM {eo_union} eo
                       JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
                         ON eo.owner_kind = s.kind
                        AND eo.owner_id IS NOT DISTINCT FROM s.id
@@ -60,7 +68,7 @@ pub(crate) async fn list_active_goals(
            JOIN proxima_core.goal_activated_v1 ga ON ga.goal_id = g.goal_id
           WHERE EXISTS (
                 SELECT 1
-                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                  FROM {eo_union} eo
                   JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
                     ON eo.owner_kind = s.kind
                    AND eo.owner_id IS NOT DISTINCT FROM s.id
@@ -73,17 +81,19 @@ pub(crate) async fn list_active_goals(
                  WHERE newer.supersedes = g.goal_id
                    AND EXISTS (
                         SELECT 1
-                          FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                          FROM {eo_union} eo
                           JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
                             ON eo.owner_kind = s.kind
                            AND eo.owner_id IS NOT DISTINCT FROM s.id
                          WHERE eo.entity_id = newer.goal_id
                    )
             )
-          ORDER BY g.created_at DESC
-          LIMIT $5"
-    ;
+          ORDER BY g.created_at DESC, g.goal_id DESC
+          LIMIT $5",
+        eo_union = entity_owner_union(),
+    );
 
+    // SQL-POLICY: fixed-fragment
     let rows: Vec<ActiveGoalRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(&read_owner_kinds)
         .bind(&read_owner_ids)
@@ -92,7 +102,7 @@ pub(crate) async fn list_active_goals(
         .bind(i64::try_from(limit).unwrap_or(i64::MAX))
         .fetch_all(pool)
         .await
-        .map_err(internal)?;
+        .map_err(map_err)?;
 
     Ok(rows
         .into_iter()
@@ -102,10 +112,6 @@ pub(crate) async fn list_active_goals(
             title: row.title,
         })
         .collect())
-}
-
-fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<Option<uuid::Uuid>>) {
-    crate::access::owner_columns::owner_arrays(read_owners)
 }
 
 #[derive(sqlx::FromRow)]

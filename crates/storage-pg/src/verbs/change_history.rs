@@ -5,13 +5,14 @@
 use proxima_core::verbs::change_history::{
     ChangeHistoryRequest, ChangeHistoryResponse, MAX_CHANGE_HISTORY_LIMIT,
 };
-use proxima_core::{ChangeEvent, OwnerRef, OwnerRefKind, StorageError};
+use proxima_core::{ChangeEvent, OwnerRef, StorageError};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::change_event::hydrate_change_events_batch;
-use crate::error::internal;
+use crate::error::map_err;
 use crate::verbs::consolidate::edge_event_visibility_predicate;
+use crate::verbs::query::read_owner_columns;
 
 pub(crate) async fn change_history(
     pool: &PgPool,
@@ -45,6 +46,8 @@ pub(crate) async fn change_history(
              ORDER BY ce.seq DESC
              LIMIT $4"
     );
+    // SQL-POLICY: fixed-fragment (edge_visibility is a fixed predicate over
+    // numbered binds; every value is bound)
     let seqs: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
         .bind(&read_owner_kinds)
         .bind(&read_owner_ids)
@@ -54,38 +57,17 @@ pub(crate) async fn change_history(
         .bind(world_id)
         .fetch_all(pool)
         .await
-        .map_err(internal)?;
+        .map_err(map_err)?;
 
     let events: Vec<ChangeEvent> = hydrate_change_events_batch(pool, read_owners, &seqs).await?;
 
-    let high_water_visibility = edge_event_visibility_predicate(1, 2, 3, 4);
-    let high_water_sql = format!(
-        r"SELECT ce.seq FROM proxima_core.change_event ce
-             WHERE EXISTS (
-                SELECT 1
-                  FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-                 WHERE ce.owner_kind = s.kind
-                   AND ce.owner_id IS NOT DISTINCT FROM s.id
-             )
-               AND {high_water_visibility}
-             ORDER BY ce.seq DESC
-             LIMIT 1"
-    );
-    let high_water = sqlx::query_scalar(sqlx::AssertSqlSafe(high_water_sql))
-        .bind(&read_owner_kinds)
-        .bind(&read_owner_ids)
-        .bind(world_kind)
-        .bind(world_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(internal)?;
+    // Same visibility-gated high-water query the memories page computes;
+    // one implementation keeps the two verbs' semantics in lockstep.
+    let high_water =
+        crate::verbs::query::read_seq_high_water(pool, &read_owner_kinds, &read_owner_ids).await?;
 
     Ok(ChangeHistoryResponse {
         events,
         seq_high_water: high_water,
     })
-}
-
-fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<Option<uuid::Uuid>>) {
-    crate::access::owner_columns::owner_arrays(read_owners)
 }

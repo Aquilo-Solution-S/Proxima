@@ -7,7 +7,7 @@ use proxima_core::{
 };
 use sqlx::PgPool;
 
-use crate::error::internal;
+use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::verbs::consolidate::edge_event_visibility_predicate;
 
@@ -167,7 +167,7 @@ pub(super) struct MemoryRowDb {
 /// events the requester may see (the same set `list_change_events_after`
 /// filters by); using `req.owner` here would leak whether/when a foreign
 /// owner has events.
-pub(super) async fn read_seq_high_water(
+pub(crate) async fn read_seq_high_water(
     pool: &PgPool,
     read_owner_kinds: &[OwnerRefKind],
     read_owner_ids: &[Option<uuid::Uuid>],
@@ -194,7 +194,7 @@ pub(super) async fn read_seq_high_water(
         .bind(world_id)
         .fetch_optional(pool)
         .await
-        .map_err(internal)?;
+        .map_err(map_err)?;
     Ok(row.map(|(v,)| v))
 }
 

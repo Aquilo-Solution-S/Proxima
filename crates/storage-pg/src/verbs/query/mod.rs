@@ -36,6 +36,7 @@ pub use edges::MAX_SNAPSHOT_EDGES;
 pub(crate) use edges::{edge_exists, read_edges};
 pub(crate) use lineage::walk_memory_lineage;
 pub(crate) use memories::query_memories;
+pub(crate) use rows::read_seq_high_water;
 pub(crate) use search::search_memories;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use search::semantic_search_sql_for_tests;
@@ -54,6 +55,23 @@ pub(super) fn push_same_home_owner_successor_predicate(
           AND {successor_alias}.owner_id IS NOT DISTINCT FROM {head_alias}.owner_id"
     )
     .expect("write to String is infallible");
+}
+
+/// Append the goals `HeadsOnly` filter on alias `g`: hide a goal whose
+/// successor row exists. The same-owner guard mirrors the memories head
+/// filter (`push_same_home_owner_successor_predicate`): goal supersession
+/// is already written intra-Owner (`goal_write/prior.rs` scopes the
+/// `supersedes` update to one owner), so the guard is a read-side
+/// fail-closed double-check, not a behavior change. Goals carry no
+/// tombstones, so no tombstone clause applies.
+pub(super) fn push_goal_heads_only_predicate(sql: &mut String) {
+    // SQL-POLICY: fixed-fragment
+    sql.push_str(
+        " AND NOT EXISTS (SELECT 1 FROM proxima_core.goals g2 \
+                          WHERE g2.supersedes = g.goal_id \
+                            AND g2.owner_kind = g.owner_kind \
+                            AND g2.owner_id IS NOT DISTINCT FROM g.owner_id)",
+    );
 }
 
 pub(crate) fn read_owner_columns(
@@ -116,7 +134,7 @@ where
         "SELECT fact_entity_id
            FROM proxima_core.fact_entities
           WHERE owner_kind = $1
-            AND owner_id = $2
+            AND owner_id IS NOT DISTINCT FROM $2
             AND schema_id = $3
             AND schema_version = $4
             AND natural_key = $5::text[]",

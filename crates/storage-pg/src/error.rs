@@ -1,4 +1,10 @@
 //! sqlx → `StorageError` mapping shared by every verb.
+//!
+//! Policy: reads and writes both classify through [`map_err`] — a
+//! serialization failure inside a read transaction is just as
+//! `Retryable` as one inside a write, even though only write paths run
+//! retry loops today. [`internal`] is for non-sqlx failures (row
+//! conversion, arithmetic) where no sqlx taxonomy applies.
 
 use proxima_core::StorageError;
 
