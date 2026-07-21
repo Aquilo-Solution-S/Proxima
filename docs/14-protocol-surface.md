@@ -74,7 +74,7 @@ Canonical substrate resources:
 | `proxima://graph` | graph snapshot and status fields, including `fact_retention_seconds` |
 | `proxima://memory/{id}{?expand_neighbors}` | hydrate memory by id; optional neighbor edges |
 | `proxima://memories{?ids}` | batch memory read by comma-separated prefixed ids, at most 100 per call; returns found memories in request order plus a `missing` list (not-exists and not-visible are deliberately indistinguishable) |
-| `proxima://memory/{id}/lineage{?direction,depth,limit,cursor}` | traverse provenance / supersession lineage; keyset `cursor`/`next_cursor` alongside the `truncated` flag, cursor bound to memory + direction + depth |
+| `proxima://memory/{id}/lineage{?direction,depth,limit,cursor}` | traverse provenance / supersession lineage; keyset `cursor`/`next_cursor` + `has_more`, cursor bound to memory + direction + depth |
 | `proxima://change-events{?since,limit}` | forward `change_event` poll, ascending, with `next_since` and `has_more` |
 | `proxima://goals{?state,limit,cursor}` | owner-scoped goal listing: optional state filter (Active/Paused/Achieved/Abandoned), keyset `cursor`/`next_cursor` + `has_more`, wake-config read-back per goal |
 | `proxima://goal/{id}` | single-goal read by `G:<uuid>` reference, including stored wake configuration |
@@ -105,7 +105,7 @@ generic "unknown resource":
 
 Out-of-range numerics do not error: `depth` and `limit` values beyond the
 documented bounds clamp to them (house behavior across the surface), and
-truncation is always signaled via `has_more`/`truncated` + cursor.
+truncation is always signaled via `has_more` + cursor.
 
 ## The verbs
 

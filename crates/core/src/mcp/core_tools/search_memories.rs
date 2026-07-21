@@ -158,7 +158,7 @@ pub struct SearchMemoriesArgs {
     pub include_body: bool,
     #[serde(default)]
     #[schemars(
-        description = "Optional max character count for hydrated body text. Applies only when include_body=true. When a body is cut to this cap the result carries body_truncated=true; fetch the full text via proxima://memory/{id}."
+        description = "Optional max character count for hydrated body text, at least 1. Applies only when include_body=true. When a body is cut to this cap the result carries body_truncated=true; fetch the full text via proxima://memory/{id}."
     )]
     pub body_max_chars: Option<usize>,
     #[serde(default)]
@@ -222,6 +222,7 @@ impl McpTool for SearchMemoriesTool {
                 ));
             }
             validate_score_args(&args)?;
+            validate_body_max_chars(args.body_max_chars)?;
 
             let mode = SearchMode::from(args.mode);
             let embeddings_available = ctx
@@ -609,6 +610,20 @@ fn truncate_body(body: &str, max_chars: usize) -> (String, bool) {
     (truncated, did_truncate)
 }
 
+/// Reject `body_max_chars: 0` explicitly. Letting it through would hydrate
+/// every body to `""` with `body_truncated=true` — a well-formed page that
+/// carries no text, which reads as data loss rather than the caller's own
+/// cap. A caller who wants no bodies has `include_body=false` for that.
+fn validate_body_max_chars(requested: Option<usize>) -> Result<(), McpToolError> {
+    if requested == Some(0) {
+        return Err(McpToolError::InvalidInput(
+            "body_max_chars must be >= 1 when provided; use include_body=false to skip bodies"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 fn effective_body_max_chars(requested: Option<usize>) -> usize {
     requested.map_or(DEFAULT_BODY_MAX_CHARS, |max| {
         max.min(DEFAULT_BODY_MAX_CHARS)
@@ -742,7 +757,7 @@ mod tests {
         SearchMemoriesMode, SearchMemoriesSupersession, SearchMemoryOutput, decode_cursor,
         degraded_to_lexical, effective_body_max_chars, encode_cursor,
         resolve_effective_search_mode, retain_surviving_neighbor_edges, truncate_body,
-        validate_score_args,
+        validate_body_max_chars, validate_score_args,
     };
     use crate::MemoryId;
     use crate::mcp::McpToolError;
@@ -992,5 +1007,12 @@ mod tests {
             effective_body_max_chars(Some(DEFAULT_BODY_MAX_CHARS + 1)),
             DEFAULT_BODY_MAX_CHARS
         );
+    }
+
+    #[test]
+    fn zero_body_max_chars_is_rejected_not_hydrated_empty() {
+        assert!(validate_body_max_chars(Some(0)).is_err());
+        assert!(validate_body_max_chars(Some(1)).is_ok());
+        assert!(validate_body_max_chars(None).is_ok());
     }
 }

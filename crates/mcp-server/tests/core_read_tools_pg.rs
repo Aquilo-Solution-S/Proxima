@@ -287,9 +287,9 @@ async fn assert_lineage_clamps_pages_and_reports_missing_start(
             edges_seen.push(edge["edge"].as_str().expect("edge handle").to_string());
         }
         assert_eq!(
-            page["truncated"] == serde_json::json!(true),
+            page["has_more"] == serde_json::json!(true),
             page["next_cursor"].is_string(),
-            "truncated iff next_cursor"
+            "has_more iff next_cursor"
         );
         match page["next_cursor"].as_str() {
             Some(token) => cursor = Some(token.to_string()),

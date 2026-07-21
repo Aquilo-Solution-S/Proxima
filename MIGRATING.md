@@ -599,11 +599,13 @@ surfaces were unbounded or truncated silently. Wire changes to review:
   envelope but gains `next_cursor`/`has_more` and a page cap; both
   accept `limit`/`cursor`.
 - **`proxima://memory/{id}/lineage` paginates.** New `cursor` parameter
-  and `next_cursor` output alongside the existing `truncated` flag; the
-  cursor is bound to memory + direction + depth. `depth=300` now clamps
-  to 8 instead of erroring as "unknown resource". An empty walk for a
-  missing/invisible start memory is now a `resource_not_found`, not an
-  empty success.
+  and `next_cursor` output; the cursor is bound to memory + direction +
+  depth. The output's `truncated` flag is renamed to `has_more` (`true`
+  iff `next_cursor` is present) so every paginated surface speaks the
+  same pagination vocabulary — clients reading `truncated` must switch.
+  `depth=300` now clamps to 8 instead of erroring as "unknown
+  resource". An empty walk for a missing/invisible start memory is now
+  a `resource_not_found`, not an empty success.
 - **New `proxima://memories{?ids}` batch read** (at most 100
   comma-separated prefixed ids): found memories in request order plus a
   `missing` list. Wake-candidate `hard_memories` hydration no longer

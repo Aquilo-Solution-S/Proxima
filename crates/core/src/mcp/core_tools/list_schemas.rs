@@ -9,7 +9,8 @@ use crate::verbs::schema::PayloadKind;
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListSchemasArgs {
     /// Optional filter. One of "Fact", "Abstraction", "Perspective",
-    /// "Goal", "Edge", "`CitedObject`", "`CitationMapping`". Omit to return all kinds.
+    /// "Goal", "Edge", "`CitedObject`", "`CitationMapping`"
+    /// (case-insensitive). Omit to return all kinds.
     #[serde(default)]
     pub kind: Option<String>,
 }
@@ -26,15 +27,18 @@ pub struct ListSchemasOutput {
     pub schemas: Vec<SchemaItem>,
 }
 
+// Case-insensitive: agents reading `kind` values back from output see
+// `CitedObject` but frequently send `citedobject`/`FACT`; casing is not
+// signal, so it must not turn a valid filter into an error.
 fn parse_kind(s: &str) -> Option<PayloadKind> {
-    match s {
-        "Fact" => Some(PayloadKind::Fact),
-        "Abstraction" => Some(PayloadKind::Abstraction),
-        "Perspective" => Some(PayloadKind::Perspective),
-        "Goal" => Some(PayloadKind::Goal),
-        "Edge" => Some(PayloadKind::Edge),
-        "CitedObject" => Some(PayloadKind::CitedObject),
-        "CitationMapping" => Some(PayloadKind::CitationMapping),
+    match s.to_ascii_lowercase().as_str() {
+        "fact" => Some(PayloadKind::Fact),
+        "abstraction" => Some(PayloadKind::Abstraction),
+        "perspective" => Some(PayloadKind::Perspective),
+        "goal" => Some(PayloadKind::Goal),
+        "edge" => Some(PayloadKind::Edge),
+        "citedobject" => Some(PayloadKind::CitedObject),
+        "citationmapping" => Some(PayloadKind::CitationMapping),
         _ => None,
     }
 }
@@ -82,4 +86,27 @@ pub async fn list_schemas(
         })
         .collect();
     Ok(ListSchemasOutput { schemas })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_kind;
+    use crate::verbs::schema::PayloadKind;
+
+    #[test]
+    fn kind_filter_is_case_insensitive() {
+        for raw in ["Fact", "fact", "FACT"] {
+            assert_eq!(parse_kind(raw), Some(PayloadKind::Fact), "{raw}");
+        }
+        for raw in ["CitedObject", "citedobject", "CITEDOBJECT"] {
+            assert_eq!(parse_kind(raw), Some(PayloadKind::CitedObject), "{raw}");
+        }
+    }
+
+    #[test]
+    fn unknown_kind_still_fails_closed() {
+        // Case-insensitivity must not soften the typo guard.
+        assert_eq!(parse_kind("Facts"), None);
+        assert_eq!(parse_kind(""), None);
+    }
 }
