@@ -755,16 +755,22 @@ mod tests {
 
     /// The "Tools:" section in the static help text is hand-written (the
     /// help path is `&'static str` end to end and must never fail), so
-    /// this test pins it to the registry: adding or removing a tool
+    /// this test pins it to the registry: adding or removing a core tool
     /// without updating `USAGE` fails here instead of silently drifting.
+    /// Flavor tools stay out of the comparison — the static text cannot
+    /// know which optional flavors (e.g. `--features code`) a build
+    /// carries, so it lists the always-present substrate surface only.
     #[test]
     fn usage_tools_section_matches_registry() {
+        use proxima_core::mcp::McpToolOrigin;
+
         let mut registry = FlavorRegistry::new();
         <ProximaMcpApp as FlavorBundle>::register(&mut registry).expect("register");
         let frozen = registry.try_freeze().expect("freeze");
         let mut expected: Vec<&str> = frozen
             .list_mcp_tools()
             .iter()
+            .filter(|tool| matches!(tool.origin, McpToolOrigin::Substrate))
             .map(|tool| tool.name)
             .collect();
         expected.sort_unstable();
