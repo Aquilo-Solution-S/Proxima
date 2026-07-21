@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::AgentDerivationV1;
 
-use super::util::normalize_tags;
+use super::util::{normalize_tags, validate_idempotency_key};
 
 const MAX_SOURCE_HANDLES: usize = 256;
 const DERIVED_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
@@ -186,6 +186,7 @@ impl McpTool for DeriveTool {
                     "body must be 1..=20000 chars".into(),
                 ));
             }
+            validate_idempotency_key(args.idempotency_key.as_deref())?;
             // `model_id` is the reserved operator label. It may arrive as an
             // explicit arg or via the request-context `model_id` (which the MCP
             // server strips into `ctx.author.model_id`); fall back to the latter.

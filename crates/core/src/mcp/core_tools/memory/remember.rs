@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AgentNoteV1, SidecarPayload};
 
-use super::util::normalize_tags;
+use super::util::{normalize_tags, validate_idempotency_key};
 
 const SOURCE_ID: &str = "core/agent";
 const NOTE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
@@ -95,13 +95,7 @@ impl McpTool for RememberTool {
                     "body must be 1..=20000 chars".into(),
                 ));
             }
-            if let Some(key) = args.idempotency_key.as_deref()
-                && (key.is_empty() || key.chars().count() > 200)
-            {
-                return Err(McpToolError::InvalidInput(
-                    "idempotency_key must be 1..=200 chars when provided".into(),
-                ));
-            }
+            validate_idempotency_key(args.idempotency_key.as_deref())?;
             let space = super::super::memory_spaces::resolve_space_owner(
                 &ctx,
                 args.space.as_deref(),

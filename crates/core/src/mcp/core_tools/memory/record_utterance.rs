@@ -61,6 +61,7 @@ impl McpTool for RecordUtteranceTool {
                     "text must be 1..=20000 chars".into(),
                 ));
             }
+            super::util::validate_idempotency_key(args.idempotency_key.as_deref())?;
 
             let space = super::super::memory_spaces::resolve_space_owner(
                 &ctx,
