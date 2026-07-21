@@ -3,18 +3,16 @@
 //! deployment `ToolScope` (the same mechanism `PROXIMA_TOOL_PROFILE` drives)
 //! and asserting the instructions track the resolved surface.
 
-use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 mod common;
 
 use async_trait::async_trait;
-use common::{create_db, db_url, drop_db, initialized, post_rpc};
+use common::{initialized, post_rpc};
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, Owner, OwnerRef,
-    ToolScope,
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, Owner, OwnerRef, ToolScope,
 };
-use proxima_mcp_server::{McpEdgeAuth, McpToolHost, default_allowlist, serve_streamable_http};
+use proxima_mcp_server::McpEdgeAuth;
 use serde_json::json;
 
 #[derive(Debug)]
@@ -85,35 +83,11 @@ async fn initialize_capture(
     Ok((session_id, body))
 }
 
-async fn start(
-    auth_store: Arc<McpEdgeAuth>,
-) -> Result<
-    (
-        tokio::task::JoinHandle<Result<(), proxima_mcp_server::McpServerError>>,
-        SocketAddr,
-        String,
-    ),
-    Box<dyn std::error::Error>,
-> {
-    let db_name = create_db().await?;
-    let database_url = db_url(&db_name);
-    let registry = FlavorRegistry::new();
-    let server = McpToolHost::from_database_url(&database_url, registry).await?;
-    let (handle, addr) = serve_streamable_http(
-        SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
-        server,
-        default_allowlist(),
-        auth_store,
-    )
-    .await?;
-    Ok((handle, addr, db_name))
-}
-
 #[tokio::test]
 async fn initialize_returns_instructions_and_how_to_resource()
 -> Result<(), Box<dyn std::error::Error>> {
     let auth_store = auth_store(ToolScope::All);
-    let (handle, addr, db_name) = start(auth_store).await?;
+    let (handle, addr, db_name) = common::start_server(auth_store).await?;
 
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
@@ -174,9 +148,7 @@ async fn initialize_returns_instructions_and_how_to_resource()
     assert!(body.contains("derived-from"));
     assert!(body.contains("## Worked example"));
 
-    handle.abort();
-    let _ = handle.await;
-    drop_db(&db_name).await?;
+    common::stop_server(handle, &db_name).await?;
     Ok(())
 }
 
@@ -200,7 +172,7 @@ async fn memory_profile_instructions_omit_excluded_tools() -> Result<(), Box<dyn
         .collect(),
     );
     let auth_store = auth_store(palette);
-    let (handle, addr, db_name) = start(auth_store).await?;
+    let (handle, addr, db_name) = common::start_server(auth_store).await?;
 
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
@@ -225,8 +197,6 @@ async fn memory_profile_instructions_omit_excluded_tools() -> Result<(), Box<dyn
     assert!(!instructions.contains("goal"));
     assert!(!instructions.contains("proxima-code_"));
 
-    handle.abort();
-    let _ = handle.await;
-    drop_db(&db_name).await?;
+    common::stop_server(handle, &db_name).await?;
     Ok(())
 }

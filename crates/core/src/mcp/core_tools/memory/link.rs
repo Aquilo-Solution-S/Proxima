@@ -94,9 +94,7 @@ impl McpTool for LinkTool {
                 authorship_owner_memory_id: ctx.caller_self_perspective,
                 sidecar_payload: Some(&payload),
             };
-            let engine = ctx
-                .engine()
-                .ok_or_else(|| McpToolError::InvalidInput("engine required".into()))?;
+            let engine = ctx.require_engine()?;
             let edge_id = engine
                 .append_memory_edge_authorized(&ctx.authz, edge)
                 .await

@@ -20,20 +20,10 @@ use tokio::task::JoinHandle;
 
 #[tokio::test]
 async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn std::error::Error>> {
-    let db_name = create_db().await?;
-    let database_url = db_url(&db_name);
-    let registry = FlavorRegistry::new();
-    let server = McpToolHost::from_database_url(&database_url, registry).await?;
-    let owner = common::nil_owner();
-    let auth_store =
-        Arc::new(McpEdgeAuth::headless().with_host(Arc::new(TestHostAuth::new(owner, None))));
-    let (handle, addr) = serve_streamable_http(
-        SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
-        server,
-        default_allowlist(),
-        auth_store,
-    )
-    .await?;
+    let auth_store = Arc::new(
+        McpEdgeAuth::headless().with_host(Arc::new(TestHostAuth::new(common::nil_owner(), None))),
+    );
+    let (handle, addr, db_name) = common::start_server(auth_store).await?;
 
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
@@ -83,9 +73,7 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
     let output: serde_json::Value = serde_json::from_str(content)?;
     assert_prefixed_uuid(output["handle"].as_str().expect("handle"), "F");
 
-    handle.abort();
-    let _ = handle.await;
-    drop_db(&db_name).await?;
+    common::stop_server(handle, &db_name).await?;
     Ok(())
 }
 
@@ -97,18 +85,7 @@ fn assert_prefixed_uuid(raw: &str, expected_prefix: &str) {
 
 #[tokio::test]
 async fn missing_auth_returns_401() -> Result<(), Box<dyn std::error::Error>> {
-    let db_name = create_db().await?;
-    let database_url = db_url(&db_name);
-    let registry = FlavorRegistry::new();
-    let server = McpToolHost::from_database_url(&database_url, registry).await?;
-    let auth_store = Arc::new(McpEdgeAuth::headless());
-    let (handle, addr) = serve_streamable_http(
-        SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
-        server,
-        default_allowlist(),
-        auth_store,
-    )
-    .await?;
+    let (handle, addr, db_name) = common::start_server(Arc::new(McpEdgeAuth::headless())).await?;
 
     let response = reqwest::Client::new()
         .post(format!("http://{addr}/mcp"))
@@ -119,29 +96,17 @@ async fn missing_auth_returns_401() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     assert_eq!(response.status().as_u16(), 401);
 
-    handle.abort();
-    let _ = handle.await;
-    drop_db(&db_name).await?;
+    common::stop_server(handle, &db_name).await?;
     Ok(())
 }
 
 #[tokio::test]
 async fn disallowed_origin_returns_403_with_valid_token() -> Result<(), Box<dyn std::error::Error>>
 {
-    let db_name = create_db().await?;
-    let database_url = db_url(&db_name);
-    let registry = FlavorRegistry::new();
-    let server = McpToolHost::from_database_url(&database_url, registry).await?;
-    let owner = common::nil_owner();
-    let auth_store =
-        Arc::new(McpEdgeAuth::headless().with_host(Arc::new(TestHostAuth::new(owner, None))));
-    let (handle, addr) = serve_streamable_http(
-        SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
-        server,
-        default_allowlist(),
-        auth_store,
-    )
-    .await?;
+    let auth_store = Arc::new(
+        McpEdgeAuth::headless().with_host(Arc::new(TestHostAuth::new(common::nil_owner(), None))),
+    );
+    let (handle, addr, db_name) = common::start_server(auth_store).await?;
 
     let response = reqwest::Client::new()
         .post(format!("http://{addr}/mcp"))
@@ -154,28 +119,16 @@ async fn disallowed_origin_returns_403_with_valid_token() -> Result<(), Box<dyn 
         .await?;
     assert_eq!(response.status().as_u16(), 403);
 
-    handle.abort();
-    let _ = handle.await;
-    drop_db(&db_name).await?;
+    common::stop_server(handle, &db_name).await?;
     Ok(())
 }
 
 #[tokio::test]
 async fn host_bearer_lists_all_tools_without_origin() -> Result<(), Box<dyn std::error::Error>> {
-    let db_name = create_db().await?;
-    let database_url = db_url(&db_name);
-    let registry = FlavorRegistry::new();
-    let server = McpToolHost::from_database_url(&database_url, registry).await?;
-    let owner = common::nil_owner();
-    let auth_store =
-        Arc::new(McpEdgeAuth::headless().with_host(Arc::new(TestHostAuth::new(owner, None))));
-    let (handle, addr) = serve_streamable_http(
-        SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
-        server,
-        default_allowlist(),
-        auth_store,
-    )
-    .await?;
+    let auth_store = Arc::new(
+        McpEdgeAuth::headless().with_host(Arc::new(TestHostAuth::new(common::nil_owner(), None))),
+    );
+    let (handle, addr, db_name) = common::start_server(auth_store).await?;
 
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
@@ -246,9 +199,7 @@ async fn host_bearer_lists_all_tools_without_origin() -> Result<(), Box<dyn std:
         template_uris.contains(&"proxima://memory/{id}/lineage{?direction,depth,limit,cursor}")
     );
 
-    handle.abort();
-    let _ = handle.await;
-    drop_db(&db_name).await?;
+    common::stop_server(handle, &db_name).await?;
     Ok(())
 }
 
@@ -287,9 +238,7 @@ async fn host_bearer_sse_get_closes_at_identity_expiry() -> Result<(), Box<dyn s
         .await
         .expect("SSE stream closes after identity expiry")?;
 
-    handle.abort();
-    let _ = handle.await;
-    drop_db(&db_name).await?;
+    common::stop_server(handle, &db_name).await?;
     Ok(())
 }
 
@@ -313,9 +262,7 @@ async fn host_bearer_sse_get_closes_after_epoch_bump() -> Result<(), Box<dyn std
         .await
         .expect("SSE stream closes after auth epoch bump")?;
 
-    handle.abort();
-    let _ = handle.await;
-    drop_db(&db_name).await?;
+    common::stop_server(handle, &db_name).await?;
     Ok(())
 }
 

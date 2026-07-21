@@ -16,9 +16,14 @@ use crate::verbs::query::{
     EntityKind, QueryCursor, QueryPage, QueryRequest, SupersessionStatus, TombstoneFilter,
 };
 
-const MAX_GOAL_PAGE_LIMIT: u32 = 200;
-const DEFAULT_GOAL_PAGE_LIMIT: u32 = 50;
-const GOAL_CURSOR_VERSION: u8 = 1;
+/// Opaque cursor codec: the shared `{v, fp, c}` envelope with the goal
+/// keyset under `c`. The fingerprint binds the state filter; `limit`
+/// stays out so it may vary between pages.
+const GOAL_CURSOR: wire_cursor::FingerprintedCursor = wire_cursor::FingerprintedCursor {
+    version: 1,
+    source: "proxima://goals page",
+    rebind_hint: "repeat the state filter that produced it",
+};
 
 #[derive(Debug, Deserialize)]
 pub struct ListGoalsArgs {
@@ -71,15 +76,16 @@ pub struct WakeConfigItem {
     pub hard_memories: Vec<String>,
 }
 
-/// Opaque wire cursor: version + state binding + goal keyset. The state
-/// tag binds the cursor to the filter that produced it so a replay under
-/// a different filter fails closed instead of returning a wrong page.
+/// Keyset resume point carried inside the opaque goal cursor.
 #[derive(Debug, Serialize, Deserialize)]
-struct WireGoalCursor {
-    v: u8,
-    state: Option<String>,
+struct GoalCursorPos {
     created_at_nanos: i128,
     goal_id: uuid::Uuid,
+}
+
+fn goal_fingerprint(state_tag: Option<&str>) -> String {
+    let canon = serde_json::to_string(&state_tag).expect("fingerprint canon serializes");
+    wire_cursor::fingerprint(&canon)
 }
 
 /// # Errors
@@ -97,14 +103,9 @@ pub async fn list_goals(
         .as_deref()
         .map(|raw| decode_goal_cursor(raw, state_tag.as_deref()))
         .transpose()?;
-    let limit = args
-        .limit
-        .unwrap_or(DEFAULT_GOAL_PAGE_LIMIT)
-        .clamp(1, MAX_GOAL_PAGE_LIMIT);
+    let limit = super::clamp_page_limit(args.limit);
 
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let mut req = QueryRequest::for_owner(ctx.owner);
     req.entity_kind = Some(EntityKind::Goal);
     req.goal_state = state;
@@ -145,9 +146,7 @@ pub async fn get_goal(ctx: McpToolCtx, raw: &str) -> Result<GoalItem, McpToolErr
     let goal_id = parse_prefixed_uuid(raw, PrefixedUuidClass::Goal)
         .map(GoalId::new)
         .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let mut req = QueryRequest::for_owner(ctx.owner);
     req.entity_kind = Some(EntityKind::Goal);
     req.goal_ids = vec![goal_id];
@@ -213,12 +212,8 @@ fn wake_config_item(ctx: &McpToolCtx, config: GoalWakeConfigRow) -> WakeConfigIt
         hard_memories: config
             .hard_memories
             .iter()
-            .map(|hard| match hard.kind {
-                crate::EntityKind::Abstraction => ctx.format_abstraction_memory(hard.memory_id),
-                crate::EntityKind::Perspective => ctx.format_perspective_memory(hard.memory_id),
-                crate::EntityKind::Fact | crate::EntityKind::Goal => {
-                    ctx.format_fact_memory(hard.memory_id)
-                }
+            .map(|hard| {
+                super::wire_ref::format_memory_by_kind(ctx, hard.memory_id, Some(hard.kind))
             })
             .collect(),
     }
@@ -250,30 +245,22 @@ fn encode_goal_cursor(
     goal_id: uuid::Uuid,
     state_tag: Option<&str>,
 ) -> String {
-    wire_cursor::encode_token(&WireGoalCursor {
-        v: GOAL_CURSOR_VERSION,
-        state: state_tag.map(str::to_string),
-        created_at_nanos: created_at.unix_timestamp_nanos(),
-        goal_id,
-    })
+    GOAL_CURSOR.encode(
+        &goal_fingerprint(state_tag),
+        &GoalCursorPos {
+            created_at_nanos: created_at.unix_timestamp_nanos(),
+            goal_id,
+        },
+    )
 }
 
 fn decode_goal_cursor(raw: &str, state_tag: Option<&str>) -> Result<QueryCursor, McpToolError> {
-    let malformed = || wire_cursor::malformed_cursor("proxima://goals page");
-    let wire: WireGoalCursor = wire_cursor::decode_token(raw).ok_or_else(malformed)?;
-    if wire.v != GOAL_CURSOR_VERSION {
-        return Err(malformed().into());
-    }
-    if wire.state.as_deref() != state_tag {
-        return Err(
-            wire_cursor::cursor_query_mismatch("repeat the state filter that produced it").into(),
-        );
-    }
-    let created_at = time::OffsetDateTime::from_unix_timestamp_nanos(wire.created_at_nanos)
-        .map_err(|_| malformed())?;
+    let pos: GoalCursorPos = GOAL_CURSOR.decode(&goal_fingerprint(state_tag), raw)?;
+    let created_at = time::OffsetDateTime::from_unix_timestamp_nanos(pos.created_at_nanos)
+        .map_err(|_| wire_cursor::malformed_cursor(GOAL_CURSOR.source))?;
     Ok(QueryCursor::Goal {
         created_at,
-        goal_id: GoalId::new(wire.goal_id),
+        goal_id: GoalId::new(pos.goal_id),
     })
 }
 

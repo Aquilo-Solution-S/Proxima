@@ -9,16 +9,19 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::mcp::cursor as wire_cursor;
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::verbs::query::{
-    EdgeFilter, EdgeReadCursor, EdgeReadRequest, EdgeRow, EdgeTargetProjection, EntityKind,
-};
-use crate::{EdgeId, EntityRef, MemoryId};
+use crate::verbs::query::{EdgeFilter, EdgeReadCursor, EdgeReadRequest, EdgeRow};
+use crate::{EdgeId, EntityRef};
 
 use super::get_memory::snapshot_payload_value;
 
-const MAX_EDGE_PAGE_LIMIT: u32 = 200;
-const DEFAULT_EDGE_PAGE_LIMIT: u32 = 50;
-const EDGE_CURSOR_VERSION: u8 = 1;
+/// Opaque cursor codec: the shared `{v, fp, c}` envelope with the edge
+/// keyset under `c`. The fingerprint binds the relation/source/target
+/// filter; `limit` stays out so it may vary between pages.
+const EDGE_CURSOR: wire_cursor::FingerprintedCursor = wire_cursor::FingerprintedCursor {
+    version: 1,
+    source: "proxima://edges page",
+    rebind_hint: "repeat the relation/source/target filter that produced it",
+};
 
 #[derive(Debug, Deserialize)]
 pub struct ListEdgesArgs {
@@ -63,17 +66,17 @@ pub struct EdgeItem {
     pub payload: serde_json::Value,
 }
 
-/// Opaque wire cursor: version + filter binding + edge keyset. The filter
-/// tags bind the cursor to the query that produced it so a replay under a
-/// different filter fails closed instead of returning a wrong page.
+/// Keyset resume point carried inside the opaque edge cursor.
 #[derive(Debug, Serialize, Deserialize)]
-struct WireEdgeCursor {
-    v: u8,
-    relation: Option<String>,
-    source: Option<String>,
-    target: Option<String>,
+struct EdgeCursorPos {
     created_at_nanos: i128,
     edge_id: uuid::Uuid,
+}
+
+fn edge_fingerprint(args: &ListEdgesArgs) -> String {
+    let canon = serde_json::to_string(&(&args.relation, &args.source, &args.target))
+        .expect("fingerprint canon serializes");
+    wire_cursor::fingerprint(&canon)
 }
 
 /// # Errors
@@ -113,14 +116,9 @@ pub async fn list_edges(
         .as_deref()
         .map(|raw| decode_edge_cursor(raw, &args))
         .transpose()?;
-    let limit = args
-        .limit
-        .unwrap_or(DEFAULT_EDGE_PAGE_LIMIT)
-        .clamp(1, MAX_EDGE_PAGE_LIMIT);
+    let limit = super::clamp_page_limit(args.limit);
 
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let response = engine
         .read_edges(
             &ctx.authz,
@@ -161,9 +159,7 @@ pub async fn list_edges(
 /// failures.
 pub async fn get_edge(ctx: McpToolCtx, raw: &str) -> Result<EdgeItem, McpToolError> {
     let edge_id = ctx.resolve_edge(raw)?;
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let response = engine
         .read_edges(
             &ctx.authz,
@@ -186,12 +182,8 @@ pub async fn get_edge(ctx: McpToolCtx, raw: &str) -> Result<EdgeItem, McpToolErr
 }
 
 fn edge_item(ctx: &McpToolCtx, row: EdgeRow) -> Result<EdgeItem, McpToolError> {
-    let source = format_entity_ref(ctx, &row.source, Some(row.source_kind));
-    let target = match &row.target {
-        EdgeTargetProjection::Visible { target } => format_entity_ref(ctx, target, row.target_kind),
-        EdgeTargetProjection::Redacted => "redacted target".into(),
-        EdgeTargetProjection::Unavailable => "unavailable target".into(),
-    };
+    let source = super::wire_ref::format_entity_ref(ctx, &row.source, Some(row.source_kind));
+    let target = super::wire_ref::format_target_projection(ctx, &row.target, row.target_kind);
     let created_at = row
         .created_at
         .format(&Rfc3339)
@@ -207,28 +199,6 @@ fn edge_item(ctx: &McpToolCtx, row: EdgeRow) -> Result<EdgeItem, McpToolError> {
     })
 }
 
-fn format_entity_ref(ctx: &McpToolCtx, entity: &EntityRef, kind: Option<EntityKind>) -> String {
-    match entity {
-        EntityRef::Memory(memory_id) => format_memory_endpoint(ctx, *memory_id, kind),
-        EntityRef::Goal(goal_id) => ctx.format_goal(*goal_id),
-        EntityRef::FactEntity(fact_entity_id) => {
-            format!("fact_entity:{}", fact_entity_id.into_inner())
-        }
-    }
-}
-
-fn format_memory_endpoint(
-    ctx: &McpToolCtx,
-    memory_id: MemoryId,
-    kind: Option<EntityKind>,
-) -> String {
-    match kind {
-        Some(EntityKind::Abstraction) => ctx.format_abstraction_memory(memory_id),
-        Some(EntityKind::Perspective) => ctx.format_perspective_memory(memory_id),
-        Some(EntityKind::Fact | EntityKind::Goal) | None => ctx.format_fact_memory(memory_id),
-    }
-}
-
 fn resolve_endpoint(ctx: &McpToolCtx, field: &str, raw: &str) -> Result<EntityRef, McpToolError> {
     if let Ok(goal_id) = ctx.resolve_goal(raw) {
         return Ok(EntityRef::Goal(goal_id));
@@ -241,33 +211,22 @@ fn resolve_endpoint(ctx: &McpToolCtx, field: &str, raw: &str) -> Result<EntityRe
 }
 
 fn encode_edge_cursor(cursor: EdgeReadCursor, args: &ListEdgesArgs) -> String {
-    wire_cursor::encode_token(&WireEdgeCursor {
-        v: EDGE_CURSOR_VERSION,
-        relation: args.relation.clone(),
-        source: args.source.clone(),
-        target: args.target.clone(),
-        created_at_nanos: cursor.created_at.unix_timestamp_nanos(),
-        edge_id: cursor.edge_id.into_inner(),
-    })
+    EDGE_CURSOR.encode(
+        &edge_fingerprint(args),
+        &EdgeCursorPos {
+            created_at_nanos: cursor.created_at.unix_timestamp_nanos(),
+            edge_id: cursor.edge_id.into_inner(),
+        },
+    )
 }
 
 fn decode_edge_cursor(raw: &str, args: &ListEdgesArgs) -> Result<EdgeReadCursor, McpToolError> {
-    let malformed = || wire_cursor::malformed_cursor("proxima://edges page");
-    let wire: WireEdgeCursor = wire_cursor::decode_token(raw).ok_or_else(malformed)?;
-    if wire.v != EDGE_CURSOR_VERSION {
-        return Err(malformed().into());
-    }
-    if wire.relation != args.relation || wire.source != args.source || wire.target != args.target {
-        return Err(wire_cursor::cursor_query_mismatch(
-            "repeat the relation/source/target filter that produced it",
-        )
-        .into());
-    }
-    let created_at = time::OffsetDateTime::from_unix_timestamp_nanos(wire.created_at_nanos)
-        .map_err(|_| malformed())?;
+    let pos: EdgeCursorPos = EDGE_CURSOR.decode(&edge_fingerprint(args), raw)?;
+    let created_at = time::OffsetDateTime::from_unix_timestamp_nanos(pos.created_at_nanos)
+        .map_err(|_| wire_cursor::malformed_cursor(EDGE_CURSOR.source))?;
     Ok(EdgeReadCursor {
         created_at,
-        edge_id: EdgeId::new(wire.edge_id),
+        edge_id: EdgeId::new(pos.edge_id),
     })
 }
 

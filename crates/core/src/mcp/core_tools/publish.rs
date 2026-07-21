@@ -56,9 +56,7 @@ impl McpTool for CorePublishTool {
         args: CorePublishArgs,
     ) -> BoxFuture<'static, Result<PublishOutput, McpToolError>> {
         Box::pin(async move {
-            let engine = ctx
-                .engine()
-                .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+            let engine = ctx.require_engine()?;
             match args {
                 CorePublishArgs::PublishToWorld(args) => {
                     let entity = resolve_publishable_entity(&ctx, &args.entity)?;

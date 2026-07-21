@@ -256,9 +256,7 @@ impl McpTool for SearchMemoriesTool {
                 effective_mode,
                 SearchMode::Semantic | SearchMode::Hybrid
             ) {
-                let engine = ctx.engine().ok_or_else(|| {
-                    McpToolError::Other("engine required for semantic search".into())
-                })?;
+                let engine = ctx.require_engine()?;
                 // The embed client can vanish (or its call can fail) between
                 // the availability probe above and this point. A pure
                 // Semantic request has no lexical fallback, so it hard-fails
@@ -438,9 +436,7 @@ async fn search_one_space(
         query_embedding: prepared.query_embedding.clone(),
         embedding_model_id: prepared.embedding_model_id.clone(),
     };
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let response = engine
         .search(
             &ctx.authz,

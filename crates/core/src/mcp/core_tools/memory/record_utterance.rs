@@ -93,9 +93,7 @@ impl McpTool for RecordUtteranceTool {
                 observed_at,
             );
 
-            let engine = ctx
-                .engine()
-                .ok_or_else(|| McpToolError::InvalidInput("engine required".into()))?;
+            let engine = ctx.require_engine()?;
             let embedding_client = engine.embed_client();
             let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
             let authorized = engine

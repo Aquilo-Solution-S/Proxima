@@ -71,9 +71,7 @@ pub async fn list_change_events(
         })?,
     };
     let limit = args.limit.unwrap_or(100).clamp(1, 1000) as usize;
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let response = engine
         .list_change_events(
             &ctx.authz,
@@ -178,7 +176,11 @@ fn event_item(
                 edge: Some(ctx.format_edge(EdgeId::new(edge_id))),
                 relation: Some(relation),
                 source: Some(format_ref(ctx, &source, source_kind)),
-                target: Some(format_target_projection(ctx, target, target_kind)),
+                target: Some(super::wire_ref::format_target_projection(
+                    ctx,
+                    &target,
+                    target_kind,
+                )),
             }
         }
         ChangeEventKind::EdgeDelete {
@@ -202,7 +204,11 @@ fn event_item(
                 edge: Some(ctx.format_edge(EdgeId::new(edge_id))),
                 relation: Some(relation),
                 source: Some(format_ref(ctx, &source, source_kind)),
-                target: Some(format_target_projection(ctx, target, target_kind)),
+                target: Some(super::wire_ref::format_target_projection(
+                    ctx,
+                    &target,
+                    target_kind,
+                )),
             }
         }
     }
@@ -215,32 +221,8 @@ fn kind_from_ref(r: &EntityRef) -> EntityKind {
     }
 }
 
-fn format_target_projection(
-    ctx: &McpToolCtx,
-    target: crate::EdgeTargetProjection,
-    target_kind: Option<EntityKind>,
-) -> String {
-    match target {
-        crate::EdgeTargetProjection::Visible { target } => format_ref(
-            ctx,
-            &target,
-            target_kind.unwrap_or_else(|| kind_from_ref(&target)),
-        ),
-        crate::EdgeTargetProjection::Redacted => "redacted target".into(),
-        crate::EdgeTargetProjection::Unavailable => "unavailable target".into(),
-    }
-}
-
 fn format_ref(ctx: &McpToolCtx, r: &EntityRef, kind: EntityKind) -> String {
-    match r {
-        EntityRef::Goal(g) => ctx.format_goal(*g),
-        EntityRef::FactEntity(fe) => format!("fact_entity:{}", fe.into_inner()),
-        EntityRef::Memory(m) => match kind {
-            EntityKind::Abstraction => ctx.format_abstraction_memory(*m),
-            EntityKind::Perspective => ctx.format_perspective_memory(*m),
-            EntityKind::Fact | EntityKind::Goal => ctx.format_fact_memory(*m),
-        },
-    }
+    super::wire_ref::format_entity_ref(ctx, r, Some(kind))
 }
 
 #[cfg(test)]

@@ -22,6 +22,18 @@ impl McpToolCtx {
         self.engine.as_deref()
     }
 
+    /// The wired engine, or the one canonical "engine unavailable" error.
+    /// Every tool that needs storage goes through this so a missing
+    /// engine reads identically everywhere.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpToolError::Other`] when no engine is wired.
+    pub fn require_engine(&self) -> Result<&crate::Engine, McpToolError> {
+        self.engine()
+            .ok_or_else(|| McpToolError::Other("engine unavailable".into()))
+    }
+
     #[must_use]
     pub fn extension<T>(&self) -> Option<Arc<T>>
     where

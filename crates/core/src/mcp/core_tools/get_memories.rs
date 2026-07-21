@@ -68,9 +68,7 @@ pub async fn get_memories(
             requested.push((id, raw));
         }
     }
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let response = engine
         .get_memories(
             &ctx.authz,

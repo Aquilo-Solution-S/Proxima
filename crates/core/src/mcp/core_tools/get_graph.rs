@@ -61,9 +61,7 @@ pub async fn get_graph(
     ctx: McpToolCtx,
     _args: GetGraphArgs,
 ) -> Result<GetGraphOutput, McpToolError> {
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let embeddings_client_configured = engine.embed_client().is_some();
     let graph = engine
         .get_graph(&ctx.authz, &GetGraphReadRequest { owner: ctx.owner })

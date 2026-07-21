@@ -9,7 +9,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::EntityKind;
 use crate::engine::{ListWakeCandidatesReadRequest, MAX_WAKE_CANDIDATE_LIMIT};
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::read_models::GoalWakeCandidate;
@@ -54,11 +53,9 @@ pub async fn list_wake_candidates(
     args: ListWakeCandidatesArgs,
 ) -> Result<ListWakeCandidatesOutput, McpToolError> {
     let trigger_fact_id = ctx.resolve_fact_memory(&args.fact)?;
-    let limit = args.limit.unwrap_or(50).clamp(1, 200) as usize;
+    let limit = super::clamp_page_limit(args.limit) as usize;
     debug_assert!(limit <= MAX_WAKE_CANDIDATE_LIMIT);
-    let engine = ctx
-        .engine()
-        .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+    let engine = ctx.require_engine()?;
     let response = engine
         .list_goal_wake_candidates(
             &ctx.authz,
@@ -86,10 +83,8 @@ fn candidate_item(ctx: &McpToolCtx, candidate: GoalWakeCandidate) -> WakeCandida
         hard_memories: candidate
             .hard_memories
             .into_iter()
-            .map(|hard| match hard.kind {
-                EntityKind::Abstraction => ctx.format_abstraction_memory(hard.memory_id),
-                EntityKind::Perspective => ctx.format_perspective_memory(hard.memory_id),
-                EntityKind::Fact | EntityKind::Goal => ctx.format_fact_memory(hard.memory_id),
+            .map(|hard| {
+                super::wire_ref::format_memory_by_kind(ctx, hard.memory_id, Some(hard.kind))
             })
             .collect(),
         actor_write_owners: candidate
