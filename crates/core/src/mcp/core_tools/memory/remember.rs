@@ -140,8 +140,7 @@ impl McpTool for RememberTool {
                         cited_object,
                         mapping,
                     )
-                    .await
-                    .map_err(|err| McpToolError::Other(err.to_string()))?;
+                    .await?;
                 engine
                     .ingest_fact_with_citation_and_typed_sidecar(
                         &authorized,
@@ -152,8 +151,7 @@ impl McpTool for RememberTool {
             } else {
                 let authorized = engine
                     .authorize_fact_ingest(&authz, Relation::Editor, draft)
-                    .await
-                    .map_err(|err| McpToolError::Other(err.to_string()))?;
+                    .await?;
                 engine
                     .ingest_fact_with_typed_sidecar(
                         &authorized,
@@ -166,8 +164,7 @@ impl McpTool for RememberTool {
             if !outcome.idempotent_replay {
                 engine
                     .close_batch(&authz, space.owner, source_batch_id)
-                    .await
-                    .map_err(|err| McpToolError::Other(err.to_string()))?;
+                    .await?;
             }
 
             Ok(RememberOutput {
