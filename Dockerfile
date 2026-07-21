@@ -3,7 +3,7 @@
 # cache so no database is needed at build time. cmake + pkg-config are
 # required to build native crypto deps (aws-lc-sys / ring).
 # Pin bookworm so the builder's glibc matches the distroless cc-debian12 runtime.
-FROM rust:1.97-bookworm@sha256:7d0723df719e7f213b69dc7c8c595985c3f4b060cfbee4f7bc0e347a86fe3b6a AS builder
+FROM rust:1.97-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa AS builder
 ENV SQLX_OFFLINE=true
 RUN apt-get update \
     && apt-get install -y --no-install-recommends cmake pkg-config \
@@ -15,7 +15,7 @@ RUN cargo build --release -p proxima-mcp --features code \
 
 # Distroless cc image: glibc + libstdc++ (for aws-lc) + ca-certificates
 # (for outbound TLS to Zitadel/S3/embeddings), non-root by default.
-FROM gcr.io/distroless/cc-debian12@sha256:a90cf0f046efb32466b38b0972fef3a95e7c580e392e79ff1b7ac08c15fed0bc AS runtime
+FROM gcr.io/distroless/cc-debian12@sha256:7ee09f36862efbdbf70422db263e411c2618409ca46faa555bd5b636155307df AS runtime
 COPY --from=builder /proxima-mcp /usr/local/bin/proxima-mcp
 USER nonroot:nonroot
 EXPOSE 8080
