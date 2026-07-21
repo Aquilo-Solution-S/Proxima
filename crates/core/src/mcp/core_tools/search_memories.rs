@@ -19,6 +19,13 @@ use super::memory::search::{NeighborEdge, neighbor_edges_from_rows};
 const SEMANTIC_SEARCH_UNAVAILABLE: &str =
     "semantic search unavailable: no embedding client is configured for this host";
 const DEFAULT_BODY_MAX_CHARS: usize = 8_000;
+/// Each distinct space costs one full storage search, so the space list is
+/// this tool's only per-request work multiplier; cap it like every other
+/// list argument.
+const MAX_SEARCH_SPACES: usize = 16;
+/// Matches the write-side cap of 16 distinct tags per memory — a filter
+/// larger than any storable tag set cannot narrow anything further.
+const MAX_SEARCH_TAGS: usize = 16;
 
 #[derive(Debug, Default)]
 pub struct SearchMemoriesTool;
@@ -124,7 +131,9 @@ pub struct SearchMemoriesArgs {
     #[schemars(description = "Optional schema_id filter. Omit or null for all schemas.")]
     pub schema_id: Option<String>,
     #[serde(default)]
-    #[schemars(description = "Optional exact tag filter. Empty means no tag filter.")]
+    #[schemars(
+        description = "Optional exact tag filter, at most 16 tags. Empty means no tag filter."
+    )]
     pub tags: Vec<String>,
     #[serde(default)]
     #[schemars(description = "Tag filter mode: any or all. Defaults to any.")]
@@ -163,7 +172,7 @@ pub struct SearchMemoriesArgs {
     pub body_max_chars: Option<usize>,
     #[serde(default)]
     #[schemars(
-        description = "Memory space keys from core_memory_spaces. Empty/omitted searches current owner."
+        description = "Memory space keys from core_memory_spaces, at most 16. Empty/omitted searches current owner."
     )]
     pub spaces: Vec<String>,
     #[serde(default)]
@@ -223,6 +232,7 @@ impl McpTool for SearchMemoriesTool {
             }
             validate_score_args(&args)?;
             validate_body_max_chars(args.body_max_chars)?;
+            validate_list_caps(&args)?;
 
             let mode = SearchMode::from(args.mode);
             let embeddings_available = ctx
@@ -629,6 +639,24 @@ fn validate_body_max_chars(requested: Option<usize>) -> Result<(), McpToolError>
     Ok(())
 }
 
+/// Cap the raw list arguments before any per-item work. `spaces` and
+/// `tags` were the only uncapped list inputs on the tool surface; without
+/// a cap a single request could fan out into one storage search per
+/// listed space.
+fn validate_list_caps(args: &SearchMemoriesArgs) -> Result<(), McpToolError> {
+    if args.spaces.len() > MAX_SEARCH_SPACES {
+        return Err(McpToolError::InvalidInput(format!(
+            "at most {MAX_SEARCH_SPACES} spaces per search"
+        )));
+    }
+    if args.tags.len() > MAX_SEARCH_TAGS {
+        return Err(McpToolError::InvalidInput(format!(
+            "at most {MAX_SEARCH_TAGS} tags in the tags filter"
+        )));
+    }
+    Ok(())
+}
+
 fn effective_body_max_chars(requested: Option<usize>) -> usize {
     requested.map_or(DEFAULT_BODY_MAX_CHARS, |max| {
         max.min(DEFAULT_BODY_MAX_CHARS)
@@ -762,7 +790,7 @@ mod tests {
         SearchMemoriesMode, SearchMemoriesSupersession, SearchMemoryOutput, decode_cursor,
         degraded_to_lexical, effective_body_max_chars, encode_cursor,
         resolve_effective_search_mode, retain_surviving_neighbor_edges, truncate_body,
-        validate_body_max_chars, validate_score_args,
+        validate_body_max_chars, validate_list_caps, validate_score_args,
     };
     use crate::MemoryId;
     use crate::mcp::McpToolError;
@@ -1019,6 +1047,30 @@ mod tests {
         assert!(validate_body_max_chars(Some(0)).is_err());
         assert!(validate_body_max_chars(Some(1)).is_ok());
         assert!(validate_body_max_chars(None).is_ok());
+    }
+
+    #[test]
+    fn oversized_space_and_tag_lists_are_rejected() {
+        let mut too_many_spaces = args(SearchMemoriesMode::Lexical);
+        too_many_spaces.spaces = (0..17).map(|i| format!("group:{i}")).collect();
+        assert!(matches!(
+            validate_list_caps(&too_many_spaces),
+            Err(McpToolError::InvalidInput(message)) if message.contains("16 spaces")
+        ));
+
+        let mut too_many_tags = args(SearchMemoriesMode::Lexical);
+        too_many_tags.tags = (0..17).map(|i| format!("tag-{i}")).collect();
+        assert!(matches!(
+            validate_list_caps(&too_many_tags),
+            Err(McpToolError::InvalidInput(message)) if message.contains("16 tags")
+        ));
+
+        // Exactly at the cap passes; the caps bound work, they are not
+        // off-by-one traps.
+        let mut at_cap = args(SearchMemoriesMode::Lexical);
+        at_cap.spaces = (0..16).map(|i| format!("group:{i}")).collect();
+        at_cap.tags = (0..16).map(|i| format!("tag-{i}")).collect();
+        assert!(validate_list_caps(&at_cap).is_ok());
     }
 
     #[test]

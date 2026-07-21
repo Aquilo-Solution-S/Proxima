@@ -101,8 +101,7 @@ impl McpTool for RecordUtteranceTool {
             let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
             let authorized = engine
                 .authorize_fact_ingest(&authz, Relation::Editor, draft)
-                .await
-                .map_err(|err| McpToolError::Other(err.to_string()))?;
+                .await?;
             let outcome = engine
                 .ingest_fact_with_typed_sidecar(
                     &authorized,
