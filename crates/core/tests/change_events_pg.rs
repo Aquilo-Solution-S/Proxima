@@ -264,6 +264,7 @@ fn remember_args(title: &str, body: &str, idempotency_key: &str) -> RememberArgs
         idempotency_key: Some(idempotency_key.into()),
         citation: None,
         space: None,
+        observed_at: None,
     }
 }
 

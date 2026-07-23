@@ -39,6 +39,11 @@ pub struct RememberArgs {
     #[serde(default)]
     #[schemars(description = "Memory space key from core_memory_spaces. Omit for current owner.")]
     pub space: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional RFC3339 timestamp of when this Fact was originally observed, for importing historical material (must not be in the future). Recorded as receipt provenance (observed_at/occurred_at); recency ordering and the note-head pointer still follow ingestion time. Omit for 'now'."
+    )]
+    pub observed_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -121,7 +126,8 @@ impl McpTool for RememberTool {
                 tags,
                 idempotency_key,
             };
-            let observed_at = time::OffsetDateTime::now_utc();
+            let observed_at = super::util::parse_observed_at(args.observed_at.as_deref())?
+                .unwrap_or_else(time::OffsetDateTime::now_utc);
             let source_batch_id = SourceBatchId::new(uuid::Uuid::now_v7());
             let draft =
                 FactWriteCommand::from_payload(SOURCE_ID, source_batch_id, &payload, observed_at);
