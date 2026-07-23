@@ -1,4 +1,4 @@
-use proxima_core::llm::EmbeddingClient;
+use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::{EmbeddingJobClaim, StorageError};
 use sqlx::PgPool;
 
@@ -6,8 +6,8 @@ use crate::error::map_err;
 
 use super::jobs::claim_pending_embedding_jobs_excluding;
 use super::{
-    complete_embedding_job, ensure_nonnegative_limit, fail_embedding_job, insert_memory_embedding,
-    load_embedding_text,
+    complete_embedding_job, ensure_nonnegative_limit, fail_embedding_job,
+    fail_embedding_job_permanently, insert_memory_embedding, load_embedding_text,
 };
 
 pub use proxima_core::{
@@ -88,6 +88,10 @@ WHERE NULLIF(btrim(m.text), '') IS NOT NULL
                    next_attempt_at = now(),
                    updated_at = now()
          WHERE embedding_jobs.status = 'failed'::proxima_core.embedding_job_status
+           -- Permanently rejected inputs (PERMANENT_EMBED_FAILURE_MARKER)
+           -- stay terminal: requeueing them would only re-poison the queue.
+           AND (embedding_jobs.last_error IS NULL
+                OR embedding_jobs.last_error NOT LIKE 'permanent: %')
      RETURNING 1
  )
  SELECT
@@ -102,6 +106,9 @@ WHERE NULLIF(btrim(m.text), '') IS NOT NULL
 /// `failed` job (retries exhausted per `fail_embedding_job`) is requeued —
 /// status back to `pending`, attempts reset, backoff cleared — so reconcile is
 /// the operator/startup reset that lifts a Fact out of the retry dead-end.
+/// Jobs terminally failed for a permanent input rejection
+/// (`fail_embedding_job_permanently`, marker-prefixed `last_error`) are NOT
+/// requeued: the provider will always reject the same input again.
 /// `pending`/`processing` jobs are left untouched.
 ///
 /// # Errors
@@ -182,7 +189,11 @@ pub async fn drain_embedding_jobs_inline(
             Ok(false) => {
                 complete_embedding_job(pool, &claim).await?;
             }
-            Err(err) => {
+            Err(EmbedClaimFailure::Permanent(message)) => {
+                outcome.failed += 1;
+                fail_embedding_job_permanently(pool, &claim, &message).await?;
+            }
+            Err(EmbedClaimFailure::Retryable(err)) => {
                 outcome.failed += 1;
                 fail_embedding_job(pool, &claim, &err.to_string()).await?;
             }
@@ -191,26 +202,44 @@ pub async fn drain_embedding_jobs_inline(
     Ok(outcome)
 }
 
+/// Why one claimed job could not embed: a permanent input rejection (job
+/// must go terminal) versus everything retryable.
+enum EmbedClaimFailure {
+    Permanent(String),
+    Retryable(StorageError),
+}
+
+impl From<StorageError> for EmbedClaimFailure {
+    fn from(err: StorageError) -> Self {
+        Self::Retryable(err)
+    }
+}
+
 async fn embed_claim(
     pool: &PgPool,
     client: &dyn EmbeddingClient,
     claim: &EmbeddingJobClaim,
-) -> Result<bool, StorageError> {
+) -> Result<bool, EmbedClaimFailure> {
     let Some(text) =
         load_embedding_text(pool, &claim.owner, claim.entity_kind, claim.entity_id).await?
     else {
         return Ok(false);
     };
-    let embedding = client
-        .embed(&text)
-        .await
-        .map_err(|err| StorageError::Internal(format!("embed memory text: {err}")))?;
+    let embedding = client.embed(&text).await.map_err(|err| match err {
+        LlmError::EmbedPermanent(message) => {
+            EmbedClaimFailure::Permanent(format!("embed memory text: {message}"))
+        }
+        other => EmbedClaimFailure::Retryable(StorageError::Internal(format!(
+            "embed memory text: {other}"
+        ))),
+    })?;
     if embedding.len() != client.dim() {
         return Err(StorageError::ConstraintViolation(format!(
             "embedding dim mismatch: client dim {} but vector len {}",
             client.dim(),
             embedding.len(),
-        )));
+        ))
+        .into());
     }
 
     let mut tx = pool.begin().await.map_err(|err| {

@@ -105,6 +105,22 @@ impl EmbeddingJobPort for PgStorage {
         verbs::fact_embeddings::fail_embedding_job(&self.pool, claim, error).await
     }
 
+    async fn fail_embedding_job_permanently(
+        &self,
+        claim: &EmbeddingJobClaim,
+        error: &str,
+    ) -> Result<(), StorageError> {
+        verbs::fact_embeddings::fail_embedding_job_permanently(&self.pool, claim, error).await
+    }
+
+    async fn release_embedding_jobs(
+        &self,
+        claims: &[EmbeddingJobClaim],
+        error: &str,
+    ) -> Result<(), StorageError> {
+        verbs::fact_embeddings::release_embedding_jobs(&self.pool, claims, error).await
+    }
+
     async fn enqueue_missing_embedding_jobs(
         &self,
         permit: &OwnerWritePermit,

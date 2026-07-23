@@ -93,6 +93,96 @@ impl EmbeddingClient for SequenceEmbedding {
     }
 }
 
+/// Batch call always rejected as permanent, per-item calls transiently
+/// failing: forces the drain's per-item isolation fallback so each pass
+/// records exactly one ordinary attempt per job — the path that walks a
+/// job to the attempt cap under the batched drain.
+#[derive(Debug)]
+struct PoisonBatchTransientItemEmbedding;
+
+#[async_trait::async_trait]
+impl EmbeddingClient for PoisonBatchTransientItemEmbedding {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+        Err(LlmError::Embed("forced embedding failure".into()))
+    }
+
+    async fn embed_many(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, LlmError> {
+        Err(LlmError::EmbedPermanent("some input rejected".into()))
+    }
+
+    fn model_id(&self) -> &'static str {
+        "stub-fact-embed"
+    }
+
+    fn dim(&self) -> usize {
+        EMBEDDING_DIM
+    }
+}
+
+/// Rejects any text containing `poison` as permanent (both batch and
+/// per-item), embeds everything else. Mirrors a provider's token-limit
+/// 400: the batch call cannot say which input is at fault.
+#[derive(Debug)]
+struct PoisonTextEmbedding;
+
+#[async_trait::async_trait]
+impl EmbeddingClient for PoisonTextEmbedding {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        if text.contains("poison") {
+            Err(LlmError::EmbedPermanent("input exceeds token limit".into()))
+        } else {
+            Ok(vec![0.5; EMBEDDING_DIM])
+        }
+    }
+
+    async fn embed_many(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, LlmError> {
+        if texts.iter().any(|text| text.contains("poison")) {
+            return Err(LlmError::EmbedPermanent("input exceeds token limit".into()));
+        }
+        Ok(texts.iter().map(|_| vec![0.5; EMBEDDING_DIM]).collect())
+    }
+
+    fn model_id(&self) -> &'static str {
+        "stub-fact-embed"
+    }
+
+    fn dim(&self) -> usize {
+        EMBEDDING_DIM
+    }
+}
+
+/// Counts provider calls so tests can assert the drain batches texts into
+/// one request instead of one request per memory.
+#[derive(Debug, Default)]
+struct CountingBatchEmbedding {
+    batch_calls: Mutex<Vec<usize>>,
+    single_calls: Mutex<usize>,
+}
+
+#[async_trait::async_trait]
+impl EmbeddingClient for CountingBatchEmbedding {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+        *self.single_calls.lock().expect("counter mutex") += 1;
+        Ok(vec![0.5; EMBEDDING_DIM])
+    }
+
+    async fn embed_many(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, LlmError> {
+        self.batch_calls
+            .lock()
+            .expect("counter mutex")
+            .push(texts.len());
+        Ok(texts.iter().map(|_| vec![0.5; EMBEDDING_DIM]).collect())
+    }
+
+    fn model_id(&self) -> &'static str {
+        "stub-fact-embed"
+    }
+
+    fn dim(&self) -> usize {
+        EMBEDDING_DIM
+    }
+}
+
 #[derive(Debug)]
 struct AllowComplianceAdmin;
 
@@ -697,7 +787,11 @@ async fn failed_embedding_jobs_retry_until_attempt_cap() -> Result<(), Box<dyn s
     let (pg, db_name) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner_fixture();
-        let engine = engine_for(pg.clone(), Some(Arc::new(FailingEmbedding)));
+        // Attempts accrue on the per-item isolation path (batch rejected as
+        // permanent, items failing transiently). Purely transient batch
+        // failures release claims instead — covered by
+        // `transient_failure_releases_claim_without_burning_attempts`.
+        let engine = engine_for(pg.clone(), Some(Arc::new(PoisonBatchTransientItemEmbedding)));
         let outcome = engine
             .fact_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
@@ -765,7 +859,7 @@ async fn reconcile_requeues_failed_embedding_jobs() -> Result<(), Box<dyn std::e
     let (pg, db_name) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner_fixture();
-        let engine = engine_for(pg.clone(), Some(Arc::new(FailingEmbedding)));
+        let engine = engine_for(pg.clone(), Some(Arc::new(PoisonBatchTransientItemEmbedding)));
         let outcome = engine
             .fact_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
@@ -807,6 +901,164 @@ async fn reconcile_requeues_failed_embedding_jobs() -> Result<(), Box<dyn std::e
         assert_eq!(status, "pending");
         assert_eq!(attempts, 0);
         assert!(last_error.is_none(), "requeue clears last_error");
+        Ok(())
+    }
+    .await;
+    drop(pg);
+    drop_db(&db_name).await?;
+    result
+}
+
+#[tokio::test]
+async fn drain_embeds_full_batch_in_one_provider_call() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner_fixture();
+        let counting = Arc::new(CountingBatchEmbedding::default());
+        let engine = engine_for(pg.clone(), Some(counting.clone()));
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let mut memory_ids = Vec::new();
+        for label in ["batched fact one", "batched fact two", "batched fact three"] {
+            let outcome = engine.fact_ingest(&authz, fact_draft(&owner, label)).await?;
+            memory_ids.push(outcome.memory_id);
+        }
+
+        let drain = engine.drain_embedding_jobs(10).await?;
+        assert_eq!(drain.processed, 3);
+        assert_eq!(drain.failed, 0);
+        for memory_id in memory_ids {
+            assert_eq!(count_fact_embeddings(pg.pool_for_tests(), memory_id).await?, 1);
+        }
+        // The point of batching: three memories, ONE provider request.
+        assert_eq!(
+            *counting.batch_calls.lock().expect("counter mutex"),
+            vec![3],
+            "all queued texts must travel in a single embed_many call"
+        );
+        assert_eq!(*counting.single_calls.lock().expect("counter mutex"), 0);
+        Ok(())
+    }
+    .await;
+    drop(pg);
+    drop_db(&db_name).await?;
+    result
+}
+
+#[tokio::test]
+async fn transient_failure_releases_claim_without_burning_attempts()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner_fixture();
+        let engine = engine_for(pg.clone(), Some(Arc::new(FailingEmbedding)));
+        let outcome = engine
+            .fact_ingest(
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+                fact_draft(&owner, "outage fact"),
+            )
+            .await?;
+
+        // A transient provider failure (429/5xx/network) says nothing about
+        // this job; the claim is released instead of burning one of its five
+        // attempts. Before this rule, a provider outage lasting a few drain
+        // passes marched entire queues into the terminal `failed` state.
+        let drain = engine.drain_embedding_jobs(10).await?;
+        assert_eq!(drain.processed, 0);
+        assert_eq!(drain.failed, 0);
+        let (status, attempts, last_error) =
+            load_embedding_job(pg.pool_for_tests(), outcome.memory_id)
+                .await?
+                .expect("released job must remain queued");
+        assert_eq!(status, "pending");
+        assert_eq!(attempts, 0, "release must not burn a retry attempt");
+        assert!(
+            last_error
+                .as_deref()
+                .is_some_and(|err| err.contains("forced embedding failure")),
+            "release still records the outage on the job row"
+        );
+
+        // The release backoff gates immediate re-claim (no hot loop across
+        // drain passes during an outage)...
+        let immediate = engine.drain_embedding_jobs(10).await?;
+        assert_eq!(immediate.processed, 0);
+        // ...but after the window the job is claimable again, still with
+        // zero attempts burned no matter how long the outage lasted.
+        clear_embedding_backoff(pg.pool_for_tests(), outcome.memory_id).await?;
+        let retry = engine.drain_embedding_jobs(10).await?;
+        assert_eq!(retry.processed, 0);
+        let (status, attempts, _) = load_embedding_job(pg.pool_for_tests(), outcome.memory_id)
+            .await?
+            .expect("job still queued");
+        assert_eq!(status, "pending");
+        assert_eq!(attempts, 0);
+        Ok(())
+    }
+    .await;
+    drop(pg);
+    drop_db(&db_name).await?;
+    result
+}
+
+#[tokio::test]
+async fn permanently_rejected_input_goes_terminal_and_batch_mates_still_embed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner_fixture();
+        let engine = engine_for(pg.clone(), Some(Arc::new(PoisonTextEmbedding)));
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let good = engine
+            .fact_ingest(&authz, fact_draft(&owner, "healthy fact"))
+            .await?;
+        let poison = engine
+            .fact_ingest(&authz, fact_draft(&owner, "poison fact"))
+            .await?;
+
+        // The batch call is rejected without naming the culprit; the drain
+        // isolates per item: the healthy memory embeds, the poison job goes
+        // terminal on its FIRST attempt instead of retrying a hopeless
+        // input four more times.
+        let drain = engine.drain_embedding_jobs(10).await?;
+        assert_eq!(drain.processed, 2);
+        assert_eq!(drain.failed, 1);
+        assert_eq!(count_fact_embeddings(pg.pool_for_tests(), good.memory_id).await?, 1);
+        assert_eq!(
+            count_fact_embeddings(pg.pool_for_tests(), poison.memory_id).await?,
+            0
+        );
+        let (status, attempts, last_error) =
+            load_embedding_job(pg.pool_for_tests(), poison.memory_id)
+                .await?
+                .expect("poison job stays visible in embedding_jobs");
+        assert_eq!(status, "failed");
+        assert_eq!(attempts, 1);
+        assert!(
+            last_error
+                .as_deref()
+                .is_some_and(|err| err.starts_with("permanent: ")),
+            "terminal cause must carry the permanent marker, got {last_error:?}"
+        );
+
+        // Reconcile requeues retry-exhausted jobs but must NOT resurrect a
+        // permanently rejected input — the provider would reject it again,
+        // forever. (This is the startup-heal path that previously turned
+        // one oversized memory into an immortal retry loop.)
+        let reconciled = pg
+            .reconcile_embeddings(EmbeddingReconcileOptions {
+                model_id: "stub-fact-embed",
+                scope: EmbeddingReconcileScope::MissingOnly,
+                limit: None,
+            })
+            .await?;
+        assert_eq!(
+            reconciled.enqueued, 0,
+            "permanent rejection must survive reconcile"
+        );
+        let (status, _, _) = load_embedding_job(pg.pool_for_tests(), poison.memory_id)
+            .await?
+            .expect("poison job still terminal");
+        assert_eq!(status, "failed");
         Ok(())
     }
     .await;
@@ -1188,7 +1440,10 @@ async fn count_embedding_job_status_merges_pending_and_failed_counts()
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner_fixture();
         let other_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let engine = engine_for(pg.clone(), Some(Arc::new(FailingEmbedding)));
+        // Per-item failures (batch rejected as permanent, items transient)
+        // are what accrue attempts and reach `failed` under the batched
+        // drain; purely transient failures release the claim instead.
+        let engine = engine_for(pg.clone(), Some(Arc::new(PoisonBatchTransientItemEmbedding)));
 
         // Drive one fact to the terminal `failed` state for `owner`.
         let failing = engine

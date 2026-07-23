@@ -4,6 +4,12 @@ use crate::storage::{EmbeddingJobClaim, StorageError};
 use crate::storage_ports::{OperatorMaintenanceProof, OwnerWritePermit};
 use crate::{EmbeddableEntityRef, EntityKind, Owner};
 
+/// `last_error` prefix marking a job that failed for a permanent,
+/// input-specific cause (embed input the provider will always reject).
+/// Reconciliation keys off this marker to leave such jobs terminal instead
+/// of requeueing them into an endless reject-retry loop.
+pub const PERMANENT_EMBED_FAILURE_MARKER: &str = "permanent: ";
+
 #[async_trait::async_trait]
 pub trait EmbeddingTextPort: Send + Sync {
     async fn load_embedding_text(
@@ -178,6 +184,30 @@ pub trait EmbeddingJobPort: Send + Sync {
     async fn fail_embedding_job(
         &self,
         claim: &EmbeddingJobClaim,
+        error: &str,
+    ) -> Result<(), StorageError>;
+
+    /// Terminally fail a job whose input the embedding provider rejects for
+    /// a cause retries cannot fix (e.g. text over the model's token limit).
+    /// The job goes straight to `failed` with
+    /// [`PERMANENT_EMBED_FAILURE_MARKER`]-prefixed `last_error`, and
+    /// reconciliation must not resurrect it (the memory would just poison
+    /// the queue again).
+    async fn fail_embedding_job_permanently(
+        &self,
+        claim: &EmbeddingJobClaim,
+        error: &str,
+    ) -> Result<(), StorageError>;
+
+    /// Return claimed-but-unattempted jobs to `pending` without burning a
+    /// retry attempt. Used when a *batch* embed call fails for a transient
+    /// provider-side cause (429/5xx/network): the failure says nothing about
+    /// any individual job, so none of them should march toward the attempt
+    /// cap. A short `next_attempt_at` delay keeps concurrent drainers from
+    /// hot-looping on the same jobs.
+    async fn release_embedding_jobs(
+        &self,
+        claims: &[EmbeddingJobClaim],
         error: &str,
     ) -> Result<(), StorageError>;
 

@@ -323,6 +323,26 @@ impl EmbeddingJobPort for RejectingStorage {
         ))
     }
 
+    async fn fail_embedding_job_permanently(
+        &self,
+        _claim: &EmbeddingJobClaim,
+        _error: &str,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn release_embedding_jobs(
+        &self,
+        _claims: &[EmbeddingJobClaim],
+        _error: &str,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
     async fn enqueue_missing_embedding_jobs(
         &self,
         _permit: &OwnerWritePermit,
