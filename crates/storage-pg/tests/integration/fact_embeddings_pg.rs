@@ -791,7 +791,10 @@ async fn failed_embedding_jobs_retry_until_attempt_cap() -> Result<(), Box<dyn s
         // permanent, items failing transiently). Purely transient batch
         // failures release claims instead — covered by
         // `transient_failure_releases_claim_without_burning_attempts`.
-        let engine = engine_for(pg.clone(), Some(Arc::new(PoisonBatchTransientItemEmbedding)));
+        let engine = engine_for(
+            pg.clone(),
+            Some(Arc::new(PoisonBatchTransientItemEmbedding)),
+        );
         let outcome = engine
             .fact_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
@@ -859,7 +862,10 @@ async fn reconcile_requeues_failed_embedding_jobs() -> Result<(), Box<dyn std::e
     let (pg, db_name) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner_fixture();
-        let engine = engine_for(pg.clone(), Some(Arc::new(PoisonBatchTransientItemEmbedding)));
+        let engine = engine_for(
+            pg.clone(),
+            Some(Arc::new(PoisonBatchTransientItemEmbedding)),
+        );
         let outcome = engine
             .fact_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
@@ -919,7 +925,9 @@ async fn drain_embeds_full_batch_in_one_provider_call() -> Result<(), Box<dyn st
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let mut memory_ids = Vec::new();
         for label in ["batched fact one", "batched fact two", "batched fact three"] {
-            let outcome = engine.fact_ingest(&authz, fact_draft(&owner, label)).await?;
+            let outcome = engine
+                .fact_ingest(&authz, fact_draft(&owner, label))
+                .await?;
             memory_ids.push(outcome.memory_id);
         }
 
@@ -927,7 +935,10 @@ async fn drain_embeds_full_batch_in_one_provider_call() -> Result<(), Box<dyn st
         assert_eq!(drain.processed, 3);
         assert_eq!(drain.failed, 0);
         for memory_id in memory_ids {
-            assert_eq!(count_fact_embeddings(pg.pool_for_tests(), memory_id).await?, 1);
+            assert_eq!(
+                count_fact_embeddings(pg.pool_for_tests(), memory_id).await?,
+                1
+            );
         }
         // The point of batching: three memories, ONE provider request.
         assert_eq!(
@@ -1022,7 +1033,10 @@ async fn permanently_rejected_input_goes_terminal_and_batch_mates_still_embed()
         let drain = engine.drain_embedding_jobs(10).await?;
         assert_eq!(drain.processed, 2);
         assert_eq!(drain.failed, 1);
-        assert_eq!(count_fact_embeddings(pg.pool_for_tests(), good.memory_id).await?, 1);
+        assert_eq!(
+            count_fact_embeddings(pg.pool_for_tests(), good.memory_id).await?,
+            1
+        );
         assert_eq!(
             count_fact_embeddings(pg.pool_for_tests(), poison.memory_id).await?,
             0
@@ -1443,7 +1457,10 @@ async fn count_embedding_job_status_merges_pending_and_failed_counts()
         // Per-item failures (batch rejected as permanent, items transient)
         // are what accrue attempts and reach `failed` under the batched
         // drain; purely transient failures release the claim instead.
-        let engine = engine_for(pg.clone(), Some(Arc::new(PoisonBatchTransientItemEmbedding)));
+        let engine = engine_for(
+            pg.clone(),
+            Some(Arc::new(PoisonBatchTransientItemEmbedding)),
+        );
 
         // Drive one fact to the terminal `failed` state for `owner`.
         let failing = engine

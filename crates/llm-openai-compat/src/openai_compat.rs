@@ -172,8 +172,7 @@ impl OpenAiCompatEmbeddingClient {
             .map_err(|e| LlmError::Embed(format!("HTTP body read: {e}")))?;
 
         if !status.is_success() {
-            let message =
-                format!("openai-compatible /embeddings returned {status}: {text_body}");
+            let message = format!("openai-compatible /embeddings returned {status}: {text_body}");
             return Err(if permanent_embed_status(status) {
                 LlmError::EmbedPermanent(message)
             } else {
