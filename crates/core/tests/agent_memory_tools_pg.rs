@@ -392,6 +392,127 @@ async fn remember_enqueues_one_embedding_job_and_replay_does_not_duplicate()
 }
 
 #[tokio::test]
+async fn remember_and_record_utterance_backdate_receipt_observed_at()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
+    let owner = nil_owner();
+    let author = author_ctx();
+
+    // Historical import: the caller-supplied observation time lands in the
+    // receipt provenance (observed_at AND occurred_at) instead of now().
+    let backdate = "2023-03-22T17:47:00Z";
+    let noted = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author.clone(),
+        "core_remember",
+        json!({
+            "title": "Historical note",
+            "body": "Imported from a 2023 conversation.",
+            "observed_at": backdate
+        }),
+    )
+    .await?;
+    let memory_id = resolve_memory(noted["handle"].as_str().expect("handle"))?;
+    let (observed_at, occurred_at) =
+        receipt_times(pg.pool_for_tests(), memory_id).await?;
+    let expected = time::OffsetDateTime::parse(
+        backdate,
+        &time::format_description::well_known::Rfc3339,
+    )?;
+    assert_eq!(observed_at, expected);
+    assert_eq!(occurred_at, expected);
+
+    let uttered = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author.clone(),
+        "core_record_utterance",
+        json!({
+            "speaker": "user",
+            "conversation_id": "imported-2023",
+            "text": "An utterance from the archive.",
+            "observed_at": backdate
+        }),
+    )
+    .await?;
+    let utterance_id = resolve_memory(uttered["handle"].as_str().expect("handle"))?;
+    let (observed_at, _) = receipt_times(pg.pool_for_tests(), utterance_id).await?;
+    assert_eq!(observed_at, expected);
+
+    // Omitted observed_at keeps the present-time default.
+    let fresh = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author.clone(),
+        "core_remember",
+        json!({
+            "title": "Fresh note",
+            "body": "Written just now."
+        }),
+    )
+    .await?;
+    let fresh_id = resolve_memory(fresh["handle"].as_str().expect("handle"))?;
+    let (observed_at, _) = receipt_times(pg.pool_for_tests(), fresh_id).await?;
+    assert!(
+        (time::OffsetDateTime::now_utc() - observed_at).whole_seconds().abs() < 60,
+        "omitted observed_at must default to now, got {observed_at}"
+    );
+
+    // Malformed and future timestamps are caller errors.
+    for (bad, expect_in_message) in [
+        ("22.03.2023", "RFC3339"),
+        ("2199-01-01T00:00:00Z", "future"),
+    ] {
+        let rejected = call_tool(
+            &pg,
+            &owner,
+            &frozen,
+            author.clone(),
+            "core_remember",
+            json!({
+                "title": "Bad backdate",
+                "body": "Should be rejected.",
+                "observed_at": bad
+            }),
+        )
+        .await;
+        match rejected {
+            Err(McpToolError::InvalidInput(message)) => assert!(
+                message.contains(expect_in_message),
+                "error for {bad:?} must mention {expect_in_message}, got {message:?}"
+            ),
+            other => panic!("expected InvalidInput for observed_at {bad:?}, got {other:?}"),
+        }
+    }
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+async fn receipt_times(
+    pool: &sqlx::PgPool,
+    memory_id: proxima_core::MemoryId,
+) -> Result<(time::OffsetDateTime, time::OffsetDateTime), sqlx::Error> {
+    sqlx::query_as(
+        "SELECT fr.observed_at, fr.occurred_at
+           FROM proxima_core.memories m
+           JOIN proxima_core.fact_receipts fr ON fr.receipt_id = m.receipt_id
+          WHERE m.memory_id = $1",
+    )
+    .bind(memory_id.into_inner())
+    .fetch_one(pool)
+    .await
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)] // linear PG flow: ingest + supersede + heads/all assertions read best together
 async fn remember_reused_idempotency_key_changed_body_creates_new_stateful_fact()
 -> Result<(), Box<dyn std::error::Error>> {

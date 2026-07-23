@@ -27,6 +27,11 @@ pub struct RecordUtteranceArgs {
     #[serde(default)]
     #[schemars(description = "Memory space key from core_memory_spaces. Omit for current owner.")]
     pub space: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional RFC3339 timestamp of when this utterance originally happened, for importing historical conversations (must not be in the future). Recorded as receipt provenance (observed_at/occurred_at); recency ordering still follows ingestion time. Omit for 'now'."
+    )]
+    pub observed_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -85,7 +90,8 @@ impl McpTool for RecordUtteranceTool {
                 });
             let source_id = format!("{SOURCE_ID}/{source_instance_id}");
 
-            let observed_at = time::OffsetDateTime::now_utc();
+            let observed_at = super::util::parse_observed_at(args.observed_at.as_deref())?
+                .unwrap_or_else(time::OffsetDateTime::now_utc);
             let draft = FactWriteCommand::from_payload(
                 source_id,
                 SourceBatchId::new(uuid::Uuid::now_v7()),

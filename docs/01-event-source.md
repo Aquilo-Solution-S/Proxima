@@ -202,7 +202,7 @@ Every event carries:
 | `source_batch_id` | UUIDv7 declared by the source at emit time; engine validates uniqueness within `(source_id, owner)` and rejects collisions. Groups events from the same Reality observation. |
 | `schema_id` | Which registered schema this event conforms to (component 03). |
 | `schema_version` | Version of that schema. |
-| `observed_at` | When the agent observed the event. |
+| `observed_at` | When the agent observed the event. Defaults to ingest time; `core_remember`/`core_record_utterance` accept an optional RFC3339 backdate for historical import (provenance only — `memories.created_at` ordering is unaffected and has no write path). |
 | `occurred_at` | When the underlying Reality change happened (may differ — a webhook arrives after the commit). |
 | `payload` | Typed, source-specific data conforming to `schema_id @ schema_version`. This includes source-specific fields like `source_uri` (e.g., `forgejo://AQS/aquilo/commit/<sha>`, `telegram://chat/<id>/<msg>`) and `source_locus` (e.g., line number, message index, file path, query offset). |
 
