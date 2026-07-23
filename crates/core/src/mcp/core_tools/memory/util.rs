@@ -36,18 +36,14 @@ const OBSERVED_AT_FUTURE_SKEW: time::Duration = time::Duration::minutes(5);
 /// Returns [`McpToolError::InvalidInput`] when the value is not RFC3339 or
 /// lies in the future beyond a small clock-skew tolerance (an observation
 /// cannot postdate its own recording).
-pub fn parse_observed_at(
-    raw: Option<&str>,
-) -> Result<Option<time::OffsetDateTime>, McpToolError> {
+pub fn parse_observed_at(raw: Option<&str>) -> Result<Option<time::OffsetDateTime>, McpToolError> {
     let Some(raw) = raw else {
         return Ok(None);
     };
-    let parsed =
-        time::OffsetDateTime::parse(raw, &time::format_description::well_known::Rfc3339).map_err(
-            |err| {
-                McpToolError::InvalidInput(format!("observed_at must be an RFC3339 timestamp: {err}"))
-            },
-        )?;
+    let parsed = time::OffsetDateTime::parse(raw, &time::format_description::well_known::Rfc3339)
+        .map_err(|err| {
+        McpToolError::InvalidInput(format!("observed_at must be an RFC3339 timestamp: {err}"))
+    })?;
     if parsed > time::OffsetDateTime::now_utc() + OBSERVED_AT_FUTURE_SKEW {
         return Err(McpToolError::InvalidInput(
             "observed_at must not be in the future".into(),

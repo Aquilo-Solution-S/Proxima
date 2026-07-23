@@ -418,12 +418,9 @@ async fn remember_and_record_utterance_backdate_receipt_observed_at()
     )
     .await?;
     let memory_id = resolve_memory(noted["handle"].as_str().expect("handle"))?;
-    let (observed_at, occurred_at) =
-        receipt_times(pg.pool_for_tests(), memory_id).await?;
-    let expected = time::OffsetDateTime::parse(
-        backdate,
-        &time::format_description::well_known::Rfc3339,
-    )?;
+    let (observed_at, occurred_at) = receipt_times(pg.pool_for_tests(), memory_id).await?;
+    let expected =
+        time::OffsetDateTime::parse(backdate, &time::format_description::well_known::Rfc3339)?;
     assert_eq!(observed_at, expected);
     assert_eq!(occurred_at, expected);
 
@@ -461,7 +458,10 @@ async fn remember_and_record_utterance_backdate_receipt_observed_at()
     let fresh_id = resolve_memory(fresh["handle"].as_str().expect("handle"))?;
     let (observed_at, _) = receipt_times(pg.pool_for_tests(), fresh_id).await?;
     assert!(
-        (time::OffsetDateTime::now_utc() - observed_at).whole_seconds().abs() < 60,
+        (time::OffsetDateTime::now_utc() - observed_at)
+            .whole_seconds()
+            .abs()
+            < 60,
         "omitted observed_at must default to now, got {observed_at}"
     );
 
