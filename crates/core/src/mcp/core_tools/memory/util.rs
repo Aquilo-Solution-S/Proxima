@@ -22,6 +22,26 @@ pub fn normalize_idempotency_key(key: Option<String>) -> Result<Option<String>, 
     .transpose()
 }
 
+/// Normalize an optional `source_batch_key` under the same trimmed
+/// 1..=180-char contract as idempotency keys, with its own error text.
+///
+/// # Errors
+///
+/// Returns [`McpToolError::InvalidInput`] when the key is blank after
+/// trimming or over the character cap.
+pub fn normalize_batch_key(key: Option<String>) -> Result<Option<String>, McpToolError> {
+    key.map(|raw| {
+        IdempotencyKey::new(raw)
+            .map(IdempotencyKey::into_string)
+            .map_err(|_| {
+                McpToolError::InvalidInput(
+                    "source_batch_key must be 1..=180 chars after trimming".into(),
+                )
+            })
+    })
+    .transpose()
+}
+
 /// Clock-skew tolerance for caller-supplied `observed_at` timestamps.
 const OBSERVED_AT_FUTURE_SKEW: time::Duration = time::Duration::minutes(5);
 

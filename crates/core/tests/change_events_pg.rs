@@ -265,6 +265,7 @@ fn remember_args(title: &str, body: &str, idempotency_key: &str) -> RememberArgs
         citation: None,
         space: None,
         observed_at: None,
+        source_batch_key: None,
     }
 }
 

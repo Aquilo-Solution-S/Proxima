@@ -15,6 +15,21 @@ const SOURCE_ID: &str = "core/agent";
 const NOTE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x91, 0x3e, 0xa1, 0x4c, 0x12, 0x9b, 0x4f, 0xa1, 0x86, 0x2c, 0xb7, 0x2e, 0x18, 0x5d, 0xc7, 0x77,
 ]);
+const BATCH_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+    0x5a, 0x0d, 0x2f, 0x9e, 0x7c, 0x44, 0x41, 0xb2, 0x9d, 0x11, 0x3f, 0x86, 0xa4, 0xe0, 0x52, 0x19,
+]);
+
+/// Deterministic per-(owner, key) source batch id, so every
+/// `core_remember` call carrying the same `source_batch_key` lands its
+/// Fact in the same batch. Folding the owner in keeps two owners using
+/// the same key on distinct batches (`source_batches.id` is a global
+/// primary key). Deliberately not `UUIDv7`: determinism across calls is
+/// the point, and batch uniqueness per `(source_id, owner)` is enforced
+/// by the storage constraint either way.
+fn keyed_source_batch_id(owner: crate::OwnerRef, key: &str) -> SourceBatchId {
+    let seed = format!("{}\0{key}", owner.external_key());
+    SourceBatchId::new(uuid::Uuid::new_v5(&BATCH_NAMESPACE, seed.as_bytes()))
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RememberArgs {
@@ -44,6 +59,11 @@ pub struct RememberArgs {
         description = "Optional RFC3339 timestamp of when this Fact was originally observed, for importing historical material (must not be in the future). Recorded as receipt provenance (observed_at/occurred_at); recency ordering and the note-head pointer still follow ingestion time. Omit for 'now'."
     )]
     pub observed_at: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional key grouping several core_remember calls into ONE source batch (e.g. one key per imported chat session). Multi-Fact consolidation requires this: core_derive's F→A inputs must share a source batch, and without a key every call gets its own. Deriving an Abstraction from the batch closes it; later writes with the same key are then rejected. Omit for the default batch-per-call."
+    )]
+    pub source_batch_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -128,7 +148,11 @@ impl McpTool for RememberTool {
             };
             let observed_at = super::util::parse_observed_at(args.observed_at.as_deref())?
                 .unwrap_or_else(time::OffsetDateTime::now_utc);
-            let source_batch_id = SourceBatchId::new(uuid::Uuid::now_v7());
+            let source_batch_key = super::util::normalize_batch_key(args.source_batch_key)?;
+            let source_batch_id = source_batch_key.as_deref().map_or_else(
+                || SourceBatchId::new(uuid::Uuid::now_v7()),
+                |key| keyed_source_batch_id(space.owner, key),
+            );
             let draft =
                 FactWriteCommand::from_payload(SOURCE_ID, source_batch_id, &payload, observed_at);
 
@@ -166,7 +190,10 @@ impl McpTool for RememberTool {
                     .await?
             };
 
-            if !outcome.idempotent_replay {
+            // A keyed batch stays open so later calls with the same key can
+            // join it; consolidation (F→A core_derive) closes it. Keyless
+            // batches close per call as before.
+            if !outcome.idempotent_replay && source_batch_key.is_none() {
                 engine
                     .close_batch(&authz, space.owner, source_batch_id)
                     .await?;

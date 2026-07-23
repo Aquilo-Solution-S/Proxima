@@ -392,6 +392,121 @@ async fn remember_enqueues_one_embedding_job_and_replay_does_not_duplicate()
 }
 
 #[tokio::test]
+async fn source_batch_key_groups_remembers_for_multi_fact_consolidation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
+    let owner = nil_owner();
+    let author = author_ctx();
+
+    // Two separate core_remember calls join ONE source batch via the key —
+    // the enabler for multi-Fact F→A consolidation (per-call batches make
+    // core_derive reject multi-Fact source sets).
+    let mut handles = Vec::new();
+    for (idx, body) in [
+        "user: I adopted a kitten named Luna.",
+        "user: Luna's vet visit is on Friday.",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let noted = call_tool(
+            &pg,
+            &owner,
+            &frozen,
+            author.clone(),
+            "core_remember",
+            json!({
+                "title": format!("Session exchange {idx}"),
+                "body": body,
+                "idempotency_key": format!("batched-session/r{idx}"),
+                "source_batch_key": "batched-session",
+            }),
+        )
+        .await?;
+        handles.push(noted["handle"].as_str().expect("handle").to_string());
+    }
+
+    let derived = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author.clone(),
+        "core_derive",
+        json!({
+            "kind": "Abstraction",
+            "title": "Session summary",
+            "body": "User adopted a kitten named Luna; vet visit Friday.",
+            "source_handles": handles,
+            "model_id": "test-consolidator",
+            "idempotency_key": "batched-session/abs",
+        }),
+    )
+    .await?;
+    assert!(
+        derived["handle"]
+            .as_str()
+            .expect("handle")
+            .starts_with("A:"),
+        "F→A consolidation over batched Facts must succeed: {derived}"
+    );
+    assert_eq!(
+        derived["provenance_edge_handles"]
+            .as_array()
+            .expect("edges")
+            .len(),
+        2,
+        "provenance must record both consolidated Facts"
+    );
+
+    // Deriving declared the observation complete: the batch is closed, so
+    // later writes with the same key are rejected...
+    let late = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author.clone(),
+        "core_remember",
+        json!({
+            "title": "Late arrival",
+            "body": "user: one more thing.",
+            "idempotency_key": "batched-session/r9",
+            "source_batch_key": "batched-session",
+        }),
+    )
+    .await;
+    let err = format!("{late:?}");
+    assert!(late.is_err(), "write into closed batch must fail: {err}");
+    assert!(
+        err.contains("closed source batch"),
+        "error must name the closed batch: {err}"
+    );
+
+    // ...while a fresh key opens a fresh batch.
+    let fresh = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author,
+        "core_remember",
+        json!({
+            "title": "Next session",
+            "body": "user: a new conversation begins.",
+            "idempotency_key": "batched-session-2/r0",
+            "source_batch_key": "batched-session-2",
+        }),
+    )
+    .await?;
+    assert!(fresh["handle"].as_str().expect("handle").starts_with("F:"));
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn remember_and_record_utterance_backdate_receipt_observed_at()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
