@@ -808,6 +808,46 @@ async fn min_score_floor_drops_weak_matches() -> Result<(), Box<dyn std::error::
 }
 
 #[tokio::test]
+async fn lexical_search_stems_and_ignores_stopwords() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+    let owner = owner_fixture();
+
+    let adopted =
+        insert_search_abstraction(&pg, &owner, "we adopted two kittens yesterday", None).await?;
+
+    // Stemming ('english' config): the query's inflection must not matter —
+    // "adopting a kitten" reaches "adopted two kittens".
+    let mut inflected = lexical_request(&owner, "adopting a kitten");
+    inflected.kind = Some(EntityKind::Abstraction);
+    let page = pg.search_memories(&inflected, &[]).await?;
+    assert!(
+        page.results
+            .iter()
+            .any(|row| row.memory_id.into_inner() == adopted),
+        "stemmed query must match the inflected document"
+    );
+
+    // Stopword removal: a natural-language question matches on its content
+    // words; its function words ("when", "were", "the") must not be
+    // required to appear literally under websearch AND semantics. Under
+    // the previous 'simple' config this exact shape returned nothing.
+    let mut question = lexical_request(&owner, "when were the kittens adopted?");
+    question.kind = Some(EntityKind::Abstraction);
+    let page = pg.search_memories(&question, &[]).await?;
+    assert!(
+        page.results
+            .iter()
+            .any(|row| row.memory_id.into_inner() == adopted),
+        "natural-language question must match via its content words"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn relevance_pagination_pages_are_disjoint_and_exhaustive()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;

@@ -19,6 +19,16 @@ use crate::pgvector::{SET_HNSW_EF_SEARCH_SQL, SET_HNSW_ITERATIVE_SCAN_SQL};
 
 use super::{entity_owner_union, read_owner_columns, read_owner_predicate};
 
+/// Text-search configuration for the lexical branch. `english` stems both
+/// document and query tokens ("adopted" matches "adopt") and drops
+/// stopwords, so a natural-language question's content words drive the
+/// AND-semantics match instead of its function words ("what", "my", …).
+/// With `simple` (the previous config), every question word had to appear
+/// literally — on conversational corpora most queries matched nothing.
+/// A query that is *all* stopwords yields an empty tsquery and falls back
+/// to the substring `LIKE` arm below.
+const TEXT_SEARCH_CONFIG: &str = "english";
+
 #[derive(Debug)]
 struct SearchRow {
     memory_id: uuid::Uuid,
@@ -264,14 +274,14 @@ async fn run_lexical(
           SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
                  left(c.search_text, 480) AS snippet,
                  GREATEST(
-                     LEAST(ts_rank_cd(to_tsvector('simple', c.index_text), q.tsq) * 10.0, 1.0),
+                     LEAST(ts_rank_cd(to_tsvector('{ts_config}', c.index_text), q.tsq) * 10.0, 1.0),
                      CASE WHEN lower(c.search_text) LIKE '%' || lower(${query_param}) || '%'
                           THEN 0.25 ELSE 0.0 END
                  )::real AS lexical_score,
                  0.0::real AS similarity_score
           FROM indexed c,
                (SELECT websearch_to_tsquery(
-                   'simple',
+                   '{ts_config}',
                    regexp_replace(
                        regexp_replace(${query_param}, '[[:punct:]]+', ' ', 'g'),
                        '\\m[[:alnum:]]{{255}}[[:alnum:]]+\\M',
@@ -281,13 +291,14 @@ async fn run_lexical(
                ) AS tsq) q
           WHERE c.search_text <> ''
             AND (
-                to_tsvector('simple', c.index_text) @@ q.tsq
+                to_tsvector('{ts_config}', c.index_text) @@ q.tsq
                 OR lower(c.search_text) LIKE '%' || lower(${query_param}) || '%'
             )
           ORDER BY {order_by}
           LIMIT {}",
         u64::from(limit),
-        order_by = order_by
+        order_by = order_by,
+        ts_config = TEXT_SEARCH_CONFIG
     )
     .expect("write to String is infallible");
 
