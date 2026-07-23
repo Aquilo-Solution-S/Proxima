@@ -276,6 +276,18 @@ impl McpTool for DeriveTool {
                     .collect()
             });
             let engine = ctx.require_engine()?;
+            // Consolidating a keyed source batch (grouped core_remember
+            // writes) is what completes it: close the F→A input batch if
+            // it is still open so the closed-batch gate passes.
+            if matches!(operator_kind, crate::MemoryOperatorKind::FtoA) {
+                let source_ids: Vec<MemoryId> = sources
+                    .iter()
+                    .map(|(memory_id, _class)| *memory_id)
+                    .collect();
+                engine
+                    .close_ftoa_source_batch_if_open(&ctx.authz, space.owner, &source_ids)
+                    .await?;
+            }
             let outcome = engine
                 .author_derived_authorized(
                     &ctx.authz,

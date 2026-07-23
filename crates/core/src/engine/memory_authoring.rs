@@ -64,6 +64,45 @@ pub struct AppendMemoryEdgeRequestInput<'a> {
 }
 
 impl Engine {
+    /// Close the single open source batch behind a set of F→A input Facts.
+    ///
+    /// Sources that group `core_remember` writes with a `source_batch_key`
+    /// never issue an explicit close; deriving an Abstraction from the
+    /// batch is the natural completion signal, so consolidation closes it
+    /// here (idempotently) before the F→A closed-batch gate runs. No-ops
+    /// when inputs are unbatched, missing, or span batches — those shapes
+    /// are left to the F→A validation path for its precise errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns authorization failures from the owner-scoped close
+    /// ([`Relation::Ingest`] is required, as for any batch close) and
+    /// `Internal` for storage failures.
+    pub async fn close_ftoa_source_batch_if_open(
+        &self,
+        authz: &AuthzContext,
+        owner: crate::OwnerRef,
+        source_memory_ids: &[MemoryId],
+    ) -> Result<(), ProtocolError> {
+        let rows = self
+            .storage()
+            .memory_authoring
+            .memory_authoring
+            .load_fact_source_batches(&owner, source_memory_ids)
+            .await
+            .map_err(|err| ProtocolError::internal(err.to_string()))?;
+        if rows.is_empty() || rows.len() != source_memory_ids.len() {
+            return Ok(());
+        }
+        let Some(first) = rows.first().map(|row| row.source_batch_id) else {
+            return Ok(());
+        };
+        if rows.iter().any(|row| row.source_batch_id != first) {
+            return Ok(());
+        }
+        self.close_batch(authz, owner, first).await.map(|_| ())
+    }
+
     /// Authorized graph-write verb for agent-authored derived memory.
     ///
     /// # Errors
