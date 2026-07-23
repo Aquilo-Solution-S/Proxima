@@ -29,6 +29,14 @@ use super::{entity_owner_union, read_owner_columns, read_owner_predicate};
 /// to the substring `LIKE` arm below.
 const TEXT_SEARCH_CONFIG: &str = "english";
 
+// Lexical score bands. Websearch AND semantics require every content word
+// to co-occur in one memory; on conversational corpora most multi-word
+// questions match nothing, so an OR-rescue arm re-runs the same lexemes
+// any-matched. Match *tier* must dominate cover-density rank — ts_rank_cd
+// penalizes wide multi-term covers, so an unbanded strict match can rank
+// below a saturated single-term rescue hit — hence disjoint bands:
+// strict [0.5, 1.0] > rescue (0.25, 0.45] > substring LIKE 0.25.
+
 #[derive(Debug)]
 struct SearchRow {
     memory_id: uuid::Uuid,
@@ -258,6 +266,28 @@ async fn run_lexical(
     let mut sql = common_candidates_sql(req, &projections, &mut next_param)?;
     let query_param = next_param;
     let order_by = branch_order_by(req, "lexical_score");
+    // The OR-rescue arm serves pure-lexical retrieval (including hybrid
+    // searches degraded to lexical): without it, websearch AND semantics
+    // leave most conversational queries empty-handed. Inside true hybrid
+    // fusion it is noise — partial-match scores compete against precise
+    // semantic scores and drag recall down (measured: session Recall@5
+    // 0.99 → 0.82 when fused) — so hybrid keeps the strict+substring arms
+    // only and lets the semantic leg carry recall.
+    let rescue = matches!(req.mode, SearchMode::Lexical);
+    let rescue_score_arm = if rescue {
+        format!(
+            ", CASE WHEN to_tsvector('{TEXT_SEARCH_CONFIG}', c.index_text) @@ q.any_tsq
+                    THEN 0.25 + LEAST(ts_rank_cd(to_tsvector('{TEXT_SEARCH_CONFIG}', c.index_text), q.any_tsq) * 10.0, 1.0) * 0.2
+                    ELSE 0.0 END"
+        )
+    } else {
+        String::new()
+    };
+    let rescue_where_arm = if rescue {
+        format!(" OR to_tsvector('{TEXT_SEARCH_CONFIG}', c.index_text) @@ q.any_tsq")
+    } else {
+        String::new()
+    };
 
     write!(
         sql,
@@ -274,7 +304,9 @@ async fn run_lexical(
           SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
                  left(c.search_text, 480) AS snippet,
                  GREATEST(
-                     LEAST(ts_rank_cd(to_tsvector('{ts_config}', c.index_text), q.tsq) * 10.0, 1.0),
+                     CASE WHEN to_tsvector('{ts_config}', c.index_text) @@ q.tsq
+                          THEN 0.5 + LEAST(ts_rank_cd(to_tsvector('{ts_config}', c.index_text), q.tsq) * 10.0, 1.0) * 0.5
+                          ELSE 0.0 END{rescue_score_arm},
                      CASE WHEN lower(c.search_text) LIKE '%' || lower(${query_param}) || '%'
                           THEN 0.25 ELSE 0.0 END
                  )::real AS lexical_score,
@@ -288,17 +320,38 @@ async fn run_lexical(
                        ' ',
                        'g'
                    )
-               ) AS tsq) q
+               ) AS tsq,
+               -- OR-rescue arm: the same content lexemes any-matched.
+               -- plainto_tsquery emits only '&' between lexemes (no phrase
+               -- or negation operators), so the operator swap is safe.
+               NULLIF(
+                   replace(
+                       plainto_tsquery(
+                           '{ts_config}',
+                           regexp_replace(
+                               regexp_replace(${query_param}, '[[:punct:]]+', ' ', 'g'),
+                               '\\m[[:alnum:]]{{255}}[[:alnum:]]+\\M',
+                               ' ',
+                               'g'
+                           )
+                       )::text,
+                       ' & ',
+                       ' | '
+                   ),
+                   ''
+               )::tsquery AS any_tsq) q
           WHERE c.search_text <> ''
             AND (
-                to_tsvector('{ts_config}', c.index_text) @@ q.tsq
+                to_tsvector('{ts_config}', c.index_text) @@ q.tsq{rescue_where_arm}
                 OR lower(c.search_text) LIKE '%' || lower(${query_param}) || '%'
             )
           ORDER BY {order_by}
           LIMIT {}",
         u64::from(limit),
         order_by = order_by,
-        ts_config = TEXT_SEARCH_CONFIG
+        ts_config = TEXT_SEARCH_CONFIG,
+        rescue_score_arm = rescue_score_arm,
+        rescue_where_arm = rescue_where_arm
     )
     .expect("write to String is infallible");
 

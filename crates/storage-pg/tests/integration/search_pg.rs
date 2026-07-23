@@ -848,6 +848,55 @@ async fn lexical_search_stems_and_ignores_stopwords() -> Result<(), Box<dyn std:
 }
 
 #[tokio::test]
+async fn lexical_or_rescue_matches_partial_content_words() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+    let owner = owner_fixture();
+
+    let full =
+        insert_search_abstraction(&pg, &owner, "we adopted two kittens from the shelter", None)
+            .await?;
+    let partial =
+        insert_search_abstraction(&pg, &owner, "the kittens slept all afternoon", None).await?;
+
+    // "adopted kittens shelter": the partial document holds only one of the
+    // three content lexemes, so strict websearch AND semantics exclude it.
+    // The OR-rescue arm must surface it — scored below the full match, above
+    // the 0.25 substring floor.
+    let mut req = lexical_request(&owner, "adopted kittens from a shelter");
+    req.kind = Some(EntityKind::Abstraction);
+    let page = pg.search_memories(&req, &[]).await?;
+    let score_of = |id: uuid::Uuid| {
+        page.results
+            .iter()
+            .find(|row| row.memory_id.into_inner() == id)
+            .map(|row| row.score)
+    };
+    let full_score = score_of(full).expect("full AND match present");
+    let partial_score = score_of(partial).expect("partial match rescued by OR arm");
+    // Disjoint score bands: strict [0.5, 1.0] > rescue (0.25, 0.45] > 0.25.
+    // Match tier dominates cover-density rank by construction, so a strict
+    // match can never rank below a rescue no matter how ts_rank_cd falls.
+    assert!(
+        full_score >= 0.5,
+        "strict match must land in the strict band: {full_score}"
+    );
+    assert!(
+        full_score > partial_score,
+        "strict match must outrank rescue: {full_score} vs {partial_score}"
+    );
+    assert!(
+        partial_score > 0.25 && partial_score <= 0.45 + 1.0e-6,
+        "rescue score sits between substring floor and strict band: {partial_score}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn relevance_pagination_pages_are_disjoint_and_exhaustive()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
