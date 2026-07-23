@@ -533,7 +533,10 @@ fn spawn_embedding_worker(engine: Arc<Engine>, cancel: CancellationToken) -> Joi
                 if cancel.is_cancelled() {
                     return;
                 }
-                match engine.drain_embedding_jobs(1).await {
+                match engine
+                    .drain_embedding_jobs(proxima_core::llm::EMBEDDING_BATCH_SIZE)
+                    .await
+                {
                     Ok(outcome) if outcome.processed > 0 => {
                         processed += outcome.processed;
                         failed += outcome.failed;

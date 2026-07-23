@@ -35,7 +35,7 @@ pub use embeddings::{
     EmbeddingMaintenancePort, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome,
     EmbeddingRecallCanary, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
     EmbeddingReconcileScope, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort,
-    EmbeddingWriteProof,
+    EmbeddingWriteProof, PERMANENT_EMBED_FAILURE_MARKER,
 };
 pub use fact::{FactIngestPort, SourceBatchPort};
 pub use goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};

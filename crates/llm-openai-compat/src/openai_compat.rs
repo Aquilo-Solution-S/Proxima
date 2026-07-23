@@ -67,7 +67,7 @@ impl OpenAiCompatConfig {
 #[derive(Serialize)]
 struct EmbedRequest<'a> {
     model: &'a str,
-    input: &'a str,
+    input: &'a [&'a str],
     #[serde(skip_serializing_if = "Option::is_none")]
     dimensions: Option<u32>,
 }
@@ -135,16 +135,24 @@ struct OpenAiEmbeddingResponse {
 
 #[derive(Deserialize)]
 struct OpenAiEmbeddingDatum {
+    #[serde(default)]
+    index: Option<usize>,
     embedding: Vec<f32>,
 }
 
-#[async_trait]
-impl EmbeddingClient for OpenAiCompatEmbeddingClient {
-    async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+/// Whether a non-success `/embeddings` status is one retries cannot fix.
+/// 400/413/422 reject the request itself (over-limit input, malformed
+/// payload); 408/429/5xx are transient.
+fn permanent_embed_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 400 | 413 | 422)
+}
+
+impl OpenAiCompatEmbeddingClient {
+    async fn embed_call(&self, inputs: &[&str]) -> Result<Vec<Vec<f32>>, LlmError> {
         let url = join_endpoint(&self.config.base_url, "embeddings");
         let body = EmbedRequest {
             model: &self.model_id,
-            input: text,
+            input: inputs,
             dimensions: self.caps.matryoshka.then_some(self.caps.dim),
         };
 
@@ -164,9 +172,13 @@ impl EmbeddingClient for OpenAiCompatEmbeddingClient {
             .map_err(|e| LlmError::Embed(format!("HTTP body read: {e}")))?;
 
         if !status.is_success() {
-            return Err(LlmError::Embed(format!(
-                "openai-compatible /embeddings returned {status}: {text_body}"
-            )));
+            let message =
+                format!("openai-compatible /embeddings returned {status}: {text_body}");
+            return Err(if permanent_embed_status(status) {
+                LlmError::EmbedPermanent(message)
+            } else {
+                LlmError::Embed(message)
+            });
         }
 
         let parsed: OpenAiEmbeddingResponse = serde_json::from_str(&text_body).map_err(|e| {
@@ -174,24 +186,52 @@ impl EmbeddingClient for OpenAiCompatEmbeddingClient {
                 "decode OpenAI-compatible envelope: {e}; body: {text_body}"
             ))
         })?;
-        let vec = parsed
-            .data
-            .into_iter()
-            .next()
-            .ok_or_else(|| LlmError::Embed("OpenAI-compatible response had no embeddings".into()))?
-            .embedding;
-
-        let expected = self.dim();
-        if vec.len() != expected {
+        if parsed.data.len() != inputs.len() {
             return Err(LlmError::Embed(format!(
-                "expected dim {} (matryoshka={}), got {}",
-                expected,
-                self.caps.matryoshka,
-                vec.len()
+                "requested {} embeddings, response carried {}",
+                inputs.len(),
+                parsed.data.len()
             )));
         }
+        // The OpenAI shape orders `data` by `index`; sort defensively when
+        // the field is present so batch outputs align with batch inputs.
+        let mut data = parsed.data;
+        if data.iter().all(|d| d.index.is_some()) {
+            data.sort_by_key(|d| d.index.unwrap_or(usize::MAX));
+        }
 
-        Ok(vec)
+        let expected = self.dim();
+        data.into_iter()
+            .map(|datum| {
+                if datum.embedding.len() == expected {
+                    Ok(datum.embedding)
+                } else {
+                    Err(LlmError::Embed(format!(
+                        "expected dim {} (matryoshka={}), got {}",
+                        expected,
+                        self.caps.matryoshka,
+                        datum.embedding.len()
+                    )))
+                }
+            })
+            .collect()
+    }
+}
+
+#[async_trait]
+impl EmbeddingClient for OpenAiCompatEmbeddingClient {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        let mut vecs = self.embed_call(&[text]).await?;
+        vecs.pop()
+            .ok_or_else(|| LlmError::Embed("OpenAI-compatible response had no embeddings".into()))
+    }
+
+    async fn embed_many(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, LlmError> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let inputs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        self.embed_call(&inputs).await
     }
 
     fn model_id(&self) -> &str {
@@ -305,6 +345,54 @@ mod tests {
                 "loopback base {base} must be allowed"
             );
         }
+    }
+
+    #[test]
+    fn permanent_statuses_are_request_rejections_only() {
+        use reqwest::StatusCode;
+        // Rejections of the request itself — retrying the same input can
+        // never succeed, so jobs must go terminal.
+        for permanent in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ] {
+            assert!(super::permanent_embed_status(permanent), "{permanent}");
+        }
+        // Auth, rate-limit, timeout, and server-side failures are all
+        // retryable: the same input may embed fine later.
+        for transient in [
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+            StatusCode::REQUEST_TIMEOUT,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            assert!(!super::permanent_embed_status(transient), "{transient}");
+        }
+    }
+
+    #[test]
+    fn embed_request_serializes_inputs_as_array() {
+        // Providers' /embeddings endpoints take `input` as an array; the
+        // batch width of one request is what divides request-rate-limit
+        // pressure, so the wire shape is load-bearing.
+        let body = super::EmbedRequest {
+            model: "mistral-embed",
+            input: &["first text", "second text"],
+            dimensions: None,
+        };
+        let json = serde_json::to_value(&body).expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "model": "mistral-embed",
+                "input": ["first text", "second text"],
+            })
+        );
     }
 
     #[test]

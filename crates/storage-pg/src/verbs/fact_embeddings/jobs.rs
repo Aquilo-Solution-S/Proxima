@@ -1,5 +1,7 @@
 use proxima_core::llm::EMBEDDING_JOB_MAX_ATTEMPTS;
-use proxima_core::storage_ports::{EmbeddingJobStatusCounts, OwnerWritePermit};
+use proxima_core::storage_ports::{
+    EmbeddingJobStatusCounts, OwnerWritePermit, PERMANENT_EMBED_FAILURE_MARKER,
+};
 use proxima_core::{EmbeddingJobClaim, EntityKind, MemoryId, Owner, OwnerRefKind, StorageError};
 use sqlx::PgPool;
 
@@ -249,6 +251,94 @@ pub async fn fail_embedding_job(
     .execute(pool)
     .await
     .map_err(map_err)?;
+    Ok(())
+}
+
+/// Terminally fail a job whose input the provider rejects for a permanent
+/// cause (e.g. over the embedding model's token limit). Goes straight to
+/// `failed` with a [`PERMANENT_EMBED_FAILURE_MARKER`]-prefixed
+/// `last_error`; `reconcile_embeddings` skips marker-prefixed rows so the
+/// job stays terminal instead of cycling reject-retry forever.
+///
+/// # Errors
+///
+/// Maps SQL failures through the shared mapper.
+pub async fn fail_embedding_job_permanently(
+    pool: &PgPool,
+    claim: &EmbeddingJobClaim,
+    error: &str,
+) -> Result<(), StorageError> {
+    let (owner_kind, owner_id) = owner_parts(&claim.owner);
+    let marked = format!("{PERMANENT_EMBED_FAILURE_MARKER}{error}");
+    sqlx::query(
+        "UPDATE proxima_core.embedding_jobs
+            SET attempts = attempts + 1,
+                last_error = $7,
+                updated_at = now(),
+                status = 'failed'::proxima_core.embedding_job_status
+          WHERE owner_kind = $1
+            AND owner_id = $2
+            AND entity_kind = $3
+            AND entity_id = $4
+            AND model_id = $5
+            AND embedding_version = $6
+            AND status = 'processing'",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(claim.entity_kind)
+    .bind(claim.entity_id.into_inner())
+    .bind(&claim.model_id)
+    .bind(claim.embedding_version)
+    .bind(&marked)
+    .execute(pool)
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}
+
+/// Return claimed-but-unattempted jobs to `pending` without incrementing
+/// `attempts`. Batch-drain uses this when one provider call covering many
+/// jobs fails for a transient cause: the failure is not evidence against
+/// any individual job, so none should march toward the attempt cap. The
+/// flat 30s `next_attempt_at` keeps concurrent drainers from immediately
+/// re-claiming the same set.
+///
+/// # Errors
+///
+/// Maps SQL failures through the shared mapper.
+pub async fn release_embedding_jobs(
+    pool: &PgPool,
+    claims: &[EmbeddingJobClaim],
+    error: &str,
+) -> Result<(), StorageError> {
+    for claim in claims {
+        let (owner_kind, owner_id) = owner_parts(&claim.owner);
+        sqlx::query(
+            "UPDATE proxima_core.embedding_jobs
+                SET status = 'pending'::proxima_core.embedding_job_status,
+                    last_error = $7,
+                    updated_at = now(),
+                    next_attempt_at = now() + interval '30 seconds'
+              WHERE owner_kind = $1
+                AND owner_id = $2
+                AND entity_kind = $3
+                AND entity_id = $4
+                AND model_id = $5
+                AND embedding_version = $6
+                AND status = 'processing'",
+        )
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(claim.entity_kind)
+        .bind(claim.entity_id.into_inner())
+        .bind(&claim.model_id)
+        .bind(claim.embedding_version)
+        .bind(error)
+        .execute(pool)
+        .await
+        .map_err(map_err)?;
+    }
     Ok(())
 }
 

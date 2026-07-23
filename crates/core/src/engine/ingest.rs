@@ -5,8 +5,8 @@ use crate::SchemaVersion;
 use crate::access::Relation;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
-use crate::llm::EmbeddingClient;
-use crate::storage::StorageError;
+use crate::llm::{EMBEDDING_BATCH_SIZE, EmbeddingClient, LlmError};
+use crate::storage::{EmbeddingJobClaim, StorageError};
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::fact_ingest::{
     AuthorizedCitationAttachment, AuthorizedFactWithCitation, AuthorizedFactWrite,
@@ -465,14 +465,27 @@ impl Engine {
     /// Host-invoked sweep that drains durable pending memory embedding jobs
     /// for the currently active embedding model. This method does not
     /// spawn a worker, timer, or model decision loop; the caller controls
-    /// invocation and `limit`.
+    /// invocation and `limit`. Jobs are claimed and embedded in batches of
+    /// up to [`EMBEDDING_BATCH_SIZE`] texts per provider call (`/embeddings`
+    /// endpoints accept arrays), dividing request count — and request-rate-
+    /// limit pressure — by the batch width.
+    ///
+    /// Failure semantics:
+    /// - a *transient* batch failure (429/5xx/network) releases the claimed
+    ///   jobs back to `pending` without burning retry attempts — a provider
+    ///   outage is not evidence against any individual job — and ends the
+    ///   drain call;
+    /// - a *permanent* batch rejection ([`LlmError::EmbedPermanent`])
+    ///   re-embeds the batch one text at a time to isolate the poison
+    ///   input(s); permanently rejected jobs go terminal instead of cycling
+    ///   reject-retry forever, and their batch-mates still embed.
     ///
     /// # Errors
     ///
     /// Returns storage errors from claiming or final job-state writes.
     /// Per-job embedding failures are recorded on their job rows and
-    /// counted in the returned outcome. A failed embed ends the current
-    /// drain call so retry cadence stays one attempt per invocation.
+    /// counted in the returned outcome; each job receives at most one
+    /// attempt per invocation.
     pub async fn drain_embedding_jobs(
         &self,
         limit: usize,
@@ -480,31 +493,157 @@ impl Engine {
         let Some(client) = self.embed_client() else {
             return Ok(EmbeddingDrainOutcome::default());
         };
-        let limit = i64::try_from(limit)
-            .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
         let mut outcome = EmbeddingDrainOutcome::default();
-        for _ in 0..limit {
-            let Some(claim) = self
+        let mut remaining = limit;
+        while remaining > 0 {
+            let take = i64::try_from(remaining.min(EMBEDDING_BATCH_SIZE))
+                .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
+            let claims = self
                 .storage
                 .ingest
                 .embedding_job
-                .claim_pending_embedding_jobs(client.model_id(), 1)
-                .await?
-                .into_iter()
-                .next()
-            else {
+                .claim_pending_embedding_jobs(client.model_id(), take)
+                .await?;
+            if claims.is_empty() {
                 break;
-            };
-            outcome.processed += 1;
-            match self
-                .embed_claimed_memory(&client, &claim.owner, claim.entity_kind, claim.entity_id)
-                .await
-            {
-                Ok(EmbedStep::Embedded | EmbedStep::NothingToEmbed) => {
+            }
+            remaining = remaining.saturating_sub(claims.len());
+
+            // Jobs whose memory no longer yields embeddable text are
+            // complete as-is; only texted jobs go to the provider.
+            let mut batch: Vec<(EmbeddingJobClaim, String)> = Vec::with_capacity(claims.len());
+            for claim in claims {
+                let text = self
+                    .storage
+                    .ingest
+                    .embedding_text
+                    .load_embedding_text(&claim.owner, claim.entity_kind, claim.entity_id)
+                    .await?;
+                if let Some(text) = text {
+                    batch.push((claim, text));
+                } else {
+                    outcome.processed += 1;
                     self.storage
                         .ingest
                         .embedding_job
                         .complete_embedding_job(&claim)
+                        .await?;
+                }
+            }
+            if batch.is_empty() {
+                continue;
+            }
+
+            let texts: Vec<String> = batch.iter().map(|(_, text)| text.clone()).collect();
+            match client.embed_many(&texts).await {
+                Ok(vectors) => {
+                    for ((claim, _), vector) in batch.iter().zip(vectors) {
+                        outcome.processed += 1;
+                        if !self.store_claim_embedding(&client, claim, &vector).await? {
+                            outcome.failed += 1;
+                        }
+                    }
+                }
+                Err(LlmError::EmbedPermanent(_)) => {
+                    self.embed_claims_individually(&client, batch, &mut outcome)
+                        .await?;
+                }
+                Err(err) => {
+                    let claims: Vec<EmbeddingJobClaim> =
+                        batch.into_iter().map(|(claim, _)| claim).collect();
+                    tracing::warn!(
+                        error = %err,
+                        jobs = claims.len(),
+                        "transient embedding batch failure; releasing claims without burning attempts"
+                    );
+                    self.storage
+                        .ingest
+                        .embedding_job
+                        .release_embedding_jobs(&claims, &format!("embed memory text: {err}"))
+                        .await?;
+                    break;
+                }
+            }
+        }
+        Ok(outcome)
+    }
+
+    /// Store one produced vector for its claim and complete the job; a
+    /// dimension mismatch records an ordinary retryable job failure
+    /// instead. Returns whether the vector was stored.
+    async fn store_claim_embedding(
+        &self,
+        client: &Arc<dyn EmbeddingClient>,
+        claim: &EmbeddingJobClaim,
+        vector: &[f32],
+    ) -> Result<bool, StorageError> {
+        if vector.len() != client.dim() {
+            let error = format!(
+                "embedding dim mismatch: client dim {} but vector len {}",
+                client.dim(),
+                vector.len(),
+            );
+            self.storage
+                .ingest
+                .embedding_job
+                .fail_embedding_job(claim, &error)
+                .await?;
+            return Ok(false);
+        }
+        self.storage
+            .ingest
+            .embedding_write
+            .insert_embedding(
+                &claim.owner,
+                EmbeddableEntityRef::Memory {
+                    kind: claim.entity_kind,
+                    memory_id: claim.entity_id,
+                },
+                client.model_id(),
+                client.dim(),
+                vector,
+                crate::storage_ports::EmbeddingWriteProof::new(),
+            )
+            .await?;
+        self.storage
+            .ingest
+            .embedding_job
+            .complete_embedding_job(claim)
+            .await?;
+        Ok(true)
+    }
+
+    /// Per-item fallback after a permanent batch rejection: isolate which
+    /// inputs the provider rejects. Permanently rejected jobs go terminal;
+    /// other errors record one ordinary attempt. Either way each job gets
+    /// at most one attempt in this pass.
+    async fn embed_claims_individually(
+        &self,
+        client: &Arc<dyn EmbeddingClient>,
+        batch: Vec<(EmbeddingJobClaim, String)>,
+        outcome: &mut EmbeddingDrainOutcome,
+    ) -> Result<(), StorageError> {
+        for (claim, text) in batch {
+            outcome.processed += 1;
+            match client.embed(&text).await {
+                Ok(vector) => {
+                    if !self.store_claim_embedding(client, &claim, &vector).await? {
+                        outcome.failed += 1;
+                    }
+                }
+                Err(LlmError::EmbedPermanent(message)) => {
+                    outcome.failed += 1;
+                    tracing::warn!(
+                        entity_id = ?claim.entity_id,
+                        "embedding input permanently rejected; job going terminal"
+                    );
+                    self.storage
+                        .ingest
+                        .embedding_job
+                        .fail_embedding_job_permanently(
+                            &claim,
+                            &format!("embed memory text: {message}"),
+                        )
                         .await?;
                 }
                 Err(err) => {
@@ -512,13 +651,12 @@ impl Engine {
                     self.storage
                         .ingest
                         .embedding_job
-                        .fail_embedding_job(&claim, &err.to_string())
+                        .fail_embedding_job(&claim, &format!("embed memory text: {err}"))
                         .await?;
-                    break;
                 }
             }
         }
-        Ok(outcome)
+        Ok(())
     }
 
     /// Host-invoked global reconciliation: enqueue durable embedding jobs for

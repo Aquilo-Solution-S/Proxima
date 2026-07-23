@@ -363,6 +363,22 @@ mod storage_port_tests_support {
             Ok(())
         }
 
+        async fn fail_embedding_job_permanently(
+            &self,
+            _claim: &crate::storage::EmbeddingJobClaim,
+            _error: &str,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn release_embedding_jobs(
+            &self,
+            _claims: &[crate::storage::EmbeddingJobClaim],
+            _error: &str,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
         async fn enqueue_missing_embedding_jobs(
             &self,
             _permit: &crate::storage_ports::OwnerWritePermit,

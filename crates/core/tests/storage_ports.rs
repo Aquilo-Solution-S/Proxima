@@ -286,6 +286,24 @@ impl EmbeddingJobPort for EmbeddingJobFake {
         fake_error()
     }
 
+    async fn fail_embedding_job_permanently(
+        &self,
+        claim: &EmbeddingJobClaim,
+        error: &str,
+    ) -> Result<(), StorageError> {
+        let _ = (claim, error);
+        fake_error()
+    }
+
+    async fn release_embedding_jobs(
+        &self,
+        claims: &[EmbeddingJobClaim],
+        error: &str,
+    ) -> Result<(), StorageError> {
+        let _ = (claims, error);
+        fake_error()
+    }
+
     async fn enqueue_missing_embedding_jobs(
         &self,
         _permit: &OwnerWritePermit,
