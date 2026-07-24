@@ -394,6 +394,20 @@ pub(in crate::engine) mod tests {
                 embedding_version: 0,
             })
         }
+
+        async fn insert_embedding_chunks(
+            &self,
+            _owner: &Owner,
+            _entity: crate::EmbeddableEntityRef,
+            _model_id: &str,
+            _dim: usize,
+            _chunks: &[&[f32]],
+            _proof: crate::storage_ports::EmbeddingWriteProof,
+        ) -> Result<crate::EmbeddingWriteOutcome, StorageError> {
+            Ok(crate::EmbeddingWriteOutcome {
+                embedding_version: 0,
+            })
+        }
     }
 
     #[async_trait::async_trait]

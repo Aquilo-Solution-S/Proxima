@@ -224,6 +224,61 @@ async fn semantic_search_matches_pgvector_cosine_and_clamps_zero_query()
 }
 
 #[tokio::test]
+async fn semantic_search_scores_chunked_memory_by_best_chunk_without_duplicates()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let (owner_kind, owner_id) = owner.columns();
+    let far_chunk = padded_embedding([0.0, 1.0, 0.0]);
+    let near_chunk = padded_embedding([1.0, 0.0, 0.0]);
+    let middling = padded_embedding([0.5, 0.5, 0.0]);
+    let query_vec = padded_embedding([1.0, 0.0, 0.0]);
+
+    // One over-limit memory embedded as two chunks under one version: the
+    // first chunk is orthogonal to the query, the second matches exactly.
+    let chunked =
+        insert_embedded_memory_with_vec(&pg, &owner, "chunked oversized memory", &far_chunk)
+            .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.embeddings
+            (entity_kind, entity_id, embedding_version, model_id, vec,
+             owner_kind, owner_id, chunk_index)
+         VALUES ($1, $2, 1, 'test-embed', $3::vector, $4, $5, 1)",
+    )
+    .bind(EntityKind::Abstraction)
+    .bind(chunked)
+    .bind(vector_literal(&near_chunk))
+    .bind(owner_kind)
+    .bind(owner_id)
+    .execute(pg.pool_for_tests())
+    .await?;
+    let plain = insert_embedded_memory_with_vec(&pg, &owner, "plain memory", &middling).await?;
+
+    let rows = pg
+        .search_memories(&semantic_request(&owner, query_vec), &[])
+        .await?
+        .results;
+
+    let ids: Vec<Uuid> = rows.iter().map(|row| row.memory_id.into_inner()).collect();
+    assert_eq!(
+        ids,
+        vec![chunked, plain],
+        "chunked memory must rank by its best chunk and appear exactly once"
+    );
+    assert!(
+        (rows[0].similarity_score - 1.0).abs() <= 1.0e-4,
+        "best-chunk similarity must win, got {}",
+        rows[0].similarity_score
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn semantic_search_uses_current_embedding_head() -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;

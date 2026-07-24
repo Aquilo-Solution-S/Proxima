@@ -151,6 +151,42 @@ impl EmbeddingClient for PoisonTextEmbedding {
     }
 }
 
+/// Mirrors a provider token cap: rejects any input over `CAP` bytes as
+/// permanent (batch and per-item), embeds shorter inputs. Exercises the
+/// chunked-embedding rescue — an over-limit memory should end up with
+/// one embedding version of multiple chunk rows instead of a terminal
+/// job.
+#[derive(Debug)]
+struct TokenCapEmbedding;
+
+const TOKEN_CAP_BYTES: usize = 3000;
+
+#[async_trait::async_trait]
+impl EmbeddingClient for TokenCapEmbedding {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        if text.len() > TOKEN_CAP_BYTES {
+            Err(LlmError::EmbedPermanent("input exceeds token limit".into()))
+        } else {
+            Ok(vec![0.5; EMBEDDING_DIM])
+        }
+    }
+
+    async fn embed_many(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, LlmError> {
+        if texts.iter().any(|text| text.len() > TOKEN_CAP_BYTES) {
+            return Err(LlmError::EmbedPermanent("input exceeds token limit".into()));
+        }
+        Ok(texts.iter().map(|_| vec![0.5; EMBEDDING_DIM]).collect())
+    }
+
+    fn model_id(&self) -> &'static str {
+        "stub-fact-embed"
+    }
+
+    fn dim(&self) -> usize {
+        EMBEDDING_DIM
+    }
+}
+
 /// Counts provider calls so tests can assert the drain batches texts into
 /// one request instead of one request per memory.
 #[derive(Debug, Default)]
@@ -1073,6 +1109,96 @@ async fn permanently_rejected_input_goes_terminal_and_batch_mates_still_embed()
             .await?
             .expect("poison job still terminal");
         assert_eq!(status, "failed");
+        Ok(())
+    }
+    .await;
+    drop(pg);
+    drop_db(&db_name).await?;
+    result
+}
+
+#[tokio::test]
+async fn over_limit_input_is_rescued_as_chunked_embeddings()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner_fixture();
+        let engine = engine_for(pg.clone(), Some(Arc::new(TokenCapEmbedding)));
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let oversized = engine
+            .fact_ingest(&authz, fact_draft(&owner, &"x".repeat(10_000)))
+            .await?;
+
+        // The full text (>cap) is rejected; bisection embeds every piece
+        // (~10k → two ~5k halves rejected → four ~2.5k quarters accepted),
+        // so the job completes with one version of multiple chunk rows —
+        // the whole text stays semantically covered, not just a prefix.
+        let drain = engine.drain_embedding_jobs(10).await?;
+        assert_eq!(drain.processed, 1);
+        assert_eq!(drain.failed, 0, "rescued job must not count as failed");
+        let chunk_count = count_fact_embeddings(pg.pool_for_tests(), oversized.memory_id).await?;
+        assert!(
+            chunk_count >= 2,
+            "over-limit memory must carry multiple chunk embeddings, got {chunk_count}"
+        );
+        let distinct_versions: i64 = sqlx::query_scalar(
+            "SELECT count(DISTINCT embedding_version)
+               FROM proxima_core.embeddings
+              WHERE entity_id = $1",
+        )
+        .bind(oversized.memory_id.into_inner())
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(distinct_versions, 1, "chunks must share one version");
+        assert!(
+            load_embedding_job(pg.pool_for_tests(), oversized.memory_id)
+                .await?
+                .is_none(),
+            "rescued job must complete, not stay queued or terminal"
+        );
+        Ok(())
+    }
+    .await;
+    drop(pg);
+    drop_db(&db_name).await?;
+    result
+}
+
+#[tokio::test]
+async fn long_input_rejected_at_every_length_still_goes_terminal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner_fixture();
+        let engine = engine_for(pg.clone(), Some(Arc::new(PoisonTextEmbedding)));
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        // "poison" leads the text, so every truncated prefix still contains
+        // it: the provider rejects at every length and the rescue must not
+        // mask a genuinely invalid input.
+        let poison = engine
+            .fact_ingest(
+                &authz,
+                fact_draft(&owner, &format!("poison {}", "x".repeat(10_000))),
+            )
+            .await?;
+
+        let drain = engine.drain_embedding_jobs(10).await?;
+        assert_eq!(drain.processed, 1);
+        assert_eq!(drain.failed, 1);
+        assert_eq!(
+            count_fact_embeddings(pg.pool_for_tests(), poison.memory_id).await?,
+            0
+        );
+        let (status, _, last_error) = load_embedding_job(pg.pool_for_tests(), poison.memory_id)
+            .await?
+            .expect("poison job stays visible in embedding_jobs");
+        assert_eq!(status, "failed");
+        assert!(
+            last_error
+                .as_deref()
+                .is_some_and(|err| err.starts_with("permanent: ")),
+            "terminal cause must carry the permanent marker, got {last_error:?}"
+        );
         Ok(())
     }
     .await;
