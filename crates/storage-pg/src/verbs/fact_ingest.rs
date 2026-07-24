@@ -889,11 +889,17 @@ where
 
     if let (Some(receipt), Some(receipt_id_bytes)) = (&draft.receipt, receipt_id_bytes) {
         sqlx::query(
+            // Target-less ON CONFLICT tolerates conflicts on ANY unique
+            // index. Keyed batches (deterministic ids from
+            // `source_batch_key`) race concurrent ingests into identical
+            // rows; with `(id)` as the sole arbiter, the loser collided on
+            // `source_batches_unique_per_source` and surfaced a spurious
+            // unique violation instead of no-oping.
             "INSERT INTO proxima_core.source_batches
                 (id, source_id, owner_kind,
                  owner_id)
              VALUES ($1, $2, $3, $4)
-             ON CONFLICT (id) DO NOTHING",
+             ON CONFLICT DO NOTHING",
         )
         .bind(receipt.source_batch_id.into_inner())
         .bind(receipt.source_id.as_str())

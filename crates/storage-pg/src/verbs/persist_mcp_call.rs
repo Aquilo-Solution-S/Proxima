@@ -132,7 +132,7 @@ pub async fn persist_mcp_call_in_tx(
             (id, source_id, owner_kind,
              owner_id)
          VALUES ($1, $2, $3, $4)
-         ON CONFLICT (id) DO NOTHING",
+         ON CONFLICT DO NOTHING",
     )
     .bind(source_batch_id)
     .bind(MCP_CALL_SOURCE_ID)
