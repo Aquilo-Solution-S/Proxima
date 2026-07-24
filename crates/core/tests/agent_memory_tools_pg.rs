@@ -392,6 +392,56 @@ async fn remember_enqueues_one_embedding_job_and_replay_does_not_duplicate()
 }
 
 #[tokio::test]
+async fn concurrent_remembers_into_one_keyed_batch_never_collide()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
+    let owner = nil_owner();
+    let author = author_ctx();
+
+    // A keyed batch id is deterministic, so concurrent core_remember calls
+    // with the same key race to insert the SAME source_batches row. The
+    // insert must no-op for the losers on every unique index — with the
+    // primary key as the sole ON CONFLICT arbiter, losers collided on
+    // `source_batches_unique_per_source` and the ingest failed spuriously
+    // (observed live at 8-way ingest concurrency). Many rounds of paired
+    // concurrent calls keep the speculative-insert window hot.
+    for round in 0..24 {
+        let calls = (0..4).map(|i| {
+            let pg = pg.clone();
+            let frozen = Arc::clone(&frozen);
+            let author = author.clone();
+            tokio::spawn(async move {
+                call_tool(
+                    &pg,
+                    &owner,
+                    &frozen,
+                    author,
+                    "core_remember",
+                    json!({
+                        "title": format!("racing exchange {round}/{i}"),
+                        "body": format!("user: concurrent fact {round}/{i}"),
+                        "idempotency_key": format!("race-batch-{round}/r{i}"),
+                        "source_batch_key": format!("race-batch-{round}"),
+                    }),
+                )
+                .await
+            })
+        });
+        for handle in calls {
+            let noted = handle.await.expect("task join")?;
+            assert!(noted["handle"].as_str().is_some(), "remember must succeed");
+        }
+    }
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn source_batch_key_groups_remembers_for_multi_fact_consolidation()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
