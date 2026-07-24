@@ -42,6 +42,22 @@ pub trait EmbeddingWritePort: Send + Sync {
         proof: EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError>;
 
+    /// Write one embedding *version* made of ordered chunk rows
+    /// (`chunk_index` 0..n) for an over-limit entity text, advancing the
+    /// head once. Search max-aggregates chunk similarity per memory, so
+    /// chunking keeps the whole text semantically findable. Public
+    /// callers cannot forge `EmbeddingWriteProof`; route through engine
+    /// embedding-write APIs instead.
+    async fn insert_embedding_chunks(
+        &self,
+        owner: &Owner,
+        entity: EmbeddableEntityRef,
+        model_id: &str,
+        dim: usize,
+        chunks: &[&[f32]],
+        proof: EmbeddingWriteProof,
+    ) -> Result<EmbeddingWriteOutcome, StorageError>;
+
     async fn insert_fact_embedding(
         &self,
         owner: &Owner,

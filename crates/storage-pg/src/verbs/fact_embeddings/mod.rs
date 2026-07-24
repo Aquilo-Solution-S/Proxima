@@ -20,7 +20,7 @@ pub use reconcile::{
     EmbeddingReconcileScope, drain_embedding_jobs_inline, reconcile_embeddings,
 };
 pub use text::{load_embedding_text, load_fact_text, load_fact_text_in_tx};
-pub(crate) use write::{insert_embedding, insert_memory_embedding};
+pub(crate) use write::{insert_embedding, insert_embedding_chunks, insert_memory_embedding};
 
 fn owner_parts(owner: &Owner) -> (OwnerRefKind, Option<uuid::Uuid>) {
     owner.columns()

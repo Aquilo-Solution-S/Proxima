@@ -19,6 +19,12 @@ use crate::{
     EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload, SourceBatchId,
 };
 
+/// Smallest chunk (in bytes) the chunked-embedding rescue will bisect
+/// down to. An input the provider still rejects at this length is not
+/// over-limit — every embedding model in use accepts far more — so the
+/// rejection is treated as genuinely permanent.
+const CHUNKED_EMBED_MIN_BYTES: usize = 2048;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EmbeddingDrainOutcome {
     pub processed: usize,
@@ -477,8 +483,10 @@ impl Engine {
     ///   drain call;
     /// - a *permanent* batch rejection ([`LlmError::EmbedPermanent`])
     ///   re-embeds the batch one text at a time to isolate the poison
-    ///   input(s); permanently rejected jobs go terminal instead of cycling
-    ///   reject-retry forever, and their batch-mates still embed.
+    ///   input(s); an over-limit input is rescued by bisecting it into
+    ///   chunked embeddings (full coverage), jobs rejected at every length go
+    ///   terminal instead of cycling reject-retry forever, and their
+    ///   batch-mates still embed.
     ///
     /// # Errors
     ///
@@ -614,9 +622,13 @@ impl Engine {
     }
 
     /// Per-item fallback after a permanent batch rejection: isolate which
-    /// inputs the provider rejects. Permanently rejected jobs go terminal;
-    /// other errors record one ordinary attempt. Either way each job gets
-    /// at most one attempt in this pass.
+    /// inputs the provider rejects. A rejected input is bisected into
+    /// provider-acceptable chunks ([`Self::embed_in_chunks`]) — over-limit
+    /// inputs, the dominant permanent cause, stay fully semantically
+    /// findable through chunked embeddings instead of going invisible.
+    /// Inputs the provider rejects at every length go terminal; other
+    /// errors record one ordinary attempt. Either way each job gets at
+    /// most one attempt in this pass.
     async fn embed_claims_individually(
         &self,
         client: &Arc<dyn EmbeddingClient>,
@@ -632,19 +644,48 @@ impl Engine {
                     }
                 }
                 Err(LlmError::EmbedPermanent(message)) => {
-                    outcome.failed += 1;
-                    tracing::warn!(
-                        entity_id = ?claim.entity_id,
-                        "embedding input permanently rejected; job going terminal"
-                    );
-                    self.storage
-                        .ingest
-                        .embedding_job
-                        .fail_embedding_job_permanently(
-                            &claim,
-                            &format!("embed memory text: {message}"),
-                        )
-                        .await?;
+                    match self.embed_in_chunks(client, &text).await {
+                        Ok(Some(vectors)) => {
+                            tracing::warn!(
+                                entity_id = ?claim.entity_id,
+                                chunks = vectors.len(),
+                                total_bytes = text.len(),
+                                "over-limit embedding input rescued as chunked embeddings"
+                            );
+                            if !self
+                                .store_claim_embedding_chunks(client, &claim, &vectors)
+                                .await?
+                            {
+                                outcome.failed += 1;
+                            }
+                        }
+                        Ok(None) => {
+                            outcome.failed += 1;
+                            tracing::warn!(
+                                entity_id = ?claim.entity_id,
+                                "embedding input permanently rejected at every length; job going terminal"
+                            );
+                            self.storage
+                                .ingest
+                                .embedding_job
+                                .fail_embedding_job_permanently(
+                                    &claim,
+                                    &format!("embed memory text: {message}"),
+                                )
+                                .await?;
+                        }
+                        Err(err) => {
+                            outcome.failed += 1;
+                            self.storage
+                                .ingest
+                                .embedding_job
+                                .fail_embedding_job(
+                                    &claim,
+                                    &format!("embed truncated memory text: {err}"),
+                                )
+                                .await?;
+                        }
+                    }
                 }
                 Err(err) => {
                     outcome.failed += 1;
@@ -657,6 +698,102 @@ impl Engine {
             }
         }
         Ok(())
+    }
+
+    /// Rescue pass for a permanently rejected embedding input: bisect the
+    /// text (on char boundaries) into provider-acceptable pieces and embed
+    /// every piece, so the *entire* text stays semantically findable as
+    /// one chunked embedding version — not just a truncated prefix.
+    ///
+    /// The provider's rejection does not say *why* the input is invalid,
+    /// and this never needs to know: an over-limit input starts embedding
+    /// once its pieces are short enough, while an input rejected for any
+    /// other reason keeps failing all the way down and the caller sends
+    /// the job terminal exactly as before. A piece still rejected below
+    /// [`CHUNKED_EMBED_MIN_BYTES`] is treated as genuinely invalid and
+    /// aborts the rescue — partial coverage would mask the poison input.
+    ///
+    /// Returns `Ok(Some(vectors))` (in text order) on rescue, `Ok(None)`
+    /// when some piece is rejected at every length, and `Err` on the first
+    /// transient provider error so the caller records an ordinary
+    /// retryable attempt.
+    async fn embed_in_chunks(
+        &self,
+        client: &Arc<dyn EmbeddingClient>,
+        text: &str,
+    ) -> Result<Option<Vec<Vec<f32>>>, LlmError> {
+        // Depth-first, left-to-right bisection keeps chunk vectors in
+        // text order without recursion (async fns don't recurse).
+        let mut pending: Vec<&str> = vec![text];
+        let mut vectors: Vec<Vec<f32>> = Vec::new();
+        while let Some(segment) = pending.pop() {
+            match client.embed(segment).await {
+                Ok(vector) => vectors.push(vector),
+                Err(LlmError::EmbedPermanent(_)) => {
+                    let mut cut = segment.len() / 2;
+                    while cut > 0 && !segment.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    if cut < CHUNKED_EMBED_MIN_BYTES {
+                        return Ok(None);
+                    }
+                    // Pop order: push right half first so the left half
+                    // embeds (or splits) next.
+                    pending.push(&segment[cut..]);
+                    pending.push(&segment[..cut]);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(Some(vectors))
+    }
+
+    /// Store one chunked embedding version for its claim and complete the
+    /// job; a dimension mismatch in any chunk records an ordinary
+    /// retryable job failure instead. Returns whether the version was
+    /// stored.
+    async fn store_claim_embedding_chunks(
+        &self,
+        client: &Arc<dyn EmbeddingClient>,
+        claim: &EmbeddingJobClaim,
+        vectors: &[Vec<f32>],
+    ) -> Result<bool, StorageError> {
+        if vectors.is_empty() || vectors.iter().any(|vector| vector.len() != client.dim()) {
+            let error = format!(
+                "chunked embedding dim mismatch: client dim {} but got {} chunk(s) of lens {:?}",
+                client.dim(),
+                vectors.len(),
+                vectors.iter().map(Vec::len).collect::<Vec<_>>(),
+            );
+            self.storage
+                .ingest
+                .embedding_job
+                .fail_embedding_job(claim, &error)
+                .await?;
+            return Ok(false);
+        }
+        let chunks: Vec<&[f32]> = vectors.iter().map(Vec::as_slice).collect();
+        self.storage
+            .ingest
+            .embedding_write
+            .insert_embedding_chunks(
+                &claim.owner,
+                EmbeddableEntityRef::Memory {
+                    kind: claim.entity_kind,
+                    memory_id: claim.entity_id,
+                },
+                client.model_id(),
+                client.dim(),
+                &chunks,
+                crate::storage_ports::EmbeddingWriteProof::new(),
+            )
+            .await?;
+        self.storage
+            .ingest
+            .embedding_job
+            .complete_embedding_job(claim)
+            .await?;
+        Ok(true)
     }
 
     /// Host-invoked global reconciliation: enqueue durable embedding jobs for

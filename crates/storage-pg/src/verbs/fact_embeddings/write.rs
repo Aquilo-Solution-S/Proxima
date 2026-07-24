@@ -64,8 +64,43 @@ pub(crate) async fn insert_embedding(
     dim: usize,
     vec: &[f32],
 ) -> Result<EmbeddingWriteOutcome, StorageError> {
+    insert_embedding_chunks(tx, owner, entity, model_id, dim, std::slice::from_ref(&vec)).await
+}
+
+/// Append one embedding *version* made of one or more chunk rows
+/// (`chunk_index` 0..n) and advance the independent latest head. Chunked
+/// versions represent one over-limit memory text split into provider-
+/// acceptable pieces: search max-aggregates chunk similarity per memory,
+/// so every part of the text stays semantically findable.
+///
+/// Crate-private: this is a raw-owner write below the proof gate. External
+/// writers go through `EmbeddingWritePort`, which requires an
+/// `EmbeddingWriteProof` only `proxima-core` can construct.
+///
+/// Returns version `0` when the entity is not currently eligible for
+/// embedding, preserving the existing best-effort no-op behavior for deleted
+/// or textless entities.
+///
+/// # Errors
+///
+/// Returns `ConstraintViolation` when `chunks` is empty or any vector's
+/// length differs from the fixed embedding dimension, otherwise maps SQL
+/// failures through the shared mapper.
+pub(crate) async fn insert_embedding_chunks(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    entity: EmbeddableEntityRef,
+    model_id: &str,
+    dim: usize,
+    chunks: &[&[f32]],
+) -> Result<EmbeddingWriteOutcome, StorageError> {
     let (owner_kind, owner_id) = owner_parts(owner);
-    if dim != EMBEDDING_DIM || vec.len() != EMBEDDING_DIM {
+    if chunks.is_empty() {
+        return Err(StorageError::ConstraintViolation(
+            "embedding version needs at least one chunk".into(),
+        ));
+    }
+    if dim != EMBEDDING_DIM || chunks.iter().any(|vec| vec.len() != EMBEDDING_DIM) {
         return Err(StorageError::ConstraintViolation(
             "embedding length must be 1024".into(),
         ));
@@ -105,23 +140,29 @@ pub(crate) async fn insert_embedding(
     .await
     .map_err(map_err)?;
 
-    let vec_literal = crate::pgvector::literal(vec);
-    sqlx::query(
-        "INSERT INTO proxima_core.embeddings
-            (entity_kind, entity_id, embedding_version, model_id, vec,
-             owner_kind, owner_id)
-         VALUES ($1, $2, $3, $4, $5::vector, $6, $7)",
-    )
-    .bind(entity_kind)
-    .bind(entity_id)
-    .bind(embedding_version)
-    .bind(model_id)
-    .bind(vec_literal)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
+    for (chunk_index, vec) in chunks.iter().enumerate() {
+        let chunk_index = i32::try_from(chunk_index).map_err(|_| {
+            StorageError::ConstraintViolation("chunk count does not fit i32".into())
+        })?;
+        let vec_literal = crate::pgvector::literal(vec);
+        sqlx::query(
+            "INSERT INTO proxima_core.embeddings
+                (entity_kind, entity_id, embedding_version, model_id, vec,
+                 owner_kind, owner_id, chunk_index)
+             VALUES ($1, $2, $3, $4, $5::vector, $6, $7, $8)",
+        )
+        .bind(entity_kind)
+        .bind(entity_id)
+        .bind(embedding_version)
+        .bind(model_id)
+        .bind(vec_literal)
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(chunk_index)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    }
 
     sqlx::query(
         "INSERT INTO proxima_core.embedding_heads

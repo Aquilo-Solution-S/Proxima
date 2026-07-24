@@ -259,6 +259,19 @@ impl EmbeddingWritePort for EmbeddingWriteFake {
         let _ = (model_id, dim, vec);
         fake_error()
     }
+
+    async fn insert_embedding_chunks(
+        &self,
+        _owner: &Owner,
+        _entity: proxima_core::EmbeddableEntityRef,
+        model_id: &str,
+        dim: usize,
+        chunks: &[&[f32]],
+        _proof: proxima_core::storage_ports::EmbeddingWriteProof,
+    ) -> Result<proxima_core::EmbeddingWriteOutcome, StorageError> {
+        let _ = (model_id, dim, chunks);
+        fake_error()
+    }
 }
 
 #[derive(Debug)]

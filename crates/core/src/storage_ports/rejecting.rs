@@ -293,6 +293,20 @@ impl EmbeddingWritePort for RejectingStorage {
             embedding_version: 0,
         })
     }
+
+    async fn insert_embedding_chunks(
+        &self,
+        _owner: &Owner,
+        _entity: EmbeddableEntityRef,
+        _model_id: &str,
+        _dim: usize,
+        _chunks: &[&[f32]],
+        _proof: EmbeddingWriteProof,
+    ) -> Result<EmbeddingWriteOutcome, StorageError> {
+        Ok(EmbeddingWriteOutcome {
+            embedding_version: 0,
+        })
+    }
 }
 
 #[async_trait::async_trait]

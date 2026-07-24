@@ -53,6 +53,26 @@ impl EmbeddingWritePort for PgStorage {
         Ok(outcome)
     }
 
+    async fn insert_embedding_chunks(
+        &self,
+        owner: &Owner,
+        entity: EmbeddableEntityRef,
+        model_id: &str,
+        dim: usize,
+        chunks: &[&[f32]],
+        _proof: proxima_core::storage_ports::EmbeddingWriteProof,
+    ) -> Result<EmbeddingWriteOutcome, StorageError> {
+        let mut tx = self.pool.begin().await.map_err(|err| {
+            StorageError::Internal(format!("begin embedding chunks insert tx: {err}"))
+        })?;
+        let outcome = verbs::fact_embeddings::insert_embedding_chunks(
+            &mut tx, owner, entity, model_id, dim, chunks,
+        )
+        .await?;
+        tx.commit().await.map_err(crate::error::map_err)?;
+        Ok(outcome)
+    }
+
     async fn upsert_fact_embedding(
         &self,
         owner: &Owner,
