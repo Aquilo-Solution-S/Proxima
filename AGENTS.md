@@ -130,6 +130,12 @@ Use the smallest relevant check:
 still works as fallback. PG tests clone a pre-migrated template DB.
 Single-test selection: `cargo nextest run -E 'test(<name>)'`.
 
+`--workspace` does **not** cover everything: `apps/proxima-mcp`'s OIDC e2e
+suite is `#![cfg(feature = "code")]` and needs
+`cargo test -p proxima-mcp --features code`. It is the only end-to-end
+assertion on the served Code-flavor tool list, so touching the flavor's
+`mcp_tools` without it passes locally and fails in CI.
+
 ## Delegated agents (Codex / Vibe execution runs)
 
 Rules for non-interactive agents executing a scoped brief in this repo:

@@ -55,6 +55,11 @@ break out-of-tree struct literals at compile time.
 cargo fmt --all --check
 cargo clippy --workspace --all-targets
 PROXIMA_TEST_PG_URL=postgres://... cargo test --workspace --no-fail-fast
+# proxima-mcp's OIDC e2e suite is #![cfg(feature = "code")], so
+# --workspace does not build it. It is the only place the served
+# Code-flavor tool list is asserted end to end; skipping it means
+# adding or removing a flavor tool goes green locally and red in CI.
+PROXIMA_TEST_PG_URL=postgres://... cargo test -p proxima-mcp --features code
 python3 scripts/check-sql-policy.py
 python3 scripts/check-migration-ranges.py
 python3 scripts/check-architecture-guardrails.py
