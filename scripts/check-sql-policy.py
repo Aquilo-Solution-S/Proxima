@@ -44,7 +44,6 @@ ALLOWLISTED_SITE_LINES = {
     ("crates/storage-pg/src/verbs/query/search.rs", 432, "sql-push-str"): "SQL-POLICY: PgIdent",
     ("crates/storage-pg/src/verbs/query/search.rs", 513, "sql-push-str"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/src/verbs/query/search.rs", 529, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/tests/integration/fact_entity_edges_pg.rs", 427, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("crates/storage-pg/tests/integration/fact_entity_ingest_pg.rs", 403, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("flavors/code/src/ingest/pg_sidecars.rs", 33, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
     ("flavors/code/src/mcp/work_item_bundle.rs", 371, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
