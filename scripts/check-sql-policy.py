@@ -288,7 +288,12 @@ def run_fixture(path: Path) -> int:
 # remaining sites in the touched files (active_goals, change_history,
 # query/goals, query/memories) now carry inline fixed-fragment proofs, so
 # their line-pinned allowlist entries were removed.
-EXPECTED_DYNAMIC_SQL_SITES = 51
+# 2026-07-26 analysis: +2 — the owner-scoped search plan tests
+# (search_pg.rs) EXPLAIN the exact production branch SQL from
+# lexical/semantic_search_sql_for_tests; both sites are parameter-bound
+# EXPLAIN prefixes over the audited builders with inline fixed-fragment
+# proofs.
+EXPECTED_DYNAMIC_SQL_SITES = 53
 
 
 def run_self_test() -> int:
