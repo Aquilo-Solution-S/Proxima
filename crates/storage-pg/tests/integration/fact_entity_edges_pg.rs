@@ -419,6 +419,7 @@ async fn create_sidecar(pg: &PgStorage) -> Result<(), sqlx::Error> {
             state text NOT NULL
         )",
     ] {
+        // SQL-POLICY: fixed-fragment
         sqlx::query(sql).execute(pg.pool_for_tests()).await?;
     }
     Ok(())
