@@ -138,6 +138,11 @@ pub struct MemorySearchProjection {
     pub sidecar_table: String,
     pub fields: Vec<MemorySearchProjectionField>,
     pub tag_column: Option<String>,
+    /// Column holding the row's pre-computed lexical vector, when the
+    /// sidecar table carries one. Present, the search builder reads it
+    /// instead of tokenising the projected text on every candidate;
+    /// absent, it falls back to computing the same vector inline.
+    pub tsv_column: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]

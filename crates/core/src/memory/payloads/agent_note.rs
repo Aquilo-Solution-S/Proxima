@@ -55,6 +55,7 @@ impl FactPayload for AgentNoteV1 {
                 },
             ],
             tag_column: Some("tags".to_string()),
+            tsv_column: Some("search_tsv"),
         })
     }
 }

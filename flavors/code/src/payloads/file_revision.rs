@@ -66,6 +66,7 @@ impl FactPayload for FileRevisionV1 {
                 },
             ],
             tag_column: None,
+            tsv_column: None,
         })
     }
     fn render(&self) -> String {

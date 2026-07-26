@@ -52,6 +52,7 @@ impl AbstractionPayload for CodeChunkV1 {
                 },
             ],
             tag_column: None,
+            tsv_column: None,
         })
     }
 

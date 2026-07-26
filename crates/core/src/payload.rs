@@ -193,6 +193,11 @@ pub struct SearchProjectionField {
 pub struct SearchProjection {
     pub fields: &'static [SearchProjectionField],
     pub tag_column: Option<String>,
+    /// Column holding the row's pre-computed lexical vector, for sidecar
+    /// tables whose migration adds one (see `proxima_core.lexical_tsv`).
+    /// Declaring it lets search read the stored vector instead of
+    /// tokenising the projected text on every candidate row.
+    pub tsv_column: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

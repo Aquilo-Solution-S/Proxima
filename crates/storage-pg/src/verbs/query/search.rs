@@ -266,7 +266,7 @@ fn lexical_branch_sql<'p>(
 ) -> Result<(String, Vec<&'p MemorySearchProjection>), StorageError> {
     let projections = memory_search_projections(req, projections);
     let mut next_param = 3;
-    let mut sql = common_candidates_sql(req, &projections, &mut next_param)?;
+    let mut sql = common_candidates_sql(req, &projections, &mut next_param, true)?;
     let query_param = next_param;
     let order_by = branch_order_by(req, "lexical_score");
     // The OR-rescue arm serves pure-lexical retrieval (including hybrid
@@ -278,19 +278,23 @@ fn lexical_branch_sql<'p>(
     // only and lets the semantic leg carry recall.
     let rescue = matches!(req.mode, SearchMode::Lexical);
     let rescue_score_arm = if rescue {
-        ", CASE WHEN c.tsv @@ q.any_tsq
-                THEN 0.25 + LEAST(ts_rank_cd(c.tsv, q.any_tsq) * 10.0, 1.0) * 0.2
+        ", CASE WHEN c.search_tsv @@ q.any_tsq
+                THEN 0.25 + LEAST(ts_rank_cd(c.search_tsv, q.any_tsq) * 10.0, 1.0) * 0.2
                 ELSE 0.0 END"
     } else {
         ""
     };
-    let rescue_where_arm = if rescue { " OR c.tsv @@ q.any_tsq" } else { "" };
+    let rescue_where_arm = if rescue {
+        " OR c.search_tsv @@ q.any_tsq"
+    } else {
+        ""
+    };
 
-    // `indexed` is MATERIALIZED so the tsvector is built exactly once per
-    // candidate row. Inlined, the planner substitutes the expression into
-    // every reference — the match arm, the rank arm, and the WHERE gate
-    // each re-parsed the full document (up to 20k chars) per row, tripling
-    // the dominant cost of the branch.
+    // `candidates` carries `search_tsv` per branch — read from the stored
+    // column where the table has one, computed once inside the MATERIALIZED
+    // CTE where it does not. Either way the vector is produced exactly once
+    // per candidate row, so the match arm, the rank arm and the WHERE gate
+    // share it rather than each re-tokenising the document.
     write!(
         sql,
         " , q AS (
@@ -322,34 +326,21 @@ fn lexical_branch_sql<'p>(
                    ),
                    ''
                )::tsquery AS any_tsq
-          ),
-          indexed AS MATERIALIZED (
-              SELECT c.*,
-                     to_tsvector(
-                         '{ts_config}',
-                         regexp_replace(
-                             regexp_replace(c.search_text, '[[:punct:]]+', ' ', 'g'),
-                             '\\m[[:alnum:]]{{255}}[[:alnum:]]+\\M',
-                             ' ',
-                             'g'
-                         )
-                     ) AS tsv
-                FROM candidates c
-               WHERE c.search_text <> ''
           )
           SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
                  left(c.search_text, 480) AS snippet,
                  GREATEST(
-                     CASE WHEN c.tsv @@ q.tsq
-                          THEN 0.5 + LEAST(ts_rank_cd(c.tsv, q.tsq) * 10.0, 1.0) * 0.5
+                     CASE WHEN c.search_tsv @@ q.tsq
+                          THEN 0.5 + LEAST(ts_rank_cd(c.search_tsv, q.tsq) * 10.0, 1.0) * 0.5
                           ELSE 0.0 END{rescue_score_arm},
                      CASE WHEN lower(c.search_text) LIKE '%' || lower(${query_param}) || '%'
                           THEN 0.25 ELSE 0.0 END
                  )::real AS lexical_score,
                  0.0::real AS similarity_score
-          FROM indexed c, q
-          WHERE (
-                c.tsv @@ q.tsq{rescue_where_arm}
+          FROM candidates c, q
+          WHERE c.search_text <> ''
+            AND (
+                c.search_tsv @@ q.tsq{rescue_where_arm}
                 OR lower(c.search_text) LIKE '%' || lower(${query_param}) || '%'
             )
           ORDER BY {order_by}
@@ -410,7 +401,7 @@ fn semantic_branch_sql<'p>(
 ) -> Result<(String, Vec<&'p MemorySearchProjection>), StorageError> {
     let projections = memory_search_projections(req, projections);
     let mut next_param = 3;
-    let mut sql = common_candidates_sql(req, &projections, &mut next_param)?;
+    let mut sql = common_candidates_sql(req, &projections, &mut next_param, false)?;
     let vec_param = next_param;
     let model_param = next_param + 1;
     let order_by = branch_order_by(req, "similarity_score");
@@ -527,10 +518,17 @@ async fn run_semantic(
     Ok(rows)
 }
 
+/// Builds the owner-scoped candidate CTE shared by both branches.
+///
+/// `include_tsv` adds each candidate's lexical vector as a column. Only
+/// the lexical branch needs it, and `candidates` is MATERIALIZED, so
+/// emitting it unconditionally would make every semantic search
+/// materialise a few hundred tsvectors it never reads.
 fn common_candidates_sql(
     req: &MemorySearchRequest,
     projections: &[&MemorySearchProjection],
     next_param: &mut usize,
+    include_tsv: bool,
 ) -> Result<String, StorageError> {
     let sidecar_first_param = *next_param;
     *next_param += projections.len() * 2;
@@ -578,12 +576,20 @@ fn common_candidates_sql(
     push_candidate_branch_prefix(&mut sql);
     write!(
         sql,
-        "NULL::text[] AS tags, COALESCE(m.text, '') AS search_text \
+        "NULL::text[] AS tags, COALESCE(m.text, '') AS search_text{base_tsv} \
          FROM proxima_core.memories m \
          LEFT JOIN {entity_owner_union} home_owner \
            ON home_owner.entity_id = m.memory_id \
 ",
         entity_owner_union = entity_owner_union(),
+        // memories.search_tsv is generated from the same COALESCE(text, '')
+        // this branch projects, so the column and the expression it
+        // replaces are the same value by construction.
+        base_tsv = if include_tsv {
+            ", m.search_tsv AS search_tsv"
+        } else {
+            ""
+        },
     )
     .expect("write to String is infallible");
     push_base_memory_filters(&mut sql, req, filters);
@@ -595,18 +601,26 @@ fn common_candidates_sql(
         let tag_expr = projection_tag_expr(projection)?;
         let schema_param = sidecar_first_param + (idx * 2);
         let version_param = schema_param + 1;
+        let search_text_expr = format!("NULLIF(concat_ws(' ', {projection_expr}), '')");
+        let tsv_expr = if include_tsv {
+            format!(
+                ", {} AS search_tsv",
+                projection_tsv_expr(projection, &search_text_expr)?
+            )
+        } else {
+            String::new()
+        };
         sql.push_str(" UNION ALL ");
         push_candidate_branch_prefix(&mut sql);
         write!(
             sql,
             "{tag_expr} AS tags,
-             NULLIF(concat_ws(' ', {projection_expr}), '') AS search_text
+             {search_text_expr} AS search_text{tsv_expr}
              FROM proxima_core.memories m
              LEFT JOIN {entity_owner_union} home_owner
                ON home_owner.entity_id = m.memory_id
 JOIN {table} s ON s.memory_id = m.memory_id",
             tag_expr = tag_expr.as_str(),
-            projection_expr = projection_expr,
             entity_owner_union = entity_owner_union(),
             table = table.as_str()
         )
@@ -641,6 +655,24 @@ fn projection_search_expr(fields: &[MemorySearchProjectionField]) -> Result<Stri
         expressions.push(expression);
     }
     Ok(expressions.join(", "))
+}
+
+/// The candidate's lexical vector: the stored column when the sidecar
+/// declares one, else the same vector computed inline.
+///
+/// Both spellings resolve to `proxima_core.lexical_tsv` over the branch's
+/// projected search text — the stored column is generated from it (see
+/// migration 0012), so a sidecar with a column and one without cannot
+/// score differently for the same content.
+fn projection_tsv_expr(
+    projection: &MemorySearchProjection,
+    search_text_expr: &str,
+) -> Result<String, StorageError> {
+    let Some(tsv_column) = &projection.tsv_column else {
+        return Ok(format!("proxima_core.lexical_tsv({search_text_expr})"));
+    };
+    let column = PgIdent::column(tsv_column)?;
+    Ok(format!("s.{}", column.as_str()))
 }
 
 fn projection_tag_expr(projection: &MemorySearchProjection) -> Result<String, StorageError> {
