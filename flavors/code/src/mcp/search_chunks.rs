@@ -37,6 +37,11 @@ pub struct CodeSearchChunksArgs {
         description = "Whether to include neighboring proxima-code/calls edges. Defaults to true."
     )]
     pub include_calls: bool,
+    #[serde(default)]
+    #[schemars(
+        description = "Maximum characters of chunk text per match. Omit or null for 2000; values above 8000 are clamped, and 0 is rejected. A match whose text was cut carries snippet_truncated=true — read the whole chunk with proxima-code_open_file_revision."
+    )]
+    pub snippet_max_chars: Option<usize>,
 }
 
 const fn default_include_calls() -> bool {
@@ -45,6 +50,31 @@ const fn default_include_calls() -> bool {
 
 /// Relation whose edges are returned as `calls_edges` neighbours.
 const CALLS_RELATION: &str = "proxima-code/calls";
+
+/// Characters of chunk text returned per match when the caller says nothing.
+///
+/// This was 480, and a chunk is much larger than that: measured over this
+/// repository's index, the median chunk is 1,628 characters and only 15.3% of
+/// chunks fit in 480 — so a search returned the right chunk with roughly its
+/// first quarter visible, and an agent had to spend a second
+/// `proxima-code_open_file_revision` call per result to see what it had
+/// found. A local model asked for a constant's value routinely answered with
+/// the constant's *name*, because the name was inside the first 480
+/// characters and the value was not.
+///
+/// 2000 covers the median chunk whole and most of the p90 (2,675).
+const DEFAULT_SNIPPET_MAX_CHARS: usize = 2_000;
+
+/// Ceiling on `snippet_max_chars`, matching `core_search_memories`'
+/// `body_max_chars`. Covers the p99 chunk (4,488 characters).
+const MAX_SNIPPET_MAX_CHARS: usize = 8_000;
+
+/// Resolve the requested snippet budget against the ceiling.
+fn effective_snippet_max_chars(requested: Option<usize>) -> usize {
+    requested.map_or(DEFAULT_SNIPPET_MAX_CHARS, |max| {
+        max.min(MAX_SNIPPET_MAX_CHARS)
+    })
+}
 
 #[derive(Debug, Serialize)]
 pub struct CodeSearchChunksOutput {
@@ -67,6 +97,10 @@ pub struct ChunkMatch {
     pub line_range: (i64, i64),
     pub byte_range: (i64, i64),
     pub snippet: String,
+    /// `true` when `snippet` is shorter than the chunk it came from. Read the
+    /// whole chunk with `proxima-code_open_file_revision`, or re-run with a
+    /// larger `snippet_max_chars`.
+    pub snippet_truncated: bool,
     pub match_kind: String,
     pub matched_line: Option<i64>,
     pub matched_excerpt: Option<String>,
@@ -87,7 +121,7 @@ pub struct CodeSearchChunksTool;
 
 impl Tool for CodeSearchChunksTool {
     const NAME: &'static str = "proxima-code_search_chunks";
-    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Supports language/chunk_type filters and optional proxima-code/calls neighbor edges.";
+    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut. Supports language/chunk_type filters and optional proxima-code/calls neighbor edges.";
 
     type Args = CodeSearchChunksArgs;
     type Output = CodeSearchChunksOutput;
@@ -104,6 +138,12 @@ impl Tool for CodeSearchChunksTool {
                     "query must be 1..=512 chars".into(),
                 ));
             }
+            if args.snippet_max_chars == Some(0) {
+                return Err(ToolError::InvalidInput(
+                    "snippet_max_chars must be at least 1".into(),
+                ));
+            }
+            let snippet_max_chars = effective_snippet_max_chars(args.snippet_max_chars);
             let limit = args.limit.unwrap_or(12).min(50);
             let exact_pattern = like_pattern(query);
             let repo_id = match args.repo_handle.as_deref() {
@@ -286,7 +326,8 @@ impl Tool for CodeSearchChunksTool {
                         i64::from(payload.byte_range_start),
                         i64::from(payload.byte_range_end),
                     ),
-                    snippet: payload.text.chars().take(480).collect(),
+                    snippet: payload.text.chars().take(snippet_max_chars).collect(),
+                    snippet_truncated: payload.text.chars().count() > snippet_max_chars,
                     match_kind,
                     matched_line,
                     matched_excerpt,

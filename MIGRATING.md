@@ -725,7 +725,13 @@ surfaces were unbounded or truncated silently. Wire changes to review:
   fanned out.
 - **Code flavor:** `proxima-code_list_repos` accepts `limit`/`cursor`
   and returns `{repos, next_cursor, has_more}` (was unbounded);
-  `proxima-code_search_chunks` gains `has_more`;
+  `proxima-code_search_chunks` gains `has_more`, `snippet_max_chars`
+  and a per-match `snippet_truncated` flag — its snippets were capped at
+  480 characters against a chunker that targets 1,500, so callers that
+  parsed a match's `snippet` as the whole chunk were reading roughly its
+  first quarter (measured on this repository's index: median chunk 1,628
+  characters, only 15.3% under 480). The default is now 2,000, clamped at
+  8,000 like `core_search_memories`' `body_max_chars`;
   `proxima-code_search_commits` gains `commits_has_more` /
   `summaries_has_more`.
 - Rust embedders: `MemoryInspectPort` gains `load_memories_by_ids`,
