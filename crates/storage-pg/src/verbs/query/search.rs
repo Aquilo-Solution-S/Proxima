@@ -662,7 +662,7 @@ fn projection_search_expr(fields: &[MemorySearchProjectionField]) -> Result<Stri
 ///
 /// Both spellings resolve to `proxima_core.lexical_tsv` over the branch's
 /// projected search text — the stored column is generated from it (see
-/// migration 0012), so a sidecar with a column and one without cannot
+/// migration 0011), so a sidecar with a column and one without cannot
 /// score differently for the same content.
 fn projection_tsv_expr(
     projection: &MemorySearchProjection,

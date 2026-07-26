@@ -295,7 +295,7 @@ def run_fixture(path: Path) -> int:
 # 2026-07-26 refactor: +-0 — search_pg.rs was split into search_pg/ submodules;
 # all four EXPLAIN sites named above now live in search_pg/plans.rs, unchanged.
 # 2026-07-26 analysis: +1 — the stored-tsvector drift test (search_pg/
-# stored_tsv.rs) interpolates the pre-0012 tsvector expression, held as a
+# stored_tsv.rs) interpolates the pre-0011 tsvector expression, held as a
 # module constant, into a comparison against proxima_core.lexical_tsv. The
 # only interpolated text is that constant; the inputs under test are bound.
 EXPECTED_DYNAMIC_SQL_SITES = 54

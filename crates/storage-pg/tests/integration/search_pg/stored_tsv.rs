@@ -1,18 +1,18 @@
 //! The stored lexical vectors must equal the expression they replaced.
 //!
-//! Migration 0012 moved `to_tsvector` off the read path and into generated
+//! Migration 0011 moved `to_tsvector` off the read path and into generated
 //! columns. The definition now lives in two places that cannot see each
 //! other: SQL (the generated column) and the Rust query builder (the
 //! fallback for sidecars with no stored column). If they ever disagree, a
 //! memory silently scores differently depending on which table it lives
 //! in — no error, just wrong results. These tests pin both against the
-//! literal expression the builder computed before 0012.
+//! literal expression the builder computed before 0011.
 
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 
 use super::{insert_search_abstraction, insert_text_memory};
 
-/// The exact tsvector expression the lexical branch inlined before 0012,
+/// The exact tsvector expression the lexical branch inlined before 0011,
 /// as a SQL fragment over `$1`.
 const LEGACY_TSV_SQL: &str = "to_tsvector(
      'english',
@@ -60,7 +60,7 @@ async fn lexical_tsv_function_matches_the_inlined_expression()
         .await?;
         assert!(
             matches,
-            "lexical_tsv diverged from the pre-0012 expression for {text:?}"
+            "lexical_tsv diverged from the pre-0011 expression for {text:?}"
         );
     }
 
