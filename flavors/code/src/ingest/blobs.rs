@@ -21,7 +21,28 @@ use super::schemas::{
 };
 
 const CODE_SLICE_OPERATOR_MODEL: &str = "proxima-code/local-git-source";
-const CODE_SLICE_PROMPT_VERSION: &str = "code-slice-v1";
+
+/// Version of the code-slice derivation, carried in chunk identity.
+///
+/// A code chunk's `memory_id` is a v5 UUID over its position — source file
+/// revision, repo, path, chunk index, state — which is stable across
+/// re-ingests by design: chunking the same blob twice must not mint a second
+/// memory. That stability is also the problem when the *deriver* changes.
+/// `append_derived_with_edges_in_tx` inserts `ON CONFLICT (memory_id) DO
+/// NOTHING`, so a chunker or render change would re-derive every file to
+/// exactly the same ids and silently discard the new text.
+///
+/// Bumping this changes those ids, so re-derived chunks insert as new rows in
+/// a new source batch and win head selection — which is per
+/// `(repo_id, file_path, chunk_index)`, newest batch first — while the
+/// superseded rows fall out of search on their own.
+///
+/// Bump it whenever the bytes a chunk carries stop being a pure function of
+/// its position: chunker boundaries, `render_code_slice`, the payload's
+/// stored fields. v2 is v0.0.7: comments joined the chunk text, and the
+/// render gained the chunk body.
+const CODE_SLICE_IDENTITY: &[u8] = b"proxima-code/code-slice:local-git-file-facts-v2";
+const CODE_SLICE_PROMPT_VERSION: &str = "code-slice-v2";
 
 const CODE_SLICE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x8d, 0xb6, 0x89, 0x67, 0x17, 0x34, 0x44, 0x11, 0xaa, 0xe6, 0x68, 0xef, 0x6c, 0x2a, 0x31, 0x8d,
@@ -38,7 +59,7 @@ const CODE_SLICE_INPUT_CONTRACT_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
 fn code_slice_operator_id() -> OperatorId {
     OperatorId::new(uuid::Uuid::new_v5(
         &CODE_SLICE_OPERATOR_NAMESPACE,
-        b"proxima-code/local-git-source:code-slice-v1",
+        b"proxima-code/local-git-source:code-slice-v2",
     ))
 }
 
@@ -46,8 +67,17 @@ fn code_slice_input_contract_id(
     payload: &CodeChunkV1,
     source_file_revision: MemoryId,
 ) -> InputContractId {
+    InputContractId::new(uuid::Uuid::new_v5(
+        &CODE_SLICE_INPUT_CONTRACT_NAMESPACE,
+        &code_slice_identity_key(payload, source_file_revision),
+    ))
+}
+
+/// The positional key both code-slice ids are derived from, prefixed with
+/// [`CODE_SLICE_IDENTITY`] so a derivation change reaches both of them.
+fn code_slice_identity_key(payload: &CodeChunkV1, source_file_revision: MemoryId) -> Vec<u8> {
     let mut key = Vec::with_capacity(128 + payload.file_path.len());
-    key.extend_from_slice(b"proxima-code/code-slice:local-git-file-facts-v1");
+    key.extend_from_slice(CODE_SLICE_IDENTITY);
     key.push(0);
     key.extend_from_slice(source_file_revision.into_inner().as_bytes());
     key.push(0);
@@ -58,10 +88,7 @@ fn code_slice_input_contract_id(
     key.extend_from_slice(&payload.chunk_index.to_be_bytes());
     key.push(0);
     key.extend_from_slice(payload.state_marker().as_bytes());
-    InputContractId::new(uuid::Uuid::new_v5(
-        &CODE_SLICE_INPUT_CONTRACT_NAMESPACE,
-        &key,
-    ))
+    key
 }
 
 /// Close a `source_batch` opened by the typed-ingest helpers under a
@@ -230,19 +257,10 @@ pub async fn append_code_slice(
 }
 
 fn code_slice_memory_id(payload: &CodeChunkV1, source_file_revision: MemoryId) -> uuid::Uuid {
-    let mut key = Vec::with_capacity(96 + payload.file_path.len());
-    key.extend_from_slice(CODE_SLICE_PROMPT_VERSION.as_bytes());
-    key.push(0);
-    key.extend_from_slice(source_file_revision.into_inner().as_bytes());
-    key.push(0);
-    key.extend_from_slice(payload.repo_id.as_bytes());
-    key.push(0);
-    key.extend_from_slice(payload.file_path.as_bytes());
-    key.push(0);
-    key.extend_from_slice(&payload.chunk_index.to_be_bytes());
-    key.push(0);
-    key.extend_from_slice(payload.state_marker().as_bytes());
-    uuid::Uuid::new_v5(&CODE_SLICE_NAMESPACE, &key)
+    uuid::Uuid::new_v5(
+        &CODE_SLICE_NAMESPACE,
+        &code_slice_identity_key(payload, source_file_revision),
+    )
 }
 
 fn code_slice_provenance_edge<'a>(
@@ -264,11 +282,28 @@ fn code_slice_provenance_edge<'a>(
     }
 }
 
+/// The chunk's rendered form: a `path:start-end` header line followed by
+/// the chunk body.
+///
+/// The render is `memories.text`, and `memories.text` is what the embedding
+/// pipeline embeds (`fact_embeddings::text::load_embedding_text`) and what
+/// `memories.search_tsv` is generated from. While this returned the header
+/// alone, every code-chunk embedding in a corpus was a 1024-d encoding of a
+/// file path and two line numbers, and `core_search_memories` could only
+/// ever retrieve code whose *filename* resembled the question. Measured on
+/// this repository's own index, asking where an over-limit embedding input
+/// gets split returned five chunks of `flavors/code/src/chunker.rs` — the
+/// path contains "chunker" — with a lexical score of exactly 0.0 on every
+/// row, and never returned `crates/core/src/llm.rs`, which is the answer.
+///
+/// The header stays because it is what makes a retrieved chunk actionable:
+/// the agent needs to know which file and lines it is looking at, and the
+/// path also carries real lexical signal.
 fn render_code_slice(payload: &CodeChunkV1) -> String {
     match payload.state {
         crate::payloads::FileState::Present => format!(
-            "{}:{}-{}",
-            payload.file_path, payload.line_range_start, payload.line_range_end
+            "{}:{}-{}\n{}",
+            payload.file_path, payload.line_range_start, payload.line_range_end, payload.text
         ),
         crate::payloads::FileState::Tombstone => {
             format!(

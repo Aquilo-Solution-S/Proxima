@@ -237,6 +237,28 @@ def iter_rust_string_literals(text: str):
         i += 1
 
 
+#: Pure `proxima_core` SQL functions a flavor may call from its own query.
+#:
+#: The rule this supports is that a flavor must not reach core *data* — it
+#: goes through an authorized port instead. These are not data: each is
+#: IMMUTABLE, STRICT and PARALLEL SAFE, reads no row, enforces no
+#: authorization, and returns a pure function of its arguments. They exist to
+#: be shared, and a flavor that could not call them would have to restate the
+#: definition — which is the drift they were introduced to prevent
+#: (`0011_v007.sql`). Anything with a table or view behind it stays denied.
+PURE_CORE_SQL_FUNCTIONS = (
+    "lexical_scrub",
+    "lexical_tsv",
+    "lexical_join",
+    "lexical_text_array",
+    "memory_entity_kind",
+)
+
+_PURE_CORE_SQL_CALL = re.compile(
+    r"proxima_core\.(?:" + "|".join(PURE_CORE_SQL_FUNCTIONS) + r")\s*\("
+)
+
+
 def flavor_core_sql_hits(text: str) -> list[tuple[int, int, str]]:
     """Return ``(start_line, end_line, literal)`` for every string literal
     containing a schema-qualified ``proxima_core.`` reference.
@@ -244,10 +266,16 @@ def flavor_core_sql_hits(text: str) -> list[tuple[int, int, str]]:
     A literal dot after `proxima_core` is a schema-qualified SQL identifier
     (`proxima_core.memories`); a colon there is Rust path syntax
     (`proxima_core::verbs`) and must stay allowed everywhere.
+
+    Calls to `PURE_CORE_SQL_FUNCTIONS` are masked out before the check, so a
+    literal that references core only to call one of them is not a finding
+    while a literal that also names a table still is.
     """
     hits: list[tuple[int, int, str]] = []
     for start_line, _start_offset, literal in iter_rust_string_literals(text):
         if "proxima_core." not in literal:
+            continue
+        if "proxima_core." not in _PURE_CORE_SQL_CALL.sub("", literal):
             continue
         hits.append((start_line, start_line + literal.count("\n"), literal))
     return hits

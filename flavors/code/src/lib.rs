@@ -143,6 +143,7 @@ proxima::flavor::proxima_flavor! {
         mcp::CodeListReposTool,
         mcp::CodeRegisterRepoTool,
         mcp::CodeIngestHeadSnapshotTool,
+        mcp::CodeEraseRepoTool,
         mcp::CodeSearchChunksTool,
         mcp::CodeOpenFileRevisionTool,
         mcp::CodeSearchCommitsTool,

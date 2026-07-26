@@ -1,33 +1,32 @@
-//! The stored code-chunk vector must equal the expression it replaced.
+//! The stored code-chunk vector must equal what both search surfaces expect.
 //!
 //! The v0.0.7 flavor migration moved `to_tsvector` off the read path into a
-//! generated column. Its definition now lives in two places that cannot see
-//! each other: the migration's `GENERATED ALWAYS AS`, and the search
-//! query in `flavors/code/src/mcp/search_chunks.rs` that matches
-//! `websearch_to_tsquery('simple', ...)` against it. If they diverge, code
-//! search silently returns different results — no error, no signal.
+//! generated column. Its definition now lives in three places that cannot see
+//! each other:
 //!
-//! These pin the column against the literal pre-migration expression, and
-//! pin the config to `simple`: code is not English, and stemming or stopword
-//! removal would fold distinct identifiers together and drop real tokens
-//! (`in`, `as`, `if`, `do`, `no`, `on`).
+//! - the migration's `GENERATED ALWAYS AS`,
+//! - the query in `flavors/code/src/mcp/search_chunks.rs` that matches a
+//!   tsquery against it,
+//! - `CodeChunkV1::search_projection()`, which names the column as its
+//!   `tsv_column` so `core_search_memories` substitutes it for the expression
+//!   it would otherwise compute inline.
+//!
+//! If any of them diverges, code search silently returns different results —
+//! no error, no signal. These pin all three against
+//! `proxima_core.lexical_tsv(proxima_core.lexical_join(...))`, which is the
+//! single definition core and the flavor now share.
 
+use proxima_code::payloads::CodeChunkV1;
+use proxima_core::AbstractionPayload;
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
 
-/// The exact expression `search_chunks` scored with before the migration,
-/// as a SQL fragment over `$1` (path) and `$2` (text).
-const LEGACY_TSV_SQL: &str =
-    "to_tsvector('pg_catalog.simple'::regconfig, $1::text || ' ' || $2::text)";
-
-/// Inputs chosen to hit the cases where `simple` and `english` diverge, plus
-/// the punctuation and identifier shapes real code carries.
+/// Inputs chosen to hit the punctuation, identifier and Unicode shapes real
+/// code carries, plus the cases where a config choice is observable.
 fn adversarial_chunks() -> Vec<(&'static str, &'static str)> {
     vec![
         ("src/lib.rs", "fn main() {}"),
-        // Stemming would fold these three together under 'english'.
         ("src/parse.rs", "parsing parsed parser parses"),
-        // Every one of these is a real keyword and an English stopword.
         ("src/kw.rs", "in as if do no on it be for while"),
         ("a/b/c.ts", "export const x: Record<string, number> = {};"),
         ("src/punct.rs", "let a = b::<C>(&d)?; // e.f-g_h"),
@@ -35,11 +34,16 @@ fn adversarial_chunks() -> Vec<(&'static str, &'static str)> {
         ("src/num.rs", "0xFF 3.14 1_000_000 -42"),
         ("path/with space.rs", "struct S;"),
         ("src/long.rs", "x"),
+        ("src/empty.rs", ""),
     ]
 }
 
+/// The generated column must equal `lexical_tsv(lexical_join(file_path,
+/// text))` for every input — the expression `core_search_memories` builds
+/// when a sidecar declares no `tsv_column`, and therefore the only expression
+/// the column is allowed to stand in for.
 #[tokio::test]
-async fn code_chunk_search_tsv_matches_the_scoring_expression() {
+async fn code_chunk_search_tsv_matches_the_projection() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
@@ -49,71 +53,20 @@ async fn code_chunk_search_tsv_matches_the_scoring_expression() {
         pg.run_migrations().await?;
         proxima_code::migrator().run(pg.pool_for_tests()).await?;
 
-        // The generated column is not addressable without rows, so probe the
-        // expression equivalence directly first: it is the property the
-        // column's definition has to hold.
-        for (path, text) in adversarial_chunks() {
-            // SQL-POLICY: fixed-fragment — LEGACY_TSV_SQL is a module
-            // constant; both inputs are bound.
-            let matches: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-                "SELECT to_tsvector('simple'::regconfig, $1::text || ' ' || $2::text)
-                        IS NOT DISTINCT FROM {LEGACY_TSV_SQL}"
-            )))
-            .bind(path)
-            .bind(text)
-            .fetch_one(pg.pool_for_tests())
-            .await?;
-            assert!(
-                matches,
-                "stored expression diverged from the pre-migration one for {path} / {text:?}"
-            );
-        }
-
-        // `simple` must not stem: under 'english' these collapse to one lexeme.
-        let distinct_lexemes: i32 = sqlx::query_scalar(
-            "SELECT array_length(tsvector_to_array(
-                 to_tsvector('simple'::regconfig, 'parsing parsed parser parses')), 1)",
-        )
-        .fetch_one(pg.pool_for_tests())
-        .await?;
+        // The projection is the contract: the fields it lists, in order, are
+        // the arguments the column has to be generated from.
+        let projection = CodeChunkV1::search_projection().expect("chunks project for search");
+        let columns: Vec<&str> = projection.fields.iter().map(|f| f.column).collect();
         assert_eq!(
-            distinct_lexemes, 4,
-            "code search must not stem identifiers; 'simple' keeps all four forms"
+            columns,
+            vec!["file_path", "text"],
+            "projection fields changed; the v0.0.7 generated column must change with them"
         );
-
-        // `simple` must not drop stopwords: these are all real keywords.
-        let keyword_lexemes: i32 = sqlx::query_scalar(
-            "SELECT array_length(tsvector_to_array(
-                 to_tsvector('simple'::regconfig, 'in as if do no on')), 1)",
-        )
-        .fetch_one(pg.pool_for_tests())
-        .await?;
         assert_eq!(
-            keyword_lexemes, 6,
-            "code search must not drop keywords that are English stopwords"
+            projection.tsv_column,
+            Some("search_tsv"),
+            "chunks must read the stored vector rather than recompute it"
         );
-
-        Ok(())
-    }
-    .await;
-
-    drop_db(&db_name).await.ok();
-    result.expect("chunk search tsv checks");
-}
-
-/// The column is `GENERATED ALWAYS AS ... STORED` over exactly the search
-/// expression, and the GIN index sits on the column rather than on the old
-/// expression.
-#[tokio::test]
-async fn code_chunk_search_tsv_is_stored_and_indexed() {
-    let db_name = unique_db_name("proxima_test");
-    create_db(&db_name).await.expect("PG required for tests");
-    let url = db_url(&db_name);
-
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        proxima_code::migrator().run(pg.pool_for_tests()).await?;
 
         let generation: Option<String> = sqlx::query_scalar(
             "SELECT generation_expression
@@ -126,10 +79,130 @@ async fn code_chunk_search_tsv_is_stored_and_indexed() {
         .await?
         .flatten();
         let generation = generation.expect("search_tsv is a generated column");
+
+        // Re-declare the migration's own expression over a scratch table
+        // whose columns carry the projected names, then compare what it
+        // stores against what `core_search_memories` builds when a sidecar
+        // declares no `tsv_column`. Reading the definition back out of the
+        // catalog is what makes this a drift test rather than a restatement:
+        // it fails if the migration and the projection stop agreeing, for
+        // any input, including the ones a reviewer would not think to try.
+        //
+        // A plain table, not a TEMP one: the pool hands out a different
+        // connection per statement and TEMP tables are session-scoped. The
+        // whole database is dropped at the end of the test either way.
+        //
+        // SQL-POLICY: fixed-fragment — `generation` is read from
+        // information_schema, not from a caller.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE TABLE tsv_probe (
+                 file_path text,
+                 text text,
+                 stored tsvector GENERATED ALWAYS AS ({generation}) STORED
+             )"
+        )))
+        .execute(pg.pool_for_tests())
+        .await?;
+
+        for (path, text) in adversarial_chunks() {
+            sqlx::query("INSERT INTO tsv_probe (file_path, text) VALUES ($1, $2)")
+                .bind(path)
+                .bind(text)
+                .execute(pg.pool_for_tests())
+                .await?;
+        }
+
+        let drifted: Vec<(String, String)> = sqlx::query_as(
+            "SELECT file_path, text
+               FROM tsv_probe
+              WHERE stored IS DISTINCT FROM
+                    proxima_core.lexical_tsv(proxima_core.lexical_join(
+                        NULLIF(file_path, ''), NULLIF(text, '')))",
+        )
+        .fetch_all(pg.pool_for_tests())
+        .await?;
         assert!(
-            generation.contains("simple") && generation.contains("file_path"),
-            "unexpected generation expression: {generation}"
+            drifted.is_empty(),
+            "stored column and the projection expression disagree for: {drifted:?}"
         );
+
+        Ok(())
+    }
+    .await;
+
+    drop_db(&db_name).await.ok();
+    result.expect("chunk search tsv projection checks");
+}
+
+/// A sidecar's stored vector stands in for one core builds with
+/// `TEXT_SEARCH_CONFIG`. A column built with any other config would match
+/// nothing that stems and everything that does not — silently, because a
+/// tsvector carries no record of the config that produced it.
+///
+/// `lexical_tsv` is the only spelling that cannot drift, so the guard is that
+/// the column is built from it rather than from a bare `to_tsvector`.
+#[tokio::test]
+async fn code_chunk_search_tsv_shares_core_text_search_config() {
+    let db_name = unique_db_name("proxima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        proxima_code::migrator().run(pg.pool_for_tests()).await?;
+
+        // Every stored search vector in the database, core's and the
+        // flavor's alike, has to route through lexical_tsv.
+        let rogue: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT table_schema, table_name, generation_expression
+               FROM information_schema.columns
+              WHERE column_name = 'search_tsv'
+                AND table_schema IN ('proxima_core', 'proxima_code')
+                AND generation_expression NOT LIKE '%lexical_tsv%'",
+        )
+        .fetch_all(pg.pool_for_tests())
+        .await?;
+        assert!(
+            rogue.is_empty(),
+            "search_tsv columns bypassing proxima_core.lexical_tsv cannot be \
+             substituted for core's builder expression: {rogue:?}"
+        );
+
+        // A stemming query must reach a stored row: this is the property a
+        // 'simple' column would silently lose.
+        let stems: bool = sqlx::query_scalar(
+            "SELECT proxima_core.lexical_tsv('fn parse_manifest(input: &str)')
+                    @@ websearch_to_tsquery('english'::regconfig,
+                           proxima_core.lexical_scrub('parsing manifests'))",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert!(
+            stems,
+            "stored vectors and the query builder must share a stemmer"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    drop_db(&db_name).await.ok();
+    result.expect("chunk search tsv config checks");
+}
+
+/// The column is `GENERATED ALWAYS AS ... STORED`, and the GIN index sits on
+/// the column rather than on the old expression.
+#[tokio::test]
+async fn code_chunk_search_tsv_is_stored_and_indexed() {
+    let db_name = unique_db_name("proxima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        proxima_code::migrator().run(pg.pool_for_tests()).await?;
 
         let has_index: bool = sqlx::query_scalar(
             "SELECT EXISTS (

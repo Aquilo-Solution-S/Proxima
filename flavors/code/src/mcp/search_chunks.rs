@@ -15,7 +15,7 @@ use super::sql::{map_storage, resolve_repo_identifier};
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeSearchChunksArgs {
     #[schemars(
-        description = "Lexical query string for code chunk search. Matches file paths and chunk text; 1 to 512 chars."
+        description = "Query string for code chunk search, matched against file paths and chunk text. Takes an identifier or path for exact lookup, or a plain-English question — chunks sharing any content word are returned when none share all of them. 1 to 512 chars."
     )]
     pub query: String,
     #[schemars(
@@ -42,6 +42,9 @@ pub struct CodeSearchChunksArgs {
 const fn default_include_calls() -> bool {
     true
 }
+
+/// Relation whose edges are returned as `calls_edges` neighbours.
+const CALLS_RELATION: &str = "proxima-code/calls";
 
 #[derive(Debug, Serialize)]
 pub struct CodeSearchChunksOutput {
@@ -84,7 +87,7 @@ pub struct CodeSearchChunksTool;
 
 impl Tool for CodeSearchChunksTool {
     const NAME: &'static str = "proxima-code_search_chunks";
-    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content. Supports language/chunk_type filters and optional proxima-code/calls neighbor edges.";
+    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Supports language/chunk_type filters and optional proxima-code/calls neighbor edges.";
 
     type Args = CodeSearchChunksArgs;
     type Output = CodeSearchChunksOutput;
@@ -124,17 +127,61 @@ impl Tool for CodeSearchChunksTool {
             let candidate_limit = i64::from(limit.saturating_mul(20).max(limit).min(1_000));
             // `c.search_tsv` is the STORED generated column added by the v0.0.7
             // flavor migration, holding exactly
-            // `to_tsvector('simple', file_path || ' ' || text)`. Reading it
-            // replaces two per-row `to_tsvector` evaluations — one for the
-            // predicate, one for the rank — with a column read, and the GIN
-            // index now sits on the column rather than on the expression.
-            // `code_chunk_search_tsv_matches_the_scoring_expression` pins the
-            // column against the expression it replaced.
+            // `proxima_core.lexical_tsv(proxima_core.lexical_join(file_path,
+            // text))`. Reading it replaces two per-row `to_tsvector`
+            // evaluations — one for the predicate, one for the rank — with a
+            // column read, and the GIN index sits on the column rather than on
+            // an expression. `code_chunk_search_tsv_matches_the_projection`
+            // pins the column against that definition.
+            //
+            // Three disjoint score bands, so match *tier* dominates rank:
+            //
+            //   strict  [2.0, 3.0]   every content lexeme co-occurs
+            //   rescue  [1.0, 1.5]   any content lexeme matched
+            //   neither  0.0         reached only via the substring arms
+            //
+            // The rescue arm is what makes a question answerable at all.
+            // `websearch_to_tsquery` is AND-semantics, so a query phrased as a
+            // sentence needs every one of its content words in one chunk;
+            // measured against this repository's own index, 0 of 24
+            // natural-language queries returned a single row without this arm.
+            // `plainto_tsquery` emits only '&' between lexemes (no phrase or
+            // negation operators), so rewriting them to '|' is safe.
+            //
+            // Rescue ranks with `ts_rank(..., 1|32)`, not `ts_rank_cd`.
+            // Cover density rewards a short span containing several query
+            // terms, which repetitive DDL wins trivially: for "how does the
+            // code chunker decide how big a chunk should be", `ts_rank_cd`
+            // returned four chunks of a `*.sql` migration above
+            // `flavors/code/src/chunker.rs`, while `ts_rank` with
+            // length normalisation (flag 1) put chunker.rs first and second.
+            //
+            // The path/text substring bonuses sit on top of the bands, and the
+            // largest of them outweighs a whole tier. That is deliberate: it is
+            // where exact identifier and keyword lookup lives now that the
+            // vector stems and drops stopwords. `embed_in_chunks` matches the
+            // substring arm verbatim regardless of how it tokenises.
             let rows: Vec<ChunkCandidateRow> = sqlx::query_as(
-                "WITH q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $1) AS tsq)
+                "WITH q AS (
+                     SELECT websearch_to_tsquery('english'::regconfig,
+                                proxima_core.lexical_scrub($1)) AS tsq,
+                            NULLIF(
+                                replace(
+                                    plainto_tsquery('english'::regconfig,
+                                        proxima_core.lexical_scrub($1))::text,
+                                    ' & ', ' | '),
+                                '')::tsquery AS any_tsq
+                 )
                  SELECT c.memory_id,
                         (
-                            ts_rank_cd(c.search_tsv, q.tsq)
+                            GREATEST(
+                                CASE WHEN c.search_tsv @@ q.tsq
+                                     THEN 2.0 + LEAST(ts_rank_cd(c.search_tsv, q.tsq) * 10.0, 1.0)
+                                     ELSE 0.0 END,
+                                CASE WHEN q.any_tsq IS NOT NULL AND c.search_tsv @@ q.any_tsq
+                                     THEN 1.0 + LEAST(ts_rank(c.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * 0.5
+                                     ELSE 0.0 END
+                            )
                             + CASE WHEN lower(c.file_path) = lower($1) THEN 10.0 ELSE 0.0 END
                             + CASE WHEN lower(c.file_path) LIKE $4 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
                             + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
@@ -146,6 +193,7 @@ impl Tool for CodeSearchChunksTool {
                     AND ($5::text IS NULL OR c.chunk_type = $5)
                     AND (
                         c.search_tsv @@ q.tsq
+                        OR (q.any_tsq IS NOT NULL AND c.search_tsv @@ q.any_tsq)
                         OR lower(c.file_path) LIKE $4 ESCAPE '\\'
                         OR lower(c.text) LIKE $4 ESCAPE '\\'
                     )
@@ -302,21 +350,31 @@ async fn load_call_edges(
     let engine = super::engine(ctx)?;
     let pool = code_store(ctx)?;
 
-    let mut edges = HashMap::new();
-    for chunk_id in chunk_ids {
-        for filter in [
+    // One `read_edges` per (chunk, direction). They are independent reads
+    // against disjoint filters, so they run concurrently rather than in a
+    // sequential loop: at the default page size that is 24 round-trips, and
+    // serialising them cost roughly half the tool's latency (measured on
+    // this repository's index: 105ms with neighbours, 57ms without).
+    // `include_calls` defaults to true, so every default search paid it.
+    let requests = chunk_ids.iter().flat_map(|chunk_id| {
+        let entity = EntityRef::Memory(MemoryId::new(*chunk_id));
+        [
             EdgeFilter {
-                relation: Some("proxima-code/calls".to_string()),
-                source: Some(EntityRef::Memory(MemoryId::new(*chunk_id))),
+                relation: Some(CALLS_RELATION.to_string()),
+                source: Some(entity),
                 target: None,
             },
             EdgeFilter {
-                relation: Some("proxima-code/calls".to_string()),
+                relation: Some(CALLS_RELATION.to_string()),
                 source: None,
-                target: Some(EntityRef::Memory(MemoryId::new(*chunk_id))),
+                target: Some(entity),
             },
-        ] {
-            let response = engine
+        ]
+    });
+    let responses = futures::future::try_join_all(requests.map(|filter| {
+        let engine = engine.clone();
+        async move {
+            engine
                 .read_edges(
                     ctx.authz(),
                     &EdgeReadRequest {
@@ -328,10 +386,15 @@ async fn load_call_edges(
                         include_payloads: false,
                     },
                 )
-                .await?;
-            for edge in response.edges {
-                edges.entry(edge.id).or_insert(edge);
-            }
+                .await
+        }
+    }))
+    .await?;
+
+    let mut edges = HashMap::new();
+    for response in responses {
+        for edge in response.edges {
+            edges.entry(edge.id).or_insert(edge);
         }
     }
 

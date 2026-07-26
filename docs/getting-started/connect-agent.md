@@ -50,10 +50,26 @@ local checkout and ingest its current tree:
 Then search with `proxima-code_search_chunks`, `proxima-code_search_commits`,
 and read exact revisions with `proxima-code_open_file_revision`.
 
-`proxima-code_search_chunks` is lexical and conjunctive — every term must
-match. Search it with identifiers and paths (`lexical_tsv`,
-`common_candidates_sql`, `crates/storage-pg/src/verbs`), not with
-natural-language questions.
+`proxima-code_search_chunks` is lexical, and it takes both shapes of query.
+An identifier or path (`lexical_tsv`, `common_candidates_sql`,
+`crates/storage-pg/src/verbs`) matches as a substring and outranks everything
+else. A plain-English question ("how does the chunker decide how big a chunk
+should be") matches on shared content words: chunks containing all of them
+rank above chunks containing some, so a question returns its best candidates
+rather than nothing.
+
+To re-index a repository from scratch — which v0.0.7 requires of indexes
+built by an earlier version, since chunking and rendering both changed —
+erase it and ingest again:
+
+1. `proxima-code_erase_repo` with `repo_handle` and `confirm_canonical_path`
+   (the repo's exact stored path; a mismatch is refused). This is
+   irreversible and removes every Fact, Abstraction, edge and embedding
+   derived from that repository.
+2. `proxima-code_register_repo`, then `proxima-code_ingest_head_snapshot`.
+
+A HEAD snapshot alone will not do it: it re-derives only files whose content
+changed, so files that have not moved keep their old chunks.
 
 ## First Calls
 

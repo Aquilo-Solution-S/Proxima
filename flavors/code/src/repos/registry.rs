@@ -3,7 +3,6 @@
 use super::records::{RepoEraseReceipt, RepoRecord, RepoRegistryError};
 use super::rows::RepoRow;
 use proxima_core::Owner;
-use proxima_core::verbs::schema::SchemaInfo;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -220,7 +219,6 @@ pub async fn erase_repo(
     pool: &PgPool,
     owner: &Owner,
     repo_id: Uuid,
-    _schemas: &[SchemaInfo],
 ) -> Result<RepoEraseReceipt, RepoRegistryError> {
     let outcome = proxima_storage_pg::verbs::code_repo_erase::erase_code_repo(pool, owner, repo_id)
         .await?
