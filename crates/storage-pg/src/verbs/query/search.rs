@@ -10,14 +10,14 @@ use proxima_core::verbs::query::{
 use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
 };
-use proxima_core::{MemoryId, SchemaId, SearchProjectionColumnKind, StorageError};
+use proxima_core::{MemoryId, OwnerRef, SchemaId, SearchProjectionColumnKind, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::pgvector::{SET_HNSW_EF_SEARCH_SQL, SET_HNSW_ITERATIVE_SCAN_SQL};
 
-use super::{entity_owner_union, read_owner_columns, read_owner_predicate};
+use super::{entity_owner_union, read_owner_columns};
 
 /// Text-search configuration for the lexical branch. `english` stems both
 /// document and query tokens ("adopted" matches "adopt") and drops
@@ -255,12 +255,15 @@ fn merge_row(candidates: &mut BTreeMap<uuid::Uuid, Candidate>, row: SearchRow) {
     }
 }
 
-async fn run_lexical(
-    pool: &PgPool,
+/// Exact SQL of the lexical branch, factored out so EXPLAIN-based plan
+/// tests can assert against precisely what production executes.
+/// Parameter order: read-owner kind/id arrays, per-projection
+/// `(schema_id, version)` pairs, optional filter params, query text.
+fn lexical_branch_sql<'p>(
     req: &MemorySearchRequest,
-    projections: &[MemorySearchProjection],
+    projections: &'p [MemorySearchProjection],
     limit: u32,
-) -> Result<Vec<SearchRow>, StorageError> {
+) -> Result<(String, Vec<&'p MemorySearchProjection>), StorageError> {
     let projections = memory_search_projections(req, projections);
     let mut next_param = 3;
     let mut sql = common_candidates_sql(req, &projections, &mut next_param)?;
@@ -275,44 +278,23 @@ async fn run_lexical(
     // only and lets the semantic leg carry recall.
     let rescue = matches!(req.mode, SearchMode::Lexical);
     let rescue_score_arm = if rescue {
-        format!(
-            ", CASE WHEN to_tsvector('{TEXT_SEARCH_CONFIG}', c.index_text) @@ q.any_tsq
-                    THEN 0.25 + LEAST(ts_rank_cd(to_tsvector('{TEXT_SEARCH_CONFIG}', c.index_text), q.any_tsq) * 10.0, 1.0) * 0.2
-                    ELSE 0.0 END"
-        )
+        ", CASE WHEN c.tsv @@ q.any_tsq
+                THEN 0.25 + LEAST(ts_rank_cd(c.tsv, q.any_tsq) * 10.0, 1.0) * 0.2
+                ELSE 0.0 END"
     } else {
-        String::new()
+        ""
     };
-    let rescue_where_arm = if rescue {
-        format!(" OR to_tsvector('{TEXT_SEARCH_CONFIG}', c.index_text) @@ q.any_tsq")
-    } else {
-        String::new()
-    };
+    let rescue_where_arm = if rescue { " OR c.tsv @@ q.any_tsq" } else { "" };
 
+    // `indexed` is MATERIALIZED so the tsvector is built exactly once per
+    // candidate row. Inlined, the planner substitutes the expression into
+    // every reference — the match arm, the rank arm, and the WHERE gate
+    // each re-parsed the full document (up to 20k chars) per row, tripling
+    // the dominant cost of the branch.
     write!(
         sql,
-        " , indexed AS (
-              SELECT c.*,
-                     regexp_replace(
-                         regexp_replace(c.search_text, '[[:punct:]]+', ' ', 'g'),
-                         '\\m[[:alnum:]]{{255}}[[:alnum:]]+\\M',
-                         ' ',
-                         'g'
-                     ) AS index_text
-                FROM candidates c
-          )
-          SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
-                 left(c.search_text, 480) AS snippet,
-                 GREATEST(
-                     CASE WHEN to_tsvector('{ts_config}', c.index_text) @@ q.tsq
-                          THEN 0.5 + LEAST(ts_rank_cd(to_tsvector('{ts_config}', c.index_text), q.tsq) * 10.0, 1.0) * 0.5
-                          ELSE 0.0 END{rescue_score_arm},
-                     CASE WHEN lower(c.search_text) LIKE '%' || lower(${query_param}) || '%'
-                          THEN 0.25 ELSE 0.0 END
-                 )::real AS lexical_score,
-                 0.0::real AS similarity_score
-          FROM indexed c,
-               (SELECT websearch_to_tsquery(
+        " , q AS (
+               SELECT websearch_to_tsquery(
                    '{ts_config}',
                    regexp_replace(
                        regexp_replace(${query_param}, '[[:punct:]]+', ' ', 'g'),
@@ -339,10 +321,35 @@ async fn run_lexical(
                        ' | '
                    ),
                    ''
-               )::tsquery AS any_tsq) q
-          WHERE c.search_text <> ''
-            AND (
-                to_tsvector('{ts_config}', c.index_text) @@ q.tsq{rescue_where_arm}
+               )::tsquery AS any_tsq
+          ),
+          indexed AS MATERIALIZED (
+              SELECT c.*,
+                     to_tsvector(
+                         '{ts_config}',
+                         regexp_replace(
+                             regexp_replace(c.search_text, '[[:punct:]]+', ' ', 'g'),
+                             '\\m[[:alnum:]]{{255}}[[:alnum:]]+\\M',
+                             ' ',
+                             'g'
+                         )
+                     ) AS tsv
+                FROM candidates c
+               WHERE c.search_text <> ''
+          )
+          SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
+                 left(c.search_text, 480) AS snippet,
+                 GREATEST(
+                     CASE WHEN c.tsv @@ q.tsq
+                          THEN 0.5 + LEAST(ts_rank_cd(c.tsv, q.tsq) * 10.0, 1.0) * 0.5
+                          ELSE 0.0 END{rescue_score_arm},
+                     CASE WHEN lower(c.search_text) LIKE '%' || lower(${query_param}) || '%'
+                          THEN 0.25 ELSE 0.0 END
+                 )::real AS lexical_score,
+                 0.0::real AS similarity_score
+          FROM indexed c, q
+          WHERE (
+                c.tsv @@ q.tsq{rescue_where_arm}
                 OR lower(c.search_text) LIKE '%' || lower(${query_param}) || '%'
             )
           ORDER BY {order_by}
@@ -354,6 +361,27 @@ async fn run_lexical(
         rescue_where_arm = rescue_where_arm
     )
     .expect("write to String is infallible");
+    Ok((sql, projections))
+}
+
+/// The lexical branch SQL for EXPLAIN-based plan assertions in tests.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+pub fn lexical_search_sql_for_tests(
+    req: &MemorySearchRequest,
+    projections: &[MemorySearchProjection],
+    limit: u32,
+) -> Result<String, StorageError> {
+    lexical_branch_sql(req, projections, limit).map(|(sql, _)| sql)
+}
+
+async fn run_lexical(
+    pool: &PgPool,
+    req: &MemorySearchRequest,
+    projections: &[MemorySearchProjection],
+    limit: u32,
+) -> Result<Vec<SearchRow>, StorageError> {
+    let (sql, projections) = lexical_branch_sql(req, projections, limit)?;
 
     // SQL-POLICY: PgIdent
     let mut q = bind_common(
@@ -539,7 +567,14 @@ fn common_candidates_sql(
         recency_cursor: recency_cursor_param,
     };
 
-    let mut sql = String::from("WITH candidates AS (");
+    // MATERIALIZED pins the plan to owner-first enumeration: candidates
+    // are resolved via the owner-prefix indexes before any text or vector
+    // predicate runs. Left inlinable, the planner pushed the lexical
+    // tsvector filter into the Abstraction sidecar branch and seq-scanned
+    // the whole table across every owner (measured: 3.1s of a 3.3s
+    // query on the 150k corpus). The per-owner candidate set is a few
+    // hundred rows, so the materialization itself is noise.
+    let mut sql = String::from("WITH candidates AS MATERIALIZED (");
     push_candidate_branch_prefix(&mut sql);
     write!(
         sql,
@@ -625,25 +660,56 @@ fn push_candidate_branch_prefix(sql: &mut String) {
     );
 }
 
+/// Owner-scope gate for one candidate branch, split at SQL-build time so
+/// every arm is index-eligible. The generic `owner_id IS NOT DISTINCT
+/// FROM s.id` join defeats the `(owner_kind, owner_id)` b-tree prefixes
+/// (measured on a 150k-memory corpus: every branch seq-scanned all of
+/// `memories` per owner check). `owner_binds` emits a NULL id only for
+/// [`OwnerRef::World`], so the read set splits exactly into a plain
+/// equality join plus — only when World is actually in the read set — a
+/// constant World arm (`owner_id IS NULL` ⇔ World by the owner-shape
+/// checks, and NULL never survives the equality join).
+fn push_read_owner_scope(sql: &mut String, req: &MemorySearchRequest) {
+    write!(
+        sql,
+        " WHERE (EXISTS (
+              SELECT 1
+                FROM {entity_owner_union} eo
+                JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+                  ON eo.owner_kind = s.kind AND eo.owner_id = s.id
+               WHERE eo.entity_id = m.memory_id
+           )",
+        entity_owner_union = entity_owner_union(),
+    )
+    .expect("write to String is infallible");
+    if req
+        .read_owners
+        .iter()
+        .any(|owner| matches!(owner, OwnerRef::World))
+    {
+        write!(
+            sql,
+            " OR EXISTS (
+              SELECT 1
+                FROM {entity_owner_union} eo
+               WHERE eo.entity_id = m.memory_id
+                 AND eo.owner_kind = 'world'
+                 AND eo.owner_id IS NULL
+           )",
+            entity_owner_union = entity_owner_union(),
+        )
+        .expect("write to String is infallible");
+    }
+    sql.push(')');
+}
+
 fn push_base_memory_filters(
     sql: &mut String,
     req: &MemorySearchRequest,
     filters: CandidateFilterParams,
 ) {
-    write!(
-        sql,
-        " WHERE EXISTS (
-              SELECT 1
-                FROM {entity_owner_union} eo
-                JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-                  ON {read_owner_predicate}
-               WHERE eo.entity_id = m.memory_id
-           )
-           AND m.tombstoned_at IS NULL",
-        entity_owner_union = entity_owner_union(),
-        read_owner_predicate = read_owner_predicate("eo", "s"),
-    )
-    .expect("write to String is infallible");
+    push_read_owner_scope(sql, req);
+    sql.push_str(" AND m.tombstoned_at IS NULL");
     match req.kind {
         None => {}
         Some(EntityKind::Fact) => sql.push_str(" AND m.kind IS NULL"),
@@ -669,20 +735,12 @@ fn push_sidecar_memory_filters(
     filters: CandidateFilterParams,
     tag_expr: &str,
 ) {
+    push_read_owner_scope(sql, req);
     write!(
         sql,
-        " WHERE EXISTS (
-              SELECT 1
-                FROM {entity_owner_union} eo
-                JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-                  ON {read_owner_predicate}
-               WHERE eo.entity_id = m.memory_id
-           )
-           AND m.tombstoned_at IS NULL
+        " AND m.tombstoned_at IS NULL
            AND m.schema_id = ${schema_param}
            AND m.schema_version = ${version_param}",
-        entity_owner_union = entity_owner_union(),
-        read_owner_predicate = read_owner_predicate("eo", "s"),
     )
     .expect("write to String is infallible");
     push_payload_kind_filter(sql, kind);
