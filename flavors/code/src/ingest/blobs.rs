@@ -25,22 +25,28 @@ const CODE_SLICE_OPERATOR_MODEL: &str = "proxima-code/local-git-source";
 /// Version of the code-slice derivation, carried in chunk identity.
 ///
 /// A code chunk's `memory_id` is a v5 UUID over its position — source file
-/// revision, repo, path, chunk index, state — which is stable across
-/// re-ingests by design: chunking the same blob twice must not mint a second
-/// memory. That stability is also the problem when the *deriver* changes.
-/// `append_derived_with_edges_in_tx` inserts `ON CONFLICT (memory_id) DO
-/// NOTHING`, so a chunker or render change would re-derive every file to
-/// exactly the same ids and silently discard the new text.
-///
-/// Bumping this changes those ids, so re-derived chunks insert as new rows in
-/// a new source batch and win head selection — which is per
-/// `(repo_id, file_path, chunk_index)`, newest batch first — while the
-/// superseded rows fall out of search on their own.
+/// revision, repo, path, chunk index, state — deliberately stable across
+/// re-ingests, because chunking the same blob twice must not mint a second
+/// memory. `append_derived_with_edges_in_tx` inserts `ON CONFLICT
+/// (memory_id) DO NOTHING`, so without this prefix a chunker or render change
+/// would derive every file to exactly the same ids and silently discard the
+/// new text.
 ///
 /// Bump it whenever the bytes a chunk carries stop being a pure function of
 /// its position: chunker boundaries, `render_code_slice`, the payload's
-/// stored fields. v2 is v0.0.7: comments joined the chunk text, and the
+/// stored fields. v2 is v0.0.7 — comments joined the chunk text, and the
 /// render gained the chunk body.
+///
+/// Bumping it does **not** make an existing index re-derive itself. A HEAD
+/// snapshot skips files whose blob hash has not moved, and that skip cannot
+/// simply be lifted: `validate_ftoa_input_batch` requires a derived
+/// Abstraction to carry the same `source_batch_id` as the Facts it came from,
+/// so re-deriving an unchanged file would stamp new chunks with a batch its
+/// already-receipted Fact does not belong to. The supported path is
+/// `proxima-code_erase_repo` followed by a fresh register and ingest, which
+/// produces new Facts in new batches. What this constant guarantees is
+/// narrower and still worth having: the two derivations can never collide on
+/// an id, so a stale chunk cannot masquerade as a current one.
 const CODE_SLICE_IDENTITY: &[u8] = b"proxima-code/code-slice:local-git-file-facts-v2";
 const CODE_SLICE_PROMPT_VERSION: &str = "code-slice-v2";
 
