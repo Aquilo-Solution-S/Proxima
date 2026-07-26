@@ -38,6 +38,7 @@ impl FactPayload for DocumentFiledV1 {
                 kind: SearchProjectionColumnKind::Text,
             }],
             tag_column: None,
+            tsv_column: None,
         })
     }
 }

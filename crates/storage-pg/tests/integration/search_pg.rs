@@ -451,6 +451,7 @@ fn code_chunk_projection() -> MemorySearchProjection {
             },
         ],
         tag_column: None,
+        tsv_column: None,
     }
 }
 
@@ -475,6 +476,7 @@ fn tagged_abstraction_projection() -> MemorySearchProjection {
             },
         ],
         tag_column: Some("tags".into()),
+        tsv_column: None,
     }
 }
 
@@ -525,3 +527,4 @@ mod pagination;
 mod plans;
 mod ranking;
 mod semantic;
+mod stored_tsv;
