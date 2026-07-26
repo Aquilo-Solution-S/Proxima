@@ -121,7 +121,8 @@ impl HttpJwksResolver {
     ///
     /// Returns an error when the issuer is not HTTPS or loopback HTTP, or
     /// when the JWKS endpoint is plaintext HTTP that this issuer is not
-    /// entitled to name (see [`validate_jwks_url`]).
+    /// entitled to name — only a loopback issuer may point at a loopback
+    /// JWKS, so a remote provider cannot move key resolution onto the host.
     pub fn new(issuer: String, jwks_uri: Option<String>) -> Result<Self, OidcConfigError> {
         validate_https_url("issuer", &issuer)?;
         if let Some(uri) = &jwks_uri {
