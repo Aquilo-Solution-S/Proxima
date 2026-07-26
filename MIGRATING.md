@@ -88,12 +88,13 @@ no backfill.
 | Source | Files | Notes |
 |---|---|---|
 | Proxima core | `0011_v007.sql` | `embeddings` primary key rebuilt to include `chunk_index`; STORED generated `search_tsv` on `memories`, `agent_derivation_v1`, `agent_note_v1`; four `proxima_core.lexical_*` functions |
-| Code flavor | — | none |
+| Code flavor | `20260726000020_v007.sql` | STORED generated `search_tsv` on `code_chunk_v1` (config `simple`, unchanged); GIN moves from the old expression index to the column |
 
-**This lane is not online-safe.** Unlike v0.0.6, `0011_v007.sql` rewrites
-tables. `ADD COLUMN ... GENERATED ALWAYS AS ... STORED` rewrites each target
-and holds `ACCESS EXCLUSIVE` for the duration, and sqlx runs the file in one
-transaction — so all four tables stay locked until the last one finishes.
+**This lane is not online-safe.** Unlike v0.0.6, both files rewrite tables.
+`ADD COLUMN ... GENERATED ALWAYS AS ... STORED` rewrites each target and holds
+`ACCESS EXCLUSIVE` for the duration, and sqlx runs each file in one
+transaction — so every table in a file stays locked until the last one
+finishes.
 Measured: **54.7s** for a 149k-row `memories` plus a 24.8k-row sidecar, and
 it scales with corpus size. A queued `ACCESS EXCLUSIVE` request also blocks
 every reader that arrives behind it, so this is a read outage, not just a
@@ -101,13 +102,18 @@ write pause.
 
 Plan for it:
 
-- **Large deployments: apply out of band.** Run `0011_v007.sql` through
+- **Large deployments: apply out of band.** Run both files through
   GitOps against a real backup during a maintenance window, then boot with
   `PROXIMA_SKIP_MIGRATIONS=true`. Do not discover the lock window during a
   rolling update.
 - **Small deployments** can let boot apply it. Boot migrations now set
   `lock_timeout = 5s`, so a migration that cannot get the lock fails and
   retries on the next pod rather than freezing the table behind a lock queue.
+
+The code-flavor file keeps the `simple` text-search config deliberately —
+code is not English, and stemming would fold `parsing` into `pars` while
+stopword removal would drop `in`, `as`, `if`, `do`, `no`, `on`. It changes
+cost, never results.
 
 Two behaviour changes ride along, neither of which announces itself:
 
@@ -750,6 +756,32 @@ differently from every other. Pin it with a test in the shape of
 `crates/storage-pg/tests/integration/search_pg/stored_tsv.rs`, which
 asserts the stored column equals `lexical_tsv` over the projection's own
 concatenation.
+
+## 24. v0.0.7: `Engine::backfill_fact_embeddings` is now `backfill_missing_embeddings`
+
+Renamed, and widened to match the name: it enqueues missing embeddings for
+Facts **and** derived memories (Abstractions, Perspectives), owner-scoped and
+idempotent as before.
+
+```rust
+// before
+engine.backfill_fact_embeddings(&authz, &owner, limit).await?;
+// after
+engine.backfill_missing_embeddings(&authz, &owner, limit).await?;
+```
+
+The Fact-only filter was a real gap, not a naming detail. A flavor that
+materializes derived memories through its own sidecar path — as
+`proxima-code`'s repository ingest does for every `code-chunk-v1`
+Abstraction — has no embedding client in scope at write time and enqueues
+nothing. Those rows were then invisible to the owner-scoped backfill too, so
+an indexed repository stayed lexically searchable and semantically empty
+until an operator happened to run a *global* `maintain-embeddings` pass.
+
+Custom `EmbeddingJobPort` implementations need no change: the port method
+`enqueue_missing_embedding_jobs` keeps its name and signature. If yours
+filters to Facts internally, widen it to match, or derived memories will
+still be skipped.
 
 ## Checks before calling an upgrade done
 

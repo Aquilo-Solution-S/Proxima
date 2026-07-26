@@ -19,12 +19,6 @@ use crate::{
     EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload, SourceBatchId,
 };
 
-/// Smallest chunk (in bytes) the chunked-embedding rescue will bisect
-/// down to. An input the provider still rejects at this length is not
-/// over-limit — every embedding model in use accepts far more — so the
-/// rejection is treated as genuinely permanent.
-const CHUNKED_EMBED_MIN_BYTES: usize = 2048;
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EmbeddingDrainOutcome {
     pub processed: usize,
@@ -437,15 +431,20 @@ impl Engine {
         Ok(EmbedStep::Embedded)
     }
 
-    /// Owner-scoped, idempotent backfill enqueue for missing Fact
-    /// embeddings under the current embedding client's model id.
+    /// Owner-scoped, idempotent backfill enqueue for memories missing an
+    /// embedding under the current client's model id.
+    ///
+    /// Covers Facts *and* derived memories. Derived rows matter because a
+    /// flavor can materialize Abstractions through its own sidecar path with
+    /// no embedding client in scope — code-chunk ingest does — leaving them
+    /// semantically invisible until someone ran a global reconcile.
     ///
     /// # Errors
     ///
     /// Returns authorization failures with their protocol category
     /// (e.g. `Forbidden`) rather than an internal-error string, and
     /// storage errors from enqueueing missing jobs as `Internal`.
-    pub async fn backfill_fact_embeddings(
+    pub async fn backfill_missing_embeddings(
         &self,
         authz: &AuthzContext,
         owner: &Owner,
@@ -623,7 +622,7 @@ impl Engine {
 
     /// Per-item fallback after a permanent batch rejection: isolate which
     /// inputs the provider rejects. A rejected input is bisected into
-    /// provider-acceptable chunks ([`Self::embed_in_chunks`]) — over-limit
+    /// provider-acceptable chunks ([`crate::llm::embed_in_chunks`]) — over-limit
     /// inputs, the dominant permanent cause, stay fully semantically
     /// findable through chunked embeddings instead of going invisible.
     /// Inputs the provider rejects at every length go terminal; other
@@ -644,7 +643,7 @@ impl Engine {
                     }
                 }
                 Err(LlmError::EmbedPermanent(message)) => {
-                    match self.embed_in_chunks(client, &text).await {
+                    match crate::llm::embed_in_chunks(client.as_ref(), &text).await {
                         Ok(Some(vectors)) => {
                             tracing::warn!(
                                 entity_id = ?claim.entity_id,
@@ -698,54 +697,6 @@ impl Engine {
             }
         }
         Ok(())
-    }
-
-    /// Rescue pass for a permanently rejected embedding input: bisect the
-    /// text (on char boundaries) into provider-acceptable pieces and embed
-    /// every piece, so the *entire* text stays semantically findable as
-    /// one chunked embedding version — not just a truncated prefix.
-    ///
-    /// The provider's rejection does not say *why* the input is invalid,
-    /// and this never needs to know: an over-limit input starts embedding
-    /// once its pieces are short enough, while an input rejected for any
-    /// other reason keeps failing all the way down and the caller sends
-    /// the job terminal exactly as before. A piece still rejected below
-    /// [`CHUNKED_EMBED_MIN_BYTES`] is treated as genuinely invalid and
-    /// aborts the rescue — partial coverage would mask the poison input.
-    ///
-    /// Returns `Ok(Some(vectors))` (in text order) on rescue, `Ok(None)`
-    /// when some piece is rejected at every length, and `Err` on the first
-    /// transient provider error so the caller records an ordinary
-    /// retryable attempt.
-    async fn embed_in_chunks(
-        &self,
-        client: &Arc<dyn EmbeddingClient>,
-        text: &str,
-    ) -> Result<Option<Vec<Vec<f32>>>, LlmError> {
-        // Depth-first, left-to-right bisection keeps chunk vectors in
-        // text order without recursion (async fns don't recurse).
-        let mut pending: Vec<&str> = vec![text];
-        let mut vectors: Vec<Vec<f32>> = Vec::new();
-        while let Some(segment) = pending.pop() {
-            match client.embed(segment).await {
-                Ok(vector) => vectors.push(vector),
-                Err(LlmError::EmbedPermanent(_)) => {
-                    let mut cut = segment.len() / 2;
-                    while cut > 0 && !segment.is_char_boundary(cut) {
-                        cut -= 1;
-                    }
-                    if cut < CHUNKED_EMBED_MIN_BYTES {
-                        return Ok(None);
-                    }
-                    // Pop order: push right half first so the left half
-                    // embeds (or splits) next.
-                    pending.push(&segment[cut..]);
-                    pending.push(&segment[..cut]);
-                }
-                Err(err) => return Err(err),
-            }
-        }
-        Ok(Some(vectors))
     }
 
     /// Store one chunked embedding version for its claim and complete the

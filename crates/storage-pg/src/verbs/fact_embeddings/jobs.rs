@@ -362,7 +362,8 @@ pub async fn enqueue_missing_embedding_jobs(
     let (owner_kind, owner_id) = owner_parts(permit.owner());
     let result = sqlx::query(
         "WITH missing AS (
-             SELECT m.memory_id
+             SELECT m.memory_id,
+                    COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS entity_kind
                FROM proxima_core.memories m
               WHERE EXISTS (
                         SELECT 1
@@ -371,13 +372,27 @@ pub async fn enqueue_missing_embedding_jobs(
                            AND eo.owner_kind = $1
                            AND eo.owner_id = $2
 )
-                AND m.kind IS NULL
+                -- Facts (kind IS NULL) plus derived memories. Derived rows
+                -- belong here because a flavor can materialize Abstractions
+                -- through its own sidecar path without an embedding client in
+                -- scope — code-chunk ingest does exactly that — and those rows
+                -- would otherwise stay unembedded until an operator ran a
+                -- global reconcile. Matches the kinds `reconcile_embeddings`
+                -- scans, owner-scoped.
+                AND (
+                    m.kind IS NULL
+                    OR m.kind IN (
+                        'Abstraction'::proxima_core.entity_kind,
+                        'Perspective'::proxima_core.entity_kind
+                    )
+                )
                 AND m.text IS NOT NULL
                 AND m.tombstoned_at IS NULL
                 AND NOT EXISTS (
                     SELECT 1
                       FROM proxima_core.embedding_heads h
-                     WHERE h.entity_kind = 'Fact'
+                     WHERE h.entity_kind
+                           = COALESCE(m.kind, 'Fact'::proxima_core.entity_kind)
                        AND h.entity_id = m.memory_id
                        AND h.model_id = $3
                 )
@@ -387,7 +402,7 @@ pub async fn enqueue_missing_embedding_jobs(
          INSERT INTO proxima_core.embedding_jobs
              (owner_kind, owner_id,
               entity_kind, entity_id, model_id)
-         SELECT $1, $2, 'Fact'::proxima_core.entity_kind, memory_id, $3
+         SELECT $1, $2, entity_kind, memory_id, $3
            FROM missing
          ON CONFLICT (owner_kind, owner_id,
                       entity_kind, entity_id, model_id, embedding_version)

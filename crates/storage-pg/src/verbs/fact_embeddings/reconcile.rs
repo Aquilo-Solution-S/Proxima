@@ -1,5 +1,5 @@
 use proxima_core::llm::{EmbeddingClient, LlmError};
-use proxima_core::{EmbeddingJobClaim, StorageError};
+use proxima_core::{EmbeddableEntityRef, EmbeddingJobClaim, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
@@ -7,7 +7,8 @@ use crate::error::map_err;
 use super::jobs::claim_pending_embedding_jobs_excluding;
 use super::{
     complete_embedding_job, ensure_nonnegative_limit, fail_embedding_job,
-    fail_embedding_job_permanently, insert_memory_embedding, load_embedding_text,
+    fail_embedding_job_permanently, insert_embedding_chunks, insert_memory_embedding,
+    load_embedding_text,
 };
 
 pub use proxima_core::{
@@ -202,6 +203,44 @@ pub async fn drain_embedding_jobs_inline(
     Ok(outcome)
 }
 
+/// Write one chunked embedding version for a claim, mirroring the engine
+/// drain's `store_claim_embedding_chunks`. A dimension mismatch in any chunk
+/// is an ordinary retryable failure, not a terminal one — the provider
+/// answered, it just answered in the wrong space.
+async fn store_claim_chunks(
+    pool: &PgPool,
+    client: &dyn EmbeddingClient,
+    claim: &EmbeddingJobClaim,
+    vectors: &[Vec<f32>],
+) -> Result<(), EmbedClaimFailure> {
+    if let Some(bad) = vectors.iter().find(|vec| vec.len() != client.dim()) {
+        return Err(StorageError::ConstraintViolation(format!(
+            "chunked embedding dim mismatch: client dim {} but got a chunk of len {}",
+            client.dim(),
+            bad.len(),
+        ))
+        .into());
+    }
+    let chunks: Vec<&[f32]> = vectors.iter().map(Vec::as_slice).collect();
+    let mut tx = pool.begin().await.map_err(|err| {
+        StorageError::Internal(format!("begin chunked embedding upsert tx: {err}"))
+    })?;
+    insert_embedding_chunks(
+        &mut tx,
+        &claim.owner,
+        EmbeddableEntityRef::Memory {
+            kind: claim.entity_kind,
+            memory_id: claim.entity_id,
+        },
+        client.model_id(),
+        client.dim(),
+        &chunks,
+    )
+    .await?;
+    tx.commit().await.map_err(map_err)?;
+    Ok(())
+}
+
 /// Why one claimed job could not embed: a permanent input rejection (job
 /// must go terminal) versus everything retryable.
 enum EmbedClaimFailure {
@@ -225,14 +264,41 @@ async fn embed_claim(
     else {
         return Ok(false);
     };
-    let embedding = client.embed(&text).await.map_err(|err| match err {
-        LlmError::EmbedPermanent(message) => {
-            EmbedClaimFailure::Permanent(format!("embed memory text: {message}"))
+    let embedding = match client.embed(&text).await {
+        Ok(embedding) => embedding,
+        // An over-limit input is not a dead memory. The engine's drain
+        // rescues it as a chunked embedding version; this drain must do the
+        // same, or which drain happens to reach a job first decides whether
+        // the memory is recoverable — and a job failed here is marked
+        // terminal, which `reconcile_embeddings` then refuses to requeue.
+        Err(LlmError::EmbedPermanent(message)) => {
+            return match proxima_core::llm::embed_in_chunks(client, &text).await {
+                Ok(Some(vectors)) => {
+                    tracing::warn!(
+                        entity_id = ?claim.entity_id,
+                        chunks = vectors.len(),
+                        total_bytes = text.len(),
+                        "over-limit embedding input rescued as chunked embeddings"
+                    );
+                    store_claim_chunks(pool, client, claim, &vectors).await?;
+                    Ok(true)
+                }
+                // Rejected at every length: genuinely invalid input, so the
+                // job goes terminal exactly as it did before.
+                Ok(None) => Err(EmbedClaimFailure::Permanent(format!(
+                    "embed memory text: {message}"
+                ))),
+                Err(err) => Err(EmbedClaimFailure::Retryable(StorageError::Internal(
+                    format!("embed memory text in chunks: {err}"),
+                ))),
+            };
         }
-        other => EmbedClaimFailure::Retryable(StorageError::Internal(format!(
-            "embed memory text: {other}"
-        ))),
-    })?;
+        Err(other) => {
+            return Err(EmbedClaimFailure::Retryable(StorageError::Internal(
+                format!("embed memory text: {other}"),
+            )));
+        }
+    };
     if embedding.len() != client.dim() {
         return Err(StorageError::ConstraintViolation(format!(
             "embedding dim mismatch: client dim {} but vector len {}",

@@ -171,7 +171,7 @@ Runtime search:
 
 | Item | Runtime value |
 |---|---|
-| vector type | `vector(1024)`; no halfvec migration in v0.0.6 |
+| vector type | `vector(1024)`; no halfvec migration as of v0.0.7. Any embedding model must return 1024 dimensions — see `PROXIMA_EMBED_MATRYOSHKA` for nested-prefix models wider than that |
 | ANN index | shared `idx_embeddings_vec_hnsw` |
 | semantic-search GUCs | `SET LOCAL hnsw.ef_search = 100`; `SET LOCAL hnsw.iterative_scan = relaxed_order` |
 | cold owner subsets | planner may prefer owner btree + exact sort |

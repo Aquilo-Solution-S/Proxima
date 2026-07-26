@@ -115,7 +115,12 @@ async fn fact_embedding_backfill_heals_no_client_ingest() -> Result<(), Box<dyn 
             ))))
             .await;
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
-        assert_eq!(engine.backfill_fact_embeddings(&authz, &owner, 1).await?, 1);
+        assert_eq!(
+            engine
+                .backfill_missing_embeddings(&authz, &owner, 1)
+                .await?,
+            1
+        );
         assert_eq!(
             count_embedding_jobs(pg.pool_for_tests(), first.memory_id).await?
                 + count_embedding_jobs(pg.pool_for_tests(), second.memory_id).await?,
@@ -137,7 +142,9 @@ async fn fact_embedding_backfill_heals_no_client_ingest() -> Result<(), Box<dyn 
         );
 
         assert_eq!(
-            engine.backfill_fact_embeddings(&authz, &owner, 10).await?,
+            engine
+                .backfill_missing_embeddings(&authz, &owner, 10)
+                .await?,
             1
         );
         let drain = engine.drain_embedding_jobs(10).await?;
@@ -340,4 +347,106 @@ async fn reconcile_limit_skips_existing_heads_before_bounding()
     .await;
     let _ = drop_db(&db_name).await;
     result
+}
+
+/// A derived memory written straight to the sidecar tables — the shape a
+/// flavor produces when it materializes Abstractions through its own ingest
+/// path, with no embedding client in scope — must still be picked up by the
+/// owner-scoped backfill.
+///
+/// Before this, the backfill matched `kind IS NULL` only. `proxima-code`'s
+/// HEAD-snapshot ingest emits one `code-chunk-v1` Abstraction per parsed
+/// chunk that way, so an indexed repository stayed semantically invisible:
+/// lexical search worked, semantic search returned nothing, and nothing
+/// surfaced the gap until an operator happened to run a global reconcile.
+#[tokio::test]
+async fn backfill_covers_derived_memories_not_just_facts() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner_fixture();
+        let engine = engine_for(
+            pg.clone(),
+            Some(Arc::new(ConstantEmbedding::prefixed(
+                "stub-derived-embed",
+                &[0.25, 0.5, 0.75],
+            ))),
+        );
+        let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
+
+        let abstraction_id = uuid::Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.memories
+                (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+                 operator_kind, operator_id, input_contract_id, source_batch_id,
+                 model_id, prompt_version)
+             VALUES ($1, $2, $3, 'test/derived-v1', 1, 'Abstraction', 'derived chunk text',
+                     'AtoA', '00000000-0000-0000-0000-000000000431'::uuid,
+                     '00000000-0000-0000-0000-000000000432'::uuid, NULL,
+                     'test-model', 'test-v1')",
+        )
+        .bind(abstraction_id)
+        .bind(owner_kind)
+        .bind(owner_id)
+        .execute(pg.pool_for_tests())
+        .await?;
+
+        assert_eq!(
+            count_jobs_for_entity(pg.pool_for_tests(), abstraction_id).await?,
+            0,
+            "sidecar-path write enqueues nothing on its own"
+        );
+
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        assert_eq!(
+            engine
+                .backfill_missing_embeddings(&authz, &owner, 10)
+                .await?,
+            1,
+            "the derived memory must be enqueued"
+        );
+        assert_eq!(
+            count_jobs_for_entity(pg.pool_for_tests(), abstraction_id).await?,
+            1
+        );
+
+        // And it must be enqueued under its own kind, or the drain writes an
+        // embedding head no reader looks up.
+        let kind: EntityKind = sqlx::query_scalar(
+            "SELECT entity_kind FROM proxima_core.embedding_jobs WHERE entity_id = $1",
+        )
+        .bind(abstraction_id)
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(kind, EntityKind::Abstraction);
+
+        // Idempotent: a second pass adds nothing.
+        assert_eq!(
+            engine
+                .backfill_missing_embeddings(&authz, &owner, 10)
+                .await?,
+            0
+        );
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    result
+}
+
+/// Job count for one entity regardless of kind. The shared
+/// `count_embedding_jobs` helper pins `entity_kind = 'Fact'`, which is
+/// exactly the assumption the test above exists to disprove.
+async fn count_jobs_for_entity(
+    pool: &sqlx::PgPool,
+    entity_id: uuid::Uuid,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM proxima_core.embedding_jobs WHERE entity_id = $1",
+    )
+    .bind(entity_id)
+    .fetch_one(pool)
+    .await
 }

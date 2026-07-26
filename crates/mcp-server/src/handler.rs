@@ -26,6 +26,9 @@ use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 
 use crate::selfdoc;
 
+/// Product name reported to MCP clients on `initialize`.
+const SERVER_NAME: &str = "proxima";
+
 use crate::auth::McpAuthContext;
 use crate::server::{McpToolHost, ToolInvocationError};
 use proxima_core::ToolScope;
@@ -57,7 +60,11 @@ impl ServerHandler for DynamicHandler {
             .enable_tools()
             .enable_resources()
             .build();
-        info.server_info = Implementation::from_build_env();
+        // NOT `Implementation::from_build_env()`: those `env!` macros expand
+        // against rmcp's own manifest, so every Proxima deployment introduced
+        // itself as `rmcp 2.2.0` and no client or operator could tell which
+        // release they were talking to.
+        info.server_info = Implementation::new(SERVER_NAME, proxima_core::RELEASE_VERSION);
         info
     }
 

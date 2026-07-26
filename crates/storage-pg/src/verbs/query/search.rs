@@ -415,29 +415,50 @@ fn semantic_branch_sql<'p>(
                 FROM candidates c
                ORDER BY c.kind, c.memory_id, c.created_at DESC
           ),
+          -- One row per *memory*, not per embedding row. Since chunked
+          -- embeddings, an over-limit memory holds several vectors under one
+          -- version, and the nearest-neighbour scan returns each of them
+          -- separately. Collapsing here — rather than leaving it to the
+          -- caller's merge — is what keeps the outer LIMIT a budget of
+          -- memories: without it, a handful of heavily-chunked memories fill
+          -- the page with their own chunks, the page under-fills after the
+          -- merge collapses them, and `has_more` reports false while matching
+          -- memories were never returned.
+          --
+          -- The inner scan keeps `ORDER BY <vector distance> LIMIT n` intact,
+          -- which is the only shape the HNSW index can serve
+          -- (`semantic_search_plan_uses_hnsw_index` pins that); deduplication
+          -- happens over its result, not in place of it. A memory scores by
+          -- its best chunk, so partial-match coverage is preserved.
           vector_candidates AS MATERIALIZED (
-              SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
-                     c.search_text,
-                     CASE
-                         WHEN (1 - (emb.vec <=> ${vec_param}::vector)) = 'NaN'::float8 THEN 0.0
-                         ELSE GREATEST(0.0, (1 - (emb.vec <=> ${vec_param}::vector)))
-                     END::real AS similarity_score
-                FROM proxima_core.embeddings emb
-                JOIN proxima_core.embedding_heads head
-                  ON head.entity_kind = emb.entity_kind
-                 AND head.entity_id = emb.entity_id
-                 AND head.model_id = emb.model_id
-                 AND head.embedding_version = emb.embedding_version
-                 AND head.owner_kind = emb.owner_kind
-                 AND head.owner_id IS NOT DISTINCT FROM emb.owner_id
-                JOIN eligible_entities c
-                  ON c.kind = emb.entity_kind
-                 AND c.memory_id = emb.entity_id
-                 AND c.owner_kind = emb.owner_kind
-                 AND c.owner_id IS NOT DISTINCT FROM emb.owner_id
-               WHERE emb.model_id = ${model_param}
-               ORDER BY emb.vec <=> ${vec_param}::vector
-               LIMIT {candidate_overfetch}
+              SELECT DISTINCT ON (ann.kind, ann.memory_id)
+                     ann.memory_id, ann.kind, ann.schema_id, ann.created_at,
+                     ann.search_text, ann.similarity_score
+                FROM (
+                  SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
+                         c.search_text,
+                         CASE
+                             WHEN (1 - (emb.vec <=> ${vec_param}::vector)) = 'NaN'::float8 THEN 0.0
+                             ELSE GREATEST(0.0, (1 - (emb.vec <=> ${vec_param}::vector)))
+                         END::real AS similarity_score
+                    FROM proxima_core.embeddings emb
+                    JOIN proxima_core.embedding_heads head
+                      ON head.entity_kind = emb.entity_kind
+                     AND head.entity_id = emb.entity_id
+                     AND head.model_id = emb.model_id
+                     AND head.embedding_version = emb.embedding_version
+                     AND head.owner_kind = emb.owner_kind
+                     AND head.owner_id IS NOT DISTINCT FROM emb.owner_id
+                    JOIN eligible_entities c
+                      ON c.kind = emb.entity_kind
+                     AND c.memory_id = emb.entity_id
+                     AND c.owner_kind = emb.owner_kind
+                     AND c.owner_id IS NOT DISTINCT FROM emb.owner_id
+                   WHERE emb.model_id = ${model_param}
+                   ORDER BY emb.vec <=> ${vec_param}::vector
+                   LIMIT {candidate_overfetch}
+                ) ann
+               ORDER BY ann.kind, ann.memory_id, ann.similarity_score DESC
           )
           SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
                  left(c.search_text, 480) AS snippet,

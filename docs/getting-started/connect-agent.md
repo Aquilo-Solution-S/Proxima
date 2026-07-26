@@ -41,9 +41,11 @@ local checkout and ingest its current tree:
 2. `proxima-code_ingest_head_snapshot` with that `repo_handle` — emits one
    `file-revision-v1` Fact per tracked file and `code-chunk-v1` Abstractions
    per parsed chunk.
-3. `proxima-mcp maintain-embeddings --missing-only --drain` — ingest does not
-   enqueue embedding jobs itself, so run this before expecting semantic
-   results. Lexical `proxima-code_search_chunks` works immediately.
+   The response reports `embeddings_enqueued`: ingest enqueues embedding jobs
+   for the owner, and the server drains them in the background. Lexical
+   `proxima-code_search_chunks` works immediately; semantic results appear as
+   the backlog drains (watch `proxima://graph`). With no embedding client
+   configured this is `0` and the deployment stays lexical-only.
 
 Then search with `proxima-code_search_chunks`, `proxima-code_search_commits`,
 and read exact revisions with `proxima-code_open_file_revision`.

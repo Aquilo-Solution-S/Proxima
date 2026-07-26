@@ -32,7 +32,7 @@ async fn fresh_pool() -> (sqlx::PgPool, String) {
 fn s3_config_for_dev() -> S3RuntimeConfig {
     S3RuntimeConfig {
         bucket: std::env::var("PROXIMA_S3_BUCKET")
-            .expect("MinIO required: start docker-compose.dev.yml and set PROXIMA_S3_*"),
+            .expect("S3 target required: start docker-compose.dev.yml and set PROXIMA_S3_*"),
         region: std::env::var("PROXIMA_S3_REGION").expect("PROXIMA_S3_REGION"),
         endpoint_url: std::env::var("PROXIMA_S3_ENDPOINT_URL").ok(),
         force_path_style: true,
@@ -70,12 +70,13 @@ async fn put_object_via_sdk(config: &S3RuntimeConfig, key: &str, body: &'static 
 
 #[tokio::test]
 async fn prepare_then_complete_then_read_roundtrip() {
-    // Opt-in integration test: needs a reachable S3/MinIO target. Skip
+    // Opt-in integration test: needs a reachable S3 target. Skip
     // (rather than panic) when PROXIMA_S3_* is unset so the default
-    // `cargo test --workspace` is green without standing up MinIO.
+    // `cargo test --workspace` is green without standing up an object store.
+    // CI sets these (see .github/workflows/ci.yml), so the lane is not dark there.
     if !S3RuntimeConfig::present_in_env() {
         eprintln!(
-            "skipped: PROXIMA_S3_* unset (set PROXIMA_S3_BUCKET/REGION + run MinIO to enable)"
+            "skipped: PROXIMA_S3_* unset (set PROXIMA_S3_BUCKET/REGION + run the s3 service to enable)"
         );
         return;
     }
@@ -164,9 +165,9 @@ async fn prepare_then_complete_then_read_roundtrip() {
 #[tokio::test]
 async fn purge_owner_objects_removes_completed_blob() {
     // Owner erasure must physically remove the
-    // owner's S3 objects in-band. Opt-in, needs MinIO like the roundtrip above.
+    // owner's S3 objects in-band. Opt-in, needs an S3 target like the roundtrip above.
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset (run MinIO to enable)");
+        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
         return;
     }
 
@@ -259,7 +260,7 @@ async fn purge_owner_objects_removes_completed_blob() {
 #[tokio::test]
 async fn versioned_bucket_purge_removes_all_object_versions() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset (run MinIO to enable)");
+        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
         return;
     }
 

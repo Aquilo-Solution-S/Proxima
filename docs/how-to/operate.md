@@ -34,6 +34,8 @@ version/GUC preflight (see [15 §Runtime requirements](../15-deployment.md#runti
 | Boot error | Meaning | Action |
 |---|---|---|
 | `ProximaError::V004ResetRequired` / `EmbedError::V004ResetRequired` | DB carries pre-v0.0.4 schema artifacts or a stale baseline checksum | export, then reset the DB per [MIGRATING.md](https://github.com/Aquilo-Solution-S/Proxima/blob/main/MIGRATING.md) — never in-place migrate |
+| `EmbedError::Storage(String)` containing `VersionMismatch` | a migration file changed after it was applied — its checksum no longer matches the `_sqlx_migrations` ledger | **not** retryable; restarting crashloops. Only reachable on a database that ran a pre-release build of a migration that was later edited. Repair the ledger: delete rows for versions that no longer exist as files, and reset the checksum for the edited version to the SHA-384 of the current file |
+| `EmbedError::Storage(String)` containing `missing schema markers` | the database is a release lane behind the binary | apply the lane's migrations from [MIGRATING.md](https://github.com/Aquilo-Solution-S/Proxima/blob/main/MIGRATING.md), then restart |
 | `EmbedError::Storage(String)` | generic connection / migration / preflight failure | retryable infra: fix connectivity or pgvector version, restart |
 
 The reset variant is typed (distinct from the `Storage` string) precisely so a

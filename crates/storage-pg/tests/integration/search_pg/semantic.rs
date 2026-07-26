@@ -413,3 +413,86 @@ async fn semantic_search_filters_query_predicates_before_candidate_limit()
     drop_db(&db_name).await?;
     Ok(())
 }
+
+/// A page must be a budget of *memories*, not of embedding rows.
+///
+/// The semantic branch's outer `LIMIT` used to count rows straight out of the
+/// nearest-neighbour scan, and chunked embeddings put several rows in there
+/// for one memory. A handful of heavily-chunked memories therefore filled the
+/// page with their own chunks; the Rust-side merge then collapsed them, the
+/// page came back short, and `has_more` was computed from the collapsed count
+/// — so it read `false` while matching memories had never been returned. A
+/// caller paginating until `has_more` stopped would silently see a fraction
+/// of the matches, with no error anywhere.
+#[tokio::test]
+async fn chunked_memories_do_not_starve_the_semantic_page() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let (owner_kind, owner_id) = owner.columns();
+    let query_vec = padded_embedding([1.0, 0.0, 0.0]);
+
+    // Three memories that each hold many chunks, all near the query, so the
+    // nearest-neighbour scan is dominated by their rows.
+    for memory in 0..3 {
+        let id = insert_embedded_memory_with_vec(
+            &pg,
+            &owner,
+            &format!("chunked memory {memory}"),
+            &padded_embedding([0.99, 0.01, 0.0]),
+        )
+        .await?;
+        for chunk_index in 1..12 {
+            sqlx::query(
+                "INSERT INTO proxima_core.embeddings
+                    (entity_kind, entity_id, embedding_version, model_id, vec,
+                     owner_kind, owner_id, chunk_index)
+                 VALUES ($1, $2, 1, 'test-embed', $3::vector, $4, $5, $6)",
+            )
+            .bind(EntityKind::Abstraction)
+            .bind(id)
+            .bind(vector_literal(&padded_embedding([0.99, 0.01, 0.0])))
+            .bind(owner_kind)
+            .bind(owner_id)
+            .bind(chunk_index)
+            .execute(pg.pool_for_tests())
+            .await?;
+        }
+    }
+    // Plus enough single-chunk memories to fill a page on their own.
+    for memory in 0..12 {
+        insert_embedded_memory_with_vec(
+            &pg,
+            &owner,
+            &format!("plain memory {memory}"),
+            &padded_embedding([0.95, 0.05, 0.0]),
+        )
+        .await?;
+    }
+
+    let mut req = semantic_request(&owner, query_vec);
+    req.limit = 5;
+    let page = pg.search_memories(&req, &[]).await?;
+
+    assert_eq!(
+        page.results.len(),
+        5,
+        "page must fill with distinct memories, not be starved by one memory's chunks"
+    );
+    let unique: std::collections::HashSet<Uuid> = page
+        .results
+        .iter()
+        .map(|row| row.memory_id.into_inner())
+        .collect();
+    assert_eq!(unique.len(), 5, "every result must be a distinct memory");
+    assert!(
+        page.has_more,
+        "15 matching memories against a limit of 5 must report has_more"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
