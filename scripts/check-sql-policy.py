@@ -293,6 +293,8 @@ def run_fixture(path: Path) -> int:
 # lexical/semantic_search_sql_for_tests; both sites are parameter-bound
 # EXPLAIN prefixes over the audited builders with inline fixed-fragment
 # proofs.
+# 2026-07-26 refactor: +-0 — search_pg.rs was split into search_pg/ submodules;
+# all four EXPLAIN sites named above now live in search_pg/plans.rs, unchanged.
 EXPECTED_DYNAMIC_SQL_SITES = 53
 
 
