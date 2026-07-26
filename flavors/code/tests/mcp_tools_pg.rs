@@ -5,7 +5,7 @@ mod common;
 
 use common::{TestDb, test_owner as owner_fixture};
 use proxima_code::mcp::{
-    CodeEmitExecutionPlanTool, CodeIngestHeadSnapshotTool, CodeListReposTool,
+    CodeEmitExecutionPlanTool, CodeEraseRepoTool, CodeIngestHeadSnapshotTool, CodeListReposTool,
     CodeOpenFileRevisionTool, CodeRegisterRepoTool, CodeRetryExecutionRequestTool,
     CodeSearchChunksTool, CodeSearchCommitsTool,
 };
@@ -194,6 +194,162 @@ async fn ingest_head_snapshot_tool_indexes_current_tree() -> Result<(), Box<dyn 
     .await?;
     assert_eq!(chunks["matches"].as_array().expect("matches").len(), 1);
     assert_eq!(chunks["matches"][0]["file_path"], "src/lib.rs");
+    Ok(())
+}
+
+/// Erasure is the supported way to re-index a repository from scratch, which
+/// is what a chunker or render upgrade needs: a HEAD snapshot re-derives only
+/// files whose content moved, and a derived Abstraction has to carry its
+/// input Facts' `source_batch_id`, so files that never change cannot be
+/// re-derived in place. It is also the only way to remove an indexed
+/// repository at all — `register_repo` upserts and keeps the cursor.
+#[tokio::test]
+async fn erase_repo_tool_clears_the_index_and_allows_a_fresh_one()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+    init_git_repo_with_commit(
+        temp.path(),
+        "src/lib.rs",
+        "pub fn proxima_erase_marker() -> u64 { 7 }\n",
+    )?;
+    let repo_path = temp.path().to_string_lossy().to_string();
+
+    let registered = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "path": repo_path, "display_name": "Erase Repo" }),
+    )
+    .await?;
+    let repo_handle = registered["repo"]["repo_id"].as_str().expect("repo_id");
+    let canonical_path = registered["repo"]["canonical_path"]
+        .as_str()
+        .expect("canonical_path")
+        .to_string();
+
+    run_tool::<CodeIngestHeadSnapshotTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "repo_handle": repo_handle }),
+    )
+    .await?;
+    let before = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "query": "proxima_erase_marker", "limit": 10 }),
+    )
+    .await?;
+    assert_eq!(before["matches"].as_array().expect("matches").len(), 1);
+
+    // A wrong confirmation must not destroy anything.
+    let refused = run_tool::<CodeEraseRepoTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "repo_handle": repo_handle, "confirm_canonical_path": "/not/this/repo" }),
+    )
+    .await;
+    assert!(refused.is_err(), "mismatched confirmation must be refused");
+    let still_there = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "query": "proxima_erase_marker", "limit": 10 }),
+    )
+    .await?;
+    assert_eq!(
+        still_there["matches"].as_array().expect("matches").len(),
+        1,
+        "a refused erase must leave the index intact"
+    );
+
+    let receipt = run_tool::<CodeEraseRepoTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "repo_handle": repo_handle, "confirm_canonical_path": canonical_path }),
+    )
+    .await?;
+    assert_eq!(receipt["repo_record_deleted"], true);
+    assert!(receipt["abstractions_deleted"].as_u64().expect("count") >= 1);
+
+    let after = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "query": "proxima_erase_marker", "limit": 10 }),
+    )
+    .await?;
+    assert_eq!(
+        after["matches"].as_array().expect("matches").len(),
+        0,
+        "erased chunks must leave search"
+    );
+
+    // The path is registerable again, and re-ingest rebuilds the index —
+    // this is the round trip an upgrade relies on.
+    let reregistered = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "path": repo_path, "display_name": "Erase Repo" }),
+    )
+    .await?;
+    assert_eq!(reregistered["created"], true);
+    let fresh_handle = reregistered["repo"]["repo_id"].as_str().expect("repo_id");
+    run_tool::<CodeIngestHeadSnapshotTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "repo_handle": fresh_handle }),
+    )
+    .await?;
+    let rebuilt = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry),
+        json!({ "query": "proxima_erase_marker", "limit": 10 }),
+    )
+    .await?;
+    assert_eq!(
+        rebuilt["matches"].as_array().expect("matches").len(),
+        1,
+        "re-ingest after erase must rebuild the index"
+    );
+    Ok(())
+}
+
+/// A plain-English question must reach the right chunk. Without the
+/// OR-rescue arm `websearch_to_tsquery` requires every content word in one
+/// chunk, which no sentence-shaped query satisfies.
+#[tokio::test]
+async fn search_chunks_answers_a_natural_language_question()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+    init_git_repo_with_commit(
+        temp.path(),
+        "src/retry.rs",
+        "/// Retries the upload with exponential backoff until the deadline.\n\
+         pub fn upload_with_backoff() {}\n",
+    )?;
+
+    let registered = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "path": temp.path().to_string_lossy(), "display_name": "NL Repo" }),
+    )
+    .await?;
+    let repo_handle = registered["repo"]["repo_id"].as_str().expect("repo_id");
+    run_tool::<CodeIngestHeadSnapshotTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "repo_handle": repo_handle }),
+    )
+    .await?;
+
+    // None of these words co-occur as a phrase, and "how"/"does"/"the" are
+    // stopwords: only a stemming config plus a rescue arm can answer it.
+    let found = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry),
+        json!({
+            "query": "how does the uploader retry when a request fails",
+            "limit": 10,
+            "include_calls": false,
+        }),
+    )
+    .await?;
+    let matches = found["matches"].as_array().expect("matches");
+    assert!(
+        !matches.is_empty(),
+        "a natural-language question must return something"
+    );
+    assert_eq!(matches[0]["file_path"], "src/retry.rs");
     Ok(())
 }
 

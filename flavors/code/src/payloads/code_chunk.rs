@@ -35,6 +35,16 @@ impl AbstractionPayload for CodeChunkV1 {
         "proxima_code.code_chunk_v1"
     }
 
+    /// `file_path` and `text`, in that order — the exact arguments the
+    /// v0.0.7 flavor migration generates `search_tsv` from, so naming the
+    /// stored column below is sound.
+    ///
+    /// `language` and `chunk_type` were projected here and are not any
+    /// more. They are one lexeme each against a chunk body's few hundred,
+    /// so they never lifted a result; they are already exposed as explicit
+    /// filters on `proxima-code_search_chunks`; and every field listed here
+    /// has to appear in the generated column's expression, so keeping them
+    /// would widen the invariant for no retrieval gain.
     fn search_projection() -> Option<SearchProjection> {
         Some(SearchProjection {
             fields: &[
@@ -43,16 +53,12 @@ impl AbstractionPayload for CodeChunkV1 {
                     kind: SearchProjectionColumnKind::Text,
                 },
                 SearchProjectionField {
-                    column: "language",
-                    kind: SearchProjectionColumnKind::Text,
-                },
-                SearchProjectionField {
-                    column: "chunk_type",
+                    column: "text",
                     kind: SearchProjectionColumnKind::Text,
                 },
             ],
             tag_column: None,
-            tsv_column: None,
+            tsv_column: Some("search_tsv"),
         })
     }
 

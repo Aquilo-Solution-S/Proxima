@@ -1,32 +1,14 @@
 mod common;
 
 use common::{migrated_db, test_owner};
+use proxima_code::CommitV1;
 use proxima_code::testkit::{erase_repo, register_repo};
-use proxima_code::{CommitV1, TestRequestV1};
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
-use proxima_core::{FactPayload, Owner, SchemaId, SchemaVersion};
+use proxima_core::{FactPayload, Owner};
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
 
 fn owner_parts(owner: &Owner) -> (proxima_core::OwnerRefKind, Option<Uuid>) {
     proxima_storage_pg::access::owner_columns::owner_binds(owner)
-}
-
-fn fact_schema(schema_id: &str, sidecar_table: &str) -> SchemaInfo {
-    let mut schema = SchemaInfo::opaque(
-        SchemaId::new(schema_id.into()),
-        SchemaVersion::new(1),
-        PayloadKind::Fact,
-    );
-    schema.sidecar_table = Some(sidecar_table.into());
-    schema
-}
-
-fn schemas_for_test() -> Vec<SchemaInfo> {
-    vec![
-        fact_schema(CommitV1::SCHEMA_ID, "proxima_code.commit_v1"),
-        fact_schema(TestRequestV1::SCHEMA_ID, "proxima_code.test_requested_v1"),
-    ]
 }
 
 async fn insert_repo_commit_with_test_request(
@@ -141,7 +123,7 @@ async fn exercise_repo_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::err
     let other_memory_id = Uuid::now_v7();
     insert_repo_commit_with_test_request(pool, &owner, other_repo_id, other_memory_id).await?;
 
-    let receipt = erase_repo(pool, &owner, repo_id, &schemas_for_test()).await?;
+    let receipt = erase_repo(pool, &owner, repo_id).await?;
     assert_eq!(receipt.repo_id, repo_id);
     assert_eq!(receipt.facts_deleted, 1);
     assert_eq!(receipt.abstractions_deleted, 0);

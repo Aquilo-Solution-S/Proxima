@@ -50,9 +50,11 @@ pub trait EmbeddingClient: Send + Sync + std::fmt::Debug {
     fn dim(&self) -> usize;
 }
 
-/// Smallest chunk (in bytes) the chunked-embedding rescue will bisect down
-/// to before treating a rejection as genuinely invalid input rather than an
-/// over-limit one.
+/// Smallest piece, in bytes, the chunked-embedding rescue is willing to
+/// produce. A segment whose halves would fall below this is not split
+/// further: at that size a rejection is read as genuinely invalid input
+/// rather than an over-limit one, so the effective floor on a segment the
+/// rescue will still bisect is twice this value.
 pub const CHUNKED_EMBED_MIN_BYTES: usize = 2048;
 
 /// Split an input the provider rejected as over-limit into pieces it will
@@ -63,7 +65,7 @@ pub const CHUNKED_EMBED_MIN_BYTES: usize = 2048;
 /// this never needs to know: an over-limit input starts embedding once its
 /// pieces are short enough, while an input rejected for any other reason
 /// keeps failing all the way down and the caller sends the job terminal
-/// exactly as before. A piece still rejected below
+/// exactly as before. A piece whose halves would fall below
 /// [`CHUNKED_EMBED_MIN_BYTES`] is treated as genuinely invalid and aborts
 /// the rescue — partial coverage would mask the poison input.
 ///

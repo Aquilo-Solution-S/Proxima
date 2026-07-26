@@ -15,7 +15,7 @@ use sqlx::PgPool;
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
-use crate::pgvector::{SET_HNSW_EF_SEARCH_SQL, SET_HNSW_ITERATIVE_SCAN_SQL};
+use crate::pgvector::SET_HNSW_SEARCH_SQL;
 
 use super::{entity_owner_union, read_owner_columns};
 
@@ -526,11 +526,8 @@ async fn run_semantic(
     q = q.bind(model_id.clone());
 
     let mut tx = pool.begin().await.map_err(map_err)?;
-    sqlx::query(SET_HNSW_EF_SEARCH_SQL)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-    sqlx::query(SET_HNSW_ITERATIVE_SCAN_SQL)
+    // SQL-POLICY: fixed-fragment
+    sqlx::raw_sql(SET_HNSW_SEARCH_SQL)
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;

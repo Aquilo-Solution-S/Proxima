@@ -110,7 +110,9 @@ pub use emit_execution_request::{
     CodeEmitExecutionPlanTool, CodeEmitExecutionRequestTool, CodeRetryExecutionRequestTool,
 };
 pub use open_file_revision::CodeOpenFileRevisionTool;
-pub use repos::{CodeIngestHeadSnapshotTool, CodeListReposTool, CodeRegisterRepoTool};
+pub use repos::{
+    CodeEraseRepoTool, CodeIngestHeadSnapshotTool, CodeListReposTool, CodeRegisterRepoTool,
+};
 pub use search_chunks::CodeSearchChunksTool;
 pub use search_commits::CodeSearchCommitsTool;
 pub use work_item_bundle::CodeWorkItemBundleTool;

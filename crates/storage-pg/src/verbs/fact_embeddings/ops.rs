@@ -7,7 +7,14 @@ use proxima_core::{
 use sqlx::PgPool;
 
 use crate::error::map_err;
-use crate::pgvector::{SET_HNSW_EF_SEARCH_SQL, SET_HNSW_ITERATIVE_SCAN_SQL};
+/// Session settings for the ANN leg of the recall canary: the HNSW search
+/// settings plus a seqscan ban, so the canary measures the index rather than
+/// the planner's opinion of it. One statement, one round trip.
+const ANN_CANARY_SESSION_SQL: &str = concat!(
+    "SET LOCAL enable_seqscan = off; ",
+    "SET LOCAL hnsw.ef_search = 100; ",
+    "SET LOCAL hnsw.iterative_scan = relaxed_order"
+);
 
 use super::{nonnegative_count, ratio_count, usize_count};
 
@@ -274,15 +281,8 @@ async fn current_embedding_ids_by_distance(
                 .map_err(map_err)?;
         }
         DistancePlan::Ann => {
-            sqlx::query("SET LOCAL enable_seqscan = off")
-                .execute(tx.as_mut())
-                .await
-                .map_err(map_err)?;
-            sqlx::query(SET_HNSW_EF_SEARCH_SQL)
-                .execute(tx.as_mut())
-                .await
-                .map_err(map_err)?;
-            sqlx::query(SET_HNSW_ITERATIVE_SCAN_SQL)
+            // SQL-POLICY: fixed-fragment
+            sqlx::raw_sql(ANN_CANARY_SESSION_SQL)
                 .execute(tx.as_mut())
                 .await
                 .map_err(map_err)?;

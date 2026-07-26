@@ -3,9 +3,19 @@ use std::fmt::Write as _;
 pub(crate) const REQUIRED_PGVECTOR_MAJOR: u32 = 0;
 pub(crate) const REQUIRED_PGVECTOR_MINOR: u32 = 8;
 pub(crate) const REQUIRED_PGVECTOR_PATCH: u32 = 0;
-pub(crate) const SET_HNSW_EF_SEARCH_SQL: &str = "SET LOCAL hnsw.ef_search = 100";
 pub(crate) const SET_HNSW_ITERATIVE_SCAN_SQL: &str =
     "SET LOCAL hnsw.iterative_scan = relaxed_order";
+
+/// Both HNSW search settings in one statement.
+///
+/// `SET LOCAL` takes a single parameter, so these are inherently two
+/// statements — and sqlx's `query` uses the extended protocol, which sends
+/// one statement per round trip. Every semantic search therefore paid two
+/// round trips before its query even started. `raw_sql` uses the simple
+/// protocol, which accepts both in one message; there is nothing to bind
+/// here, so the usual reason to prefer the extended protocol does not apply.
+pub(crate) const SET_HNSW_SEARCH_SQL: &str =
+    "SET LOCAL hnsw.ef_search = 100; SET LOCAL hnsw.iterative_scan = relaxed_order";
 
 #[must_use]
 pub(crate) fn literal(vec: &[f32]) -> String {

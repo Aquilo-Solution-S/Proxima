@@ -88,7 +88,7 @@ no backfill.
 | Source | Files | Notes |
 |---|---|---|
 | Proxima core | `0011_v007.sql` | `embeddings` primary key rebuilt to include `chunk_index`; STORED generated `search_tsv` on `memories`, `agent_derivation_v1`, `agent_note_v1`; four `proxima_core.lexical_*` functions |
-| Code flavor | `20260726000020_v007.sql` | STORED generated `search_tsv` on `code_chunk_v1` (config `simple`, unchanged); GIN moves from the old expression index to the column |
+| Code flavor | `20260726000020_v007.sql` | STORED generated `search_tsv` on `code_chunk_v1`, built from `proxima_core.lexical_tsv` (config `english`, changed from `simple`); GIN moves from the old expression index to the column |
 
 **This lane is not online-safe.** Unlike v0.0.6, both files rewrite tables.
 `ADD COLUMN ... GENERATED ALWAYS AS ... STORED` rewrites each target and holds
@@ -110,10 +110,29 @@ Plan for it:
   `lock_timeout = 5s`, so a migration that cannot get the lock fails and
   retries on the next pod rather than freezing the table behind a lock queue.
 
-The code-flavor file keeps the `simple` text-search config deliberately —
-code is not English, and stemming would fold `parsing` into `pars` while
-stopword removal would drop `in`, `as`, `if`, `do`, `no`, `on`. It changes
-cost, never results.
+The code-flavor file moves code chunks onto `proxima_core.lexical_tsv`, the
+same definition core uses, which means config `english` rather than `simple`.
+That does change results, and deliberately.
+
+`simple` neither stems nor drops stopwords, so
+`websearch_to_tsquery('simple', ...)` over a question is an AND of every word
+in it, function words included. Measured against Proxima's own indexed source,
+**0 of 24 natural-language queries returned a single row**. Under `english`
+the same question reduces to its content lexemes, which an OR-rescue arm can
+work with; the same 24 queries then score hit@1 0.375, hit@10 0.708,
+MRR 0.499.
+
+Stemming does fold `parsing`/`parsed`/`parser` together, and `in`, `as`, `if`,
+`do`, `no`, `on` are all English stopwords and real keywords. Exact identifier
+and keyword lookup moved to the substring arm of the search, which carries a
+larger score bonus than any rank, so that precision is relocated rather than
+lost — `embed_in_chunks` still matches verbatim.
+
+Sharing the definition is also what lets `CodeChunkV1::search_projection()`
+name the column as its `tsv_column`, so `core_search_memories` reads the
+stored vector instead of recomputing one. A column built with a different
+config could not be substituted: a tsvector carries no record of the config
+that produced it, so the mismatch would be silent.
 
 Two behaviour changes ride along, neither of which announces itself:
 
@@ -122,9 +141,17 @@ Two behaviour changes ride along, neither of which announces itself:
   provider's input limit is now stored as several chunk rows under one
   embedding version, where it previously went un-embedded entirely.
 - **Lexical search now stems and drops English stopwords** (`'simple'` →
-  `'english'` text-search config). Result *sets* change, not just ordering:
-  a query of only stopwords no longer matches, and `running` now matches
-  `run`. Re-check any saved query or test that pins exact lexical hits.
+  `'english'` text-search config), in core and in the code flavor alike.
+  Result *sets* change, not just ordering: a query of only stopwords no
+  longer matches, and `running` now matches `run`. Re-check any saved query
+  or test that pins exact lexical hits.
+- **Code chunks carry their body.** `code-chunk-v1` renders as
+  `path:start-end` followed by the chunk text, where it used to render the
+  header alone. That render is `memories.text`, so it is what gets embedded:
+  code-chunk embeddings previously encoded a file path and two line numbers,
+  and `core_search_memories` could only retrieve code whose *filename*
+  resembled the question. Existing indexes need re-indexing to benefit — see
+  §25.
 
 `ProximaBuilder::skip_migrations(true)` boot runs `ensure_core_schema_current`,
 which for this release requires core migration version ≥ 11 (lane `version <=
@@ -339,6 +366,15 @@ the full helper set (`authorized_memory_ids`, `authorized_fact_payloads`,
 `authorized_fact_payloads_include_tombstones`) — all route through
 `Engine::query`, the same owner/group/`World` visibility path every other
 authorized read uses.
+
+The rule is about core *data*. As of v0.0.7 a flavor query may call the pure
+`proxima_core` SQL functions — `lexical_scrub`, `lexical_tsv`,
+`lexical_join`, `lexical_text_array`, `memory_entity_kind` — which are
+IMMUTABLE, read no row and enforce no authorization. They exist to be shared:
+a flavor that could not call them would have to restate the definition its
+own generated column is built from, which is exactly the drift they were
+introduced to prevent. The guardrail masks those calls and still fails on any
+literal that names a core table or view, including one that does both.
 
 ## 9. Owner-transfer: `core_publish:publish_to_world`
 
@@ -782,6 +818,56 @@ Custom `EmbeddingJobPort` implementations need no change: the port method
 `enqueue_missing_embedding_jobs` keeps its name and signature. If yours
 filters to Facts internally, widen it to match, or derived memories will
 still be skipped.
+
+## 25. v0.0.7: code indexes must be re-indexed; `proxima-code_erase_repo`
+
+Two v0.0.7 changes alter how a repository is chunked and rendered, and neither
+reaches an index that already exists.
+
+- The chunker no longer drops comments. In the Rust grammar a doc comment is a
+  *sibling* of the item it documents, and the merge step skipped comment nodes
+  — so every `///` and `//!` block was excluded from the corpus. Measured over
+  Proxima's own 444 indexed Rust files, chunk spans covered 95.3% of source
+  bytes overall but only 14.2% of `flavors/code/src/migrations.rs` and 65.9%
+  of `crates/core/src/llm.rs`: the loss landed exactly on the files that carry
+  their reasoning in prose. After the fix, 99.2% and 99.9% respectively.
+- `code-chunk-v1` renders as `path:start-end` plus the chunk body rather than
+  the header alone, so chunk embeddings encode code instead of a file path.
+
+A HEAD snapshot re-derives only files whose blob hash moved, so a repository
+that has not changed keeps its old chunks, and files that never change keep
+them permanently. That skip cannot simply be bypassed: a derived Abstraction
+must carry the same `source_batch_id` as the Facts it was derived from, and
+re-deriving an unchanged file would stamp new chunks with a batch its
+already-receipted Fact does not belong to.
+
+The supported path is therefore erase and re-ingest, which produces fresh
+Facts in fresh batches — the model working as intended rather than around:
+
+```
+proxima-code_erase_repo   { repo_handle, confirm_canonical_path }
+proxima-code_register_repo { path }
+proxima-code_ingest_head_snapshot { repo_handle }
+```
+
+`proxima-code_erase_repo` is new in v0.0.7, and it is also the first supported
+way to remove an indexed repository at all. The storage verb behind it has
+existed and been tested since the code flavor shipped, but was reachable only
+through `proxima_code::testkit`, which is `cfg(debug_assertions)` — in a
+release build, `proxima-code_register_repo` upserts and keeps the cursor, so a
+repository once indexed was permanent.
+
+It deletes every Fact, Abstraction, edge, embedding, receipt, citation mapping
+and cited object derived from that repository, and returns a receipt counting
+each. It is irreversible and requires `confirm_canonical_path` to match the
+repo's stored path exactly; a mismatch is rejected and changes nothing.
+
+Budget for the re-embed. Chunk embeddings now cover real content, so the
+queue after a re-ingest is proportional to corpus size rather than to a few
+bytes per chunk: Proxima's own 620-file tree enqueues 4,083 jobs.
+
+Rust embedders: `proxima_code::repos::erase_repo` lost its unused `schemas`
+parameter.
 
 ## Checks before calling an upgrade done
 

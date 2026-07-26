@@ -395,6 +395,103 @@ fn repo_item(ctx: &ToolCtx, record: RepoRecord) -> Result<RepoItem, ToolError> {
     })
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CodeEraseRepoArgs {
+    #[schemars(
+        description = "Repo handle returned by proxima-code_register_repo or proxima-code_list_repos, for example `R:<uuid>`."
+    )]
+    pub repo_handle: String,
+    #[schemars(
+        description = "The repo's canonical path, exactly as reported by proxima-code_list_repos. Required, and must match — erasure is irreversible, so the caller has to name what it is destroying."
+    )]
+    pub confirm_canonical_path: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CodeEraseRepoOutput {
+    pub repo_id: String,
+    pub canonical_path: String,
+    pub completed_at: String,
+    pub facts_deleted: u64,
+    pub abstractions_deleted: u64,
+    pub edges_deleted: u64,
+    pub embeddings_deleted: u64,
+    pub receipts_deleted: u64,
+    pub citation_mappings_deleted: u64,
+    pub cited_objects_deleted: u64,
+    pub source_batches_deleted: u64,
+    pub repo_record_deleted: bool,
+}
+
+/// Erase one registered repository and everything derived from it.
+///
+/// The storage verb behind this has existed and been tested since the code
+/// flavor shipped, but was reachable only through `proxima_code::testkit`,
+/// which is `cfg(debug_assertions)`. In a release build there was no way to
+/// remove an indexed repository at all: `proxima-code_register_repo` upserts
+/// and keeps the cursor, so a repository, once indexed, was permanent.
+///
+/// It is also the supported re-index path. A HEAD snapshot re-derives only
+/// files whose content moved, and a derived Abstraction must carry the same
+/// `source_batch_id` as the Facts it came from — so when the *deriver*
+/// changes (a chunker or render upgrade), previously indexed files cannot be
+/// re-derived in place. Erasing and re-ingesting produces fresh Facts in
+/// fresh batches, which is the model working as intended rather than around.
+#[derive(Debug)]
+pub struct CodeEraseRepoTool;
+
+impl Tool for CodeEraseRepoTool {
+    const NAME: &'static str = "proxima-code_erase_repo";
+    const DESCRIPTION: &'static str = "Erase one registered repository and every Fact, Abstraction, edge, embedding and receipt derived from it. Irreversible; requires the canonical path as confirmation. Also the supported way to re-index a repository from scratch after a Proxima upgrade changes chunking.";
+
+    type Args = CodeEraseRepoArgs;
+    type Output = CodeEraseRepoOutput;
+
+    fn call(
+        ctx: ToolCtx,
+        args: CodeEraseRepoArgs,
+    ) -> futures::future::BoxFuture<'static, Result<CodeEraseRepoOutput, ToolError>> {
+        Box::pin(async move {
+            let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
+            let pool = code_store(&ctx)?;
+            let repo = crate::repos::get_repo(pool.pool(), &ctx.owner(), repo_id)
+                .await
+                .map_err(map_repo_registry)?
+                .ok_or_else(|| ToolError::InvalidInput(format!("repo not found: {repo_id}")))?;
+
+            // Confirm against the stored path rather than the caller's, so a
+            // handle typo cannot erase a different repository than the one
+            // the caller believes it named.
+            if args.confirm_canonical_path.trim() != repo.canonical_path {
+                return Err(ToolError::InvalidInput(format!(
+                    "confirm_canonical_path does not match repo {repo_id}: expected {}",
+                    repo.canonical_path
+                )));
+            }
+
+            let canonical_path = repo.canonical_path.clone();
+            let receipt = crate::repos::erase_repo(pool.pool(), &ctx.owner(), repo_id)
+                .await
+                .map_err(map_repo_registry)?;
+
+            Ok(CodeEraseRepoOutput {
+                repo_id: receipt.repo_id.to_string(),
+                canonical_path,
+                completed_at: format_time(receipt.completed_at)?,
+                facts_deleted: receipt.facts_deleted,
+                abstractions_deleted: receipt.abstractions_deleted,
+                edges_deleted: receipt.edges_deleted,
+                embeddings_deleted: receipt.embeddings_deleted,
+                receipts_deleted: receipt.receipts_deleted,
+                citation_mappings_deleted: receipt.citation_mappings_deleted,
+                cited_objects_deleted: receipt.cited_objects_deleted,
+                source_batches_deleted: receipt.source_batches_deleted,
+                repo_record_deleted: receipt.repo_record_deleted,
+            })
+        })
+    }
+}
+
 fn format_time(value: time::OffsetDateTime) -> Result<String, ToolError> {
     value
         .format(&time::format_description::well_known::Rfc3339)

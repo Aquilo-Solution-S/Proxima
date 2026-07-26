@@ -249,20 +249,25 @@ fn is_chunk_candidate(node: &Node) -> bool {
     )
 }
 
-/// Skip insubstantial leaves at merge time: top-level comments, raw
-/// whitespace tokens, semicolons.
+/// Skip insubstantial leaves at merge time: anonymous punctuation tokens
+/// (`//`, `/*`, `{`, `;`) that carry no retrievable content.
+///
+/// Comments are *not* skipped. In tree-sitter-rust a doc comment is a
+/// sibling of the item it documents rather than part of it, so excluding
+/// comment nodes here dropped every `///` and `//!` block from the corpus
+/// — measured over this repository's 444 indexed Rust files, chunk spans
+/// covered 95.3% of source bytes overall but only 14.2% of
+/// `flavors/code/src/migrations.rs` and 65.9% of `crates/core/src/llm.rs`,
+/// because byte loss lands exactly on the files that carry their reasoning
+/// in prose. Letting comments merge normally puts a doc comment in the same
+/// greedy buffer as the item that follows it, which is also the grouping a
+/// reader would choose.
+///
+/// `node.is_named()` already excludes the anonymous `//` / `/*` / `*/`
+/// tokens; the named `comment`, `line_comment` and `block_comment` kinds
+/// are content and are kept.
 fn is_substantive(node: &Node) -> bool {
-    let kind = node.kind();
-    if kind == "comment"
-        || kind == "line_comment"
-        || kind == "block_comment"
-        || kind == "//"
-        || kind == "/*"
-        || kind == "*/"
-    {
-        return false;
-    }
-    if kind.is_empty() {
+    if node.kind().is_empty() {
         return false;
     }
     node.is_named()
@@ -485,6 +490,101 @@ mod tests {
                 "chunk NWS size {nws} exceeds MAX_CHUNK_CHARS {MAX_CHUNK_CHARS}"
             );
         }
+    }
+
+    /// Byte-span coverage of a source, as a fraction of its length.
+    /// Overlapping spans are merged so a file cannot score above 1.0.
+    fn coverage(src: &str, chunks: &[Chunk]) -> f64 {
+        let mut spans: Vec<(usize, usize)> = chunks
+            .iter()
+            .map(|c| (c.byte_range_start as usize, c.byte_range_end as usize))
+            .collect();
+        spans.sort_unstable();
+        let mut covered = 0usize;
+        let mut reach = 0usize;
+        for (start, end) in spans {
+            let start = start.max(reach);
+            if end > start {
+                covered += end - start;
+                reach = end;
+            }
+        }
+        f64::from(u32::try_from(covered).unwrap_or(u32::MAX))
+            / f64::from(u32::try_from(src.len()).unwrap_or(u32::MAX))
+    }
+
+    /// A doc comment is a *sibling* of the item it documents in the Rust
+    /// grammar, so the merge loop is the only thing that can keep it. It
+    /// used to skip comment nodes outright, which silently dropped every
+    /// `///` and `//!` block in the corpus.
+    #[test]
+    fn rust_doc_comments_are_indexed() {
+        let src = "\
+//! Crate-level prose explaining the module's contract.
+
+/// Returns the answer, having consulted the oracle about parity.
+pub fn answer() -> u32 {
+    42
+}
+";
+        let chunks = chunk_blob("a.rs", src.as_bytes());
+        let combined: String = chunks
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            combined.contains("consulted the oracle about parity"),
+            "item doc comment missing from every chunk: {combined:?}"
+        );
+        assert!(
+            combined.contains("Crate-level prose"),
+            "module doc comment missing from every chunk: {combined:?}"
+        );
+    }
+
+    /// The greedy merge should put a doc comment and the item it documents
+    /// in one chunk, which is the grouping a reader would choose too.
+    #[test]
+    fn doc_comment_merges_with_the_item_it_documents() {
+        let src = "\
+/// Parses the manifest and yields one record per stanza.
+pub fn parse() {}
+";
+        let chunks = chunk_blob("a.rs", src.as_bytes());
+        assert_eq!(chunks.len(), 1, "expected one merged chunk: {chunks:?}");
+        assert!(chunks[0].text.contains("one record per stanza"));
+        assert!(chunks[0].text.contains("pub fn parse"));
+    }
+
+    /// Comment-dense sources are the ones that lost the most: this shape
+    /// scored 0.33 coverage while comments were skipped.
+    #[test]
+    fn comment_dense_source_is_almost_fully_covered() {
+        let src = "\
+//! Module prose that carries the design rationale for this file.
+//!
+//! It runs several lines, because that is how the reasoning is recorded.
+
+use std::fmt;
+
+/// Why this constant has the value it has, at length, because the number
+/// is not self-explanatory and the next reader will want the argument.
+pub const LIMIT: usize = 64;
+
+/// What this function guarantees to its caller, and what it deliberately
+/// does not guarantee, spelled out so nobody has to re-derive it.
+pub fn run(input: &str) -> Result<(), fmt::Error> {
+    let _ = input;
+    Ok(())
+}
+";
+        let chunks = chunk_blob("a.rs", src.as_bytes());
+        let covered = coverage(src, &chunks);
+        assert!(
+            covered > 0.95,
+            "coverage {covered:.3} — comment-dense source is losing bytes"
+        );
     }
 
     #[test]
