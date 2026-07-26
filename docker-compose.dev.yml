@@ -57,7 +57,10 @@ services:
     volumes:
       - proxima_dev_s3_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000 >/dev/null || exit 1"]
+      # Any HTTP response means it is listening and serving. Not `curl -f`:
+      # an S3 root request is unauthenticated, so a healthy server answers
+      # 403 and `-f` would treat that as failure forever.
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://localhost:9000"]
       interval: 2s
       timeout: 3s
       retries: 30
